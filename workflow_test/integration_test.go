@@ -3,254 +3,193 @@ package workflow_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
-)
 
-const (
-	sliceServiceAddr = "localhost:50051"
-	adminServiceAddr = "localhost:50052"
-	cliBinaryPath    = "../gs_cli/gs_cli"
+	adminservice "github.com/niczy/gitslice/internal/services/admin"
+	sliceservice "github.com/niczy/gitslice/internal/services/slice"
+	"github.com/niczy/gitslice/internal/storage"
+	"google.golang.org/grpc"
 )
 
 var (
-	sliceServiceProcess *exec.Cmd
-	adminServiceProcess *exec.Cmd
+	sliceServiceAddr string
+	adminServiceAddr string
+	cliBinaryPath    string
+
+	sliceServer *grpc.Server
+	adminServer *grpc.Server
 )
 
 // TestMain sets up and tears down services for all tests
 func TestMain(m *testing.M) {
-	// Skip all tests if implementation is not ready
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
 		fmt.Println("Skipping integration tests. Set RUN_INTEGRATION_TESTS=1 to run.")
 		os.Exit(0)
 	}
 
-	// Start services
-	if err := startServices(); err != nil {
-		fmt.Printf("Failed to start services: %v\n", err)
+	st := storage.NewInMemoryStorage()
+
+	var err error
+	sliceServiceAddr, sliceServer, err = startSliceService(st)
+	if err != nil {
+		fmt.Printf("Failed to start slice service: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Wait for services to be ready
-	time.Sleep(2 * time.Second)
+	adminServiceAddr, adminServer, err = startAdminService(st)
+	if err != nil {
+		fmt.Printf("Failed to start admin service: %v\n", err)
+		stopServers()
+		os.Exit(1)
+	}
 
-	// Run tests
+	cliBinaryPath, err = buildCLIBinary()
+	if err != nil {
+		fmt.Printf("Failed to build CLI: %v\n", err)
+		stopServers()
+		os.Exit(1)
+	}
+
+	// Allow servers to bind before running tests
+	time.Sleep(100 * time.Millisecond)
+
 	code := m.Run()
 
-	// Stop services
-	stopServices()
-
+	stopServers()
 	os.Exit(code)
 }
 
-// startServices starts the slice_service and admin_service
-func startServices() error {
-	// Start slice service
-	sliceServiceProcess = exec.Command("go", "run", "../slice_service/")
-	sliceServiceProcess.Env = append(os.Environ(), "GRPC_TRACE=all")
-	if err := sliceServiceProcess.Start(); err != nil {
-		return fmt.Errorf("failed to start slice service: %w", err)
+func startSliceService(st storage.Storage) (string, *grpc.Server, error) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", nil, err
 	}
 
-	// Start admin service
-	adminServiceProcess = exec.Command("go", "run", "../admin_service/")
-	adminServiceProcess.Env = append(os.Environ(), "GRPC_TRACE=all")
-	if err := adminServiceProcess.Start(); err != nil {
-		sliceServiceProcess.Process.Kill()
-		return fmt.Errorf("failed to start admin service: %w", err)
-	}
+	srv := sliceservice.NewGRPCServer(st)
+	go srv.Serve(lis)
 
-	return nil
+	return lis.Addr().String(), srv, nil
 }
 
-// stopServices stops both services
-func stopServices() {
-	if sliceServiceProcess != nil && sliceServiceProcess.Process != nil {
-		sliceServiceProcess.Process.Kill()
+func startAdminService(st storage.Storage) (string, *grpc.Server, error) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", nil, err
 	}
-	if adminServiceProcess != nil && adminServiceProcess.Process != nil {
-		adminServiceProcess.Process.Kill()
+
+	srv := adminservice.NewGRPCServer(st)
+	go srv.Serve(lis)
+
+	return lis.Addr().String(), srv, nil
+}
+
+func stopServers() {
+	if sliceServer != nil {
+		sliceServer.GracefulStop()
+	}
+	if adminServer != nil {
+		adminServer.GracefulStop()
+	}
+	if cliBinaryPath != "" {
+		_ = os.RemoveAll(filepath.Dir(cliBinaryPath))
 	}
 }
 
-// runCLI executes a CLI command and returns to output
+func buildCLIBinary() (string, error) {
+	tmpDir, err := os.MkdirTemp("", "gs-cli-bin-")
+	if err != nil {
+		return "", err
+	}
+
+	binaryPath := filepath.Join(tmpDir, "gs_cli")
+	cmd := exec.Command("go", "build", "-o", binaryPath, "./gs_cli")
+	cmd.Dir = ".."
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("build failed: %w\nOutput:\n%s", err, string(output))
+	}
+
+	return binaryPath, nil
+}
+
+// runCLI executes a CLI command in the current working directory.
 func runCLI(args ...string) (string, error) {
+	return runCLIWithDir("", args...)
+}
+
+// runCLIWithDir executes a CLI command from the provided working directory.
+func runCLIWithDir(workdir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	absPath, _ := filepath.Abs(cliBinaryPath)
-	cmd := exec.CommandContext(ctx, absPath, args...)
+	fullArgs := append([]string{"--slice-addr", sliceServiceAddr, "--admin-addr", adminServiceAddr}, args...)
+	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+
 	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func runCLIOrFail(t *testing.T, workdir string, args ...string) string {
+	t.Helper()
+
+	output, err := runCLIWithDir(workdir, args...)
 	if err != nil {
-		return string(output), fmt.Errorf("cli command failed: %w", err)
+		t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
 	}
 
-	return string(output), nil
+	return output
 }
 
-// TestServicesRunning tests that services are running and accessible
-func TestServicesRunning(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Test slice service is accessible
-	output, err := runCLI("status")
-	if err != nil {
-		t.Fatalf("Failed to connect to slice service: %v\nOutput: %s", err, output)
+func extractChangesetID(output string) string {
+	re := regexp.MustCompile(`Created changeset ([^ ]+) `)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
 	}
-	t.Logf("Slice service is running. Output: %s", output)
+	return matches[1]
 }
 
-// TestSliceServiceHealth tests slice service health
-func TestSliceServiceHealth(t *testing.T) {
-	t.Skip("Implementation not ready yet")
+func TestChangesetWorkflowEndToEnd(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := "slice-integration"
 
-	// This would be replaced with actual health check
-	t.Log("Slice service health check")
-}
-
-// TestAdminServiceHealth tests admin service health
-func TestAdminServiceHealth(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// This would be replaced with actual health check
-	t.Log("Admin service health check")
-}
-
-// TestCLIBuild tests that CLI is built correctly
-func TestCLIBuild(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Verify CLI binary exists and is executable
-	if _, err := os.Stat(cliBinaryPath); os.IsNotExist(err) {
-		t.Fatalf("CLI binary not found at %s. Run: go build -o %s ./gs_cli/", cliBinaryPath, cliBinaryPath)
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--description", "integration slice")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
 
-	// Test CLI help
-	output, err := runCLI("--help")
-	if err != nil {
-		t.Fatalf("CLI --help failed: %v\nOutput: %s", err, output)
+	output = runCLIOrFail(t, workdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("Expected init output, got: %s", output)
 	}
 
-	if len(output) == 0 {
-		t.Error("CLI --help returned no output")
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "initial change", "--files", "main.go,README.md")
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("Failed to extract changeset ID from output: %s", output)
 	}
 
-	t.Logf("CLI built successfully. Help output length: %d", len(output))
-}
-
-// TestIntegrationSetup tests that the integration test environment is set up correctly
-func TestIntegrationSetup(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Check that all required directories exist
-	requiredDirs := []string{
-		"../slice_service/",
-		"../admin_service/",
-		"../gs_cli/",
-		"../proto/slice/",
-		"../proto/admin/",
+	output = runCLIOrFail(t, workdir, "changeset", "review", changesetID)
+	if !strings.Contains(output, "Changeset: "+changesetID) {
+		t.Fatalf("Expected review output to include changeset ID, got: %s", output)
 	}
 
-	for _, dir := range requiredDirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			t.Fatalf("Required directory not found: %s", dir)
-		}
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("Expected merge success, got: %s", output)
 	}
 
-	t.Log("Integration test environment is set up correctly")
-}
-
-// TestProtoFilesGenerated tests that proto files are generated correctly
-func TestProtoFilesGenerated(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Check that generated Go files exist
-	requiredFiles := []string{
-		"../proto/slice/slice_service.pb.go",
-		"../proto/slice/slice_service_grpc.pb.go",
-		"../proto/admin/admin_service.pb.go",
-		"../proto/admin/admin_service_grpc.pb.go",
+	output = runCLIOrFail(t, workdir, "changeset", "list", "--status", "merged")
+	if !strings.Contains(output, changesetID) {
+		t.Fatalf("Expected merged changeset in list output, got: %s", output)
 	}
-
-	for _, file := range requiredFiles {
-		if _, err := os.Stat(file); os.IsNotExist(err) {
-			t.Fatalf("Required proto generated file not found: %s", file)
-		}
-	}
-
-	t.Log("Proto files generated correctly")
-}
-
-// TestServiceDependencies tests that all service dependencies are installed
-func TestServiceDependencies(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Check that go.mod is present
-	if _, err := os.Stat("../go.mod"); os.IsNotExist(err) {
-		t.Fatal("go.mod not found")
-	}
-
-	// Check that go.sum is present
-	if _, err := os.Stat("../go.sum"); os.IsNotExist(err) {
-		t.Fatal("go.sum not found")
-	}
-
-	t.Log("Service dependencies are installed")
-}
-
-// TestConcurrentAccess tests concurrent access to services
-func TestConcurrentAccess(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// This test would verify that multiple concurrent CLI commands work correctly
-	// For now, it's skipped
-	t.Log("Concurrent access test skipped")
-}
-
-// TestServiceRestart tests service restart scenarios
-func TestServiceRestart(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// This test would verify that services can be restarted without issues
-	// For now, it's skipped
-	t.Log("Service restart test skipped")
-}
-
-// TestErrorHandling tests error handling in CLI
-func TestErrorHandling(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Test invalid commands return appropriate errors
-	output, err := runCLI("invalid-command")
-	if err == nil {
-		t.Error("Expected error for invalid command, got nil")
-	}
-
-	if len(output) == 0 {
-		t.Error("Expected error message for invalid command")
-	}
-
-	t.Logf("Error handling test passed. Error output: %s", output)
-}
-
-// TestNetworkResilience tests network resilience
-func TestNetworkResilience(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// This test would verify CLI handles network issues gracefully
-	// For now, it's skipped
-	t.Log("Network resilience test skipped")
-}
-
-// TestCleanup ensures proper cleanup after tests
-func TestCleanup(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Verify no orphaned processes
-	// Verify no temporary files left
-	t.Log("Cleanup test passed")
 }

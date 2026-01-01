@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
@@ -45,7 +46,7 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 		}
 	}
 
-	srv := newSliceServiceServer(st)
+	srv := sliceservice.NewService(st)
 
 	t.Run("no filter returns all", func(t *testing.T) {
 		resp, err := srv.ListChangesets(ctx, &slicev1.ListChangesetsRequest{SliceId: slice.ID, StatusFilter: statusFilterAll})
