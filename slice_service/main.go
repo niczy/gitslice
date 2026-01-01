@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
@@ -54,11 +55,28 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
 
-	// For now, return stub response
-	// TODO: Implement full changeset creation logic
+	id := fmt.Sprintf("cs-%d", time.Now().UnixNano())
+	hash := fmt.Sprintf("hash-%d", time.Now().UnixNano())
+
+	cs := &models.Changeset{
+		ID:             id,
+		Hash:           hash,
+		SliceID:        req.SliceId,
+		BaseCommitHash: req.BaseCommitHash,
+		ModifiedFiles:  req.ModifiedFiles,
+		Status:         models.ChangesetStatusPending,
+		Author:         req.Author,
+		Message:        req.Message,
+		CreatedAt:      time.Now(),
+	}
+
+	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create changeset: %v", err))
+	}
+
 	return &slicev1.CreateChangesetResponse{
-		ChangesetId:   fmt.Sprintf("cs-%d", time.Now().UnixNano()),
-		ChangesetHash: "stub-hash",
+		ChangesetId:   cs.ID,
+		ChangesetHash: cs.Hash,
 		Status:        slicev1.ChangesetStatus_PENDING,
 	}, nil
 }
@@ -66,8 +84,22 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.ReviewChangesetRequest) (*slicev1.ReviewChangesetResponse, error) {
 	log.Printf("ReviewChangeset called: changeset_id=%s", req.ChangesetId)
 
-	// TODO: Implement review logic
+	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+
+	diff := &slicev1.DiffSummary{
+		FilesAdded:    int32(len(cs.ModifiedFiles)),
+		FilesModified: 0,
+		FilesDeleted:  0,
+		LinesAdded:    int64(len(cs.ModifiedFiles)),
+		LinesRemoved:  0,
+	}
+
 	return &slicev1.ReviewChangesetResponse{
+		Changeset:    convertChangesetToProto(cs),
+		Diff:         diff,
 		ReviewStatus: slicev1.ReviewStatus_READY_FOR_MERGE,
 		Warnings:     []string{},
 	}, nil
@@ -76,10 +108,32 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.MergeChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
 	log.Printf("MergeChangeset called: changeset_id=%s", req.ChangesetId)
 
-	// TODO: Implement merge logic
+	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+
+	newCommit := fmt.Sprintf("commit-%d", time.Now().UnixNano())
+	cs.Status = models.ChangesetStatusMerged
+	now := time.Now()
+	cs.MergedAt = &now
+
+	if err := s.storage.UpdateChangeset(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
+	}
+
+	metadata, err := s.storage.GetSliceMetadata(ctx, cs.SliceID)
+	if err == nil {
+		metadata.HeadCommitHash = newCommit
+		metadata.ModifiedFiles = cs.ModifiedFiles
+		metadata.ModifiedFilesCount = len(cs.ModifiedFiles)
+		_ = s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata)
+	}
+
 	return &slicev1.MergeChangesetResponse{
 		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
-		NewCommitHash: fmt.Sprintf("commit-%d", time.Now().UnixNano()),
+		NewCommitHash: newCommit,
+		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
 	}, nil
 }
@@ -87,10 +141,20 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {
 	log.Printf("RebaseChangeset called: changeset_id=%s", req.ChangesetId)
 
-	// TODO: Implement rebase logic
+	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+
+	newBase := fmt.Sprintf("base-%d", time.Now().UnixNano())
+	cs.BaseCommitHash = newBase
+	if err := s.storage.UpdateChangeset(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
+	}
+
 	return &slicev1.RebaseChangesetResponse{
 		Status:              slicev1.RebaseStatus_REBASE_STATUS_SUCCESS,
-		NewBaseCommitHash:   "base-hash",
+		NewBaseCommitHash:   newBase,
 		SliceCommitsToApply: []string{},
 		Conflicts:           []*slicev1.Conflict{},
 	}, nil
@@ -124,9 +188,24 @@ func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.Sta
 func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.ListChangesetsRequest) (*slicev1.ListChangesetsResponse, error) {
 	log.Printf("ListChangesets called: slice_id=%s", req.SliceId)
 
-	// TODO: Implement changeset list
+	var statusFilter *models.ChangesetStatus
+	if req.StatusFilter != slicev1.ChangesetStatus(0) {
+		converted := convertProtoStatusToModel(req.StatusFilter)
+		statusFilter = &converted
+	}
+
+	changesets, err := s.storage.ListChangesets(ctx, req.SliceId, statusFilter, int(req.Limit))
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list changesets: %v", err))
+	}
+
+	infos := make([]*slicev1.ChangesetInfo, 0, len(changesets))
+	for _, cs := range changesets {
+		infos = append(infos, convertChangesetToProto(cs))
+	}
+
 	return &slicev1.ListChangesetsResponse{
-		Changesets: []*slicev1.ChangesetInfo{},
+		Changesets: infos,
 	}, nil
 }
 
@@ -142,6 +221,53 @@ func (s *sliceServiceServer) StreamCreateChangeset(stream slicev1.SliceService_S
 
 	// TODO: Implement streaming changeset creation
 	return nil
+}
+
+func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
+	info := &slicev1.ChangesetInfo{
+		ChangesetId:    cs.ID,
+		ChangesetHash:  cs.Hash,
+		SliceId:        cs.SliceID,
+		BaseCommitHash: cs.BaseCommitHash,
+		ModifiedFiles:  cs.ModifiedFiles,
+		Status:         convertModelStatusToProto(cs.Status),
+		Author:         cs.Author,
+		CreatedAt:      cs.CreatedAt.Unix(),
+		Message:        cs.Message,
+		MergedAt:       0,
+	}
+
+	if cs.MergedAt != nil {
+		info.MergedAt = cs.MergedAt.Unix()
+	}
+
+	return info
+}
+
+func convertModelStatusToProto(status models.ChangesetStatus) slicev1.ChangesetStatus {
+	switch status {
+	case models.ChangesetStatusApproved:
+		return slicev1.ChangesetStatus_APPROVED
+	case models.ChangesetStatusRejected:
+		return slicev1.ChangesetStatus_REJECTED
+	case models.ChangesetStatusMerged:
+		return slicev1.ChangesetStatus_MERGED
+	default:
+		return slicev1.ChangesetStatus_PENDING
+	}
+}
+
+func convertProtoStatusToModel(status slicev1.ChangesetStatus) models.ChangesetStatus {
+	switch status {
+	case slicev1.ChangesetStatus_APPROVED:
+		return models.ChangesetStatusApproved
+	case slicev1.ChangesetStatus_REJECTED:
+		return models.ChangesetStatusRejected
+	case slicev1.ChangesetStatus_MERGED:
+		return models.ChangesetStatusMerged
+	default:
+		return models.ChangesetStatusPending
+	}
 }
 
 func main() {
