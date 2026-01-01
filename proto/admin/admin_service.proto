@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package admin.v1;
+
+option go_package = "github.com/niczy/gitslice/proto;adminv1";
+
+service AdminService {
+  // Trigger batch merge to global
+  rpc BatchMerge(BatchMergeRequest) returns (BatchMergeResponse);
+
+  // List all active slices
+  rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
+
+  // Get current conflicts across slices
+  rpc GetConflicts(ConflictsRequest) returns (ConflictsResponse);
+
+  // Get global state
+  rpc GetGlobalState(GlobalStateRequest) returns (GlobalStateResponse);
+
+  // Stream conflict updates (bidirectional streaming)
+  rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
+}
+
+message BatchMergeRequest {
+  optional int32 max_slices = 1;
+}
+
+message BatchMergeResponse {
+  string global_commit_hash = 1;
+  int32 merged_slice_count = 2;
+  repeated string merged_slice_ids = 3;
+  int64 timestamp = 4;
+}
+
+message ListSlicesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message ListSlicesResponse {
+  repeated SliceInfo slices = 1;
+}
+
+message SliceInfo {
+  string slice_id = 1;
+  string latest_commit_hash = 2;
+  int32 modified_files_count = 3;
+  int64 last_modified = 4;
+}
+
+message ConflictsRequest {
+  optional string slice_id = 1;
+}
+
+message ConflictsResponse {
+  repeated Conflict conflicts = 1;
+  int32 total_conflicts = 2;
+}
+
+message Conflict {
+  string file_id = 1;
+  repeated string conflicting_slice_ids = 2;
+}
+
+message GlobalStateRequest {
+  bool include_history = 1;
+}
+
+message GlobalStateResponse {
+  string global_commit_hash = 1;
+  int64 timestamp = 2;
+  repeated GlobalCommitHistory history = 3;
+}
+
+message GlobalCommitHistory {
+  string commit_hash = 1;
+  int64 timestamp = 2;
+  repeated string merged_slice_ids = 3;
+}
+
+message WatchConflictsRequest {
+  optional string slice_id = 1;
+}
+
+message ConflictUpdate {
+  repeated Conflict new_conflicts = 1;
+  repeated Conflict resolved_conflicts = 2;
+}

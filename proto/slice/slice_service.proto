@@ -1,0 +1,237 @@
+syntax = "proto3";
+
+package slice.v1;
+
+option go_package = "github.com/niczy/gitslice/proto;slicev1";
+
+service SliceService {
+  // Checkout slice for editing
+  rpc CheckoutSlice(CheckoutRequest) returns (CheckoutResponse);
+
+  // Create a new change list
+  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
+
+  // Review a change list (check against slice head)
+  rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse);
+
+  // Merge change list into slice (with conflict detection)
+  rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse);
+
+  // Rebase change list on new slice head
+  rpc RebaseChangeset(RebaseChangesetRequest) returns (RebaseChangesetResponse);
+
+  // Get slice commit history
+  rpc GetSliceCommits(CommitHistoryRequest) returns (CommitHistoryResponse);
+
+  // Get current slice state
+  rpc GetSliceState(StateRequest) returns (StateResponse);
+
+  // List pending change lists for a slice
+  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+
+  // Stream checkout for large slices (server streaming)
+  rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
+
+  // Stream changeset creation (client streaming)
+  rpc StreamCreateChangeset(stream ChangesetChunk) returns (CreateChangesetResponse);
+}
+
+message CheckoutRequest {
+  string slice_id = 1;
+  string commit_hash = 2;
+}
+
+message CheckoutResponse {
+  SliceManifest manifest = 1;
+  repeated FileContent files = 2;
+}
+
+message SliceManifest {
+  string commit_hash = 1;
+  repeated FileMetadata file_metadata = 2;
+}
+
+message FileMetadata {
+  string file_id = 1;
+  string path = 2;
+  int64 size = 3;
+  string hash = 4;
+  string content_url = 5;
+}
+
+message FileContent {
+  string file_id = 1;
+  bytes content = 2;
+}
+
+message CheckoutChunk {
+  oneof chunk {
+    SliceManifest manifest = 1;
+    FileContent file = 2;
+  }
+}
+
+message CreateChangesetRequest {
+  string slice_id = 1;
+  string base_commit_hash = 2;
+  repeated Object objects = 3;
+  repeated string modified_files = 4;
+  string author = 5;
+  string message = 6;
+}
+
+message CreateChangesetResponse {
+  string changeset_id = 1;
+  string changeset_hash = 2;
+  ChangesetStatus status = 3;
+}
+
+message ChangesetChunk {
+  oneof chunk {
+    ChangesetMetadata metadata = 1;
+    Object object = 2;
+  }
+}
+
+message ChangesetMetadata {
+  string slice_id = 1;
+  string base_commit_hash = 2;
+  string author = 3;
+  string message = 4;
+}
+
+message Object {
+  ObjectType type = 1;
+  string hash = 2;
+  bytes data = 3;
+}
+
+enum ObjectType {
+  BLOB = 0;
+  TREE = 1;
+  COMMIT = 2;
+  SLICE_DEF = 3;
+  CHANGESET = 4;
+}
+
+message ReviewChangesetRequest {
+  string changeset_id = 1;
+}
+
+message ReviewChangesetResponse {
+  ChangesetInfo changeset = 1;
+  DiffSummary diff = 2;
+  ReviewStatus review_status = 3;
+  repeated string warnings = 4;
+}
+
+message DiffSummary {
+  int32 files_added = 1;
+  int32 files_modified = 2;
+  int32 files_deleted = 3;
+  int64 lines_added = 4;
+  int64 lines_removed = 5;
+}
+
+message MergeChangesetRequest {
+  string changeset_id = 1;
+}
+
+message MergeChangesetResponse {
+  MergeStatus status = 1;
+  string new_commit_hash = 2;
+  string changeset_id = 3;
+  repeated Conflict conflicts = 4;
+}
+
+enum MergeStatus {
+  MERGE_STATUS_SUCCESS = 0;
+  MERGE_STATUS_CONFLICT = 1;
+  MERGE_STATUS_ERROR = 2;
+}
+
+message Conflict {
+  string file_id = 1;
+  repeated string conflicting_slice_ids = 2;
+}
+
+message RebaseChangesetRequest {
+  string changeset_id = 1;
+}
+
+message RebaseChangesetResponse {
+  RebaseStatus status = 1;
+  string new_base_commit_hash = 2;
+  repeated string slice_commits_to_apply = 3;
+  repeated Conflict conflicts = 4;
+}
+
+enum RebaseStatus {
+  REBASE_STATUS_SUCCESS = 0;
+  REBASE_STATUS_CONFLICT = 1;
+  REBASE_STATUS_NEEDS_MERGE = 2;
+  REBASE_STATUS_ERROR = 3;
+}
+
+message ListChangesetsRequest {
+  string slice_id = 1;
+  ChangesetStatus status_filter = 2;
+  int32 limit = 3;
+}
+
+message ListChangesetsResponse {
+  repeated ChangesetInfo changesets = 1;
+}
+
+message ChangesetInfo {
+  string changeset_id = 1;
+  string changeset_hash = 2;
+  string slice_id = 3;
+  string base_commit_hash = 4;
+  repeated string modified_files = 5;
+  ChangesetStatus status = 6;
+  string author = 7;
+  int64 created_at = 8;
+  int64 merged_at = 9;
+  string message = 10;
+}
+
+enum ChangesetStatus {
+  PENDING = 0;
+  APPROVED = 1;
+  REJECTED = 2;
+  MERGED = 3;
+}
+
+enum ReviewStatus {
+  READY_FOR_MERGE = 0;
+  NEEDS_REBASE = 1;
+  HAS_CONFLICTS = 2;
+}
+
+message CommitHistoryRequest {
+  string slice_id = 1;
+  int64 limit = 2;
+  string from_commit_hash = 3;
+}
+
+message CommitHistoryResponse {
+  repeated CommitInfo commits = 1;
+}
+
+message CommitInfo {
+  string commit_hash = 1;
+  int64 timestamp = 2;
+  string parent_hash = 3;
+  string message = 4;
+}
+
+message StateRequest {
+  string slice_id = 1;
+}
+
+message StateResponse {
+  string latest_commit_hash = 1;
+  repeated string modified_files = 2;
+  int64 last_modified = 3;
+}

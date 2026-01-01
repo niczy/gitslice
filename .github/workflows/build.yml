@@ -1,0 +1,59 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Install protoc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
+    - name: Install protoc-gen-go and protoc-gen-go-grpc
+      run: |
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Generate proto code
+      run: |
+        export PATH=$PATH:$(go env GOPATH)/bin
+        cd proto/slice && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto
+        cd ../admin && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative admin_service.proto
+
+    - name: Build slice service
+      run: go build -o slice_service_server ./slice_service/
+
+    - name: Build admin service
+      run: go build -o admin_service_server ./admin_service/
+
+    - name: Build CLI
+      run: go build -o gs_cli ./gs_cli/
+
+    - name: Run slice service
+      run: |
+        timeout 5s ./slice_service_server || true
+
+    - name: Run admin service
+      run: |
+        timeout 5s ./admin_service_server || true
+
+    - name: Test CLI help
+      run: |
+        timeout 2s ./gs_cli || true
