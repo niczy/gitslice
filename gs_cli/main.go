@@ -28,6 +28,23 @@ type CLI struct {
 	adminClient adminv1.AdminServiceClient
 }
 
+// stringFlag tracks whether a string flag was explicitly set
+// so we can distinguish between a zero value and an omitted flag.
+type stringFlag struct {
+	value string
+	set   bool
+}
+
+func (f *stringFlag) String() string {
+	return f.value
+}
+
+func (f *stringFlag) Set(v string) error {
+	f.value = v
+	f.set = true
+	return nil
+}
+
 func main() {
 	flag.Parse()
 
@@ -376,19 +393,25 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 
 	fs := flag.NewFlagSet("changeset list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "Maximum results")
-	status := fs.String("status", "", "Filter by status (pending, approved, rejected, merged)")
+	status := &stringFlag{}
+	fs.Var(status, "status", "Filter by status (pending, approved, rejected, merged)")
 	fs.Parse(args)
 
-	statusFilter := slicev1.ChangesetStatus(0)
-	switch strings.ToLower(*status) {
-	case "approved":
-		statusFilter = slicev1.ChangesetStatus_APPROVED
-	case "rejected":
-		statusFilter = slicev1.ChangesetStatus_REJECTED
-	case "merged":
-		statusFilter = slicev1.ChangesetStatus_MERGED
-	case "pending":
-		statusFilter = slicev1.ChangesetStatus_PENDING
+	statusFilter := slicev1.ChangesetStatus(-1)
+	if status.set {
+		switch strings.ToLower(status.value) {
+		case "approved":
+			statusFilter = slicev1.ChangesetStatus_APPROVED
+		case "rejected":
+			statusFilter = slicev1.ChangesetStatus_REJECTED
+		case "merged":
+			statusFilter = slicev1.ChangesetStatus_MERGED
+		case "pending":
+			statusFilter = slicev1.ChangesetStatus_PENDING
+		default:
+			log.Printf("Unknown status filter: %s", status.value)
+			return
+		}
 	}
 
 	req := &slicev1.ListChangesetsRequest{

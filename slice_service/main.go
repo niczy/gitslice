@@ -189,7 +189,7 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 	log.Printf("ListChangesets called: slice_id=%s", req.SliceId)
 
 	var statusFilter *models.ChangesetStatus
-	if req.StatusFilter != slicev1.ChangesetStatus(0) {
+	if req.StatusFilter >= 0 {
 		converted := convertProtoStatusToModel(req.StatusFilter)
 		statusFilter = &converted
 	}
