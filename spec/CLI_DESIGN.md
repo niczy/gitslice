@@ -639,6 +639,159 @@ gs status --uncommitted
 
 ---
 
+## Global Cache
+
+### How It Works
+
+**Global cache** is shared across all working directories to speed up slice checkout and reduce redundant downloads.
+
+**Key Design:**
+```
+~/.gitslice/cache/
+├── manifests/                 # Cached slice manifests (by commit hash)
+├── objects/                    # Cached object contents
+├── metadata/                   # Cached slice metadata
+└── .lockfile                    # Cache coordination
+```
+
+**Cache Strategy:**
+- **Manifest Cache:** Full file lists per commit (precomputed from server)
+- **Object Cache:** Frequently accessed objects (deduplicated across slices)
+- **Metadata Cache:** Slice information, file ownership
+- **Coordinated Access:** Shared lock prevents cache corruption
+- **TTL-based Eviction:** Auto-expire stale cache entries
+
+### Cache Commands
+
+```bash
+# Show cache statistics
+gs cache stats
+
+# Clear entire cache
+gs cache clear
+
+# Clear specific slice cache
+gs cache clear --slice my-team
+
+# Prefetch slice (preload cache)
+gs cache prefetch my-team
+
+# Verify cache integrity
+gs cache verify
+```
+
+### Configuration
+
+**Cache settings in config file:**
+
+```yaml
+cache:
+  enabled: true
+  location: ~/.gitslice/cache
+  max_size_mb: 1000
+  max_age_hours: 24
+  compression: true
+  parallel_downloads: 20
+  manifest_ttl_hours: 1
+  object_ttl_hours: 168  # 7 days
+
+eviction:
+  policy: lru  # Least recently used
+  strategy: adaptive  # Based on access patterns
+```
+
+### Cache Hit Behavior
+
+**On Slice Checkout:**
+1. Check cache for manifest (by commit hash)
+2. If cache hit:
+   - Return manifest immediately
+   - No server round-trip
+   - Checkout: ~10-50ms
+3. If cache miss:
+   - Fetch manifest from server
+   - Update cache for future checkouts
+   - Checkout: ~100-500ms
+
+**On Object Fetch:**
+1. Check cache for object (by hash)
+2. If cache hit:
+   - Serve from local cache
+   - No S3 download
+3. If cache miss:
+   - Download from S3 with presigned URL
+   - Update cache
+   - Save bandwidth and time
+
+### Internal Implementation
+
+**Cache Key Structure:**
+```python
+# Manifest cache
+manifest:{commit_hash} -> SliceManifest
+  - commit_hash: string
+  - file_metadata: [FileMetadata objects]
+  - created_at: timestamp
+  - access_count: int
+  - last_accessed: timestamp
+
+# Object cache
+object:{hash} -> CachedObject
+  - hash: string
+  - content: bytes
+  - size: int
+  - created_at: timestamp
+  - last_accessed: timestamp
+  - compressed: bool
+
+# Slice metadata cache
+slice:{slice_id} -> SliceMetadata
+  - slice_id: string
+  - manifest_cache_hits: int
+  - object_cache_hits: int
+  - last_prefetch: timestamp
+```
+
+**Cache Operations:**
+```python
+# Get from cache
+def get_manifest(commit_hash):
+  return cache.get(f"manifest:{commit_hash}")
+
+# Update cache
+def update_manifest(commit_hash, manifest):
+  cache.set(f"manifest:{commit_hash}", manifest, ttl=3600)  # 1 hour
+
+# Prefetch slice
+def prefetch_slice(slice_id):
+  slice = get_slice_metadata(slice_id)
+  for commit_hash in slice.recent_commits:
+    ensure_manifest_cached(commit_hash)
+  update_last_prefetch(slice_id)
+```
+
+### Performance Impact
+
+**Without cache:**
+- Small slice (100 files): 100-500ms per checkout
+- Medium slice (10K files): 200-500ms per checkout
+- Large slice (100K files): 500-1000ms per checkout
+
+**With cache:**
+- Small slice (100 files): 10-50ms per checkout (90% faster)
+- Medium slice (10K files): 20-100ms per checkout (80% faster)
+- Large slice (100K files): 100-500ms per checkout (90% faster)
+- Bandwidth savings: 80-95% for frequently accessed slices
+
+**Cache Size Estimates:**
+- 100K slices, avg 100 files/slice
+- Avg 10KB per file, 1KB per manifest
+- Cache: 1-2GB for manifests (100K * 10KB)
+- Object cache: 10GB for frequently accessed objects
+- Total: ~12GB for full cache
+
+---
+
 ## Workflows
 
 ### Daily Development Workflow
