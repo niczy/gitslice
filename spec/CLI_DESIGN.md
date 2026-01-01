@@ -4,6 +4,11 @@
 
 The **gitslice** CLI (short: `gs`) provides a command-line interface for the slice-based version control system. It enables developers to work with slices, manage change lists, and resolve conflicts efficiently.
 
+**Key Design Principle:**
+- **One directory = one slice** - Each working directory is bound to a specific slice
+- **No slice switching in place** - Create new directory for each slice
+- **Clear mental model** - Directory you're in = Slice you're working on
+
 **CLI Names:**
 - Full: `gitslice`
 - Short: `gs`
@@ -35,9 +40,6 @@ gitslice --version
 # Set API endpoint
 gs config set api.endpoint https://api.gitslice.com
 
-# Set default slice
-gs config set default-slice my-team
-
 # Set authentication token
 gs config set auth.token YOUR_API_TOKEN
 
@@ -51,6 +53,19 @@ gs config list
 
 ### 1. Slice Management
 
+#### Create Slice
+
+```bash
+# Create new slice
+gs slice create my-team --files "services/my-team/**"
+
+# Create with specific files
+gs slice create billing --files services/billing/** tests/billing/**
+
+# Create with description
+gs slice create frontend-react --description "React components and hooks"
+```
+
 #### List Slices
 
 ```bash
@@ -62,6 +77,9 @@ gs slice list --detailed
 
 # List slices you have access to
 gs slice list --mine
+
+# Search slices
+gs slice list --search billing
 ```
 
 #### Get Slice Information
@@ -72,43 +90,42 @@ gs slice info my-team
 
 # Get slice status
 gs slice status my-team
+
+# Get slice owners
+gs slice owners my-team
 ```
 
-#### Checkout Slice
+#### Initialize Working Directory
 
 ```bash
-# Checkout latest version
-gs slice checkout my-team
+# Initialize current directory for slice
+# This creates .gs config binding directory to slice
+gs init my-team
 
-# Checkout specific commit
-gs slice checkout my-team --commit abc123
+# Create directory in specific path
+gs init my-team --path ./work/my-team
 
-# Checkout specific folder
-gs slice checkout my-team --path ./my-workspace
-
-# Checkout without downloading files (metadata only)
-gs slice checkout my-team --metadata-only
-```
-
-#### Show Slice Files
-
-```bash
-# List files in current slice
-gs slice files
-
-# List files recursively
-gs slice files --recursive
-
-# List with sizes
-gs slice files --sizes
+# Directory must be empty
+gs init my-team ./empty-directory
 ```
 
 ---
 
 ### 2. Change List Workflow
 
-#### Create Change List
+### How It Works
 
+**Change lists** provide a review workflow before changes are committed to slice history:
+
+1. **Create** - Create change list from local modifications
+2. **Review** - Review changes against slice head (diff, stats)
+3. **Merge** - Merge change list into slice (creates commit)
+4. **Resolve** - Resolve conflicts if detected during merge
+5. **Abandon** - Discard unwanted change lists
+
+### Create Change List
+
+**Command:**
 ```bash
 # Create change list from modified files
 gs changeset create --message "Add region-based tax calculation"
@@ -119,20 +136,31 @@ gs changeset create files/payment.py --message "Fix bug"
 # Create with diff from specific commit
 gs changeset create --base abc123 --message "Feature X"
 
-# Create with interactive mode
-gs changeset create --interactive
+# Create from staged files
+gs changeset create --staged
 
 # Create with reviewers
 gs changeset create --reviewer alice --reviewer bob
 ```
 
-#### Review Change List
+**Internal Implementation:**
+1. Scans working directory for modified/deleted/added files
+2. Calculates file hashes (SHA-256) for each file
+3. Uploads file contents to object store via presigned URLs
+4. Sends change list metadata to server (slice_id, base_commit, file list)
+5. Server returns unique changeset_id
+6. Current working directory bound to this changeset
 
+---
+
+### Review Change List
+
+**Command:**
 ```bash
-# Review latest change list
+# Review current changeset
 gs changeset review
 
-# Review specific change list
+# Review specific changeset
 gs changeset review cl-abc123
 
 # Review with diff output
@@ -143,85 +171,170 @@ gs changeset review --file-level
 
 # Review in external diff tool
 gs changeset review --external-diff
+
+# Show summary only (no diff)
+gs changeset review --summary
 ```
 
-#### Merge Change List
+**Internal Implementation:**
+1. Fetches current working directory's slice and changeset info
+2. Gets current slice head commit from server
+3. Compares working tree to base commit
+4. Generates diff summary (files added/modified/deleted, lines changed)
+5. Shows warnings if slice has advanced since changeset created
+6. Returns review status: READY_FOR_MERGE, NEEDS_REBASE, or HAS_CONFLICTS
 
+---
+
+### Merge Change List
+
+**Command:**
 ```bash
-# Merge current change list
+# Merge current changeset
 gs changeset merge
 
-# Merge specific change list
+# Merge specific changeset
 gs changeset merge cl-abc123
-
-# Merge with force (skip conflict check - not recommended)
-gs changeset merge --force
 
 # Merge with custom message
 gs changeset merge --message "Merge after conflict resolution"
+
+# Merge and update working directory
+gs changeset merge --update-workdir
+
+# Merge without conflict check (not recommended)
+gs changeset merge --force
 ```
 
-#### Rebase Change List
+**Internal Implementation:**
+1. Fetches changeset metadata and modified files from server
+2. Runs conflict detection against other slices:
+   - For each modified file, check `file:{file_id}:active_slices`
+   - If slice_id NOT IN active_slices AND active_slices not empty → CONFLICT
+3. If no conflicts:
+   - Builds new tree from base commit + changeset objects
+   - Computes new commit hash
+   - Updates slice state and active tracking on server
+   - Returns SUCCESS with new_commit_hash
+4. If conflicts:
+   - Returns CONFLICT error with conflicting files and slice IDs
+   - Client must resolve before retrying merge
 
+---
+
+### Rebase Change List
+
+**Command:**
 ```bash
-# Rebase current change list
+# Rebase current changeset
 gs changeset rebase
 
-# Rebase specific change list
+# Rebase specific changeset
 gs changeset rebase cl-abc123
 
-# Rebase with auto-merge
+# Rebase with auto-merge of slice changes
 gs changeset rebase --auto-merge
 
 # Rebase with conflict markers
 gs changeset rebase --markers
 ```
 
-#### List Change Lists
+**Internal Implementation:**
+1. Gets current changeset's base commit
+2. Gets current slice head commit from server
+3. Calculates commits between old base and new head
+4. Checks for file-level conflicts:
+   - If slice modified same files as changeset since creation → CONFLICT
+5. If no conflicts:
+   - Updates changeset's base commit to current slice head
+   - Returns slice commits to apply to working directory
+6. Client updates working directory files and retries merge
+7. If conflicts:
+   - Returns CONFLICT with conflicting files and commits
+   - Client must manually resolve
 
+---
+
+### List Change Lists
+
+**Command:**
 ```bash
-# List all change lists for current slice
+# List all changesets for current slice
 gs changeset list
 
-# List pending change lists
+# List pending changesets
 gs changeset list --status pending
 
 # List with limit
 gs changeset list --limit 20
 
-# List for specific slice
-gs changeset list --slice my-team
+# List with filter
+gs changeset list --author alice
 ```
 
-#### Abandon Change List
-
-```bash
-# Abandon current change list
-gs changeset abandon
-
-# Abandon specific change list
-gs changeset abandon cl-abc123
-```
+**Internal Implementation:**
+1. Fetches working directory's slice
+2. Queries server for all changesets bound to that slice
+3. Displays with status (PENDING, IN_REVIEW, APPROVED, MERGED, ABANDONED)
+4. Shows metadata: author, created_at, files count, message
 
 ---
 
-### 3. Conflict Resolution
+### Abandon Change List
 
-#### Show Conflicts
-
+**Command:**
 ```bash
-# Show all conflicts for current slice
+# Abandon current changeset
+gs changeset abandon
+
+# Abandon specific changeset
+gs changeset abandon cl-abc123
+
+# Abandon with reason
+gs changeset abandon --reason "Superseded by cl-xyz789"
+```
+
+**Internal Implementation:**
+1. Fetches changeset metadata
+2. Updates status to ABANDONED on server
+3. Working directory no longer bound to this changeset
+4. Returns success message
+
+---
+
+## 3. Conflict Resolution
+
+### Show Conflicts
+
+**Command:**
+```bash
+# Show all conflicts for current working directory
 gs conflict list
 
-# Show conflicts for specific change list
+# Show conflicts for specific changeset
 gs conflict list --changeset cl-abc123
 
 # Show conflicts in detail
 gs conflict list --detailed
+
+# Show conflicts with severity levels
+gs conflict list --severity
 ```
 
-#### Resolve Conflicts
+**Internal Implementation:**
+1. Queries server for conflicts affecting current slice
+2. Shows conflicting files with:
+   - File paths and IDs
+   - Conflicting slice IDs
+   - Severity (HIGH, MEDIUM, LOW, CRITICAL)
+   - Modification timestamps
+   - Conflict type (semantic, formatting, structural)
 
+---
+
+### Resolve Conflicts
+
+**Command:**
 ```bash
 # Interactive conflict resolution
 gs conflict resolve
@@ -232,28 +345,43 @@ gs conflict resolve --theirs
 # Auto-resolve (use local changes)
 gs conflict resolve --ours
 
-# Mark conflict as resolved
+# Mark conflict as resolved (after manual edit)
 gs conflict resolve --resolved file.py
-```
 
-#### Get Conflict Details
-
-```bash
-# Get details for specific file conflict
+# Show conflict details before resolving
 gs conflict show file.py
 
 # Get conflict history
 gs conflict history file.py
 ```
 
+**Internal Implementation:**
+1. For interactive mode:
+   - Lists all pending conflicts
+   - User selects conflict to resolve
+   - Presents resolution options (theirs, ours, manual edit)
+   - Updates conflict resolution status on server
+2. For auto-resolve modes:
+   - Applies resolution automatically
+   - Updates working directory files accordingly
+   - Marks conflict as resolved on server
+3. On manual resolution:
+   - User edits file externally
+   - User marks conflict as resolved
+   - Server updates conflict status
+
 ---
 
-### 4. Commit History
+## 4. Commit History
 
-#### View Log
+### View Log
 
+**Command:**
 ```bash
 # Show slice commit history
+gs log
+
+# Show current working directory's slice history
 gs log
 
 # Show specific slice history
@@ -270,10 +398,27 @@ gs log --detailed
 
 # Show with graph visualization
 gs log --graph
+
+# Show commits from specific author
+gs log --author alice
 ```
 
-#### View Commit Details
+**Internal Implementation:**
+1. Fetches working directory's slice from .gs config
+2. Queries server for slice commit history
+3. Displays commits in reverse chronological order
+4. Each commit shows:
+   - Short hash
+   - Commit message
+   - Author and timestamp
+   - Files changed count
+   - Parent commit hash
 
+---
+
+### View Commit Details
+
+**Command:**
 ```bash
 # Show specific commit
 gs show abc123
@@ -286,10 +431,26 @@ gs show abc123 --files
 
 # Show parent commits
 gs show abc123 --parents
+
+# Show full patch
+gs show abc123 --patch
 ```
 
-#### Compare Commits
+**Internal Implementation:**
+1. Fetches commit metadata from server
+2. Displays:
+   - Full commit hash
+   - Tree structure
+   - Commit message and metadata
+   - Files changed (list or detailed)
+   - Parent commits
+   - Optional: Unified diff output
 
+---
+
+### Compare Commits
+
+**Command:**
 ```bash
 # Compare two commits
 gs diff abc123 def456
@@ -299,14 +460,30 @@ gs diff abc123 def456 --filter "*.py"
 
 # Compare with summary only
 gs diff abc123 def456 --summary
+
+# Compare with word diff
+gs diff abc123 def456 --word-diff
+
+# Compare with color output
+gs diff abc123 def456 --color
 ```
+
+**Internal Implementation:**
+1. Fetches both commit objects from server
+2. Compares their tree structures
+3. Generates Merkle tree diff
+4. Shows:
+   - Files added/modified/deleted/renamed
+   - Line-by-line or word-level diffs
+   - Summary statistics
 
 ---
 
-### 5. Global State
+## 5. Global State
 
-#### View Global Status
+### View Global Status
 
+**Command:**
 ```bash
 # View global repository state
 gs global status
@@ -316,10 +493,28 @@ gs global log
 
 # Show current global commit
 gs global show
+
+# Show which slices are in global state vs pending
+gs global status --pending
+
+# Show global state statistics
+gs global stats
 ```
 
-#### Trigger Batch Merge
+**Internal Implementation:**
+1. Queries global state from server
+2. Displays:
+   - Current global commit hash
+   - Last merge timestamp
+   - Slices merged into current commit
+   - Slices with pending changes
+   - Total files and commits in global state
 
+---
+
+### Trigger Batch Merge
+
+**Command:**
 ```bash
 # Trigger batch merge (admin only)
 gs global merge
@@ -329,7 +524,118 @@ gs global merge --max-slices 100
 
 # Merge specific slices
 gs global merge --slice my-team --slice billing-service
+
+# Dry-run merge (preview only)
+gs global merge --dry-run
+
+# Merge with specific global commit as parent
+gs global merge --parent abc123
 ```
+
+**Internal Implementation:**
+1. Validates admin permissions
+2. Triggers batch merge job on server
+3. Displays merge progress:
+   - Slices being merged
+   - Estimated time remaining
+4. Returns new global commit hash
+
+---
+
+## Working Directory Model
+
+### One Directory = One Slice
+
+**Core Principle:**
+```
+Each working directory is bound to exactly one slice when initialized.
+Directory location = Slice identity
+```
+
+**Directory Structure:**
+```bash
+my-team/                    # Bound to my-team slice
+  ├── .gs/                      # Directory binding
+  │   ├── config                # Slice ID this directory is bound to
+  │   ├── current_changeset      # Current active changeset
+  │   └── state                # Working directory state
+  ├── services/                  # Slice files
+  ├── tests/                     # Slice files
+  └── README.md
+
+billing-service/             # Bound to billing-service slice
+  ├── .gs/                      # Different slice, different binding
+  ├── services/
+  └── tests/
+```
+
+### Initialize Working Directory
+
+**Command:**
+```bash
+# Initialize current directory for slice
+gs init my-team
+
+# Directory must be empty (or use --force)
+gs init my-team --force
+
+# Initialize with custom path
+gs init my-team --path ./work/my-team
+
+# Initialize with description
+gs init my-team --description "My team's services"
+```
+
+**Internal Implementation:**
+1. Validates directory is empty (unless --force)
+2. Creates `.gs/` directory with:
+   - `config`: Slice ID this directory belongs to
+   - `current_changeset`: Active changeset ID (if any)
+   - `state`: Working directory state (clean, conflicts, etc.)
+3. Fetches slice manifest from server
+4. Downloads slice files to directory
+5. Directory is now ready for development
+
+**Switching to Different Slice:**
+```bash
+# Switch slices by changing directory
+cd ../billing-service   # Different directory = different slice
+gs log                   # Shows billing-service history
+
+# Or create new directory
+gs init billing-service --path ./work/billing
+```
+
+---
+
+### Working Directory Commands
+
+**Show Directory State**
+
+```bash
+# Show current directory's slice binding
+gs status
+
+# Show working directory state
+gs status --detailed
+
+# Show conflicts in current working directory
+gs status --conflicts
+
+# Show uncommitted files
+gs status --uncommitted
+```
+
+**Internal Implementation:**
+1. Reads `.gs/config` to get slice ID
+2. Queries server for slice status
+3. Scans working directory for uncommitted changes
+4. Displays:
+   - Current slice ID and head commit
+   - Active changeset (if any)
+   - Uncommitted files count
+   - Any conflicts
+   - Working directory state (clean/dirty)
 
 ---
 
@@ -338,24 +644,48 @@ gs global merge --slice my-team --slice billing-service
 ### Daily Development Workflow
 
 ```bash
-# 1. Start day - checkout slice
-gs slice checkout my-team
+# 1. Start day - initialize slice directory
+gs init my-team
 
 # 2. Make changes
 vim services/payment.py
 
-# 3. Create change list
+# 3. Create change list from changes
 gs changeset create --message "Add refund support"
+# Output: Changeset created: cl-abc123
 
 # 4. Review changes
-gs changeset review --diff
+gs changeset review
+# Output: 2 files modified, no conflicts, ready to merge
 
-# 5. Merge to slice (if ready)
+# 5. Merge to slice
 gs changeset merge
+# Output: Success - New commit: b2c3d4e5
 
 # 6. Handle conflicts if any
-gs conflict resolve --interactive
 gs changeset merge
+# Output: ✗ Conflict in services/payment.py
+#    Modified by: api-gateway (2 hours ago)
+#    Run: gs conflict resolve
+#    Then: gs changeset merge
+```
+
+### Multi-Slice Workflow
+
+```bash
+# 1. Work on slice A (in its directory)
+cd ./my-team-frontend
+gs changeset create --message "Update button styles"
+gs changeset merge
+
+# 2. Work on slice B (in its directory)
+cd ./my-team-backend
+gs changeset create --message "Update API routes"
+gs changeset merge
+
+# 3. Check global state (any directory)
+gs global status
+# Shows both slices' status in global state
 ```
 
 ### Conflict Resolution Workflow
@@ -372,13 +702,12 @@ gs conflict list
 gs conflict show file.py
 
 # 4. Resolve conflict
-vim file.py  # Edit file manually
+gs conflict resolve --theirs
+# Output: Applied incoming changes
 
-# 5. Mark as resolved
-gs conflict resolve --resolved file.py
-
-# 6. Retry merge
+# 5. Retry merge
 gs changeset merge
+# ✓ Success - New commit: y2z3w4x5
 ```
 
 ### Historical Investigation Workflow
@@ -387,64 +716,80 @@ gs changeset merge
 # 1. View commit history
 gs log --limit 20
 
-# 2. Checkout specific commit
-gs slice checkout my-team --commit abc123
+# 2. Checkout specific historical commit
+# Since directories are bound to slices, use `gs show` instead
+gs show b2c3d4e5
 
-# 3. Compare with current
+# 3. View file at that commit
+gs show b2c3d4e5 --files --path services/payment.py
+
+# 4. Compare commits
 gs diff abc123 HEAD
-
-# 4. View specific changes
-gs show abc123 --files
-```
-
-### Multi-Slice Workflow
-
-```bash
-# 1. Work on slice A
-gs slice checkout frontend-react
-gs changeset create --message "Update button styles"
-gs changeset merge
-
-# 2. Switch to slice B
-gs slice checkout backend-api
-
-# 3. Make compatible changes
-vim api/routes.ts
-
-# 4. Create and merge change list
-gs changeset create --message "Update for new button"
-gs changeset merge
-
-# 5. Check global state
-gs global status
 ```
 
 ---
 
-## Commands Reference
+## Advanced Features
 
-### Global Flags
+### Stashing
 
 ```bash
---verbose, -v           # Verbose output
---quiet, -q             # Quiet mode
---json                   # JSON output format
---no-color              # Disable colored output
---config <path>          # Use specific config file
---help, -h              # Show help
---version                # Show version
+# Stash current work
+gs stash save "WIP"
+
+# List stashes
+gs stash list
+
+# Apply stash
+gs stash apply stash-0
+
+# Drop stash
+gs stash drop stash-0
 ```
 
-### Command Aliases
+### Git Integration
 
 ```bash
-# Short forms for quick access
-gs co                   # alias for slice checkout
-gs cs                   # alias for changeset
-gs ci                   # alias for changeset info
-gs ca                   # alias for changeset create
-gs cm                   # alias for changeset merge
-gs cr                   # alias for changeset review
+# Import git repository into gitslice
+gs import from-git ./my-git-repo
+
+# Export gitslice to git
+gs export to-git
+
+# Sync with git repository
+gs sync with-git
+
+# Create git branch from slice
+gs export my-team --branch feature-x
+```
+
+### Hooks
+
+```bash
+# Add pre-changeset-merge hook
+gs hook add pre-merge --command "npm test"
+
+# Add post-changeset-merge hook
+gs hook add post-merge --command "npm run deploy"
+
+# List hooks
+gs hook list
+
+# Remove hook
+gs hook remove pre-merge
+```
+
+### Caching
+
+```bash
+# Clear cache
+gs cache clear
+
+# Show cache stats
+gs cache stats
+
+# Prefetch slice for faster checkouts
+gs cache prefetch my-team
 ```
 
 ---
@@ -460,14 +805,14 @@ export GITSLICE_API_ENDPOINT=https://api.gitslice.com
 # Authentication token
 export GITSLICE_AUTH_TOKEN=your-token
 
-# Default slice
-export GITSLICE_DEFAULT_SLICE=my-team
-
-# Editor for conflict resolution
+# Default editor for conflict resolution
 export GITSLICE_EDITOR=vim
 
-# Diff tool
+# Diff tool preference
 export GITSLICE_DIFF_TOOL=vscode
+
+# Number of parallel file downloads
+export GITSLICE_PARALLEL_DOWNLOADS=10
 ```
 
 ### Config File
@@ -485,139 +830,22 @@ auth:
   token_file: ~/.gitslice/token
 
 defaults:
-  slice: my-team
-  review-tool: vim
+  editor: vim
   diff-tool: diff
 
 performance:
-  parallel-downloads: 10
-  cache-size: 1GB
+  parallel_downloads: 10
   compression: true
+  cache_size: 1GB
 
 colors:
   enabled: true
   theme: dark
-```
 
----
-
-## Interactive Mode
-
-### Interactive Changeset Creation
-
-```bash
-$ gs changeset create --interactive
-
-Modified files:
-  ✓  services/payment.py (modified)
-  ✓  tests/payment_test.py (modified)
-  ✗  docs/api.md (not modified)
-
-Select files to include in changeset:
-[1] All modified files
-[2] Select specific files
-> 1
-
-Enter commit message:
-> Add region-based tax calculation
-
-Add reviewers (comma-separated, optional):
-> alice, bob
-
-Enter tags (comma-separated, optional):
-> feature, payment
-
-✓ Change list created: cl-abc123
-```
-
-### Interactive Conflict Resolution
-
-```bash
-$ gs conflict resolve
-
-Conflicts:
-  [1] services/payment.py
-  [2] tests/payment_test.py
-
-Select conflict to resolve:
-> 1
-
-<<<<<<< HEAD (your changes)
-amount = calculate_tax(amount)
-=======
->>>>>>> incoming (slice my-team)
-amount = calculate_tax(amount, region)
-
-Select resolution:
-[1] Use your changes (ours)
-[2] Use incoming changes (theirs)
-[3] Edit manually
-[4] Open in external editor
-> 3
-
-Opening in vim...
-```
-
----
-
-## Advanced Features
-
-### Batch Operations
-
-```bash
-# Batch create change lists
-gs changeset batch-create changeset-list.yaml
-
-# Batch merge change lists
-gs changeset batch-merge changeset-list.yaml
-
-# Batch checkout multiple slices
-gs slice batch-checkout slice-list.yaml
-```
-
-### Hooks
-
-```bash
-# Pre-changeset-merge hook
-gs hook add pre-merge --command "npm test"
-
-# Post-changeset-merge hook
-gs hook add post-merge --command "git push origin main"
-
-# List hooks
-gs hook list
-
-# Remove hook
-gs hook remove pre-merge
-```
-
-### Workspaces
-
-```bash
-# List workspaces
-gs workspace list
-
-# Create workspace
-gs workspace create ./my-project
-
-# Switch workspace
-gs workspace use my-project
-
-# Remove workspace
-gs workspace remove my-project
-```
-
-### Caching
-
-```bash
-# Clear cache
-gs cache clear
-
-# Show cache stats
-gs cache stats
-
-# Pre-fetch slice
-gs cache prefetch my-team
+workflows:
+  auto-commit: false
+  stash_on_switch: false
+  create_changeset_on_init: false
 ```
 
 ---
@@ -672,48 +900,53 @@ gs changeset list --format table
 
 ```bash
 # First-time setup
-gs init
-gs auth login
+gs config set api.endpoint https://api.gitslice.com
+gs config set auth.token YOUR_TOKEN
 
-# Start working
-gs slice checkout my-team
-vim file.py
-gs changeset create --message "Fix bug"
+# Start working on a slice
+mkdir my-team && cd my-team
+gs init my-team
+
+# Make your first change
+vim services/payment.py
+
+# Create and merge changeset
+gs changeset create --message "Initial commit"
 gs changeset merge
 ```
 
-### Feature Branch Equivalent
+### Feature Development
 
 ```bash
-# Create feature branch equivalent
+# Feature branch equivalent
 gs changeset create --message "Feature: new payment flow"
 # Work on it...
 gs changeset review
 gs changeset merge
 ```
 
-### Bug Fix Equivalent
+### Bug Fix
 
 ```bash
-# Fix bug in historical commit
+# Fix bug from historical commit
 gs log --grep "bug"
-gs slice checkout --commit abc123
-vim file.py
+gs show abc123 --files --path services/payment.py
+vim services/payment.py
 gs changeset create --message "Fix: payment calculation"
 gs changeset merge
 ```
 
-### Review Team's Changes
+### Team Collaboration
 
 ```bash
-# Review someone else's changeset
+# Review teammate's changeset
 gs changeset review cl-abc123 --diff
 
 # Add comment
 gs changeset comment cl-abc123 --message "LGTM, minor nit"
 ```
 
-### Deploy to Production
+### Deployment
 
 ```bash
 # Check global state
@@ -723,7 +956,7 @@ gs global status
 gs global merge
 
 # Deploy specific global commit
-gs deploy g1h2i3j4 --env production
+deploy g1h2i3j4 --env production
 ```
 
 ---
@@ -737,17 +970,17 @@ gs deploy g1h2i3j4 --env production
 Error: Conflict detected in services/payment.py
 Solution: gs conflict resolve
 
-# Stale changeset
-Error: Changeset base commit is outdated
+# Directory not initialized
+Error: Working directory not initialized. Run: gs init <slice_id>
+Solution: gs init my-team
+
+# Changeset outdated
+Error: Changeset base commit is outdated. Slice has advanced
 Solution: gs changeset rebase
 
 # Authentication failed
 Error: Invalid authentication token
-Solution: gs auth login
-
-# Network error
-Error: Connection timeout
-Solution: gs config set api.timeout 60s
+Solution: gs config set auth.token YOUR_TOKEN
 ```
 
 ### Error Codes
@@ -769,11 +1002,14 @@ Solution: gs config set api.timeout 60s
 20 - Changeset not found
 21 - Changeset already merged
 22 - Changeset conflicts with slice head
+23 - Working directory not initialized for slice
+24 - Changeset bound to different slice
 
 # Conflict errors
 30 - Conflict detected
 31 - Unresolvable conflict
 32 - Merge conflict
+33 - File-level conflict
 ```
 
 ---
@@ -783,30 +1019,17 @@ Solution: gs config set api.timeout 60s
 ### Faster Operations
 
 ```bash
-# Use parallel downloads
-gs config set performance.parallel-downloads 20
+# Use parallel file downloads
+gs config set performance.parallel_downloads 20
 
 # Enable compression
 gs config set performance.compression true
 
 # Cache frequently accessed slices
-gs cache prefetch my-team billing-service
+gs cache prefetch my-team
 
 # Use JSON output for scripting
 gs changeset list --json --quiet | jq '.[] | select(.status=="pending")'
-```
-
-### Network Optimization
-
-```bash
-# Set lower timeout for fast networks
-gs config set api.timeout 10s
-
-# Use compression for slow networks
-gs config set performance.compression true
-
-# Disable progress bars for scripts
-gs changeset merge --quiet
 ```
 
 ---
@@ -823,10 +1046,7 @@ code --install-extension gitslice.vscode
 PlugInstall gitslice.vim
 
 # Emacs mode
-(add-hook 'before-save-hook 'gs changeset status')
-
-# JetBrains IDEA
-Preferences → Plugins → Install gitslice
+(add-hook 'before-save-hook 'gs status')
 ```
 
 ### CI/CD Integration
@@ -845,73 +1065,11 @@ pipeline {
     stage('Test') {
       steps {
         sh 'gs changeset review ${CHANGESET_ID}'
+        sh 'gs changeset merge ${CHANGESET_ID}'
       }
     }
   }
 }
-
-# GitLab CI
-test:
-  script:
-    - gs changeset review $CI_MERGE_REQUEST_ID
-    - gs changeset merge $CI_MERGE_REQUEST_ID
-```
-
-### Git Integration
-
-```bash
-# Convert git repo to gitslice
-gs import from-git
-
-# Sync gitslice with git
-gs sync with-git
-
-# Convert gitslice commit to git
-gs export to-git
-```
-
----
-
-## Troubleshooting
-
-### Debug Mode
-
-```bash
-# Enable debug logging
-gs config set debug true
-
-# Show verbose output
-gs changeset merge --verbose --verbose
-
-# Check connection
-gs health check
-```
-
-### Cache Issues
-
-```bash
-# Clear cache
-gs cache clear
-
-# Reset configuration
-gs config reset
-
-# Verify installation
-gs doctor
-```
-
-### Performance Issues
-
-```bash
-# Check performance stats
-gs perf stats
-
-# Benchmark operations
-gs perf benchmark checkout
-gs perf benchmark merge
-
-# Show profile
-gs perf profile changeset merge
 ```
 
 ---
@@ -926,7 +1084,7 @@ gs --help
 gs help
 
 # Command-specific help
-gs slice checkout --help
+gs slice init --help
 gs changeset merge --help
 
 # Show examples
@@ -945,28 +1103,6 @@ gs docs api
 
 # Show troubleshooting guide
 gs docs troubleshooting
-```
-
----
-
-## Alias Reference
-
-### Common Aliases
-
-```bash
-# Shorten common commands
-alias gsc="gs changeset create"
-alias gsm="gs changeset merge"
-alias gsr="gs changeset review"
-alias gss="gs slice status"
-
-# Quick checkout
-alias gco="gs slice checkout"
-alias gl="gs log"
-
-# Quick conflict resolution
-alias gcr="gs conflict resolve --theirs"
-alias gco="gs conflict resolve --ours"
 ```
 
 ---
@@ -991,49 +1127,29 @@ gs changelog
 
 ---
 
-## Migration Guide
+## Comparison with Git
 
-### From Git to gitslice
-
-```bash
-# Initialize gitslice in git repo
-gs init
-
-# Detect git branches as slices
-gs detect slices
-
-# Convert git history to gitslice
-gs migrate --from-git
-
-# Push to gitslice
-gs push --all
-```
-
-### From gitslice to Git
-
-```bash
-# Export to git
-gs export --to-git
-
-# Clone as git repo
-gs clone --as-git my-team
-
-# Create git branch from slice
-gs export slice my-team --branch feature-x
-```
+| Aspect | Traditional Git | gitslice |
+|--------|----------------|-----------|
+| Working Model | Switch branches in same directory | Different directory = different slice |
+| Mental Model | Current branch = where you are | Current directory = which slice you're on |
+| Conflict Timing | On merge (too late) | On changeset merge (proactive) |
+| Review Process | PR review then merge | Changeset review + conflict check |
+| Scope | Entire repository | Single slice |
+| Checkout Time | Full repo | Single slice |
+| Parallel Work | Switch branches | Multiple directories |
 
 ---
 
 ## Conclusion
 
-The `gitslice` CLI provides a comprehensive interface for the slice-based version control system, with intuitive commands for all major workflows:
+The **gitslice** CLI provides a comprehensive interface for slice-based version control system:
 
-✅ **Slice management** - Checkout, list, info
-✅ **Change list workflow** - Create, review, merge, rebase
+✅ **Slice management** - Create, list, info, init working directories
+✅ **Change list workflow** - Create, review, merge, rebase, list, abandon
 ✅ **Conflict resolution** - Interactive and automated
-✅ **History management** - Log, show, diff
+✅ **Commit history** - Log, show, diff
 ✅ **Global operations** - Status, merge, deploy
-✅ **Advanced features** - Hooks, workspaces, caching
-✅ **Integration** - Editors, CI/CD, Git compatibility
+✅ **Working directory model** - One directory = one slice (simple & clear)
 
 Commands follow consistent naming patterns and include helpful flags for customization.
