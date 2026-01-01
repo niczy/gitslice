@@ -402,378 +402,26 @@ Garbage Collection:
 
 ## 4. API Design: gRPC Protocol
 
-### Service Definitions
-
-#### Core Service
-
-```protobuf
-syntax = "proto3";
-
-package slice.v1;
-
-service SliceService {
-  // Checkout slice for editing
-  rpc CheckoutSlice(CheckoutRequest) returns (CheckoutResponse);
-
-  // Create a new change list
-  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
-
-  // Review a change list (check against slice head)
-  rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse);
-
-  // Merge change list into slice (with conflict detection)
-  rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse);
-
-  // Rebase change list on new slice head
-  rpc RebaseChangeset(RebaseChangesetRequest) returns (RebaseChangesetResponse);
-
-  // Get slice commit history
-  rpc GetSliceCommits(CommitHistoryRequest) returns (CommitHistoryResponse);
-
-  // Get current slice state
-  rpc GetSliceState(StateRequest) returns (StateResponse);
-
-  // List pending change lists for a slice
-  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
-}
-```
-
-#### Admin Service
-
-```protobuf
-service AdminService {
-  // Trigger batch merge to global
-  rpc BatchMerge(BatchMergeRequest) returns (BatchMergeResponse);
-
-  // List all active slices
-  rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
-
-  // Get current conflicts across slices
-  rpc GetConflicts(ConflictsRequest) returns (ConflictsResponse);
-
-  // Get global state
-  rpc GetGlobalState(GlobalStateRequest) returns (GlobalStateResponse);
-}
-```
-
-### Message Definitions
-
-#### Core Operations
-
-```protobuf
-message CheckoutRequest {
-  string slice_id = 1;
-  string commit_hash = 2;  // "HEAD" for latest, specific hash for historical
-}
-
-message CheckoutResponse {
-  SliceManifest manifest = 1;
-  repeated FileContent files = 2;
-}
-
-message SliceManifest {
-  string commit_hash = 1;
-  repeated FileMetadata file_metadata = 2;
-}
-
-message FileMetadata {
-  string file_id = 1;
-  string path = 2;
-  int64 size = 3;
-  string hash = 4;
-  string content_url = 5;  // Presigned URL for object fetching
-}
-
-message FileContent {
-  string file_id = 1;
-  bytes content = 2;
-}
-
-message CreateChangesetRequest {
-  string slice_id = 1;
-  string base_commit_hash = 2;
-  repeated Object objects = 3;  // blobs, trees
-  repeated string modified_files = 4;
-  string author = 5;
-  string message = 6;
-}
-
-message CreateChangesetResponse {
-  string changeset_id = 1;
-  string changeset_hash = 2;
-  ChangesetStatus status = 3;
-}
-
-message ReviewChangesetRequest {
-  string changeset_id = 1;
-}
-
-message ReviewChangesetResponse {
-  ChangesetInfo changeset = 1;
-  DiffSummary diff = 2;
-  ReviewStatus review_status = 3;
-  repeated string warnings = 4;
-}
-
-message DiffSummary {
-  int32 files_added = 1;
-  int32 files_modified = 2;
-  int32 files_deleted = 3;
-  int64 lines_added = 4;
-  int64 lines_removed = 5;
-}
-
-message MergeChangesetRequest {
-  string changeset_id = 1;
-}
-
-message MergeChangesetResponse {
-  MergeStatus status = 1;
-  string new_commit_hash = 2;
-  string changeset_id = 3;
-  repeated Conflict conflicts = 4;
-}
-
-message RebaseChangesetRequest {
-  string changeset_id = 1;
-}
-
-message RebaseChangesetResponse {
-  RebaseStatus status = 1;
-  string new_base_commit_hash = 2;
-  repeated string slice_commits_to_apply = 3;
-  repeated Conflict conflicts = 4;
-}
-
-message ListChangesetsRequest {
-  string slice_id = 1;
-  ChangesetStatus status_filter = 2;  // Optional filter
-  int32 limit = 3;
-}
-
-message ListChangesetsResponse {
-  repeated ChangesetInfo changesets = 1;
-}
-
-message ChangesetInfo {
-  string changeset_id = 1;
-  string changeset_hash = 2;
-  string slice_id = 3;
-  string base_commit_hash = 4;
-  repeated string modified_files = 5;
-  ChangesetStatus status = 6;
-  string author = 7;
-  int64 created_at = 8;
-  int64 merged_at = 9;
-  string message = 10;
-}
-
-enum ChangesetStatus {
-  PENDING = 0;
-  APPROVED = 1;
-  REJECTED = 2;
-  MERGED = 3;
-}
-
-enum ReviewStatus {
-  READY_FOR_MERGE = 0;
-  NEEDS_REBASE = 1;
-  HAS_CONFLICTS = 2;
-}
-
-enum MergeStatus {
-  SUCCESS = 0;
-  CONFLICT = 1;
-  ERROR = 2;
-}
-
-enum RebaseStatus {
-  SUCCESS = 0;
-  CONFLICT = 1;
-  NEEDS_MERGE = 2;
-  ERROR = 3;
-}
-
-message Object {
-  ObjectType type = 1;
-  string hash = 2;
-  bytes data = 3;
-}
-
-enum ObjectType {
-  BLOB = 0;
-  TREE = 1;
-  COMMIT = 2;
-  SLICE_DEF = 3;
-  CHANGESET = 4;
-}
-
-message Conflict {
-  string file_id = 1;
-  repeated string conflicting_slice_ids = 2;
-}
-
-message CommitHistoryRequest {
-  string slice_id = 1;
-  int64 limit = 2;
-  string from_commit_hash = 3;
-}
-
-message CommitHistoryResponse {
-  repeated CommitInfo commits = 1;
-}
-
-message CommitInfo {
-  string commit_hash = 1;
-  int64 timestamp = 2;
-  string parent_hash = 3;
-  string message = 4;
-}
-
-message StateRequest {
-  string slice_id = 1;
-}
-
-message StateResponse {
-  string latest_commit_hash = 1;
-  repeated string modified_files = 2;
-  int64 last_modified = 3;
-}
-```
-
-#### Admin Operations
-
-```protobuf
-message BatchMergeRequest {
-  optional int32 max_slices = 1;  // Optional: limit batch size
-}
-
-message BatchMergeResponse {
-  string global_commit_hash = 1;
-  int32 merged_slice_count = 2;
-  repeated string merged_slice_ids = 3;
-  int64 timestamp = 4;
-}
-
-message ListSlicesRequest {
-  int32 limit = 1;
-  int32 offset = 2;
-}
-
-message ListSlicesResponse {
-  repeated SliceInfo slices = 1;
-}
-
-message SliceInfo {
-  string slice_id = 1;
-  string latest_commit_hash = 2;
-  int32 modified_files_count = 3;
-  int64 last_modified = 4;
-}
-
-message ConflictsRequest {
-  optional string slice_id = 1;  // Optional: filter by slice
-}
-
-message ConflictsResponse {
-  repeated Conflict conflicts = 1;
-  int32 total_conflicts = 2;
-}
-
-message GlobalStateRequest {
-  bool include_history = 1;
-}
-
-message GlobalStateResponse {
-  string global_commit_hash = 1;
-  int64 timestamp = 2;
-  repeated GlobalCommitHistory history = 3;
-}
-
-message GlobalCommitHistory {
-  string commit_hash = 1;
-  int64 timestamp = 2;
-  repeated string merged_slice_ids = 3;
-}
-```
-
-### Streaming Operations
-
-#### Checkout Large Slices (Server Streaming)
-
-```protobuf
-rpc CheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
-
-message CheckoutChunk {
-  oneof chunk {
-    SliceManifest manifest = 1;
-    FileContent file = 2;
-  }
-}
-```
-
-**Benefit:** Stream files incrementally instead of loading all into memory.
-
-#### Create Change List (Client Streaming)
-
-```protobuf
-rpc CreateChangeset(stream ChangesetChunk) returns (CreateChangesetResponse);
-
-message ChangesetChunk {
-  oneof chunk {
-    ChangesetMetadata metadata = 1;  // slice_id, base_commit_hash, etc.
-    Object object = 2;
-  }
-}
-
-message ChangesetMetadata {
-  string slice_id = 1;
-  string base_commit_hash = 2;
-  string author = 3;
-  string message = 4;
-}
-```
-
-**Benefit:** Stream large change lists with many files without buffering.
-
-#### Real-time Conflict Updates (Bidirectional Streaming)
-
-```protobuf
-rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
-
-message ConflictUpdate {
-  repeated Conflict new_conflicts = 1;
-  repeated Conflict resolved_conflicts = 2;
-}
-```
-
-**Benefit:** Real-time conflict notifications for collaboration.
-
-### Advantages of gRPC over REST
-
-1. **Performance**
-   - Binary serialization (Protocol Buffers) - 5-10x faster than JSON
-   - HTTP/2 multiplexing - parallel requests over single connection
-   - Built-in compression (gzip)
-
-2. **Type Safety**
-   - Strongly typed message definitions
-   - Compile-time type checking
-   - Auto-generated client/server code
-
-3. **Streaming Support**
-   - Bidirectional streaming for large file transfers
-   - Server-side streaming for commit history pagination
-   - Client-side streaming for batch uploads
-
-4. **Better for High-Throughput Operations**
-   - Push operations with many objects
-   - Checkout with large file sets
-   - Batch merge operations
+The gRPC API design has been extracted to a separate document: **[API_DESIGN.md](./API_DESIGN.md)**
+
+The API specification includes:
+- Complete service definitions (SliceService, AdminService)
+- Message definitions for all requests and responses
+- Streaming operations (checkout, changeset creation, conflict watching)
+- Error handling and status codes
+- Implementation notes for each RPC method
+- CLI to API mapping
+
+**Key API Features:**
+- **SliceService**: Core operations for slice management and change list workflows
+- **AdminService**: Administrative operations for batch merging, monitoring, and global state
+- **Streaming Support**: Server, client, and bidirectional streaming for high-throughput operations
+- **Type Safety**: Protocol Buffers for compile-time type checking
+- **Performance**: Binary serialization and HTTP/2 multiplexing
 
 ---
 
-## 5. Consistency & Reliability
+## 4. Consistency & Reliability
 
 ### Conflict Guarantees
 
@@ -850,7 +498,7 @@ message ConflictUpdate {
 
 ---
 
-## 6. Estimated Capacity & Performance
+## 5. Estimated Capacity & Performance
 
 ### Benchmarks (Estimated)
 
@@ -977,7 +625,7 @@ Large push (500 files, avg 10KB):
 
 ---
 
-## 7. Open Questions for Implementation
+## 6. Open Questions for Implementation
 
 ### 1. Object Store Choice
 **Options:**
@@ -1039,7 +687,7 @@ Large push (500 files, avg 10KB):
 
 ---
 
-## 8. Deployment Architecture
+## 7. Deployment Architecture
 
 ### Recommended Setup
 
@@ -1110,7 +758,7 @@ Large push (500 files, avg 10KB):
 
 ---
 
-## 9. Migration Strategy
+## 8. Migration Strategy
 
 ### Phase 1: MVP (3 months)
 - Single Redis node (small scale)
@@ -1133,7 +781,7 @@ Large push (500 files, avg 10KB):
 
 ---
 
-## 10. Security Considerations
+## 9. Security Considerations
 
 ### Authentication
 - JWT tokens with expiration
@@ -1157,7 +805,7 @@ Large push (500 files, avg 10KB):
 
 ---
 
-## 11. Disaster Recovery
+## 10. Disaster Recovery
 
 ### Backup Strategy
 - Daily snapshots of Redis cluster
