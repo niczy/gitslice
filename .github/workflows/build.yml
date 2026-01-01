@@ -57,3 +57,14 @@ jobs:
     - name: Test CLI help
       run: |
         timeout 2s ./gs_cli || true
+
+    - name: Run workflow tests (stub)
+      run: |
+        cd workflow_test
+        go test -v -run TestCLIBuild
+
+    - name: Test coverage for workflow tests
+      run: |
+        cd workflow_test
+        go test -cover -coverprofile=coverage.out -run TestCLIBuild
+        go tool cover -func=coverage.out
