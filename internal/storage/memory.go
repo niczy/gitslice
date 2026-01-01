@@ -18,14 +18,20 @@ type InMemoryStorage struct {
 
 	// File indexing: fileID -> set of slice IDs
 	fileIndex map[string]map[string]bool // fileID -> {sliceID: true}
+
+	// Changesets
+	changesets      map[string]*models.Changeset // changesetID -> changeset
+	sliceChangesets map[string][]string          // sliceID -> []changesetID
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
 func NewInMemoryStorage() *InMemoryStorage {
 	return &InMemoryStorage{
-		slices:        make(map[string]*models.Slice),
-		sliceMetadata: make(map[string]*models.SliceMetadata),
-		fileIndex:     make(map[string]map[string]bool),
+		slices:          make(map[string]*models.Slice),
+		sliceMetadata:   make(map[string]*models.SliceMetadata),
+		fileIndex:       make(map[string]map[string]bool),
+		changesets:      make(map[string]*models.Changeset),
+		sliceChangesets: make(map[string][]string),
 	}
 }
 
@@ -228,6 +234,78 @@ func (s *InMemoryStorage) RemoveFileFromSlice(ctx context.Context, fileID, slice
 			delete(s.fileIndex, fileID)
 		}
 	}
+	return nil
+}
+
+// CreateChangeset stores a new changeset
+func (s *InMemoryStorage) CreateChangeset(ctx context.Context, changeset *models.Changeset) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.slices[changeset.SliceID]; !exists {
+		return ErrSliceNotFound
+	}
+
+	s.changesets[changeset.ID] = changeset
+	s.sliceChangesets[changeset.SliceID] = append([]string{changeset.ID}, s.sliceChangesets[changeset.SliceID]...)
+	return nil
+}
+
+// GetChangeset retrieves a changeset by ID
+func (s *InMemoryStorage) GetChangeset(ctx context.Context, changesetID string) (*models.Changeset, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cs, ok := s.changesets[changesetID]
+	if !ok {
+		return nil, ErrChangesetNotFound
+	}
+
+	copy := *cs
+	return &copy, nil
+}
+
+// ListChangesets returns changesets for a slice filtered by status and limited by count
+func (s *InMemoryStorage) ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := s.sliceChangesets[sliceID]
+	if len(ids) == 0 {
+		return []*models.Changeset{}, nil
+	}
+
+	var result []*models.Changeset
+	for _, id := range ids {
+		cs, ok := s.changesets[id]
+		if !ok {
+			continue
+		}
+		if status != nil && cs.Status != *status {
+			continue
+		}
+
+		copy := *cs
+		result = append(result, &copy)
+
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+// UpdateChangeset replaces an existing changeset entry
+func (s *InMemoryStorage) UpdateChangeset(ctx context.Context, changeset *models.Changeset) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.changesets[changeset.ID]; !exists {
+		return ErrChangesetNotFound
+	}
+
+	s.changesets[changeset.ID] = changeset
 	return nil
 }
 

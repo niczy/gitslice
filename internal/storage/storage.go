@@ -11,6 +11,7 @@ var (
 	ErrSliceNotFound      = errors.New("slice not found")
 	ErrSliceAlreadyExists = errors.New("slice already exists")
 	ErrInvalidInput       = errors.New("invalid input")
+	ErrChangesetNotFound  = errors.New("changeset not found")
 )
 
 // Storage defines the interface for data storage operations
@@ -29,6 +30,12 @@ type Storage interface {
 	AddFileToSlice(ctx context.Context, fileID, sliceID string) error
 	GetActiveSlicesForFile(ctx context.Context, fileID string) ([]string, error)
 	RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error
+
+	// Changesets
+	CreateChangeset(ctx context.Context, changeset *models.Changeset) error
+	GetChangeset(ctx context.Context, changesetID string) (*models.Changeset, error)
+	ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error)
+	UpdateChangeset(ctx context.Context, changeset *models.Changeset) error
 
 	// Health check
 	Ping(ctx context.Context) error
