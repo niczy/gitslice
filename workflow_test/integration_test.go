@@ -103,17 +103,6 @@ func TestServicesRunning(t *testing.T) {
 	}
 	t.Logf("Slice service is running. Output: %s", output)
 }
-/// TestServicesRunning tests that services are running and accessible
-func TestServicesRunning(t *testing.T) {
-	t.Skip("Implementation not ready yet")
-
-	// Test slice service is accessible
-	output, err := runCLI("status")
-	if err != nil {
-		t.Fatalf("Failed to connect to slice service: %v\nOutput: %s", err, output)
-	}
-	t.Logf("Slice service is running. Output: %s", output)
-}
 
 // TestSliceServiceHealth tests slice service health
 func TestSliceServiceHealth(t *testing.T) {
