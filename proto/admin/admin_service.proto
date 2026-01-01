@@ -4,9 +4,12 @@ package admin.v1;
 
 option go_package = "github.com/niczy/gitslice/proto;adminv1";
 
-service AdminService {
+ service AdminService {
   // Trigger batch merge to global
   rpc BatchMerge(BatchMergeRequest) returns (BatchMergeResponse);
+
+  // Create a new slice
+  rpc CreateSlice(CreateSliceRequest) returns (CreateSliceResponse);
 
   // List all active slices
   rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
@@ -21,18 +24,32 @@ service AdminService {
   rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
 }
 
-message BatchMergeRequest {
-  optional int32 max_slices = 1;
-}
+ message BatchMergeRequest {
+   optional int32 max_slices = 1;
+ }
 
-message BatchMergeResponse {
-  string global_commit_hash = 1;
-  int32 merged_slice_count = 2;
-  repeated string merged_slice_ids = 3;
-  int64 timestamp = 4;
-}
+ message BatchMergeResponse {
+   string global_commit_hash = 1;
+   int32 merged_slice_count = 2;
+   repeated string merged_slice_ids = 3;
+   int64 timestamp = 4;
+ }
 
-message ListSlicesRequest {
+ message CreateSliceRequest {
+   string slice_id = 1;
+   string name = 2;
+   string description = 3;
+   repeated string files = 4;
+   repeated string owners = 5;
+   string created_by = 6;
+ }
+
+ message CreateSliceResponse {
+    string slice_id = 1;
+    string status = 2;
+  }
+
+ message ListSlicesRequest {
   int32 limit = 1;
   int32 offset = 2;
 }

@@ -44,7 +44,7 @@ jobs:
       run: go build -o admin_service_server ./admin_service/
 
     - name: Build CLI
-      run: go build -o gs_cli ./gs_cli/
+      run: go build -o gs_cli/gs_cli ./gs_cli/
 
     - name: Run slice service
       run: |
