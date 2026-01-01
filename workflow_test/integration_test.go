@@ -77,11 +77,13 @@ func stopServices() {
 	}
 }
 
-// runCLI executes a CLI command and returns the output
+// runCLI executes a CLI command and returns to output
 func runCLI(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	absPath, _ := filepath.Abs(cliBinaryPath)
+	cmd := exec.CommandContext(ctx, absPath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("cli command failed: %w", err)
@@ -91,6 +93,17 @@ func runCLI(args ...string) (string, error) {
 }
 
 // TestServicesRunning tests that services are running and accessible
+func TestServicesRunning(t *testing.T) {
+	t.Skip("Implementation not ready yet")
+
+	// Test slice service is accessible
+	output, err := runCLI("status")
+	if err != nil {
+		t.Fatalf("Failed to connect to slice service: %v\nOutput: %s", err, output)
+	}
+	t.Logf("Slice service is running. Output: %s", output)
+}
+/// TestServicesRunning tests that services are running and accessible
 func TestServicesRunning(t *testing.T) {
 	t.Skip("Implementation not ready yet")
 
