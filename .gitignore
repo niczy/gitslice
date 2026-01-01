@@ -6,6 +6,7 @@
 *.dylib
 slice_service_server
 admin_service_server
+bin/
 
 # Test binary, built with `go test -c`
 *.test

@@ -209,20 +209,11 @@ func TestSliceInitDescription(t *testing.T) {
 
 // Helper function to create a test slice via storage
 func createTestSlice(sliceID string) error {
-	// This would be better done by calling to storage directly
-	// For now, we just log that the slice would be created
-	// The test will fail if the slice doesn't exist in storage
-	return nil
+	_, err := runCLI("slice", "create", sliceID, "--description", "test slice")
+	return err
 }
 
 // Helper function to run CLI in a specific directory
 func runCLIInDir(dir string, args ...string) (string, error) {
-	originalDir, _ := os.Getwd()
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(dir); err != nil {
-		return "", err
-	}
-
-	return runCLI(args...)
+	return runCLIWithDir(dir, args...)
 }

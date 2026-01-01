@@ -3,11 +3,19 @@ package workflow_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/niczy/gitslice/internal/server"
+	"github.com/niczy/gitslice/internal/storage"
+	adminv1 "github.com/niczy/gitslice/proto/admin"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -17,9 +25,22 @@ const (
 )
 
 var (
-	sliceServiceProcess *exec.Cmd
-	adminServiceProcess *exec.Cmd
+	repoRoot        string
+	adminGRPCServer *grpc.Server
+	sliceGRPCServer *grpc.Server
+	cliBinary       string
+	buildOnce       sync.Once
+	buildErr        error
 )
+
+func init() {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		repoRoot = ".."
+		return
+	}
+	repoRoot = root
+}
 
 // TestMain sets up and tears down services for all tests
 func TestMain(m *testing.M) {
@@ -49,39 +70,64 @@ func TestMain(m *testing.M) {
 
 // startServices starts the slice_service and admin_service
 func startServices() error {
-	// Start slice service
-	sliceServiceProcess = exec.Command("go", "run", "../slice_service/")
-	sliceServiceProcess.Env = append(os.Environ(), "GRPC_TRACE=all")
-	if err := sliceServiceProcess.Start(); err != nil {
-		return fmt.Errorf("failed to start slice service: %w", err)
-	}
+	sharedStorage := storage.NewInMemoryStorage()
 
-	// Start admin service
-	adminServiceProcess = exec.Command("go", "run", "../admin_service/")
-	adminServiceProcess.Env = append(os.Environ(), "GRPC_TRACE=all")
-	if err := adminServiceProcess.Start(); err != nil {
-		sliceServiceProcess.Process.Kill()
-		return fmt.Errorf("failed to start admin service: %w", err)
+	sliceLis, err := net.Listen("tcp", sliceServiceAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", sliceServiceAddr, err)
 	}
+	sliceGRPCServer = grpc.NewServer()
+	slicev1.RegisterSliceServiceServer(sliceGRPCServer, server.NewSliceServiceServer(sharedStorage))
+	go sliceGRPCServer.Serve(sliceLis)
+
+	adminLis, err := net.Listen("tcp", adminServiceAddr)
+	if err != nil {
+		sliceGRPCServer.Stop()
+		return fmt.Errorf("failed to listen on %s: %w", adminServiceAddr, err)
+	}
+	adminGRPCServer = grpc.NewServer()
+	adminv1.RegisterAdminServiceServer(adminGRPCServer, server.NewAdminServiceServer(sharedStorage))
+	go adminGRPCServer.Serve(adminLis)
 
 	return nil
 }
 
 // stopServices stops both services
 func stopServices() {
-	if sliceServiceProcess != nil && sliceServiceProcess.Process != nil {
-		sliceServiceProcess.Process.Kill()
+	if sliceGRPCServer != nil {
+		sliceGRPCServer.Stop()
 	}
-	if adminServiceProcess != nil && adminServiceProcess.Process != nil {
-		adminServiceProcess.Process.Kill()
+	if adminGRPCServer != nil {
+		adminGRPCServer.Stop()
 	}
 }
 
 // runCLI executes a CLI command and returns the output
 func runCLI(args ...string) (string, error) {
+	return runCLIWithDir(repoRoot, args...)
+}
+
+func runCLIWithDir(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	buildOnce.Do(func() {
+		cliBinary = filepath.Join(repoRoot, "bin", "gs_cli_test")
+		if err := os.MkdirAll(filepath.Dir(cliBinary), 0o755); err != nil {
+			buildErr = err
+			return
+		}
+		cmd := exec.Command("go", "build", "-o", cliBinary, "./gs_cli/")
+		cmd.Dir = repoRoot
+		buildErr = cmd.Run()
+	})
+
+	if buildErr != nil {
+		return "", fmt.Errorf("failed to build cli: %w", buildErr)
+	}
+
+	cmd := exec.CommandContext(ctx, cliBinary, args...)
+	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("cli command failed: %w", err)
