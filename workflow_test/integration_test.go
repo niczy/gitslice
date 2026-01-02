@@ -15,7 +15,9 @@ import (
 	adminservice "github.com/niczy/gitslice/internal/services/admin"
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
+	adminv1 "github.com/niczy/gitslice/proto/admin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -253,5 +255,81 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "merge", changesetID)
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("Expected merge success for subfolder, got: %s", output)
+	}
+}
+
+func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping batch merge integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(nil); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	addr, srv, err := startAdminService(st)
+	if err != nil {
+		t.Fatalf("failed to start admin service: %v", err)
+	}
+	defer srv.GracefulStop()
+
+	conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to dial admin service: %v", err)
+	}
+	defer conn.Close()
+
+	client := adminv1.NewAdminServiceClient(conn)
+	sliceA := fmt.Sprintf("batch-merge-a-%d", time.Now().UnixNano())
+	sliceB := fmt.Sprintf("batch-merge-b-%d", time.Now().UnixNano())
+
+	if _, err := client.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceA, Name: "Batch A", Files: []string{"file-a"}}); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if _, err := client.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceB, Name: "Batch B", Files: []string{"file-b"}}); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+
+	mergeResp, err := client.BatchMerge(ctx, &adminv1.BatchMergeRequest{})
+	if err != nil {
+		t.Fatalf("batch merge failed: %v", err)
+	}
+	if mergeResp.MergedSliceCount != 2 {
+		t.Fatalf("expected 2 merged slices, got %d", mergeResp.MergedSliceCount)
+	}
+
+	listResp, err := client.ListSlices(ctx, &adminv1.ListSlicesRequest{Limit: 50})
+	if err != nil {
+		t.Fatalf("list slices failed: %v", err)
+	}
+
+	var rootInfo *adminv1.SliceInfo
+	for _, info := range listResp.Slices {
+		if info.SliceId == "root_slice" {
+			rootInfo = info
+			break
+		}
+	}
+
+	if rootInfo == nil {
+		t.Fatalf("root slice not found in list response")
+	}
+	if rootInfo.LatestCommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected root commit %s, got %s", mergeResp.GlobalCommitHash, rootInfo.LatestCommitHash)
+	}
+	if rootInfo.ModifiedFilesCount != 2 {
+		t.Fatalf("expected 2 modified files in root metadata, got %d", rootInfo.ModifiedFilesCount)
+	}
+
+	conflictsResp, err := client.GetConflicts(ctx, &adminv1.ConflictsRequest{})
+	if err != nil {
+		t.Fatalf("get conflicts failed: %v", err)
+	}
+	if conflictsResp.TotalConflicts != 0 {
+		t.Fatalf("expected no conflicts after batch merge, found %d", conflictsResp.TotalConflicts)
 	}
 }
