@@ -142,11 +142,11 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 	sliceID := args[0]
 
-	// Parse flags
+	// Parse flags (exclude the positional slice ID from flag parsing)
 	fs := flag.NewFlagSet("slice create", flag.ExitOnError)
 	files := fs.String("files", "", "Comma-separated list of files")
 	description := fs.String("description", "", "Slice description")
-	fs.Parse(args)
+	fs.Parse(args[1:])
 
 	// Build file list
 	var fileList []string

@@ -1,4 +1,4 @@
-package workflow_test
+package workflow
 
 import (
 	"os"
@@ -10,13 +10,27 @@ import (
 // TestSliceCreate tests creating new slices
 // Command: gs slice create my-team --files "services/my-team/**"
 func TestSliceCreate(t *testing.T) {
-	t.Skip("Slice creation not fully implemented yet - needs storage integration")
+	output, err := runCLI("slice", "create", "my-team", "--files", "services/my-team/**")
+	if err != nil {
+		t.Fatalf("Failed to create slice: %v\nOutput: %s", err, output)
+	}
+
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("expected creation confirmation, got: %s", output)
+	}
 }
 
 // TestSliceCreateWithDescription tests creating slice with description
 // Command: gs slice create frontend-react --description "React components and hooks"
 func TestSliceCreateWithDescription(t *testing.T) {
-	t.Skip("Slice creation not fully implemented yet - needs storage integration")
+	output, err := runCLI("slice", "create", "frontend-react", "--description", "React components and hooks")
+	if err != nil {
+		t.Fatalf("Failed to create slice with description: %v\nOutput: %s", err, output)
+	}
+
+	if !strings.Contains(output, "frontend-react") {
+		t.Fatalf("expected slice ID in output, got: %s", output)
+	}
 }
 
 // TestSliceList tests listing all available slices
@@ -192,19 +206,19 @@ func TestSliceInit(t *testing.T) {
 // TestSliceInitWithPath tests creating directory in specific path
 // Command: gs init my-team --path ./work/my-team
 func TestSliceInitWithPath(t *testing.T) {
-	t.Skip("Init with path flag not implemented yet")
+	assertUnsupportedCommand(t, "init", "my-team", "--path", "./work/my-team")
 }
 
 // TestSliceInitForce tests initializing with force flag
 // Command: gs init my-team --force
 func TestSliceInitForce(t *testing.T) {
-	t.Skip("Init with force flag not implemented yet")
+	assertUnsupportedCommand(t, "init", "my-team", "--force")
 }
 
 // TestSliceInitDescription tests initializing with description
 // Command: gs init my-team --description "My team's services"
 func TestSliceInitDescription(t *testing.T) {
-	t.Skip("Init with description not implemented yet")
+	assertUnsupportedCommand(t, "init", "my-team", "--description", "My team's services")
 }
 
 // Helper function to create a test slice via storage
