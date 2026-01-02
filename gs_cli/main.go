@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -303,6 +305,54 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to checkout slice: %v", err)
 	}
 
+	cache, err := NewCacheManager()
+	if err != nil {
+		log.Printf("Warning: unable to initialize cache: %v", err)
+	}
+
+	fileContents := make(map[string][]byte)
+	for _, file := range resp.Files {
+		fileContents[file.FileId] = file.Content
+	}
+
+	var cachedHits int
+	for _, fm := range resp.Manifest.FileMetadata {
+		var content []byte
+
+		if cache != nil && fm.Hash != "" {
+			if data, err := cache.ReadObject(fm.Hash); err == nil {
+				content = data
+				cachedHits++
+			} else if !errors.Is(err, os.ErrNotExist) {
+				log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
+			}
+		}
+
+		if content == nil {
+			if data, ok := fileContents[fm.FileId]; ok {
+				content = data
+			}
+		}
+
+		if content != nil {
+			if cache != nil && fm.Hash != "" {
+				if err := cache.StoreObject(fm.Hash, content); err != nil {
+					log.Printf("Failed to update cache for %s: %v", fm.Path, err)
+				}
+			}
+
+			targetPath := filepath.Join(".", fm.Path)
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				log.Printf("Failed to prepare directories for %s: %v", fm.Path, err)
+				continue
+			}
+
+			if err := os.WriteFile(targetPath, content, 0o644); err != nil {
+				log.Printf("Failed to write file %s: %v", fm.Path, err)
+			}
+		}
+	}
+
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
@@ -313,6 +363,10 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		for _, fm := range resp.Manifest.FileMetadata {
 			fmt.Printf("  - %s (%d bytes)\n", fm.Path, fm.Size)
 		}
+	}
+
+	if cache != nil {
+		fmt.Printf("Cache hits: %d\n", cachedHits)
 	}
 }
 
