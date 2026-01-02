@@ -13,6 +13,10 @@ import (
 type InMemoryStorage struct {
 	mu sync.RWMutex
 
+	// Lock tracking
+	lockedSlices map[string]bool   // sliceID -> locked
+	fileLocks    map[string]string // fileID -> owning sliceID
+
 	// Slice storage
 	slices        map[string]*models.Slice         // sliceID -> slice
 	sliceMetadata map[string]*models.SliceMetadata // sliceID -> metadata
@@ -52,11 +56,49 @@ func NewInMemoryStorage() *InMemoryStorage {
 		changesets:      make(map[string]*models.Changeset),
 		sliceChangesets: make(map[string][]string),
 		sliceCommits:    make(map[string][]*models.Commit),
+		lockedSlices:    make(map[string]bool),
+		fileLocks:       make(map[string]string),
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
 			History:          []*models.GlobalCommit{},
 		},
+	}
+}
+
+// LockSliceAndFiles acquires a lock on the slice and the provided files.
+func (s *InMemoryStorage) LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return ErrSliceNotFound
+	}
+
+	for _, fileID := range fileIDs {
+		if owner, locked := s.fileLocks[fileID]; locked && owner != sliceID {
+			return ErrLockHeld
+		}
+	}
+
+	s.lockedSlices[sliceID] = true
+	for _, fileID := range fileIDs {
+		s.fileLocks[fileID] = sliceID
+	}
+
+	return nil
+}
+
+// UnlockSliceAndFiles releases a previously acquired lock.
+func (s *InMemoryStorage) UnlockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.lockedSlices, sliceID)
+	for _, fileID := range fileIDs {
+		if owner, locked := s.fileLocks[fileID]; locked && owner == sliceID {
+			delete(s.fileLocks, fileID)
+		}
 	}
 }
 

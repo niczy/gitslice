@@ -2,6 +2,7 @@ package sliceservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -169,6 +170,14 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
 	}
 
+	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, cs.ModifiedFiles); err != nil {
+		if errors.Is(err, storage.ErrLockHeld) {
+			return nil, status.Error(codes.Aborted, "slice or files are locked by another operation")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to acquire locks: %v", err))
+	}
+	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, cs.ModifiedFiles)
+
 	var conflicts []*slicev1.Conflict
 	for _, fileID := range cs.ModifiedFiles {
 		slices, err := s.storage.GetActiveSlicesForFile(ctx, fileID)
@@ -197,6 +206,15 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		}, nil
 	}
 
+	for _, fileID := range cs.ModifiedFiles {
+		if _, err := s.storage.ResolveConflict(ctx, fileID, cs.SliceID); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve conflicts for %s: %v", fileID, err))
+		}
+		if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
+		}
+	}
+
 	newCommit := fmt.Sprintf("commit-%d", time.Now().UnixNano())
 	cs.Status = models.ChangesetStatusMerged
 	now := time.Now()
@@ -220,6 +238,10 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 			Timestamp:  now,
 			Message:    cs.Message,
 		})
+
+		if err := s.promoteSlice(ctx, cs.SliceID, newCommit, cs.ModifiedFiles, now); err != nil {
+			log.Printf("failed to promote slice %s to global state: %v", cs.SliceID, err)
+		}
 	}
 
 	return &slicev1.MergeChangesetResponse{
@@ -402,4 +424,50 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		Status:  "created",
 		Files:   []string{},
 	}, nil
+}
+
+func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
+	rootSlice, err := s.storage.GetRootSlice(ctx)
+	if errors.Is(err, storage.ErrSliceNotFound) {
+		if initErr := s.storage.InitializeRootSlice(ctx); initErr != nil {
+			return fmt.Errorf("failed to initialize root slice: %w", initErr)
+		}
+		rootSlice, err = s.storage.GetRootSlice(ctx)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load root slice: %w", err)
+	}
+
+	rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
+	if err != nil {
+		return fmt.Errorf("failed to load root metadata: %w", err)
+	}
+
+	rootMetadata.HeadCommitHash = commitHash
+	rootMetadata.ModifiedFiles = files
+	rootMetadata.ModifiedFilesCount = len(files)
+	rootMetadata.LastModified = commitTime
+
+	if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
+		return fmt.Errorf("failed to update root metadata: %w", err)
+	}
+
+	state, err := s.storage.GetGlobalState(ctx)
+	if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
+		return fmt.Errorf("failed to load global state: %w", err)
+	}
+	if state == nil {
+		state = &models.GlobalState{}
+	}
+
+	newCommit := &models.GlobalCommit{CommitHash: commitHash, Timestamp: commitTime, MergedSliceIDs: []string{sliceID}}
+	state.GlobalCommitHash = commitHash
+	state.Timestamp = commitTime
+	state.History = append([]*models.GlobalCommit{newCommit}, state.History...)
+
+	if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
+		return fmt.Errorf("failed to update global state: %w", err)
+	}
+
+	return nil
 }

@@ -499,3 +499,89 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 		t.Fatalf("expected root head to match global commit hash %s, got %s", mergeResp.GlobalCommitHash, rootState.LatestCommitHash)
 	}
 }
+
+func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adminClient := newAdminClient(t)
+	sliceClient := newSliceClient(t)
+
+	sharedFile := fmt.Sprintf("lock-shared-%d.txt", time.Now().UnixNano())
+	sliceA := fmt.Sprintf("lock-a-%d", time.Now().UnixNano())
+	sliceB := fmt.Sprintf("lock-b-%d", time.Now().UnixNano())
+
+	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceA, Name: "LockA", Files: []string{sharedFile}}); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceB, Name: "LockB", Files: []string{sharedFile}}); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+
+	if _, err := adminClient.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{FileId: sharedFile, PreferredSliceId: sliceA}); err != nil {
+		t.Fatalf("failed to resolve conflict to slice A: %v", err)
+	}
+
+	changeset, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        sliceA,
+		BaseCommitHash: "",
+		ModifiedFiles:  []string{sharedFile},
+		Author:         "tester",
+		Message:        "lock test",
+	})
+	if err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	mergeResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: changeset.ChangesetId})
+	if err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+	if mergeResp.Status != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got status %v", mergeResp.Status)
+	}
+	if mergeResp.NewCommitHash == "" {
+		t.Fatalf("expected new commit hash from merge")
+	}
+
+	stateResp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read global state: %v", err)
+	}
+	if stateResp.GlobalCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected global head %s to reflect slice promotion, got %s", mergeResp.NewCommitHash, stateResp.GlobalCommitHash)
+	}
+
+	promoted := false
+	if len(stateResp.History) > 0 {
+		for _, id := range stateResp.History[0].MergedSliceIds {
+			if id == sliceA {
+				promoted = true
+				break
+			}
+		}
+	}
+	if !promoted {
+		t.Fatalf("expected promoted slice %s to appear in global history", sliceA)
+	}
+
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	if err != nil {
+		t.Fatalf("failed to fetch root slice state: %v", err)
+	}
+	if rootState.LatestCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected root slice head %s, got %s", mergeResp.NewCommitHash, rootState.LatestCommitHash)
+	}
+
+	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "should conflict"})
+	if err != nil {
+		t.Fatalf("failed to create conflicting changeset: %v", err)
+	}
+	conflictResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: otherChange.ChangesetId})
+	if err != nil {
+		t.Fatalf("expected merge response despite lock, got error: %v", err)
+	}
+	if conflictResp.Status != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
+		t.Fatalf("expected conflict status for locked file merge, got %v", conflictResp.Status)
+	}
+}
