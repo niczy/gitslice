@@ -84,6 +84,8 @@ Complexity: O(k) where k = number of modified files
 
 **Goal:** Merge change list into slice, checking for conflicts with other slices
 
+Concurrency model: when a changeset is merged (pushed) into a slice, the slice and all files in the changeset are locked for the duration of the operation. Any files that are currently modified in other slices must be resolved before the merge proceeds; conflicting slices are rejected until an explicit resolution chooses an owner. Files already owned by the same slice remain writable. After a successful push the updated slice is automatically promoted to the global state so that the root slice and global history can advance concurrently without blocking other slices.
+
 ```
 Input: changeset_id
 

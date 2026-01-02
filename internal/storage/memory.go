@@ -13,6 +13,10 @@ import (
 type InMemoryStorage struct {
 	mu sync.RWMutex
 
+	// Lock tracking
+	lockedSlices map[string]bool   // sliceID -> locked
+	fileLocks    map[string]string // fileID -> owning sliceID
+
 	// Slice storage
 	slices        map[string]*models.Slice         // sliceID -> slice
 	sliceMetadata map[string]*models.SliceMetadata // sliceID -> metadata
@@ -31,6 +35,12 @@ type InMemoryStorage struct {
 	// Changesets
 	changesets      map[string]*models.Changeset // changesetID -> changeset
 	sliceChangesets map[string][]string          // sliceID -> []changesetID
+
+	// Commit history
+	sliceCommits map[string][]*models.Commit // sliceID -> commits (newest first)
+
+	// Global state
+	globalState *models.GlobalState
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
@@ -45,6 +55,50 @@ func NewInMemoryStorage() *InMemoryStorage {
 		entriesBySlice:  make(map[string][]string),
 		changesets:      make(map[string]*models.Changeset),
 		sliceChangesets: make(map[string][]string),
+		sliceCommits:    make(map[string][]*models.Commit),
+		lockedSlices:    make(map[string]bool),
+		fileLocks:       make(map[string]string),
+		globalState: &models.GlobalState{
+			GlobalCommitHash: "global-init",
+			Timestamp:        time.Now(),
+			History:          []*models.GlobalCommit{},
+		},
+	}
+}
+
+// LockSliceAndFiles acquires a lock on the slice and the provided files.
+func (s *InMemoryStorage) LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return ErrSliceNotFound
+	}
+
+	for _, fileID := range fileIDs {
+		if owner, locked := s.fileLocks[fileID]; locked && owner != sliceID {
+			return ErrLockHeld
+		}
+	}
+
+	s.lockedSlices[sliceID] = true
+	for _, fileID := range fileIDs {
+		s.fileLocks[fileID] = sliceID
+	}
+
+	return nil
+}
+
+// UnlockSliceAndFiles releases a previously acquired lock.
+func (s *InMemoryStorage) UnlockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.lockedSlices, sliceID)
+	for _, fileID := range fileIDs {
+		if owner, locked := s.fileLocks[fileID]; locked && owner == sliceID {
+			delete(s.fileLocks, fileID)
+		}
 	}
 }
 
@@ -74,6 +128,11 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 		ModifiedFiles:      []string{},
 		LastModified:       now,
 		ModifiedFilesCount: 0,
+	}
+
+	// Initialize commit history slice
+	if _, exists := s.sliceCommits[slice.ID]; !exists {
+		s.sliceCommits[slice.ID] = []*models.Commit{}
 	}
 
 	// Index files
@@ -205,6 +264,58 @@ func (s *InMemoryStorage) UpdateSliceMetadata(ctx context.Context, sliceID strin
 	metadata.LastModified = time.Now()
 	s.sliceMetadata[sliceID] = metadata
 	return nil
+}
+
+// AddSliceCommit records a commit for a slice, keeping most recent commits first.
+func (s *InMemoryStorage) AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return ErrSliceNotFound
+	}
+
+	commitCopy := *commit
+	s.sliceCommits[sliceID] = append([]*models.Commit{&commitCopy}, s.sliceCommits[sliceID]...)
+	return nil
+}
+
+// ListSliceCommits returns the commit history for a slice applying optional pagination.
+func (s *InMemoryStorage) ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return nil, ErrSliceNotFound
+	}
+
+	commits := s.sliceCommits[sliceID]
+	start := 0
+	if fromCommitHash != "" {
+		for i, c := range commits {
+			if c.CommitHash == fromCommitHash {
+				start = i + 1
+				break
+			}
+		}
+	}
+
+	if start > len(commits) {
+		return []*models.Commit{}, nil
+	}
+
+	result := commits[start:]
+	if limit > 0 && limit < len(result) {
+		result = result[:limit]
+	}
+
+	copy := make([]*models.Commit, 0, len(result))
+	for _, c := range result {
+		commitCopy := *c
+		copy = append(copy, &commitCopy)
+	}
+
+	return copy, nil
 }
 
 // AddFileToSlice adds a file to the index for a slice
@@ -604,5 +715,40 @@ func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error
 	delete(s.entries, entryID)
 	delete(s.entriesByPath, entry.ParentID+":"+entry.Path)
 
+	return nil
+}
+
+// GetGlobalState returns the tracked global state snapshot.
+func (s *InMemoryStorage) GetGlobalState(ctx context.Context) (*models.GlobalState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.globalState == nil {
+		return nil, ErrInvalidInput
+	}
+
+	stateCopy := *s.globalState
+	stateCopy.History = make([]*models.GlobalCommit, 0, len(s.globalState.History))
+	for _, item := range s.globalState.History {
+		entryCopy := *item
+		stateCopy.History = append(stateCopy.History, &entryCopy)
+	}
+
+	return &stateCopy, nil
+}
+
+// UpdateGlobalState replaces the stored global state snapshot.
+func (s *InMemoryStorage) UpdateGlobalState(ctx context.Context, state *models.GlobalState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stateCopy := *state
+	stateCopy.History = make([]*models.GlobalCommit, 0, len(state.History))
+	for _, item := range state.History {
+		entryCopy := *item
+		stateCopy.History = append(stateCopy.History, &entryCopy)
+	}
+
+	s.globalState = &stateCopy
 	return nil
 }

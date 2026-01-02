@@ -131,7 +131,8 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 	}
 	sort.Strings(mergedFileList)
 
-	globalCommitHash := fmt.Sprintf("global-%d", time.Now().UnixNano())
+	commitTime := time.Now()
+	globalCommitHash := fmt.Sprintf("global-%d", commitTime.UnixNano())
 	rootMetadata.HeadCommitHash = globalCommitHash
 	rootMetadata.ModifiedFiles = mergedFileList
 	rootMetadata.ModifiedFilesCount = len(mergedFileList)
@@ -140,11 +141,33 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update root metadata: %v", err))
 	}
 
+	state, err := s.storage.GetGlobalState(ctx)
+	if err != nil {
+		if !errors.Is(err, storage.ErrInvalidInput) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load global state: %v", err))
+		}
+		state = &models.GlobalState{}
+	}
+
+	newHistory := &models.GlobalCommit{
+		CommitHash:     globalCommitHash,
+		Timestamp:      commitTime,
+		MergedSliceIDs: mergedSliceIDs,
+	}
+
+	state.GlobalCommitHash = globalCommitHash
+	state.Timestamp = commitTime
+	state.History = append([]*models.GlobalCommit{newHistory}, state.History...)
+
+	if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update global state: %v", err))
+	}
+
 	return &adminv1.BatchMergeResponse{
 		GlobalCommitHash: globalCommitHash,
 		MergedSliceCount: int32(len(mergeCandidates)),
 		MergedSliceIds:   mergedSliceIDs,
-		Timestamp:        time.Now().Unix(),
+		Timestamp:        commitTime.Unix(),
 	}, nil
 }
 
@@ -261,26 +284,62 @@ func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.R
 func (s *adminServiceServer) GetGlobalState(ctx context.Context, req *adminv1.GlobalStateRequest) (*adminv1.GlobalStateResponse, error) {
 	log.Printf("GetGlobalState called: include_history=%v", req.IncludeHistory)
 
-	// TODO: Implement global state
-	history := []*adminv1.GlobalCommitHistory{}
-	if req.IncludeHistory {
-		history = append(history, &adminv1.GlobalCommitHistory{
-			CommitHash:     "global-init",
-			Timestamp:      time.Now().Unix(),
-			MergedSliceIds: []string{},
-		})
+	state, err := s.storage.GetGlobalState(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load global state: %v", err))
 	}
 
-	return &adminv1.GlobalStateResponse{
-		GlobalCommitHash: "global-init",
-		Timestamp:        time.Now().Unix(),
-		History:          history,
-	}, nil
+	response := &adminv1.GlobalStateResponse{
+		GlobalCommitHash: state.GlobalCommitHash,
+		Timestamp:        state.Timestamp.Unix(),
+		History:          []*adminv1.GlobalCommitHistory{},
+	}
+
+	if req.IncludeHistory {
+		for _, commit := range state.History {
+			response.History = append(response.History, &adminv1.GlobalCommitHistory{
+				CommitHash:     commit.CommitHash,
+				Timestamp:      commit.Timestamp.Unix(),
+				MergedSliceIds: commit.MergedSliceIDs,
+			})
+		}
+	}
+
+	return response, nil
 }
 
 func (s *adminServiceServer) WatchConflicts(req *adminv1.WatchConflictsRequest, stream adminv1.AdminService_WatchConflictsServer) error {
 	log.Printf("WatchConflicts called: slice_id=%v", req.SliceId)
 
-	// TODO: Implement conflict streaming
+	conflicts, err := s.storage.ListConflicts(stream.Context())
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to list conflicts: %v", err))
+	}
+
+	var protoConflicts []*adminv1.Conflict
+	for _, conflict := range conflicts {
+		if req.SliceId != nil {
+			matches := false
+			for _, id := range conflict.ConflictingSlices {
+				if id == req.GetSliceId() {
+					matches = true
+					break
+				}
+			}
+			if !matches {
+				continue
+			}
+		}
+
+		protoConflicts = append(protoConflicts, &adminv1.Conflict{
+			FileId:              conflict.FileID,
+			ConflictingSliceIds: conflict.ConflictingSlices,
+		})
+	}
+
+	if err := stream.Send(&adminv1.ConflictUpdate{NewConflicts: protoConflicts}); err != nil {
+		return status.Error(codes.Unavailable, fmt.Sprintf("failed to stream conflicts: %v", err))
+	}
+
 	return nil
 }

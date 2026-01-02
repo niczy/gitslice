@@ -16,6 +16,7 @@ import (
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -163,6 +164,63 @@ func extractChangesetID(output string) string {
 		return ""
 	}
 	return matches[1]
+}
+
+func extractCommitHash(output string) string {
+	re := regexp.MustCompile(`New commit: ([^\n]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
+func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(sliceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial slice service: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return slicev1.NewSliceServiceClient(conn)
+}
+
+func newAdminClient(t *testing.T) adminv1.AdminServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(adminServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial admin service: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return adminv1.NewAdminServiceClient(conn)
+}
+
+func resolveAllConflicts(ctx context.Context, t *testing.T, client adminv1.AdminServiceClient) {
+	resp, err := client.GetConflicts(ctx, &adminv1.ConflictsRequest{})
+	if err != nil {
+		t.Fatalf("failed to list conflicts: %v", err)
+	}
+
+	for _, conflict := range resp.Conflicts {
+		preferred := ""
+		if len(conflict.ConflictingSliceIds) > 0 {
+			preferred = conflict.ConflictingSliceIds[0]
+		}
+
+		if _, err := client.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{FileId: conflict.FileId, PreferredSliceId: preferred}); err != nil {
+			t.Fatalf("failed to resolve conflict for %s: %v", conflict.FileId, err)
+		}
+	}
 }
 
 func TestChangesetWorkflowEndToEnd(t *testing.T) {
@@ -331,5 +389,321 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 	}
 	if conflictsResp.TotalConflicts != 0 {
 		t.Fatalf("expected no conflicts after batch merge, found %d", conflictsResp.TotalConflicts)
+	}
+}
+
+func TestSliceCommitHistoryIntegration(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-history-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "history_file.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "history change", "--files", "history_file.txt")
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("failed to extract changeset ID from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected merge success, got: %s", output)
+	}
+
+	commitHash := extractCommitHash(output)
+	if commitHash == "" {
+		t.Fatalf("expected commit hash in merge output, got: %s", output)
+	}
+
+	sliceClient := newSliceClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	historyResp, err := sliceClient.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceID, Limit: 5})
+	if err != nil {
+		t.Fatalf("failed to fetch slice commits: %v", err)
+	}
+
+	if len(historyResp.Commits) == 0 {
+		t.Fatalf("expected at least one commit in history")
+	}
+
+	if historyResp.Commits[0].CommitHash != commitHash {
+		t.Fatalf("expected latest commit %s, got %s", commitHash, historyResp.Commits[0].CommitHash)
+	}
+	if historyResp.Commits[0].Message != "history change" {
+		t.Fatalf("expected commit message 'history change', got %q", historyResp.Commits[0].Message)
+	}
+}
+
+func TestGlobalStateTrackingIntegration(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-global-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "global_state.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("expected slice creation output, got: %s", output)
+	}
+
+	adminClient := newAdminClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resolveAllConflicts(ctx, t, adminClient)
+
+	mergeResp, err := adminClient.BatchMerge(ctx, &adminv1.BatchMergeRequest{})
+	if err != nil {
+		t.Fatalf("batch merge failed: %v", err)
+	}
+
+	stateResp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to get global state: %v", err)
+	}
+
+	if stateResp.GlobalCommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected global commit hash %s, got %s", mergeResp.GlobalCommitHash, stateResp.GlobalCommitHash)
+	}
+	if len(stateResp.History) == 0 {
+		t.Fatalf("expected global history to include merge commit")
+	}
+	if stateResp.History[0].CommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected latest history commit %s, got %s", mergeResp.GlobalCommitHash, stateResp.History[0].CommitHash)
+	}
+
+	foundSlice := false
+	for _, id := range stateResp.History[0].MergedSliceIds {
+		if id == sliceID {
+			foundSlice = true
+			break
+		}
+	}
+	if !foundSlice {
+		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
+	}
+
+	sliceClient := newSliceClient(t)
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	if err != nil {
+		t.Fatalf("failed to get root slice state: %v", err)
+	}
+
+	if rootState.LatestCommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected root head to match global commit hash %s, got %s", mergeResp.GlobalCommitHash, rootState.LatestCommitHash)
+	}
+}
+
+func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adminClient := newAdminClient(t)
+	sliceClient := newSliceClient(t)
+
+	sharedFile := fmt.Sprintf("lock-shared-%d.txt", time.Now().UnixNano())
+	sliceA := fmt.Sprintf("lock-a-%d", time.Now().UnixNano())
+	sliceB := fmt.Sprintf("lock-b-%d", time.Now().UnixNano())
+
+	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceA, Name: "LockA", Files: []string{sharedFile}}); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceB, Name: "LockB", Files: []string{sharedFile}}); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+
+	if _, err := adminClient.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{FileId: sharedFile, PreferredSliceId: sliceA}); err != nil {
+		t.Fatalf("failed to resolve conflict to slice A: %v", err)
+	}
+
+	changeset, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        sliceA,
+		BaseCommitHash: "",
+		ModifiedFiles:  []string{sharedFile},
+		Author:         "tester",
+		Message:        "lock test",
+	})
+	if err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	mergeResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: changeset.ChangesetId})
+	if err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+	if mergeResp.Status != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got status %v", mergeResp.Status)
+	}
+	if mergeResp.NewCommitHash == "" {
+		t.Fatalf("expected new commit hash from merge")
+	}
+
+	stateResp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read global state: %v", err)
+	}
+	if stateResp.GlobalCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected global head %s to reflect slice promotion, got %s", mergeResp.NewCommitHash, stateResp.GlobalCommitHash)
+	}
+
+	promoted := false
+	if len(stateResp.History) > 0 {
+		for _, id := range stateResp.History[0].MergedSliceIds {
+			if id == sliceA {
+				promoted = true
+				break
+			}
+		}
+	}
+	if !promoted {
+		t.Fatalf("expected promoted slice %s to appear in global history", sliceA)
+	}
+
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	if err != nil {
+		t.Fatalf("failed to fetch root slice state: %v", err)
+	}
+	if rootState.LatestCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected root slice head %s, got %s", mergeResp.NewCommitHash, rootState.LatestCommitHash)
+	}
+
+	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "should conflict"})
+	if err != nil {
+		t.Fatalf("failed to create conflicting changeset: %v", err)
+	}
+	conflictResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: otherChange.ChangesetId})
+	if err != nil {
+		t.Fatalf("expected merge response despite lock, got error: %v", err)
+	}
+	if conflictResp.Status != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
+		t.Fatalf("expected conflict status for locked file merge, got %v", conflictResp.Status)
+	}
+}
+
+func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	adminClient := newAdminClient(t)
+	sliceClient := newSliceClient(t)
+
+	initialState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read initial global state: %v", err)
+	}
+
+	const mergeCount = 5
+	slices := make([]string, 0, mergeCount)
+	changesets := make([]string, 0, mergeCount)
+	commits := make(map[string]string)
+
+	for i := 0; i < mergeCount; i++ {
+		file := fmt.Sprintf("concurrency-%d-%d.txt", i, time.Now().UnixNano())
+		sliceID := fmt.Sprintf("concurrency-slice-%d-%d", i, time.Now().UnixNano())
+		slices = append(slices, sliceID)
+
+		if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}}); err != nil {
+			t.Fatalf("failed to create slice %d: %v", i, err)
+		}
+
+		cs, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceID, ModifiedFiles: []string{file}, Message: fmt.Sprintf("change-%d", i)})
+		if err != nil {
+			t.Fatalf("failed to create changeset for slice %d: %v", i, err)
+		}
+		changesets = append(changesets, cs.ChangesetId)
+	}
+
+	start := make(chan struct{})
+	results := make(chan struct {
+		sliceID string
+		resp    *slicev1.MergeChangesetResponse
+		err     error
+	}, mergeCount)
+
+	mergeSlice := func(sliceID, changesetID string) {
+		<-start
+		resp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: changesetID})
+		results <- struct {
+			sliceID string
+			resp    *slicev1.MergeChangesetResponse
+			err     error
+		}{sliceID: sliceID, resp: resp, err: err}
+	}
+
+	for i := 0; i < mergeCount; i++ {
+		go mergeSlice(slices[i], changesets[i])
+	}
+	close(start)
+
+	for i := 0; i < mergeCount; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("merge failed for %s: %v", result.sliceID, result.err)
+		}
+		if result.resp.Status != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+			t.Fatalf("expected merge success for %s, got %v", result.sliceID, result.resp.Status)
+		}
+		commits[result.sliceID] = result.resp.NewCommitHash
+	}
+
+	for _, sliceID := range slices {
+		if commits[sliceID] == "" {
+			t.Fatalf("expected commit hash for %s", sliceID)
+		}
+	}
+
+	globalState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read global state after merges: %v", err)
+	}
+
+	if len(globalState.History) < len(initialState.History)+mergeCount {
+		t.Fatalf("expected at least %d history entries after concurrent merges, got %d", len(initialState.History)+mergeCount, len(globalState.History))
+	}
+
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	if err != nil {
+		t.Fatalf("failed to fetch root slice state: %v", err)
+	}
+	if rootState.LatestCommitHash != globalState.GlobalCommitHash {
+		t.Fatalf("expected root slice head %s to match global %s", rootState.LatestCommitHash, globalState.GlobalCommitHash)
+	}
+
+	historyCommits := make(map[string][]string)
+	for _, entry := range globalState.History {
+		historyCommits[entry.CommitHash] = entry.MergedSliceIds
+	}
+
+	for sliceID, commitHash := range commits {
+		mergedSlices, ok := historyCommits[commitHash]
+		if !ok {
+			t.Fatalf("expected commit %s for slice %s to appear in global history", commitHash, sliceID)
+		}
+		foundSlice := false
+		for _, id := range mergedSlices {
+			if id == sliceID {
+				foundSlice = true
+				break
+			}
+		}
+		if !foundSlice {
+			t.Fatalf("expected slice %s to be recorded in history entry %s", sliceID, commitHash)
+		}
+	}
+
+	for sliceID, expectedCommit := range commits {
+		state, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
+		if err != nil {
+			t.Fatalf("failed to fetch slice %s state: %v", sliceID, err)
+		}
+		if state.LatestCommitHash != expectedCommit {
+			t.Fatalf("expected slice %s head %s, got %s", sliceID, expectedCommit, state.LatestCommitHash)
+		}
 	}
 }

@@ -14,6 +14,7 @@ var (
 	ErrChangesetNotFound  = errors.New("changeset not found")
 	ErrEntryNotFound      = errors.New("entry not found")
 	ErrEntryExists        = errors.New("entry already exists")
+	ErrLockHeld           = errors.New("resource locked")
 )
 
 // Storage defines the interface for data storage operations
@@ -29,6 +30,8 @@ type Storage interface {
 	UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error
 	GetRootSlice(ctx context.Context) (*models.Slice, error)
 	InitializeRootSlice(ctx context.Context) error
+	AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error
+	ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error)
 
 	// File indexing
 	AddFileToSlice(ctx context.Context, fileID, sliceID string) error
@@ -36,6 +39,8 @@ type Storage interface {
 	RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error
 	ListConflicts(ctx context.Context) ([]*models.FileConflict, error)
 	ResolveConflict(ctx context.Context, fileID, preferredSliceID string) (*models.FileConflict, error)
+	LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error
+	UnlockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string)
 
 	// Changesets
 	CreateChangeset(ctx context.Context, changeset *models.Changeset) error
@@ -54,6 +59,10 @@ type Storage interface {
 	ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error)
 	UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error
 	DeleteEntry(ctx context.Context, entryID string) error
+
+	// Global state
+	GetGlobalState(ctx context.Context) (*models.GlobalState, error)
+	UpdateGlobalState(ctx context.Context, state *models.GlobalState) error
 
 	// Health check
 	Ping(ctx context.Context) error
