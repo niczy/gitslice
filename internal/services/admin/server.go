@@ -102,10 +102,55 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.ConflictsRequest) (*adminv1.ConflictsResponse, error) {
 	log.Printf("GetConflicts called: slice_id=%v", req.SliceId)
 
-	// TODO: Implement conflict detection
+	conflicts, err := s.storage.ListConflicts(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list conflicts: %v", err))
+	}
+
+	var protoConflicts []*adminv1.Conflict
+	for _, conflict := range conflicts {
+		if req.SliceId != nil {
+			contains := false
+			for _, id := range conflict.SliceIDs {
+				if id == req.GetSliceId() {
+					contains = true
+					break
+				}
+			}
+			if !contains {
+				continue
+			}
+		}
+
+		protoConflicts = append(protoConflicts, &adminv1.Conflict{
+			FileId:              conflict.FileID,
+			ConflictingSliceIds: conflict.SliceIDs,
+		})
+	}
+
 	return &adminv1.ConflictsResponse{
-		Conflicts:      []*adminv1.Conflict{},
-		TotalConflicts: 0,
+		Conflicts:      protoConflicts,
+		TotalConflicts: int32(len(protoConflicts)),
+	}, nil
+}
+
+func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.ResolveConflictRequest) (*adminv1.ResolveConflictResponse, error) {
+	log.Printf("ResolveConflict called: file_id=%s preferred_slice_id=%s", req.FileId, req.PreferredSliceId)
+
+	if req.FileId == "" {
+		return nil, status.Error(codes.InvalidArgument, "file_id is required")
+	}
+
+	conflict, err := s.storage.ResolveConflict(ctx, req.FileId, req.PreferredSliceId)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve conflict: %v", err))
+	}
+
+	return &adminv1.ResolveConflictResponse{
+		ResolvedConflict: &adminv1.Conflict{
+			FileId:              conflict.FileID,
+			ConflictingSliceIds: conflict.SliceIDs,
+		},
 	}, nil
 }
 

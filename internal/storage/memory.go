@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -235,6 +236,68 @@ func (s *InMemoryStorage) RemoveFileFromSlice(ctx context.Context, fileID, slice
 		}
 	}
 	return nil
+}
+
+// ListConflicts returns files that are associated with more than one slice.
+func (s *InMemoryStorage) ListConflicts(ctx context.Context) ([]*models.FileConflict, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var conflicts []*models.FileConflict
+	for fileID, slices := range s.fileIndex {
+		if len(slices) < 2 {
+			continue
+		}
+
+		var sliceIDs []string
+		for id := range slices {
+			sliceIDs = append(sliceIDs, id)
+		}
+		sort.Strings(sliceIDs)
+
+		conflicts = append(conflicts, &models.FileConflict{
+			FileID:   fileID,
+			SliceIDs: sliceIDs,
+		})
+	}
+
+	return conflicts, nil
+}
+
+// ResolveConflict keeps the preferred slice mapped to the file and removes other associations.
+func (s *InMemoryStorage) ResolveConflict(ctx context.Context, fileID, preferredSliceID string) (*models.FileConflict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slices, exists := s.fileIndex[fileID]
+	if !exists {
+		return &models.FileConflict{FileID: fileID, SliceIDs: []string{}}, nil
+	}
+
+	updated := make(map[string]bool)
+	if preferredSliceID != "" {
+		if _, ok := slices[preferredSliceID]; ok {
+			updated[preferredSliceID] = true
+		}
+	}
+
+	if len(updated) == 0 && len(slices) > 0 {
+		// Default to keeping the first slice if preference was unknown
+		for sliceID := range slices {
+			updated[sliceID] = true
+			break
+		}
+	}
+
+	s.fileIndex[fileID] = updated
+
+	var remaining []string
+	for id := range updated {
+		remaining = append(remaining, id)
+	}
+	sort.Strings(remaining)
+
+	return &models.FileConflict{FileID: fileID, SliceIDs: remaining}, nil
 }
 
 // CreateChangeset stores a new changeset
