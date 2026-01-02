@@ -172,7 +172,9 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "initial change", "--files", "main.go,README.md")
+	// Use unique file names to avoid conflicts with other tests
+	uniqueFile := fmt.Sprintf("integration_%d.go", time.Now().UnixNano())
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "initial change", "--files", uniqueFile)
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("Failed to extract changeset ID from output: %s", output)
