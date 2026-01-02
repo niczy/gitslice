@@ -1,4 +1,4 @@
-.PHONY: install proto build build-slice build-admin build-cli start-servers test clean
+.PHONY: install proto build build-slice build-admin build-cli start-servers test clean install_gs
 
 GOPATH := $(shell go env GOPATH)
 
@@ -35,3 +35,6 @@ test:
 
 clean:
 	rm -f slice_service_server admin_service_server gs_cli/gs_cli
+
+install_gs: build-cli
+	cp gs_cli/gs_cli /usr/local/bin/gs
