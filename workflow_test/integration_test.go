@@ -1,4 +1,4 @@
-package workflow_test
+package workflow
 
 import (
 	"context"
