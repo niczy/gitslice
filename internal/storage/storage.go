@@ -29,6 +29,8 @@ type Storage interface {
 	UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error
 	GetRootSlice(ctx context.Context) (*models.Slice, error)
 	InitializeRootSlice(ctx context.Context) error
+	AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error
+	ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error)
 
 	// File indexing
 	AddFileToSlice(ctx context.Context, fileID, sliceID string) error
@@ -54,6 +56,10 @@ type Storage interface {
 	ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error)
 	UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error
 	DeleteEntry(ctx context.Context, entryID string) error
+
+	// Global state
+	GetGlobalState(ctx context.Context) (*models.GlobalState, error)
+	UpdateGlobalState(ctx context.Context, state *models.GlobalState) error
 
 	// Health check
 	Ping(ctx context.Context) error

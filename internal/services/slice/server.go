@@ -208,10 +208,18 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 
 	metadata, err := s.storage.GetSliceMetadata(ctx, cs.SliceID)
 	if err == nil {
+		parentHash := metadata.HeadCommitHash
 		metadata.HeadCommitHash = newCommit
 		metadata.ModifiedFiles = cs.ModifiedFiles
 		metadata.ModifiedFilesCount = len(cs.ModifiedFiles)
 		_ = s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata)
+
+		_ = s.storage.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
+			CommitHash: newCommit,
+			ParentHash: parentHash,
+			Timestamp:  now,
+			Message:    cs.Message,
+		})
 	}
 
 	return &slicev1.MergeChangesetResponse{
@@ -247,10 +255,25 @@ func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.R
 func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.CommitHistoryRequest) (*slicev1.CommitHistoryResponse, error) {
 	log.Printf("GetSliceCommits called: slice_id=%s", req.SliceId)
 
-	// TODO: Implement commit history
-	return &slicev1.CommitHistoryResponse{
-		Commits: []*slicev1.CommitInfo{},
-	}, nil
+	commits, err := s.storage.ListSliceCommits(ctx, req.SliceId, int(req.Limit), req.FromCommitHash)
+	if err != nil {
+		if err == storage.ErrSliceNotFound {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list commits: %v", err))
+	}
+
+	response := &slicev1.CommitHistoryResponse{}
+	for _, commit := range commits {
+		response.Commits = append(response.Commits, &slicev1.CommitInfo{
+			CommitHash: commit.CommitHash,
+			Timestamp:  commit.Timestamp.Unix(),
+			ParentHash: commit.ParentHash,
+			Message:    commit.Message,
+		})
+	}
+
+	return response, nil
 }
 
 func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.StateRequest) (*slicev1.StateResponse, error) {

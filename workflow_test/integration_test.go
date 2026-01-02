@@ -16,6 +16,7 @@ import (
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -163,6 +164,63 @@ func extractChangesetID(output string) string {
 		return ""
 	}
 	return matches[1]
+}
+
+func extractCommitHash(output string) string {
+	re := regexp.MustCompile(`New commit: ([^\n]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
+func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(sliceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial slice service: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return slicev1.NewSliceServiceClient(conn)
+}
+
+func newAdminClient(t *testing.T) adminv1.AdminServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(adminServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial admin service: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return adminv1.NewAdminServiceClient(conn)
+}
+
+func resolveAllConflicts(ctx context.Context, t *testing.T, client adminv1.AdminServiceClient) {
+	resp, err := client.GetConflicts(ctx, &adminv1.ConflictsRequest{})
+	if err != nil {
+		t.Fatalf("failed to list conflicts: %v", err)
+	}
+
+	for _, conflict := range resp.Conflicts {
+		preferred := ""
+		if len(conflict.ConflictingSliceIds) > 0 {
+			preferred = conflict.ConflictingSliceIds[0]
+		}
+
+		if _, err := client.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{FileId: conflict.FileId, PreferredSliceId: preferred}); err != nil {
+			t.Fatalf("failed to resolve conflict for %s: %v", conflict.FileId, err)
+		}
+	}
 }
 
 func TestChangesetWorkflowEndToEnd(t *testing.T) {
@@ -331,5 +389,113 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 	}
 	if conflictsResp.TotalConflicts != 0 {
 		t.Fatalf("expected no conflicts after batch merge, found %d", conflictsResp.TotalConflicts)
+	}
+}
+
+func TestSliceCommitHistoryIntegration(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-history-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "history_file.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "history change", "--files", "history_file.txt")
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("failed to extract changeset ID from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected merge success, got: %s", output)
+	}
+
+	commitHash := extractCommitHash(output)
+	if commitHash == "" {
+		t.Fatalf("expected commit hash in merge output, got: %s", output)
+	}
+
+	sliceClient := newSliceClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	historyResp, err := sliceClient.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceID, Limit: 5})
+	if err != nil {
+		t.Fatalf("failed to fetch slice commits: %v", err)
+	}
+
+	if len(historyResp.Commits) == 0 {
+		t.Fatalf("expected at least one commit in history")
+	}
+
+	if historyResp.Commits[0].CommitHash != commitHash {
+		t.Fatalf("expected latest commit %s, got %s", commitHash, historyResp.Commits[0].CommitHash)
+	}
+	if historyResp.Commits[0].Message != "history change" {
+		t.Fatalf("expected commit message 'history change', got %q", historyResp.Commits[0].Message)
+	}
+}
+
+func TestGlobalStateTrackingIntegration(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-global-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "global_state.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("expected slice creation output, got: %s", output)
+	}
+
+	adminClient := newAdminClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resolveAllConflicts(ctx, t, adminClient)
+
+	mergeResp, err := adminClient.BatchMerge(ctx, &adminv1.BatchMergeRequest{})
+	if err != nil {
+		t.Fatalf("batch merge failed: %v", err)
+	}
+
+	stateResp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to get global state: %v", err)
+	}
+
+	if stateResp.GlobalCommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected global commit hash %s, got %s", mergeResp.GlobalCommitHash, stateResp.GlobalCommitHash)
+	}
+	if len(stateResp.History) == 0 {
+		t.Fatalf("expected global history to include merge commit")
+	}
+	if stateResp.History[0].CommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected latest history commit %s, got %s", mergeResp.GlobalCommitHash, stateResp.History[0].CommitHash)
+	}
+
+	foundSlice := false
+	for _, id := range stateResp.History[0].MergedSliceIds {
+		if id == sliceID {
+			foundSlice = true
+			break
+		}
+	}
+	if !foundSlice {
+		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
+	}
+
+	sliceClient := newSliceClient(t)
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	if err != nil {
+		t.Fatalf("failed to get root slice state: %v", err)
+	}
+
+	if rootState.LatestCommitHash != mergeResp.GlobalCommitHash {
+		t.Fatalf("expected root head to match global commit hash %s, got %s", mergeResp.GlobalCommitHash, rootState.LatestCommitHash)
 	}
 }
