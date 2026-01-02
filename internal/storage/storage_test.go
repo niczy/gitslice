@@ -188,3 +188,58 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("Ping failed: %v", err)
 	}
 }
+
+func TestRedisStorageRebuildIndexes(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := NewInMemoryObjectStore()
+	rs := NewRedisStorage(client, store, "rebuild")
+	t.Cleanup(func() {
+		_ = client.Close()
+		mr.Close()
+	})
+
+	slice1 := &models.Slice{ID: "slice-1", Name: "Alpha", Files: []string{"file-1"}}
+	slice2 := &models.Slice{ID: "slice-2", Name: "Beta", Files: []string{"file-1", "file-2"}}
+	if err := rs.CreateSlice(ctx, slice1); err != nil {
+		t.Fatalf("CreateSlice 1 failed: %v", err)
+	}
+	if err := rs.CreateSlice(ctx, slice2); err != nil {
+		t.Fatalf("CreateSlice 2 failed: %v", err)
+	}
+
+	// Simulate index loss after a restart by removing the catalog and file indexes.
+	fileIdxKeys, err := client.Keys(ctx, rs.key("file_index", "*")).Result()
+	if err != nil {
+		t.Fatalf("listing file index keys failed: %v", err)
+	}
+	if len(fileIdxKeys) > 0 {
+		if err := client.Del(ctx, fileIdxKeys...).Err(); err != nil {
+			t.Fatalf("deleting file index keys failed: %v", err)
+		}
+	}
+	if err := client.Del(ctx, rs.key("slices")).Err(); err != nil {
+		t.Fatalf("deleting slice catalog failed: %v", err)
+	}
+
+	if err := rs.RebuildIndexes(ctx); err != nil {
+		t.Fatalf("RebuildIndexes failed: %v", err)
+	}
+
+	slices, err := rs.ListSlices(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListSlices failed: %v", err)
+	}
+	if len(slices) != 2 {
+		t.Fatalf("expected 2 slices after rebuild, got %d", len(slices))
+	}
+
+	mapped, err := rs.GetActiveSlicesForFile(ctx, "file-1")
+	if err != nil {
+		t.Fatalf("GetActiveSlicesForFile failed: %v", err)
+	}
+	if len(mapped) != 2 {
+		t.Fatalf("expected file-1 to map to 2 slices after rebuild, got %d", len(mapped))
+	}
+}

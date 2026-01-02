@@ -42,6 +42,9 @@ type Storage interface {
 	LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error
 	UnlockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string)
 
+	// Index maintenance
+	RebuildIndexes(ctx context.Context) error
+
 	// Changesets
 	CreateChangeset(ctx context.Context, changeset *models.Changeset) error
 	GetChangeset(ctx context.Context, changesetID string) (*models.Changeset, error)

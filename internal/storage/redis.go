@@ -443,6 +443,87 @@ func (s *RedisStorage) ResolveConflict(ctx context.Context, fileID, preferredSli
 	return &models.FileConflict{FileID: fileID, ConflictingSlices: remaining}, nil
 }
 
+// RebuildIndexes reconstructs file-to-slice mappings and the slice catalog from stored slice definitions.
+// This is useful when Redis has lost volatile index keys after a restart while slice definitions remain intact.
+func (s *RedisStorage) RebuildIndexes(ctx context.Context) error {
+	ctx = ensureCtx(ctx)
+
+	fileMembership := make(map[string][]string)
+	sliceIDs := make(map[string]struct{})
+
+	var cursor uint64
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, s.key("slice", "*"), 100).Result()
+		if err != nil {
+			return err
+		}
+
+		for _, key := range keys {
+			raw, err := s.rdb.Get(ctx, key).Result()
+			if err != nil {
+				return err
+			}
+
+			var slice models.Slice
+			if err := unmarshal(raw, &slice); err != nil {
+				return err
+			}
+			sliceIDs[slice.ID] = struct{}{}
+			for _, fileID := range slice.Files {
+				fileMembership[fileID] = append(fileMembership[fileID], slice.ID)
+			}
+		}
+
+		if next == 0 || next == cursor {
+			break
+		}
+		cursor = next
+	}
+
+	pipe := s.rdb.TxPipeline()
+
+	// Rebuild the slice catalog.
+	pipe.Del(ctx, s.key("slices"))
+	if len(sliceIDs) > 0 {
+		members := make([]any, 0, len(sliceIDs))
+		for id := range sliceIDs {
+			members = append(members, id)
+		}
+		pipe.SAdd(ctx, s.key("slices"), members...)
+	}
+
+	// Clear and repopulate file index sets.
+	cursor = 0
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, s.key("file_index", "*"), 100).Result()
+		if err != nil {
+			pipe.Discard()
+			return err
+		}
+		if len(keys) > 0 {
+			pipe.Del(ctx, keys...)
+		}
+		if next == 0 || next == cursor {
+			break
+		}
+		cursor = next
+	}
+
+	for fileID, owners := range fileMembership {
+		if len(owners) == 0 {
+			continue
+		}
+		members := make([]any, 0, len(owners))
+		for _, id := range owners {
+			members = append(members, id)
+		}
+		pipe.SAdd(ctx, s.key("file_index", fileID), members...)
+	}
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 // CreateChangeset stores a new changeset.
 func (s *RedisStorage) CreateChangeset(ctx context.Context, changeset *models.Changeset) error {
 	ctx = ensureCtx(ctx)
