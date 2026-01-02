@@ -209,9 +209,25 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 		t.Fatalf("Expected root slice info, got: %s", output)
 	}
 
-	newSliceID := fmt.Sprintf("slice-fork-%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, workdir, "init", "root_slice")
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("Expected init output, got: %s", output)
+	}
 
-	output = runCLIOrFail(t, workdir, "fork", newSliceID, "src", "--parent", "root_slice")
+	srcFolder := fmt.Sprintf("src_%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Create src folder", "--files", srcFolder)
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("Failed to extract changeset ID from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("Expected merge success, got: %s", output)
+	}
+
+	newSliceID := fmt.Sprintf("slice-fork-%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, workdir, "fork", newSliceID, srcFolder, "--parent", "root_slice")
 	if !strings.Contains(output, "Created slice: "+newSliceID) {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
@@ -219,5 +235,23 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	output = runCLIOrFail(t, workdir, "slice", "info", newSliceID)
 	if !strings.Contains(output, "Slice: "+newSliceID) {
 		t.Fatalf("Expected slice info output, got: %s", output)
+	}
+
+	newSliceWorkdir := t.TempDir()
+	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("Expected init output, got: %s", output)
+	}
+
+	subFolder := fmt.Sprintf("components_%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "create", "--message", "Create components subfolder", "--files", subFolder)
+	changesetID = extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("Failed to extract changeset ID from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("Expected merge success for subfolder, got: %s", output)
 	}
 }
