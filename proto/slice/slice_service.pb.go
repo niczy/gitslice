@@ -1958,6 +1958,234 @@ func (x *StateResponse) GetLastModified() int64 {
 	return 0
 }
 
+// Request to get root slice info
+type GetRootSliceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRootSliceRequest) Reset() {
+	*x = GetRootSliceRequest{}
+	mi := &file_slice_service_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRootSliceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRootSliceRequest) ProtoMessage() {}
+
+func (x *GetRootSliceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_slice_service_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRootSliceRequest.ProtoReflect.Descriptor instead.
+func (*GetRootSliceRequest) Descriptor() ([]byte, []int) {
+	return file_slice_service_proto_rawDescGZIP(), []int{27}
+}
+
+// Response with root slice info
+type GetRootSliceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SliceId       string                 `protobuf:"bytes,1,opt,name=slice_id,json=sliceId,proto3" json:"slice_id,omitempty"`
+	CommitHash    string                 `protobuf:"bytes,2,opt,name=commit_hash,json=commitHash,proto3" json:"commit_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRootSliceResponse) Reset() {
+	*x = GetRootSliceResponse{}
+	mi := &file_slice_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRootSliceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRootSliceResponse) ProtoMessage() {}
+
+func (x *GetRootSliceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_slice_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRootSliceResponse.ProtoReflect.Descriptor instead.
+func (*GetRootSliceResponse) Descriptor() ([]byte, []int) {
+	return file_slice_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *GetRootSliceResponse) GetSliceId() string {
+	if x != nil {
+		return x.SliceId
+	}
+	return ""
+}
+
+func (x *GetRootSliceResponse) GetCommitHash() string {
+	if x != nil {
+		return x.CommitHash
+	}
+	return ""
+}
+
+// Request to create a slice from an existing folder
+type CreateSliceFromFolderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ParentSliceId string                 `protobuf:"bytes,1,opt,name=parent_slice_id,json=parentSliceId,proto3" json:"parent_slice_id,omitempty"`
+	FolderPath    string                 `protobuf:"bytes,2,opt,name=folder_path,json=folderPath,proto3" json:"folder_path,omitempty"`
+	NewSliceId    string                 `protobuf:"bytes,3,opt,name=new_slice_id,json=newSliceId,proto3" json:"new_slice_id,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Description   string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSliceFromFolderRequest) Reset() {
+	*x = CreateSliceFromFolderRequest{}
+	mi := &file_slice_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSliceFromFolderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSliceFromFolderRequest) ProtoMessage() {}
+
+func (x *CreateSliceFromFolderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_slice_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSliceFromFolderRequest.ProtoReflect.Descriptor instead.
+func (*CreateSliceFromFolderRequest) Descriptor() ([]byte, []int) {
+	return file_slice_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *CreateSliceFromFolderRequest) GetParentSliceId() string {
+	if x != nil {
+		return x.ParentSliceId
+	}
+	return ""
+}
+
+func (x *CreateSliceFromFolderRequest) GetFolderPath() string {
+	if x != nil {
+		return x.FolderPath
+	}
+	return ""
+}
+
+func (x *CreateSliceFromFolderRequest) GetNewSliceId() string {
+	if x != nil {
+		return x.NewSliceId
+	}
+	return ""
+}
+
+func (x *CreateSliceFromFolderRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateSliceFromFolderRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+// Response for slice creation from folder
+type CreateSliceFromFolderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SliceId       string                 `protobuf:"bytes,1,opt,name=slice_id,json=sliceId,proto3" json:"slice_id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Files         []string               `protobuf:"bytes,3,rep,name=files,proto3" json:"files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSliceFromFolderResponse) Reset() {
+	*x = CreateSliceFromFolderResponse{}
+	mi := &file_slice_service_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSliceFromFolderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSliceFromFolderResponse) ProtoMessage() {}
+
+func (x *CreateSliceFromFolderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_slice_service_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSliceFromFolderResponse.ProtoReflect.Descriptor instead.
+func (*CreateSliceFromFolderResponse) Descriptor() ([]byte, []int) {
+	return file_slice_service_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *CreateSliceFromFolderResponse) GetSliceId() string {
+	if x != nil {
+		return x.SliceId
+	}
+	return ""
+}
+
+func (x *CreateSliceFromFolderResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CreateSliceFromFolderResponse) GetFiles() []string {
+	if x != nil {
+		return x.Files
+	}
+	return nil
+}
+
 var File_slice_service_proto protoreflect.FileDescriptor
 
 const file_slice_service_proto_rawDesc = "" +
@@ -2084,7 +2312,24 @@ const file_slice_service_proto_rawDesc = "" +
 	"\rStateResponse\x12,\n" +
 	"\x12latest_commit_hash\x18\x01 \x01(\tR\x10latestCommitHash\x12%\n" +
 	"\x0emodified_files\x18\x02 \x03(\tR\rmodifiedFiles\x12#\n" +
-	"\rlast_modified\x18\x03 \x01(\x03R\flastModified*J\n" +
+	"\rlast_modified\x18\x03 \x01(\x03R\flastModified\"\x15\n" +
+	"\x13GetRootSliceRequest\"R\n" +
+	"\x14GetRootSliceResponse\x12\x19\n" +
+	"\bslice_id\x18\x01 \x01(\tR\asliceId\x12\x1f\n" +
+	"\vcommit_hash\x18\x02 \x01(\tR\n" +
+	"commitHash\"\xbf\x01\n" +
+	"\x1cCreateSliceFromFolderRequest\x12&\n" +
+	"\x0fparent_slice_id\x18\x01 \x01(\tR\rparentSliceId\x12\x1f\n" +
+	"\vfolder_path\x18\x02 \x01(\tR\n" +
+	"folderPath\x12 \n" +
+	"\fnew_slice_id\x18\x03 \x01(\tR\n" +
+	"newSliceId\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\"h\n" +
+	"\x1dCreateSliceFromFolderResponse\x12\x19\n" +
+	"\bslice_id\x18\x01 \x01(\tR\asliceId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +
+	"\x05files\x18\x03 \x03(\tR\x05files*J\n" +
 	"\n" +
 	"ObjectType\x12\b\n" +
 	"\x04BLOB\x10\x00\x12\b\n" +
@@ -2111,7 +2356,7 @@ const file_slice_service_proto_rawDesc = "" +
 	"\fReviewStatus\x12\x13\n" +
 	"\x0fREADY_FOR_MERGE\x10\x00\x12\x10\n" +
 	"\fNEEDS_REBASE\x10\x01\x12\x11\n" +
-	"\rHAS_CONFLICTS\x10\x022\xc3\x06\n" +
+	"\rHAS_CONFLICTS\x10\x022\xfc\a\n" +
 	"\fSliceService\x12F\n" +
 	"\rCheckoutSlice\x12\x19.slice.v1.CheckoutRequest\x1a\x1a.slice.v1.CheckoutResponse\x12V\n" +
 	"\x0fCreateChangeset\x12 .slice.v1.CreateChangesetRequest\x1a!.slice.v1.CreateChangesetResponse\x12V\n" +
@@ -2120,7 +2365,9 @@ const file_slice_service_proto_rawDesc = "" +
 	"\x0fRebaseChangeset\x12 .slice.v1.RebaseChangesetRequest\x1a!.slice.v1.RebaseChangesetResponse\x12R\n" +
 	"\x0fGetSliceCommits\x12\x1e.slice.v1.CommitHistoryRequest\x1a\x1f.slice.v1.CommitHistoryResponse\x12@\n" +
 	"\rGetSliceState\x12\x16.slice.v1.StateRequest\x1a\x17.slice.v1.StateResponse\x12S\n" +
-	"\x0eListChangesets\x12\x1f.slice.v1.ListChangesetsRequest\x1a .slice.v1.ListChangesetsResponse\x12K\n" +
+	"\x0eListChangesets\x12\x1f.slice.v1.ListChangesetsRequest\x1a .slice.v1.ListChangesetsResponse\x12M\n" +
+	"\fGetRootSlice\x12\x1d.slice.v1.GetRootSliceRequest\x1a\x1e.slice.v1.GetRootSliceResponse\x12h\n" +
+	"\x15CreateSliceFromFolder\x12&.slice.v1.CreateSliceFromFolderRequest\x1a'.slice.v1.CreateSliceFromFolderResponse\x12K\n" +
 	"\x13StreamCheckoutSlice\x12\x19.slice.v1.CheckoutRequest\x1a\x17.slice.v1.CheckoutChunk0\x01\x12V\n" +
 	"\x15StreamCreateChangeset\x12\x18.slice.v1.ChangesetChunk\x1a!.slice.v1.CreateChangesetResponse(\x01B)Z'github.com/niczy/gitslice/proto;slicev1b\x06proto3"
 
@@ -2137,40 +2384,44 @@ func file_slice_service_proto_rawDescGZIP() []byte {
 }
 
 var file_slice_service_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_slice_service_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_slice_service_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_slice_service_proto_goTypes = []any{
-	(ObjectType)(0),                 // 0: slice.v1.ObjectType
-	(MergeStatus)(0),                // 1: slice.v1.MergeStatus
-	(RebaseStatus)(0),               // 2: slice.v1.RebaseStatus
-	(ChangesetStatus)(0),            // 3: slice.v1.ChangesetStatus
-	(ReviewStatus)(0),               // 4: slice.v1.ReviewStatus
-	(*CheckoutRequest)(nil),         // 5: slice.v1.CheckoutRequest
-	(*CheckoutResponse)(nil),        // 6: slice.v1.CheckoutResponse
-	(*SliceManifest)(nil),           // 7: slice.v1.SliceManifest
-	(*FileMetadata)(nil),            // 8: slice.v1.FileMetadata
-	(*FileContent)(nil),             // 9: slice.v1.FileContent
-	(*CheckoutChunk)(nil),           // 10: slice.v1.CheckoutChunk
-	(*CreateChangesetRequest)(nil),  // 11: slice.v1.CreateChangesetRequest
-	(*CreateChangesetResponse)(nil), // 12: slice.v1.CreateChangesetResponse
-	(*ChangesetChunk)(nil),          // 13: slice.v1.ChangesetChunk
-	(*ChangesetMetadata)(nil),       // 14: slice.v1.ChangesetMetadata
-	(*Object)(nil),                  // 15: slice.v1.Object
-	(*ReviewChangesetRequest)(nil),  // 16: slice.v1.ReviewChangesetRequest
-	(*ReviewChangesetResponse)(nil), // 17: slice.v1.ReviewChangesetResponse
-	(*DiffSummary)(nil),             // 18: slice.v1.DiffSummary
-	(*MergeChangesetRequest)(nil),   // 19: slice.v1.MergeChangesetRequest
-	(*MergeChangesetResponse)(nil),  // 20: slice.v1.MergeChangesetResponse
-	(*Conflict)(nil),                // 21: slice.v1.Conflict
-	(*RebaseChangesetRequest)(nil),  // 22: slice.v1.RebaseChangesetRequest
-	(*RebaseChangesetResponse)(nil), // 23: slice.v1.RebaseChangesetResponse
-	(*ListChangesetsRequest)(nil),   // 24: slice.v1.ListChangesetsRequest
-	(*ListChangesetsResponse)(nil),  // 25: slice.v1.ListChangesetsResponse
-	(*ChangesetInfo)(nil),           // 26: slice.v1.ChangesetInfo
-	(*CommitHistoryRequest)(nil),    // 27: slice.v1.CommitHistoryRequest
-	(*CommitHistoryResponse)(nil),   // 28: slice.v1.CommitHistoryResponse
-	(*CommitInfo)(nil),              // 29: slice.v1.CommitInfo
-	(*StateRequest)(nil),            // 30: slice.v1.StateRequest
-	(*StateResponse)(nil),           // 31: slice.v1.StateResponse
+	(ObjectType)(0),                       // 0: slice.v1.ObjectType
+	(MergeStatus)(0),                      // 1: slice.v1.MergeStatus
+	(RebaseStatus)(0),                     // 2: slice.v1.RebaseStatus
+	(ChangesetStatus)(0),                  // 3: slice.v1.ChangesetStatus
+	(ReviewStatus)(0),                     // 4: slice.v1.ReviewStatus
+	(*CheckoutRequest)(nil),               // 5: slice.v1.CheckoutRequest
+	(*CheckoutResponse)(nil),              // 6: slice.v1.CheckoutResponse
+	(*SliceManifest)(nil),                 // 7: slice.v1.SliceManifest
+	(*FileMetadata)(nil),                  // 8: slice.v1.FileMetadata
+	(*FileContent)(nil),                   // 9: slice.v1.FileContent
+	(*CheckoutChunk)(nil),                 // 10: slice.v1.CheckoutChunk
+	(*CreateChangesetRequest)(nil),        // 11: slice.v1.CreateChangesetRequest
+	(*CreateChangesetResponse)(nil),       // 12: slice.v1.CreateChangesetResponse
+	(*ChangesetChunk)(nil),                // 13: slice.v1.ChangesetChunk
+	(*ChangesetMetadata)(nil),             // 14: slice.v1.ChangesetMetadata
+	(*Object)(nil),                        // 15: slice.v1.Object
+	(*ReviewChangesetRequest)(nil),        // 16: slice.v1.ReviewChangesetRequest
+	(*ReviewChangesetResponse)(nil),       // 17: slice.v1.ReviewChangesetResponse
+	(*DiffSummary)(nil),                   // 18: slice.v1.DiffSummary
+	(*MergeChangesetRequest)(nil),         // 19: slice.v1.MergeChangesetRequest
+	(*MergeChangesetResponse)(nil),        // 20: slice.v1.MergeChangesetResponse
+	(*Conflict)(nil),                      // 21: slice.v1.Conflict
+	(*RebaseChangesetRequest)(nil),        // 22: slice.v1.RebaseChangesetRequest
+	(*RebaseChangesetResponse)(nil),       // 23: slice.v1.RebaseChangesetResponse
+	(*ListChangesetsRequest)(nil),         // 24: slice.v1.ListChangesetsRequest
+	(*ListChangesetsResponse)(nil),        // 25: slice.v1.ListChangesetsResponse
+	(*ChangesetInfo)(nil),                 // 26: slice.v1.ChangesetInfo
+	(*CommitHistoryRequest)(nil),          // 27: slice.v1.CommitHistoryRequest
+	(*CommitHistoryResponse)(nil),         // 28: slice.v1.CommitHistoryResponse
+	(*CommitInfo)(nil),                    // 29: slice.v1.CommitInfo
+	(*StateRequest)(nil),                  // 30: slice.v1.StateRequest
+	(*StateResponse)(nil),                 // 31: slice.v1.StateResponse
+	(*GetRootSliceRequest)(nil),           // 32: slice.v1.GetRootSliceRequest
+	(*GetRootSliceResponse)(nil),          // 33: slice.v1.GetRootSliceResponse
+	(*CreateSliceFromFolderRequest)(nil),  // 34: slice.v1.CreateSliceFromFolderRequest
+	(*CreateSliceFromFolderResponse)(nil), // 35: slice.v1.CreateSliceFromFolderResponse
 }
 var file_slice_service_proto_depIdxs = []int32{
 	7,  // 0: slice.v1.CheckoutResponse.manifest:type_name -> slice.v1.SliceManifest
@@ -2202,20 +2453,24 @@ var file_slice_service_proto_depIdxs = []int32{
 	27, // 26: slice.v1.SliceService.GetSliceCommits:input_type -> slice.v1.CommitHistoryRequest
 	30, // 27: slice.v1.SliceService.GetSliceState:input_type -> slice.v1.StateRequest
 	24, // 28: slice.v1.SliceService.ListChangesets:input_type -> slice.v1.ListChangesetsRequest
-	5,  // 29: slice.v1.SliceService.StreamCheckoutSlice:input_type -> slice.v1.CheckoutRequest
-	13, // 30: slice.v1.SliceService.StreamCreateChangeset:input_type -> slice.v1.ChangesetChunk
-	6,  // 31: slice.v1.SliceService.CheckoutSlice:output_type -> slice.v1.CheckoutResponse
-	12, // 32: slice.v1.SliceService.CreateChangeset:output_type -> slice.v1.CreateChangesetResponse
-	17, // 33: slice.v1.SliceService.ReviewChangeset:output_type -> slice.v1.ReviewChangesetResponse
-	20, // 34: slice.v1.SliceService.MergeChangeset:output_type -> slice.v1.MergeChangesetResponse
-	23, // 35: slice.v1.SliceService.RebaseChangeset:output_type -> slice.v1.RebaseChangesetResponse
-	28, // 36: slice.v1.SliceService.GetSliceCommits:output_type -> slice.v1.CommitHistoryResponse
-	31, // 37: slice.v1.SliceService.GetSliceState:output_type -> slice.v1.StateResponse
-	25, // 38: slice.v1.SliceService.ListChangesets:output_type -> slice.v1.ListChangesetsResponse
-	10, // 39: slice.v1.SliceService.StreamCheckoutSlice:output_type -> slice.v1.CheckoutChunk
-	12, // 40: slice.v1.SliceService.StreamCreateChangeset:output_type -> slice.v1.CreateChangesetResponse
-	31, // [31:41] is the sub-list for method output_type
-	21, // [21:31] is the sub-list for method input_type
+	32, // 29: slice.v1.SliceService.GetRootSlice:input_type -> slice.v1.GetRootSliceRequest
+	34, // 30: slice.v1.SliceService.CreateSliceFromFolder:input_type -> slice.v1.CreateSliceFromFolderRequest
+	5,  // 31: slice.v1.SliceService.StreamCheckoutSlice:input_type -> slice.v1.CheckoutRequest
+	13, // 32: slice.v1.SliceService.StreamCreateChangeset:input_type -> slice.v1.ChangesetChunk
+	6,  // 33: slice.v1.SliceService.CheckoutSlice:output_type -> slice.v1.CheckoutResponse
+	12, // 34: slice.v1.SliceService.CreateChangeset:output_type -> slice.v1.CreateChangesetResponse
+	17, // 35: slice.v1.SliceService.ReviewChangeset:output_type -> slice.v1.ReviewChangesetResponse
+	20, // 36: slice.v1.SliceService.MergeChangeset:output_type -> slice.v1.MergeChangesetResponse
+	23, // 37: slice.v1.SliceService.RebaseChangeset:output_type -> slice.v1.RebaseChangesetResponse
+	28, // 38: slice.v1.SliceService.GetSliceCommits:output_type -> slice.v1.CommitHistoryResponse
+	31, // 39: slice.v1.SliceService.GetSliceState:output_type -> slice.v1.StateResponse
+	25, // 40: slice.v1.SliceService.ListChangesets:output_type -> slice.v1.ListChangesetsResponse
+	33, // 41: slice.v1.SliceService.GetRootSlice:output_type -> slice.v1.GetRootSliceResponse
+	35, // 42: slice.v1.SliceService.CreateSliceFromFolder:output_type -> slice.v1.CreateSliceFromFolderResponse
+	10, // 43: slice.v1.SliceService.StreamCheckoutSlice:output_type -> slice.v1.CheckoutChunk
+	12, // 44: slice.v1.SliceService.StreamCreateChangeset:output_type -> slice.v1.CreateChangesetResponse
+	33, // [33:45] is the sub-list for method output_type
+	21, // [21:33] is the sub-list for method input_type
 	21, // [21:21] is the sub-list for extension type_name
 	21, // [21:21] is the sub-list for extension extendee
 	0,  // [0:21] is the sub-list for field type_name
@@ -2240,7 +2495,7 @@ func file_slice_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_slice_service_proto_rawDesc), len(file_slice_service_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   27,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

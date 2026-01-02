@@ -27,6 +27,8 @@ const (
 	SliceService_GetSliceCommits_FullMethodName       = "/slice.v1.SliceService/GetSliceCommits"
 	SliceService_GetSliceState_FullMethodName         = "/slice.v1.SliceService/GetSliceState"
 	SliceService_ListChangesets_FullMethodName        = "/slice.v1.SliceService/ListChangesets"
+	SliceService_GetRootSlice_FullMethodName          = "/slice.v1.SliceService/GetRootSlice"
+	SliceService_CreateSliceFromFolder_FullMethodName = "/slice.v1.SliceService/CreateSliceFromFolder"
 	SliceService_StreamCheckoutSlice_FullMethodName   = "/slice.v1.SliceService/StreamCheckoutSlice"
 	SliceService_StreamCreateChangeset_FullMethodName = "/slice.v1.SliceService/StreamCreateChangeset"
 )
@@ -51,6 +53,10 @@ type SliceServiceClient interface {
 	GetSliceState(ctx context.Context, in *StateRequest, opts ...grpc.CallOption) (*StateResponse, error)
 	// List pending change lists for a slice
 	ListChangesets(ctx context.Context, in *ListChangesetsRequest, opts ...grpc.CallOption) (*ListChangesetsResponse, error)
+	// Get root slice info
+	GetRootSlice(ctx context.Context, in *GetRootSliceRequest, opts ...grpc.CallOption) (*GetRootSliceResponse, error)
+	// Create a new slice from an existing folder
+	CreateSliceFromFolder(ctx context.Context, in *CreateSliceFromFolderRequest, opts ...grpc.CallOption) (*CreateSliceFromFolderResponse, error)
 	// Stream checkout for large slices (server streaming)
 	StreamCheckoutSlice(ctx context.Context, in *CheckoutRequest, opts ...grpc.CallOption) (SliceService_StreamCheckoutSliceClient, error)
 	// Stream changeset creation (client streaming)
@@ -131,6 +137,24 @@ func (c *sliceServiceClient) GetSliceState(ctx context.Context, in *StateRequest
 func (c *sliceServiceClient) ListChangesets(ctx context.Context, in *ListChangesetsRequest, opts ...grpc.CallOption) (*ListChangesetsResponse, error) {
 	out := new(ListChangesetsResponse)
 	err := c.cc.Invoke(ctx, SliceService_ListChangesets_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sliceServiceClient) GetRootSlice(ctx context.Context, in *GetRootSliceRequest, opts ...grpc.CallOption) (*GetRootSliceResponse, error) {
+	out := new(GetRootSliceResponse)
+	err := c.cc.Invoke(ctx, SliceService_GetRootSlice_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sliceServiceClient) CreateSliceFromFolder(ctx context.Context, in *CreateSliceFromFolderRequest, opts ...grpc.CallOption) (*CreateSliceFromFolderResponse, error) {
+	out := new(CreateSliceFromFolderResponse)
+	err := c.cc.Invoke(ctx, SliceService_CreateSliceFromFolder_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -223,6 +247,10 @@ type SliceServiceServer interface {
 	GetSliceState(context.Context, *StateRequest) (*StateResponse, error)
 	// List pending change lists for a slice
 	ListChangesets(context.Context, *ListChangesetsRequest) (*ListChangesetsResponse, error)
+	// Get root slice info
+	GetRootSlice(context.Context, *GetRootSliceRequest) (*GetRootSliceResponse, error)
+	// Create a new slice from an existing folder
+	CreateSliceFromFolder(context.Context, *CreateSliceFromFolderRequest) (*CreateSliceFromFolderResponse, error)
 	// Stream checkout for large slices (server streaming)
 	StreamCheckoutSlice(*CheckoutRequest, SliceService_StreamCheckoutSliceServer) error
 	// Stream changeset creation (client streaming)
@@ -257,6 +285,12 @@ func (UnimplementedSliceServiceServer) GetSliceState(context.Context, *StateRequ
 }
 func (UnimplementedSliceServiceServer) ListChangesets(context.Context, *ListChangesetsRequest) (*ListChangesetsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListChangesets not implemented")
+}
+func (UnimplementedSliceServiceServer) GetRootSlice(context.Context, *GetRootSliceRequest) (*GetRootSliceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRootSlice not implemented")
+}
+func (UnimplementedSliceServiceServer) CreateSliceFromFolder(context.Context, *CreateSliceFromFolderRequest) (*CreateSliceFromFolderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateSliceFromFolder not implemented")
 }
 func (UnimplementedSliceServiceServer) StreamCheckoutSlice(*CheckoutRequest, SliceService_StreamCheckoutSliceServer) error {
 	return status.Errorf(codes.Unimplemented, "method StreamCheckoutSlice not implemented")
@@ -421,6 +455,42 @@ func _SliceService_ListChangesets_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SliceService_GetRootSlice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRootSliceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SliceServiceServer).GetRootSlice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SliceService_GetRootSlice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SliceServiceServer).GetRootSlice(ctx, req.(*GetRootSliceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SliceService_CreateSliceFromFolder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateSliceFromFolderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SliceServiceServer).CreateSliceFromFolder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SliceService_CreateSliceFromFolder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SliceServiceServer).CreateSliceFromFolder(ctx, req.(*CreateSliceFromFolderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SliceService_StreamCheckoutSlice_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(CheckoutRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -506,6 +576,14 @@ var SliceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListChangesets",
 			Handler:    _SliceService_ListChangesets_Handler,
+		},
+		{
+			MethodName: "GetRootSlice",
+			Handler:    _SliceService_GetRootSlice_Handler,
+		},
+		{
+			MethodName: "CreateSliceFromFolder",
+			Handler:    _SliceService_CreateSliceFromFolder_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

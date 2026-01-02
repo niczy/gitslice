@@ -12,6 +12,8 @@ var (
 	ErrSliceAlreadyExists = errors.New("slice already exists")
 	ErrInvalidInput       = errors.New("invalid input")
 	ErrChangesetNotFound  = errors.New("changeset not found")
+	ErrEntryNotFound      = errors.New("entry not found")
+	ErrEntryExists        = errors.New("entry already exists")
 )
 
 // Storage defines the interface for data storage operations
@@ -25,6 +27,8 @@ type Storage interface {
 	SearchSlices(ctx context.Context, query string, limit, offset int) ([]*models.Slice, error)
 	GetSliceMetadata(ctx context.Context, sliceID string) (*models.SliceMetadata, error)
 	UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error
+	GetRootSlice(ctx context.Context) (*models.Slice, error)
+	InitializeRootSlice(ctx context.Context) error
 
 	// File indexing
 	AddFileToSlice(ctx context.Context, fileID, sliceID string) error
@@ -41,6 +45,15 @@ type Storage interface {
 
 	// File content for checkout
 	GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)
+	GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error)
+
+	// Directory entries
+	AddEntry(ctx context.Context, entry *models.DirectoryEntry) error
+	GetEntry(ctx context.Context, entryID string) (*models.DirectoryEntry, error)
+	GetEntryByPath(ctx context.Context, sliceID, path string) (*models.DirectoryEntry, error)
+	ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error)
+	UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error
+	DeleteEntry(ctx context.Context, entryID string) error
 
 	// Health check
 	Ping(ctx context.Context) error

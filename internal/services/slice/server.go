@@ -333,3 +333,50 @@ func convertProtoStatusToModel(status slicev1.ChangesetStatus) models.ChangesetS
 		return models.ChangesetStatusPending
 	}
 }
+
+func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetRootSliceRequest) (*slicev1.GetRootSliceResponse, error) {
+	log.Printf("GetRootSlice called")
+
+	rootSlice, err := s.storage.GetRootSlice(ctx)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "root slice not found")
+	}
+
+	metadata, _ := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
+
+	return &slicev1.GetRootSliceResponse{
+		SliceId:    rootSlice.ID,
+		CommitHash: metadata.HeadCommitHash,
+	}, nil
+}
+
+func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *slicev1.CreateSliceFromFolderRequest) (*slicev1.CreateSliceFromFolderResponse, error) {
+	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, new_slice_id=%s",
+		req.ParentSliceId, req.FolderPath, req.NewSliceId)
+
+	parentSlice, err := s.storage.GetSlice(ctx, req.ParentSliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("parent slice not found: %s", req.ParentSliceId))
+	}
+
+	newSlice := &models.Slice{
+		ID:          req.NewSliceId,
+		Name:        req.Name,
+		Description: req.Description,
+		Files:       []string{},
+		Owners:      parentSlice.Owners,
+		CreatedBy:   "user",
+		ParentSlice: parentSlice.ID,
+		IsRoot:      false,
+	}
+
+	if err := s.storage.CreateSlice(ctx, newSlice); err != nil {
+		return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("slice already exists: %s", req.NewSliceId))
+	}
+
+	return &slicev1.CreateSliceFromFolderResponse{
+		SliceId: req.NewSliceId,
+		Status:  "created",
+		Files:   []string{},
+	}, nil
+}

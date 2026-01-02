@@ -36,6 +36,11 @@ func TestMain(m *testing.M) {
 
 	st := storage.NewInMemoryStorage()
 
+	// Initialize root slice
+	if err := st.InitializeRootSlice(nil); err != nil {
+		fmt.Printf("Warning: Failed to initialize root slice: %v\n", err)
+	}
+
 	var err error
 	sliceServiceAddr, sliceServer, err = startSliceService(st)
 	if err != nil {
@@ -193,5 +198,26 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 	output = runCLIOrFail(t, workdir, "changeset", "list", "--status", "merged")
 	if !strings.Contains(output, changesetID) {
 		t.Fatalf("Expected merged changeset in list output, got: %s", output)
+	}
+}
+
+func TestRootSliceAndForkWorkflow(t *testing.T) {
+	workdir := t.TempDir()
+
+	output := runCLIOrFail(t, workdir, "root")
+	if !strings.Contains(output, "Root Slice ID: root_slice") {
+		t.Fatalf("Expected root slice info, got: %s", output)
+	}
+
+	newSliceID := fmt.Sprintf("slice-fork-%d", time.Now().UnixNano())
+
+	output = runCLIOrFail(t, workdir, "fork", newSliceID, "src", "--parent", "root_slice")
+	if !strings.Contains(output, "Created slice: "+newSliceID) {
+		t.Fatalf("Expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "slice", "info", newSliceID)
+	if !strings.Contains(output, "Slice: "+newSliceID) {
+		t.Fatalf("Expected slice info output, got: %s", output)
 	}
 }

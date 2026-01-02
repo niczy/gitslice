@@ -76,6 +76,10 @@ func main() {
 		handleLog(ctx, cli, args[1:])
 	case "conflict":
 		handleConflictCommand(ctx, cli, args[1:])
+	case "root":
+		handleRootSlice(ctx, cli)
+	case "fork":
+		handleForkSlice(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown command: %s", args[0])
 		printHelp()
@@ -694,6 +698,59 @@ func handleConflictShow(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	fmt.Printf("No conflict found for %s\n", fileID)
+}
+
+func handleRootSlice(ctx context.Context, cli *CLI) {
+	resp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{})
+	if err != nil {
+		log.Fatalf("Failed to get root slice: %v", err)
+	}
+
+	fmt.Printf("Root Slice ID: %s\n", resp.SliceId)
+	fmt.Printf("Commit Hash: %s\n", resp.CommitHash)
+}
+
+func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
+	if len(args) < 2 {
+		log.Println("Usage: gs fork <new-slice-id> <folder-path>")
+		return
+	}
+
+	newSliceID := args[0]
+	folderPath := args[1]
+
+	fs := flag.NewFlagSet("fork", flag.ExitOnError)
+	parentID := fs.String("parent", "", "Parent slice ID")
+	name := fs.String("name", newSliceID, "Name of the new slice")
+	description := fs.String("description", "Forked slice", "Description of the new slice")
+	fs.Parse(args[2:])
+
+	parentSliceID := *parentID
+	if parentSliceID == "" {
+		cfgSliceID, err := readSliceIDFromConfig()
+		if err != nil {
+			log.Printf("Failed to read slice binding: %v", err)
+			log.Println("Please run 'gs init <slice-id>' first or specify parent with --parent")
+			return
+		}
+		parentSliceID = cfgSliceID
+	}
+
+	req := &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: parentSliceID,
+		FolderPath:    folderPath,
+		NewSliceId:    newSliceID,
+		Name:          *name,
+		Description:   *description,
+	}
+
+	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, req)
+	if err != nil {
+		log.Fatalf("Failed to fork slice: %v", err)
+	}
+
+	fmt.Printf("Created slice: %s\n", resp.SliceId)
+	fmt.Printf("Status: %s\n", resp.Status)
 }
 
 func readSliceIDFromConfig() (string, error) {

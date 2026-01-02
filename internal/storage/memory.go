@@ -23,6 +23,11 @@ type InMemoryStorage struct {
 	// File content storage
 	fileContents map[string]*models.FileContent // fileID -> content
 
+	// Directory entries
+	entries        map[string]*models.DirectoryEntry // entryID -> entry
+	entriesByPath  map[string]string                 // sliceID:path -> entryID
+	entriesBySlice map[string][]string               // sliceID -> []entryID
+
 	// Changesets
 	changesets      map[string]*models.Changeset // changesetID -> changeset
 	sliceChangesets map[string][]string          // sliceID -> []changesetID
@@ -35,6 +40,9 @@ func NewInMemoryStorage() *InMemoryStorage {
 		sliceMetadata:   make(map[string]*models.SliceMetadata),
 		fileIndex:       make(map[string]map[string]bool),
 		fileContents:    make(map[string]*models.FileContent),
+		entries:         make(map[string]*models.DirectoryEntry),
+		entriesByPath:   make(map[string]string),
+		entriesBySlice:  make(map[string][]string),
 		changesets:      make(map[string]*models.Changeset),
 		sliceChangesets: make(map[string][]string),
 	}
@@ -422,5 +430,179 @@ func (s *InMemoryStorage) AddFileContent(ctx context.Context, content *models.Fi
 	defer s.mu.Unlock()
 
 	s.fileContents[content.FileID] = content
+	return nil
+}
+
+// GetRootSlice returns the root slice
+func (s *InMemoryStorage) GetRootSlice(ctx context.Context) (*models.Slice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, slice := range s.slices {
+		if slice.IsRoot {
+			copy := *slice
+			return &copy, nil
+		}
+	}
+
+	return nil, ErrSliceNotFound
+}
+
+// InitializeRootSlice creates the root slice if it doesn't exist
+func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if root slice already exists
+	for _, slice := range s.slices {
+		if slice.IsRoot {
+			return nil
+		}
+	}
+
+	rootSlice := &models.Slice{
+		ID:          "root_slice",
+		Name:        "Root Slice",
+		Description: "The root slice containing all files",
+		Files:       []string{},
+		Owners:      []string{"system"},
+		CreatedBy:   "system",
+		IsRoot:      true,
+	}
+
+	now := time.Now()
+	rootSlice.CreatedAt = now
+	rootSlice.UpdatedAt = now
+
+	s.slices[rootSlice.ID] = rootSlice
+	s.sliceMetadata[rootSlice.ID] = &models.SliceMetadata{
+		SliceID:            rootSlice.ID,
+		HeadCommitHash:     "root-initial",
+		ModifiedFiles:      []string{},
+		LastModified:       now,
+		ModifiedFilesCount: 0,
+	}
+
+	return nil
+}
+
+// GetSliceFileByPath retrieves a file content by path for a slice
+func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entryID, ok := s.entriesByPath[sliceID+":"+path]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+
+	entry, ok := s.entries[entryID]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+
+	return &models.FileContent{
+		FileID:  entry.ID,
+		Path:    entry.Path,
+		Content: entry.Content,
+		Size:    entry.Size,
+	}, nil
+}
+
+// AddEntry adds a directory entry
+func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry.ID == "" {
+		return ErrInvalidInput
+	}
+
+	if _, exists := s.entries[entry.ID]; exists {
+		return ErrEntryExists
+	}
+
+	s.entries[entry.ID] = entry
+	s.entriesByPath[entry.ParentID+":"+entry.Path] = entry.ID
+	s.entriesBySlice[entry.ID] = append(s.entriesBySlice[entry.ID], entry.ID)
+
+	return nil
+}
+
+// GetEntry retrieves a directory entry by ID
+func (s *InMemoryStorage) GetEntry(ctx context.Context, entryID string) (*models.DirectoryEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, exists := s.entries[entryID]
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	copy := *entry
+	return &copy, nil
+}
+
+// GetEntryByPath retrieves a directory entry by path for a slice
+func (s *InMemoryStorage) GetEntryByPath(ctx context.Context, sliceID, path string) (*models.DirectoryEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entryID, ok := s.entriesByPath[sliceID+":"+path]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+
+	entry, ok := s.entries[entryID]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+
+	copy := *entry
+	return &copy, nil
+}
+
+// ListEntries retrieves all entries for a slice with a given parent ID
+func (s *InMemoryStorage) ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []*models.DirectoryEntry
+	for _, entry := range s.entries {
+		if entry.ParentID == parentID {
+			copy := *entry
+			result = append(result, &copy)
+		}
+	}
+
+	return result, nil
+}
+
+// UpdateEntry updates a directory entry
+func (s *InMemoryStorage) UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.entries[entry.ID]; !exists {
+		return ErrEntryNotFound
+	}
+
+	s.entries[entry.ID] = entry
+	return nil
+}
+
+// DeleteEntry removes a directory entry
+func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.entries[entryID]
+	if !exists {
+		return ErrEntryNotFound
+	}
+
+	delete(s.entries, entryID)
+	delete(s.entriesByPath, entry.ParentID+":"+entry.Path)
+
 	return nil
 }

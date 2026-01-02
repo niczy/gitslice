@@ -12,6 +12,11 @@ func main() {
 	// Initialize storage
 	st := storage.NewInMemoryStorage()
 
+	// Initialize root slice
+	if err := st.InitializeRootSlice(nil); err != nil {
+		log.Printf("Warning: Failed to initialize root slice: %v", err)
+	}
+
 	lis, err := net.Listen("tcp", ":50052")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)

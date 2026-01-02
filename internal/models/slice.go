@@ -12,6 +12,8 @@ type Slice struct {
 	CreatedBy   string    `json:"created_by"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	ParentSlice string    `json:"parent_slice,omitempty"`
+	IsRoot      bool      `json:"is_root,omitempty"`
 }
 
 // SliceMetadata represents slice metadata
@@ -30,4 +32,14 @@ type FileContent struct {
 	Content []byte `json:"content"`
 	Size    int64  `json:"size"`
 	Hash    string `json:"hash"`
+}
+
+// DirectoryEntry represents a file or directory entry
+type DirectoryEntry struct {
+	ID       string `json:"id"`
+	Path     string `json:"path"`
+	Type     string `json:"type"` // "file" or "directory"
+	ParentID string `json:"parent_id"`
+	Content  []byte `json:"content,omitempty"`
+	Size     int64  `json:"size"`
 }

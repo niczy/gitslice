@@ -29,6 +29,12 @@ service SliceService {
   // List pending change lists for a slice
   rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
 
+  // Get root slice info
+  rpc GetRootSlice(GetRootSliceRequest) returns (GetRootSliceResponse);
+
+  // Create a new slice from an existing folder
+  rpc CreateSliceFromFolder(CreateSliceFromFolderRequest) returns (CreateSliceFromFolderResponse);
+
   // Stream checkout for large slices (server streaming)
   rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
@@ -234,4 +240,29 @@ message StateResponse {
   string latest_commit_hash = 1;
   repeated string modified_files = 2;
   int64 last_modified = 3;
+}
+
+// Request to get root slice info
+message GetRootSliceRequest {}
+
+// Response with root slice info
+message GetRootSliceResponse {
+  string slice_id = 1;
+  string commit_hash = 2;
+}
+
+// Request to create a slice from an existing folder
+message CreateSliceFromFolderRequest {
+  string parent_slice_id = 1;
+  string folder_path = 2;
+  string new_slice_id = 3;
+  string name = 4;
+  string description = 5;
+}
+
+// Response for slice creation from folder
+message CreateSliceFromFolderResponse {
+  string slice_id = 1;
+  string status = 2;
+  repeated string files = 3;
 }
