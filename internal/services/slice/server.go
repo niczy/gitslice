@@ -46,15 +46,60 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
 
-	// Return manifest with slice metadata
+	// Get slice
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+
+	// Get file contents
+	files, err := s.storage.GetSliceFiles(ctx, req.SliceId)
+	if err != nil {
+		files = []*models.FileContent{}
+	}
+
+	// Build manifest with file metadata
+	var fileMetadata []*slicev1.FileMetadata
+	for _, file := range files {
+		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
+			FileId:     file.FileID,
+			Path:       file.Path,
+			Size:       file.Size,
+			Hash:       file.Hash,
+			ContentUrl: "", // No presigned URL for in-memory storage
+		})
+	}
+
+	// If no files in storage, create metadata from slice definition
+	if len(fileMetadata) == 0 {
+		for _, fileID := range slice.Files {
+			fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
+				FileId:     fileID,
+				Path:       fileID,
+				Size:       0,
+				Hash:       "",
+				ContentUrl: "",
+			})
+		}
+	}
+
+	// Convert file contents to proto format
+	var fileContents []*slicev1.FileContent
+	for _, file := range files {
+		fileContents = append(fileContents, &slicev1.FileContent{
+			FileId:  file.FileID,
+			Content: file.Content,
+		})
+	}
+
 	manifest := &slicev1.SliceManifest{
 		CommitHash:   metadata.HeadCommitHash,
-		FileMetadata: []*slicev1.FileMetadata{},
+		FileMetadata: fileMetadata,
 	}
 
 	return &slicev1.CheckoutResponse{
 		Manifest: manifest,
-		Files:    []*slicev1.FileContent{},
+		Files:    fileContents,
 	}, nil
 }
 

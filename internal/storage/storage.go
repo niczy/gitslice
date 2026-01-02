@@ -39,6 +39,9 @@ type Storage interface {
 	ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error)
 	UpdateChangeset(ctx context.Context, changeset *models.Changeset) error
 
+	// File content for checkout
+	GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)
+
 	// Health check
 	Ping(ctx context.Context) error
 }

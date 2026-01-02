@@ -128,6 +128,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceStatus(ctx, cli, args[1:])
 	case "owners":
 		handleSliceOwners(ctx, cli, args[1:])
+	case "checkout":
+		handleSliceCheckout(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown slice command: %s", args[0])
 		printSliceHelp()
@@ -271,6 +273,43 @@ func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 
 	sliceID := args[0]
 	log.Printf("Owners for slice %s: not implemented yet", sliceID)
+}
+
+func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
+	if len(args) < 1 {
+		log.Println("Usage: gs slice checkout <slice-id> [--commit <commit-hash>]")
+		return
+	}
+
+	sliceID := args[0]
+
+	// Parse flags
+	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
+	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
+	fs.Parse(args[1:])
+
+	// Call slice service
+	req := &slicev1.CheckoutRequest{
+		SliceId:    sliceID,
+		CommitHash: *commitHash,
+	}
+
+	resp, err := cli.sliceClient.CheckoutSlice(ctx, req)
+	if err != nil {
+		log.Fatalf("Failed to checkout slice: %v", err)
+	}
+
+	// Display checkout results
+	fmt.Printf("Checked out slice: %s\n", sliceID)
+	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
+	fmt.Printf("Files: %d\n", len(resp.Files))
+
+	if len(resp.Manifest.FileMetadata) > 0 {
+		fmt.Println("\nFiles in slice:")
+		for _, fm := range resp.Manifest.FileMetadata {
+			fmt.Printf("  - %s (%d bytes)\n", fm.Path, fm.Size)
+		}
+	}
 }
 
 func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {

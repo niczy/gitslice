@@ -20,6 +20,9 @@ type InMemoryStorage struct {
 	// File indexing: fileID -> set of slice IDs
 	fileIndex map[string]map[string]bool // fileID -> {sliceID: true}
 
+	// File content storage
+	fileContents map[string]*models.FileContent // fileID -> content
+
 	// Changesets
 	changesets      map[string]*models.Changeset // changesetID -> changeset
 	sliceChangesets map[string][]string          // sliceID -> []changesetID
@@ -31,6 +34,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		slices:          make(map[string]*models.Slice),
 		sliceMetadata:   make(map[string]*models.SliceMetadata),
 		fileIndex:       make(map[string]map[string]bool),
+		fileContents:    make(map[string]*models.FileContent),
 		changesets:      make(map[string]*models.Changeset),
 		sliceChangesets: make(map[string][]string),
 	}
@@ -256,8 +260,8 @@ func (s *InMemoryStorage) ListConflicts(ctx context.Context) ([]*models.FileConf
 		sort.Strings(sliceIDs)
 
 		conflicts = append(conflicts, &models.FileConflict{
-			FileID:   fileID,
-			SliceIDs: sliceIDs,
+			FileID:            fileID,
+			ConflictingSlices: sliceIDs,
 		})
 	}
 
@@ -271,7 +275,7 @@ func (s *InMemoryStorage) ResolveConflict(ctx context.Context, fileID, preferred
 
 	slices, exists := s.fileIndex[fileID]
 	if !exists {
-		return &models.FileConflict{FileID: fileID, SliceIDs: []string{}}, nil
+		return &models.FileConflict{FileID: fileID, ConflictingSlices: []string{}}, nil
 	}
 
 	updated := make(map[string]bool)
@@ -297,7 +301,7 @@ func (s *InMemoryStorage) ResolveConflict(ctx context.Context, fileID, preferred
 	}
 	sort.Strings(remaining)
 
-	return &models.FileConflict{FileID: fileID, SliceIDs: remaining}, nil
+	return &models.FileConflict{FileID: fileID, ConflictingSlices: remaining}, nil
 }
 
 // CreateChangeset stores a new changeset
@@ -390,4 +394,33 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// GetSliceFiles returns all files for a slice
+func (s *InMemoryStorage) GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	slice, exists := s.slices[sliceID]
+	if !exists {
+		return nil, ErrSliceNotFound
+	}
+
+	var files []*models.FileContent
+	for _, fileID := range slice.Files {
+		if content, ok := s.fileContents[fileID]; ok {
+			files = append(files, content)
+		}
+	}
+
+	return files, nil
+}
+
+// AddFileContent adds or updates file content
+func (s *InMemoryStorage) AddFileContent(ctx context.Context, content *models.FileContent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.fileContents[content.FileID] = content
+	return nil
 }

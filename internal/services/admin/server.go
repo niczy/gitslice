@@ -111,7 +111,7 @@ func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.Conf
 	for _, conflict := range conflicts {
 		if req.SliceId != nil {
 			contains := false
-			for _, id := range conflict.SliceIDs {
+			for _, id := range conflict.ConflictingSlices {
 				if id == req.GetSliceId() {
 					contains = true
 					break
@@ -124,7 +124,7 @@ func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.Conf
 
 		protoConflicts = append(protoConflicts, &adminv1.Conflict{
 			FileId:              conflict.FileID,
-			ConflictingSliceIds: conflict.SliceIDs,
+			ConflictingSliceIds: conflict.ConflictingSlices,
 		})
 	}
 
@@ -149,7 +149,7 @@ func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.R
 	return &adminv1.ResolveConflictResponse{
 		ResolvedConflict: &adminv1.Conflict{
 			FileId:              conflict.FileID,
-			ConflictingSliceIds: conflict.SliceIDs,
+			ConflictingSliceIds: conflict.ConflictingSlices,
 		},
 	}, nil
 }

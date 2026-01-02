@@ -22,3 +22,12 @@ type SliceMetadata struct {
 	LastModified       time.Time `json:"last_modified"`
 	ModifiedFilesCount int       `json:"modified_files_count"`
 }
+
+// FileContent represents file content for checkout
+type FileContent struct {
+	FileID  string `json:"file_id"`
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
+	Size    int64  `json:"size"`
+	Hash    string `json:"hash"`
+}
