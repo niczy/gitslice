@@ -30,6 +30,8 @@ type Storage interface {
 	AddFileToSlice(ctx context.Context, fileID, sliceID string) error
 	GetActiveSlicesForFile(ctx context.Context, fileID string) ([]string, error)
 	RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error
+	ListConflicts(ctx context.Context) ([]*models.FileConflict, error)
+	ResolveConflict(ctx context.Context, fileID, preferredSliceID string) (*models.FileConflict, error)
 
 	// Changesets
 	CreateChangeset(ctx context.Context, changeset *models.Changeset) error

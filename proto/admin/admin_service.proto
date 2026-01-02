@@ -17,6 +17,9 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
   // Get current conflicts across slices
   rpc GetConflicts(ConflictsRequest) returns (ConflictsResponse);
 
+  // Resolve a conflict by choosing a preferred slice
+  rpc ResolveConflict(ResolveConflictRequest) returns (ResolveConflictResponse);
+
   // Get global state
   rpc GetGlobalState(GlobalStateRequest) returns (GlobalStateResponse);
 
@@ -72,6 +75,15 @@ message ConflictsRequest {
 message ConflictsResponse {
   repeated Conflict conflicts = 1;
   int32 total_conflicts = 2;
+}
+
+message ResolveConflictRequest {
+  string file_id = 1;
+  string preferred_slice_id = 2;
+}
+
+message ResolveConflictResponse {
+  Conflict resolved_conflict = 1;
 }
 
 message Conflict {

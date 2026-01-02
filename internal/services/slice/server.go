@@ -124,6 +124,34 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
 	}
 
+	var conflicts []*slicev1.Conflict
+	for _, fileID := range cs.ModifiedFiles {
+		slices, err := s.storage.GetActiveSlicesForFile(ctx, fileID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
+		}
+
+		var conflictingSlices []string
+		for _, sliceID := range slices {
+			if sliceID != cs.SliceID {
+				conflictingSlices = append(conflictingSlices, sliceID)
+			}
+		}
+
+		if len(conflictingSlices) > 0 {
+			conflicts = append(conflicts, &slicev1.Conflict{FileId: fileID, ConflictingSliceIds: conflictingSlices})
+		}
+	}
+
+	if len(conflicts) > 0 {
+		return &slicev1.MergeChangesetResponse{
+			Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
+			NewCommitHash: "",
+			ChangesetId:   cs.ID,
+			Conflicts:     conflicts,
+		}, nil
+	}
+
 	newCommit := fmt.Sprintf("commit-%d", time.Now().UnixNano())
 	cs.Status = models.ChangesetStatusMerged
 	now := time.Now()
