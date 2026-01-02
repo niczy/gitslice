@@ -23,28 +23,14 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
 
-    - name: Install protoc-gen-go and protoc-gen-go-grpc
-      run: |
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
-
-    - name: Download dependencies
-      run: go mod download
+    - name: Install dependencies
+      run: make install
 
     - name: Generate proto code
-      run: |
-        export PATH=$PATH:$(go env GOPATH)/bin
-        cd proto/slice && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto
-        cd ../admin && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative admin_service.proto
+      run: make proto
 
-    - name: Build slice service
-      run: go build -o slice_service_server ./slice_service/
-
-    - name: Build admin service
-      run: go build -o admin_service_server ./admin_service/
-
-    - name: Build CLI
-      run: go build -o gs_cli/gs_cli ./gs_cli/
+    - name: Build all
+      run: make build
 
     - name: Run slice service
       run: |
