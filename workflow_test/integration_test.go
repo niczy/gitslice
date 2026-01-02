@@ -587,7 +587,7 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 }
 
 func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	adminClient := newAdminClient(t)
@@ -598,25 +598,25 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("failed to read initial global state: %v", err)
 	}
 
-	fileA := fmt.Sprintf("concurrency-a-%d.txt", time.Now().UnixNano())
-	fileB := fmt.Sprintf("concurrency-b-%d.txt", time.Now().UnixNano())
-	sliceA := fmt.Sprintf("concurrency-slice-a-%d", time.Now().UnixNano())
-	sliceB := fmt.Sprintf("concurrency-slice-b-%d", time.Now().UnixNano())
+	const mergeCount = 5
+	slices := make([]string, 0, mergeCount)
+	changesets := make([]string, 0, mergeCount)
+	commits := make(map[string]string)
 
-	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceA, Name: "ConcurrentA", Files: []string{fileA}}); err != nil {
-		t.Fatalf("failed to create slice A: %v", err)
-	}
-	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceB, Name: "ConcurrentB", Files: []string{fileB}}); err != nil {
-		t.Fatalf("failed to create slice B: %v", err)
-	}
+	for i := 0; i < mergeCount; i++ {
+		file := fmt.Sprintf("concurrency-%d-%d.txt", i, time.Now().UnixNano())
+		sliceID := fmt.Sprintf("concurrency-slice-%d-%d", i, time.Now().UnixNano())
+		slices = append(slices, sliceID)
 
-	changesetA, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceA, ModifiedFiles: []string{fileA}, Message: "A change"})
-	if err != nil {
-		t.Fatalf("failed to create changeset for slice A: %v", err)
-	}
-	changesetB, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{fileB}, Message: "B change"})
-	if err != nil {
-		t.Fatalf("failed to create changeset for slice B: %v", err)
+		if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}}); err != nil {
+			t.Fatalf("failed to create slice %d: %v", i, err)
+		}
+
+		cs, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceID, ModifiedFiles: []string{file}, Message: fmt.Sprintf("change-%d", i)})
+		if err != nil {
+			t.Fatalf("failed to create changeset for slice %d: %v", i, err)
+		}
+		changesets = append(changesets, cs.ChangesetId)
 	}
 
 	start := make(chan struct{})
@@ -624,7 +624,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		sliceID string
 		resp    *slicev1.MergeChangesetResponse
 		err     error
-	}, 2)
+	}, mergeCount)
 
 	mergeSlice := func(sliceID, changesetID string) {
 		<-start
@@ -636,12 +636,12 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		}{sliceID: sliceID, resp: resp, err: err}
 	}
 
-	go mergeSlice(sliceA, changesetA.ChangesetId)
-	go mergeSlice(sliceB, changesetB.ChangesetId)
+	for i := 0; i < mergeCount; i++ {
+		go mergeSlice(slices[i], changesets[i])
+	}
 	close(start)
 
-	var commitA, commitB string
-	for i := 0; i < 2; i++ {
+	for i := 0; i < mergeCount; i++ {
 		result := <-results
 		if result.err != nil {
 			t.Fatalf("merge failed for %s: %v", result.sliceID, result.err)
@@ -649,15 +649,13 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		if result.resp.Status != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 			t.Fatalf("expected merge success for %s, got %v", result.sliceID, result.resp.Status)
 		}
-		if result.sliceID == sliceA {
-			commitA = result.resp.NewCommitHash
-		} else {
-			commitB = result.resp.NewCommitHash
-		}
+		commits[result.sliceID] = result.resp.NewCommitHash
 	}
 
-	if commitA == "" || commitB == "" {
-		t.Fatalf("expected commit hashes for both merges, got A=%q B=%q", commitA, commitB)
+	for _, sliceID := range slices {
+		if commits[sliceID] == "" {
+			t.Fatalf("expected commit hash for %s", sliceID)
+		}
 	}
 
 	globalState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
@@ -665,8 +663,8 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("failed to read global state after merges: %v", err)
 	}
 
-	if len(globalState.History) < len(initialState.History)+2 {
-		t.Fatalf("expected at least %d history entries after concurrent merges, got %d", len(initialState.History)+2, len(globalState.History))
+	if len(globalState.History) < len(initialState.History)+mergeCount {
+		t.Fatalf("expected at least %d history entries after concurrent merges, got %d", len(initialState.History)+mergeCount, len(globalState.History))
 	}
 
 	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
@@ -677,48 +675,35 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("expected root slice head %s to match global %s", rootState.LatestCommitHash, globalState.GlobalCommitHash)
 	}
 
-	top := globalState.History
-	if len(top) > 2 {
-		top = top[:2]
+	historyCommits := make(map[string][]string)
+	for _, entry := range globalState.History {
+		historyCommits[entry.CommitHash] = entry.MergedSliceIds
 	}
 
-	var foundA, foundB bool
-	for _, entry := range top {
-		if entry.CommitHash == commitA {
-			for _, id := range entry.MergedSliceIds {
-				if id == sliceA {
-					foundA = true
-					break
-				}
+	for sliceID, commitHash := range commits {
+		mergedSlices, ok := historyCommits[commitHash]
+		if !ok {
+			t.Fatalf("expected commit %s for slice %s to appear in global history", commitHash, sliceID)
+		}
+		foundSlice := false
+		for _, id := range mergedSlices {
+			if id == sliceID {
+				foundSlice = true
+				break
 			}
 		}
-		if entry.CommitHash == commitB {
-			for _, id := range entry.MergedSliceIds {
-				if id == sliceB {
-					foundB = true
-					break
-				}
-			}
+		if !foundSlice {
+			t.Fatalf("expected slice %s to be recorded in history entry %s", sliceID, commitHash)
 		}
 	}
 
-	if !foundA || !foundB {
-		t.Fatalf("expected both concurrent commits in latest global history entries (foundA=%v, foundB=%v)", foundA, foundB)
-	}
-
-	sliceAState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceA})
-	if err != nil {
-		t.Fatalf("failed to fetch slice A state: %v", err)
-	}
-	if sliceAState.LatestCommitHash != commitA {
-		t.Fatalf("expected slice A head %s, got %s", commitA, sliceAState.LatestCommitHash)
-	}
-
-	sliceBState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceB})
-	if err != nil {
-		t.Fatalf("failed to fetch slice B state: %v", err)
-	}
-	if sliceBState.LatestCommitHash != commitB {
-		t.Fatalf("expected slice B head %s, got %s", commitB, sliceBState.LatestCommitHash)
+	for sliceID, expectedCommit := range commits {
+		state, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
+		if err != nil {
+			t.Fatalf("failed to fetch slice %s state: %v", sliceID, err)
+		}
+		if state.LatestCommitHash != expectedCommit {
+			t.Fatalf("expected slice %s head %s, got %s", sliceID, expectedCommit, state.LatestCommitHash)
+		}
 	}
 }
