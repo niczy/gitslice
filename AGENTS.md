@@ -29,10 +29,14 @@ These guidelines apply to the entire repository.
    gh pr create --title "Your PR title" --body "PR description"
    ```
 
-4. **Wait for GitHub Actions to pass:**
-   - Check the PR status at `https://github.com/niczy/gitslice/pull/<number>`
-   - All checks must pass (Build and Test workflow)
-   - If checks fail, fix the issues and push again
+4. **Check GitHub Actions status and fix any issues:**
+   ```bash
+   gh run list --limit 3
+   ```
+   - If a workflow fails, view details with `gh run view <run-number>`
+   - Check failed logs with `gh run view <run-number> --log-failed`
+   - Fix the issues, commit, and push again
+   - Only proceed to merge when all checks pass
 
 5. **Merge the PR** only after all checks pass:
    ```bash
@@ -51,5 +55,6 @@ These guidelines apply to the entire repository.
 | Push branch | `git push -u origin feature/name` |
 | Create PR | `gh pr create --title "title" --body "body"` |
 | Check PR status | `gh pr view <pr-number>` |
-| Check Actions | `gh run list` or check GitHub web UI |
+| Check Actions | `gh run list` then `gh run view <run-number> --log-failed` if failed |
+| Fix failed Actions | Fix issues, commit, and `git push` |
 | Merge PR | `gh pr merge <pr-number> --admin --merge` |
