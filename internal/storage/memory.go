@@ -261,7 +261,9 @@ func (s *InMemoryStorage) UpdateSliceMetadata(ctx context.Context, sliceID strin
 		return ErrSliceNotFound
 	}
 
-	metadata.LastModified = time.Now()
+	if metadata.LastModified.IsZero() {
+		metadata.LastModified = time.Now()
+	}
 	s.sliceMetadata[sliceID] = metadata
 	return nil
 }

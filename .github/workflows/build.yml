@@ -49,6 +49,12 @@ jobs:
         cd workflow_test
         go test -v -run TestCLIBuild
 
+    - name: Run full test suite with mocks
+      env:
+        RUN_INTEGRATION_TESTS: "1"
+      run: |
+        go test ./...
+
     - name: Test coverage for workflow tests
       run: |
         cd workflow_test

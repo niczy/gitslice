@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	adminservice "github.com/niczy/gitslice/internal/services/admin"
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
@@ -37,14 +40,25 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
-	st := storage.NewInMemoryStorage()
+	mr, err := miniredis.Run()
+	if err != nil {
+		fmt.Printf("Failed to start mock redis: %v\n", err)
+		os.Exit(1)
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	objectStore := storage.NewInMemoryObjectStore()
+	st := storage.NewRedisStorage(client, objectStore, "integration")
+	defer func() {
+		_ = client.Close()
+		mr.Close()
+	}()
 
 	// Initialize root slice
 	if err := st.InitializeRootSlice(nil); err != nil {
 		fmt.Printf("Warning: Failed to initialize root slice: %v\n", err)
 	}
 
-	var err error
 	sliceServiceAddr, sliceServer, err = startSliceService(st)
 	if err != nil {
 		fmt.Printf("Failed to start slice service: %v\n", err)
