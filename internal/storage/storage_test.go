@@ -209,19 +209,19 @@ func TestRedisStorageRebuildIndexes(t *testing.T) {
 		t.Fatalf("CreateSlice 2 failed: %v", err)
 	}
 
-	// Simulate index loss after a restart by removing the catalog and file indexes.
-	fileIdxKeys, err := client.Keys(ctx, rs.key("file_index", "*")).Result()
-	if err != nil {
-		t.Fatalf("listing file index keys failed: %v", err)
+	cs := &models.Changeset{ID: "cs-rebuild", Hash: "h", SliceID: slice1.ID, ModifiedFiles: []string{"file-1"}, Status: models.ChangesetStatusPending}
+	if err := rs.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
 	}
-	if len(fileIdxKeys) > 0 {
-		if err := client.Del(ctx, fileIdxKeys...).Err(); err != nil {
-			t.Fatalf("deleting file index keys failed: %v", err)
-		}
+	entry := &models.DirectoryEntry{ID: "entry-1", Path: "app/main.go", Type: "file", ParentID: slice1.ID, Content: []byte("hi"), Size: 2}
+	if err := rs.AddEntry(ctx, entry); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := client.Del(ctx, rs.key("slices")).Err(); err != nil {
-		t.Fatalf("deleting slice catalog failed: %v", err)
+	if err := rs.UpdateGlobalState(ctx, &models.GlobalState{GlobalCommitHash: "gc1", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("UpdateGlobalState failed: %v", err)
 	}
+
+	mr.FlushAll()
 
 	if err := rs.RebuildIndexes(ctx); err != nil {
 		t.Fatalf("RebuildIndexes failed: %v", err)
@@ -241,5 +241,18 @@ func TestRedisStorageRebuildIndexes(t *testing.T) {
 	}
 	if len(mapped) != 2 {
 		t.Fatalf("expected file-1 to map to 2 slices after rebuild, got %d", len(mapped))
+	}
+
+	restoredCS, err := rs.GetChangeset(ctx, cs.ID)
+	if err != nil || restoredCS.ID != cs.ID {
+		t.Fatalf("expected changeset restored after rebuild: %v", err)
+	}
+	restoredEntry, err := rs.GetEntry(ctx, entry.ID)
+	if err != nil || restoredEntry.Path != entry.Path {
+		t.Fatalf("expected entry restored after rebuild: %v", err)
+	}
+	restoredState, err := rs.GetGlobalState(ctx)
+	if err != nil || restoredState.GlobalCommitHash != "gc1" {
+		t.Fatalf("expected global state restored, got %#v err=%v", restoredState, err)
 	}
 }

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,11 +20,150 @@ type RedisStorage struct {
 	keyPrefix   string
 }
 
+type durableState struct {
+	Slices            map[string]*models.Slice          `json:"slices"`
+	Metadata          map[string]*models.SliceMetadata  `json:"metadata"`
+	SliceCommits      map[string][]*models.Commit       `json:"slice_commits"`
+	Changesets        map[string]*models.Changeset      `json:"changesets"`
+	SliceChangesets   map[string][]string               `json:"slice_changesets"`
+	Entries           map[string]*models.DirectoryEntry `json:"entries"`
+	EntriesByParent   map[string][]string               `json:"entries_by_parent"`
+	EntryPathsBySlice map[string]map[string]string      `json:"entry_paths_by_slice"`
+	GlobalState       *models.GlobalState               `json:"global_state"`
+}
+
+func newDurableState() *durableState {
+	return &durableState{
+		Slices:            make(map[string]*models.Slice),
+		Metadata:          make(map[string]*models.SliceMetadata),
+		SliceCommits:      make(map[string][]*models.Commit),
+		Changesets:        make(map[string]*models.Changeset),
+		SliceChangesets:   make(map[string][]string),
+		Entries:           make(map[string]*models.DirectoryEntry),
+		EntriesByParent:   make(map[string][]string),
+		EntryPathsBySlice: make(map[string]map[string]string),
+	}
+}
+
 func ensureCtx(ctx context.Context) context.Context {
 	if ctx == nil {
 		return context.Background()
 	}
 	return ctx
+}
+
+func (s *RedisStorage) durableKey(parts ...string) string {
+	return s.key(append([]string{"durable"}, parts...)...)
+}
+
+func (s *RedisStorage) loadDurableState(ctx context.Context) (*durableState, error) {
+	ctx = ensureCtx(ctx)
+	raw, err := s.objectStore.GetObject(ctx, s.durableKey("state"))
+	if err != nil {
+		if errors.Is(err, ErrEntryNotFound) {
+			return newDurableState(), nil
+		}
+		return nil, err
+	}
+
+	var state durableState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return nil, err
+	}
+
+	if state.Slices == nil {
+		return newDurableState(), nil
+	}
+
+	if state.Metadata == nil {
+		state.Metadata = make(map[string]*models.SliceMetadata)
+	}
+	if state.SliceCommits == nil {
+		state.SliceCommits = make(map[string][]*models.Commit)
+	}
+	if state.Changesets == nil {
+		state.Changesets = make(map[string]*models.Changeset)
+	}
+	if state.SliceChangesets == nil {
+		state.SliceChangesets = make(map[string][]string)
+	}
+	if state.Entries == nil {
+		state.Entries = make(map[string]*models.DirectoryEntry)
+	}
+	if state.EntriesByParent == nil {
+		state.EntriesByParent = make(map[string][]string)
+	}
+	if state.EntryPathsBySlice == nil {
+		state.EntryPathsBySlice = make(map[string]map[string]string)
+	}
+
+	return &state, nil
+}
+
+func (s *RedisStorage) saveDurableState(ctx context.Context, state *durableState) error {
+	ctx = ensureCtx(ctx)
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return s.objectStore.PutObject(ctx, s.durableKey("state"), raw)
+}
+
+func (s *RedisStorage) withDurableState(ctx context.Context, fn func(state *durableState) error) error {
+	state, err := s.loadDurableState(ctx)
+	if err != nil {
+		return err
+	}
+	if err := fn(state); err != nil {
+		return err
+	}
+	return s.saveDurableState(ctx, state)
+}
+
+func (s *RedisStorage) cacheSlice(ctx context.Context, slice *models.Slice, meta *models.SliceMetadata) error {
+	raw, err := marshal(slice)
+	if err != nil {
+		return err
+	}
+
+	pipe := s.rdb.TxPipeline()
+	pipe.Set(ctx, s.key("slice", slice.ID), raw, 0)
+	pipe.SAdd(ctx, s.key("slices"), slice.ID)
+	for _, fileID := range slice.Files {
+		pipe.SAdd(ctx, s.key("file_index", fileID), slice.ID)
+	}
+
+	if meta != nil {
+		metaRaw, err := marshal(meta)
+		if err != nil {
+			pipe.Discard()
+			return err
+		}
+		pipe.Set(ctx, s.key("slice_metadata", slice.ID), metaRaw, 0)
+	}
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (s *RedisStorage) clearKeys(ctx context.Context, pattern string) error {
+	ctx = ensureCtx(ctx)
+	var cursor uint64
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return err
+		}
+		if len(keys) > 0 {
+			if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+				return err
+			}
+		}
+		if next == 0 || next == cursor {
+			return nil
+		}
+		cursor = next
+	}
 }
 
 // NewRedisStorage creates a Redis-backed storage implementation.
@@ -102,12 +242,6 @@ func (s *RedisStorage) CreateSlice(ctx context.Context, slice *models.Slice) err
 		return ErrInvalidInput
 	}
 
-	if _, err := s.GetSlice(ctx, slice.ID); err == nil {
-		return ErrSliceAlreadyExists
-	} else if err != ErrSliceNotFound {
-		return err
-	}
-
 	now := time.Now()
 	slice.CreatedAt = now
 	slice.UpdatedAt = now
@@ -124,6 +258,25 @@ func (s *RedisStorage) CreateSlice(ctx context.Context, slice *models.Slice) err
 		ModifiedFiles:      []string{},
 		LastModified:       now,
 		ModifiedFilesCount: 0,
+	}
+
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		if _, exists := state.Slices[slice.ID]; exists {
+			return ErrSliceAlreadyExists
+		}
+		copySlice := *slice
+		state.Slices[slice.ID] = &copySlice
+		copyMeta := *meta
+		state.Metadata[slice.ID] = &copyMeta
+		if _, ok := state.SliceChangesets[slice.ID]; !ok {
+			state.SliceChangesets[slice.ID] = []string{}
+		}
+		if _, ok := state.SliceCommits[slice.ID]; !ok {
+			state.SliceCommits[slice.ID] = []*models.Commit{}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	metaKey := s.key("slice_metadata", slice.ID)
 	metaRaw, err := marshal(meta)
@@ -152,6 +305,14 @@ func (s *RedisStorage) GetSlice(ctx context.Context, sliceID string) (*models.Sl
 	val, err := s.rdb.Get(ctx, s.key("slice", sliceID)).Result()
 	if err != nil {
 		if err == redis.Nil {
+			state, loadErr := s.loadDurableState(ctx)
+			if loadErr == nil {
+				if saved, ok := state.Slices[sliceID]; ok {
+					_ = s.cacheSlice(ctx, saved, state.Metadata[sliceID])
+					copy := *saved
+					return &copy, nil
+				}
+			}
 			return nil, ErrSliceNotFound
 		}
 		return nil, err
@@ -171,6 +332,14 @@ func (s *RedisStorage) ListSlices(ctx context.Context, limit, offset int) ([]*mo
 	ids, err := s.rdb.SMembers(ctx, s.key("slices")).Result()
 	if err != nil {
 		return nil, err
+	}
+	if len(ids) == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			for id := range state.Slices {
+				ids = append(ids, id)
+			}
+		}
 	}
 	sort.Strings(ids)
 	if offset >= len(ids) {
@@ -200,6 +369,14 @@ func (s *RedisStorage) ListSlicesByOwner(ctx context.Context, owner string, limi
 	ids, err := s.rdb.SMembers(ctx, s.key("slices")).Result()
 	if err != nil {
 		return nil, err
+	}
+	if len(ids) == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			for id := range state.Slices {
+				ids = append(ids, id)
+			}
+		}
 	}
 	sort.Strings(ids)
 
@@ -234,6 +411,14 @@ func (s *RedisStorage) SearchSlices(ctx context.Context, query string, limit, of
 	if err != nil {
 		return nil, err
 	}
+	if len(ids) == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			for id := range state.Slices {
+				ids = append(ids, id)
+			}
+		}
+	}
 	sort.Strings(ids)
 
 	var matches []*models.Slice
@@ -265,6 +450,14 @@ func (s *RedisStorage) GetSliceMetadata(ctx context.Context, sliceID string) (*m
 	raw, err := s.rdb.Get(ctx, s.key("slice_metadata", sliceID)).Result()
 	if err != nil {
 		if err == redis.Nil {
+			state, loadErr := s.loadDurableState(ctx)
+			if loadErr == nil {
+				if meta, ok := state.Metadata[sliceID]; ok {
+					_ = s.cacheSlice(ctx, state.Slices[sliceID], meta)
+					copyMeta := *meta
+					return &copyMeta, nil
+				}
+			}
 			return nil, ErrSliceNotFound
 		}
 		return nil, err
@@ -292,6 +485,14 @@ func (s *RedisStorage) UpdateSliceMetadata(ctx context.Context, sliceID string, 
 		return err
 	}
 
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		copyMeta := *metadata
+		state.Metadata[sliceID] = &copyMeta
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	return s.rdb.Set(ctx, s.key("slice_metadata", sliceID), raw, 0).Err()
 }
 
@@ -299,6 +500,14 @@ func (s *RedisStorage) UpdateSliceMetadata(ctx context.Context, sliceID string, 
 func (s *RedisStorage) AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error {
 	ctx = ensureCtx(ctx)
 	if _, err := s.GetSlice(ctx, sliceID); err != nil {
+		return err
+	}
+
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		copyCommit := *commit
+		state.SliceCommits[sliceID] = append([]*models.Commit{&copyCommit}, state.SliceCommits[sliceID]...)
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -317,8 +526,21 @@ func (s *RedisStorage) ListSliceCommits(ctx context.Context, sliceID string, lim
 	}
 
 	raws, err := s.rdb.LRange(ctx, s.key("slice_commits", sliceID), 0, -1).Result()
-	if err != nil {
+	if err != nil && err != redis.Nil {
 		return nil, err
+	}
+	if len(raws) == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			if stored, ok := state.SliceCommits[sliceID]; ok {
+				copyCommits := make([]*models.Commit, len(stored))
+				for i, c := range stored {
+					dup := *c
+					copyCommits[i] = &dup
+				}
+				return copyCommits, nil
+			}
+		}
 	}
 
 	start := 0
@@ -357,9 +579,48 @@ func (s *RedisStorage) ListSliceCommits(ctx context.Context, sliceID string, lim
 // AddFileToSlice indexes a file for a slice.
 func (s *RedisStorage) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
 	ctx = ensureCtx(ctx)
-	if _, err := s.GetSlice(ctx, sliceID); err != nil {
+	slice, err := s.GetSlice(ctx, sliceID)
+	if err != nil {
 		return err
 	}
+
+	exists := false
+	for _, f := range slice.Files {
+		if f == fileID {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		slice.Files = append(slice.Files, fileID)
+	}
+
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		stored := slice
+		if stateSlice, ok := state.Slices[sliceID]; ok {
+			copySlice := *stateSlice
+			exists := false
+			for _, f := range copySlice.Files {
+				if f == fileID {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				copySlice.Files = append(copySlice.Files, fileID)
+			}
+			stored = &copySlice
+		}
+		state.Slices[sliceID] = stored
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	if err := s.cacheSlice(ctx, slice, nil); err != nil {
+		return err
+	}
+
 	return s.rdb.SAdd(ctx, s.key("file_index", fileID), sliceID).Err()
 }
 
@@ -377,6 +638,34 @@ func (s *RedisStorage) GetActiveSlicesForFile(ctx context.Context, fileID string
 // RemoveFileFromSlice removes a file mapping for a slice.
 func (s *RedisStorage) RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error {
 	ctx = ensureCtx(ctx)
+	slice, err := s.GetSlice(ctx, sliceID)
+	if err != nil {
+		return err
+	}
+
+	filtered := slice.Files[:0]
+	for _, f := range slice.Files {
+		if f != fileID {
+			filtered = append(filtered, f)
+		}
+	}
+	slice.Files = filtered
+
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		if existing, ok := state.Slices[sliceID]; ok {
+			copySlice := *existing
+			copySlice.Files = filtered
+			state.Slices[sliceID] = &copySlice
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	if err := s.cacheSlice(ctx, slice, nil); err != nil {
+		return err
+	}
+
 	return s.rdb.SRem(ctx, s.key("file_index", fileID), sliceID).Err()
 }
 
@@ -443,84 +732,120 @@ func (s *RedisStorage) ResolveConflict(ctx context.Context, fileID, preferredSli
 	return &models.FileConflict{FileID: fileID, ConflictingSlices: remaining}, nil
 }
 
-// RebuildIndexes reconstructs file-to-slice mappings and the slice catalog from stored slice definitions.
-// This is useful when Redis has lost volatile index keys after a restart while slice definitions remain intact.
+// RebuildIndexes reconstructs Redis indexes and cached records from the durable object store.
+// This is useful when Redis has lost volatile keys after a restart while object storage still
+// holds the authoritative metadata and manifests.
 func (s *RedisStorage) RebuildIndexes(ctx context.Context) error {
 	ctx = ensureCtx(ctx)
 
-	fileMembership := make(map[string][]string)
-	sliceIDs := make(map[string]struct{})
+	state, err := s.loadDurableState(ctx)
+	if err != nil {
+		return err
+	}
 
-	var cursor uint64
-	for {
-		keys, next, err := s.rdb.Scan(ctx, cursor, s.key("slice", "*"), 100).Result()
-		if err != nil {
+	patterns := []string{
+		s.key("slice", "*"),
+		s.key("slice_metadata", "*"),
+		s.key("file_index", "*"),
+		s.key("slice_commits", "*"),
+		s.key("slice_changesets", "*"),
+		s.key("changeset", "*"),
+		s.key("entry", "*"),
+		s.key("entry_path", "*"),
+		s.key("entries_by_parent", "*"),
+	}
+
+	for _, pattern := range patterns {
+		if err := s.clearKeys(ctx, pattern); err != nil {
 			return err
 		}
-
-		for _, key := range keys {
-			raw, err := s.rdb.Get(ctx, key).Result()
-			if err != nil {
-				return err
-			}
-
-			var slice models.Slice
-			if err := unmarshal(raw, &slice); err != nil {
-				return err
-			}
-			sliceIDs[slice.ID] = struct{}{}
-			for _, fileID := range slice.Files {
-				fileMembership[fileID] = append(fileMembership[fileID], slice.ID)
-			}
-		}
-
-		if next == 0 || next == cursor {
-			break
-		}
-		cursor = next
 	}
 
 	pipe := s.rdb.TxPipeline()
-
-	// Rebuild the slice catalog.
 	pipe.Del(ctx, s.key("slices"))
-	if len(sliceIDs) > 0 {
-		members := make([]any, 0, len(sliceIDs))
-		for id := range sliceIDs {
+	if len(state.Slices) > 0 {
+		members := make([]any, 0, len(state.Slices))
+		for id := range state.Slices {
 			members = append(members, id)
 		}
 		pipe.SAdd(ctx, s.key("slices"), members...)
 	}
 
-	// Clear and repopulate file index sets.
-	cursor = 0
-	for {
-		keys, next, err := s.rdb.Scan(ctx, cursor, s.key("file_index", "*"), 100).Result()
+	for id, slice := range state.Slices {
+		meta := state.Metadata[id]
+		if err := s.cacheSlice(ctx, slice, meta); err != nil {
+			pipe.Discard()
+			return err
+		}
+	}
+
+	for sliceID, commits := range state.SliceCommits {
+		if len(commits) == 0 {
+			continue
+		}
+		rawCommits := make([]any, 0, len(commits))
+		for _, commit := range commits {
+			data, err := marshal(commit)
+			if err != nil {
+				pipe.Discard()
+				return err
+			}
+			rawCommits = append(rawCommits, data)
+		}
+		pipe.Del(ctx, s.key("slice_commits", sliceID))
+		pipe.RPush(ctx, s.key("slice_commits", sliceID), rawCommits...)
+	}
+
+	for id, cs := range state.Changesets {
+		raw, err := marshal(cs)
 		if err != nil {
 			pipe.Discard()
 			return err
 		}
-		if len(keys) > 0 {
-			pipe.Del(ctx, keys...)
-		}
-		if next == 0 || next == cursor {
-			break
-		}
-		cursor = next
+		pipe.Set(ctx, s.key("changeset", id), raw, 0)
 	}
-
-	for fileID, owners := range fileMembership {
-		if len(owners) == 0 {
+	for sliceID, ids := range state.SliceChangesets {
+		if len(ids) == 0 {
 			continue
 		}
-		members := make([]any, 0, len(owners))
-		for _, id := range owners {
+		members := make([]any, 0, len(ids))
+		for _, id := range ids {
 			members = append(members, id)
 		}
-		pipe.SAdd(ctx, s.key("file_index", fileID), members...)
+		pipe.Del(ctx, s.key("slice_changesets", sliceID))
+		pipe.RPush(ctx, s.key("slice_changesets", sliceID), members...)
 	}
 
-	_, err := pipe.Exec(ctx)
+	for _, entry := range state.Entries {
+		raw, err := marshal(entry)
+		if err != nil {
+			pipe.Discard()
+			return err
+		}
+		pipe.Set(ctx, s.key("entry", entry.ID), raw, 0)
+		pipe.Set(ctx, s.key("entry_path", entry.ParentID, entry.Path), entry.ID, 0)
+	}
+	for parentID, ids := range state.EntriesByParent {
+		members := make([]any, 0, len(ids))
+		for _, id := range ids {
+			members = append(members, id)
+		}
+		pipe.Del(ctx, s.key("entries_by_parent", parentID))
+		if len(members) > 0 {
+			pipe.SAdd(ctx, s.key("entries_by_parent", parentID), members...)
+		}
+	}
+
+	if state.GlobalState != nil {
+		raw, err := marshal(state.GlobalState)
+		if err != nil {
+			pipe.Discard()
+			return err
+		}
+		pipe.Set(ctx, s.key("global_state"), raw, 0)
+	}
+
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
@@ -528,6 +853,15 @@ func (s *RedisStorage) RebuildIndexes(ctx context.Context) error {
 func (s *RedisStorage) CreateChangeset(ctx context.Context, changeset *models.Changeset) error {
 	ctx = ensureCtx(ctx)
 	if _, err := s.GetSlice(ctx, changeset.SliceID); err != nil {
+		return err
+	}
+
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		copyCS := *changeset
+		state.Changesets[changeset.ID] = &copyCS
+		state.SliceChangesets[changeset.SliceID] = append([]string{changeset.ID}, state.SliceChangesets[changeset.SliceID]...)
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -549,6 +883,13 @@ func (s *RedisStorage) GetChangeset(ctx context.Context, changesetID string) (*m
 	raw, err := s.rdb.Get(ctx, s.key("changeset", changesetID)).Result()
 	if err != nil {
 		if err == redis.Nil {
+			state, loadErr := s.loadDurableState(ctx)
+			if loadErr == nil {
+				if cs, ok := state.Changesets[changesetID]; ok {
+					copyCS := *cs
+					return &copyCS, nil
+				}
+			}
 			return nil, ErrChangesetNotFound
 		}
 		return nil, err
@@ -566,6 +907,12 @@ func (s *RedisStorage) ListChangesets(ctx context.Context, sliceID string, statu
 	ids, err := s.rdb.LRange(ctx, s.key("slice_changesets", sliceID), 0, -1).Result()
 	if err != nil && err != redis.Nil {
 		return nil, err
+	}
+	if len(ids) == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			ids = append(ids, state.SliceChangesets[sliceID]...)
+		}
 	}
 	var result []*models.Changeset
 	for _, id := range ids {
@@ -592,6 +939,13 @@ func (s *RedisStorage) UpdateChangeset(ctx context.Context, changeset *models.Ch
 	}
 	raw, err := marshal(changeset)
 	if err != nil {
+		return err
+	}
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		copyCS := *changeset
+		state.Changesets[changeset.ID] = &copyCS
+		return nil
+	}); err != nil {
 		return err
 	}
 	return s.rdb.Set(ctx, s.key("changeset", changeset.ID), raw, 0).Err()
@@ -703,6 +1057,19 @@ func (s *RedisStorage) AddEntry(ctx context.Context, entry *models.DirectoryEntr
 		return err
 	}
 
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		copyEntry := *entry
+		state.Entries[entry.ID] = &copyEntry
+		state.EntriesByParent[entry.ParentID] = append(state.EntriesByParent[entry.ParentID], entry.ID)
+		if _, ok := state.EntryPathsBySlice[entry.ParentID]; !ok {
+			state.EntryPathsBySlice[entry.ParentID] = make(map[string]string)
+		}
+		state.EntryPathsBySlice[entry.ParentID][entry.Path] = entry.ID
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	raw, err := marshal(entry)
 	if err != nil {
 		return err
@@ -722,6 +1089,13 @@ func (s *RedisStorage) GetEntry(ctx context.Context, entryID string) (*models.Di
 	raw, err := s.rdb.Get(ctx, s.key("entry", entryID)).Result()
 	if err != nil {
 		if err == redis.Nil {
+			state, loadErr := s.loadDurableState(ctx)
+			if loadErr == nil {
+				if entry, ok := state.Entries[entryID]; ok {
+					copyEntry := *entry
+					return &copyEntry, nil
+				}
+			}
 			return nil, ErrEntryNotFound
 		}
 		return nil, err
@@ -739,6 +1113,14 @@ func (s *RedisStorage) GetEntryByPath(ctx context.Context, sliceID, path string)
 	entryID, err := s.rdb.Get(ctx, s.key("entry_path", sliceID, path)).Result()
 	if err != nil {
 		if err == redis.Nil {
+			state, loadErr := s.loadDurableState(ctx)
+			if loadErr == nil {
+				if paths, ok := state.EntryPathsBySlice[sliceID]; ok {
+					if id, ok := paths[path]; ok {
+						return s.GetEntry(ctx, id)
+					}
+				}
+			}
 			return nil, ErrEntryNotFound
 		}
 		return nil, err
@@ -752,6 +1134,12 @@ func (s *RedisStorage) ListEntries(ctx context.Context, sliceID, parentID string
 	ids, err := s.rdb.SMembers(ctx, s.key("entries_by_parent", parentID)).Result()
 	if err != nil {
 		return nil, err
+	}
+	if len(ids) == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			ids = append(ids, state.EntriesByParent[parentID]...)
+		}
 	}
 	sort.Strings(ids)
 	var entries []*models.DirectoryEntry
@@ -775,6 +1163,13 @@ func (s *RedisStorage) UpdateEntry(ctx context.Context, entry *models.DirectoryE
 	if err != nil {
 		return err
 	}
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		copyEntry := *entry
+		state.Entries[entry.ID] = &copyEntry
+		return nil
+	}); err != nil {
+		return err
+	}
 	return s.rdb.Set(ctx, s.key("entry", entry.ID), raw, 0).Err()
 }
 
@@ -783,6 +1178,25 @@ func (s *RedisStorage) DeleteEntry(ctx context.Context, entryID string) error {
 	ctx = ensureCtx(ctx)
 	entry, err := s.GetEntry(ctx, entryID)
 	if err != nil {
+		return err
+	}
+
+	if err := s.withDurableState(ctx, func(state *durableState) error {
+		delete(state.Entries, entryID)
+		if ids, ok := state.EntriesByParent[entry.ParentID]; ok {
+			filtered := ids[:0]
+			for _, id := range ids {
+				if id != entryID {
+					filtered = append(filtered, id)
+				}
+			}
+			state.EntriesByParent[entry.ParentID] = filtered
+		}
+		if paths, ok := state.EntryPathsBySlice[entry.ParentID]; ok {
+			delete(paths, entry.Path)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	pipe := s.rdb.TxPipeline()
@@ -799,6 +1213,11 @@ func (s *RedisStorage) GetGlobalState(ctx context.Context) (*models.GlobalState,
 	raw, err := s.rdb.Get(ctx, s.key("global_state")).Result()
 	if err != nil {
 		if err == redis.Nil {
+			durable, loadErr := s.loadDurableState(ctx)
+			if loadErr == nil && durable.GlobalState != nil {
+				copyState := *durable.GlobalState
+				return &copyState, nil
+			}
 			return nil, ErrInvalidInput
 		}
 		return nil, err
@@ -816,6 +1235,7 @@ func (s *RedisStorage) UpdateGlobalState(ctx context.Context, state *models.Glob
 
 	key := s.key("global_state")
 	attempts := 0
+	var mergedResult *models.GlobalState
 	for {
 		attempts++
 		err := s.rdb.Watch(ctx, func(tx *redis.Tx) error {
@@ -838,17 +1258,32 @@ func (s *RedisStorage) UpdateGlobalState(ctx context.Context, state *models.Glob
 				return err
 			}
 
+			mergedResult = merged
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				return pipe.Set(ctx, key, rawMerged, 0).Err()
 			})
 			return err
 		}, key)
 
+		if err == nil {
+			break
+		}
 		if err == redis.TxFailedErr && attempts < 5 {
 			continue
 		}
 		return err
 	}
+
+	durableSnapshot := state
+	if mergedResult != nil {
+		durableSnapshot = mergedResult
+	}
+
+	return s.withDurableState(ctx, func(durable *durableState) error {
+		copyState := *durableSnapshot
+		durable.GlobalState = &copyState
+		return nil
+	})
 }
 
 func mergeGlobalStates(incoming, current *models.GlobalState) *models.GlobalState {
