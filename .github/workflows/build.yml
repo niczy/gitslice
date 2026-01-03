@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version: '1.23'
 
     - name: Install protoc
       run: |
@@ -48,6 +48,12 @@ jobs:
       run: |
         cd workflow_test
         go test -v -run TestCLIBuild
+
+    - name: Run full test suite with mocks
+      env:
+        RUN_INTEGRATION_TESTS: "1"
+      run: |
+        go test ./...
 
     - name: Test coverage for workflow tests
       run: |

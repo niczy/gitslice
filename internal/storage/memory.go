@@ -261,7 +261,9 @@ func (s *InMemoryStorage) UpdateSliceMetadata(ctx context.Context, sliceID strin
 		return ErrSliceNotFound
 	}
 
-	metadata.LastModified = time.Now()
+	if metadata.LastModified.IsZero() {
+		metadata.LastModified = time.Now()
+	}
 	s.sliceMetadata[sliceID] = metadata
 	return nil
 }
@@ -750,5 +752,11 @@ func (s *InMemoryStorage) UpdateGlobalState(ctx context.Context, state *models.G
 	}
 
 	s.globalState = &stateCopy
+	return nil
+}
+
+// RebuildIndexes is a no-op for the in-memory backend because indexes are kept in memory alongside data.
+func (s *InMemoryStorage) RebuildIndexes(ctx context.Context) error {
+	_ = ctx
 	return nil
 }

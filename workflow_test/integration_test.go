@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	adminservice "github.com/niczy/gitslice/internal/services/admin"
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
@@ -37,14 +40,25 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
-	st := storage.NewInMemoryStorage()
+	mr, err := miniredis.Run()
+	if err != nil {
+		fmt.Printf("Failed to start mock redis: %v\n", err)
+		os.Exit(1)
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	objectStore := storage.NewInMemoryObjectStore()
+	st := storage.NewRedisStorage(client, objectStore, "integration")
+	defer func() {
+		_ = client.Close()
+		mr.Close()
+	}()
 
 	// Initialize root slice
 	if err := st.InitializeRootSlice(nil); err != nil {
 		fmt.Printf("Warning: Failed to initialize root slice: %v\n", err)
 	}
 
-	var err error
 	sliceServiceAddr, sliceServer, err = startSliceService(st)
 	if err != nil {
 		fmt.Printf("Failed to start slice service: %v\n", err)
@@ -497,6 +511,85 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 
 	if rootState.LatestCommitHash != mergeResp.GlobalCommitHash {
 		t.Fatalf("expected root head to match global commit hash %s, got %s", mergeResp.GlobalCommitHash, rootState.LatestCommitHash)
+	}
+}
+
+func TestRedisRestartRebuildsEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	objectStore := storage.NewInMemoryObjectStore()
+	st := storage.NewRedisStorage(client, objectStore, "restart-e2e")
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to init root slice: %v", err)
+	}
+
+	sliceAddr, sliceSrv, err := startSliceService(st)
+	if err != nil {
+		t.Fatalf("failed to start slice service: %v", err)
+	}
+	defer sliceSrv.GracefulStop()
+
+	adminAddr, adminSrv, err := startAdminService(st)
+	if err != nil {
+		t.Fatalf("failed to start admin service: %v", err)
+	}
+	defer adminSrv.GracefulStop()
+
+	sliceConn, err := grpc.DialContext(ctx, sliceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to dial slice service: %v", err)
+	}
+	defer sliceConn.Close()
+	adminConn, err := grpc.DialContext(ctx, adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to dial admin service: %v", err)
+	}
+	defer adminConn.Close()
+
+	sliceClient := slicev1.NewSliceServiceClient(sliceConn)
+	adminClient := adminv1.NewAdminServiceClient(adminConn)
+
+	sliceID := fmt.Sprintf("restart-slice-%d", time.Now().UnixNano())
+	fileID := fmt.Sprintf("persist-%d.txt", time.Now().UnixNano())
+	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceID, Name: "Persist", Files: []string{fileID}}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	cs, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceID, ModifiedFiles: []string{fileID}, Message: "persist"})
+	if err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	mergeResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ChangesetId})
+	if err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+
+	mr.FlushAll()
+	if err := st.RebuildIndexes(ctx); err != nil {
+		t.Fatalf("rebuild after flush failed: %v", err)
+	}
+
+	globalState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read global state after rebuild: %v", err)
+	}
+	if globalState.GlobalCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected global commit %s after rebuild, got %s", mergeResp.NewCommitHash, globalState.GlobalCommitHash)
+	}
+
+	sliceState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
+	if err != nil {
+		t.Fatalf("failed to read slice state after rebuild: %v", err)
+	}
+	if sliceState.LatestCommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected slice head %s after rebuild, got %s", mergeResp.NewCommitHash, sliceState.LatestCommitHash)
 	}
 }
 

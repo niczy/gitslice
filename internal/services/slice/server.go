@@ -469,5 +469,11 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 		return fmt.Errorf("failed to update global state: %w", err)
 	}
 
+	if updatedState, err := s.storage.GetGlobalState(ctx); err == nil {
+		rootMetadata.HeadCommitHash = updatedState.GlobalCommitHash
+		rootMetadata.LastModified = updatedState.Timestamp
+		_ = s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata)
+	}
+
 	return nil
 }
