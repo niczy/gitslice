@@ -1,4 +1,4 @@
-.PHONY: install proto build build-slice build-admin build-cli start-servers test clean install_gs
+.PHONY: install proto build build-slice build-admin build-cli start-servers test clean install_gs web-install web-build web-test-e2e
 
 GOPATH := $(shell go env GOPATH)
 
@@ -38,3 +38,14 @@ clean:
 
 install_gs: build-cli
 	cp gs_cli/gs_cli $(GOPATH)/bin/gs
+
+web-install:
+	cd web && npm ci
+
+web-build: web-install
+	cd web && npm run build
+
+web-test-e2e: web-install
+	cd web && npm run build
+	cd web && npx playwright install --with-deps
+	cd web && npm run test:e2e
