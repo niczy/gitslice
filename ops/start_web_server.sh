@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="${LOG_DIR:-"$REPO_ROOT/logs"}"
+LOG_DIR="${LOG_DIR:-/logs}"
 WEB_DIR="$REPO_ROOT/web"
 SLICE_BIN="$REPO_ROOT/slice_service_server"
 ADMIN_BIN="$REPO_ROOT/admin_service_server"
