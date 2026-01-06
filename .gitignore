@@ -30,3 +30,12 @@ vendor/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Web app build artifacts
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
+
+# Logs
+logs/
