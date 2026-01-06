@@ -116,6 +116,19 @@ GitHub Actions workflow is configured to:
 
 See `.github/workflows/build.yml` for details.
 
+## SSL Certificates for NGINX
+
+Generate a self-signed certificate and key for `agenttools.dev` and `api.agenttools.dev` with:
+
+```bash
+sudo mkdir -p /etc/ssl/private /etc/ssl/certs
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/agenttools.dev.key \
+  -out /etc/ssl/certs/agenttools.dev.crt \
+  -subj "/CN=agenttools.dev" \
+  -addext "subjectAltName=DNS:agenttools.dev,DNS:api.agenttools.dev"
+```
+
 ## Documentation
 
 See the `spec/` directory for detailed design specifications:
