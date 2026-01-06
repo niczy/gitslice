@@ -39,3 +39,7 @@ web/test-results/
 
 # Logs
 logs/
+
+bin/
+include/
+readme.txt

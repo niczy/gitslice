@@ -2,17 +2,67 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="${LOG_DIR:-/logs}"
 
 cd "$REPO_ROOT"
 
 git pull --ff-only
 
-LOG_DIR="$LOG_DIR" "$REPO_ROOT/ops/start_web_server.sh"
+"$REPO_ROOT/ops/start_web_server.sh"
 
-sudo mkdir -p "$LOG_DIR"
-sudo chown -R "$(whoami)" "$LOG_DIR"
-export LOG_DIR
-envsubst '$LOG_DIR' < "$REPO_ROOT/ops/nginx.conf" | sudo tee /etc/nginx/nginx.conf > /dev/null
-sudo systemctl reload nginx
+sudo tee /etc/nginx/nginx.conf > /dev/null <<'EOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/nginx.access.log main;
+    error_log /var/log/nginx/nginx.error.log;
+
+    upstream slice_service {
+        server 127.0.0.1:50051;
+    }
+
+    upstream admin_service {
+        server 127.0.0.1:50052;
+    }
+
+    upstream web_app {
+        server 127.0.0.1:4173;
+    }
+
+    server {
+        listen 80;
+        server_name api.agenttools.dev;
+
+        location /slice.v1.SliceService/ {
+            grpc_pass grpc://slice_service;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+        }
+
+        location /admin.v1.AdminService/ {
+            grpc_pass grpc://admin_service;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+        }
+    }
+
+    server {
+        listen 80;
+        server_name agenttools.dev;
+
+        location / {
+            proxy_pass http://web_app;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+}
+EOF
+sudo systemctl restart nginx
 

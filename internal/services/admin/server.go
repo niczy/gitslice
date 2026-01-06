@@ -236,7 +236,7 @@ func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.Conf
 
 	var protoConflicts []*adminv1.Conflict
 	for _, conflict := range conflicts {
-		if req.SliceId != nil {
+		if req.SliceId != "" {
 			contains := false
 			for _, id := range conflict.ConflictingSlices {
 				if id == req.GetSliceId() {
@@ -318,7 +318,7 @@ func (s *adminServiceServer) WatchConflicts(req *adminv1.WatchConflictsRequest, 
 
 	var protoConflicts []*adminv1.Conflict
 	for _, conflict := range conflicts {
-		if req.SliceId != nil {
+		if req.SliceId != "" {
 			matches := false
 			for _, id := range conflict.ConflictingSlices {
 				if id == req.GetSliceId() {

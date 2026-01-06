@@ -662,7 +662,7 @@ func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 
 	req := &adminv1.ConflictsRequest{}
 	if sliceID != "" {
-		req.SliceId = &sliceID
+		req.SliceId = sliceID
 	}
 
 	resp, err := cli.adminClient.GetConflicts(ctx, req)

@@ -27,9 +27,9 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
   rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
 }
 
- message BatchMergeRequest {
-   optional int32 max_slices = 1;
- }
+  message BatchMergeRequest {
+    int32 max_slices = 1;
+  }
 
  message BatchMergeResponse {
    string global_commit_hash = 1;
@@ -69,7 +69,7 @@ message SliceInfo {
 }
 
 message ConflictsRequest {
-  optional string slice_id = 1;
+  string slice_id = 1;
 }
 
 message ConflictsResponse {
@@ -108,7 +108,7 @@ message GlobalCommitHistory {
 }
 
 message WatchConflictsRequest {
-  optional string slice_id = 1;
+  string slice_id = 1;
 }
 
 message ConflictUpdate {
