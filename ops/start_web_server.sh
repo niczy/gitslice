@@ -2,15 +2,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="${LOG_DIR:-$REPO_ROOT/logs}"
+RAW_LOG_DIR="${LOG_DIR:-$REPO_ROOT/logs}"
 WEB_DIR="$REPO_ROOT/web"
 SLICE_BIN="$REPO_ROOT/slice_service_server"
 ADMIN_BIN="$REPO_ROOT/admin_service_server"
+LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pwd)"
 WEB_LOG="$LOG_DIR/web_preview.log"
 SLICE_LOG="$LOG_DIR/slice_service.log"
 ADMIN_LOG="$LOG_DIR/admin_service.log"
-
-mkdir -p "$LOG_DIR"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
