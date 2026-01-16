@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -404,11 +405,22 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("parent slice not found: %s", req.ParentSliceId))
 	}
 
+	folderPath := strings.TrimSuffix(req.FolderPath, "/")
+	selectedFiles := make([]string, 0)
+	if folderPath != "" {
+		prefix := folderPath + "/"
+		for _, fileID := range parentSlice.Files {
+			if fileID == folderPath || strings.HasPrefix(fileID, prefix) {
+				selectedFiles = append(selectedFiles, fileID)
+			}
+		}
+	}
+
 	newSlice := &models.Slice{
 		ID:          req.NewSliceId,
 		Name:        req.Name,
 		Description: req.Description,
-		Files:       []string{},
+		Files:       selectedFiles,
 		Owners:      parentSlice.Owners,
 		CreatedBy:   "user",
 		ParentSlice: parentSlice.ID,
@@ -422,7 +434,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	return &slicev1.CreateSliceFromFolderResponse{
 		SliceId: req.NewSliceId,
 		Status:  "created",
-		Files:   []string{},
+		Files:   selectedFiles,
 	}, nil
 }
 
@@ -450,6 +462,12 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 
 	if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
 		return fmt.Errorf("failed to update root metadata: %w", err)
+	}
+
+	for _, fileID := range files {
+		if err := s.storage.AddFileToSlice(ctx, fileID, rootSlice.ID); err != nil {
+			return fmt.Errorf("failed to add file to root slice: %w", err)
+		}
 	}
 
 	state, err := s.storage.GetGlobalState(ctx)
