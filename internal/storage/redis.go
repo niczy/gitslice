@@ -130,6 +130,10 @@ func (s *RedisStorage) cacheSlice(ctx context.Context, slice *models.Slice, meta
 	pipe.Set(ctx, s.key("slice", slice.ID), raw, 0)
 	pipe.SAdd(ctx, s.key("slices"), slice.ID)
 	for _, fileID := range slice.Files {
+		if slice.IsRoot {
+			pipe.SRem(ctx, s.key("file_index", fileID), slice.ID)
+			continue
+		}
 		pipe.SAdd(ctx, s.key("file_index", fileID), slice.ID)
 	}
 
