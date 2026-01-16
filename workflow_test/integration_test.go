@@ -330,6 +330,107 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	}
 }
 
+func TestRootSliceEndToEndWorkflow(t *testing.T) {
+	workdir := t.TempDir()
+
+	output := runCLIOrFail(t, workdir, "root")
+	if !strings.Contains(output, "Root Slice ID: root_slice") {
+		t.Fatalf("expected root slice info, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "init", "root_slice")
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
+
+	rootFolders := []string{"apps", "services", "docs"}
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Add root folders", "--files", strings.Join(rootFolders, ","))
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("failed to extract changeset ID from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected merge success, got: %s", output)
+	}
+
+	rootCommit := extractCommitHash(output)
+	if rootCommit == "" {
+		t.Fatalf("expected root commit hash from merge output, got: %s", output)
+	}
+
+	sliceID := fmt.Sprintf("slice-apps-%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, workdir, "fork", sliceID, "apps", "--parent", "root_slice")
+	if !strings.Contains(output, "Created slice: "+sliceID) {
+		t.Fatalf("expected slice creation output, got: %s", output)
+	}
+
+	sliceWorkdir := t.TempDir()
+	output = runCLIOrFail(t, sliceWorkdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceID)
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+	if !strings.Contains(output, "apps (0 bytes)") {
+		t.Fatalf("expected apps folder in checkout output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", "apps/readme.md")
+	changesetID = extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("failed to extract changeset ID from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, sliceWorkdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected merge success, got: %s", output)
+	}
+
+	sliceCommit := extractCommitHash(output)
+	if sliceCommit == "" {
+		t.Fatalf("expected slice commit hash from merge output, got: %s", output)
+	}
+
+	updatedSliceWorkdir := t.TempDir()
+	output = runCLIOrFail(t, updatedSliceWorkdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceID)
+	if !strings.Contains(output, "Commit: "+sliceCommit) {
+		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
+	}
+	if !strings.Contains(output, "apps/readme.md") {
+		t.Fatalf("expected apps/readme.md in slice checkout, got: %s", output)
+	}
+
+	rootCheckoutDir := t.TempDir()
+	output = runCLIOrFail(t, rootCheckoutDir, "init", "root_slice")
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("expected init output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", "root_slice")
+	if !strings.Contains(output, "Commit: "+sliceCommit) {
+		t.Fatalf("expected root slice to promote latest commit, got: %s", output)
+	}
+	if !strings.Contains(output, "apps/readme.md") {
+		t.Fatalf("expected apps/readme.md in root checkout, got: %s", output)
+	}
+	if !strings.Contains(output, "apps (0 bytes)") || !strings.Contains(output, "services (0 bytes)") || !strings.Contains(output, "docs (0 bytes)") {
+		t.Fatalf("expected root folders in root checkout output, got: %s", output)
+	}
+	if rootCommit == sliceCommit {
+		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
+	}
+}
+
 func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping batch merge integration test in short mode")

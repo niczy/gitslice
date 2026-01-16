@@ -325,8 +325,24 @@ func (s *InMemoryStorage) AddFileToSlice(ctx context.Context, fileID, sliceID st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.slices[sliceID]; !exists {
+	slice, exists := s.slices[sliceID]
+	if !exists {
 		return ErrSliceNotFound
+	}
+
+	hasFile := false
+	for _, existing := range slice.Files {
+		if existing == fileID {
+			hasFile = true
+			break
+		}
+	}
+	if !hasFile {
+		slice.Files = append(slice.Files, fileID)
+	}
+
+	if slice.IsRoot {
+		return nil
 	}
 
 	if s.fileIndex[fileID] == nil {

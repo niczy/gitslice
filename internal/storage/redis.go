@@ -621,6 +621,10 @@ func (s *RedisStorage) AddFileToSlice(ctx context.Context, fileID, sliceID strin
 		return err
 	}
 
+	if slice.IsRoot {
+		return nil
+	}
+
 	return s.rdb.SAdd(ctx, s.key("file_index", fileID), sliceID).Err()
 }
 
