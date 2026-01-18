@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -315,26 +316,31 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		fileContents[file.FileId] = file.Content
 	}
 
-	var cachedHits int
-	for _, fm := range resp.Manifest.FileMetadata {
-		var content []byte
+	var cachedHits int64
+	workerCount := checkoutWorkerCount(len(resp.Manifest.FileMetadata))
+	if workerCount > 0 {
+		runCheckoutJobs(workerCount, resp.Manifest.FileMetadata, func(fm *slicev1.FileMetadata) {
+			var content []byte
 
-		if cache != nil && fm.Hash != "" {
-			if data, err := cache.ReadObject(fm.Hash); err == nil {
-				content = data
-				cachedHits++
-			} else if !errors.Is(err, os.ErrNotExist) {
-				log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
+			if cache != nil && fm.Hash != "" {
+				if data, err := cache.ReadObject(fm.Hash); err == nil {
+					content = data
+					atomic.AddInt64(&cachedHits, 1)
+				} else if !errors.Is(err, os.ErrNotExist) {
+					log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
+				}
 			}
-		}
 
-		if content == nil {
-			if data, ok := fileContents[fm.FileId]; ok {
-				content = data
+			if content == nil {
+				if data, ok := fileContents[fm.FileId]; ok {
+					content = data
+				}
 			}
-		}
 
-		if content != nil {
+			if content == nil {
+				return
+			}
+
 			if cache != nil && fm.Hash != "" {
 				if err := cache.StoreObject(fm.Hash, content); err != nil {
 					log.Printf("Failed to update cache for %s: %v", fm.Path, err)
@@ -344,13 +350,13 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 			targetPath := filepath.Join(".", fm.Path)
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				log.Printf("Failed to prepare directories for %s: %v", fm.Path, err)
-				continue
+				return
 			}
 
 			if err := os.WriteFile(targetPath, content, 0o644); err != nil {
 				log.Printf("Failed to write file %s: %v", fm.Path, err)
 			}
-		}
+		})
 	}
 
 	// Display checkout results
@@ -366,7 +372,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	if cache != nil {
-		fmt.Printf("Cache hits: %d\n", cachedHits)
+		fmt.Printf("Cache hits: %d\n", atomic.LoadInt64(&cachedHits))
 	}
 }
 
