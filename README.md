@@ -11,6 +11,11 @@ Gitslice is a distributed version control system that enables efficient, conflic
 │   │   ├── slice_service.proto
 │   │   ├── slice_service.pb.go
 │   │   └── slice_service_grpc.pb.go
+│   ├── file/              # File service proto files
+│   │   ├── file_service.proto
+│   │   ├── file_service.pb.go
+│   │   ├── file_service_grpc.pb.go
+│   │   └── file_service.pb.gw.go
 │   └── admin/             # Admin service proto files
 │       ├── admin_service.proto
 │       ├── admin_service.pb.go
@@ -40,12 +45,14 @@ Gitslice is a distributed version control system that enables efficient, conflic
 - Protocol Buffers compiler (protoc)
 - protoc-gen-go
 - protoc-gen-go-grpc
+- protoc-gen-grpc-gateway
 
 ### Install Dependencies
 
 ```bash
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
+go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest
 ```
 
 ### Generate Proto Code
@@ -53,6 +60,10 @@ go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
 ```bash
 cd proto/slice
 protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto
+
+cd ../file
+protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto
 
 cd ../admin
 protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative admin_service.proto

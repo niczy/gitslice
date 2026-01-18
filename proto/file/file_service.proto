@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package file.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/file;filev1";
+
+import "google/api/annotations.proto";
+
+service FileService {
+  // List entries within a slice at a given path.
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/entries/{path=**}"
+      additional_bindings { get: "/v1/slices/{slice_id}/entries" }
+    };
+  }
+
+  // Fetch the contents of a file within a slice.
+  rpc GetFile(GetFileRequest) returns (GetFileResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/files/{path=**}"
+      additional_bindings { get: "/v1/slices/{slice_id}/files" }
+    };
+  }
+}
+
+message ListEntriesRequest {
+  string slice_id = 1;
+  string path = 2;
+  int32 limit = 3;
+}
+
+message ListEntriesResponse {
+  string slice_id = 1;
+  string path = 2;
+  repeated DirectoryEntry entries = 3;
+  bool truncated = 4;
+}
+
+message DirectoryEntry {
+  string name = 1;
+  string path = 2;
+  EntryType type = 3;
+  int64 size = 4;
+  bool has_children = 5;
+}
+
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0;
+  ENTRY_TYPE_FILE = 1;
+  ENTRY_TYPE_DIRECTORY = 2;
+}
+
+message GetFileRequest {
+  string slice_id = 1;
+  string path = 2;
+}
+
+message GetFileResponse {
+  File file = 1;
+}
+
+message File {
+  string path = 1;
+  bytes content = 2;
+  int64 size = 3;
+  string hash = 4;
+}
