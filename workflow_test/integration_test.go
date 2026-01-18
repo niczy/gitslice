@@ -489,6 +489,16 @@ func TestFileBrowserIntegration(t *testing.T) {
 	}
 
 	readmeContent := []byte("# Hello\\nFile browser test.")
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       "apps/readme.md",
+		Path:     "apps/readme.md",
+		Type:     "file",
+		ParentID: sliceID,
+		Content:  readmeContent,
+		Size:     int64(len(readmeContent)),
+	}); err != nil {
+		t.Fatalf("failed to add entry metadata: %v", err)
+	}
 	if err := testStorage.AddFileContent(ctx, &models.FileContent{
 		FileID:  "apps/readme.md",
 		Path:    "apps/readme.md",
