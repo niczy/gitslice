@@ -131,18 +131,18 @@ function OverviewPage() {
 
 function RepoBrowser() {
   const [sliceId, setSliceId] = useState('root_slice');
-  const [currentPath, setCurrentPath] = useState('');
-  const [entries, setEntries] = useState([]);
+  const [treeEntries, setTreeEntries] = useState({});
+  const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
   const breadcrumbs = useMemo(() => {
-    if (!currentPath) {
+    if (!selectedFile) {
       return [{ name: 'root', path: '' }];
     }
-    const parts = currentPath.split('/');
+    const parts = selectedFile.split('/');
     return [
       { name: 'root', path: '' },
       ...parts.map((part, index) => ({
@@ -150,24 +150,25 @@ function RepoBrowser() {
         path: parts.slice(0, index + 1).join('/'),
       })),
     ];
-  }, [currentPath]);
+  }, [selectedFile]);
+
+  useEffect(() => {
+    setTreeEntries({});
+    setExpandedPaths(['']);
+    setSelectedFile(null);
+    setFileContent('');
+  }, [sliceId]);
 
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
 
-    const loadEntries = async () => {
+    const loadRoot = async () => {
       setIsLoading(true);
       setError('');
-      setSelectedFile(null);
-      setFileContent('');
 
       try {
-        const params = new URLSearchParams();
-        if (currentPath) {
-          params.set('path', currentPath);
-        }
-        const response = await fetch(`${apiBaseUrl}/v1/slices/${sliceId}/entries?${params.toString()}`, {
+        const response = await fetch(`${apiBaseUrl}/v1/slices/${sliceId}/entries`, {
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -177,7 +178,7 @@ function RepoBrowser() {
         if (!active) {
           return;
         }
-        setEntries(payload.entries || []);
+        setTreeEntries({ '': payload.entries || [] });
       } catch (err) {
         if (!active || err?.name === 'AbortError') {
           return;
@@ -190,18 +191,57 @@ function RepoBrowser() {
       }
     };
 
-    loadEntries();
+    loadRoot();
 
     return () => {
       active = false;
       controller.abort();
     };
-  }, [currentPath, sliceId]);
+  }, [sliceId]);
+
+  const fetchEntries = async (path) => {
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const params = new URLSearchParams();
+      if (path) {
+        params.set('path', path);
+      }
+      const response = await fetch(`${apiBaseUrl}/v1/slices/${sliceId}/entries?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      const payload = await response.json();
+      setTreeEntries((prev) => ({
+        ...prev,
+        [path]: payload.entries || [],
+      }));
+    } catch (err) {
+      setError('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const toggleDirectory = async (entry) => {
+    const isExpanded = expandedPaths.includes(entry.path);
+    if (isExpanded) {
+      setExpandedPaths((prev) => prev.filter((path) => path !== entry.path));
+      return;
+    }
+
+    if (!treeEntries[entry.path]) {
+      await fetchEntries(entry.path);
+    }
+
+    setExpandedPaths((prev) => [...prev, entry.path]);
+  };
 
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
     if (entryKind === 'directory') {
-      setCurrentPath(entry.path);
+      await toggleDirectory(entry);
       return;
     }
 
@@ -226,8 +266,43 @@ function RepoBrowser() {
     }
   };
 
-  const handleBreadcrumbClick = (path) => {
-    setCurrentPath(path);
+  const handleBreadcrumbClick = async (path) => {
+    if (path && !treeEntries[path]) {
+      await fetchEntries(path);
+    }
+    if (path) {
+      setExpandedPaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
+      return;
+    }
+    setExpandedPaths(['']);
+  };
+
+  const renderTree = (path, depth = 0) => {
+    const entries = treeEntries[path] || [];
+    return (
+      <ul className="tree-list">
+        {entries.map((entry) => {
+          const entryKind = normalizeEntryType(entry.type);
+          const isExpanded = expandedPaths.includes(entry.path);
+          return (
+            <li key={entry.path}>
+              <button
+                type="button"
+                className={`tree-entry ${entryKind}`}
+                style={{ paddingLeft: `${depth * 18 + 12}px` }}
+                onClick={() => handleEntryClick(entry)}
+              >
+                <span className="tree-caret">{entryKind === 'directory' ? (isExpanded ? '▾' : '▸') : '•'}</span>
+                <span className="entry-icon">{entryKind === 'directory' ? '📁' : '📄'}</span>
+                <span className="entry-name">{entry.name}</span>
+                {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
+              </button>
+              {entryKind === 'directory' && isExpanded && renderTree(entry.path, depth + 1)}
+            </li>
+          );
+        })}
+      </ul>
+    );
   };
 
   return (
@@ -236,8 +311,8 @@ function RepoBrowser() {
         <p className="eyebrow">Monorepo navigator</p>
         <h2>Browse the fetched code</h2>
         <p>
-          The file service streams content directly from slice storage. Select a directory to explore, or open a file to view
-          its contents.
+          The file service streams content directly from slice storage. Expand folders to explore the tree and open a file to
+          preview it.
         </p>
       </div>
 
@@ -264,25 +339,14 @@ function RepoBrowser() {
       <div className="browser-grid">
         <div className="browser-panel">
           <div className="panel-header">
-            <h3>Entries</h3>
+            <h3>File tree</h3>
             {isLoading && <span className="status">Loading…</span>}
           </div>
           {error && <div className="panel-error">{error}</div>}
-          {!isLoading && !error && entries.length === 0 && <div className="panel-empty">No entries found.</div>}
-          <ul className="entry-list">
-            {entries.map((entry) => {
-              const entryKind = normalizeEntryType(entry.type);
-              return (
-                <li key={entry.path}>
-                  <button type="button" className="entry" onClick={() => handleEntryClick(entry)}>
-                    <span className={`entry-icon ${entryKind}`}>{entryKind === 'directory' ? '📁' : '📄'}</span>
-                    <span className="entry-name">{entry.name}</span>
-                    {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          {!isLoading && !error && (treeEntries[''] || []).length === 0 && (
+            <div className="panel-empty">No entries found.</div>
+          )}
+          {renderTree('')}
         </div>
 
         <div className="browser-panel">
@@ -290,10 +354,8 @@ function RepoBrowser() {
             <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
             {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
           </div>
-          {!selectedFile && <div className="panel-empty">Choose a file from the list to preview its contents.</div>}
-          {selectedFile && (
-            <pre className="file-preview">{fileContent || 'No content available yet.'}</pre>
-          )}
+          {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+          {selectedFile && <pre className="file-preview">{fileContent || 'No content available yet.'}</pre>}
         </div>
       </div>
     </section>

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -15,10 +16,13 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/niczy/gitslice/internal/models"
 	adminservice "github.com/niczy/gitslice/internal/services/admin"
+	fileservice "github.com/niczy/gitslice/internal/services/file"
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -31,6 +35,7 @@ var (
 
 	sliceServer *grpc.Server
 	adminServer *grpc.Server
+	testStorage *storage.RedisStorage
 )
 
 // TestMain sets up and tears down services for all tests
@@ -49,6 +54,7 @@ func TestMain(m *testing.M) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	objectStore := storage.NewInMemoryObjectStore()
 	st := storage.NewRedisStorage(client, objectStore, "integration")
+	testStorage = st
 	defer func() {
 		_ = client.Close()
 		mr.Close()
@@ -95,6 +101,7 @@ func startSliceService(st storage.Storage) (string, *grpc.Server, error) {
 	}
 
 	srv := sliceservice.NewGRPCServer(st)
+	filev1.RegisterFileServiceServer(srv, fileservice.NewService(st))
 	go srv.Serve(lis)
 
 	return lis.Addr().String(), srv, nil
@@ -217,6 +224,36 @@ func newAdminClient(t *testing.T) adminv1.AdminServiceClient {
 	})
 
 	return adminv1.NewAdminServiceClient(conn)
+}
+
+func newFileClient(t *testing.T) filev1.FileServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(sliceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial slice service for file client: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return filev1.NewFileServiceClient(conn)
+}
+
+func assertEntryNames(t *testing.T, entries []*filev1.DirectoryEntry, expected ...string) {
+	t.Helper()
+
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.Name] = true
+	}
+
+	for _, name := range expected {
+		if !seen[name] {
+			t.Fatalf("expected entry %q in list, got %#v", name, entries)
+		}
+	}
 }
 
 func resolveAllConflicts(ctx context.Context, t *testing.T, client adminv1.AdminServiceClient) {
@@ -428,6 +465,62 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	if rootCommit == sliceCommit {
 		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
+	}
+}
+
+func TestFileBrowserIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if testStorage == nil {
+		t.Fatalf("expected test storage to be initialized")
+	}
+
+	sliceID := fmt.Sprintf("slice-browser-%d", time.Now().UnixNano())
+	files := []string{
+		"apps/readme.md",
+		"apps/components/button.jsx",
+		"docs/guide.md",
+	}
+
+	adminClient := newAdminClient(t)
+	if _, err := adminClient.CreateSlice(ctx, &adminv1.CreateSliceRequest{SliceId: sliceID, Name: "Browser", Files: files}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	readmeContent := []byte("# Hello\\nFile browser test.")
+	if err := testStorage.AddFileContent(ctx, &models.FileContent{
+		FileID:  "apps/readme.md",
+		Path:    "apps/readme.md",
+		Content: readmeContent,
+		Size:    int64(len(readmeContent)),
+	}); err != nil {
+		t.Fatalf("failed to add file content: %v", err)
+	}
+
+	fileClient := newFileClient(t)
+
+	rootEntries, err := fileClient.ListEntries(ctx, &filev1.ListEntriesRequest{SliceId: sliceID})
+	if err != nil {
+		t.Fatalf("failed to list root entries: %v", err)
+	}
+	assertEntryNames(t, rootEntries.Entries, "apps", "docs")
+
+	appEntries, err := fileClient.ListEntries(ctx, &filev1.ListEntriesRequest{SliceId: sliceID, Path: "apps"})
+	if err != nil {
+		t.Fatalf("failed to list apps entries: %v", err)
+	}
+	assertEntryNames(t, appEntries.Entries, "readme.md", "components")
+
+	fileResp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{SliceId: sliceID, Path: "apps/readme.md"})
+	if err != nil {
+		t.Fatalf("failed to fetch file: %v", err)
+	}
+	if fileResp.File == nil || fileResp.File.Path != "apps/readme.md" {
+		t.Fatalf("expected readme file response, got %#v", fileResp.File)
+	}
+	if !bytes.Equal(fileResp.File.Content, readmeContent) {
+		t.Fatalf("unexpected file content: %q", string(fileResp.File.Content))
 	}
 }
 
