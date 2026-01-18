@@ -6,6 +6,12 @@ A scalable version control system designed for massive monorepos with billions o
 
 ---
 
+## Prototype Scope (Current)
+
+The current codebase is a prototype: slice/admin services run in-memory, the CLI focuses on basic slice and changeset workflows, and the FileService gateway provides read-only browsing. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the concrete service layout and [API_DESIGN.md](./API_DESIGN.md) for the current proto surface. Example commands below use conceptual `slice`/`slice-admin` syntax; the current prototype CLI uses `gs` (see [CLI_DESIGN.md](./CLI_DESIGN.md)).
+
+---
+
 ## Product Overview
 
 ### The Problem

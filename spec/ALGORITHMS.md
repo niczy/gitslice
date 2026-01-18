@@ -1,6 +1,8 @@
 # Algorithms
 
-This document describes the key algorithms used in the slice-based version control system.
+## Executive Summary
+
+This document captures the intended algorithms for slice workflows. The current prototype implements simplified, in-memory variants in [`internal/storage/memory.go`](../internal/storage/memory.go) and the slice/admin service handlers in [`internal/services`](../internal/services). Treat the sections below as target behavior rather than the current implementation.
 
 ---
 

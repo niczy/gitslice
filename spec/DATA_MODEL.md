@@ -1,16 +1,29 @@
 # Data Models
 
+## Executive Summary
+
+The current prototype ships protobuf definitions for slice, admin, and file workflows. These are the authoritative models today and live in the `proto/` directory. The object-store and metadata models below describe the intended future state and are not fully implemented in the in-memory backend.
+
+## Current Implementation Models
+
+The following protobuf files define the live data contracts:
+- [`proto/slice/slice_service.proto`](../proto/slice/slice_service.proto)
+- [`proto/admin/admin_service.proto`](../proto/admin/admin_service.proto)
+- [`proto/file/file_service.proto`](../proto/file/file_service.proto)
+
+These models are backed by the in-memory storage implementation in [`internal/storage/memory.go`](../internal/storage/memory.go).
+
+---
+
 ## Overview
 
-This document describes all data models used in the slice-based version control system, including:
+This document describes the planned data models for the slice-based version control system, including:
 - Object store models (immutable data)
 - Metadata models (state tracking)
 - Conflict models
 - Manifest models
 - Changeset models
 - Batch merge models
-
-All models are defined using Protocol Buffers (protobuf) for serialization and communication.
 
 ---
 
