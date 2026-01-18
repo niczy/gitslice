@@ -19,7 +19,7 @@ const features = [
   },
 ];
 
-const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || 'http://localhost:8080';
+const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
 const pageOptions = [
   { id: 'overview', label: 'Overview' },
