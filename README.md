@@ -1,11 +1,19 @@
 # Gitslice
 
-Gitslice is a distributed version control system that enables efficient, conflict-free collaboration on large codebases through slice-based workflows.
+**High-level summary:** Gitslice is a prototype slice-based version control system with gRPC services, a CLI, and a lightweight web landing page. The current implementation runs entirely in-memory while the design docs outline the long-term distributed architecture.
 
 ## Project Structure
 
 ```
 .
+├── admin_service/         # Admin service server implementation
+│   └── main.go
+├── gs_cli/                # CLI client implementation
+│   └── main.go
+├── internal/              # Storage and service implementations
+│   ├── services/
+│   └── storage/
+├── ops/                   # Ops assets (NGINX config, etc.)
 ├── proto/                  # Protocol Buffer definitions and generated code
 │   ├── slice/             # Slice service proto files
 │   │   ├── slice_service.proto
@@ -20,11 +28,7 @@ Gitslice is a distributed version control system that enables efficient, conflic
 │       ├── admin_service.proto
 │       ├── admin_service.pb.go
 │       └── admin_service_grpc.pb.go
-├── slice_service/         # Slice service server implementation
-│   └── main.go
-├── admin_service/         # Admin service server implementation
-│   └── main.go
-├── gs_cli/               # CLI client implementation
+├── slice_service/         # Slice + File service server implementation
 │   └── main.go
 ├── spec/                 # Design specifications
 │   ├── PRODUCT_VISION.md
@@ -33,6 +37,10 @@ Gitslice is a distributed version control system that enables efficient, conflic
 │   ├── CLI_DESIGN.md
 │   ├── API_DESIGN.md
 │   └── ARCHITECTURE.md
+├── web/                  # Vite + React landing page
+│   └── README.md
+├── workflow_test/        # End-to-end integration tests
+│   └── integration_test.go
 └── .github/workflows/    # CI/CD workflows
     └── build.yml
 ```
@@ -85,13 +93,13 @@ go build -o gs_cli ./gs_cli/
 ### Run
 
 ```bash
-# Run slice service (listens on :50051)
+# Run slice service (SliceService on :50051, FileService gateway on :8080)
 ./slice_service_server
 
 # Run admin service (listens on :50052)
 ./admin_service_server
 
-# Run CLI
+# Run CLI (override addresses if needed)
 ./gs_cli --help
 ```
 
@@ -149,6 +157,9 @@ See the `spec/` directory for detailed design specifications:
 - [CLI Design](spec/CLI_DESIGN.md)
 - [API Design](spec/API_DESIGN.md)
 - [Architecture](spec/ARCHITECTURE.md)
+- [Scalability Review](spec/SCALABILITY_REVIEW.md)
+
+For the web landing page, see [web/README.md](web/README.md).
 
 ## License
 

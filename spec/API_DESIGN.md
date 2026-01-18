@@ -1,10 +1,15 @@
 # API Design: gRPC Protocol
 
+## Executive Summary
+
+The current API surface is defined in three protobuf services: SliceService for slice workflows, AdminService for admin workflows (including conflict management), and FileService for read-only file browsing over HTTP via gRPC-Gateway. See the proto sources for the authoritative definitions in `proto/slice/slice_service.proto`, `proto/admin/admin_service.proto`, and `proto/file/file_service.proto`.
+
 ## Overview
 
-This document defines the gRPC API for the Gitslice service. The API is divided into two main services:
+The API is divided into three services:
 - **SliceService**: Core operations for slice management and change list workflows
 - **AdminService**: Administrative operations for batch merging, monitoring, and global state management
+- **FileService**: Read-only file browsing for a slice (exposed via gRPC-Gateway HTTP routes)
 
 ## Service Definitions
 
@@ -39,6 +44,18 @@ service SliceService {
 
   // List pending change lists for a slice
   rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+
+  // Get root slice info
+  rpc GetRootSlice(GetRootSliceRequest) returns (GetRootSliceResponse);
+
+  // Create a new slice from an existing folder
+  rpc CreateSliceFromFolder(CreateSliceFromFolderRequest) returns (CreateSliceFromFolderResponse);
+
+  // Stream checkout for large slices (server streaming)
+  rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
+
+  // Stream changeset creation (client streaming)
+  rpc StreamCreateChangeset(stream ChangesetChunk) returns (CreateChangesetResponse);
 }
 ```
 
@@ -49,14 +66,35 @@ service AdminService {
   // Trigger batch merge to global
   rpc BatchMerge(BatchMergeRequest) returns (BatchMergeResponse);
 
+  // Create a new slice
+  rpc CreateSlice(CreateSliceRequest) returns (CreateSliceResponse);
+
   // List all active slices
   rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
 
   // Get current conflicts across slices
   rpc GetConflicts(ConflictsRequest) returns (ConflictsResponse);
 
+  // Resolve a conflict by choosing a preferred slice
+  rpc ResolveConflict(ResolveConflictRequest) returns (ResolveConflictResponse);
+
   // Get global state
   rpc GetGlobalState(GlobalStateRequest) returns (GlobalStateResponse);
+
+  // Stream conflict updates
+  rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
+}
+```
+
+### File Service: FileService
+
+```protobuf
+service FileService {
+  // List entries within a slice at a given path.
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
+
+  // Fetch the contents of a file within a slice.
+  rpc GetFile(GetFileRequest) returns (GetFileResponse);
 }
 ```
 
@@ -87,7 +125,7 @@ message FileMetadata {
   string path = 2;
   int64 size = 3;
   string hash = 4;
-  string content_url = 5;  // Presigned URL for object fetching
+  string content_url = 5;  // Reserved for future object-store URLs
 }
 
 message FileContent {
@@ -173,9 +211,9 @@ message MergeChangesetResponse {
 }
 
 enum MergeStatus {
-  SUCCESS = 0;
-  CONFLICT = 1;
-  ERROR = 2;
+  MERGE_STATUS_SUCCESS = 0;
+  MERGE_STATUS_CONFLICT = 1;
+  MERGE_STATUS_ERROR = 2;
 }
 
 message Conflict {
@@ -199,11 +237,12 @@ message RebaseChangesetResponse {
 }
 
 enum RebaseStatus {
-  SUCCESS = 0;
-  CONFLICT = 1;
-  NEEDS_MERGE = 2;
-  ERROR = 3;
+  REBASE_STATUS_SUCCESS = 0;
+  REBASE_STATUS_CONFLICT = 1;
+  REBASE_STATUS_NEEDS_MERGE = 2;
+  REBASE_STATUS_ERROR = 3;
 }
+
 ```
 
 #### List Changesets
@@ -275,13 +314,42 @@ message StateResponse {
 }
 ```
 
+#### Get Root Slice
+
+```protobuf
+message GetRootSliceRequest {}
+
+message GetRootSliceResponse {
+  string slice_id = 1;
+  string commit_hash = 2;
+}
+```
+
+#### Create Slice From Folder
+
+```protobuf
+message CreateSliceFromFolderRequest {
+  string parent_slice_id = 1;
+  string folder_path = 2;
+  string new_slice_id = 3;
+  string name = 4;
+  string description = 5;
+}
+
+message CreateSliceFromFolderResponse {
+  string slice_id = 1;
+  string status = 2;
+  repeated string files = 3;
+}
+```
+
 ### Admin Operations
 
 #### Batch Merge
 
 ```protobuf
 message BatchMergeRequest {
-  optional int32 max_slices = 1;  // Optional: limit batch size
+  int32 max_slices = 1;
 }
 
 message BatchMergeResponse {
@@ -312,16 +380,47 @@ message SliceInfo {
 }
 ```
 
+#### Create Slice
+
+```protobuf
+message CreateSliceRequest {
+  string slice_id = 1;
+  string name = 2;
+  string description = 3;
+  repeated string files = 4;
+  repeated string owners = 5;
+  string created_by = 6;
+}
+
+message CreateSliceResponse {
+  string slice_id = 1;
+  string status = 2;
+}
+```
+
 #### Get Conflicts
 
 ```protobuf
 message ConflictsRequest {
-  optional string slice_id = 1;  // Optional: filter by slice
+  string slice_id = 1;  // Optional filter; omit to list all conflicts
 }
 
 message ConflictsResponse {
   repeated Conflict conflicts = 1;
   int32 total_conflicts = 2;
+}
+```
+
+#### Resolve Conflict
+
+```protobuf
+message ResolveConflictRequest {
+  string file_id = 1;
+  string preferred_slice_id = 2;
+}
+
+message ResolveConflictResponse {
+  Conflict resolved_conflict = 1;
 }
 ```
 
@@ -345,12 +444,25 @@ message GlobalCommitHistory {
 }
 ```
 
+#### Watch Conflicts
+
+```protobuf
+message WatchConflictsRequest {
+  string slice_id = 1;
+}
+
+message ConflictUpdate {
+  repeated Conflict new_conflicts = 1;
+  repeated Conflict resolved_conflicts = 2;
+}
+```
+
 ## Streaming Operations
 
 ### Checkout Large Slices (Server Streaming)
 
 ```protobuf
-rpc CheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
+rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
 message CheckoutChunk {
   oneof chunk {
@@ -362,6 +474,8 @@ message CheckoutChunk {
 
 **Benefit:** Stream files incrementally instead of loading all into memory.
 
+**Prototype status:** Defined in the proto but not yet implemented on the server.
+
 **Implementation Notes:**
 - Server streams manifest first, then files one by one
 - Client can start processing files immediately
@@ -371,7 +485,7 @@ message CheckoutChunk {
 ### Create Changeset (Client Streaming)
 
 ```protobuf
-rpc CreateChangeset(stream ChangesetChunk) returns (CreateChangesetResponse);
+rpc StreamCreateChangeset(stream ChangesetChunk) returns (CreateChangesetResponse);
 
 message ChangesetChunk {
   oneof chunk {
@@ -390,13 +504,15 @@ message ChangesetMetadata {
 
 **Benefit:** Stream large change lists with many files without buffering.
 
+**Prototype status:** Defined in the proto but not yet implemented on the server.
+
 **Implementation Notes:**
 - Client streams metadata first, then objects
 - Server validates metadata before accepting objects
 - Supports large file uploads without memory issues
 - Server can reject invalid changesets early
 
-### Real-time Conflict Updates (Bidirectional Streaming)
+### Real-time Conflict Updates (Server Streaming)
 
 ```protobuf
 rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
@@ -415,217 +531,16 @@ message ConflictUpdate {
 - Supports multiple concurrent watchers
 - Heartbeat messages to detect stale connections
 
-## Implementation Notes: Service Interface
+## Implementation Notes: Prototype Status
 
-### SliceService Implementation
+The current prototype uses an in-memory storage backend and implements the core unary RPCs in the slice and admin services. The storage and service logic lives in `internal/storage` and `internal/services`, respectively. For details on how data is stored and locked, see [`internal/storage/memory.go`](../internal/storage/memory.go) and the service handlers in [`internal/services/slice/server.go`](../internal/services/slice/server.go) and [`internal/services/admin/server.go`](../internal/services/admin/server.go).
 
-#### CheckoutSlice
-
-**Algorithm:**
-```
-1. Validate slice_id exists
-2. Fetch slice manifest from metadata layer
-3. Generate presigned URLs for all files in manifest
-4. Stream manifest to client
-5. Stream files to client (optional, can use direct S3 access)
-```
-
-**Error Handling:**
-- `NOT_FOUND`: slice_id does not exist
-- `INVALID_ARGUMENT`: commit_hash not found
-- `UNAVAILABLE`: metadata layer unreachable
-
-**Performance:**
-- O(1) metadata lookup
-- O(N) file URL generation (N = number of files)
-- Streaming reduces memory footprint
-
-#### CreateChangeset
-
-**Algorithm:**
-```
-1. Validate slice_id and base_commit_hash
-2. Validate user has write access to slice
-3. Calculate change list hash from objects
-4. Create unique changeset_id
-5. Store objects in object store
-6. Store changeset metadata in metadata layer
-7. Return changeset_id and hash
-```
-
-**Error Handling:**
-- `NOT_FOUND`: slice_id or base_commit_hash does not exist
-- `PERMISSION_DENIED`: user lacks write access
-- `INVALID_ARGUMENT`: invalid objects or metadata
-
-**Performance:**
-- O(N) object storage (N = number of objects)
-- O(1) metadata write
-- Async object upload for performance
-
-#### ReviewChangeset
-
-**Algorithm:**
-```
-1. Fetch changeset metadata
-2. Fetch current slice state
-3. Check for file-level conflicts
-4. Calculate diff summary
-5. Return review status and warnings
-```
-
-**Error Handling:**
-- `NOT_FOUND`: changeset_id does not exist
-- `FAILED_PRECONDITION`: changeset already merged
-
-**Performance:**
-- O(M) conflict check (M = number of modified files)
-- O(L) diff calculation (L = line count)
-
-#### MergeChangeset
-
-**Algorithm:**
-```
-1. Validate user permissions
-2. Fetch current slice state
-3. Run conflict detection
-4. On success:
-   a. Create new commit
-   b. Update slice state
-   c. Add commit to batch merge queue
-5. On conflict:
-   a. Return error with conflict details
-6. Update changeset status
-```
-
-**Error Handling:**
-- `PERMISSION_DENIED`: user lacks merge permissions
-- `ALREADY_EXISTS`: conflicting changeset merged first
-- `FAILED_PRECONDITION`: conflicts detected
-
-**Performance:**
-- O(M) conflict detection
-- O(1) commit creation
-- O(1) slice state update
-
-#### RebaseChangeset
-
-**Algorithm:**
-```
-1. Validate slice_id and changeset_id
-2. Check for file-level conflicts with slice commits since base_commit
-3. On conflict:
-   a. Return error with rebase instructions
-4. On success:
-   a. Update changeset base commit
-   b. Return new base and commits to apply
-```
-
-**Error Handling:**
-- `NOT_FOUND`: changeset_id does not exist
-- `FAILED_PRECONDITION`: conflicts detected during rebase
-
-**Performance:**
-- O(K) conflict check (K = commits since base)
-- O(1) metadata update
-
-#### ListChangesets
-
-**Algorithm:**
-```
-1. Query metadata layer for changesets
-2. Apply filters (slice_id, status, limit)
-3. Return paginated results
-```
-
-**Performance:**
-- O(N) query (N = total changesets)
-- O(L) result set (L = limit)
-- Indexed queries for performance
-
-#### GetSliceCommits
-
-**Algorithm:**
-```
-1. Fetch commit history from metadata layer
-2. Apply pagination (limit, from_commit_hash)
-3. Return commits in reverse chronological order
-```
-
-**Performance:**
-- O(N) query (N = commit history length)
-- O(L) result set (L = limit)
-
-#### GetSliceState
-
-**Algorithm:**
-```
-1. Fetch slice state from metadata layer
-2. Return current commit hash and metadata
-```
-
-**Performance:**
-- O(1) lookup
-
-### AdminService Implementation
-
-#### BatchMerge
-
-**Algorithm:**
-```
-1. Fetch all active slices
-2. Merge slice trees into global tree
-3. Create global commit
-4. Update global state
-5. Return merge results
-```
-
-**Error Handling:**
-- `UNAVAILABLE`: object store or metadata layer unreachable
-- `FAILED_PRECONDITION`: conflicts detected (should not happen)
-
-**Performance:**
-- O(N * M) tree merge (N = slices, M = avg tree size)
-- O(N) global state update
-
-#### ListSlices
-
-**Algorithm:**
-```
-1. Query metadata layer for all slices
-2. Apply pagination (limit, offset)
-3. Return slice metadata
-```
-
-**Performance:**
-- O(N) query (N = total slices)
-- O(L) result set (L = limit)
-
-#### GetConflicts
-
-**Algorithm:**
-```
-1. Query conflict index from metadata layer
-2. Filter by slice_id if provided
-3. Return conflict list
-```
-
-**Performance:**
-- O(C) query (C = total conflicts)
-- O(K) result set (K = conflicts matching filter)
-
-#### GetGlobalState
-
-**Algorithm:**
-```
-1. Fetch global state from metadata layer
-2. Optionally fetch commit history
-3. Return global metadata
-```
-
-**Performance:**
-- O(1) lookup
-- O(H) history fetch (H = history length)
+Key behaviors in the prototype:
+- **No object store integration:** File contents and metadata are stored in-memory; `content_url` is unused.
+- **No auth or permission checks:** Requests are accepted without authentication.
+- **Streaming RPCs are defined but not implemented:** `StreamCheckoutSlice` and `StreamCreateChangeset` return `UNIMPLEMENTED` until server support is added.
+- **Conflict tracking is in-memory:** Locks and conflict ownership are managed via `InMemoryStorage`.
+- **FileService gateway:** SliceService hosts the FileService gRPC-Gateway on `:8080` for HTTP access to `ListEntries` and `GetFile`.
 
 ## Error Handling
 
@@ -683,18 +598,21 @@ See [CLI_DESIGN.md](./CLI_DESIGN.md) for detailed command-to-API mapping.
 
 | CLI Command | API Method |
 |-------------|------------|
-| `gitslice init` | N/A (local only) |
-| `gitslice checkout <slice_id>` | `CheckoutSlice` |
-| `gitslice push` | `CreateChangeset` |
-| `gitslice review` | `ReviewChangeset` |
-| `gitslice merge` | `MergeChangeset` |
-| `gitslice rebase` | `RebaseChangeset` |
-| `gitslice log` | `GetSliceCommits` |
-| `gitslice status` | `GetSliceState` |
-| `gitslice list-changesets` | `ListChangesets` |
-| `gitslice batch-merge` | `BatchMerge` (admin) |
-| `gitslice list-slices` | `ListSlices` (admin) |
-| `gitslice conflicts` | `GetConflicts` (admin) |
+| `gs init <slice_id>` | N/A (local only) |
+| `gs slice checkout <slice_id>` | `CheckoutSlice` |
+| `gs changeset create` | `CreateChangeset` |
+| `gs changeset review <id>` | `ReviewChangeset` |
+| `gs changeset merge <id>` | `MergeChangeset` |
+| `gs changeset rebase <id>` | `RebaseChangeset` |
+| `gs changeset list` | `ListChangesets` |
+| `gs log <slice_id>` | `GetSliceCommits` |
+| `gs status` | `GetSliceState` |
+| `gs root` | `GetRootSlice` |
+| `gs fork <new-slice> <folder>` | `CreateSliceFromFolder` |
+| `gs slice create <slice_id>` | `CreateSlice` (admin) |
+| `gs slice list` | `ListSlices` (admin) |
+| `gs conflict list` | `GetConflicts` (admin) |
+| `gs conflict resolve <file>` | `ResolveConflict` (admin) |
 
 ## References
 
