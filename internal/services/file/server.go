@@ -137,10 +137,8 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 
 	normalizedPath := cleanPath(req.Path)
-	contentByPath := fileContentIndex(s.storage, ctx, slice.ID)
-
-	content, ok := contentByPath[normalizedPath]
-	if !ok {
+	content, err := s.storage.GetSliceFileByPath(ctx, slice.ID, normalizedPath)
+	if err != nil {
 		if sliceHasPath(slice, normalizedPath) {
 			return nil, status.Error(codes.NotFound, "file content not available")
 		}
