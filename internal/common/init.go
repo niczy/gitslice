@@ -70,21 +70,24 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 		return nil
 	}
 
-	log.Printf("Found %d files in git repository, adding to root slice", len(files))
+	log.Printf("Found %d files in git repository, adding to root slice under genesis/", len(files))
 
-	// Add each file to the root slice
+	// Add each file to the root slice under "genesis" directory
 	for _, filePath := range files {
 		if filePath == "" {
 			continue
 		}
 
+		// Prefix path with "genesis/" for organization
+		slicePath := "genesis/" + filePath
+
 		// Add file path to slice
-		if err := st.AddFileToSlice(ctx, filePath, sliceID); err != nil {
-			log.Printf("Warning: failed to add file %s to root slice: %v", filePath, err)
+		if err := st.AddFileToSlice(ctx, slicePath, sliceID); err != nil {
+			log.Printf("Warning: failed to add file %s to root slice: %v", slicePath, err)
 			continue
 		}
 
-		// Read file content and store it
+		// Read file content from actual git repo location
 		fullPath := filepath.Join(repoRoot, filePath)
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
@@ -93,15 +96,15 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 		}
 
 		fileContent := &models.FileContent{
-			FileID:  filePath,
-			Path:    filePath,
+			FileID:  slicePath,
+			Path:    slicePath,
 			Content: content,
 			Size:    int64(len(content)),
 			Hash:    fmt.Sprintf("%x", len(content)), // Simple hash for now
 		}
 
 		if err := st.AddFileContent(ctx, fileContent); err != nil {
-			log.Printf("Warning: failed to store content for %s: %v", filePath, err)
+			log.Printf("Warning: failed to store content for %s: %v", slicePath, err)
 			continue
 		}
 	}
