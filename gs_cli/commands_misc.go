@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
