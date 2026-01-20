@@ -270,6 +270,150 @@ func (x *CreateSliceResponse) GetStatus() string {
 	return ""
 }
 
+type GetSliceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SliceId       string                 `protobuf:"bytes,1,opt,name=slice_id,json=sliceId,proto3" json:"slice_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSliceRequest) Reset() {
+	*x = GetSliceRequest{}
+	mi := &file_admin_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSliceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSliceRequest) ProtoMessage() {}
+
+func (x *GetSliceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_admin_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSliceRequest.ProtoReflect.Descriptor instead.
+func (*GetSliceRequest) Descriptor() ([]byte, []int) {
+	return file_admin_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetSliceRequest) GetSliceId() string {
+	if x != nil {
+		return x.SliceId
+	}
+	return ""
+}
+
+type GetSliceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SliceId       string                 `protobuf:"bytes,1,opt,name=slice_id,json=sliceId,proto3" json:"slice_id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Owners        []string               `protobuf:"bytes,4,rep,name=owners,proto3" json:"owners,omitempty"`
+	CreatedBy     string                 `protobuf:"bytes,5,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	CreatedAt     int64                  `protobuf:"varint,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ParentSlice   string                 `protobuf:"bytes,7,opt,name=parent_slice,json=parentSlice,proto3" json:"parent_slice,omitempty"`
+	IsRoot        bool                   `protobuf:"varint,8,opt,name=is_root,json=isRoot,proto3" json:"is_root,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSliceResponse) Reset() {
+	*x = GetSliceResponse{}
+	mi := &file_admin_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSliceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSliceResponse) ProtoMessage() {}
+
+func (x *GetSliceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_admin_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSliceResponse.ProtoReflect.Descriptor instead.
+func (*GetSliceResponse) Descriptor() ([]byte, []int) {
+	return file_admin_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetSliceResponse) GetSliceId() string {
+	if x != nil {
+		return x.SliceId
+	}
+	return ""
+}
+
+func (x *GetSliceResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetSliceResponse) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *GetSliceResponse) GetOwners() []string {
+	if x != nil {
+		return x.Owners
+	}
+	return nil
+}
+
+func (x *GetSliceResponse) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *GetSliceResponse) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *GetSliceResponse) GetParentSlice() string {
+	if x != nil {
+		return x.ParentSlice
+	}
+	return ""
+}
+
+func (x *GetSliceResponse) GetIsRoot() bool {
+	if x != nil {
+		return x.IsRoot
+	}
+	return false
+}
+
 type ListSlicesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Limit         int32                  `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
@@ -280,7 +424,7 @@ type ListSlicesRequest struct {
 
 func (x *ListSlicesRequest) Reset() {
 	*x = ListSlicesRequest{}
-	mi := &file_admin_service_proto_msgTypes[4]
+	mi := &file_admin_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -292,7 +436,7 @@ func (x *ListSlicesRequest) String() string {
 func (*ListSlicesRequest) ProtoMessage() {}
 
 func (x *ListSlicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[4]
+	mi := &file_admin_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -305,7 +449,7 @@ func (x *ListSlicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSlicesRequest.ProtoReflect.Descriptor instead.
 func (*ListSlicesRequest) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{4}
+	return file_admin_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListSlicesRequest) GetLimit() int32 {
@@ -331,7 +475,7 @@ type ListSlicesResponse struct {
 
 func (x *ListSlicesResponse) Reset() {
 	*x = ListSlicesResponse{}
-	mi := &file_admin_service_proto_msgTypes[5]
+	mi := &file_admin_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -343,7 +487,7 @@ func (x *ListSlicesResponse) String() string {
 func (*ListSlicesResponse) ProtoMessage() {}
 
 func (x *ListSlicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[5]
+	mi := &file_admin_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -356,7 +500,7 @@ func (x *ListSlicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSlicesResponse.ProtoReflect.Descriptor instead.
 func (*ListSlicesResponse) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{5}
+	return file_admin_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListSlicesResponse) GetSlices() []*SliceInfo {
@@ -378,7 +522,7 @@ type SliceInfo struct {
 
 func (x *SliceInfo) Reset() {
 	*x = SliceInfo{}
-	mi := &file_admin_service_proto_msgTypes[6]
+	mi := &file_admin_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -390,7 +534,7 @@ func (x *SliceInfo) String() string {
 func (*SliceInfo) ProtoMessage() {}
 
 func (x *SliceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[6]
+	mi := &file_admin_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -403,7 +547,7 @@ func (x *SliceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SliceInfo.ProtoReflect.Descriptor instead.
 func (*SliceInfo) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{6}
+	return file_admin_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SliceInfo) GetSliceId() string {
@@ -443,7 +587,7 @@ type ConflictsRequest struct {
 
 func (x *ConflictsRequest) Reset() {
 	*x = ConflictsRequest{}
-	mi := &file_admin_service_proto_msgTypes[7]
+	mi := &file_admin_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +599,7 @@ func (x *ConflictsRequest) String() string {
 func (*ConflictsRequest) ProtoMessage() {}
 
 func (x *ConflictsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[7]
+	mi := &file_admin_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +612,7 @@ func (x *ConflictsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConflictsRequest.ProtoReflect.Descriptor instead.
 func (*ConflictsRequest) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{7}
+	return file_admin_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ConflictsRequest) GetSliceId() string {
@@ -488,7 +632,7 @@ type ConflictsResponse struct {
 
 func (x *ConflictsResponse) Reset() {
 	*x = ConflictsResponse{}
-	mi := &file_admin_service_proto_msgTypes[8]
+	mi := &file_admin_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -500,7 +644,7 @@ func (x *ConflictsResponse) String() string {
 func (*ConflictsResponse) ProtoMessage() {}
 
 func (x *ConflictsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[8]
+	mi := &file_admin_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -513,7 +657,7 @@ func (x *ConflictsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConflictsResponse.ProtoReflect.Descriptor instead.
 func (*ConflictsResponse) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{8}
+	return file_admin_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ConflictsResponse) GetConflicts() []*Conflict {
@@ -540,7 +684,7 @@ type ResolveConflictRequest struct {
 
 func (x *ResolveConflictRequest) Reset() {
 	*x = ResolveConflictRequest{}
-	mi := &file_admin_service_proto_msgTypes[9]
+	mi := &file_admin_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -552,7 +696,7 @@ func (x *ResolveConflictRequest) String() string {
 func (*ResolveConflictRequest) ProtoMessage() {}
 
 func (x *ResolveConflictRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[9]
+	mi := &file_admin_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -565,7 +709,7 @@ func (x *ResolveConflictRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveConflictRequest.ProtoReflect.Descriptor instead.
 func (*ResolveConflictRequest) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{9}
+	return file_admin_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ResolveConflictRequest) GetFileId() string {
@@ -591,7 +735,7 @@ type ResolveConflictResponse struct {
 
 func (x *ResolveConflictResponse) Reset() {
 	*x = ResolveConflictResponse{}
-	mi := &file_admin_service_proto_msgTypes[10]
+	mi := &file_admin_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -603,7 +747,7 @@ func (x *ResolveConflictResponse) String() string {
 func (*ResolveConflictResponse) ProtoMessage() {}
 
 func (x *ResolveConflictResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[10]
+	mi := &file_admin_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -616,7 +760,7 @@ func (x *ResolveConflictResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveConflictResponse.ProtoReflect.Descriptor instead.
 func (*ResolveConflictResponse) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{10}
+	return file_admin_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ResolveConflictResponse) GetResolvedConflict() *Conflict {
@@ -636,7 +780,7 @@ type Conflict struct {
 
 func (x *Conflict) Reset() {
 	*x = Conflict{}
-	mi := &file_admin_service_proto_msgTypes[11]
+	mi := &file_admin_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -648,7 +792,7 @@ func (x *Conflict) String() string {
 func (*Conflict) ProtoMessage() {}
 
 func (x *Conflict) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[11]
+	mi := &file_admin_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -661,7 +805,7 @@ func (x *Conflict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Conflict.ProtoReflect.Descriptor instead.
 func (*Conflict) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{11}
+	return file_admin_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Conflict) GetFileId() string {
@@ -687,7 +831,7 @@ type GlobalStateRequest struct {
 
 func (x *GlobalStateRequest) Reset() {
 	*x = GlobalStateRequest{}
-	mi := &file_admin_service_proto_msgTypes[12]
+	mi := &file_admin_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +843,7 @@ func (x *GlobalStateRequest) String() string {
 func (*GlobalStateRequest) ProtoMessage() {}
 
 func (x *GlobalStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[12]
+	mi := &file_admin_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +856,7 @@ func (x *GlobalStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GlobalStateRequest.ProtoReflect.Descriptor instead.
 func (*GlobalStateRequest) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{12}
+	return file_admin_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GlobalStateRequest) GetIncludeHistory() bool {
@@ -733,7 +877,7 @@ type GlobalStateResponse struct {
 
 func (x *GlobalStateResponse) Reset() {
 	*x = GlobalStateResponse{}
-	mi := &file_admin_service_proto_msgTypes[13]
+	mi := &file_admin_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -745,7 +889,7 @@ func (x *GlobalStateResponse) String() string {
 func (*GlobalStateResponse) ProtoMessage() {}
 
 func (x *GlobalStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[13]
+	mi := &file_admin_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -758,7 +902,7 @@ func (x *GlobalStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GlobalStateResponse.ProtoReflect.Descriptor instead.
 func (*GlobalStateResponse) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{13}
+	return file_admin_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GlobalStateResponse) GetGlobalCommitHash() string {
@@ -793,7 +937,7 @@ type GlobalCommitHistory struct {
 
 func (x *GlobalCommitHistory) Reset() {
 	*x = GlobalCommitHistory{}
-	mi := &file_admin_service_proto_msgTypes[14]
+	mi := &file_admin_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -805,7 +949,7 @@ func (x *GlobalCommitHistory) String() string {
 func (*GlobalCommitHistory) ProtoMessage() {}
 
 func (x *GlobalCommitHistory) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[14]
+	mi := &file_admin_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -818,7 +962,7 @@ func (x *GlobalCommitHistory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GlobalCommitHistory.ProtoReflect.Descriptor instead.
 func (*GlobalCommitHistory) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{14}
+	return file_admin_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GlobalCommitHistory) GetCommitHash() string {
@@ -851,7 +995,7 @@ type WatchConflictsRequest struct {
 
 func (x *WatchConflictsRequest) Reset() {
 	*x = WatchConflictsRequest{}
-	mi := &file_admin_service_proto_msgTypes[15]
+	mi := &file_admin_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -863,7 +1007,7 @@ func (x *WatchConflictsRequest) String() string {
 func (*WatchConflictsRequest) ProtoMessage() {}
 
 func (x *WatchConflictsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[15]
+	mi := &file_admin_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -876,7 +1020,7 @@ func (x *WatchConflictsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchConflictsRequest.ProtoReflect.Descriptor instead.
 func (*WatchConflictsRequest) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{15}
+	return file_admin_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WatchConflictsRequest) GetSliceId() string {
@@ -896,7 +1040,7 @@ type ConflictUpdate struct {
 
 func (x *ConflictUpdate) Reset() {
 	*x = ConflictUpdate{}
-	mi := &file_admin_service_proto_msgTypes[16]
+	mi := &file_admin_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -908,7 +1052,7 @@ func (x *ConflictUpdate) String() string {
 func (*ConflictUpdate) ProtoMessage() {}
 
 func (x *ConflictUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[16]
+	mi := &file_admin_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -921,7 +1065,7 @@ func (x *ConflictUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConflictUpdate.ProtoReflect.Descriptor instead.
 func (*ConflictUpdate) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{16}
+	return file_admin_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ConflictUpdate) GetNewConflicts() []*Conflict {
@@ -961,7 +1105,20 @@ const file_admin_service_proto_rawDesc = "" +
 	"created_by\x18\x06 \x01(\tR\tcreatedBy\"H\n" +
 	"\x13CreateSliceResponse\x12\x19\n" +
 	"\bslice_id\x18\x01 \x01(\tR\asliceId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"A\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\",\n" +
+	"\x0fGetSliceRequest\x12\x19\n" +
+	"\bslice_id\x18\x01 \x01(\tR\asliceId\"\xf5\x01\n" +
+	"\x10GetSliceResponse\x12\x19\n" +
+	"\bslice_id\x18\x01 \x01(\tR\asliceId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x16\n" +
+	"\x06owners\x18\x04 \x03(\tR\x06owners\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x05 \x01(\tR\tcreatedBy\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\x03R\tcreatedAt\x12!\n" +
+	"\fparent_slice\x18\a \x01(\tR\vparentSlice\x12\x17\n" +
+	"\ais_root\x18\b \x01(\bR\x06isRoot\"A\n" +
 	"\x11ListSlicesRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\"A\n" +
@@ -1000,12 +1157,13 @@ const file_admin_service_proto_rawDesc = "" +
 	"\bslice_id\x18\x01 \x01(\tR\asliceId\"\x8c\x01\n" +
 	"\x0eConflictUpdate\x127\n" +
 	"\rnew_conflicts\x18\x01 \x03(\v2\x12.admin.v1.ConflictR\fnewConflicts\x12A\n" +
-	"\x12resolved_conflicts\x18\x02 \x03(\v2\x12.admin.v1.ConflictR\x11resolvedConflicts2\xd6\x04\n" +
+	"\x12resolved_conflicts\x18\x02 \x03(\v2\x12.admin.v1.ConflictR\x11resolvedConflicts2\x99\x05\n" +
 	"\fAdminService\x12G\n" +
 	"\n" +
 	"BatchMerge\x12\x1b.admin.v1.BatchMergeRequest\x1a\x1c.admin.v1.BatchMergeResponse\x12a\n" +
 	"\vCreateSlice\x12\x1c.admin.v1.CreateSliceRequest\x1a\x1d.admin.v1.CreateSliceResponse\"\x15\x82\xd3\xe4\x93\x02\x0f:\x01*\"\n" +
-	"/v1/slices\x12[\n" +
+	"/v1/slices\x12A\n" +
+	"\bGetSlice\x12\x19.admin.v1.GetSliceRequest\x1a\x1a.admin.v1.GetSliceResponse\x12[\n" +
 	"\n" +
 	"ListSlices\x12\x1b.admin.v1.ListSlicesRequest\x1a\x1c.admin.v1.ListSlicesResponse\"\x12\x82\xd3\xe4\x93\x02\f\x12\n" +
 	"/v1/slices\x12G\n" +
@@ -1026,49 +1184,53 @@ func file_admin_service_proto_rawDescGZIP() []byte {
 	return file_admin_service_proto_rawDescData
 }
 
-var file_admin_service_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_admin_service_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_admin_service_proto_goTypes = []any{
 	(*BatchMergeRequest)(nil),       // 0: admin.v1.BatchMergeRequest
 	(*BatchMergeResponse)(nil),      // 1: admin.v1.BatchMergeResponse
 	(*CreateSliceRequest)(nil),      // 2: admin.v1.CreateSliceRequest
 	(*CreateSliceResponse)(nil),     // 3: admin.v1.CreateSliceResponse
-	(*ListSlicesRequest)(nil),       // 4: admin.v1.ListSlicesRequest
-	(*ListSlicesResponse)(nil),      // 5: admin.v1.ListSlicesResponse
-	(*SliceInfo)(nil),               // 6: admin.v1.SliceInfo
-	(*ConflictsRequest)(nil),        // 7: admin.v1.ConflictsRequest
-	(*ConflictsResponse)(nil),       // 8: admin.v1.ConflictsResponse
-	(*ResolveConflictRequest)(nil),  // 9: admin.v1.ResolveConflictRequest
-	(*ResolveConflictResponse)(nil), // 10: admin.v1.ResolveConflictResponse
-	(*Conflict)(nil),                // 11: admin.v1.Conflict
-	(*GlobalStateRequest)(nil),      // 12: admin.v1.GlobalStateRequest
-	(*GlobalStateResponse)(nil),     // 13: admin.v1.GlobalStateResponse
-	(*GlobalCommitHistory)(nil),     // 14: admin.v1.GlobalCommitHistory
-	(*WatchConflictsRequest)(nil),   // 15: admin.v1.WatchConflictsRequest
-	(*ConflictUpdate)(nil),          // 16: admin.v1.ConflictUpdate
+	(*GetSliceRequest)(nil),         // 4: admin.v1.GetSliceRequest
+	(*GetSliceResponse)(nil),        // 5: admin.v1.GetSliceResponse
+	(*ListSlicesRequest)(nil),       // 6: admin.v1.ListSlicesRequest
+	(*ListSlicesResponse)(nil),      // 7: admin.v1.ListSlicesResponse
+	(*SliceInfo)(nil),               // 8: admin.v1.SliceInfo
+	(*ConflictsRequest)(nil),        // 9: admin.v1.ConflictsRequest
+	(*ConflictsResponse)(nil),       // 10: admin.v1.ConflictsResponse
+	(*ResolveConflictRequest)(nil),  // 11: admin.v1.ResolveConflictRequest
+	(*ResolveConflictResponse)(nil), // 12: admin.v1.ResolveConflictResponse
+	(*Conflict)(nil),                // 13: admin.v1.Conflict
+	(*GlobalStateRequest)(nil),      // 14: admin.v1.GlobalStateRequest
+	(*GlobalStateResponse)(nil),     // 15: admin.v1.GlobalStateResponse
+	(*GlobalCommitHistory)(nil),     // 16: admin.v1.GlobalCommitHistory
+	(*WatchConflictsRequest)(nil),   // 17: admin.v1.WatchConflictsRequest
+	(*ConflictUpdate)(nil),          // 18: admin.v1.ConflictUpdate
 }
 var file_admin_service_proto_depIdxs = []int32{
-	6,  // 0: admin.v1.ListSlicesResponse.slices:type_name -> admin.v1.SliceInfo
-	11, // 1: admin.v1.ConflictsResponse.conflicts:type_name -> admin.v1.Conflict
-	11, // 2: admin.v1.ResolveConflictResponse.resolved_conflict:type_name -> admin.v1.Conflict
-	14, // 3: admin.v1.GlobalStateResponse.history:type_name -> admin.v1.GlobalCommitHistory
-	11, // 4: admin.v1.ConflictUpdate.new_conflicts:type_name -> admin.v1.Conflict
-	11, // 5: admin.v1.ConflictUpdate.resolved_conflicts:type_name -> admin.v1.Conflict
+	8,  // 0: admin.v1.ListSlicesResponse.slices:type_name -> admin.v1.SliceInfo
+	13, // 1: admin.v1.ConflictsResponse.conflicts:type_name -> admin.v1.Conflict
+	13, // 2: admin.v1.ResolveConflictResponse.resolved_conflict:type_name -> admin.v1.Conflict
+	16, // 3: admin.v1.GlobalStateResponse.history:type_name -> admin.v1.GlobalCommitHistory
+	13, // 4: admin.v1.ConflictUpdate.new_conflicts:type_name -> admin.v1.Conflict
+	13, // 5: admin.v1.ConflictUpdate.resolved_conflicts:type_name -> admin.v1.Conflict
 	0,  // 6: admin.v1.AdminService.BatchMerge:input_type -> admin.v1.BatchMergeRequest
 	2,  // 7: admin.v1.AdminService.CreateSlice:input_type -> admin.v1.CreateSliceRequest
-	4,  // 8: admin.v1.AdminService.ListSlices:input_type -> admin.v1.ListSlicesRequest
-	7,  // 9: admin.v1.AdminService.GetConflicts:input_type -> admin.v1.ConflictsRequest
-	9,  // 10: admin.v1.AdminService.ResolveConflict:input_type -> admin.v1.ResolveConflictRequest
-	12, // 11: admin.v1.AdminService.GetGlobalState:input_type -> admin.v1.GlobalStateRequest
-	15, // 12: admin.v1.AdminService.WatchConflicts:input_type -> admin.v1.WatchConflictsRequest
-	1,  // 13: admin.v1.AdminService.BatchMerge:output_type -> admin.v1.BatchMergeResponse
-	3,  // 14: admin.v1.AdminService.CreateSlice:output_type -> admin.v1.CreateSliceResponse
-	5,  // 15: admin.v1.AdminService.ListSlices:output_type -> admin.v1.ListSlicesResponse
-	8,  // 16: admin.v1.AdminService.GetConflicts:output_type -> admin.v1.ConflictsResponse
-	10, // 17: admin.v1.AdminService.ResolveConflict:output_type -> admin.v1.ResolveConflictResponse
-	13, // 18: admin.v1.AdminService.GetGlobalState:output_type -> admin.v1.GlobalStateResponse
-	16, // 19: admin.v1.AdminService.WatchConflicts:output_type -> admin.v1.ConflictUpdate
-	13, // [13:20] is the sub-list for method output_type
-	6,  // [6:13] is the sub-list for method input_type
+	4,  // 8: admin.v1.AdminService.GetSlice:input_type -> admin.v1.GetSliceRequest
+	6,  // 9: admin.v1.AdminService.ListSlices:input_type -> admin.v1.ListSlicesRequest
+	9,  // 10: admin.v1.AdminService.GetConflicts:input_type -> admin.v1.ConflictsRequest
+	11, // 11: admin.v1.AdminService.ResolveConflict:input_type -> admin.v1.ResolveConflictRequest
+	14, // 12: admin.v1.AdminService.GetGlobalState:input_type -> admin.v1.GlobalStateRequest
+	17, // 13: admin.v1.AdminService.WatchConflicts:input_type -> admin.v1.WatchConflictsRequest
+	1,  // 14: admin.v1.AdminService.BatchMerge:output_type -> admin.v1.BatchMergeResponse
+	3,  // 15: admin.v1.AdminService.CreateSlice:output_type -> admin.v1.CreateSliceResponse
+	5,  // 16: admin.v1.AdminService.GetSlice:output_type -> admin.v1.GetSliceResponse
+	7,  // 17: admin.v1.AdminService.ListSlices:output_type -> admin.v1.ListSlicesResponse
+	10, // 18: admin.v1.AdminService.GetConflicts:output_type -> admin.v1.ConflictsResponse
+	12, // 19: admin.v1.AdminService.ResolveConflict:output_type -> admin.v1.ResolveConflictResponse
+	15, // 20: admin.v1.AdminService.GetGlobalState:output_type -> admin.v1.GlobalStateResponse
+	18, // 21: admin.v1.AdminService.WatchConflicts:output_type -> admin.v1.ConflictUpdate
+	14, // [14:22] is the sub-list for method output_type
+	6,  // [6:14] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -1085,7 +1247,7 @@ func file_admin_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_admin_service_proto_rawDesc), len(file_admin_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion7
 const (
 	AdminService_BatchMerge_FullMethodName      = "/admin.v1.AdminService/BatchMerge"
 	AdminService_CreateSlice_FullMethodName     = "/admin.v1.AdminService/CreateSlice"
+	AdminService_GetSlice_FullMethodName        = "/admin.v1.AdminService/GetSlice"
 	AdminService_ListSlices_FullMethodName      = "/admin.v1.AdminService/ListSlices"
 	AdminService_GetConflicts_FullMethodName    = "/admin.v1.AdminService/GetConflicts"
 	AdminService_ResolveConflict_FullMethodName = "/admin.v1.AdminService/ResolveConflict"
@@ -36,6 +37,8 @@ type AdminServiceClient interface {
 	BatchMerge(ctx context.Context, in *BatchMergeRequest, opts ...grpc.CallOption) (*BatchMergeResponse, error)
 	// Create a new slice
 	CreateSlice(ctx context.Context, in *CreateSliceRequest, opts ...grpc.CallOption) (*CreateSliceResponse, error)
+	// Get slice details
+	GetSlice(ctx context.Context, in *GetSliceRequest, opts ...grpc.CallOption) (*GetSliceResponse, error)
 	// List all active slices
 	ListSlices(ctx context.Context, in *ListSlicesRequest, opts ...grpc.CallOption) (*ListSlicesResponse, error)
 	// Get current conflicts across slices
@@ -68,6 +71,15 @@ func (c *adminServiceClient) BatchMerge(ctx context.Context, in *BatchMergeReque
 func (c *adminServiceClient) CreateSlice(ctx context.Context, in *CreateSliceRequest, opts ...grpc.CallOption) (*CreateSliceResponse, error) {
 	out := new(CreateSliceResponse)
 	err := c.cc.Invoke(ctx, AdminService_CreateSlice_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) GetSlice(ctx context.Context, in *GetSliceRequest, opts ...grpc.CallOption) (*GetSliceResponse, error) {
+	out := new(GetSliceResponse)
+	err := c.cc.Invoke(ctx, AdminService_GetSlice_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +162,8 @@ type AdminServiceServer interface {
 	BatchMerge(context.Context, *BatchMergeRequest) (*BatchMergeResponse, error)
 	// Create a new slice
 	CreateSlice(context.Context, *CreateSliceRequest) (*CreateSliceResponse, error)
+	// Get slice details
+	GetSlice(context.Context, *GetSliceRequest) (*GetSliceResponse, error)
 	// List all active slices
 	ListSlices(context.Context, *ListSlicesRequest) (*ListSlicesResponse, error)
 	// Get current conflicts across slices
@@ -172,6 +186,9 @@ func (UnimplementedAdminServiceServer) BatchMerge(context.Context, *BatchMergeRe
 }
 func (UnimplementedAdminServiceServer) CreateSlice(context.Context, *CreateSliceRequest) (*CreateSliceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateSlice not implemented")
+}
+func (UnimplementedAdminServiceServer) GetSlice(context.Context, *GetSliceRequest) (*GetSliceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSlice not implemented")
 }
 func (UnimplementedAdminServiceServer) ListSlices(context.Context, *ListSlicesRequest) (*ListSlicesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSlices not implemented")
@@ -233,6 +250,24 @@ func _AdminService_CreateSlice_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AdminServiceServer).CreateSlice(ctx, req.(*CreateSliceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_GetSlice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSliceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).GetSlice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_GetSlice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).GetSlice(ctx, req.(*GetSliceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -344,6 +379,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateSlice",
 			Handler:    _AdminService_CreateSlice_Handler,
+		},
+		{
+			MethodName: "GetSlice",
+			Handler:    _AdminService_GetSlice_Handler,
 		},
 		{
 			MethodName: "ListSlices",
