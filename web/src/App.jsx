@@ -24,6 +24,7 @@ const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 const pageOptions = [
   { id: 'overview', label: 'Overview' },
   { id: 'browser', label: 'Repo Browser' },
+  { id: 'slices', label: 'Slices' },
 ];
 
 function App() {
@@ -52,7 +53,7 @@ function App() {
         </nav>
       </header>
 
-      {activePage === 'overview' ? <OverviewPage /> : <RepoBrowser />}
+      {activePage === 'overview' ? <OverviewPage /> : activePage === 'browser' ? <RepoBrowser /> : <SlicesPage />}
 
       <footer className="footer">
         <p>Git Slice • Slice smart. Ship faster.</p>
@@ -356,6 +357,199 @@ function RepoBrowser() {
           </div>
           {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
           {selectedFile && <pre className="file-preview">{fileContent || 'No content available yet.'}</pre>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SlicesPage() {
+  const [slices, setSlices] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [createStatus, setCreateStatus] = useState({ type: '', message: '' });
+  const initialFormState = {
+    sliceId: '',
+    name: '',
+    description: '',
+    owners: '',
+    files: '',
+    createdBy: '',
+  };
+  const [formState, setFormState] = useState(initialFormState);
+
+  const loadSlices = async () => {
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/slices?limit=100`);
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      const payload = await response.json();
+      setSlices(payload.slices || []);
+    } catch (err) {
+      setError('Unable to load slices. Ensure the slice service is running.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSlices();
+  }, []);
+
+  const handleFormChange = (event) => {
+    const { name, value } = event.target;
+    setFormState((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleCreateSlice = async (event) => {
+    event.preventDefault();
+    setCreateStatus({ type: '', message: '' });
+
+    const sliceId = formState.sliceId.trim();
+    if (!sliceId) {
+      setCreateStatus({ type: 'error', message: 'Slice ID is required.' });
+      return;
+    }
+
+    const payload = {
+      slice_id: sliceId,
+      name: formState.name.trim(),
+      description: formState.description.trim(),
+      owners: formState.owners
+        .split(',')
+        .map((owner) => owner.trim())
+        .filter(Boolean),
+      files: formState.files
+        .split(',')
+        .map((file) => file.trim())
+        .filter(Boolean),
+      created_by: formState.createdBy.trim(),
+    };
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/slices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = response.status === 409 ? 'Slice already exists.' : 'Unable to create slice.';
+        throw new Error(message);
+      }
+
+      setCreateStatus({ type: 'success', message: 'Slice created successfully.' });
+      setFormState(initialFormState);
+      await loadSlices();
+    } catch (err) {
+      setCreateStatus({ type: 'error', message: err.message || 'Unable to create slice.' });
+    }
+  };
+
+  return (
+    <section className="section slices-page card">
+      <div className="section-header">
+        <p className="eyebrow">Slice catalog</p>
+        <h2>Manage existing slices</h2>
+        <p>Review all available slices and create new ones directly from the web console.</p>
+      </div>
+
+      <div className="slice-toolbar">
+        <button type="button" className="ghost" onClick={loadSlices} disabled={isLoading}>
+          Refresh list
+        </button>
+        {isLoading && <span className="status">Loading…</span>}
+      </div>
+
+      {error && <div className="panel-error">{error}</div>}
+
+      <div className="slice-grid">
+        <div className="slice-panel">
+          <div className="panel-header">
+            <h3>All slices</h3>
+            <span className="status">{slices.length} total</span>
+          </div>
+          {slices.length === 0 && !isLoading && !error && <div className="panel-empty">No slices found yet.</div>}
+          <ul className="slice-list">
+            {slices.map((slice) => (
+              <li key={slice.slice_id} className="slice-card">
+                <div className="slice-card-header">
+                  <div>
+                    <h4>{slice.name || slice.slice_id}</h4>
+                    <p className="slice-id">{slice.slice_id}</p>
+                  </div>
+                  <span className="slice-files">{slice.file_count} files</span>
+                </div>
+                {slice.description && <p className="slice-description">{slice.description}</p>}
+                <div className="slice-meta">
+                  <span>Owners: {slice.owners?.length ? slice.owners.join(', ') : 'Unassigned'}</span>
+                  <span>Updated: {slice.updated_at ? new Date(slice.updated_at).toLocaleString() : '—'}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="slice-panel">
+          <div className="panel-header">
+            <h3>Create a slice</h3>
+          </div>
+          <form className="slice-form" onSubmit={handleCreateSlice}>
+            <label>
+              Slice ID
+              <input name="sliceId" value={formState.sliceId} onChange={handleFormChange} placeholder="feature_login" />
+            </label>
+            <label>
+              Name
+              <input name="name" value={formState.name} onChange={handleFormChange} placeholder="Login improvements" />
+            </label>
+            <label>
+              Description
+              <textarea
+                name="description"
+                value={formState.description}
+                onChange={handleFormChange}
+                placeholder="Short summary of the slice goal"
+                rows={3}
+              />
+            </label>
+            <label>
+              Owners
+              <input
+                name="owners"
+                value={formState.owners}
+                onChange={handleFormChange}
+                placeholder="alice, bob"
+              />
+            </label>
+            <label>
+              Files
+              <input name="files" value={formState.files} onChange={handleFormChange} placeholder="src/app.js, api/auth.js" />
+            </label>
+            <label>
+              Created by
+              <input
+                name="createdBy"
+                value={formState.createdBy}
+                onChange={handleFormChange}
+                placeholder="alice"
+              />
+            </label>
+            <div className="form-actions">
+              <button type="submit" className="primary">
+                Create slice
+              </button>
+            </div>
+            {createStatus.message && (
+              <div className={createStatus.type === 'error' ? 'panel-error' : 'panel-success'}>
+                {createStatus.message}
+              </div>
+            )}
+          </form>
         </div>
       </div>
     </section>
