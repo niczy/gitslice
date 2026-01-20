@@ -11,6 +11,7 @@ install:
 proto:
 	PATH=$(GOPATH)/bin:$(PATH) sh -c 'cd proto/slice && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto'
 	PATH=$(GOPATH)/bin:$(PATH) sh -c 'cd proto/admin && protoc -I . -I .. -I $(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@*/third_party/googleapis --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto'
+	PATH=$(GOPATH)/bin:$(PATH) sh -c 'cd proto/file && protoc -I . -I .. -I $(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@*/third_party/googleapis --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto'
 
 build: proto
 	go build -o slice_service_server ./slice_service/
@@ -31,11 +32,13 @@ start-servers: build
 	./admin_service_server &
 	@echo "Services started. Press Ctrl+C to stop."
 
-test:
+test: proto
 	go test ./...
 
 clean:
 	rm -f slice_service_server admin_service_server gs_cli/gs_cli
+	find proto -name "*.pb.go" -delete
+	find proto -name "*.pb.gw.go" -delete
 
 install_gs: build-cli
 	cp gs_cli/gs_cli $(GOPATH)/bin/gs

@@ -30,12 +30,14 @@ Before committing and pushing code, **ALWAYS** run the following checks:
    RUN_INTEGRATION_TESTS=1 go test -v ./workflow_test/... -timeout 60s
    ```
 
-3. **Proto Regeneration** (if proto files changed)
+3. **Proto Files Are Auto-Generated**
    ```bash
-   make proto
+   make build  # automatically runs 'make proto'
    ```
-   - Only needed if `.proto` files were modified
-   - Verify generated code compiles
+   - ⚠️ **IMPORTANT**: Generated `*.pb.go` files are NOT committed to git
+   - Proto files are regenerated automatically by Makefile during build
+   - If you modify `.proto` files, just run `make build` or `make proto`
+   - Never manually edit `*.pb.go` or `*.pb.gw.go` files
 
 4. **Lint Check** (if available)
    ```bash
@@ -65,8 +67,9 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 
 5. **Proto Changes Without Implementation**
    - Adding RPC to proto requires implementing the handler
-   - Proto regeneration alone is not enough
+   - Generated files (*.pb.go) are not committed - they're auto-generated during build
    - Server must implement all RPCs to avoid Unimplemented errors
+   - After modifying .proto files, verify the build succeeds with new generated code
 
 ## Project Architecture
 
@@ -117,6 +120,48 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 3. **Storage Initialization**
    - Always use `common.EnsureRootSliceInitialized()`
    - Don't duplicate root slice initialization logic
+
+### Protobuf Workflow
+
+**IMPORTANT**: Generated protobuf files are NOT committed to the repository.
+
+**Why This Approach:**
+- Prevents stale generated code from causing build failures
+- Generated files are always in sync with `.proto` definitions
+- Smaller git history (no binary/generated file diffs)
+- Eliminates "forgot to regenerate" bugs
+
+**How It Works:**
+1. `.proto` files in `proto/` directories are committed to git
+2. `*.pb.go` and `*.pb.gw.go` files are in `.gitignore`
+3. `make build`, `make test`, and individual build targets depend on `make proto`
+4. Proto files are auto-generated during every build
+
+**When Modifying Proto Files:**
+```bash
+# 1. Edit the .proto file
+vim proto/admin/admin_service.proto
+
+# 2. Build (this regenerates proto files automatically)
+make build
+
+# 3. Implement any new RPC handlers in the service
+vim internal/services/admin/server.go
+
+# 4. Verify it builds and works
+make test
+```
+
+**First Time Setup:**
+```bash
+# Install protoc and Go plugins
+make install
+
+# This installs:
+# - protoc-gen-go (protobuf Go code generator)
+# - protoc-gen-go-grpc (gRPC Go code generator)
+# - protoc-gen-grpc-gateway (HTTP gateway generator)
+```
 
 ## Security Considerations
 
@@ -213,8 +258,9 @@ RUN_INTEGRATION_TESTS=1 go test -v ./workflow_test/...
    - No authentication system
 
 2. **Proto Files**
-   - `GetSlice` RPC defined but not implemented in admin service
-   - Proto regeneration requires `protoc` and plugins
+   - Generated `*.pb.go` files are NOT committed to git (auto-generated during build)
+   - Proto regeneration requires `protoc` and plugins (installed via `make install`)
+   - All builds automatically regenerate proto files from `.proto` sources
 
 3. **Network Issues**
    - CI/local environments may have network restrictions
