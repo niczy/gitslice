@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package admin.v1;
 
+import "google/api/annotations.proto";
+
 option go_package = "github.com/niczy/gitslice/proto;adminv1";
 
  service AdminService {
@@ -9,13 +11,22 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
   rpc BatchMerge(BatchMergeRequest) returns (BatchMergeResponse);
 
   // Create a new slice
-  rpc CreateSlice(CreateSliceRequest) returns (CreateSliceResponse);
+  rpc CreateSlice(CreateSliceRequest) returns (CreateSliceResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices"
+      body: "*"
+    };
+  }
 
   // Get slice details
   rpc GetSlice(GetSliceRequest) returns (GetSliceResponse);
 
   // List all active slices
-  rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
+  rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices"
+    };
+  }
 
   // Get current conflicts across slices
   rpc GetConflicts(ConflictsRequest) returns (ConflictsResponse);
