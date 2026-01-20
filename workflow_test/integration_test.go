@@ -167,6 +167,19 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 	return string(output), err
 }
 
+func runGitOrFail(t *testing.T, workdir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workdir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git command failed: %v\nOutput:\n%s", err, output)
+	}
+
+	return strings.TrimSpace(string(output))
+}
+
 func runCLIOrFail(t *testing.T, workdir string, args ...string) string {
 	t.Helper()
 
@@ -367,6 +380,66 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	}
 }
 
+func TestCheckoutInitializesGitRepo(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-git-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "git_file.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("Expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("Expected checkout output, got: %s", output)
+	}
+
+	insideRepo := runGitOrFail(t, workdir, "rev-parse", "--is-inside-work-tree")
+	if insideRepo != "true" {
+		t.Fatalf("expected git repo, got %q", insideRepo)
+	}
+
+	branch := runGitOrFail(t, workdir, "symbolic-ref", "--short", "HEAD")
+	if branch != "main" {
+		t.Fatalf("expected main branch after checkout, got %q", branch)
+	}
+
+	latestMessage := runGitOrFail(t, workdir, "log", "-1", "--pretty=%s")
+	if !strings.Contains(latestMessage, "gitslice checkout") {
+		t.Fatalf("expected checkout commit message, got %q", latestMessage)
+	}
+
+	status := runGitOrFail(t, workdir, "status", "--porcelain")
+	if status != "" {
+		t.Fatalf("expected clean git status after checkout, got %q", status)
+	}
+}
+
+func TestChangesetCreateRequiresMainBranch(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "branch_file.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("Expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("Expected init output, got: %s", output)
+	}
+
+	runGitOrFail(t, workdir, "checkout", "-b", "feature/test")
+
+	output, err := runCLIWithDir(workdir, "changeset", "create", "--message", "branch change", "--files", "branch_file.txt")
+	if err == nil {
+		t.Fatalf("expected changeset creation to fail on non-main branch, output: %s", output)
+	}
+	if !strings.Contains(output, "main branch") {
+		t.Fatalf("expected main branch error, got: %s", output)
+	}
+}
+
 func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
@@ -404,11 +477,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "init", sliceID)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceID)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
@@ -434,11 +502,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "init", sliceID)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceID)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
@@ -448,11 +511,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	rootCheckoutDir := t.TempDir()
-	output = runCLIOrFail(t, rootCheckoutDir, "init", "root_slice")
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", "root_slice")
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected root slice to promote latest commit, got: %s", output)

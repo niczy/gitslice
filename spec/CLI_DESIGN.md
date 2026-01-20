@@ -33,8 +33,11 @@ gs slice list --limit 50 --offset 0 --detailed
 gs slice info my-slice
 gs slice status my-slice
 gs slice checkout my-slice --commit HEAD
+gs slice clone my-slice --commit HEAD
 ```
 
+> `gs slice clone` is an alias for `gs slice checkout`.
+>
 > `gs slice owners` is currently a placeholder and logs “not implemented yet.”
 
 ### Changeset Commands

@@ -68,6 +68,13 @@ func handleInit(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
+	if _, err := ensureGitRepo("."); err != nil {
+		log.Fatalf("Failed to initialize git repository: %v", err)
+	}
+	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+		log.Fatalf("Failed to update .gitignore: %v", err)
+	}
+
 	fmt.Printf("Initialized empty gitslice repository in slice: %s\n", sliceID)
 }
 

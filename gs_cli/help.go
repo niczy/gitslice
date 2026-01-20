@@ -25,6 +25,7 @@ func printSliceHelp() {
 	fmt.Println("  status    Show slice status")
 	fmt.Println("  owners    Show slice owners")
 	fmt.Println("  checkout  Checkout a slice to working directory")
+	fmt.Println("  clone     Alias for checkout")
 }
 
 func printChangesetHelp() {
