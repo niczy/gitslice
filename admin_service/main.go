@@ -1,30 +1,38 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 
+	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/config"
 	adminservice "github.com/niczy/gitslice/internal/services/admin"
 	"github.com/niczy/gitslice/internal/storage"
 )
 
 func main() {
+	// Load configuration
+	cfg := config.LoadConfig()
+
 	// Initialize storage
 	st := storage.NewInMemoryStorage()
 
 	// Initialize root slice
-	if err := st.InitializeRootSlice(nil); err != nil {
-		log.Printf("Warning: Failed to initialize root slice: %v", err)
+	ctx := context.Background()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		log.Fatalf("Failed to initialize root slice: %v", err)
 	}
 
-	lis, err := net.Listen("tcp", ":50052")
+	addr := cfg.GetAdminServiceAddr()
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
 	s := adminservice.NewGRPCServer(st)
 
-	log.Println("AdminService server listening on :50052")
+	log.Printf("AdminService server listening on %s", addr)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
