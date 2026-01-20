@@ -3,6 +3,9 @@
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
 GOOGLEAPIS_DIR := third_party/googleapis
+# Pin to specific googleapis commit for reproducible builds
+# This commit is from 2024-05-13, matching our genproto dependency date
+GOOGLEAPIS_COMMIT := 0d38cae77aba1a9da2b4d5f27c3eabf7e48cf0e3
 
 install:
 	go mod download
@@ -12,11 +15,11 @@ install:
 
 setup-googleapis:
 	@if [ ! -d "$(GOOGLEAPIS_DIR)" ]; then \
-		echo "Downloading googleapis proto files..."; \
+		echo "Downloading googleapis proto files (commit: $(GOOGLEAPIS_COMMIT))..."; \
 		mkdir -p third_party; \
-		git clone --depth 1 --filter=blob:none --sparse https://github.com/googleapis/googleapis.git $(GOOGLEAPIS_DIR); \
-		cd $(GOOGLEAPIS_DIR) && git sparse-checkout set google/api; \
-		echo "googleapis downloaded successfully"; \
+		git clone --filter=blob:none --sparse https://github.com/googleapis/googleapis.git $(GOOGLEAPIS_DIR); \
+		cd $(GOOGLEAPIS_DIR) && git checkout $(GOOGLEAPIS_COMMIT) && git sparse-checkout set google/api; \
+		echo "googleapis downloaded successfully (pinned to $(GOOGLEAPIS_COMMIT))"; \
 	fi
 
 proto: setup-googleapis
