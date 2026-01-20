@@ -50,7 +50,7 @@ func main() {
 		}
 	}()
 
-	ctx := context.Background()
+	// Register gateway handlers (reuse ctx from above)
 	gatewayMux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	if err := filev1.RegisterFileServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost"+grpcAddr, opts); err != nil {
