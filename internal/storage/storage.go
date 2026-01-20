@@ -54,6 +54,7 @@ type Storage interface {
 	// File content for checkout
 	GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)
 	GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error)
+	AddFileContent(ctx context.Context, content *models.FileContent) error
 
 	// Directory entries
 	AddEntry(ctx context.Context, entry *models.DirectoryEntry) error
