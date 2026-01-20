@@ -18,6 +18,9 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
     };
   }
 
+  // Get slice details
+  rpc GetSlice(GetSliceRequest) returns (GetSliceResponse);
+
   // List all active slices
   rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse) {
     option (google.api.http) = {
@@ -62,6 +65,21 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
     string slice_id = 1;
     string status = 2;
   }
+
+ message GetSliceRequest {
+  string slice_id = 1;
+}
+
+message GetSliceResponse {
+  string slice_id = 1;
+  string name = 2;
+  string description = 3;
+  repeated string owners = 4;
+  string created_by = 5;
+  int64 created_at = 6;
+  string parent_slice = 7;
+  bool is_root = 8;
+}
 
  message ListSlicesRequest {
   int32 limit = 1;

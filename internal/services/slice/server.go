@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -41,6 +42,11 @@ func NewService(st storage.Storage) slicev1.SliceServiceServer {
 
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
+
+	// Validate slice ID
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
 
 	// Get slice metadata
 	metadata, err := s.storage.GetSliceMetadata(ctx, req.SliceId)
@@ -107,6 +113,18 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 
 func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.CreateChangesetRequest) (*slicev1.CreateChangesetResponse, error) {
 	log.Printf("CreateChangeset called: slice_id=%s, author=%s", req.SliceId, req.Author)
+
+	// Validate slice ID
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
+
+	// Validate modified files
+	for _, fileID := range req.ModifiedFiles {
+		if err := common.ValidateFileID(fileID); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file ID %s: %v", fileID, err))
+		}
+	}
 
 	// Verify slice exists
 	if _, err := s.storage.GetSlice(ctx, req.SliceId); err != nil {
@@ -400,6 +418,19 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, new_slice_id=%s",
 		req.ParentSliceId, req.FolderPath, req.NewSliceId)
 
+	// Validate IDs and paths
+	if err := common.ValidateSliceID(req.ParentSliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid parent slice ID: %v", err))
+	}
+	if err := common.ValidateSliceID(req.NewSliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid new slice ID: %v", err))
+	}
+	if req.FolderPath != "" {
+		if err := common.ValidateFilePath(req.FolderPath); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid folder path: %v", err))
+		}
+	}
+
 	parentSlice, err := s.storage.GetSlice(ctx, req.ParentSliceId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("parent slice not found: %s", req.ParentSliceId))
@@ -439,13 +470,12 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 }
 
 func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	rootSlice, err := s.storage.GetRootSlice(ctx)
-	if errors.Is(err, storage.ErrSliceNotFound) {
-		if initErr := s.storage.InitializeRootSlice(ctx); initErr != nil {
-			return fmt.Errorf("failed to initialize root slice: %w", initErr)
-		}
-		rootSlice, err = s.storage.GetRootSlice(ctx)
+	// Ensure root slice is initialized
+	if err := common.EnsureRootSliceInitialized(ctx, s.storage); err != nil {
+		return fmt.Errorf("failed to ensure root slice: %w", err)
 	}
+
+	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load root slice: %w", err)
 	}

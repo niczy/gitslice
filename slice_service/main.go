@@ -8,6 +8,8 @@ import (
 	"net/http"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/config"
 	fileservice "github.com/niczy/gitslice/internal/services/file"
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
@@ -18,16 +20,21 @@ import (
 )
 
 func main() {
+	// Load configuration
+	cfg := config.LoadConfig()
+
 	// Initialize storage
 	st := storage.NewInMemoryStorage()
 
 	// Initialize root slice
-	if err := st.InitializeRootSlice(nil); err != nil {
-		log.Printf("Warning: Failed to initialize root slice: %v", err)
+	ctx := context.Background()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		log.Fatalf("Failed to initialize root slice: %v", err)
 	}
 
-	grpcAddr := ":50051"
-	gatewayAddr := ":8080"
+	grpcAddr := cfg.GetSliceServiceAddr()
+	adminAddr := cfg.GetAdminServiceAddr()
+	gatewayAddr := cfg.GetGatewayAddr()
 
 	lis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
@@ -44,20 +51,29 @@ func main() {
 		}
 	}()
 
-	ctx := context.Background()
+	// Register gateway handlers (reuse ctx from above)
 	gatewayMux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	if err := filev1.RegisterFileServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost"+grpcAddr, opts); err != nil {
 		log.Fatalf("Failed to register file service gateway: %v", err)
 	}
-	if err := adminv1.RegisterAdminServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost:50052", opts); err != nil {
+	if err := adminv1.RegisterAdminServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost"+adminAddr, opts); err != nil {
 		log.Fatalf("Failed to register admin service gateway: %v", err)
 	}
 
-	handler := withCORS(gatewayMux)
+	// Create HTTP mux with health checks
+	httpMux := http.NewServeMux()
+	httpMux.HandleFunc("/health", common.HealthCheckHandler("slice-service"))
+	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("slice-service", func(ctx context.Context) bool {
+		// Check if storage is accessible
+		_, err := st.GetRootSlice(ctx)
+		return err == nil
+	}))
+	httpMux.Handle("/", withCORS(gatewayMux))
+
 	server := &http.Server{
 		Addr:    gatewayAddr,
-		Handler: handler,
+		Handler: httpMux,
 	}
 
 	log.Printf("FileService gateway listening on %s", gatewayAddr)
