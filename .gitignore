@@ -23,6 +23,7 @@ go.work
 
 # Dependency directories
 vendor/
+third_party/
 
 # IDE specific files
 .vscode/
