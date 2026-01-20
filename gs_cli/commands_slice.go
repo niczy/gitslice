@@ -33,6 +33,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceOwners(ctx, cli, args[1:])
 	case "checkout":
 		handleSliceCheckout(ctx, cli, args[1:])
+	case "clone":
+		handleSliceCheckout(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown slice command: %s", args[0])
 		printSliceHelp()
@@ -216,7 +218,7 @@ func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout <slice-id> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <slice-id> [--commit <commit-hash>]")
 		return
 	}
 
@@ -226,6 +228,21 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	fs.Parse(args[1:])
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		log.Fatalf("Failed to read directory: %v", err)
+	}
+	if len(entries) > 0 {
+		log.Fatal("Directory is not empty. Please checkout into an empty directory.")
+	}
+
+	if err := os.MkdirAll(".gs", 0o755); err != nil {
+		log.Fatalf("Failed to create .gs directory: %v", err)
+	}
+	if err := writeConfigFile(sliceID); err != nil {
+		log.Fatalf("Failed to write config file: %v", err)
+	}
 
 	// Call slice service
 	req := &slicev1.CheckoutRequest{
@@ -289,6 +306,33 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 				log.Printf("Failed to write file %s: %v", fm.Path, err)
 			}
 		})
+	}
+
+	createdRepo, err := ensureGitRepo(".")
+	if err != nil {
+		log.Fatalf("Failed to initialize git repository: %v", err)
+	}
+	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+		log.Fatalf("Failed to update .gitignore: %v", err)
+	}
+	if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
+		log.Fatalf("Failed to switch to main branch: %v", err)
+	}
+	hasCommit, err := gitHasCommit(".")
+	if err != nil {
+		log.Fatalf("Failed to check git history: %v", err)
+	}
+	if _, err := runGitCommand(".", "add", "-A"); err != nil {
+		log.Fatalf("Failed to stage checkout files: %v", err)
+	}
+	hasPendingChanges, err := gitHasPendingChanges(".")
+	if err != nil {
+		log.Fatalf("Failed to read git status: %v", err)
+	}
+	if createdRepo || !hasCommit || hasPendingChanges {
+		if err := createCheckoutCommit(".", resp.Manifest.CommitHash); err != nil {
+			log.Fatalf("Failed to create checkout commit: %v", err)
+		}
 	}
 
 	// Display checkout results

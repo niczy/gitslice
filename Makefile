@@ -32,7 +32,7 @@ start-servers: build
 	./admin_service_server &
 	@echo "Services started. Press Ctrl+C to stop."
 
-test: proto
+test: install proto
 	go test ./...
 
 clean:

@@ -35,6 +35,10 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
+	if err := requireMainBranch("."); err != nil {
+		log.Fatalf("Cannot create changeset: %v", err)
+	}
+
 	sliceID, err := readSliceIDFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
