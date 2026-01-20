@@ -413,6 +413,11 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 	if !strings.Contains(latestMessage, "gitslice checkout") {
 		t.Fatalf("expected checkout commit message, got %q", latestMessage)
 	}
+
+	status := runGitOrFail(t, workdir, "status", "--porcelain")
+	if status != "" {
+		t.Fatalf("expected clean git status after checkout, got %q", status)
+	}
 }
 
 func TestChangesetCreateRequiresMainBranch(t *testing.T) {

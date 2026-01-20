@@ -120,10 +120,6 @@ func requireMainBranch(dir string) error {
 }
 
 func createCheckoutCommit(dir, commitHash string) error {
-	if _, err := runGitCommand(dir, "add", "-A"); err != nil {
-		return err
-	}
-
 	message := "gitslice checkout"
 	if commitHash != "" {
 		message = fmt.Sprintf("gitslice checkout %s", commitHash)
@@ -144,6 +140,14 @@ func gitHasCommit(dir string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func gitHasPendingChanges(dir string) (bool, error) {
+	output, err := runGitCommand(dir, "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return output != "", nil
 }
 
 func runGitCommand(dir string, args ...string) (string, error) {

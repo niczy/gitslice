@@ -298,11 +298,21 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
+	if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
+		log.Fatalf("Failed to switch to main branch: %v", err)
+	}
 	hasCommit, err := gitHasCommit(".")
 	if err != nil {
 		log.Fatalf("Failed to check git history: %v", err)
 	}
-	if createdRepo || !hasCommit {
+	if _, err := runGitCommand(".", "add", "-A"); err != nil {
+		log.Fatalf("Failed to stage checkout files: %v", err)
+	}
+	hasPendingChanges, err := gitHasPendingChanges(".")
+	if err != nil {
+		log.Fatalf("Failed to read git status: %v", err)
+	}
+	if createdRepo || !hasCommit || hasPendingChanges {
 		if err := createCheckoutCommit(".", resp.Manifest.CommitHash); err != nil {
 			log.Fatalf("Failed to create checkout commit: %v", err)
 		}
