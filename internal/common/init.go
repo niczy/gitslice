@@ -47,6 +47,12 @@ func EnsureRootSliceInitialized(ctx context.Context, st storage.Storage) error {
 
 // populateRootSliceFromGit scans the current git repository and adds all tracked files to the root slice
 func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID string) error {
+	// Skip git population during tests
+	if os.Getenv("RUN_INTEGRATION_TESTS") == "1" || os.Getenv("SKIP_GIT_POPULATION") == "1" {
+		log.Println("Skipping git population (test environment detected)")
+		return nil
+	}
+
 	// Check if we're in a git repository
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
