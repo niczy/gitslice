@@ -21,8 +21,8 @@ start_slice_service() {
   log "Stopping existing slice service..."
   pkill -f "$SLICE_BIN" >/dev/null 2>&1 || true
 
-  log "Building slice service..."
-  go build -o "$SLICE_BIN" ./slice_service
+  log "Building slice service (with proto generation)..."
+  make build-slice
 
   log "Starting slice service (log: $SLICE_LOG)..."
   nohup "$SLICE_BIN" > "$SLICE_LOG" 2>&1 &
@@ -33,8 +33,8 @@ start_admin_service() {
   log "Stopping existing admin service..."
   pkill -f "$ADMIN_BIN" >/dev/null 2>&1 || true
 
-  log "Building admin service..."
-  go build -o "$ADMIN_BIN" ./admin_service
+  log "Building admin service (with proto generation)..."
+  make build-admin
 
   log "Starting admin service (log: $ADMIN_LOG)..."
   nohup "$ADMIN_BIN" > "$ADMIN_LOG" 2>&1 &
