@@ -29,11 +29,11 @@ proto: setup-googleapis
 		echo "  macOS: brew install protobuf"; \
 		exit 1; \
 	fi
-	@if ! command -v protoc-gen-go >/dev/null 2>&1; then \
+	@if ! PATH=$(GOBIN):$(PATH) command -v protoc-gen-go >/dev/null 2>&1; then \
 		echo "Error: protoc-gen-go not found. Run 'make install' first."; \
 		exit 1; \
 	fi
-	@if ! command -v protoc-gen-grpc-gateway >/dev/null 2>&1; then \
+	@if ! PATH=$(GOBIN):$(PATH) command -v protoc-gen-grpc-gateway >/dev/null 2>&1; then \
 		echo "Error: protoc-gen-grpc-gateway not found. Run 'make install' first."; \
 		exit 1; \
 	fi
