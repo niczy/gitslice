@@ -389,11 +389,6 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", sliceID)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("Expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("Expected checkout output, got: %s", output)
@@ -482,11 +477,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "init", sliceID)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceID)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
@@ -512,11 +502,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "init", sliceID)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceID)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
@@ -526,11 +511,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	rootCheckoutDir := t.TempDir()
-	output = runCLIOrFail(t, rootCheckoutDir, "init", "root_slice")
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("expected init output, got: %s", output)
-	}
-
 	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", "root_slice")
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected root slice to promote latest commit, got: %s", output)

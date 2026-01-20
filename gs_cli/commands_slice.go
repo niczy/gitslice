@@ -227,6 +227,21 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	fs.Parse(args[1:])
 
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		log.Fatalf("Failed to read directory: %v", err)
+	}
+	if len(entries) > 0 {
+		log.Fatal("Directory is not empty. Please checkout into an empty directory.")
+	}
+
+	if err := os.MkdirAll(".gs", 0o755); err != nil {
+		log.Fatalf("Failed to create .gs directory: %v", err)
+	}
+	if err := writeConfigFile(sliceID); err != nil {
+		log.Fatalf("Failed to write config file: %v", err)
+	}
+
 	// Call slice service
 	req := &slicev1.CheckoutRequest{
 		SliceId:    sliceID,
