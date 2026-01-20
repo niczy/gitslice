@@ -3,19 +3,24 @@ import './styles.css';
 
 const features = [
   {
-    title: 'Speed',
+    title: 'Bounded Context',
     description:
-      'Slice only what you need, reuse the rest. Move from idea to review faster with focused diffs and reproducible runs.',
+      'Agents work on defined slices, not entire repos. Checkout only what you need—faster operations, reduced cognitive load.',
   },
   {
-    title: 'Safety',
+    title: 'Parallel Operations',
     description:
-      'Keep changes isolated. Guardrails make it easy to test, share, and roll back without risking the rest of your repo.',
+      'Thousands of agents can work simultaneously on different slices. Conflicts detected proactively at slice boundaries, not after merge.',
   },
   {
-    title: 'Tooling',
+    title: 'Fast Feedback',
     description:
-      'First-class CLI and services for orchestrating slices, automations, and integrations with your existing workflows.',
+      'CI runs only on slice changes. 10x faster iteration cycles mean agents can test, retry, and converge on solutions quickly.',
+  },
+  {
+    title: 'Clear Ownership',
+    description:
+      'Slices define ownership boundaries. Map services to slices, assign agents to specific domains, reduce coordination overhead.',
   },
 ];
 
@@ -33,11 +38,11 @@ function App() {
   return (
     <div className="page">
       <header className="hero">
-        <div className="eyebrow">Introducing Git Slice</div>
-        <h1>Slice-based workflows for shipping more confidently.</h1>
+        <div className="eyebrow">Research Prototype</div>
+        <h1>Version control designed for AI coding agents at scale.</h1>
         <p className="lede">
-          Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. No more
-          sprawling branches—just fast, predictable delivery.
+          Git Slice reimagines version control for massive monorepos with thousands of autonomous agents. Bounded contexts,
+          parallel operations, and proactive conflict detection—built for the next generation of software development.
         </p>
         <nav className="page-tabs">
           {pageOptions.map((option) => (
@@ -56,7 +61,7 @@ function App() {
       {activePage === 'overview' ? <OverviewPage /> : activePage === 'browser' ? <RepoBrowser /> : <SlicesPage />}
 
       <footer className="footer">
-        <p>Git Slice • Slice smart. Ship faster.</p>
+        <p>Git Slice • Research prototype for AI-scale version control</p>
       </footer>
     </div>
   );
@@ -67,34 +72,34 @@ function OverviewPage() {
     <>
       <section id="overview" className="section card">
         <div className="section-header">
-          <p className="eyebrow">Slice-first development</p>
-          <h2>Run isolated slices from idea to production</h2>
+          <p className="eyebrow">Why slices for coding agents?</p>
+          <h2>Scale beyond Git's limits</h2>
           <p>
-            Start by defining a slice around a task. Git Slice provisions the context, fetches dependencies, and wires up
-            tooling so you can develop, test, and preview changes without disturbing the rest of the repo. When you are ready,
-            merge the slice with full traceability.
+            Traditional Git workflows struggle when thousands of agents work on massive monorepos. Gitslice introduces slices—defined
+            subsets of code that agents can own, modify, and merge independently. Designed for billions of files and millions of
+            commits per day.
           </p>
         </div>
         <div className="steps">
           <div className="step">
             <div className="step-number">1</div>
             <div>
-              <h3>Carve out the slice</h3>
-              <p>Pin the exact files and services you need. Spin up environments that mirror production with minimal setup.</p>
+              <h3>Define slice boundaries</h3>
+              <p>Map your monorepo to logical slices (services, packages, modules). Agents check out only what they need—faster than cloning entire repos.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">2</div>
             <div>
-              <h3>Iterate quickly</h3>
-              <p>Use the CLI to run tests, preview changes, and share the slice URL so reviewers can validate updates in minutes.</p>
+              <h3>Parallel agent workflows</h3>
+              <p>Fleet of agents work simultaneously. Conflicts detected at slice merge time, not globally. Proactive detection means faster retries.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">3</div>
             <div>
-              <h3>Merge with confidence</h3>
-              <p>Every slice comes with reproducible logs, checks, and diffs so merging back is predictable and low-risk.</p>
+              <h3>Batch merge to global</h3>
+              <p>Changes merge to global state in batches, avoiding per-commit bottlenecks. Built for high-volume autonomous operations.</p>
             </div>
           </div>
         </div>
@@ -102,9 +107,9 @@ function OverviewPage() {
 
       <section id="features" className="section features">
         <div className="section-header">
-          <p className="eyebrow">Built for teams</p>
-          <h2>Feature highlights</h2>
-          <p>Everything you need to move fast without losing control.</p>
+          <p className="eyebrow">Built for autonomous agents</p>
+          <h2>Key advantages over GitHub</h2>
+          <p>Optimized for massive-scale parallel development with AI coding agents.</p>
         </div>
         <div className="feature-grid">
           {features.map((feature) => (
@@ -116,14 +121,47 @@ function OverviewPage() {
         </div>
       </section>
 
+      <section id="comparison" className="section card">
+        <div className="section-header">
+          <p className="eyebrow">When to use gitslice</p>
+          <h2>Gitslice vs GitHub: Use case fit</h2>
+          <p>Designed for specific scale challenges. Evaluate if your use case justifies the complexity.</p>
+        </div>
+        <div className="comparison-grid">
+          <div className="comparison-card good">
+            <h3>✅ Ideal for Gitslice</h3>
+            <ul>
+              <li><strong>Massive monorepos</strong> (10M+ files, thousands of services)</li>
+              <li><strong>Well-defined boundaries</strong> (microservices, clear ownership)</li>
+              <li><strong>High-volume autonomous changes</strong> (fleet of coding agents)</li>
+              <li><strong>Parallel, independent operations</strong> (minimal cross-cutting changes)</li>
+              <li><strong>Scale challenges</strong> (Git checkout/CI too slow)</li>
+            </ul>
+          </div>
+          <div className="comparison-card warning">
+            <h3>⚠️ Stick with GitHub</h3>
+            <ul>
+              <li><strong>Small-medium projects</strong> (&lt;1M LOC, traditional team sizes)</li>
+              <li><strong>Cross-cutting agent tasks</strong> ("upgrade all packages", "fix linter errors everywhere")</li>
+              <li><strong>Integration-heavy workflows</strong> (need GitHub Actions, Apps, webhooks)</li>
+              <li><strong>Production requirements</strong> (auth, security, reliability needed now)</li>
+              <li><strong>Established ecosystem</strong> (mature tooling, community support)</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
       <section className="section cta card">
         <div>
-          <p className="eyebrow">Ready to slice?</p>
-          <h2>Bring slice-based delivery to your team.</h2>
-          <p>Start with the CLI and wire it into your CI/CD. Git Slice is built to plug into your existing workflows.</p>
+          <p className="eyebrow">Current status: Prototype</p>
+          <h2>In-memory implementation, proving the model</h2>
+          <p>
+            This is a research prototype demonstrating slice-based version control. Production deployment would require Redis + S3 backend,
+            authentication, durability, and ecosystem integrations. Not yet ready for production use.
+          </p>
         </div>
-        <a className="primary" href="mailto:team@gitslice.dev">
-          Contact the team
+        <a className="primary" href="https://github.com/niczy/gitslice" target="_blank" rel="noopener noreferrer">
+          View on GitHub
         </a>
       </section>
     </>

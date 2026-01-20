@@ -543,6 +543,64 @@ body {
   border: 1px solid var(--border);
 }
 
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.comparison-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 20px;
+}
+
+.comparison-card.good {
+  border-left: 3px solid var(--accent);
+}
+
+.comparison-card.warning {
+  border-left: 3px solid #ff9800;
+}
+
+.comparison-card h3 {
+  margin: 0 0 16px;
+  font-size: 1.1rem;
+}
+
+.comparison-card ul {
+  margin: 0;
+  padding: 0 0 0 20px;
+  list-style: none;
+}
+
+.comparison-card li {
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  position: relative;
+}
+
+.comparison-card li::before {
+  content: '→';
+  position: absolute;
+  left: -20px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.comparison-card.warning li::before {
+  color: #ff9800;
+}
+
+.comparison-card strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .footer {
   text-align: center;
   margin-top: 32px;
