@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -178,6 +179,16 @@ func (s *adminServiceServer) CreateSlice(ctx context.Context, req *adminv1.Creat
 	if req.SliceId == "" {
 		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
 	}
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice_id: %v", err))
+	}
+
+	// Validate file paths
+	for _, fileID := range req.Files {
+		if err := common.ValidateFileID(fileID); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file_id %s: %v", fileID, err))
+		}
+	}
 
 	// Create slice model
 	slice := &models.Slice{
@@ -197,6 +208,39 @@ func (s *adminServiceServer) CreateSlice(ctx context.Context, req *adminv1.Creat
 	return &adminv1.CreateSliceResponse{
 		SliceId: req.SliceId,
 		Status:  "created",
+	}, nil
+}
+
+func (s *adminServiceServer) GetSlice(ctx context.Context, req *adminv1.GetSliceRequest) (*adminv1.GetSliceResponse, error) {
+	log.Printf("GetSlice called: slice_id=%s", req.SliceId)
+
+	// Validate input
+	if req.SliceId == "" {
+		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
+	}
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice_id: %v", err))
+	}
+
+	// Get slice from storage
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice: %v", err))
+	}
+
+	// Convert to response
+	return &adminv1.GetSliceResponse{
+		SliceId:     slice.ID,
+		Name:        slice.Name,
+		Description: slice.Description,
+		Owners:      slice.Owners,
+		CreatedBy:   slice.CreatedBy,
+		CreatedAt:   slice.CreatedAt.Unix(),
+		ParentSlice: slice.ParentSlice,
+		IsRoot:      slice.IsRoot,
 	}, nil
 }
 

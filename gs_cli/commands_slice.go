@@ -168,22 +168,50 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice owners <slice-id> [--add <owner>] [--remove <owner>]")
+		log.Println("Usage: gs slice owners <slice-id>")
 		return
 	}
 
 	sliceID := args[0]
 
-	// For now, display a message indicating the feature requires backend support
-	// Once the GetSlice RPC is implemented in the admin service, we can use it
-	fmt.Printf("Slice: %s\n", sliceID)
-	fmt.Println("Note: Slice owner management requires the GetSlice RPC to be implemented.")
-	fmt.Println("Currently, slice owners can be set when creating a slice with 'gs slice create'.")
-	fmt.Println()
-	fmt.Println("Planned features:")
-	fmt.Println("  - View current slice owners")
-	fmt.Println("  - Add new owners with --add flag")
-	fmt.Println("  - Remove owners with --remove flag")
+	// Get slice details from admin service
+	req := &adminv1.GetSliceRequest{
+		SliceId: sliceID,
+	}
+
+	resp, err := cli.adminClient.GetSlice(ctx, req)
+	if err != nil {
+		log.Fatalf("Failed to get slice: %v", err)
+	}
+
+	// Display slice information
+	fmt.Printf("Slice: %s\n", resp.SliceId)
+	fmt.Printf("Name: %s\n", resp.Name)
+	if resp.Description != "" {
+		fmt.Printf("Description: %s\n", resp.Description)
+	}
+	fmt.Printf("Created by: %s\n", resp.CreatedBy)
+	fmt.Printf("Created at: %s\n", formatTimestamp(resp.CreatedAt))
+
+	if resp.ParentSlice != "" {
+		fmt.Printf("Parent slice: %s\n", resp.ParentSlice)
+	}
+	if resp.IsRoot {
+		fmt.Printf("Type: Root slice\n")
+	}
+
+	fmt.Printf("\nOwners (%d):\n", len(resp.Owners))
+	if len(resp.Owners) == 0 {
+		fmt.Println("  (no owners)")
+	} else {
+		for _, owner := range resp.Owners {
+			fmt.Printf("  - %s\n", owner)
+		}
+	}
+
+	// Note about adding/removing owners
+	fmt.Println("\nNote: Adding and removing owners is not yet implemented.")
+	fmt.Println("Owners can be set when creating a slice with 'gs slice create'.")
 }
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
