@@ -33,6 +33,7 @@ func main() {
 	}
 
 	grpcAddr := cfg.GetSliceServiceAddr()
+	adminAddr := cfg.GetAdminServiceAddr()
 	gatewayAddr := cfg.GetGatewayAddr()
 
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -56,7 +57,7 @@ func main() {
 	if err := filev1.RegisterFileServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost"+grpcAddr, opts); err != nil {
 		log.Fatalf("Failed to register file service gateway: %v", err)
 	}
-	if err := adminv1.RegisterAdminServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost:50052", opts); err != nil {
+	if err := adminv1.RegisterAdminServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost"+adminAddr, opts); err != nil {
 		log.Fatalf("Failed to register admin service gateway: %v", err)
 	}
 

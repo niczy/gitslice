@@ -56,10 +56,17 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 3. **Hardcoded Values**
    - Use `internal/config` package for configuration
    - Environment variables should have defaults
+   - **Configuration Consistency**: When services read configurable addresses, all references must use config
+   - Example: If admin service uses `cfg.GetAdminServiceAddr()`, gateway must also use it (not hardcode `:50052`)
 
 4. **Input Validation**
    - Use `internal/common/validation.go` functions
    - Validate all user inputs for security
+
+5. **Proto Changes Without Implementation**
+   - Adding RPC to proto requires implementing the handler
+   - Proto regeneration alone is not enough
+   - Server must implement all RPCs to avoid Unimplemented errors
 
 ## Project Architecture
 
