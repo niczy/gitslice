@@ -116,13 +116,11 @@ go build -o gs_cli ./gs_cli/
 ### Running Tests
 
 ```bash
-# Run all tests
-go test ./...
+# Run all tests (installs dependencies first)
+make test
 
-# Run specific package tests
-go test ./slice_service/
-go test ./admin_service/
-go test ./gs_cli/
+# Run integration tests
+RUN_INTEGRATION_TESTS=1 make test
 ```
 
 ## CI/CD

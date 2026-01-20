@@ -291,6 +291,23 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		})
 	}
 
+	createdRepo, err := ensureGitRepo(".")
+	if err != nil {
+		log.Fatalf("Failed to initialize git repository: %v", err)
+	}
+	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+		log.Fatalf("Failed to update .gitignore: %v", err)
+	}
+	hasCommit, err := gitHasCommit(".")
+	if err != nil {
+		log.Fatalf("Failed to check git history: %v", err)
+	}
+	if createdRepo || !hasCommit {
+		if err := createCheckoutCommit(".", resp.Manifest.CommitHash); err != nil {
+			log.Fatalf("Failed to create checkout commit: %v", err)
+		}
+	}
+
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)

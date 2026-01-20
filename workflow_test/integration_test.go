@@ -167,6 +167,19 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 	return string(output), err
 }
 
+func runGitOrFail(t *testing.T, workdir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workdir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git command failed: %v\nOutput:\n%s", err, output)
+	}
+
+	return strings.TrimSpace(string(output))
+}
+
 func runCLIOrFail(t *testing.T, workdir string, args ...string) string {
 	t.Helper()
 
@@ -364,6 +377,66 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "merge", changesetID)
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("Expected merge success for subfolder, got: %s", output)
+	}
+}
+
+func TestCheckoutInitializesGitRepo(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-git-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "git_file.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("Expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("Expected init output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("Expected checkout output, got: %s", output)
+	}
+
+	insideRepo := runGitOrFail(t, workdir, "rev-parse", "--is-inside-work-tree")
+	if insideRepo != "true" {
+		t.Fatalf("expected git repo, got %q", insideRepo)
+	}
+
+	branch := runGitOrFail(t, workdir, "symbolic-ref", "--short", "HEAD")
+	if branch != "main" {
+		t.Fatalf("expected main branch after checkout, got %q", branch)
+	}
+
+	latestMessage := runGitOrFail(t, workdir, "log", "-1", "--pretty=%s")
+	if !strings.Contains(latestMessage, "gitslice checkout") {
+		t.Fatalf("expected checkout commit message, got %q", latestMessage)
+	}
+}
+
+func TestChangesetCreateRequiresMainBranch(t *testing.T) {
+	workdir := t.TempDir()
+	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
+
+	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "branch_file.txt")
+	if !strings.Contains(output, "Slice created") {
+		t.Fatalf("Expected slice creation output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, workdir, "init", sliceID)
+	if !strings.Contains(output, "Initialized empty gitslice repository") {
+		t.Fatalf("Expected init output, got: %s", output)
+	}
+
+	runGitOrFail(t, workdir, "checkout", "-b", "feature/test")
+
+	output, err := runCLIWithDir(workdir, "changeset", "create", "--message", "branch change", "--files", "branch_file.txt")
+	if err == nil {
+		t.Fatalf("expected changeset creation to fail on non-main branch, output: %s", output)
+	}
+	if !strings.Contains(output, "main branch") {
+		t.Fatalf("expected main branch error, got: %s", output)
 	}
 }
 
