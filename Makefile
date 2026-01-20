@@ -6,10 +6,11 @@ install:
 	go mod download
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
+	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest
 
 proto:
 	PATH=$(GOPATH)/bin:$(PATH) sh -c 'cd proto/slice && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto'
-	PATH=$(GOPATH)/bin:$(PATH) sh -c 'cd proto/admin && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative admin_service.proto'
+	PATH=$(GOPATH)/bin:$(PATH) sh -c 'cd proto/admin && protoc -I . -I .. -I $(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@*/third_party/googleapis --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto'
 
 build: proto
 	go build -o slice_service_server ./slice_service/

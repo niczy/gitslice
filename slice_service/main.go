@@ -11,6 +11,7 @@ import (
 	fileservice "github.com/niczy/gitslice/internal/services/file"
 	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
+	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -44,13 +45,16 @@ func main() {
 	}()
 
 	ctx := context.Background()
-	mux := runtime.NewServeMux()
+	gatewayMux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	if err := filev1.RegisterFileServiceHandlerFromEndpoint(ctx, mux, "localhost"+grpcAddr, opts); err != nil {
+	if err := filev1.RegisterFileServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost"+grpcAddr, opts); err != nil {
 		log.Fatalf("Failed to register file service gateway: %v", err)
 	}
+	if err := adminv1.RegisterAdminServiceHandlerFromEndpoint(ctx, gatewayMux, "localhost:50052", opts); err != nil {
+		log.Fatalf("Failed to register admin service gateway: %v", err)
+	}
 
-	handler := withCORS(mux)
+	handler := withCORS(gatewayMux)
 	server := &http.Server{
 		Addr:    gatewayAddr,
 		Handler: handler,
@@ -65,7 +69,7 @@ func main() {
 func withCORS(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {
