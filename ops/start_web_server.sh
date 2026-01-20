@@ -15,30 +15,98 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
+wait_for_health() {
+  local service_name="$1"
+  local health_url="$2"
+  local max_attempts="${3:-30}"
+  local log_file="${4:-$SLICE_LOG}"
+  local attempt=0
+
+  log "Waiting for $service_name to be healthy at $health_url..."
+
+  while [ $attempt -lt $max_attempts ]; do
+    if curl -sf "$health_url" >/dev/null 2>&1; then
+      log "$service_name is healthy"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  log "ERROR: $service_name failed to become healthy after $max_attempts seconds"
+  log "Last 20 lines from service log:"
+  tail -20 "$log_file" 2>/dev/null || echo "No log available"
+  return 1
+}
+
+wait_for_port() {
+  local service_name="$1"
+  local port="$2"
+  local max_attempts="${3:-30}"
+  local log_file="${4:-$SLICE_LOG}"
+  local attempt=0
+
+  log "Waiting for $service_name to listen on port $port..."
+
+  while [ $attempt -lt $max_attempts ]; do
+    if nc -z localhost "$port" 2>/dev/null; then
+      log "$service_name is listening on port $port"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  log "ERROR: $service_name failed to listen on port $port after $max_attempts seconds"
+  log "Last 20 lines from service log:"
+  tail -20 "$log_file" 2>/dev/null || echo "No log available"
+  return 1
+}
+
 cd "$REPO_ROOT"
 
 start_slice_service() {
   log "Stopping existing slice service..."
   pkill -f "$SLICE_BIN" >/dev/null 2>&1 || true
 
+  # Wait a moment for ports to be released
+  sleep 2
+
   log "Building slice service (with proto generation)..."
   make build-slice
 
   log "Starting slice service (log: $SLICE_LOG)..."
   nohup "$SLICE_BIN" > "$SLICE_LOG" 2>&1 &
-  log "Slice service started with PID $!"
+  local pid=$!
+  log "Slice service started with PID $pid"
+
+  # Wait for the gateway to be healthy (slice_service runs both gRPC and HTTP gateway)
+  if ! wait_for_health "Slice service gateway" "http://localhost:8080/health" 30; then
+    log "ERROR: Failed to start slice service gateway. Check $SLICE_LOG for details"
+    exit 1
+  fi
 }
 
 start_admin_service() {
   log "Stopping existing admin service..."
   pkill -f "$ADMIN_BIN" >/dev/null 2>&1 || true
 
+  # Wait a moment for ports to be released
+  sleep 2
+
   log "Building admin service (with proto generation)..."
   make build-admin
 
   log "Starting admin service (log: $ADMIN_LOG)..."
   nohup "$ADMIN_BIN" > "$ADMIN_LOG" 2>&1 &
-  log "Admin service started with PID $!"
+  local pid=$!
+  log "Admin service started with PID $pid"
+
+  # Admin service is gRPC only - wait for port to be listening
+  if ! wait_for_port "Admin service" 50052 30 "$ADMIN_LOG"; then
+    log "ERROR: Failed to start admin service. Check $ADMIN_LOG for details"
+    exit 1
+  fi
 }
 
 start_web_preview() {
