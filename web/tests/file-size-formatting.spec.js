@@ -38,15 +38,20 @@ test('handles string size values from API without errors', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
   // Verify all file entries are visible (no crash from toFixed error)
-  await expect(page.getByText('small.txt')).toBeVisible();
-  await expect(page.getByText('medium.txt')).toBeVisible();
-  await expect(page.getByText('large.txt')).toBeVisible();
-  await expect(page.getByText('folder')).toBeVisible();
+  await expect(page.getByRole('button', { name: /small\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /medium\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /large\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /folder/ })).toBeVisible();
 
-  // Verify file sizes are formatted correctly
-  await expect(page.getByText('0 B')).toBeVisible(); // small.txt
-  await expect(page.getByText('1 KB')).toBeVisible(); // medium.txt (1024 bytes)
-  await expect(page.getByText('1 MB')).toBeVisible(); // large.txt (1048576 bytes)
+  // Verify file sizes are formatted correctly by checking the button content
+  const smallBtn = page.getByRole('button', { name: /small\.txt/ });
+  await expect(smallBtn).toContainText('0 B');
+
+  const mediumBtn = page.getByRole('button', { name: /medium\.txt/ });
+  await expect(mediumBtn).toContainText('1 KB');
+
+  const largeBtn = page.getByRole('button', { name: /large\.txt/ });
+  await expect(largeBtn).toContainText('1 MB');
 });
 
 test('formats numeric size values correctly', async ({ page }) => {
@@ -85,18 +90,18 @@ test('formats numeric size values correctly', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
   // Verify all files are visible
-  await expect(page.getByText('zero.txt')).toBeVisible();
-  await expect(page.getByText('bytes.txt')).toBeVisible();
-  await expect(page.getByText('kilobytes.txt')).toBeVisible();
-  await expect(page.getByText('megabytes.txt')).toBeVisible();
-  await expect(page.getByText('gigabytes.txt')).toBeVisible();
+  await expect(page.getByRole('button', { name: /zero\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /bytes\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /kilobytes\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /megabytes\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /gigabytes\.txt/ })).toBeVisible();
 
   // Verify size formatting
-  await expect(page.getByText('0 B')).toBeVisible(); // 0 bytes
-  await expect(page.getByText('500 B')).toBeVisible(); // 500 bytes
-  await expect(page.getByText('2 KB')).toBeVisible(); // 2048 bytes
-  await expect(page.getByText('5 MB')).toBeVisible(); // 5242880 bytes
-  await expect(page.getByText('2 GB')).toBeVisible(); // 2147483648 bytes
+  await expect(page.getByRole('button', { name: /zero\.txt/ })).toContainText('0 B');
+  await expect(page.getByRole('button', { name: /bytes\.txt/ })).toContainText('500 B');
+  await expect(page.getByRole('button', { name: /kilobytes\.txt/ })).toContainText('2 KB');
+  await expect(page.getByRole('button', { name: /megabytes\.txt/ })).toContainText('5 MB');
+  await expect(page.getByRole('button', { name: /gigabytes\.txt/ })).toContainText('2 GB');
 });
 
 test('clicks genesis directory and expands folders without errors', async ({ page }) => {
@@ -157,15 +162,20 @@ test('clicks genesis directory and expands folders without errors', async ({ pag
   expect(errors).toHaveLength(0);
 
   // Verify files are displayed with sizes
-  await expect(page.getByText('README.md')).toBeVisible();
-  await expect(page.getByText('src')).toBeVisible();
-  await expect(page.getByText('package.json')).toBeVisible();
+  await expect(page.getByRole('button', { name: /README\.md/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^src/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /package\.json/ })).toBeVisible();
+
+  // Verify file sizes in the buttons
+  await expect(page.getByRole('button', { name: /README\.md/ })).toContainText('1.2 KB');
+  await expect(page.getByRole('button', { name: /package\.json/ })).toContainText('523 B');
 
   // Click to expand the src folder
-  await page.getByRole('button', { name: /src/i }).click();
+  await page.getByRole('button', { name: /^src/ }).click();
 
   // Verify the nested file is visible
-  await expect(page.getByText('index.js')).toBeVisible();
+  await expect(page.getByRole('button', { name: /index\.js/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /index\.js/ })).toContainText('4.5 KB');
 
   // Verify still no JavaScript errors
   expect(errors).toHaveLength(0);
@@ -213,27 +223,30 @@ test('handles edge cases in file size formatting', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
   // Verify all files are displayed without errors
-  await expect(page.getByText('empty.txt')).toBeVisible();
-  await expect(page.getByText('null.txt')).toBeVisible();
-  await expect(page.getByText('valid.txt')).toBeVisible();
-  await expect(page.getByText('1023.txt')).toBeVisible();
-  await expect(page.getByText('1024.txt')).toBeVisible();
-  await expect(page.getByText('1025.txt')).toBeVisible();
+  await expect(page.getByRole('button', { name: /empty\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /null\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /valid\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /1023\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /1024\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /1025\.txt/ })).toBeVisible();
 
   // Verify no JavaScript errors
   expect(errors).toHaveLength(0);
 
   // Verify size formatting for edge cases
   // Empty and null should show as "0 B"
-  const zeroBElements = await page.getByText('0 B').all();
-  expect(zeroBElements.length).toBeGreaterThanOrEqual(2); // empty.txt and null.txt
+  await expect(page.getByRole('button', { name: /empty\.txt/ })).toContainText('0 B');
+  await expect(page.getByRole('button', { name: /null\.txt/ })).toContainText('0 B');
+
+  // Valid small file
+  await expect(page.getByRole('button', { name: /valid\.txt/ })).toContainText('100 B');
 
   // 1023 bytes stays in bytes
-  await expect(page.getByText('1023 B')).toBeVisible();
+  await expect(page.getByRole('button', { name: /1023\.txt/ })).toContainText('1023 B');
 
   // 1024 bytes becomes 1 KB
-  await expect(page.getByText('1 KB')).toBeVisible();
+  await expect(page.getByRole('button', { name: /1024\.txt/ })).toContainText('1 KB');
 
   // 1025 bytes becomes 1.0 KB (shows decimal for < 10 KB)
-  await expect(page.getByText(/1\.0 KB/)).toBeVisible();
+  await expect(page.getByRole('button', { name: /1025\.txt/ })).toContainText('1.0 KB');
 });
