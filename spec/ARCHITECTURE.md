@@ -26,6 +26,14 @@ For detailed data model definitions and protobuf schemas, see [DATA_MODEL.md](./
 
 For detailed algorithms and operations, see [ALGORITHMS.md](./ALGORITHMS.md).
 
+### Slice Filesystem Layout
+
+Slices are represented as normal files in the repository and are addressed by their on-disk paths. User-owned slices live under `/u/<USER_NAME>/slices/...` and organization-owned slices live under `/o/<ORG_NAME>/slices/...`. The slice path is the canonical identifier that flows through the system (what the API and CLI refer to as a slice ID). Example slice paths:
+
+- `/u/alice/slices/payments`
+- `/u/andrew/slices/infra/terraform`
+- `/o/acme/slices/platform/core-api`
+
 ### Metadata Indexes (Hybrid Approach)
 
 **Primary source of truth:** Object store (immutable, versioned)
