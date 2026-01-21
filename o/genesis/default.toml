@@ -1,5 +1,15 @@
 # Genesis Organization Configuration
-# This is the configuration for the genesis organization that contains the gitslice project
+# This is the configuration for the genesis organization
+
+[metadata]
+owner_type = "organization"
+owner_name = "genesis"
+description = "Genesis organization - home of the gitslice project and related tools"
+
+[runtime]
+# At runtime, the gitslice repository should be mounted at this location
+mount_point = "/o/genesis/project/gitslice"
+# This tells the system where to place the repository when initializing
 
 [scope]
 # Include the entire genesis organization directory
@@ -19,16 +29,11 @@ exclude = [
   "/o/genesis/project/gitslice/web/test-results/**"
 ]
 
-[metadata]
-owner_type = "organization"
-owner_name = "genesis"
-description = "Genesis organization - home of the gitslice project and related tools"
-
 [slices]
 # Default location for genesis organization slices
 slices_dir = "/o/genesis/slices"
 
-# The gitslice project itself
+# The gitslice project itself (will be available after mounting)
 [[slices.definitions]]
 name = "gitslice"
 path = "/o/genesis/project/gitslice"

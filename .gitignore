@@ -4,9 +4,9 @@
 *.dll
 *.so
 *.dylib
-o/genesis/project/gitslice/slice_service_server
-o/genesis/project/gitslice/admin_service_server
-o/genesis/project/gitslice/gs_cli/gs_cli
+slice_service_server
+admin_service_server
+gs_cli/gs_cli
 
 # Generated protobuf files
 *.pb.go
@@ -23,7 +23,7 @@ go.work
 
 # Dependency directories
 vendor/
-o/genesis/project/gitslice/third_party/
+third_party/
 
 # IDE specific files
 .vscode/
@@ -37,10 +37,10 @@ o/genesis/project/gitslice/third_party/
 Thumbs.db
 
 # Web app build artifacts
-o/genesis/project/gitslice/web/node_modules/
-o/genesis/project/gitslice/web/dist/
-o/genesis/project/gitslice/web/playwright-report/
-o/genesis/project/gitslice/web/test-results/
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
 
 # Logs
 logs/
