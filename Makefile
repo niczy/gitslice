@@ -17,9 +17,11 @@ setup-googleapis:
 	@if [ ! -d "$(GOOGLEAPIS_DIR)" ]; then \
 		echo "Downloading googleapis proto files (commit: $(GOOGLEAPIS_COMMIT))..."; \
 		mkdir -p third_party; \
-		git clone --filter=blob:none --sparse https://github.com/googleapis/googleapis.git $(GOOGLEAPIS_DIR); \
-		cd $(GOOGLEAPIS_DIR) && git checkout $(GOOGLEAPIS_COMMIT) && git sparse-checkout set google/api; \
-		echo "googleapis downloaded successfully (pinned to $(GOOGLEAPIS_COMMIT))"; \
+		git clone --depth 1 --no-checkout https://github.com/googleapis/googleapis.git $(GOOGLEAPIS_DIR); \
+		git -C $(GOOGLEAPIS_DIR) sparse-checkout init --cone; \
+		git -C $(GOOGLEAPIS_DIR) sparse-checkout set google/api; \
+		git -C $(GOOGLEAPIS_DIR) checkout master; \
+		echo "googleapis downloaded successfully"; \
 	fi
 
 proto: setup-googleapis
