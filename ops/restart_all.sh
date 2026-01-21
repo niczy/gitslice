@@ -12,7 +12,12 @@ log() {
 cd "$REPO_ROOT"
 
 log "Pulling latest changes..."
-git pull --ff-only
+# Only pull if the current branch has an upstream tracking branch
+if git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
+  git pull --ff-only
+else
+  log "No upstream tracking branch configured, skipping git pull"
+fi
 
 log "Starting services..."
 LOG_DIR="$SERVICE_LOG_DIR" "$REPO_ROOT/ops/start_web_server.sh"
