@@ -1,0 +1,43 @@
+# Default slice configuration for genesis organization
+# This file defines the default slice scope for genesis org slices
+
+[scope]
+# By default, genesis org slices include the entire genesis directory
+include = [
+  "/o/genesis/**/*"
+]
+
+# Exclude build artifacts and temporary files
+exclude = [
+  "/o/genesis/.git/**",
+  "/o/genesis/**/node_modules/**",
+  "/o/genesis/**/.DS_Store",
+  "/o/genesis/**/*.tmp",
+  "/o/genesis/project/gitslice/third_party/**",
+  "/o/genesis/project/gitslice/web/dist/**"
+]
+
+[metadata]
+# Default metadata for genesis slices
+organization = "genesis"
+default_owner = "genesis-team"
+
+[files]
+# File patterns that are commonly included in slices
+common_patterns = [
+  "**/*.go",
+  "**/*.js",
+  "**/*.jsx",
+  "**/*.proto",
+  "**/*.toml",
+  "**/*.md",
+  "**/Makefile"
+]
+
+# Patterns to exclude from slices
+exclude_patterns = [
+  "**/node_modules/**",
+  "**/.git/**",
+  "**/dist/**",
+  "**/*.test.js"
+]

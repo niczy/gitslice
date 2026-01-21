@@ -1,0 +1,38 @@
+# Genesis Organization Configuration
+# This is the configuration for the genesis organization that contains the gitslice project
+
+[scope]
+# Include the entire genesis organization directory
+include = [
+  "/o/genesis/**/*"
+]
+
+# Exclude build artifacts, dependencies, and temporary files
+exclude = [
+  "/o/genesis/.git/**",
+  "/o/genesis/**/node_modules/**",
+  "/o/genesis/**/.DS_Store",
+  "/o/genesis/**/*.tmp",
+  "/o/genesis/project/gitslice/third_party/**",
+  "/o/genesis/project/gitslice/web/dist/**",
+  "/o/genesis/project/gitslice/web/playwright-report/**",
+  "/o/genesis/project/gitslice/web/test-results/**"
+]
+
+[metadata]
+owner_type = "organization"
+owner_name = "genesis"
+description = "Genesis organization - home of the gitslice project and related tools"
+
+[slices]
+# Default location for genesis organization slices
+slices_dir = "/o/genesis/slices"
+
+# The gitslice project itself
+[[slices.definitions]]
+name = "gitslice"
+path = "/o/genesis/project/gitslice"
+description = "The gitslice version control system - all source code and documentation"
+files = [
+  "/o/genesis/project/gitslice/**/*"
+]
