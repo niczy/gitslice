@@ -89,16 +89,16 @@ test('formats numeric size values correctly', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
-  // Verify all files are visible (use exact match to avoid ambiguity)
-  await expect(page.getByRole('button', { name: /^.*zero\.txt.*$/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^.*📄.*bytes\.txt / })).toBeVisible(); // Space after to avoid matching kilobytes
+  // Verify all files are visible (use word boundaries to avoid ambiguity)
+  await expect(page.getByRole('button', { name: /zero\.txt/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: / bytes\.txt / })).toBeVisible(); // Spaces ensure exact match
   await expect(page.getByRole('button', { name: /kilobytes\.txt/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /megabytes\.txt/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /gigabytes\.txt/ })).toBeVisible();
 
   // Verify size formatting
   await expect(page.getByRole('button', { name: /zero\.txt/ })).toContainText('0 B');
-  await expect(page.getByRole('button', { name: /^.*📄.*bytes\.txt / })).toContainText('500 B');
+  await expect(page.getByRole('button', { name: / bytes\.txt / })).toContainText('500 B');
   await expect(page.getByRole('button', { name: /kilobytes\.txt/ })).toContainText('2.0 KB'); // 2048 bytes shows as 2.0 KB
   await expect(page.getByRole('button', { name: /megabytes\.txt/ })).toContainText('5.0 MB'); // Shows 1 decimal for < 10
   await expect(page.getByRole('button', { name: /gigabytes\.txt/ })).toContainText('2.0 GB'); // Shows 1 decimal for < 10
