@@ -4,9 +4,9 @@
 *.dll
 *.so
 *.dylib
-slice_service_server
-admin_service_server
-gs_cli/gs_cli
+o/genesis/slice_service_server
+o/genesis/admin_service_server
+o/genesis/gs_cli/gs_cli
 
 # Generated protobuf files
 *.pb.go
@@ -37,10 +37,10 @@ third_party/
 Thumbs.db
 
 # Web app build artifacts
-web/node_modules/
-web/dist/
-web/playwright-report/
-web/test-results/
+o/genesis/web/node_modules/
+o/genesis/web/dist/
+o/genesis/web/playwright-report/
+o/genesis/web/test-results/
 
 # Logs
 logs/
@@ -48,3 +48,17 @@ logs/
 bin/
 include/
 readme.txt
+
+# User and organization working directories
+# Keep default.toml templates and .gitkeep files, ignore everything else
+u/*
+!u/.gitkeep
+!u/default.toml
+
+o/*
+!o/.gitkeep
+!o/default.toml
+!o/genesis/
+
+# Gitslice working directories
+.gs/

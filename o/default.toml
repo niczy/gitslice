@@ -1,0 +1,33 @@
+# Default configuration for organization slices
+# This file defines what directories and files are included in the organization scope
+# Copy this to /o/<org_name>/default.toml and customize as needed
+
+[scope]
+# Include the entire organization directory by default
+include = [
+  "/o/{org_name}/**/*"
+]
+
+# Exclude certain patterns if needed
+exclude = [
+  "/o/{org_name}/.git/**",
+  "/o/{org_name}/**/node_modules/**",
+  "/o/{org_name}/**/.DS_Store",
+  "/o/{org_name}/**/*.tmp"
+]
+
+[metadata]
+# Metadata about this organization scope
+owner_type = "organization"
+# owner_name will be set to the org name when this is copied to a specific org directory
+
+[slices]
+# Default location for organization slices
+slices_dir = "/o/{org_name}/slices"
+
+# Example slice definitions (commented out by default)
+# [[slices.definitions]]
+# name = "platform-core"
+# path = "/o/{org_name}/slices/platform/core-api"
+# description = "Core platform API slice"
+# files = ["platform/api/**/*", "platform/shared/**/*"]

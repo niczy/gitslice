@@ -1,0 +1,33 @@
+# Default configuration for user slices
+# This file defines what directories and files are included in the user scope
+# Copy this to /u/<username>/default.toml and customize as needed
+
+[scope]
+# Include the entire user directory by default
+include = [
+  "/u/{user_name}/**/*"
+]
+
+# Exclude certain patterns if needed
+exclude = [
+  "/u/{user_name}/.git/**",
+  "/u/{user_name}/**/node_modules/**",
+  "/u/{user_name}/**/.DS_Store",
+  "/u/{user_name}/**/*.tmp"
+]
+
+[metadata]
+# Metadata about this user scope
+owner_type = "user"
+# owner_name will be set to the username when this is copied to a specific user directory
+
+[slices]
+# Default location for user slices
+slices_dir = "/u/{user_name}/slices"
+
+# Example slice definitions (commented out by default)
+# [[slices.definitions]]
+# name = "my-feature"
+# path = "/u/{user_name}/slices/my-feature"
+# description = "My feature slice"
+# files = ["src/feature/**/*"]
