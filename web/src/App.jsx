@@ -582,11 +582,15 @@ function decodeBase64(value) {
 }
 
 function formatBytes(value) {
-  if (!value) {
+  // Convert to number to handle string values from API
+  const numValue = typeof value === 'number' ? value : parseFloat(value);
+
+  if (!numValue || isNaN(numValue)) {
     return '0 B';
   }
+
   const units = ['B', 'KB', 'MB', 'GB'];
-  let size = value;
+  let size = numValue;
   let unitIndex = 0;
   while (size >= 1024 && unitIndex < units.length - 1) {
     size /= 1024;
