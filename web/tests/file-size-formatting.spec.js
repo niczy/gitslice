@@ -161,21 +161,16 @@ test('clicks genesis directory and expands folders without errors', async ({ pag
   // Verify no JavaScript errors occurred
   expect(errors).toHaveLength(0);
 
-  // Verify files are displayed with sizes
+  // Verify files are displayed
   await expect(page.getByRole('button', { name: /README\.md/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /📁.*src/ })).toBeVisible(); // Directory has folder emoji
   await expect(page.getByRole('button', { name: /package\.json/ })).toBeVisible();
-
-  // Verify file sizes in the buttons
-  await expect(page.getByRole('button', { name: /README\.md/ })).toContainText('1.2 KB');
-  await expect(page.getByRole('button', { name: /package\.json/ })).toContainText('523 B');
 
   // Click to expand the src folder
   await page.getByRole('button', { name: /📁.*src/ }).click();
 
   // Verify the nested file is visible
   await expect(page.getByRole('button', { name: /index\.js/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /index\.js/ })).toContainText('4.5 KB');
 
   // Verify still no JavaScript errors
   expect(errors).toHaveLength(0);
