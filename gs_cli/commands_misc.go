@@ -13,7 +13,8 @@ import (
 func handleStatus(ctx context.Context, cli *CLI) {
 	// Check if in a gitslice directory
 	if _, err := os.Stat(".gs"); os.IsNotExist(err) {
-		log.Println("Not in a gitslice directory. Run 'gs init <slice-id>' to initialize.")
+		log.Println("Not in a gitslice directory. Run 'gs init <slice-path>' to initialize.")
+		log.Println("Example: gs init /u/alice/slices/payments")
 		return
 	}
 
@@ -42,7 +43,8 @@ func handleStatus(ctx context.Context, cli *CLI) {
 
 func handleInit(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs init <slice-id>")
+		log.Println("Usage: gs init <slice-path>")
+		log.Println("Example: gs init /u/alice/slices/payments")
 		return
 	}
 
@@ -80,7 +82,8 @@ func handleInit(ctx context.Context, cli *CLI, args []string) {
 
 func handleLog(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs log <slice-id>")
+		log.Println("Usage: gs log <slice-path>")
+		log.Println("Example: gs log /u/alice/slices/payments")
 		return
 	}
 
@@ -115,7 +118,8 @@ func handleRootSlice(ctx context.Context, cli *CLI) {
 
 func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 2 {
-		log.Println("Usage: gs fork <new-slice-id> <folder-path>")
+		log.Println("Usage: gs fork <new-slice-path> <folder-path>")
+		log.Println("Example: gs fork /u/alice/slices/new-feature ./src/feature")
 		return
 	}
 

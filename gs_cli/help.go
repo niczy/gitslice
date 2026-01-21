@@ -18,6 +18,9 @@ func printHelp() {
 
 func printSliceHelp() {
 	fmt.Println("Usage: gs slice <command> [options]")
+	fmt.Println("\nSlice IDs are filesystem paths:")
+	fmt.Println("  User slices:  /u/<username>/slices/<slice-name>")
+	fmt.Println("  Org slices:   /o/<org-name>/slices/<slice-name>")
 	fmt.Println("\nCommands:")
 	fmt.Println("  create    Create a new slice")
 	fmt.Println("  list      List all slices")
@@ -26,6 +29,10 @@ func printSliceHelp() {
 	fmt.Println("  owners    Show slice owners")
 	fmt.Println("  checkout  Checkout a slice to working directory")
 	fmt.Println("  clone     Alias for checkout")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs slice create /u/alice/slices/payments")
+	fmt.Println("  gs slice checkout /u/alice/slices/payments")
+	fmt.Println("  gs slice info /o/acme/slices/platform/core-api")
 }
 
 func printChangesetHelp() {

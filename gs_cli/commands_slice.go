@@ -43,7 +43,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice create <slice-id> [--files \"file1,file2\"] [--description \"desc\"]")
+		log.Println("Usage: gs slice create <slice-path> [--files \"file1,file2\"] [--description \"desc\"]")
+		log.Println("Example: gs slice create /u/alice/slices/payments --files \"src/payments.go\"")
 		return
 	}
 
@@ -124,7 +125,8 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceInfo(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice info <slice-id>")
+		log.Println("Usage: gs slice info <slice-path>")
+		log.Println("Example: gs slice info /u/alice/slices/payments")
 		return
 	}
 
@@ -147,7 +149,8 @@ func handleSliceInfo(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice status <slice-id>")
+		log.Println("Usage: gs slice status <slice-path>")
+		log.Println("Example: gs slice status /u/alice/slices/payments")
 		return
 	}
 
@@ -170,7 +173,8 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice owners <slice-id>")
+		log.Println("Usage: gs slice owners <slice-path>")
+		log.Println("Example: gs slice owners /u/alice/slices/payments")
 		return
 	}
 
@@ -218,7 +222,8 @@ func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <slice-path> [--commit <commit-hash>]")
+		log.Println("Example: gs slice checkout /u/alice/slices/payments")
 		return
 	}
 
