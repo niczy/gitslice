@@ -19,7 +19,7 @@ go build -o gs_cli ./gs_cli/
 ## Configuration & Connection
 
 - `--slice-addr` (default `localhost:50051`) and `--admin-addr` (default `localhost:50052`) control gRPC endpoints.
-- `gs init <slice-id>` creates `.gs/config` in the current directory. The directory must be empty.
+- `gs init <slice-path>` creates `.gs/config` in the current directory. The directory must be empty. Slice paths are filesystem identifiers like `/u/<USER_NAME>/slices/...` or `/o/<ORG_NAME>/slices/...`.
 
 ---
 
@@ -28,12 +28,12 @@ go build -o gs_cli ./gs_cli/
 ### Slice Commands
 
 ```bash
-gs slice create my-slice --files file1.go,file2.go --description "demo slice"
+gs slice create /u/alice/slices/payments --files file1.go,file2.go --description "demo slice"
 gs slice list --limit 50 --offset 0 --detailed
-gs slice info my-slice
-gs slice status my-slice
-gs slice checkout my-slice --commit HEAD
-gs slice clone my-slice --commit HEAD
+gs slice info /u/alice/slices/payments
+gs slice status /u/alice/slices/payments
+gs slice checkout /u/alice/slices/payments --commit HEAD
+gs slice clone /u/alice/slices/payments --commit HEAD
 ```
 
 > `gs slice clone` is an alias for `gs slice checkout`.
@@ -51,13 +51,13 @@ gs changeset list --limit 20 --status pending
 ```
 
 Notes:
-- `changeset create` uses the slice ID from `.gs/config` and accepts `--files` or positional file arguments.
+- `changeset create` uses the slice path from `.gs/config` and accepts `--files` or positional file arguments.
 - `changeset list` supports status filters: `pending`, `approved`, `rejected`, `merged`.
 
 ### Conflict Commands
 
 ```bash
-gs conflict list --slice my-slice --detailed --severity
+gs conflict list --slice /u/alice/slices/payments --detailed --severity
 gs conflict show path/to/file.go
 gs conflict resolve --theirs other-slice path/to/file.go
 gs conflict resolve --ours path/to/file.go
@@ -67,14 +67,14 @@ gs conflict resolve --ours path/to/file.go
 
 ```bash
 gs status
-gs log my-slice
+gs log /u/alice/slices/payments
 ```
 
 ### Root Slice & Forking
 
 ```bash
 gs root
-gs fork new-slice ./folder --parent parent-slice --description "Forked slice"
+gs fork /u/alice/slices/new-slice ./folder --parent /u/alice/slices/payments --description "Forked slice"
 ```
 
 ---
