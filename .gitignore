@@ -4,9 +4,9 @@
 *.dll
 *.so
 *.dylib
-o/genesis/slice_service_server
-o/genesis/admin_service_server
-o/genesis/gs_cli/gs_cli
+slice_service_server
+admin_service_server
+gs_cli/gs_cli
 
 # Generated protobuf files
 *.pb.go
@@ -37,10 +37,10 @@ third_party/
 Thumbs.db
 
 # Web app build artifacts
-o/genesis/web/node_modules/
-o/genesis/web/dist/
-o/genesis/web/playwright-report/
-o/genesis/web/test-results/
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
 
 # Logs
 logs/
