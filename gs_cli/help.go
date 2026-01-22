@@ -19,12 +19,7 @@ func printHelp() {
 func printSliceHelp() {
 	fmt.Println("Usage: gs slice <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  create    Create a new slice")
-	fmt.Println("  list      List all slices")
-	fmt.Println("  info      Show slice information")
-	fmt.Println("  status    Show slice status")
-	fmt.Println("  owners    Show slice owners")
-	fmt.Println("  checkout  Checkout a slice to working directory")
+	fmt.Println("  checkout  Checkout a slice to working directory using metadata TOML")
 	fmt.Println("  clone     Alias for checkout")
 }
 

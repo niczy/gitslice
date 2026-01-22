@@ -173,25 +173,21 @@ A **checkpoint** is a specific commit in a slice's history. Developers can check
 
 **As a Platform Engineer:**
 ```
-$ slice-admin create my-team --files "services/my-team/**" --files "shared/common/my-team/**"
-✓ Slice created: my-team
-  - Files: 245
-  - Slice ID: abc123
+$ cat >/etc/gitslice/my-team.toml <<EOF
+slice_id = "my-team"
+EOF
 ```
 
 **As a Developer:**
 ```
-$ slice list
-Available Slices:
-- my-team (245 files)
-- billing-service (189 files)
-- api-gateway (512 files)
+$ cat /etc/gitslice/my-team.toml
+slice_id = "my-team"
 ```
 
 #### Step 2: Checkout Your Slice
 
 ```
-$ slice checkout my-team
+$ gs slice checkout /etc/gitslice/my-team.toml
 Downloading slice: my-team
 Files: 245
 Size: 45.2 MB
@@ -208,10 +204,10 @@ shared/common/my-team/
 
 **Morning:**
 ```
-$ slice checkout my-team
+$ gs slice checkout /etc/gitslice/my-team.toml
 ✓ Already at latest: a1b2c3d4
 
-$ slice status
+$ gs status
 Slice: my-team
 Head: a1b2c3d4
 Working tree: clean
@@ -248,7 +244,7 @@ $ slice changeset merge cl-abc123
 
 **Afternoon:**
 ```
-$ slice checkout billing-service
+$ gs slice checkout /etc/gitslice/billing-service.toml
 ✓ Checked out at commit: x1y2z3w4
 
 $ vim services/billing-service/invoice-generator.py
@@ -308,7 +304,7 @@ $ slice changeset merge cl-def456-v2
 
 **Team A (Frontend):**
 ```
-$ slice checkout frontend-react
+$ gs slice checkout /etc/gitslice/frontend-react.toml
 ✓ Checked out at commit: f1e2d3c4
 
 $ vim frontend/components/SharedButton.tsx
@@ -328,7 +324,7 @@ $ slice changeset merge cl-fe-001
 
 **Team B (Backend):**
 ```
-$ slice checkout backend-api
+$ gs slice checkout /etc/gitslice/backend-api.toml
 ✓ Checked out at commit: b4a5d6e7
 
 $ vim backend/api/routes.ts
@@ -348,14 +344,14 @@ $ slice changeset merge cl-be-001
 
 **Both Teams:**
 ```
-$ slice status
+$ gs status
 Slice: my-team
 Head: a1b2c3d4
 Global state: g1h2i3j4
 Last merged: 5 minutes ago
 Your slice: at tip (ahead of global by 2 commits)
 
-$ slice log --limit 3
+$ gs log /etc/gitslice/my-team.toml
 commits:
   a1b2c3d4 - Fix payment processing (2024-01-15 14:30)
   b2c3d4e5 - Add invoice validation (2024-01-15 11:20)
@@ -410,7 +406,7 @@ commits:
   c3d4e5f6 - Update API client (2024-01-15 09:15)
   ...
 
-$ slice checkout my-team --commit b2c3d4e5
+$ gs slice checkout /etc/gitslice/my-team.toml --commit b2c3d4e5
 ✓ Checked out at historical commit: b2c3d4e5
   (View only, cannot commit on top of this state)
 

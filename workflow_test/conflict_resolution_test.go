@@ -1,9 +1,13 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/niczy/gitslice/internal/models"
 )
 
 // TestConflictList tests showing all conflicts for current working directory
@@ -215,15 +219,22 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 	sliceA := fmt.Sprintf("conflict-a-%s", strings.ToLower(t.Name()))
 	sliceB := fmt.Sprintf("conflict-b-%s", strings.ToLower(t.Name()))
 
-	if _, err := runCLI("slice", "create", sliceA, "--files", fileID); err != nil {
+	if testStorage == nil {
+		t.Fatalf("expected test storage to be initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: sliceA, Files: []string{fileID}}); err != nil {
 		t.Fatalf("failed to create base slice: %v", err)
 	}
-	if _, err := runCLI("slice", "create", sliceB, "--files", fileID); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: sliceB, Files: []string{fileID}}); err != nil {
 		t.Fatalf("failed to create conflicting slice: %v", err)
 	}
 
 	workdir := t.TempDir()
-	if _, err := runCLIWithDir(workdir, "init", sliceA); err != nil {
+	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceA)
+	if _, err := runCLIWithDir(workdir, "init", metadataPath); err != nil {
 		t.Fatalf("failed to init working dir: %v", err)
 	}
 

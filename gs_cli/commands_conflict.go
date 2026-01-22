@@ -38,7 +38,7 @@ func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 
 	sliceID := *sliceFlag
 	if sliceID == "" {
-		if cfgSlice, err := readSliceIDFromConfig(); err == nil {
+		if cfgSlice, err := sliceIDFromConfig(); err == nil {
 			sliceID = cfgSlice
 		}
 	}
@@ -95,7 +95,7 @@ func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 	preferredSlice := *theirs
 	if preferredSlice == "" {
 		if *ours {
-			cfgSlice, err := readSliceIDFromConfig()
+			cfgSlice, err := sliceIDFromConfig()
 			if err != nil {
 				log.Fatalf("Failed to read slice binding: %v", err)
 			}

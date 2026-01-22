@@ -9,8 +9,9 @@ func TestStatusShowsSliceBinding(t *testing.T) {
 	workdir := t.TempDir()
 	sliceID := "status-slice"
 
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID)
-	_ = runCLIOrFail(t, workdir, "init", sliceID)
+	createSliceFromRoot(t, sliceID, "")
+	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	_ = runCLIOrFail(t, workdir, "init", metadataPath)
 
 	output := runCLIOrFail(t, workdir, "status")
 	if !strings.Contains(output, sliceID) {

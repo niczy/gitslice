@@ -10,18 +10,22 @@ import (
 	"time"
 )
 
-// readSliceIDFromConfig reads the slice ID from the .gs/config file.
-func readSliceIDFromConfig() (string, error) {
+// readSliceMetadataPathFromConfig reads the metadata path from the .gs/config file.
+func readSliceMetadataPathFromConfig() (string, error) {
 	data, err := os.ReadFile(".gs/config")
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	path := strings.TrimSpace(string(data))
+	if path == "" {
+		return "", fmt.Errorf("metadata path in .gs/config is empty")
+	}
+	return path, nil
 }
 
-// writeConfigFile writes the slice ID to the .gs/config file.
-func writeConfigFile(sliceID string) error {
-	return os.WriteFile(".gs/config", []byte(sliceID), 0644)
+// writeMetadataPathConfig writes the metadata path to the .gs/config file.
+func writeMetadataPathConfig(metadataPath string) error {
+	return os.WriteFile(".gs/config", []byte(metadataPath), 0644)
 }
 
 // splitAndTrim splits a string by a delimiter and trims whitespace from each part.

@@ -8,7 +8,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -169,104 +168,6 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 		MergedSliceCount: int32(len(mergeCandidates)),
 		MergedSliceIds:   mergedSliceIDs,
 		Timestamp:        commitTime.Unix(),
-	}, nil
-}
-
-func (s *adminServiceServer) CreateSlice(ctx context.Context, req *adminv1.CreateSliceRequest) (*adminv1.CreateSliceResponse, error) {
-	log.Printf("CreateSlice called: slice_id=%s, name=%s", req.SliceId, req.Name)
-
-	// Validate input
-	if req.SliceId == "" {
-		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
-	}
-	if err := common.ValidateSliceID(req.SliceId); err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice_id: %v", err))
-	}
-
-	// Validate file paths
-	for _, fileID := range req.Files {
-		if err := common.ValidateFileID(fileID); err != nil {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file_id %s: %v", fileID, err))
-		}
-	}
-
-	// Create slice model
-	slice := &models.Slice{
-		ID:          req.SliceId,
-		Name:        req.Name,
-		Description: req.Description,
-		Files:       req.Files,
-		Owners:      req.Owners,
-		CreatedBy:   req.CreatedBy,
-	}
-
-	// Store slice
-	if err := s.storage.CreateSlice(ctx, slice); err != nil {
-		return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("slice already exists: %s", req.SliceId))
-	}
-
-	return &adminv1.CreateSliceResponse{
-		SliceId: req.SliceId,
-		Status:  "created",
-	}, nil
-}
-
-func (s *adminServiceServer) GetSlice(ctx context.Context, req *adminv1.GetSliceRequest) (*adminv1.GetSliceResponse, error) {
-	log.Printf("GetSlice called: slice_id=%s", req.SliceId)
-
-	// Validate input
-	if req.SliceId == "" {
-		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
-	}
-	if err := common.ValidateSliceID(req.SliceId); err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice_id: %v", err))
-	}
-
-	// Get slice from storage
-	slice, err := s.storage.GetSlice(ctx, req.SliceId)
-	if err != nil {
-		if errors.Is(err, storage.ErrSliceNotFound) {
-			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
-		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice: %v", err))
-	}
-
-	// Convert to response
-	return &adminv1.GetSliceResponse{
-		SliceId:     slice.ID,
-		Name:        slice.Name,
-		Description: slice.Description,
-		Owners:      slice.Owners,
-		CreatedBy:   slice.CreatedBy,
-		CreatedAt:   slice.CreatedAt.Unix(),
-		ParentSlice: slice.ParentSlice,
-		IsRoot:      slice.IsRoot,
-	}, nil
-}
-
-func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSlicesRequest) (*adminv1.ListSlicesResponse, error) {
-	log.Printf("ListSlices called: limit=%d, offset=%d", req.Limit, req.Offset)
-
-	// List slices from storage
-	slices, err := s.storage.ListSlices(ctx, int(req.Limit), int(req.Offset))
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
-	}
-
-	// Convert to protobuf format
-	sliceInfos := make([]*adminv1.SliceInfo, 0, len(slices))
-	for _, slice := range slices {
-		metadata, _ := s.storage.GetSliceMetadata(ctx, slice.ID)
-		sliceInfos = append(sliceInfos, &adminv1.SliceInfo{
-			SliceId:            slice.ID,
-			LatestCommitHash:   metadata.HeadCommitHash,
-			ModifiedFilesCount: int32(metadata.ModifiedFilesCount),
-			LastModified:       metadata.LastModified.Unix(),
-		})
-	}
-
-	return &adminv1.ListSlicesResponse{
-		Slices: sliceInfos,
 	}, nil
 }
 
