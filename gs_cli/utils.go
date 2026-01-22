@@ -8,7 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
+
+type sliceConfig struct {
+	SlicePath string `toml:"slice_path"`
+}
 
 // readSlicePathFromConfig reads the slice path from the .gs/config file.
 func readSlicePathFromConfig() (string, error) {
@@ -16,7 +22,16 @@ func readSlicePathFromConfig() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return normalizeSlicePath(string(data))
+
+	var cfg sliceConfig
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return "", err
+	}
+	if cfg.SlicePath == "" {
+		return "", errors.New("slice path is missing from config")
+	}
+
+	return normalizeSlicePath(cfg.SlicePath)
 }
 
 // writeConfigFile writes the slice path to the .gs/config file.
@@ -25,7 +40,13 @@ func writeConfigFile(slicePath string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(".gs/config", []byte(normalizedPath), 0644)
+
+	data, err := toml.Marshal(sliceConfig{SlicePath: normalizedPath})
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(".gs/config", data, 0644)
 }
 
 // splitAndTrim splits a string by a delimiter and trims whitespace from each part.
