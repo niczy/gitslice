@@ -124,14 +124,19 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceInfo(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice info <slice-id>")
+		log.Println("Usage: gs slice info <slice-path>")
 		return
 	}
 
-	sliceID := args[0]
+	slicePath, err := normalizeSlicePath(args[0])
+	if err != nil {
+		log.Printf("Invalid slice path: %v", err)
+		log.Println("Usage: gs slice info <slice-path>")
+		return
+	}
 
 	req := &slicev1.StateRequest{
-		SliceId: sliceID,
+		SliceId: slicePath,
 	}
 
 	resp, err := cli.sliceClient.GetSliceState(ctx, req)
@@ -139,7 +144,7 @@ func handleSliceInfo(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to get slice info: %v", err)
 	}
 
-	fmt.Printf("Slice: %s\n", sliceID)
+	fmt.Printf("Slice: %s\n", slicePath)
 	fmt.Printf("Latest commit: %s\n", resp.LatestCommitHash)
 	fmt.Printf("Modified files: %d\n", len(resp.ModifiedFiles))
 	fmt.Printf("Last modified: %s\n", formatTimestamp(resp.LastModified))
@@ -147,14 +152,19 @@ func handleSliceInfo(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice status <slice-id>")
+		log.Println("Usage: gs slice status <slice-path>")
 		return
 	}
 
-	sliceID := args[0]
+	slicePath, err := normalizeSlicePath(args[0])
+	if err != nil {
+		log.Printf("Invalid slice path: %v", err)
+		log.Println("Usage: gs slice status <slice-path>")
+		return
+	}
 
 	req := &slicev1.StateRequest{
-		SliceId: sliceID,
+		SliceId: slicePath,
 	}
 
 	resp, err := cli.sliceClient.GetSliceState(ctx, req)
@@ -162,7 +172,7 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to get slice status: %v", err)
 	}
 
-	fmt.Printf("Slice: %s\n", sliceID)
+	fmt.Printf("Slice: %s\n", slicePath)
 	fmt.Printf("Status: Active\n")
 	fmt.Printf("Head: %s\n", resp.LatestCommitHash)
 	fmt.Printf("Modified files: %d\n", len(resp.ModifiedFiles))
@@ -170,15 +180,20 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice owners <slice-id>")
+		log.Println("Usage: gs slice owners <slice-path>")
 		return
 	}
 
-	sliceID := args[0]
+	slicePath, err := normalizeSlicePath(args[0])
+	if err != nil {
+		log.Printf("Invalid slice path: %v", err)
+		log.Println("Usage: gs slice owners <slice-path>")
+		return
+	}
 
 	// Get slice details from admin service
 	req := &adminv1.GetSliceRequest{
-		SliceId: sliceID,
+		SliceId: slicePath,
 	}
 
 	resp, err := cli.adminClient.GetSlice(ctx, req)
@@ -218,11 +233,16 @@ func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <slice-path> [--commit <commit-hash>]")
 		return
 	}
 
-	sliceID := args[0]
+	slicePath, err := normalizeSlicePath(args[0])
+	if err != nil {
+		log.Printf("Invalid slice path: %v", err)
+		log.Println("Usage: gs slice checkout|clone <slice-path> [--commit <commit-hash>]")
+		return
+	}
 
 	// Parse flags
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
@@ -240,13 +260,13 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := os.MkdirAll(".gs", 0o755); err != nil {
 		log.Fatalf("Failed to create .gs directory: %v", err)
 	}
-	if err := writeConfigFile(sliceID); err != nil {
+	if err := writeConfigFile(slicePath); err != nil {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
 	// Call slice service
 	req := &slicev1.CheckoutRequest{
-		SliceId:    sliceID,
+		SliceId:    slicePath,
 		CommitHash: *commitHash,
 	}
 
@@ -336,7 +356,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	// Display checkout results
-	fmt.Printf("Checked out slice: %s\n", sliceID)
+	fmt.Printf("Checked out slice: %s\n", slicePath)
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
 	fmt.Printf("Files: %d\n", len(resp.Files))
 

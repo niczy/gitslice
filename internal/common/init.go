@@ -39,7 +39,7 @@ func EnsureRootSliceInitialized(ctx context.Context, st storage.Storage) error {
 	log.Println("Root slice initialized successfully")
 
 	// Try to populate it with files from git repository
-	if err := populateRootSliceFromGit(ctx, st, "root_slice"); err != nil {
+	if err := populateRootSliceFromGit(ctx, st, storage.RootSlicePath); err != nil {
 		log.Printf("Warning: failed to populate root slice: %v", err)
 	}
 

@@ -31,16 +31,24 @@ func handleConflictCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("conflict list", flag.ExitOnError)
-	sliceFlag := fs.String("slice", "", "Slice ID to inspect for conflicts")
+	sliceFlag := fs.String("slice", "", "Slice path to inspect for conflicts")
 	detailed := fs.Bool("detailed", false, "Show detailed conflict information")
 	severity := fs.Bool("severity", false, "Show severity level")
 	fs.Parse(args)
 
 	sliceID := *sliceFlag
 	if sliceID == "" {
-		if cfgSlice, err := readSliceIDFromConfig(); err == nil {
+		if cfgSlice, err := readSlicePathFromConfig(); err == nil {
 			sliceID = cfgSlice
 		}
+	}
+	if sliceID != "" {
+		normalizedSlice, err := normalizeSlicePath(sliceID)
+		if err != nil {
+			log.Printf("Invalid slice path: %v", err)
+			return
+		}
+		sliceID = normalizedSlice
 	}
 
 	req := &adminv1.ConflictsRequest{}
@@ -81,13 +89,13 @@ func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 
 func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("conflict resolve", flag.ExitOnError)
-	theirs := fs.String("theirs", "", "Resolve in favor of provided slice ID")
+	theirs := fs.String("theirs", "", "Resolve in favor of provided slice path")
 	ours := fs.Bool("ours", false, "Resolve in favor of current slice")
 	fs.Parse(args)
 
 	remaining := fs.Args()
 	if len(remaining) < 1 {
-		log.Println("Usage: gs conflict resolve [--ours|--theirs <slice-id>] <file>")
+		log.Println("Usage: gs conflict resolve [--ours|--theirs <slice-path>] <file>")
 		return
 	}
 
@@ -95,12 +103,19 @@ func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 	preferredSlice := *theirs
 	if preferredSlice == "" {
 		if *ours {
-			cfgSlice, err := readSliceIDFromConfig()
+			cfgSlice, err := readSlicePathFromConfig()
 			if err != nil {
 				log.Fatalf("Failed to read slice binding: %v", err)
 			}
 			preferredSlice = cfgSlice
 		}
+	}
+	if preferredSlice != "" {
+		normalizedSlice, err := normalizeSlicePath(preferredSlice)
+		if err != nil {
+			log.Fatalf("Invalid slice path: %v", err)
+		}
+		preferredSlice = normalizedSlice
 	}
 
 	req := &adminv1.ResolveConflictRequest{FileId: fileID, PreferredSliceId: preferredSlice}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // TestSliceCreate tests creating new slices
@@ -97,18 +99,18 @@ func TestSliceListSearch(t *testing.T) {
 // Command: gs slice info my-team
 func TestSliceInfo(t *testing.T) {
 	// First, create a test slice
-	testSliceID := "test-slice-info"
-	if err := createTestSlice(testSliceID); err != nil {
+	testSlicePath := newSlicePath(t, "test-slice-info")
+	if err := createTestSlice(testSlicePath); err != nil {
 		t.Fatalf("Failed to create test slice: %v", err)
 	}
 
-	output, err := runCLI("slice", "info", testSliceID)
+	output, err := runCLI("slice", "info", testSlicePath)
 	if err != nil {
 		t.Fatalf("Failed to get slice info: %v\nOutput: %s", err, output)
 	}
 
-	if !strings.Contains(output, testSliceID) {
-		t.Errorf("Expected output to contain slice ID '%s', got: %s", testSliceID, output)
+	if !strings.Contains(output, testSlicePath) {
+		t.Errorf("Expected output to contain slice path '%s', got: %s", testSlicePath, output)
 	}
 
 	t.Logf("Slice info successful:\n%s", output)
@@ -118,18 +120,18 @@ func TestSliceInfo(t *testing.T) {
 // Command: gs slice status my-team
 func TestSliceStatus(t *testing.T) {
 	// First, create a test slice
-	testSliceID := "test-slice-status"
-	if err := createTestSlice(testSliceID); err != nil {
+	testSlicePath := newSlicePath(t, "test-slice-status")
+	if err := createTestSlice(testSlicePath); err != nil {
 		t.Fatalf("Failed to create test slice: %v", err)
 	}
 
-	output, err := runCLI("slice", "status", testSliceID)
+	output, err := runCLI("slice", "status", testSlicePath)
 	if err != nil {
 		t.Fatalf("Failed to get slice status: %v\nOutput: %s", err, output)
 	}
 
-	if !strings.Contains(output, testSliceID) {
-		t.Errorf("Expected output to contain slice ID '%s', got: %s", testSliceID, output)
+	if !strings.Contains(output, testSlicePath) {
+		t.Errorf("Expected output to contain slice path '%s', got: %s", testSlicePath, output)
 	}
 
 	t.Logf("Slice status successful:\n%s", output)
@@ -138,8 +140,8 @@ func TestSliceStatus(t *testing.T) {
 // TestSliceOwners tests getting slice owners
 // Command: gs slice owners my-team
 func TestSliceOwners(t *testing.T) {
-	testSliceID := "test-slice-owners"
-	output, err := runCLI("slice", "owners", testSliceID)
+	testSlicePath := newSlicePath(t, "test-slice-owners")
+	output, err := runCLI("slice", "owners", testSlicePath)
 	if err != nil {
 		// This is expected to fail as owners is not implemented yet
 		t.Logf("Slice owners command failed as expected: %v\nOutput: %s", err, output)
@@ -168,8 +170,8 @@ func TestSliceInit(t *testing.T) {
 	}
 
 	// Initialize slice
-	testSliceID := "test-init-slice"
-	output, err := runCLIInDir(tmpDir, "init", testSliceID)
+	testSlicePath := newSlicePath(t, "test-init-slice")
+	output, err := runCLIInDir(tmpDir, "init", testSlicePath)
 	if err != nil {
 		t.Fatalf("Failed to initialize slice: %v\nOutput: %s", err, output)
 	}
@@ -196,8 +198,15 @@ func TestSliceInit(t *testing.T) {
 		t.Fatalf("Failed to read config file: %v", err)
 	}
 
-	if string(content) != testSliceID {
-		t.Errorf("Expected config to contain slice ID '%s', got: %s", testSliceID, string(content))
+	var config struct {
+		SlicePath string `toml:"slice_path"`
+	}
+	if err := toml.Unmarshal(content, &config); err != nil {
+		t.Fatalf("Failed to parse config file: %v", err)
+	}
+
+	if config.SlicePath != testSlicePath {
+		t.Errorf("Expected config to contain slice path '%s', got: %s", testSlicePath, config.SlicePath)
 	}
 
 	t.Logf("Slice initialization successful:\n%s", output)
@@ -206,24 +215,24 @@ func TestSliceInit(t *testing.T) {
 // TestSliceInitWithPath tests creating directory in specific path
 // Command: gs init my-team --path ./work/my-team
 func TestSliceInitWithPath(t *testing.T) {
-	assertUnsupportedCommand(t, "init", "my-team", "--path", "./work/my-team")
+	assertUnsupportedCommand(t, "init", newSlicePath(t, "my-team"), "--path", "./work/my-team")
 }
 
 // TestSliceInitForce tests initializing with force flag
 // Command: gs init my-team --force
 func TestSliceInitForce(t *testing.T) {
-	assertUnsupportedCommand(t, "init", "my-team", "--force")
+	assertUnsupportedCommand(t, "init", newSlicePath(t, "my-team"), "--force")
 }
 
 // TestSliceInitDescription tests initializing with description
 // Command: gs init my-team --description "My team's services"
 func TestSliceInitDescription(t *testing.T) {
-	assertUnsupportedCommand(t, "init", "my-team", "--description", "My team's services")
+	assertUnsupportedCommand(t, "init", newSlicePath(t, "my-team"), "--description", "My team's services")
 }
 
 // Helper function to create a test slice via storage
-func createTestSlice(sliceID string) error {
-	_, err := runCLI("slice", "create", sliceID, "--description", "test slice")
+func createTestSlice(slicePath string) error {
+	_, err := runCLI("slice", "create", slicePath, "--description", "test slice")
 	return err
 }
 

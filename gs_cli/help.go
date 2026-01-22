@@ -21,10 +21,10 @@ func printSliceHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  create    Create a new slice")
 	fmt.Println("  list      List all slices")
-	fmt.Println("  info      Show slice information")
-	fmt.Println("  status    Show slice status")
-	fmt.Println("  owners    Show slice owners")
-	fmt.Println("  checkout  Checkout a slice to working directory")
+	fmt.Println("  info      Show slice information for a slice path")
+	fmt.Println("  status    Show slice status for a slice path")
+	fmt.Println("  owners    Show slice owners for a slice path")
+	fmt.Println("  checkout  Checkout a slice from a slice file path")
 	fmt.Println("  clone     Alias for checkout")
 }
 

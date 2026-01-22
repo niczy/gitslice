@@ -7,13 +7,13 @@ import (
 
 func TestStatusShowsSliceBinding(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "status-slice"
+	slicePath := newSlicePath(t, "status-slice")
 
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID)
-	_ = runCLIOrFail(t, workdir, "init", sliceID)
+	_ = runCLIOrFail(t, workdir, "slice", "create", slicePath)
+	_ = runCLIOrFail(t, workdir, "init", slicePath)
 
 	output := runCLIOrFail(t, workdir, "status")
-	if !strings.Contains(output, sliceID) {
+	if !strings.Contains(output, slicePath) {
 		t.Fatalf("expected status to mention slice binding, got: %s", output)
 	}
 }

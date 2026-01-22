@@ -590,7 +590,7 @@ func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
 	}
 
 	rootSlice := &models.Slice{
-		ID:          "root_slice",
+		ID:          RootSlicePath,
 		Name:        "Root Slice",
 		Description: "The root slice containing all files",
 		Files:       []string{},

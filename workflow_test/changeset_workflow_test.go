@@ -9,14 +9,14 @@ import (
 // the in-memory services bootstrapped in TestMain.
 func TestChangesetWorkflow(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "changeset-workflow"
+	slicePath := newSlicePath(t, "changeset-workflow")
 
-	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--description", "workflow slice")
+	output := runCLIOrFail(t, workdir, "slice", "create", slicePath, "--description", "workflow slice")
 	if !strings.Contains(output, "Slice created") {
 		t.Fatalf("expected slice creation confirmation, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", sliceID)
+	output = runCLIOrFail(t, workdir, "init", slicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}

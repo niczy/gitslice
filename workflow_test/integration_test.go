@@ -289,14 +289,14 @@ func resolveAllConflicts(ctx context.Context, t *testing.T, client adminv1.Admin
 
 func TestChangesetWorkflowEndToEnd(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "slice-integration"
+	slicePath := newSlicePath(t, "slice-integration")
 
-	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--description", "integration slice")
+	output := runCLIOrFail(t, workdir, "slice", "create", slicePath, "--description", "integration slice")
 	if !strings.Contains(output, "Slice created") {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", sliceID)
+	output = runCLIOrFail(t, workdir, "init", slicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -329,11 +329,11 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
 	output := runCLIOrFail(t, workdir, "root")
-	if !strings.Contains(output, "Root Slice ID: root_slice") {
+	if !strings.Contains(output, "Root Slice ID: "+storage.RootSlicePath) {
 		t.Fatalf("Expected root slice info, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", "root_slice")
+	output = runCLIOrFail(t, workdir, "init", storage.RootSlicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -350,19 +350,19 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 		t.Fatalf("Expected merge success, got: %s", output)
 	}
 
-	newSliceID := fmt.Sprintf("slice-fork-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, workdir, "fork", newSliceID, srcFolder, "--parent", "root_slice")
-	if !strings.Contains(output, "Created slice: "+newSliceID) {
+	forkSlicePath := newSlicePath(t, fmt.Sprintf("slice-fork-%d", time.Now().UnixNano()))
+	output = runCLIOrFail(t, workdir, "fork", forkSlicePath, srcFolder, "--parent", storage.RootSlicePath)
+	if !strings.Contains(output, "Created slice: "+forkSlicePath) {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "slice", "info", newSliceID)
-	if !strings.Contains(output, "Slice: "+newSliceID) {
+	output = runCLIOrFail(t, workdir, "slice", "info", forkSlicePath)
+	if !strings.Contains(output, "Slice: "+forkSlicePath) {
 		t.Fatalf("Expected slice info output, got: %s", output)
 	}
 
 	newSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceID)
+	output = runCLIOrFail(t, newSliceWorkdir, "init", forkSlicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -382,15 +382,15 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 
 func TestCheckoutInitializesGitRepo(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := fmt.Sprintf("slice-git-%d", time.Now().UnixNano())
+	slicePath := newSlicePath(t, fmt.Sprintf("slice-git-%d", time.Now().UnixNano()))
 
-	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "git_file.txt")
+	output := runCLIOrFail(t, workdir, "slice", "create", slicePath, "--files", "git_file.txt")
 	if !strings.Contains(output, "Slice created") {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+	output = runCLIOrFail(t, workdir, "slice", "checkout", slicePath)
+	if !strings.Contains(output, "Checked out slice: "+slicePath) {
 		t.Fatalf("Expected checkout output, got: %s", output)
 	}
 
@@ -417,14 +417,14 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 
 func TestChangesetCreateRequiresMainBranch(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
+	slicePath := newSlicePath(t, fmt.Sprintf("slice-branch-%d", time.Now().UnixNano()))
 
-	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "branch_file.txt")
+	output := runCLIOrFail(t, workdir, "slice", "create", slicePath, "--files", "branch_file.txt")
 	if !strings.Contains(output, "Slice created") {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", sliceID)
+	output = runCLIOrFail(t, workdir, "init", slicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -444,11 +444,11 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
 	output := runCLIOrFail(t, workdir, "root")
-	if !strings.Contains(output, "Root Slice ID: root_slice") {
+	if !strings.Contains(output, "Root Slice ID: "+storage.RootSlicePath) {
 		t.Fatalf("expected root slice info, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", "root_slice")
+	output = runCLIOrFail(t, workdir, "init", storage.RootSlicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
@@ -470,15 +470,15 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected root commit hash from merge output, got: %s", output)
 	}
 
-	sliceID := fmt.Sprintf("slice-apps-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, workdir, "fork", sliceID, "apps", "--parent", "root_slice")
-	if !strings.Contains(output, "Created slice: "+sliceID) {
+	slicePath := newSlicePath(t, fmt.Sprintf("slice-apps-%d", time.Now().UnixNano()))
+	output = runCLIOrFail(t, workdir, "fork", slicePath, "apps", "--parent", storage.RootSlicePath)
+	if !strings.Contains(output, "Created slice: "+slicePath) {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceID)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", slicePath)
+	if !strings.Contains(output, "Checked out slice: "+slicePath) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
 	if !strings.Contains(output, "apps (0 bytes)") {
@@ -502,7 +502,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceID)
+	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", slicePath)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
 	}
@@ -511,7 +511,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	rootCheckoutDir := t.TempDir()
-	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", "root_slice")
+	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", storage.RootSlicePath)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected root slice to promote latest commit, got: %s", output)
 	}
@@ -643,7 +643,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 
 	var rootInfo *adminv1.SliceInfo
 	for _, info := range listResp.Slices {
-		if info.SliceId == "root_slice" {
+		if info.SliceId == storage.RootSlicePath {
 			rootInfo = info
 			break
 		}
@@ -670,14 +670,14 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 
 func TestSliceCommitHistoryIntegration(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := fmt.Sprintf("slice-history-%d", time.Now().UnixNano())
+	slicePath := newSlicePath(t, fmt.Sprintf("slice-history-%d", time.Now().UnixNano()))
 
-	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "history_file.txt")
+	output := runCLIOrFail(t, workdir, "slice", "create", slicePath, "--files", "history_file.txt")
 	if !strings.Contains(output, "Slice created") {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "init", sliceID)
+	output = runCLIOrFail(t, workdir, "init", slicePath)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
@@ -702,7 +702,7 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	historyResp, err := sliceClient.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceID, Limit: 5})
+	historyResp, err := sliceClient.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: slicePath, Limit: 5})
 	if err != nil {
 		t.Fatalf("failed to fetch slice commits: %v", err)
 	}
@@ -721,9 +721,9 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 
 func TestGlobalStateTrackingIntegration(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := fmt.Sprintf("slice-global-%d", time.Now().UnixNano())
+	slicePath := newSlicePath(t, fmt.Sprintf("slice-global-%d", time.Now().UnixNano()))
 
-	output := runCLIOrFail(t, workdir, "slice", "create", sliceID, "--files", "global_state.txt")
+	output := runCLIOrFail(t, workdir, "slice", "create", slicePath, "--files", "global_state.txt")
 	if !strings.Contains(output, "Slice created") {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}
@@ -756,17 +756,17 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 
 	foundSlice := false
 	for _, id := range stateResp.History[0].MergedSliceIds {
-		if id == sliceID {
+		if id == slicePath {
 			foundSlice = true
 			break
 		}
 	}
 	if !foundSlice {
-		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
+		t.Fatalf("expected merged slice %s to be recorded in history", slicePath)
 	}
 
 	sliceClient := newSliceClient(t)
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: storage.RootSlicePath})
 	if err != nil {
 		t.Fatalf("failed to get root slice state: %v", err)
 	}
@@ -920,7 +920,7 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("expected promoted slice %s to appear in global history", sliceA)
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: storage.RootSlicePath})
 	if err != nil {
 		t.Fatalf("failed to fetch root slice state: %v", err)
 	}
@@ -1022,7 +1022,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("expected at least %d history entries after concurrent merges, got %d", len(initialState.History)+mergeCount, len(globalState.History))
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: storage.RootSlicePath})
 	if err != nil {
 		t.Fatalf("failed to fetch root slice state: %v", err)
 	}

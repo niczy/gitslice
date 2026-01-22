@@ -1,21 +1,22 @@
 package workflow
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "checkout-slice"
+	slicePath := newSlicePath(t, "checkout-slice")
 
 	// Create slice with files
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID,
+	_ = runCLIOrFail(t, workdir, "slice", "create", slicePath,
 		"--files", "main.go,utils.go",
 		"--description", "Slice for checkout testing")
 
 	// Checkout the slice
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", slicePath)
 
 	// Verify manifest is returned
 	if !strings.Contains(output, "Slice") && !strings.Contains(output, "checkout") {
@@ -25,27 +26,28 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 
 func TestCheckoutSliceWithFiles(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "checkout-with-files"
+	slicePath := newSlicePath(t, "checkout-with-files")
 
 	// Create slice with specific files
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID,
+	_ = runCLIOrFail(t, workdir, "slice", "create", slicePath,
 		"--files", "main.go,utils.go,README.md",
 		"--description", "Slice with multiple files")
 
 	// Checkout should return manifest with file count
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", slicePath)
 
 	// The checkout should succeed and mention the slice
-	if !strings.Contains(output, sliceID) {
-		t.Fatalf("expected checkout to mention slice ID %s, got: %s", sliceID, output)
+	if !strings.Contains(output, slicePath) {
+		t.Fatalf("expected checkout to mention slice path %s, got: %s", slicePath, output)
 	}
 }
 
 func TestCheckoutSliceNotFound(t *testing.T) {
 	workdir := t.TempDir()
+	slicePath := filepath.Join(t.TempDir(), "nonexistent-slice.json")
 
 	// Try to checkout non-existent slice
-	_, err := runCLIWithDir(workdir, "slice", "checkout", "nonexistent-slice")
+	_, err := runCLIWithDir(workdir, "slice", "checkout", slicePath)
 	if err == nil {
 		// CLI may not return error for not found, just log output
 		t.Logf("Checkout nonexistent output: %s", err)
@@ -54,15 +56,15 @@ func TestCheckoutSliceNotFound(t *testing.T) {
 
 func TestCheckoutSliceWithCommitHash(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "checkout-commit"
+	slicePath := newSlicePath(t, "checkout-commit")
 
 	// Create slice
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID,
+	_ = runCLIOrFail(t, workdir, "slice", "create", slicePath,
 		"--files", "main.go",
 		"--description", "Slice for commit checkout")
 
 	// Checkout with specific commit hash (HEAD is default)
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceID, "--commit", "HEAD")
+	output := runCLIOrFail(t, workdir, "slice", "checkout", slicePath, "--commit", "HEAD")
 
 	// Should succeed regardless of commit hash for now
 	t.Logf("Checkout with commit output: %s", output)
@@ -70,14 +72,14 @@ func TestCheckoutSliceWithCommitHash(t *testing.T) {
 
 func TestCheckoutEmptySlice(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := "empty-checkout"
+	slicePath := newSlicePath(t, "empty-checkout")
 
 	// Create slice without files
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID,
+	_ = runCLIOrFail(t, workdir, "slice", "create", slicePath,
 		"--description", "Slice with no files")
 
 	// Checkout empty slice should return empty manifest
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", slicePath)
 
 	t.Logf("Empty slice checkout output: %s", output)
 }
@@ -86,15 +88,15 @@ func TestStreamCheckoutSlice(t *testing.T) {
 	// Streaming checkout is not yet implemented in CLI
 	// This test verifies the command is recognized
 	workdir := t.TempDir()
-	sliceID := "stream-checkout"
+	slicePath := newSlicePath(t, "stream-checkout")
 
-	_ = runCLIOrFail(t, workdir, "slice", "create", sliceID)
+	_ = runCLIOrFail(t, workdir, "slice", "create", slicePath)
 
 	// The streaming version would be used for large slices
 	// For now, the regular checkout is used
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceID)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", slicePath)
 
-	if !strings.Contains(output, sliceID) {
-		t.Fatalf("expected checkout to mention slice ID %s, got: %s", sliceID, output)
+	if !strings.Contains(output, slicePath) {
+		t.Fatalf("expected checkout to mention slice path %s, got: %s", slicePath, output)
 	}
 }

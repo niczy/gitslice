@@ -212,8 +212,8 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 	t.Helper()
 
 	fileID := fmt.Sprintf("shared-%s.txt", strings.ToLower(t.Name()))
-	sliceA := fmt.Sprintf("conflict-a-%s", strings.ToLower(t.Name()))
-	sliceB := fmt.Sprintf("conflict-b-%s", strings.ToLower(t.Name()))
+	sliceA := newSlicePath(t, fmt.Sprintf("conflict-a-%s", strings.ToLower(t.Name())))
+	sliceB := newSlicePath(t, fmt.Sprintf("conflict-b-%s", strings.ToLower(t.Name())))
 
 	if _, err := runCLI("slice", "create", sliceA, "--files", fileID); err != nil {
 		t.Fatalf("failed to create base slice: %v", err)

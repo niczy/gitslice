@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,4 +22,10 @@ func assertUnsupportedCommand(t *testing.T, args ...string) {
 	if !strings.Contains(output, "Unknown") && !strings.Contains(output, "not implemented") {
 		t.Fatalf("expected command %v to be unsupported, got output: %s", args, output)
 	}
+}
+
+func newSlicePath(t *testing.T, name string) string {
+	t.Helper()
+
+	return filepath.Join(t.TempDir(), fmt.Sprintf("%s.json", name))
 }
