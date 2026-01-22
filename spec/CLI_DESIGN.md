@@ -28,7 +28,7 @@ go build -o gs_cli ./gs_cli/
 ### Slice Commands
 
 ```bash
-gs slice create my-slice --files file1.go,file2.go --description "demo slice"
+gs slice create /u/alice/slices/payments --files file1.go,file2.go --description "demo slice"
 gs slice list --limit 50 --offset 0 --detailed
 gs slice info /u/alice/slices/feature-a.json
 gs slice status /u/alice/slices/feature-a.json

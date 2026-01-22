@@ -25,6 +25,12 @@ This document describes the planned data models for the slice-based version cont
 - Changeset models
 - Batch merge models
 
+Slices are identified by their filesystem paths. User-owned slices live under `/u/<USER_NAME>/slices/...`, and organization-owned slices live under `/o/<ORG_NAME>/slices/...`. These paths are treated as canonical slice identifiers (what other documents call slice IDs), for example:
+
+- `/u/alice/slices/payments`
+- `/u/andrew/slices/infra/terraform`
+- `/o/acme/slices/platform/core-api`
+
 ---
 
 ## 1. Object Store Models
