@@ -10,18 +10,22 @@ import (
 	"time"
 )
 
-// readSliceIDFromConfig reads the slice ID from the .gs/config file.
-func readSliceIDFromConfig() (string, error) {
+// readSlicePathFromConfig reads the slice path from the .gs/config file.
+func readSlicePathFromConfig() (string, error) {
 	data, err := os.ReadFile(".gs/config")
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	return normalizeSlicePath(string(data))
 }
 
-// writeConfigFile writes the slice ID to the .gs/config file.
-func writeConfigFile(sliceID string) error {
-	return os.WriteFile(".gs/config", []byte(sliceID), 0644)
+// writeConfigFile writes the slice path to the .gs/config file.
+func writeConfigFile(slicePath string) error {
+	normalizedPath, err := normalizeSlicePath(slicePath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(".gs/config", []byte(normalizedPath), 0644)
 }
 
 // splitAndTrim splits a string by a delimiter and trims whitespace from each part.
@@ -39,6 +43,23 @@ func splitAndTrim(s, delim string) []string {
 // formatTimestamp formats a Unix timestamp into RFC3339 format.
 func formatTimestamp(ts int64) string {
 	return time.Unix(ts, 0).Format(time.RFC3339)
+}
+
+func normalizeSlicePath(slicePath string) (string, error) {
+	cleaned := strings.TrimSpace(slicePath)
+	if cleaned == "" {
+		return "", errors.New("slice path is empty")
+	}
+
+	cleaned = filepath.Clean(cleaned)
+	if !filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("slice path must be an absolute file path: %s", slicePath)
+	}
+	if cleaned == string(filepath.Separator) {
+		return "", fmt.Errorf("slice path must point to a file: %s", slicePath)
+	}
+
+	return cleaned, nil
 }
 
 func ensureGitRepo(dir string) (bool, error) {

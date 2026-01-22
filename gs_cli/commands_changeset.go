@@ -39,7 +39,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Cannot create changeset: %v", err)
 	}
 
-	sliceID, err := readSliceIDFromConfig()
+	slicePath, err := readSlicePathFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
 		return
@@ -59,7 +59,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	modifiedFiles = append(modifiedFiles, fs.Args()...)
 
 	req := &slicev1.CreateChangesetRequest{
-		SliceId:        sliceID,
+		SliceId:        slicePath,
 		BaseCommitHash: *base,
 		ModifiedFiles:  modifiedFiles,
 		Author:         *author,
@@ -134,7 +134,7 @@ func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
-	sliceID, err := readSliceIDFromConfig()
+	slicePath, err := readSlicePathFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
 		return
@@ -164,7 +164,7 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	req := &slicev1.ListChangesetsRequest{
-		SliceId:      sliceID,
+		SliceId:      slicePath,
 		StatusFilter: statusFilter,
 		Limit:        int32(*limit),
 	}
@@ -178,7 +178,7 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 		return resp.Changesets[i].CreatedAt > resp.Changesets[j].CreatedAt
 	})
 
-	fmt.Printf("Found %d changeset(s) for slice %s\n", len(resp.Changesets), sliceID)
+	fmt.Printf("Found %d changeset(s) for slice %s\n", len(resp.Changesets), slicePath)
 	for _, cs := range resp.Changesets {
 		fmt.Printf("- %s [%s] %s\n", cs.ChangesetId, cs.Status.String(), cs.Message)
 	}
