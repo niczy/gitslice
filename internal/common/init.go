@@ -93,7 +93,7 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 		}
 
 		// Prefix path with genesis mount path for organization
-		slicePath := path.Join(genesisMountPath, filePath)
+		slicePath := normalizeSlicePath(filePath)
 
 		// Extract all parent directories
 		dirs := extractParentDirs(slicePath)
@@ -133,7 +133,7 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 		}
 
 		// Prefix path with genesis mount path for organization
-		slicePath := path.Join(genesisMountPath, filePath)
+		slicePath := normalizeSlicePath(filePath)
 
 		// Read file content from actual git repo location
 		fullPath := filepath.Join(repoRoot, filePath)
@@ -186,8 +186,8 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 }
 
 // extractParentDirs returns all parent directories for a given path
-// e.g. "/o/genesis/projects/gitslice/internal/common/init.go"
-// -> ["/o", "/o/genesis", "/o/genesis/projects", "/o/genesis/projects/gitslice", "/o/genesis/projects/gitslice/internal", "/o/genesis/projects/gitslice/internal/common"]
+// e.g. "o/genesis/projects/gitslice/internal/common/init.go"
+// -> ["o", "o/genesis", "o/genesis/projects", "o/genesis/projects/gitslice", "o/genesis/projects/gitslice/internal", "o/genesis/projects/gitslice/internal/common"]
 func extractParentDirs(filePath string) []string {
 	var dirs []string
 	parts := strings.Split(filePath, "/")
@@ -224,4 +224,9 @@ func sortDirsByDepth(dirs map[string]bool) []string {
 // generateEntryID creates a unique ID for a directory entry
 func generateEntryID(sliceID, path string) string {
 	return fmt.Sprintf("%s:%s", sliceID, path)
+}
+
+func normalizeSlicePath(filePath string) string {
+	slicePath := path.Join(genesisMountPath, filePath)
+	return strings.TrimPrefix(slicePath, "/")
 }
