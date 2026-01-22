@@ -12,9 +12,17 @@ import (
 
 // readSliceMetadataPathFromConfig reads the metadata path from the .gs/config file.
 func readSliceMetadataPathFromConfig() (string, error) {
+	// Check if config file exists first
+	if _, err := os.Stat(".gs/config"); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf(".gs/config file not found - have you run 'gs init'?")
+		}
+		return "", fmt.Errorf("cannot access .gs/config: %w", err)
+	}
+
 	data, err := os.ReadFile(".gs/config")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read .gs/config: %w", err)
 	}
 	path := strings.TrimSpace(string(data))
 	if path == "" {
@@ -25,7 +33,7 @@ func readSliceMetadataPathFromConfig() (string, error) {
 
 // writeMetadataPathConfig writes the metadata path to the .gs/config file.
 func writeMetadataPathConfig(metadataPath string) error {
-	return os.WriteFile(".gs/config", []byte(metadataPath), 0644)
+	return os.WriteFile(".gs/config", []byte(metadataPath), 0600)
 }
 
 // splitAndTrim splits a string by a delimiter and trims whitespace from each part.

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -121,10 +122,11 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 
 	s.slices[slice.ID] = slice
 
-	// Initialize metadata
+	// Initialize metadata with initial commit hash
+	initialCommitHash := fmt.Sprintf("init-%s", slice.ID)
 	s.sliceMetadata[slice.ID] = &models.SliceMetadata{
 		SliceID:            slice.ID,
-		HeadCommitHash:     "",
+		HeadCommitHash:     initialCommitHash,
 		ModifiedFiles:      []string{},
 		LastModified:       now,
 		ModifiedFilesCount: 0,

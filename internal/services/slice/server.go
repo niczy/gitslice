@@ -249,14 +249,19 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		metadata.HeadCommitHash = newCommit
 		metadata.ModifiedFiles = cs.ModifiedFiles
 		metadata.ModifiedFilesCount = len(cs.ModifiedFiles)
-		_ = s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata)
 
-		_ = s.storage.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
+		if err := s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata); err != nil {
+			log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
+		}
+
+		if err := s.storage.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
 			CommitHash: newCommit,
 			ParentHash: parentHash,
 			Timestamp:  now,
 			Message:    cs.Message,
-		})
+		}); err != nil {
+			log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
+		}
 
 		if err := s.promoteSlice(ctx, cs.SliceID, newCommit, cs.ModifiedFiles, now); err != nil {
 			log.Printf("failed to promote slice %s to global state: %v", cs.SliceID, err)
@@ -520,7 +525,9 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 	if updatedState, err := s.storage.GetGlobalState(ctx); err == nil {
 		rootMetadata.HeadCommitHash = updatedState.GlobalCommitHash
 		rootMetadata.LastModified = updatedState.Timestamp
-		_ = s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata)
+		if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
+			log.Printf("Warning: failed to update root slice metadata: %v", err)
+		}
 	}
 
 	return nil
