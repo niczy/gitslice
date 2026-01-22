@@ -66,12 +66,6 @@ service AdminService {
   // Trigger batch merge to global
   rpc BatchMerge(BatchMergeRequest) returns (BatchMergeResponse);
 
-  // Create a new slice
-  rpc CreateSlice(CreateSliceRequest) returns (CreateSliceResponse);
-
-  // List all active slices
-  rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
-
   // Get current conflicts across slices
   rpc GetConflicts(ConflictsRequest) returns (ConflictsResponse);
 
@@ -360,44 +354,6 @@ message BatchMergeResponse {
 }
 ```
 
-#### List Slices
-
-```protobuf
-message ListSlicesRequest {
-  int32 limit = 1;
-  int32 offset = 2;
-}
-
-message ListSlicesResponse {
-  repeated SliceInfo slices = 1;
-}
-
-message SliceInfo {
-  string slice_id = 1;
-  string latest_commit_hash = 2;
-  int32 modified_files_count = 3;
-  int64 last_modified = 4;
-}
-```
-
-#### Create Slice
-
-```protobuf
-message CreateSliceRequest {
-  string slice_id = 1;
-  string name = 2;
-  string description = 3;
-  repeated string files = 4;
-  repeated string owners = 5;
-  string created_by = 6;
-}
-
-message CreateSliceResponse {
-  string slice_id = 1;
-  string status = 2;
-}
-```
-
 #### Get Conflicts
 
 ```protobuf
@@ -598,19 +554,17 @@ See [CLI_DESIGN.md](./CLI_DESIGN.md) for detailed command-to-API mapping.
 
 | CLI Command | API Method |
 |-------------|------------|
-| `gs init <slice_id>` | N/A (local only) |
-| `gs slice checkout <slice_id>` | `CheckoutSlice` |
+| `gs init <metadata-toml-path>` | N/A (local only) |
+| `gs slice checkout <metadata-toml-path>` | `CheckoutSlice` |
 | `gs changeset create` | `CreateChangeset` |
 | `gs changeset review <id>` | `ReviewChangeset` |
 | `gs changeset merge <id>` | `MergeChangeset` |
 | `gs changeset rebase <id>` | `RebaseChangeset` |
 | `gs changeset list` | `ListChangesets` |
-| `gs log <slice_id>` | `GetSliceCommits` |
+| `gs log` | `GetSliceCommits` |
 | `gs status` | `GetSliceState` |
 | `gs root` | `GetRootSlice` |
 | `gs fork <new-slice> <folder>` | `CreateSliceFromFolder` |
-| `gs slice create <slice_id>` | `CreateSlice` (admin) |
-| `gs slice list` | `ListSlices` (admin) |
 | `gs conflict list` | `GetConflicts` (admin) |
 | `gs conflict resolve <file>` | `ResolveConflict` (admin) |
 

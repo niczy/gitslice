@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -21,19 +20,7 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	switch args[0] {
-	case "create":
-		handleSliceCreate(ctx, cli, args[1:])
-	case "list":
-		handleSliceList(ctx, cli, args[1:])
-	case "info":
-		handleSliceInfo(ctx, cli, args[1:])
-	case "status":
-		handleSliceStatus(ctx, cli, args[1:])
-	case "owners":
-		handleSliceOwners(ctx, cli, args[1:])
-	case "checkout":
-		handleSliceCheckout(ctx, cli, args[1:])
-	case "clone":
+	case "checkout", "clone":
 		handleSliceCheckout(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown slice command: %s", args[0])
@@ -41,188 +28,21 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		log.Println("Usage: gs slice create <slice-id> [--files \"file1,file2\"] [--description \"desc\"]")
-		return
-	}
-
-	sliceID := args[0]
-
-	// Parse flags (exclude the positional slice ID from flag parsing)
-	fs := flag.NewFlagSet("slice create", flag.ExitOnError)
-	files := fs.String("files", "", "Comma-separated list of files")
-	description := fs.String("description", "", "Slice description")
-	fs.Parse(args[1:])
-
-	// Build file list
-	var fileList []string
-	if *files != "" {
-		fileList = splitAndTrim(*files, ",")
-	}
-
-	// Create slice via admin service
-	// Note: Authentication/authorization not yet implemented.
-	// In production, these values should come from the authenticated user context.
-	req := &adminv1.CreateSliceRequest{
-		SliceId:     sliceID,
-		Name:        sliceID,
-		Description: *description,
-		Files:       fileList,
-		Owners:      []string{"user"}, // Placeholder - should come from auth context
-		CreatedBy:   "user",           // Placeholder - should come from auth context
-	}
-
-	resp, err := cli.adminClient.CreateSlice(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to create slice: %v", err)
-	}
-
-	fmt.Printf("Slice created: %s\n", resp.SliceId)
-	fmt.Printf("Status: %s\n", resp.Status)
-	if len(fileList) > 0 {
-		fmt.Printf("Files: %d\n", len(fileList))
-	}
-}
-
-func handleSliceList(ctx context.Context, cli *CLI, args []string) {
-	// Parse flags
-	fs := flag.NewFlagSet("slice list", flag.ExitOnError)
-	limit := fs.Int("limit", 50, "Maximum number of slices to return")
-	offset := fs.Int("offset", 0, "Offset for pagination")
-	detailed := fs.Bool("detailed", false, "Show detailed information")
-	mine := fs.Bool("mine", false, "Show only my slices")
-	search := fs.String("search", "", "Search query")
-	fs.Parse(args)
-
-	req := &adminv1.ListSlicesRequest{
-		Limit:  int32(*limit),
-		Offset: int32(*offset),
-	}
-
-	resp, err := cli.adminClient.ListSlices(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to list slices: %v", err)
-	}
-
-	if *search != "" {
-		fmt.Printf("Searching for: %s\n", *search)
-	}
-
-	if *mine {
-		fmt.Println("Showing only my slices")
-	}
-
-	fmt.Printf("\nFound %d slice(s):\n", len(resp.Slices))
-	for _, slice := range resp.Slices {
-		fmt.Printf("- %s (commit: %s, files: %d)\n", slice.SliceId, slice.LatestCommitHash, slice.ModifiedFilesCount)
-		if *detailed {
-			fmt.Printf("  Last modified: %s\n", formatTimestamp(slice.LastModified))
-		}
-	}
-}
-
-func handleSliceInfo(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		log.Println("Usage: gs slice info <slice-id>")
-		return
-	}
-
-	sliceID := args[0]
-
-	req := &slicev1.StateRequest{
-		SliceId: sliceID,
-	}
-
-	resp, err := cli.sliceClient.GetSliceState(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to get slice info: %v", err)
-	}
-
-	fmt.Printf("Slice: %s\n", sliceID)
-	fmt.Printf("Latest commit: %s\n", resp.LatestCommitHash)
-	fmt.Printf("Modified files: %d\n", len(resp.ModifiedFiles))
-	fmt.Printf("Last modified: %s\n", formatTimestamp(resp.LastModified))
-}
-
-func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		log.Println("Usage: gs slice status <slice-id>")
-		return
-	}
-
-	sliceID := args[0]
-
-	req := &slicev1.StateRequest{
-		SliceId: sliceID,
-	}
-
-	resp, err := cli.sliceClient.GetSliceState(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to get slice status: %v", err)
-	}
-
-	fmt.Printf("Slice: %s\n", sliceID)
-	fmt.Printf("Status: Active\n")
-	fmt.Printf("Head: %s\n", resp.LatestCommitHash)
-	fmt.Printf("Modified files: %d\n", len(resp.ModifiedFiles))
-}
-
-func handleSliceOwners(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		log.Println("Usage: gs slice owners <slice-id>")
-		return
-	}
-
-	sliceID := args[0]
-
-	// Get slice details from admin service
-	req := &adminv1.GetSliceRequest{
-		SliceId: sliceID,
-	}
-
-	resp, err := cli.adminClient.GetSlice(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to get slice: %v", err)
-	}
-
-	// Display slice information
-	fmt.Printf("Slice: %s\n", resp.SliceId)
-	fmt.Printf("Name: %s\n", resp.Name)
-	if resp.Description != "" {
-		fmt.Printf("Description: %s\n", resp.Description)
-	}
-	fmt.Printf("Created by: %s\n", resp.CreatedBy)
-	fmt.Printf("Created at: %s\n", formatTimestamp(resp.CreatedAt))
-
-	if resp.ParentSlice != "" {
-		fmt.Printf("Parent slice: %s\n", resp.ParentSlice)
-	}
-	if resp.IsRoot {
-		fmt.Printf("Type: Root slice\n")
-	}
-
-	fmt.Printf("\nOwners (%d):\n", len(resp.Owners))
-	if len(resp.Owners) == 0 {
-		fmt.Println("  (no owners)")
-	} else {
-		for _, owner := range resp.Owners {
-			fmt.Printf("  - %s\n", owner)
-		}
-	}
-
-	// Note about adding/removing owners
-	fmt.Println("\nNote: Adding and removing owners is not yet implemented.")
-	fmt.Println("Owners can be set when creating a slice with 'gs slice create'.")
-}
-
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <metadata-toml-path> [--commit <commit-hash>]")
 		return
 	}
 
-	sliceID := args[0]
+	metadataPath, err := validateMetadataPath(args[0])
+	if err != nil {
+		log.Fatalf("Invalid metadata path: %v", err)
+	}
+
+	meta, err := readSliceMetadata(metadataPath)
+	if err != nil {
+		log.Fatalf("Failed to read slice metadata: %v", err)
+	}
 
 	// Parse flags
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
@@ -240,13 +60,13 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := os.MkdirAll(".gs", 0o755); err != nil {
 		log.Fatalf("Failed to create .gs directory: %v", err)
 	}
-	if err := writeConfigFile(sliceID); err != nil {
+	if err := writeMetadataPathConfig(metadataPath); err != nil {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
 	// Call slice service
 	req := &slicev1.CheckoutRequest{
-		SliceId:    sliceID,
+		SliceId:    meta.SliceID,
 		CommitHash: *commitHash,
 	}
 
@@ -336,7 +156,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	// Display checkout results
-	fmt.Printf("Checked out slice: %s\n", sliceID)
+	fmt.Printf("Checked out slice: %s\n", meta.SliceID)
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
 	fmt.Printf("Files: %d\n", len(resp.Files))
 

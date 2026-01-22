@@ -39,7 +39,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Cannot create changeset: %v", err)
 	}
 
-	sliceID, err := readSliceIDFromConfig()
+	sliceID, err := sliceIDFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
 		return
@@ -134,7 +134,7 @@ func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
-	sliceID, err := readSliceIDFromConfig()
+	sliceID, err := sliceIDFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
 		return

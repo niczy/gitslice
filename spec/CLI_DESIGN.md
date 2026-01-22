@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The `gs` CLI is a lightweight client for the slice-based prototype. It talks to the SliceService and AdminService over gRPC, stores the current slice binding in `.gs/config`, and provides commands for slice management, change lists, and conflict resolution. See [`gs_cli/main.go`](../gs_cli/main.go) for the authoritative command list.
+The `gs` CLI is a lightweight client for the slice-based prototype. It talks to the SliceService and AdminService over gRPC, stores the current slice metadata TOML path in `.gs/config`, and provides commands for slice checkout, change lists, and conflict resolution. See [`gs_cli/main.go`](../gs_cli/main.go) for the authoritative command list.
 
 ---
 
@@ -19,7 +19,7 @@ go build -o gs_cli ./gs_cli/
 ## Configuration & Connection
 
 - `--slice-addr` (default `localhost:50051`) and `--admin-addr` (default `localhost:50052`) control gRPC endpoints.
-- `gs init <slice-path>` creates `.gs/config` in the current directory. The directory must be empty. Slice paths are filesystem identifiers like `/u/<USER_NAME>/slices/...` or `/o/<ORG_NAME>/slices/...`.
+- `gs init <metadata-toml-path>` creates `.gs/config` in the current directory. The directory must be empty. Metadata files are TOML documents with a required `slice_id` field and must be specified as absolute paths.
 
 ---
 
@@ -28,17 +28,11 @@ go build -o gs_cli ./gs_cli/
 ### Slice Commands
 
 ```bash
-gs slice create /u/alice/slices/payments --files file1.go,file2.go --description "demo slice"
-gs slice list --limit 50 --offset 0 --detailed
-gs slice info /u/alice/slices/payments
-gs slice status /u/alice/slices/payments
-gs slice checkout /u/alice/slices/payments --commit HEAD
-gs slice clone /u/alice/slices/payments --commit HEAD
+gs slice checkout /abs/path/to/slice.toml --commit HEAD
+gs slice clone /abs/path/to/slice.toml --commit HEAD
 ```
 
 > `gs slice clone` is an alias for `gs slice checkout`.
->
-> `gs slice owners` is currently a placeholder and logs “not implemented yet.”
 
 ### Changeset Commands
 
@@ -51,7 +45,7 @@ gs changeset list --limit 20 --status pending
 ```
 
 Notes:
-- `changeset create` uses the slice path from `.gs/config` and accepts `--files` or positional file arguments.
+- `changeset create` uses the slice metadata TOML path from `.gs/config` and accepts `--files` or positional file arguments.
 - `changeset list` supports status filters: `pending`, `approved`, `rejected`, `merged`.
 
 ### Conflict Commands
@@ -67,7 +61,8 @@ gs conflict resolve --ours path/to/file.go
 
 ```bash
 gs status
-gs log /u/alice/slices/payments
+gs log
+gs log /abs/path/to/slice.toml
 ```
 
 ### Root Slice & Forking
