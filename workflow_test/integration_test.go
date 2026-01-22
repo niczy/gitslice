@@ -16,6 +16,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	adminservice "github.com/niczy/gitslice/internal/services/admin"
 	fileservice "github.com/niczy/gitslice/internal/services/file"
@@ -523,6 +524,44 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	if rootCommit == sliceCommit {
 		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
+	}
+}
+
+func TestRootSliceGenesisPathsNormalized(t *testing.T) {
+	t.Setenv("RUN_INTEGRATION_TESTS", "")
+	t.Setenv("SKIP_GIT_POPULATION", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	repoRoot := runGitOrFail(t, ".", "rev-parse", "--show-toplevel")
+	readmePath := filepath.Join(repoRoot, "README.md")
+	expectedContent, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("failed to read README.md: %v", err)
+	}
+
+	fileClient := fileservice.NewService(st)
+	resp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{
+		SliceId: "root_slice",
+		Path:    "/o/genesis/projects/gitslice/README.md",
+	})
+	if err != nil {
+		t.Fatalf("failed to fetch root slice file: %v", err)
+	}
+	if resp.File == nil {
+		t.Fatalf("expected file response, got nil")
+	}
+	if resp.File.Path != "o/genesis/projects/gitslice/README.md" {
+		t.Fatalf("expected normalized path, got %q", resp.File.Path)
+	}
+	if !bytes.Equal(resp.File.Content, expectedContent) {
+		t.Fatalf("unexpected root slice content: %q", string(resp.File.Content))
 	}
 }
 
