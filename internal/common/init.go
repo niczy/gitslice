@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 )
+
+const genesisMountPath = "/o/genesis/projects/gitslice"
 
 // EnsureRootSliceInitialized initializes the root slice if it doesn't exist.
 // It returns an error only if initialization fails critically.
@@ -77,7 +80,7 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 		return nil
 	}
 
-	log.Printf("Found %d files in git repository, adding to root slice under genesis/", len(files))
+	log.Printf("Found %d files in git repository, adding to root slice under %s", len(files), genesisMountPath)
 
 	// Collect all unique directories we need to create
 	dirsToCreate := make(map[string]bool)
@@ -89,8 +92,8 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 			continue
 		}
 
-		// Prefix path with "genesis/" for organization
-		slicePath := "genesis/" + filePath
+		// Prefix path with genesis mount path for organization
+		slicePath := path.Join(genesisMountPath, filePath)
 
 		// Extract all parent directories
 		dirs := extractParentDirs(slicePath)
@@ -129,8 +132,8 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 			continue
 		}
 
-		// Prefix path with "genesis/" for organization
-		slicePath := "genesis/" + filePath
+		// Prefix path with genesis mount path for organization
+		slicePath := path.Join(genesisMountPath, filePath)
 
 		// Read file content from actual git repo location
 		fullPath := filepath.Join(repoRoot, filePath)
@@ -183,7 +186,8 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 }
 
 // extractParentDirs returns all parent directories for a given path
-// e.g. "genesis/internal/common/init.go" -> ["genesis", "genesis/internal", "genesis/internal/common"]
+// e.g. "/o/genesis/projects/gitslice/internal/common/init.go"
+// -> ["/o", "/o/genesis", "/o/genesis/projects", "/o/genesis/projects/gitslice", "/o/genesis/projects/gitslice/internal", "/o/genesis/projects/gitslice/internal/common"]
 func extractParentDirs(filePath string) []string {
 	var dirs []string
 	parts := strings.Split(filePath, "/")
