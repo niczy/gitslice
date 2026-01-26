@@ -263,6 +263,11 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 			log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
 		}
 
+		// Create commit snapshot for versioned file access
+		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, now); err != nil {
+			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
+		}
+
 		if err := s.promoteSlice(ctx, cs.SliceID, newCommit, cs.ModifiedFiles, now); err != nil {
 			log.Printf("failed to promote slice %s to global state: %v", cs.SliceID, err)
 		}
@@ -531,4 +536,30 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 	}
 
 	return nil
+}
+
+// createCommitSnapshot creates a snapshot of the current file state for a commit.
+func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, commitHash string, timestamp time.Time) error {
+	// Get slice files
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return fmt.Errorf("failed to get slice: %w", err)
+	}
+
+	// Build file hash map
+	files := make(map[string]string)
+	for _, fileID := range slice.Files {
+		// Use the file path as the content hash for now
+		// In a real implementation, this would be the actual content hash
+		files[fileID] = fileID
+	}
+
+	snapshot := &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    sliceID,
+		Files:      files,
+		Timestamp:  timestamp,
+	}
+
+	return s.storage.SaveCommitSnapshot(ctx, snapshot)
 }

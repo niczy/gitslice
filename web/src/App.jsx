@@ -131,7 +131,10 @@ function OverviewPage() {
 }
 
 function RepoBrowser() {
-  const [sliceId, setSliceId] = useState('root_slice');
+  const [browseMode, setBrowseMode] = useState('root'); // 'root' | 'slice'
+  const [sliceId, setSliceId] = useState('');
+  const [commitHash, setCommitHash] = useState(''); // For root mode
+  const [sliceHash, setSliceHash] = useState(''); // For slice mode
   const [treeEntries, setTreeEntries] = useState({});
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -153,14 +156,61 @@ function RepoBrowser() {
     ];
   }, [selectedFile]);
 
+  // Reset tree when browse mode or slice changes
   useEffect(() => {
     setTreeEntries({});
     setExpandedPaths(['']);
     setSelectedFile(null);
     setFileContent('');
-  }, [sliceId]);
+  }, [browseMode, sliceId, commitHash, sliceHash]);
+
+  // Build URL for entries endpoint based on mode
+  const buildEntriesUrl = (path) => {
+    const params = new URLSearchParams();
+    if (path) {
+      params.set('path', path);
+    }
+
+    if (browseMode === 'root') {
+      if (commitHash) {
+        params.set('commit_hash', commitHash);
+      }
+      const queryString = params.toString();
+      return `${apiBaseUrl}/v1/files/entries${queryString ? `?${queryString}` : ''}`;
+    }
+    // Slice mode
+    if (sliceHash) {
+      params.set('slice_version.slice_hash', sliceHash);
+    }
+    const queryString = params.toString();
+    return `${apiBaseUrl}/v1/slices/${sliceId}/entries${queryString ? `?${queryString}` : ''}`;
+  };
+
+  // Build URL for file endpoint based on mode
+  const buildFileUrl = (filePath) => {
+    const params = new URLSearchParams({ path: filePath });
+
+    if (browseMode === 'root') {
+      if (commitHash) {
+        params.set('commit_hash', commitHash);
+      }
+      return `${apiBaseUrl}/v1/files?${params.toString()}`;
+    }
+    // Slice mode
+    if (sliceHash) {
+      params.set('slice_version.slice_hash', sliceHash);
+    }
+    return `${apiBaseUrl}/v1/slices/${sliceId}/files?${params.toString()}`;
+  };
+
+  // Check if we can load (root mode always ready, slice mode needs sliceId)
+  const canLoad = browseMode === 'root' || (browseMode === 'slice' && sliceId);
 
   useEffect(() => {
+    if (!canLoad) {
+      return;
+    }
+
     let active = true;
     const controller = new AbortController();
 
@@ -169,7 +219,7 @@ function RepoBrowser() {
       setError('');
 
       try {
-        const response = await fetch(`${apiBaseUrl}/v1/slices/${sliceId}/entries`, {
+        const response = await fetch(buildEntriesUrl(''), {
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -198,18 +248,18 @@ function RepoBrowser() {
       active = false;
       controller.abort();
     };
-  }, [sliceId]);
+  }, [browseMode, sliceId, commitHash, sliceHash]);
 
   const fetchEntries = async (path) => {
+    if (!canLoad) {
+      return;
+    }
+
     setIsLoading(true);
     setError('');
 
     try {
-      const params = new URLSearchParams();
-      if (path) {
-        params.set('path', path);
-      }
-      const response = await fetch(`${apiBaseUrl}/v1/slices/${sliceId}/entries?${params.toString()}`);
+      const response = await fetch(buildEntriesUrl(path));
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
@@ -252,8 +302,7 @@ function RepoBrowser() {
     setError('');
 
     try {
-      const params = new URLSearchParams({ path: entry.path });
-      const response = await fetch(`${apiBaseUrl}/v1/slices/${sliceId}/files?${params.toString()}`);
+      const response = await fetch(buildFileUrl(entry.path));
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
@@ -319,9 +368,50 @@ function RepoBrowser() {
 
       <div className="browser-toolbar">
         <label>
-          Slice ID
-          <input value={sliceId} onChange={(event) => setSliceId(event.target.value)} placeholder="root_slice" />
+          Browse Mode
+          <select
+            data-testid="browse-mode"
+            value={browseMode}
+            onChange={(event) => setBrowseMode(event.target.value)}
+          >
+            <option value="root">Root Repository</option>
+            <option value="slice">Specific Slice</option>
+          </select>
         </label>
+
+        {browseMode === 'root' ? (
+          <label>
+            Commit Hash (optional)
+            <input
+              data-testid="commit-hash"
+              value={commitHash}
+              onChange={(event) => setCommitHash(event.target.value)}
+              placeholder="Leave empty for HEAD"
+            />
+          </label>
+        ) : (
+          <>
+            <label>
+              Slice ID
+              <input
+                data-testid="slice-id"
+                value={sliceId}
+                onChange={(event) => setSliceId(event.target.value)}
+                placeholder="my_slice"
+              />
+            </label>
+            <label>
+              Slice Hash (optional)
+              <input
+                data-testid="slice-hash"
+                value={sliceHash}
+                onChange={(event) => setSliceHash(event.target.value)}
+                placeholder="Leave empty for HEAD"
+              />
+            </label>
+          </>
+        )}
+
         <div className="breadcrumbs">
           {breadcrumbs.map((crumb, index) => (
             <button
@@ -344,10 +434,13 @@ function RepoBrowser() {
             {isLoading && <span className="status">Loading…</span>}
           </div>
           {error && <div className="panel-error">{error}</div>}
-          {!isLoading && !error && (treeEntries[''] || []).length === 0 && (
+          {!canLoad && browseMode === 'slice' && (
+            <div className="panel-empty">Enter a Slice ID to browse files.</div>
+          )}
+          {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
             <div className="panel-empty">No entries found.</div>
           )}
-          {renderTree('')}
+          {canLoad && renderTree('')}
         </div>
 
         <div className="browser-panel">

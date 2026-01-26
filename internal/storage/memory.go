@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,23 +43,29 @@ type InMemoryStorage struct {
 
 	// Global state
 	globalState *models.GlobalState
+
+	// Versioned file storage
+	commitSnapshots  map[string]*models.CommitSnapshot // commitHash -> snapshot
+	versionedContent map[string]*models.FileContent    // contentHash -> content
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
 func NewInMemoryStorage() *InMemoryStorage {
 	return &InMemoryStorage{
-		slices:          make(map[string]*models.Slice),
-		sliceMetadata:   make(map[string]*models.SliceMetadata),
-		fileIndex:       make(map[string]map[string]bool),
-		fileContents:    make(map[string]*models.FileContent),
-		entries:         make(map[string]*models.DirectoryEntry),
-		entriesByPath:   make(map[string]string),
-		entriesBySlice:  make(map[string][]string),
-		changesets:      make(map[string]*models.Changeset),
-		sliceChangesets: make(map[string][]string),
-		sliceCommits:    make(map[string][]*models.Commit),
-		lockedSlices:    make(map[string]bool),
-		fileLocks:       make(map[string]string),
+		slices:           make(map[string]*models.Slice),
+		sliceMetadata:    make(map[string]*models.SliceMetadata),
+		fileIndex:        make(map[string]map[string]bool),
+		fileContents:     make(map[string]*models.FileContent),
+		entries:          make(map[string]*models.DirectoryEntry),
+		entriesByPath:    make(map[string]string),
+		entriesBySlice:   make(map[string][]string),
+		changesets:       make(map[string]*models.Changeset),
+		sliceChangesets:  make(map[string][]string),
+		sliceCommits:     make(map[string][]*models.Commit),
+		lockedSlices:     make(map[string]bool),
+		fileLocks:        make(map[string]string),
+		commitSnapshots:  make(map[string]*models.CommitSnapshot),
+		versionedContent: make(map[string]*models.FileContent),
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -777,4 +784,88 @@ func (s *InMemoryStorage) UpdateGlobalState(ctx context.Context, state *models.G
 func (s *InMemoryStorage) RebuildIndexes(ctx context.Context) error {
 	_ = ctx
 	return nil
+}
+
+// GetCommitSnapshot retrieves a commit snapshot by hash.
+func (s *InMemoryStorage) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot, exists := s.commitSnapshots[commitHash]
+	if !exists {
+		return nil, ErrCommitNotFound
+	}
+
+	// Return a copy
+	copySnapshot := *snapshot
+	copySnapshot.Files = make(map[string]string, len(snapshot.Files))
+	for k, v := range snapshot.Files {
+		copySnapshot.Files[k] = v
+	}
+	return &copySnapshot, nil
+}
+
+// SaveCommitSnapshot stores a commit snapshot.
+func (s *InMemoryStorage) SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if snapshot.CommitHash == "" {
+		return ErrInvalidInput
+	}
+
+	// Store a copy
+	copySnapshot := *snapshot
+	copySnapshot.Files = make(map[string]string, len(snapshot.Files))
+	for k, v := range snapshot.Files {
+		copySnapshot.Files[k] = v
+	}
+	s.commitSnapshots[snapshot.CommitHash] = &copySnapshot
+	return nil
+}
+
+// GetFileAtCommit retrieves a file's content at a specific commit.
+func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot, exists := s.commitSnapshots[commitHash]
+	if !exists {
+		return nil, ErrCommitNotFound
+	}
+
+	contentHash, exists := snapshot.Files[path]
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	content, exists := s.versionedContent[contentHash]
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	// Return a copy
+	copyContent := *content
+	return &copyContent, nil
+}
+
+// ListFilesAtCommit lists all files at a specific commit, optionally filtered by path prefix.
+func (s *InMemoryStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot, exists := s.commitSnapshots[commitHash]
+	if !exists {
+		return nil, ErrCommitNotFound
+	}
+
+	var files []string
+	for path := range snapshot.Files {
+		if pathPrefix == "" || strings.HasPrefix(path, pathPrefix) {
+			files = append(files, path)
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
 }

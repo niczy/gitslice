@@ -1350,3 +1350,84 @@ func lastKeySegment(key string) string {
 	parts := strings.Split(key, ":")
 	return parts[len(parts)-1]
 }
+
+// GetCommitSnapshot retrieves a commit snapshot by hash.
+func (s *RedisStorage) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
+	ctx = ensureCtx(ctx)
+	raw, err := s.objectStore.GetObject(ctx, s.key("commit_snapshot", commitHash))
+	if err != nil {
+		if errors.Is(err, ErrEntryNotFound) {
+			return nil, ErrCommitNotFound
+		}
+		return nil, err
+	}
+
+	var snapshot models.CommitSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
+}
+
+// SaveCommitSnapshot stores a commit snapshot.
+func (s *RedisStorage) SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error {
+	ctx = ensureCtx(ctx)
+	if snapshot.CommitHash == "" {
+		return ErrInvalidInput
+	}
+
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	return s.objectStore.PutObject(ctx, s.key("commit_snapshot", snapshot.CommitHash), raw)
+}
+
+// GetFileAtCommit retrieves a file's content at a specific commit.
+func (s *RedisStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+	ctx = ensureCtx(ctx)
+
+	snapshot, err := s.GetCommitSnapshot(ctx, commitHash)
+	if err != nil {
+		return nil, err
+	}
+
+	contentHash, exists := snapshot.Files[path]
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	raw, err := s.objectStore.GetObject(ctx, s.key("versioned_content", contentHash))
+	if err != nil {
+		if errors.Is(err, ErrEntryNotFound) {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+
+	var content models.FileContent
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return nil, err
+	}
+	return &content, nil
+}
+
+// ListFilesAtCommit lists all files at a specific commit, optionally filtered by path prefix.
+func (s *RedisStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
+	ctx = ensureCtx(ctx)
+
+	snapshot, err := s.GetCommitSnapshot(ctx, commitHash)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for path := range snapshot.Files {
+		if pathPrefix == "" || strings.HasPrefix(path, pathPrefix) {
+			files = append(files, path)
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
+}

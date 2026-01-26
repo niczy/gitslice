@@ -23,3 +23,11 @@ type GlobalState struct {
 	Timestamp        time.Time       `json:"timestamp"`
 	History          []*GlobalCommit `json:"history"`
 }
+
+// CommitSnapshot tracks file state at a specific commit.
+type CommitSnapshot struct {
+	CommitHash string            `json:"commit_hash"`
+	SliceID    string            `json:"slice_id"`
+	Files      map[string]string `json:"files"` // path -> content hash
+	Timestamp  time.Time         `json:"timestamp"`
+}
