@@ -6,6 +6,8 @@ GOOGLEAPIS_DIR := third_party/googleapis
 # Pin to specific googleapis commit for reproducible builds
 # This commit is from 2024-05-13, matching our genproto dependency date
 GOOGLEAPIS_COMMIT := 0d38cae77aba1a9da2b4d5f27c3eabf7e48cf0e3
+GATEWAY_PORT ?= 8080
+VITE_FILE_API_PROXY_TARGET ?= http://localhost:$(GATEWAY_PORT)
 
 install:
 	go mod download
@@ -58,10 +60,10 @@ build-cli: proto
 	go build -o gs_cli/gs_cli ./gs_cli/
 
 start-servers: build
-	./slice_service_server &
+	GATEWAY_PORT=$(GATEWAY_PORT) ./slice_service_server &
 	./admin_service_server &
-	cd web && npm run dev &
-	@echo "Services started (slice, admin, web). Press Ctrl+C to stop."
+	cd web && VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) npm run dev &
+	@echo "Services started (slice+gateway on :$(GATEWAY_PORT), admin, web). Press Ctrl+C to stop."
 
 test: install proto
 	go test ./...
