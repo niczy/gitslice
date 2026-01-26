@@ -268,7 +268,7 @@ test('browses the repo tree and previews a file', async ({ page }) => {
     });
   });
 
-  await page.route(/\/v1\/files\//, async (route, request) => {
+  await page.route(/\/v1\/files\/(?!entries)/, async (route, request) => {
     const url = new URL(request.url());
     const prefix = '/v1/files';
     let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
