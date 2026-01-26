@@ -21,58 +21,81 @@ const features = [
 
 const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
-const pageOptions = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'browser', label: 'Repo Browser' },
-  { id: 'slices', label: 'Slices' },
-];
-
 function App() {
-  const [activePage, setActivePage] = useState('overview');
+  const [activePage, setActivePage] = useState('landing');
+  const githubUrl = 'https://github.com/niczy/gitslice';
 
   return (
-    <div className="page">
-      <header className="hero">
-        <div className="eyebrow">Introducing Git Slice</div>
-        <h1>Slice-based workflows for shipping more confidently.</h1>
-        <p className="lede">
-          Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. No more
-          sprawling branches—just fast, predictable delivery.
-        </p>
-        <nav className="page-tabs">
-          {pageOptions.map((option) => (
-            <button
-              key={option.id}
-              className={activePage === option.id ? 'tab active' : 'tab'}
-              type="button"
-              onClick={() => setActivePage(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </nav>
+    <div className="app-shell">
+      <header className="top-bar">
+        <button type="button" className="brand" onClick={() => setActivePage('landing')}>
+          <span className="brand-icon">◆</span>
+          <span className="brand-text">Git Slice</span>
+        </button>
+        <div className="top-bar-actions">
+          <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer">
+            GitHub
+          </a>
+          <button type="button" className="primary" onClick={() => setActivePage('browser')}>
+            Repo Browser
+          </button>
+        </div>
       </header>
 
-      {activePage === 'overview' ? <OverviewPage /> : activePage === 'browser' ? <RepoBrowser /> : <SlicesPage />}
+      <main className="page">
+        {activePage === 'landing' ? <OverviewPage onBrowseRepo={() => setActivePage('browser')} /> : <RepoBrowser />}
+      </main>
 
       <footer className="footer">
-        <p>Git Slice • Slice smart. Ship faster.</p>
+        <p>
+          Git Slice • Slice smart. Ship faster. •{' '}
+          <a href={githubUrl} target="_blank" rel="noreferrer">
+            GitHub
+          </a>
+        </p>
       </footer>
     </div>
   );
 }
 
-function OverviewPage() {
+function OverviewPage({ onBrowseRepo }) {
   return (
     <>
+      <section className="hero">
+        <div className="hero-content">
+          <p className="eyebrow">Introducing Git Slice</p>
+          <h1>Slice-based workflows for shipping more confidently.</h1>
+          <p className="lede">
+            Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. Each slice is
+            defined by a metadata file path, so teams can standardize how a given area of the repo is scoped and tested.
+          </p>
+          <div className="cta-row">
+            <button type="button" className="primary" onClick={onBrowseRepo}>
+              Open repo browser
+            </button>
+            <a className="ghost" href="mailto:team@gitslice.dev">
+              Contact the team
+            </a>
+          </div>
+        </div>
+        <div className="hero-panel">
+          <div className="hero-card">
+            <p className="eyebrow">Slice-first development</p>
+            <h2>Run isolated slices from idea to production</h2>
+            <p>
+              Define a slice around a task, pull the dependencies you need, and keep every change traceable. Git Slice keeps
+              delivery focused so teams can move without long-lived branches.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section id="overview" className="section card">
         <div className="section-header">
-          <p className="eyebrow">Slice-first development</p>
-          <h2>Run isolated slices from idea to production</h2>
+          <h2>How slices keep changes focused</h2>
           <p>
-            Start by defining a slice around a task. Git Slice provisions the context, fetches dependencies, and wires up
-            tooling so you can develop, test, and preview changes without disturbing the rest of the repo. When you are ready,
-            merge the slice with full traceability.
+            A slice captures only the files and services you specify, plus any required dependencies. That means slimmer clones,
+            deterministic test runs, and a clean diff that can be merged without dragging unrelated changes along for the ride.
           </p>
         </div>
         <div className="steps">
@@ -80,22 +103,53 @@ function OverviewPage() {
             <div className="step-number">1</div>
             <div>
               <h3>Carve out the slice</h3>
-              <p>Pin the exact files and services you need. Spin up environments that mirror production with minimal setup.</p>
+              <p>Define the slice in a metadata file that lists the files, directories, and services required for the task.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">2</div>
             <div>
               <h3>Iterate quickly</h3>
-              <p>Use the CLI to run tests, preview changes, and share the slice URL so reviewers can validate updates in minutes.</p>
+              <p>Use the CLI to check out the slice by its metadata file path and run targeted tests.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">3</div>
             <div>
               <h3>Merge with confidence</h3>
-              <p>Every slice comes with reproducible logs, checks, and diffs so merging back is predictable and low-risk.</p>
+              <p>Every slice ships with reproducible logs, checks, and diffs so merging back is predictable and low-risk.</p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="section card quickstart">
+        <div className="section-header">
+          <p className="eyebrow">Quick start</p>
+          <h2>Go from repo to slice in minutes</h2>
+          <p>Use the CLI to check out a slice using its metadata file path.</p>
+        </div>
+        <div className="quickstart-grid">
+          <div className="quickstart-step">
+            <h3>1. Define a slice file</h3>
+            <pre className="code-block">
+              <code>cat slices/auth-refresh.toml</code>
+            </pre>
+            <p>Store the slice definition in a file path such as <code>slices/auth-refresh.toml</code>.</p>
+          </div>
+          <div className="quickstart-step">
+            <h3>2. Check out the slice</h3>
+            <pre className="code-block">
+              <code>gs slice checkout /abs/path/to/slices/auth-refresh.toml</code>
+            </pre>
+            <p>Use the slice metadata path to pull just the required scope into a local workspace.</p>
+          </div>
+          <div className="quickstart-step">
+            <h3>3. Validate the slice</h3>
+            <pre className="code-block">
+              <code>gs slice checkout /abs/path/to/slices/auth-refresh.toml --commit HEAD</code>
+            </pre>
+            <p>Pin a commit when needed so the slice scope is reproducible for reviewers and CI.</p>
           </div>
         </div>
       </section>
@@ -141,6 +195,7 @@ function RepoBrowser() {
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
   const breadcrumbs = useMemo(() => {
     if (!selectedFile) {
@@ -361,79 +416,66 @@ function RepoBrowser() {
   };
 
   return (
-    <section className="section repo-browser card">
-      <div className="section-header">
-        <p className="eyebrow">Monorepo navigator</p>
-        <h2>Browse the fetched code</h2>
-        <p>
-          The file service streams content directly from slice storage. Expand folders to explore the tree and open a file to
-          preview it.
-        </p>
-      </div>
-
-      <div className="browser-toolbar">
-        <label>
-          Browse Mode
-          <select
-            data-testid="browse-mode"
-            value={browseMode}
-            onChange={(event) => setBrowseMode(event.target.value)}
-          >
-            <option value="root">Root Repository</option>
-            <option value="slice">Specific Slice</option>
-          </select>
-        </label>
-
-        {browseMode === 'root' ? (
+    <section className="repo-browser">
+      <div className="repo-header">
+        <div>
+          <p className="eyebrow">Monorepo navigator</p>
+          <h2>Browse the fetched code</h2>
+          <p>
+            The file service streams content directly from slice storage. Expand folders to explore the tree and open a file to
+            preview it.
+          </p>
+        </div>
+        <div className="repo-controls">
           <label>
-            Commit Hash (optional)
-            <input
-              data-testid="commit-hash"
-              value={commitHash}
-              onChange={(event) => setCommitHash(event.target.value)}
-              placeholder="Leave empty for HEAD"
-            />
+            Browse Mode
+            <select
+              data-testid="browse-mode"
+              value={browseMode}
+              onChange={(event) => setBrowseMode(event.target.value)}
+            >
+              <option value="root">Root Repository</option>
+              <option value="slice">Specific Slice</option>
+            </select>
           </label>
-        ) : (
-          <>
+
+          {browseMode === 'root' ? (
             <label>
-              Slice ID
+              Commit Hash (optional)
               <input
-                data-testid="slice-id"
-                value={sliceId}
-                onChange={(event) => setSliceId(event.target.value)}
-                placeholder="my_slice"
-              />
-            </label>
-            <label>
-              Slice Hash (optional)
-              <input
-                data-testid="slice-hash"
-                value={sliceHash}
-                onChange={(event) => setSliceHash(event.target.value)}
+                data-testid="commit-hash"
+                value={commitHash}
+                onChange={(event) => setCommitHash(event.target.value)}
                 placeholder="Leave empty for HEAD"
               />
             </label>
-          </>
-        )}
-
-        <div className="breadcrumbs">
-          {breadcrumbs.map((crumb, index) => (
-            <button
-              key={crumb.path || 'root'}
-              type="button"
-              className="breadcrumb"
-              onClick={() => handleBreadcrumbClick(crumb.path)}
-            >
-              {crumb.name}
-              {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
-            </button>
-          ))}
+          ) : (
+            <>
+              <label>
+                Slice ID
+                <input
+                  data-testid="slice-id"
+                  value={sliceId}
+                  onChange={(event) => setSliceId(event.target.value)}
+                  placeholder="my_slice"
+                />
+              </label>
+              <label>
+                Slice Hash (optional)
+                <input
+                  data-testid="slice-hash"
+                  value={sliceHash}
+                  onChange={(event) => setSliceHash(event.target.value)}
+                  placeholder="Leave empty for HEAD"
+                />
+              </label>
+            </>
+          )}
         </div>
       </div>
 
-      <div className="browser-grid">
-        <div className="browser-panel">
+      <div className="repo-layout">
+        <aside className="repo-sidebar">
           <div className="panel-header">
             <h3>File tree</h3>
             {isLoading && <span className="status">Loading…</span>}
@@ -446,208 +488,34 @@ function RepoBrowser() {
             <div className="panel-empty">No entries found.</div>
           )}
           {canLoad && renderTree('')}
-        </div>
+        </aside>
 
-        <div className="browser-panel">
-          <div className="panel-header">
-            <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
+        <div className="repo-code">
+          <div className="code-header">
+            <div>
+              <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
+              <div className="breadcrumbs">
+                {breadcrumbs.map((crumb, index) => (
+                  <button
+                    key={crumb.path || 'root'}
+                    type="button"
+                    className="breadcrumb"
+                    onClick={() => handleBreadcrumbClick(crumb.path)}
+                  >
+                    {crumb.name}
+                    {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
             {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
           </div>
           {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-          {selectedFile && <pre className="file-preview">{fileContent || 'No content available yet.'}</pre>}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SlicesPage() {
-  const [slices, setSlices] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [createStatus, setCreateStatus] = useState({ type: '', message: '' });
-  const initialFormState = {
-    sliceId: '',
-    name: '',
-    description: '',
-    owners: '',
-    files: '',
-    createdBy: '',
-  };
-  const [formState, setFormState] = useState(initialFormState);
-
-  const loadSlices = async () => {
-    setIsLoading(true);
-    setError('');
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/v1/slices?limit=100`);
-      if (!response.ok) {
-        throw new Error(`Request failed (${response.status})`);
-      }
-      const payload = await response.json();
-      setSlices(payload.slices || []);
-    } catch (err) {
-      setError('Unable to load slices. Ensure the slice service is running.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadSlices();
-  }, []);
-
-  const handleFormChange = (event) => {
-    const { name, value } = event.target;
-    setFormState((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleCreateSlice = async (event) => {
-    event.preventDefault();
-    setCreateStatus({ type: '', message: '' });
-
-    const sliceId = formState.sliceId.trim();
-    if (!sliceId) {
-      setCreateStatus({ type: 'error', message: 'Slice ID is required.' });
-      return;
-    }
-
-    const payload = {
-      slice_id: sliceId,
-      name: formState.name.trim(),
-      description: formState.description.trim(),
-      owners: formState.owners
-        .split(',')
-        .map((owner) => owner.trim())
-        .filter(Boolean),
-      files: formState.files
-        .split(',')
-        .map((file) => file.trim())
-        .filter(Boolean),
-      created_by: formState.createdBy.trim(),
-    };
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/v1/slices`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const message = response.status === 409 ? 'Slice already exists.' : 'Unable to create slice.';
-        throw new Error(message);
-      }
-
-      setCreateStatus({ type: 'success', message: 'Slice created successfully.' });
-      setFormState(initialFormState);
-      await loadSlices();
-    } catch (err) {
-      setCreateStatus({ type: 'error', message: err.message || 'Unable to create slice.' });
-    }
-  };
-
-  return (
-    <section className="section slices-page card">
-      <div className="section-header">
-        <p className="eyebrow">Slice catalog</p>
-        <h2>Manage existing slices</h2>
-        <p>Review all available slices and create new ones directly from the web console.</p>
-      </div>
-
-      <div className="slice-toolbar">
-        <button type="button" className="ghost" onClick={loadSlices} disabled={isLoading}>
-          Refresh list
-        </button>
-        {isLoading && <span className="status">Loading…</span>}
-      </div>
-
-      {error && <div className="panel-error">{error}</div>}
-
-      <div className="slice-grid">
-        <div className="slice-panel">
-          <div className="panel-header">
-            <h3>All slices</h3>
-            <span className="status">{slices.length} total</span>
-          </div>
-          {slices.length === 0 && !isLoading && !error && <div className="panel-empty">No slices found yet.</div>}
-          <ul className="slice-list">
-            {slices.map((slice) => (
-              <li key={slice.slice_id} className="slice-card">
-                <div className="slice-card-header">
-                  <div>
-                    <h4>{slice.name || slice.slice_id}</h4>
-                    <p className="slice-id">{slice.slice_id}</p>
-                  </div>
-                  <span className="slice-files">{slice.file_count} files</span>
-                </div>
-                {slice.description && <p className="slice-description">{slice.description}</p>}
-                <div className="slice-meta">
-                  <span>Owners: {slice.owners?.length ? slice.owners.join(', ') : 'Unassigned'}</span>
-                  <span>Updated: {slice.updated_at ? new Date(slice.updated_at).toLocaleString() : '—'}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="slice-panel">
-          <div className="panel-header">
-            <h3>Create a slice</h3>
-          </div>
-          <form className="slice-form" onSubmit={handleCreateSlice}>
-            <label>
-              Slice ID
-              <input name="sliceId" value={formState.sliceId} onChange={handleFormChange} placeholder="feature_login" />
-            </label>
-            <label>
-              Name
-              <input name="name" value={formState.name} onChange={handleFormChange} placeholder="Login improvements" />
-            </label>
-            <label>
-              Description
-              <textarea
-                name="description"
-                value={formState.description}
-                onChange={handleFormChange}
-                placeholder="Short summary of the slice goal"
-                rows={3}
-              />
-            </label>
-            <label>
-              Owners
-              <input
-                name="owners"
-                value={formState.owners}
-                onChange={handleFormChange}
-                placeholder="alice, bob"
-              />
-            </label>
-            <label>
-              Files
-              <input name="files" value={formState.files} onChange={handleFormChange} placeholder="src/app.js, api/auth.js" />
-            </label>
-            <label>
-              Created by
-              <input
-                name="createdBy"
-                value={formState.createdBy}
-                onChange={handleFormChange}
-                placeholder="alice"
-              />
-            </label>
-            <div className="form-actions">
-              <button type="submit" className="primary">
-                Create slice
-              </button>
-            </div>
-            {createStatus.message && (
-              <div className={createStatus.type === 'error' ? 'panel-error' : 'panel-success'}>
-                {createStatus.message}
-              </div>
-            )}
-          </form>
+          {selectedFile && (
+            <pre className="file-preview">
+              <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
+            </pre>
+          )}
         </div>
       </div>
     </section>
@@ -695,6 +563,44 @@ function formatBytes(value) {
     unitIndex += 1;
   }
   return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function highlightCode(source) {
+  if (!source) {
+    return '';
+  }
+
+  const tokenRegex =
+    /\/\/.*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:const|let|var|function|return|if|else|for|while|class|import|from|export|async|await|try|catch|throw|new|switch|case|break|default|true|false|null)\b|\b\d+(?:\.\d+)?\b/g;
+  let lastIndex = 0;
+  let result = '';
+
+  for (const match of source.matchAll(tokenRegex)) {
+    const matchIndex = match.index ?? 0;
+    result += escapeHtml(source.slice(lastIndex, matchIndex));
+    const token = match[0];
+    const className = token.startsWith('//') || token.startsWith('/*')
+      ? 'token-comment'
+      : token.startsWith('"') || token.startsWith("'") || token.startsWith('`')
+      ? 'token-string'
+      : /^\d/.test(token)
+      ? 'token-number'
+      : 'token-keyword';
+    result += `<span class="${className}">${escapeHtml(token)}</span>`;
+    lastIndex = matchIndex + token.length;
+  }
+
+  result += escapeHtml(source.slice(lastIndex));
+  return result;
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export default App;
