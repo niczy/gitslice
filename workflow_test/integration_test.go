@@ -542,8 +542,10 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 
 	fileClient := fileservice.NewService(st)
 	resp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{
-		SliceId: "root_slice",
-		Path:    "/o/genesis/projects/gitslice/README.md",
+		Path: "/o/genesis/projects/gitslice/README.md",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: "root_slice"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("failed to fetch root slice file: %v", err)
@@ -604,19 +606,33 @@ func TestFileBrowserIntegration(t *testing.T) {
 
 	fileClient := newFileClient(t)
 
-	rootEntries, err := fileClient.ListEntries(ctx, &filev1.ListEntriesRequest{SliceId: sliceID})
+	rootEntries, err := fileClient.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: sliceID},
+		},
+	})
 	if err != nil {
 		t.Fatalf("failed to list root entries: %v", err)
 	}
 	assertEntryNames(t, rootEntries.Entries, "apps", "docs")
 
-	appEntries, err := fileClient.ListEntries(ctx, &filev1.ListEntriesRequest{SliceId: sliceID, Path: "apps"})
+	appEntries, err := fileClient.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: "apps",
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: sliceID},
+		},
+	})
 	if err != nil {
 		t.Fatalf("failed to list apps entries: %v", err)
 	}
 	assertEntryNames(t, appEntries.Entries, "readme.md", "components")
 
-	fileResp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{SliceId: sliceID, Path: "apps/readme.md"})
+	fileResp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{
+		Path: "apps/readme.md",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: sliceID},
+		},
+	})
 	if err != nil {
 		t.Fatalf("failed to fetch file: %v", err)
 	}
