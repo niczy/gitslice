@@ -1,11 +1,19 @@
 import { test, expect } from '@playwright/test';
 
+const pathFromPrefix = (url, prefix) => {
+  let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
+  if (path.startsWith('/')) {
+    path = path.slice(1);
+  }
+  return decodeURIComponent(path);
+};
+
 test('handles string size values from API without errors', async ({ page }) => {
   // Mock the API to return size as strings (the bug scenario)
   // Uses the new path-first API (default browse mode is 'root')
   await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
-    const path = url.searchParams.get('path') || '';
+    const path = pathFromPrefix(url, '/v1/files/entries');
 
     if (path === '') {
       // Genesis directory - return sizes as strings to test the bug fix
@@ -60,7 +68,7 @@ test('formats numeric size values correctly', async ({ page }) => {
   // Uses the new path-first API (default browse mode is 'root')
   await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
-    const path = url.searchParams.get('path') || '';
+    const path = pathFromPrefix(url, '/v1/files/entries');
 
     if (path === '') {
       await route.fulfill({
@@ -111,7 +119,7 @@ test('clicks genesis directory and expands folders without errors', async ({ pag
   // Uses the new path-first API (default browse mode is 'root')
   await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
-    const path = url.searchParams.get('path') || '';
+    const path = pathFromPrefix(url, '/v1/files/entries');
 
     if (path === '') {
       // Genesis directory with mixed string/number sizes
@@ -183,7 +191,7 @@ test('handles edge cases in file size formatting', async ({ page }) => {
   // Uses the new path-first API (default browse mode is 'root')
   await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
-    const path = url.searchParams.get('path') || '';
+    const path = pathFromPrefix(url, '/v1/files/entries');
 
     if (path === '') {
       await route.fulfill({
