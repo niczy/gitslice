@@ -41,7 +41,7 @@ test('handles string size values from API without errors', async ({ page }) => {
 
   // Navigate to repo browser
   await page.goto('/');
-  await page.getByRole('button', { name: 'Repo Browser' }).click();
+  await page.getByTestId('topbar-repo-browser').click();
 
   // Verify the page loads without JavaScript errors
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
@@ -95,7 +95,7 @@ test('formats numeric size values correctly', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Repo Browser' }).click();
+  await page.getByTestId('topbar-repo-browser').click();
 
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
@@ -164,7 +164,7 @@ test('clicks genesis directory and expands folders without errors', async ({ pag
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Repo Browser' }).click();
+  await page.getByTestId('topbar-repo-browser').click();
 
   // Click on the genesis directory root (expand it)
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
@@ -225,7 +225,7 @@ test('handles edge cases in file size formatting', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Repo Browser' }).click();
+  await page.getByTestId('topbar-repo-browser').click();
 
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 

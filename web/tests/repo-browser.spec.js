@@ -16,7 +16,7 @@ test.describe('Root Repository Browsing (path-first API)', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Repo Browser' }).click();
+    await page.getByTestId('topbar-repo-browser').click();
 
     // Verify root mode is default
     await expect(page.locator('[data-testid="browse-mode"]')).toHaveValue('root');
@@ -38,7 +38,7 @@ test.describe('Root Repository Browsing (path-first API)', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Repo Browser' }).click();
+    await page.getByTestId('topbar-repo-browser').click();
 
     await page.locator('[data-testid="commit-hash"]').fill('abc123');
 
@@ -76,7 +76,7 @@ test.describe('Root Repository Browsing (path-first API)', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Repo Browser' }).click();
+    await page.getByTestId('topbar-repo-browser').click();
     await page.getByRole('button', { name: /readme\.md/i }).click();
     await expect(page.getByText('# Hello World')).toBeVisible();
   });
@@ -164,7 +164,7 @@ test.describe('Slice-specific Browsing', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Repo Browser' }).click();
+    await page.getByTestId('topbar-repo-browser').click();
 
     // Switch to slice mode
     await page.locator('[data-testid="browse-mode"]').selectOption('slice');
@@ -196,7 +196,7 @@ test.describe('Slice-specific Browsing', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Repo Browser' }).click();
+    await page.getByTestId('topbar-repo-browser').click();
 
     // Switch to slice mode
     await page.locator('[data-testid="browse-mode"]').selectOption('slice');
@@ -302,7 +302,7 @@ test('browses the repo tree and previews a file', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Repo Browser' }).click();
+  await page.getByTestId('topbar-repo-browser').click();
 
   await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 

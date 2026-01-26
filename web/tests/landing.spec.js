@@ -5,17 +5,17 @@ test('renders Git Slice landing content and navigation', async ({ page }) => {
 
   await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
   await expect(page.getByText(/Introducing Git Slice/i)).toBeVisible();
-  await expect(page.getByRole('button', { name: /Overview/i })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Repo Browser/i })).toBeVisible();
+  await expect(page.getByTestId('topbar-github-link')).toBeVisible();
+  await expect(page.getByTestId('topbar-repo-browser')).toBeVisible();
 
-  await page.getByRole('button', { name: /Repo Browser/i }).click();
+  await page.getByTestId('topbar-repo-browser').click();
   await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
 
-  await page.getByRole('button', { name: /Overview/i }).click();
-  await expect(page.locator('#overview')).toBeVisible();
-  await expect(page.locator('#features')).toBeVisible();
+  await page.getByRole('button', { name: /Git Slice/i }).click();
+  await expect(page.getByRole('heading', { name: /How slices keep changes focused/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Go from repo to slice/i })).toBeVisible();
 
   await expect(page.getByRole('heading', { level: 2, name: /Feature highlights/i })).toBeVisible();
   await expect(page.getByRole('heading', { level: 3, name: 'Speed' })).toBeVisible();
-  await expect(page.getByRole('link', { name: /Contact the team/i })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Contact the team/i }).first()).toBeVisible();
 });
