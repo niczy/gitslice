@@ -200,6 +200,7 @@ function RepoBrowser() {
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
   const breadcrumbs = useMemo(() => {
@@ -479,48 +480,77 @@ function RepoBrowser() {
         </div>
       </div>
 
-      <div className="repo-layout">
-        <aside className="repo-sidebar">
+      <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
+        <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
           <div className="panel-header">
             <h3>File tree</h3>
-            {isLoading && <span className="status">Loading…</span>}
+            <div className="panel-header-actions">
+              {isLoading && <span className="status">Loading…</span>}
+              <button
+                type="button"
+                className="sidebar-toggle"
+                onClick={() => setSidebarOpen(false)}
+                aria-label="Close sidebar"
+                title="Close sidebar"
+              >
+                ✕
+              </button>
+            </div>
           </div>
-          {error && <div className="panel-error">{error}</div>}
-          {!canLoad && browseMode === 'slice' && (
-            <div className="panel-empty">Enter a Slice ID to browse files.</div>
-          )}
-          {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
-            <div className="panel-empty">No entries found.</div>
-          )}
-          {canLoad && renderTree('')}
+          <div className="sidebar-content">
+            {error && <div className="panel-error">{error}</div>}
+            {!canLoad && browseMode === 'slice' && (
+              <div className="panel-empty">Enter a Slice ID to browse files.</div>
+            )}
+            {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
+              <div className="panel-empty">No entries found.</div>
+            )}
+            {canLoad && renderTree('')}
+          </div>
         </aside>
 
         <div className="repo-code">
           <div className="code-header">
-            <div>
-              <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
-              <div className="breadcrumbs">
-                {breadcrumbs.map((crumb, index) => (
-                  <button
-                    key={crumb.path || 'root'}
-                    type="button"
-                    className="breadcrumb"
-                    onClick={() => handleBreadcrumbClick(crumb.path)}
-                  >
-                    {crumb.name}
-                    {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
-                  </button>
-                ))}
+            <div className="code-header-left">
+              {!sidebarOpen && (
+                <button
+                  type="button"
+                  className="sidebar-toggle open-btn"
+                  onClick={() => setSidebarOpen(true)}
+                  aria-label="Open sidebar"
+                  title="Open file tree"
+                  data-testid="sidebar-toggle"
+                >
+                  ☰
+                </button>
+              )}
+              <div>
+                <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
+                <div className="breadcrumbs">
+                  {breadcrumbs.map((crumb, index) => (
+                    <button
+                      key={crumb.path || 'root'}
+                      type="button"
+                      className="breadcrumb"
+                      onClick={() => handleBreadcrumbClick(crumb.path)}
+                    >
+                      {crumb.name}
+                      {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
           </div>
-          {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-          {selectedFile && (
-            <pre className="file-preview">
-              <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
-            </pre>
-          )}
+          <div className="code-content">
+            {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+            {selectedFile && (
+              <pre className="file-preview">
+                <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
+              </pre>
+            )}
+          </div>
         </div>
       </div>
     </section>

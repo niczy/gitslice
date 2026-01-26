@@ -351,29 +351,62 @@ body {
 
 .repo-layout {
   display: grid;
-  grid-template-columns: minmax(0, 0.32fr) minmax(0, 0.68fr);
-  gap: 24px;
-  min-height: 520px;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  height: calc(100vh - 280px);
+  min-height: 500px;
+  transition: grid-template-columns 0.3s ease;
+}
+
+.repo-layout.sidebar-collapsed {
+  grid-template-columns: 0 1fr;
 }
 
 .repo-sidebar,
 .repo-code {
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 18px;
   background: var(--surface);
   box-shadow: var(--glow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .repo-sidebar {
-  overflow: auto;
+  transition: opacity 0.3s ease, transform 0.3s ease, width 0.3s ease;
+  min-width: 0;
+}
+
+.repo-sidebar.open {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.repo-sidebar.closed {
+  opacity: 0;
+  transform: translateX(-20px);
+  pointer-events: none;
+  width: 0;
+  padding: 0;
+  border: none;
+}
+
+.repo-sidebar .panel-header {
+  padding: 18px 18px 12px;
+  flex-shrink: 0;
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 18px 18px;
 }
 
 .repo-code {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
 .breadcrumbs {
@@ -414,6 +447,38 @@ body {
 .panel-header h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 150ms ease;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(109, 125, 252, 0.1);
+}
+
+.sidebar-toggle.open-btn {
+  margin-right: 12px;
 }
 
 .status {
@@ -486,6 +551,42 @@ body {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+  padding: 18px 18px 0;
+  flex-shrink: 0;
+}
+
+.code-header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.code-header-left > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.code-header h3 {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 0 18px 18px;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-content .panel-empty {
+  padding: 24px;
+  text-align: center;
 }
 
 .file-preview {
@@ -495,7 +596,8 @@ body {
   padding: 18px;
   border-radius: 12px;
   overflow: auto;
-  max-height: 560px;
+  flex: 1;
+  min-height: 0;
   font-size: 0.85rem;
   line-height: 1.6;
   border: 1px solid var(--border);
@@ -537,40 +639,249 @@ body {
   color: var(--accent);
 }
 
+/* Tablet breakpoint */
+@media (max-width: 1024px) {
+  .repo-layout {
+    grid-template-columns: 260px 1fr;
+  }
+}
+
+/* Mobile landscape / small tablet */
 @media (max-width: 900px) {
   .repo-layout {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: auto;
+    gap: 12px;
+  }
+
+  .repo-layout.sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .repo-sidebar {
+    height: auto;
+    max-height: 300px;
+    position: relative;
+  }
+
+  .repo-sidebar.closed {
+    display: none;
+  }
+
+  .repo-code {
+    min-height: 400px;
+    height: auto;
+  }
+
+  .sidebar-content {
+    max-height: 220px;
   }
 }
 
 @media (max-width: 720px) {
   .top-bar {
-    padding: 16px 20px;
+    padding: 12px 16px;
+    gap: 8px;
+  }
+
+  .brand-text {
+    display: none;
+  }
+
+  .top-bar-actions {
+    gap: 8px;
+  }
+
+  .top-bar-actions .ghost {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+  }
+
+  .top-bar-actions .primary {
+    padding: 8px 12px;
+    font-size: 0.8rem;
   }
 
   .page {
-    padding: 32px 20px 72px;
+    padding: 20px 16px 60px;
   }
 
   .hero {
     grid-template-columns: 1fr;
-    padding: 28px 22px;
+    padding: 24px 18px;
+    gap: 20px;
+  }
+
+  .hero h1 {
+    font-size: 1.8rem;
   }
 
   .section {
-    padding: 28px 22px;
+    padding: 24px 18px;
+    margin-top: 32px;
   }
 
   .repo-header {
     flex-direction: column;
+    padding: 20px 16px;
+    gap: 20px;
+  }
+
+  .repo-header h2 {
+    font-size: 1.25rem;
+  }
+
+  .repo-header > div:first-child p {
+    font-size: 0.9rem;
   }
 
   .repo-controls {
     width: 100%;
+    min-width: unset;
+    gap: 12px;
+  }
+
+  .repo-controls label {
+    font-size: 0.8rem;
+  }
+
+  .repo-controls input,
+  .repo-controls select {
+    font-size: 0.85rem;
+    padding: 10px 12px;
+  }
+
+  .repo-layout {
+    gap: 12px;
+  }
+
+  .repo-sidebar {
+    border-radius: 12px;
+  }
+
+  .repo-sidebar .panel-header {
+    padding: 14px 14px 10px;
+  }
+
+  .sidebar-content {
+    padding: 0 14px 14px;
+    max-height: 200px;
+  }
+
+  .repo-code {
+    border-radius: 12px;
+    min-height: 350px;
+  }
+
+  .code-header {
+    padding: 14px 14px 0;
+    flex-wrap: wrap;
+  }
+
+  .code-header h3 {
+    font-size: 0.85rem;
+  }
+
+  .code-content {
+    padding: 0 14px 14px;
+  }
+
+  .file-preview {
+    padding: 14px;
+    font-size: 0.75rem;
+    border-radius: 10px;
+  }
+
+  .breadcrumbs {
+    gap: 4px;
+    margin-top: 6px;
+  }
+
+  .breadcrumb {
+    font-size: 0.8rem;
+  }
+
+  .tree-entry {
+    font-size: 0.8rem;
+    padding: 6px 8px;
   }
 
   .cta {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .steps {
+    gap: 16px;
+  }
+
+  .step {
+    gap: 12px;
+  }
+
+  .quickstart-grid {
+    gap: 12px;
+  }
+
+  .quickstart-step {
+    padding: 14px;
+  }
+
+  .quickstart-step h3 {
+    font-size: 0.95rem;
+  }
+
+  .code-block {
+    font-size: 0.75rem;
+    padding: 10px 12px;
+  }
+}
+
+/* Small mobile */
+@media (max-width: 480px) {
+  .page {
+    padding: 16px 12px 48px;
+  }
+
+  .hero {
+    padding: 20px 14px;
+  }
+
+  .hero h1 {
+    font-size: 1.5rem;
+  }
+
+  .lede {
+    font-size: 0.9rem;
+  }
+
+  .section {
+    padding: 20px 14px;
+  }
+
+  .repo-header {
+    padding: 16px 12px;
+  }
+
+  .repo-sidebar .panel-header,
+  .code-header {
+    padding: 12px 12px 8px;
+  }
+
+  .sidebar-content,
+  .code-content {
+    padding: 0 12px 12px;
+  }
+
+  .file-preview {
+    padding: 12px;
+    font-size: 0.7rem;
+  }
+
+  .sidebar-toggle {
+    width: 28px;
+    height: 28px;
+    font-size: 0.8rem;
   }
 }
