@@ -36,7 +36,12 @@ function App() {
           <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer">
             GitHub
           </a>
-          <button type="button" className="primary" onClick={() => setActivePage('browser')}>
+          <button
+            type="button"
+            className="primary"
+            data-testid="topbar-repo-browser"
+            onClick={() => setActivePage('browser')}
+          >
             Repo Browser
           </button>
         </div>
