@@ -77,4 +77,26 @@ type Storage interface {
 	SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error
 	GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error)
 	ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error)
+
+	// File change history operations
+	// AddFileChange records a file change associated with a commit
+	AddFileChange(ctx context.Context, change *models.FileChangeRecord) error
+
+	// AddFileChanges records multiple file changes in a batch (for efficiency)
+	AddFileChanges(ctx context.Context, changes []*models.FileChangeRecord) error
+
+	// GetFileHistory retrieves the change history for a specific file path
+	GetFileHistory(ctx context.Context, sliceID, path string, limit int, fromCommit string) ([]*models.FileChangeRecord, error)
+
+	// GetDirectoryHistory retrieves change history for all files under a directory
+	GetDirectoryHistory(ctx context.Context, sliceID, pathPrefix string, limit int, fromCommit string) ([]*models.FileChangeRecord, error)
+
+	// GetCommitChanges retrieves all file changes made in a specific commit
+	GetCommitChanges(ctx context.Context, commitHash string) ([]*models.FileChangeRecord, error)
+
+	// QueryFileHistory performs a flexible query on file change history
+	QueryFileHistory(ctx context.Context, query *models.FileHistoryQuery) (*models.FileHistoryResult, error)
+
+	// GetDirectorySummary gets an aggregated summary of changes for a directory
+	GetDirectorySummary(ctx context.Context, sliceID, pathPrefix string) (*models.DirectoryChangeSummary, error)
 }

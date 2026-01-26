@@ -28,6 +28,31 @@ service FileService {
       additional_bindings { get: "/v1/slices/{slice_version.slice_id}/files" }
     };
   }
+
+  // Get the change history for a specific file.
+  rpc GetFileHistory(GetFileHistoryRequest) returns (GetFileHistoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/files/history/{path=**}"
+      additional_bindings { get: "/v1/slices/{slice_id}/files/history/{path=**}" }
+    };
+  }
+
+  // Get the change history for all files under a directory.
+  rpc GetDirectoryHistory(GetDirectoryHistoryRequest) returns (GetDirectoryHistoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/directories/history/{path=**}"
+      additional_bindings { get: "/v1/directories/history" }
+      additional_bindings { get: "/v1/slices/{slice_id}/directories/history/{path=**}" }
+      additional_bindings { get: "/v1/slices/{slice_id}/directories/history" }
+    };
+  }
+
+  // Get all file changes in a specific commit.
+  rpc GetCommitChanges(GetCommitChangesRequest) returns (GetCommitChangesResponse) {
+    option (google.api.http) = {
+      get: "/v1/commits/{commit_hash}/changes"
+    };
+  }
 }
 
 // SliceVersion specifies a slice at a particular version
@@ -87,4 +112,85 @@ message File {
   bytes content = 2;
   int64 size = 3;
   string hash = 4;
+}
+
+// ========== File Change History Messages ==========
+
+// ChangeType represents the type of change made to a file
+enum ChangeType {
+  CHANGE_TYPE_UNSPECIFIED = 0;
+  CHANGE_TYPE_ADD = 1;
+  CHANGE_TYPE_MODIFY = 2;
+  CHANGE_TYPE_DELETE = 3;
+  CHANGE_TYPE_RENAME = 4;
+}
+
+// FileChangeRecord represents a single change to a file within a commit
+message FileChangeRecord {
+  string id = 1;                    // Unique identifier for this change
+  string slice_id = 2;              // Which slice this change belongs to
+  string commit_hash = 3;           // Commit that made this change
+  string path = 4;                  // File path (after change, for renames)
+  string old_path = 5;              // Previous path (only for renames)
+  ChangeType change_type = 6;       // Type of change
+  string old_hash = 7;              // Content hash before change (empty for add)
+  string new_hash = 8;              // Content hash after change (empty for delete)
+  int32 lines_added = 9;            // Number of lines added
+  int32 lines_deleted = 10;         // Number of lines removed
+  string author = 11;               // Who made this change
+  string message = 12;              // Commit message
+  int64 timestamp = 13;             // Unix timestamp of the change
+}
+
+// GetFileHistoryRequest retrieves change history for a specific file
+message GetFileHistoryRequest {
+  string path = 1;                  // File path to get history for
+  string slice_id = 2;              // Optional: filter by slice (empty = root slice)
+  int32 limit = 3;                  // Max results (default: 50)
+  string from_commit = 4;           // Pagination: start after this commit
+}
+
+message GetFileHistoryResponse {
+  repeated FileChangeRecord changes = 1;
+  bool has_more = 2;                // True if more results available
+  string next_commit = 3;           // Commit hash for next page
+}
+
+// GetDirectoryHistoryRequest retrieves change history for files under a directory
+message GetDirectoryHistoryRequest {
+  string path = 1;                  // Directory path (empty = root)
+  string slice_id = 2;              // Optional: filter by slice
+  int32 limit = 3;                  // Max results (default: 100)
+  string from_commit = 4;           // Pagination cursor
+  repeated ChangeType change_types = 5;  // Optional: filter by change type
+}
+
+message GetDirectoryHistoryResponse {
+  repeated FileChangeRecord changes = 1;
+  bool has_more = 2;
+  string next_commit = 3;
+  DirectoryChangeSummary summary = 4;  // Aggregated stats
+}
+
+// DirectoryChangeSummary provides aggregated change statistics
+message DirectoryChangeSummary {
+  string path = 1;
+  int32 total_changes = 2;          // Total number of changes
+  int32 files_changed = 3;          // Unique files with changes
+  map<string, int32> changes_by_type = 4;  // Count by ChangeType name
+  FileChangeRecord last_change = 5; // Most recent change
+}
+
+// GetCommitChangesRequest retrieves all file changes in a commit
+message GetCommitChangesRequest {
+  string commit_hash = 1;           // Commit to get changes for
+}
+
+message GetCommitChangesResponse {
+  string commit_hash = 1;
+  repeated FileChangeRecord changes = 2;
+  int32 files_added = 3;
+  int32 files_modified = 4;
+  int32 files_deleted = 5;
+  int32 files_renamed = 6;
 }
