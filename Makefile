@@ -1,4 +1,4 @@
-.PHONY: install proto build build-slice build-admin build-cli start-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-slice build-admin build-gateway build-cli start-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
@@ -48,6 +48,7 @@ proto: setup-googleapis
 build: proto
 	go build -o slice_service_server ./slice_service/
 	go build -o admin_service_server ./admin_service/
+	go build -o gateway_service_server ./gateway_service/
 	go build -o gs_cli/gs_cli ./gs_cli/
 
 build-slice: proto
@@ -56,20 +57,24 @@ build-slice: proto
 build-admin: proto
 	go build -o admin_service_server ./admin_service/
 
+build-gateway: proto
+	go build -o gateway_service_server ./gateway_service/
+
 build-cli: proto
 	go build -o gs_cli/gs_cli ./gs_cli/
 
 start-servers: build
 	GATEWAY_PORT=$(GATEWAY_PORT) ./slice_service_server &
 	./admin_service_server &
+	GATEWAY_PORT=$(GATEWAY_PORT) ./gateway_service_server &
 	cd web && VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) npm run dev &
-	@echo "Services started (slice+gateway on :$(GATEWAY_PORT), admin, web). Press Ctrl+C to stop."
+	@echo "Services started (slice, admin, gateway on :$(GATEWAY_PORT), web). Press Ctrl+C to stop."
 
 test: install proto
 	go test ./...
 
 clean:
-	rm -f slice_service_server admin_service_server gs_cli/gs_cli
+	rm -f slice_service_server admin_service_server gateway_service_server gs_cli/gs_cli
 	find proto -name "*.pb.go" -delete
 	find proto -name "*.pb.gw.go" -delete
 

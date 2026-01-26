@@ -496,7 +496,7 @@ Key behaviors in the prototype:
 - **No auth or permission checks:** Requests are accepted without authentication.
 - **Streaming RPCs are defined but not implemented:** `StreamCheckoutSlice` and `StreamCreateChangeset` return `UNIMPLEMENTED` until server support is added.
 - **Conflict tracking is in-memory:** Locks and conflict ownership are managed via `InMemoryStorage`.
-- **FileService gateway:** SliceService hosts the FileService gRPC-Gateway on `:8080` for HTTP access to `ListEntries` and `GetFile`.
+- **FileService gateway:** `gateway_service` hosts the FileService gRPC-Gateway on `:8080` for HTTP access to `ListEntries` and `GetFile`.
 
 ## Error Handling
 
