@@ -66,9 +66,8 @@ function OverviewPage({ onBrowseRepo }) {
           <p className="eyebrow">Introducing Git Slice</p>
           <h1>Slice-based workflows for shipping more confidently.</h1>
           <p className="lede">
-            Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. Slices are
-            scoped snapshots of your repo: you define the files, services, and dependencies required for a task, and Git Slice
-            provisions a self-contained workspace so reviewers and CI run against exactly that scope.
+            Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. Each slice is
+            defined by a metadata file path, so teams can standardize how a given area of the repo is scoped and tested.
           </p>
           <div className="cta-row">
             <button type="button" className="primary" onClick={onBrowseRepo}>
@@ -104,14 +103,14 @@ function OverviewPage({ onBrowseRepo }) {
             <div className="step-number">1</div>
             <div>
               <h3>Carve out the slice</h3>
-              <p>Pin the exact files, directories, and services you need. Git Slice records the slice manifest and dependencies.</p>
+              <p>Define the slice in a metadata file that lists the files, directories, and services required for the task.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">2</div>
             <div>
               <h3>Iterate quickly</h3>
-              <p>Use the CLI to run tests, preview changes, and share the slice URL so reviewers validate updates in minutes.</p>
+              <p>Use the CLI to check out the slice by its metadata file path and run targeted tests.</p>
             </div>
           </div>
           <div className="step">
@@ -128,29 +127,29 @@ function OverviewPage({ onBrowseRepo }) {
         <div className="section-header">
           <p className="eyebrow">Quick start</p>
           <h2>Go from repo to slice in minutes</h2>
-          <p>Use the CLI to create a slice, fetch its contents, and open it in the repo browser.</p>
+          <p>Use the CLI to check out a slice using its metadata file path.</p>
         </div>
         <div className="quickstart-grid">
           <div className="quickstart-step">
-            <h3>1. Create a slice</h3>
+            <h3>1. Define a slice file</h3>
             <pre className="code-block">
-              <code>gs slice create --id auth-refresh --files \"services/auth/**\" --owner \"you\"</code>
+              <code>cat slices/auth-refresh.toml</code>
             </pre>
-            <p>Define the files and services you need. Git Slice stores the slice manifest and returns its ID.</p>
+            <p>Store the slice definition in a file path such as <code>slices/auth-refresh.toml</code>.</p>
           </div>
           <div className="quickstart-step">
-            <h3>2. Fetch and run</h3>
+            <h3>2. Check out the slice</h3>
             <pre className="code-block">
-              <code>gs slice fetch --id auth-refresh</code>
+              <code>gs slice checkout /abs/path/to/slices/auth-refresh.toml</code>
             </pre>
-            <p>Pull only the slice scope into a local workspace. Run tests or services without cloning the entire repo.</p>
+            <p>Use the slice metadata path to pull just the required scope into a local workspace.</p>
           </div>
           <div className="quickstart-step">
-            <h3>3. Review and merge</h3>
+            <h3>3. Validate the slice</h3>
             <pre className="code-block">
-              <code>gs slice diff --id auth-refresh</code>
+              <code>gs slice checkout /abs/path/to/slices/auth-refresh.toml --commit HEAD</code>
             </pre>
-            <p>Generate a focused diff and share the slice URL so reviewers see exactly what changed.</p>
+            <p>Pin a commit when needed so the slice scope is reproducible for reviewers and CI.</p>
           </div>
         </div>
       </section>
