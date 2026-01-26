@@ -33,7 +33,7 @@ function App() {
           <span className="brand-text">Git Slice</span>
         </button>
         <div className="top-bar-actions">
-          <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer">
+          <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer" data-testid="topbar-github-link">
             GitHub
           </a>
           <button
