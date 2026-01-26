@@ -66,8 +66,9 @@ function OverviewPage({ onBrowseRepo }) {
           <p className="eyebrow">Introducing Git Slice</p>
           <h1>Slice-based workflows for shipping more confidently.</h1>
           <p className="lede">
-            Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. No more
-            sprawling branches—just fast, predictable delivery.
+            Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. Slices are
+            scoped snapshots of your repo: you define the files, services, and dependencies required for a task, and Git Slice
+            provisions a self-contained workspace so reviewers and CI run against exactly that scope.
           </p>
           <div className="cta-row">
             <button type="button" className="primary" onClick={onBrowseRepo}>
@@ -92,22 +93,25 @@ function OverviewPage({ onBrowseRepo }) {
 
       <section id="overview" className="section card">
         <div className="section-header">
-          <h2>Ship with clarity at every step</h2>
-          <p>Predictable slices, reproducible runs, and clean merges that keep the repo healthy.</p>
+          <h2>How slices keep changes focused</h2>
+          <p>
+            A slice captures only the files and services you specify, plus any required dependencies. That means slimmer clones,
+            deterministic test runs, and a clean diff that can be merged without dragging unrelated changes along for the ride.
+          </p>
         </div>
         <div className="steps">
           <div className="step">
             <div className="step-number">1</div>
             <div>
               <h3>Carve out the slice</h3>
-              <p>Pin the exact files and services you need. Spin up environments that mirror production with minimal setup.</p>
+              <p>Pin the exact files, directories, and services you need. Git Slice records the slice manifest and dependencies.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">2</div>
             <div>
               <h3>Iterate quickly</h3>
-              <p>Use the CLI to run tests, preview changes, and share the slice URL so reviewers can validate updates in minutes.</p>
+              <p>Use the CLI to run tests, preview changes, and share the slice URL so reviewers validate updates in minutes.</p>
             </div>
           </div>
           <div className="step">
@@ -116,6 +120,37 @@ function OverviewPage({ onBrowseRepo }) {
               <h3>Merge with confidence</h3>
               <p>Every slice ships with reproducible logs, checks, and diffs so merging back is predictable and low-risk.</p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="section card quickstart">
+        <div className="section-header">
+          <p className="eyebrow">Quick start</p>
+          <h2>Go from repo to slice in minutes</h2>
+          <p>Use the CLI to create a slice, fetch its contents, and open it in the repo browser.</p>
+        </div>
+        <div className="quickstart-grid">
+          <div className="quickstart-step">
+            <h3>1. Create a slice</h3>
+            <pre className="code-block">
+              <code>gs slice create --id auth-refresh --files \"services/auth/**\" --owner \"you\"</code>
+            </pre>
+            <p>Define the files and services you need. Git Slice stores the slice manifest and returns its ID.</p>
+          </div>
+          <div className="quickstart-step">
+            <h3>2. Fetch and run</h3>
+            <pre className="code-block">
+              <code>gs slice fetch --id auth-refresh</code>
+            </pre>
+            <p>Pull only the slice scope into a local workspace. Run tests or services without cloning the entire repo.</p>
+          </div>
+          <div className="quickstart-step">
+            <h3>3. Review and merge</h3>
+            <pre className="code-block">
+              <code>gs slice diff --id auth-refresh</code>
+            </pre>
+            <p>Generate a focused diff and share the slice URL so reviewers see exactly what changed.</p>
           </div>
         </div>
       </section>

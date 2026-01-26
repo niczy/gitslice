@@ -194,6 +194,40 @@ body {
   margin-top: 16px;
 }
 
+.quickstart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.quickstart-step {
+  background: var(--surface-elevated);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  box-shadow: var(--glow-cyan);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quickstart-step h3 {
+  margin: 0;
+}
+
+.code-block {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #0b0f16;
+  border: 1px solid var(--border);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 0.85rem;
+  color: #e6edf3;
+  overflow-x: auto;
+}
+
 .feature h3 {
   margin: 0 0 8px;
 }
