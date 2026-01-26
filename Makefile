@@ -60,7 +60,8 @@ build-cli: proto
 start-servers: build
 	./slice_service_server &
 	./admin_service_server &
-	@echo "Services started. Press Ctrl+C to stop."
+	cd web && npm run dev &
+	@echo "Services started (slice, admin, web). Press Ctrl+C to stop."
 
 test: install proto
 	go test ./...
