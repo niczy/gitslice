@@ -15,6 +15,7 @@ var (
 	ErrEntryNotFound      = errors.New("entry not found")
 	ErrEntryExists        = errors.New("entry already exists")
 	ErrLockHeld           = errors.New("resource locked")
+	ErrCommitNotFound     = errors.New("commit not found")
 )
 
 // Storage defines the interface for data storage operations
@@ -70,4 +71,10 @@ type Storage interface {
 
 	// Health check
 	Ping(ctx context.Context) error
+
+	// Commit snapshot operations for versioned file access
+	GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error)
+	SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error
+	GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error)
+	ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error)
 }

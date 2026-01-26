@@ -2,7 +2,8 @@ import { test, expect } from '@playwright/test';
 
 test('handles string size values from API without errors', async ({ page }) => {
   // Mock the API to return size as strings (the bug scenario)
-  await page.route('**/v1/slices/root_slice/entries**', async (route, request) => {
+  // Uses the new path-first API (default browse mode is 'root')
+  await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
     const path = url.searchParams.get('path') || '';
 
@@ -56,7 +57,8 @@ test('handles string size values from API without errors', async ({ page }) => {
 
 test('formats numeric size values correctly', async ({ page }) => {
   // Mock the API to return size as numbers (correct type)
-  await page.route('**/v1/slices/root_slice/entries**', async (route, request) => {
+  // Uses the new path-first API (default browse mode is 'root')
+  await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
     const path = url.searchParams.get('path') || '';
 
@@ -106,7 +108,8 @@ test('formats numeric size values correctly', async ({ page }) => {
 
 test('clicks genesis directory and expands folders without errors', async ({ page }) => {
   // Test the specific scenario mentioned in the bug report
-  await page.route('**/v1/slices/root_slice/entries**', async (route, request) => {
+  // Uses the new path-first API (default browse mode is 'root')
+  await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
     const path = url.searchParams.get('path') || '';
 
@@ -177,7 +180,8 @@ test('clicks genesis directory and expands folders without errors', async ({ pag
 });
 
 test('handles edge cases in file size formatting', async ({ page }) => {
-  await page.route('**/v1/slices/root_slice/entries**', async (route, request) => {
+  // Uses the new path-first API (default browse mode is 'root')
+  await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
     const path = url.searchParams.get('path') || '';
 

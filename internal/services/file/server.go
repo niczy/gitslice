@@ -2,6 +2,7 @@ package fileservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -28,14 +29,53 @@ func NewService(st storage.Storage) filev1.FileServiceServer {
 	return newFileServiceServer(st)
 }
 
-func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
-	if req.SliceId == "" {
-		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
+// resolveVersion extracts the effective slice and commit from oneof version specifiers.
+// Returns sliceID and resolvedCommit (empty string means use current HEAD).
+func (s *fileServiceServer) resolveVersion(ctx context.Context, commitHash string, sliceVer *filev1.SliceVersion) (sliceID, resolvedCommit string, err error) {
+	// Case 1: slice_version specified
+	if sliceVer != nil {
+		sliceID = sliceVer.SliceId
+		if sliceVer.SliceHash != "" {
+			return sliceID, sliceVer.SliceHash, nil
+		}
+		// No slice_hash: use slice HEAD
+		metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+		if err != nil {
+			if errors.Is(err, storage.ErrSliceNotFound) {
+				return "", "", status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+			}
+			return "", "", status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
+		}
+		return sliceID, metadata.HeadCommitHash, nil
 	}
 
-	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	// Case 2: commit_hash specified (use root_slice)
+	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		return "", "", status.Error(codes.Internal, "root slice not found")
+	}
+	if commitHash != "" {
+		return rootSlice.ID, commitHash, nil
+	}
+
+	// Case 3: Nothing specified (use root_slice HEAD)
+	metadata, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
+	if err != nil {
+		return "", "", status.Error(codes.Internal, fmt.Sprintf("failed to get root slice metadata: %v", err))
+	}
+	return rootSlice.ID, metadata.HeadCommitHash, nil
+}
+
+func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
+	// Resolve version from oneof
+	sliceID, _, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
+	if err != nil {
+		return nil, err
+	}
+
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
 
 	normalizedPath := cleanPath(req.Path)
@@ -53,7 +93,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		fileSet[normalized] = true
 	}
 
-	contentByPath := fileContentIndex(s.storage, ctx, slice.ID)
+	contentByPath := fileContentIndex(s.storage, ctx, sliceID)
 
 	entriesByName := map[string]*filev1.DirectoryEntry{}
 	for filePath := range fileSet {
@@ -116,7 +156,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	}
 
 	return &filev1.ListEntriesResponse{
-		SliceId:   req.SliceId,
+		SliceId:   sliceID,
 		Path:      normalizedPath,
 		Entries:   entries,
 		Truncated: truncated,
@@ -124,20 +164,23 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 }
 
 func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequest) (*filev1.GetFileResponse, error) {
-	if req.SliceId == "" {
-		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
-	}
 	if req.Path == "" {
 		return nil, status.Error(codes.InvalidArgument, "path is required")
 	}
 
-	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	// Resolve version from oneof
+	sliceID, _, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
 	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		return nil, err
+	}
+
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
 
 	normalizedPath := cleanPath(req.Path)
-	content, err := s.storage.GetSliceFileByPath(ctx, slice.ID, normalizedPath)
+	content, err := s.storage.GetSliceFileByPath(ctx, sliceID, normalizedPath)
 	if err != nil {
 		if sliceHasPath(slice, normalizedPath) {
 			return nil, status.Error(codes.NotFound, "file content not available")

@@ -8,26 +8,43 @@ import "google/api/annotations.proto";
 
 service FileService {
   // List entries within a slice at a given path.
+  // If no version is specified, uses root_slice at HEAD.
   rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse) {
     option (google.api.http) = {
-      get: "/v1/slices/{slice_id}/entries/{path=**}"
-      additional_bindings { get: "/v1/slices/{slice_id}/entries" }
+      get: "/v1/files/entries/{path=**}"
+      additional_bindings { get: "/v1/files/entries" }
+      additional_bindings { get: "/v1/slices/{slice_version.slice_id}/entries/{path=**}" }
+      additional_bindings { get: "/v1/slices/{slice_version.slice_id}/entries" }
     };
   }
 
   // Fetch the contents of a file within a slice.
+  // If no version is specified, uses root_slice at HEAD.
   rpc GetFile(GetFileRequest) returns (GetFileResponse) {
     option (google.api.http) = {
-      get: "/v1/slices/{slice_id}/files/{path=**}"
-      additional_bindings { get: "/v1/slices/{slice_id}/files" }
+      get: "/v1/files/{path=**}"
+      additional_bindings { get: "/v1/files" }
+      additional_bindings { get: "/v1/slices/{slice_version.slice_id}/files/{path=**}" }
+      additional_bindings { get: "/v1/slices/{slice_version.slice_id}/files" }
     };
   }
 }
 
+// SliceVersion specifies a slice at a particular version
+message SliceVersion {
+  string slice_id = 1;       // Required: which slice
+  string slice_hash = 2;     // Optional: commit hash (default: HEAD)
+}
+
 message ListEntriesRequest {
-  string slice_id = 1;
-  string path = 2;
-  int32 limit = 3;
+  string path = 1;           // Primary param (directory path)
+  int32 limit = 2;
+
+  // Version specifier (optional, mutually exclusive)
+  oneof version {
+    string commit_hash = 10;      // Global commit hash (uses root_slice)
+    SliceVersion slice_version = 11;  // Specific slice at version
+  }
 }
 
 message ListEntriesResponse {
@@ -52,8 +69,13 @@ enum EntryType {
 }
 
 message GetFileRequest {
-  string slice_id = 1;
-  string path = 2;
+  string path = 1;           // Required: file path
+
+  // Version specifier (optional, mutually exclusive)
+  oneof version {
+    string commit_hash = 10;      // Global commit hash (uses root_slice)
+    SliceVersion slice_version = 11;  // Specific slice at version
+  }
 }
 
 message GetFileResponse {
