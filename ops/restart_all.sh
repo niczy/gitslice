@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_LOG_DIR="${LOG_DIR:-./logs}"
 NGINX_LOG_DIR="${NGINX_LOG_DIR:-/var/log/nginx}"
+GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -24,8 +25,8 @@ LOG_DIR="$SERVICE_LOG_DIR" "$REPO_ROOT/ops/start_web_server.sh"
 
 log "Verifying all services are healthy..."
 # Final verification that all services are up before starting nginx
-if ! curl -sf http://localhost:8080/health >/dev/null 2>&1; then
-  log "ERROR: Slice service gateway is not healthy on port 8080"
+if ! curl -sf "http://localhost:${GATEWAY_PORT}/health" >/dev/null 2>&1; then
+  log "ERROR: Gateway service is not healthy on port ${GATEWAY_PORT}"
   exit 1
 fi
 if ! nc -z localhost 50052 2>/dev/null; then
@@ -41,7 +42,7 @@ sudo systemctl restart nginx
 log "Deployment complete!"
 log "Services:"
 log "  - Slice service (gRPC):  localhost:50051"
-log "  - HTTP Gateway:           localhost:8080"
+log "  - HTTP Gateway:           localhost:${GATEWAY_PORT}"
 log "  - Admin service (gRPC):   localhost:50052"
 log "  - Web preview:            localhost:4173"
 log ""

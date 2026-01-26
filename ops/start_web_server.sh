@@ -6,10 +6,13 @@ RAW_LOG_DIR="${LOG_DIR:-$REPO_ROOT/logs}"
 WEB_DIR="$REPO_ROOT/web"
 SLICE_BIN="$REPO_ROOT/slice_service_server"
 ADMIN_BIN="$REPO_ROOT/admin_service_server"
+GATEWAY_BIN="$REPO_ROOT/gateway_service_server"
 LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pwd)"
 WEB_LOG="$LOG_DIR/web_preview.log"
 SLICE_LOG="$LOG_DIR/slice_service.log"
 ADMIN_LOG="$LOG_DIR/admin_service.log"
+GATEWAY_LOG="$LOG_DIR/gateway_service.log"
+GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -80,9 +83,8 @@ start_slice_service() {
   local pid=$!
   log "Slice service started with PID $pid"
 
-  # Wait for the gateway to be healthy (slice_service runs both gRPC and HTTP gateway)
-  if ! wait_for_health "Slice service gateway" "http://localhost:8080/health" 30; then
-    log "ERROR: Failed to start slice service gateway. Check $SLICE_LOG for details"
+  if ! wait_for_port "Slice service" 50051 30 "$SLICE_LOG"; then
+    log "ERROR: Failed to start slice service. Check $SLICE_LOG for details"
     exit 1
   fi
 }
@@ -109,6 +111,27 @@ start_admin_service() {
   fi
 }
 
+start_gateway_service() {
+  log "Stopping existing gateway service..."
+  pkill -f "$GATEWAY_BIN" >/dev/null 2>&1 || true
+
+  # Wait a moment for ports to be released
+  sleep 2
+
+  log "Building gateway service..."
+  make build-gateway
+
+  log "Starting gateway service (log: $GATEWAY_LOG)..."
+  GATEWAY_PORT="$GATEWAY_PORT" nohup "$GATEWAY_BIN" > "$GATEWAY_LOG" 2>&1 &
+  local pid=$!
+  log "Gateway service started with PID $pid"
+
+  if ! wait_for_health "Gateway service" "http://localhost:${GATEWAY_PORT}/health" 30 "$GATEWAY_LOG"; then
+    log "ERROR: Failed to start gateway service. Check $GATEWAY_LOG for details"
+    exit 1
+  fi
+}
+
 start_web_preview() {
   cd "$WEB_DIR"
 
@@ -131,5 +154,6 @@ start_web_preview() {
 log "=== Starting all services ==="
 start_slice_service
 start_admin_service
+start_gateway_service
 start_web_preview
 log "=== All services started ==="

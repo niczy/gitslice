@@ -61,7 +61,7 @@ test.describe('Root Repository Browsing (path-first API)', () => {
     });
 
     // Mock file content
-    await page.route('**/v1/files?path=readme.md**', async (route) => {
+    await page.route('**/v1/files/readme.md**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -86,7 +86,12 @@ test.describe('Slice-specific Browsing', () => {
   test('browses the repo tree and previews a file (slice mode)', async ({ page }) => {
     await page.route('**/v1/slices/test_slice/entries**', async (route, request) => {
       const url = new URL(request.url());
-      const path = url.searchParams.get('path') || '';
+      const prefix = '/v1/slices/test_slice/entries';
+      let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
+      if (path.startsWith('/')) {
+        path = path.slice(1);
+      }
+      path = decodeURIComponent(path);
 
       if (path === '') {
         await route.fulfill({
@@ -136,7 +141,12 @@ test.describe('Slice-specific Browsing', () => {
 
     await page.route('**/v1/slices/test_slice/files**', async (route, request) => {
       const url = new URL(request.url());
-      const path = url.searchParams.get('path');
+      const prefix = '/v1/slices/test_slice/files';
+      let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
+      if (path.startsWith('/')) {
+        path = path.slice(1);
+      }
+      path = decodeURIComponent(path);
       const content = path === 'apps/readme.md' ? Buffer.from('# Hello\nPreview').toString('base64') : '';
 
       await route.fulfill({
@@ -205,7 +215,12 @@ test('browses the repo tree and previews a file', async ({ page }) => {
   // This test uses the new path-first API (root mode)
   await page.route('**/v1/files/entries**', async (route, request) => {
     const url = new URL(request.url());
-    const path = url.searchParams.get('path') || '';
+    const prefix = '/v1/files/entries';
+    let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
+    if (path.startsWith('/')) {
+      path = path.slice(1);
+    }
+    path = decodeURIComponent(path);
 
     if (path === '') {
       await route.fulfill({
@@ -253,9 +268,14 @@ test('browses the repo tree and previews a file', async ({ page }) => {
     });
   });
 
-  await page.route(/\/v1\/files\?/, async (route, request) => {
+  await page.route(/\/v1\/files\/(?!entries)/, async (route, request) => {
     const url = new URL(request.url());
-    const path = url.searchParams.get('path');
+    const prefix = '/v1/files';
+    let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
+    if (path.startsWith('/')) {
+      path = path.slice(1);
+    }
+    path = decodeURIComponent(path);
 
     if (path === 'apps/readme.md') {
       const content = Buffer.from('# Hello\nPreview').toString('base64');

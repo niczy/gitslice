@@ -3,8 +3,11 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,12 +33,15 @@ import (
 )
 
 var (
-	sliceServiceAddr string
-	adminServiceAddr string
-	cliBinaryPath    string
+	sliceServiceAddr  string
+	adminServiceAddr  string
+	gatewayServiceURL string
+	cliBinaryPath     string
+	gatewayBinaryPath string
 
 	sliceServer *grpc.Server
 	adminServer *grpc.Server
+	gatewayCmd  *exec.Cmd
 	testStorage *storage.RedisStorage
 )
 
@@ -75,6 +81,20 @@ func TestMain(m *testing.M) {
 	adminServiceAddr, adminServer, err = startAdminService(st)
 	if err != nil {
 		fmt.Printf("Failed to start admin service: %v\n", err)
+		stopServers()
+		os.Exit(1)
+	}
+
+	gatewayBinaryPath, err = buildGatewayBinary()
+	if err != nil {
+		fmt.Printf("Failed to build gateway: %v\n", err)
+		stopServers()
+		os.Exit(1)
+	}
+
+	gatewayServiceURL, gatewayCmd, err = startGatewayService(sliceServiceAddr, adminServiceAddr, gatewayBinaryPath)
+	if err != nil {
+		fmt.Printf("Failed to start gateway: %v\n", err)
 		stopServers()
 		os.Exit(1)
 	}
@@ -127,8 +147,15 @@ func stopServers() {
 	if adminServer != nil {
 		adminServer.GracefulStop()
 	}
+	if gatewayCmd != nil && gatewayCmd.Process != nil {
+		_ = gatewayCmd.Process.Kill()
+		_ = gatewayCmd.Wait()
+	}
 	if cliBinaryPath != "" {
 		_ = os.RemoveAll(filepath.Dir(cliBinaryPath))
+	}
+	if gatewayBinaryPath != "" {
+		_ = os.RemoveAll(filepath.Dir(gatewayBinaryPath))
 	}
 }
 
@@ -146,6 +173,99 @@ func buildCLIBinary() (string, error) {
 	}
 
 	return binaryPath, nil
+}
+
+func buildGatewayBinary() (string, error) {
+	tmpDir, err := os.MkdirTemp("", "gs-gateway-bin-")
+	if err != nil {
+		return "", err
+	}
+
+	binaryPath := filepath.Join(tmpDir, "gateway_service")
+	cmd := exec.Command("go", "build", "-o", binaryPath, "./gateway_service")
+	cmd.Dir = ".."
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("build failed: %w\nOutput:\n%s", err, string(output))
+	}
+
+	return binaryPath, nil
+}
+
+func startGatewayService(sliceAddr, adminAddr, binaryPath string) (string, *exec.Cmd, error) {
+	slicePort, err := portFromAddr(sliceAddr)
+	if err != nil {
+		return "", nil, err
+	}
+	adminPort, err := portFromAddr(adminAddr)
+	if err != nil {
+		return "", nil, err
+	}
+
+	gatewayPort, err := freePort()
+	if err != nil {
+		return "", nil, err
+	}
+
+	cmd := exec.Command(binaryPath)
+	cmd.Env = append(os.Environ(),
+		"SLICE_SERVICE_PORT="+slicePort,
+		"ADMIN_SERVICE_PORT="+adminPort,
+		"GATEWAY_PORT="+gatewayPort,
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	if err := cmd.Start(); err != nil {
+		return "", nil, err
+	}
+
+	gatewayURL := "http://127.0.0.1:" + gatewayPort
+	if err := waitForHTTP(gatewayURL+"/health", 5*time.Second); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return "", nil, fmt.Errorf("gateway failed to start: %w\nOutput:\n%s", err, output.String())
+	}
+
+	return gatewayURL, cmd, nil
+}
+
+func freePort() (string, error) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	defer lis.Close()
+
+	addr, ok := lis.Addr().(*net.TCPAddr)
+	if !ok {
+		return "", fmt.Errorf("unexpected address type %T", lis.Addr())
+	}
+	return fmt.Sprintf("%d", addr.Port), nil
+}
+
+func portFromAddr(addr string) (string, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	return port, nil
+}
+
+func waitForHTTP(url string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout waiting for %s", url)
 }
 
 // runCLI executes a CLI command in the current working directory.
@@ -641,6 +761,99 @@ func TestFileBrowserIntegration(t *testing.T) {
 	}
 	if !bytes.Equal(fileResp.File.Content, readmeContent) {
 		t.Fatalf("unexpected file content: %q", string(fileResp.File.Content))
+	}
+}
+
+func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
+	if gatewayServiceURL == "" {
+		t.Skip("gateway service not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if testStorage == nil {
+		t.Fatalf("expected test storage to be initialized")
+	}
+
+	rootSlice, err := testStorage.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice: %v", err)
+	}
+
+	files := []struct {
+		path    string
+		content []byte
+	}{
+		{path: "gateway/readme.md", content: []byte("# Gateway")},
+		{path: "gateway/docs/guide.md", content: []byte("Guide")},
+	}
+
+	for _, file := range files {
+		if err := testStorage.AddFileContent(ctx, &models.FileContent{
+			FileID:  file.path,
+			Path:    file.path,
+			Content: file.content,
+			Size:    int64(len(file.content)),
+		}); err != nil {
+			t.Fatalf("failed to add file content: %v", err)
+		}
+		if err := testStorage.AddFileToSlice(ctx, file.path, rootSlice.ID); err != nil {
+			t.Fatalf("failed to add file to root slice: %v", err)
+		}
+	}
+
+	rootEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries")
+	assertGatewayEntryNames(t, rootEntries.Entries, "gateway")
+
+	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway")
+	assertGatewayEntryNames(t, gatewayEntries.Entries, "readme.md", "docs")
+}
+
+type gatewayEntriesResponse struct {
+	Entries []gatewayEntry `json:"entries"`
+}
+
+type gatewayEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type any    `json:"type"`
+}
+
+func fetchGatewayEntries(t *testing.T, url string) gatewayEntriesResponse {
+	t.Helper()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("gateway request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("gateway status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var payload gatewayEntriesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("gateway decode failed: %v", err)
+	}
+	return payload
+}
+
+func assertGatewayEntryNames(t *testing.T, entries []gatewayEntry, expected ...string) {
+	t.Helper()
+
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.Name] = true
+	}
+
+	for _, name := range expected {
+		if !seen[name] {
+			t.Fatalf("expected gateway entry %q in list, got %#v", name, entries)
+		}
 	}
 }
 

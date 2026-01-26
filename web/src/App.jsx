@@ -164,43 +164,48 @@ function RepoBrowser() {
     setFileContent('');
   }, [browseMode, sliceId, commitHash, sliceHash]);
 
+  const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
+
   // Build URL for entries endpoint based on mode
   const buildEntriesUrl = (path) => {
     const params = new URLSearchParams();
-    if (path) {
-      params.set('path', path);
-    }
+    const encodedPath = path ? encodePath(path) : '';
+    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
 
     if (browseMode === 'root') {
       if (commitHash) {
         params.set('commit_hash', commitHash);
       }
       const queryString = params.toString();
-      return `${apiBaseUrl}/v1/files/entries${queryString ? `?${queryString}` : ''}`;
+      return `${apiBaseUrl}/v1/files/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
     }
     // Slice mode
     if (sliceHash) {
       params.set('slice_version.slice_hash', sliceHash);
     }
     const queryString = params.toString();
-    return `${apiBaseUrl}/v1/slices/${sliceId}/entries${queryString ? `?${queryString}` : ''}`;
+    return `${apiBaseUrl}/v1/slices/${sliceId}/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
   };
 
   // Build URL for file endpoint based on mode
   const buildFileUrl = (filePath) => {
-    const params = new URLSearchParams({ path: filePath });
+    const encodedPath = filePath ? encodePath(filePath) : '';
+    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
+    const params = new URLSearchParams();
 
     if (browseMode === 'root') {
       if (commitHash) {
         params.set('commit_hash', commitHash);
       }
-      return `${apiBaseUrl}/v1/files?${params.toString()}`;
+      const queryString = params.toString();
+      return `${apiBaseUrl}/v1/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
     }
     // Slice mode
     if (sliceHash) {
       params.set('slice_version.slice_hash', sliceHash);
     }
-    return `${apiBaseUrl}/v1/slices/${sliceId}/files?${params.toString()}`;
+    const queryString = params.toString();
+    return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
   };
 
   // Check if we can load (root mode always ready, slice mode needs sliceId)

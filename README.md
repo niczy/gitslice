@@ -94,11 +94,14 @@ go build -o gs_cli ./gs_cli/
 ### Run
 
 ```bash
-# Run slice service (SliceService on :50051, FileService gateway on :8080)
+# Run slice service (SliceService on :50051)
 ./slice_service_server
 
 # Run admin service (listens on :50052)
 ./admin_service_server
+
+# Run gateway service (HTTP gRPC-Gateway on :8080)
+./gateway_service_server
 
 # Run CLI (override addresses if needed)
 ./gs_cli --help
