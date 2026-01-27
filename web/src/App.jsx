@@ -24,11 +24,17 @@ const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 function App() {
   const [activePage, setActivePage] = useState('landing');
   const [diffCommitHash, setDiffCommitHash] = useState('');
+  const [changesetSliceId, setChangesetSliceId] = useState('');
   const githubUrl = 'https://github.com/niczy/gitslice';
 
   const navigateToDiff = (commitHash) => {
     setDiffCommitHash(commitHash);
     setActivePage('diff');
+  };
+
+  const navigateToChangesets = (sliceId) => {
+    setChangesetSliceId(sliceId);
+    setActivePage('changesets');
   };
 
   return (
@@ -55,9 +61,14 @@ function App() {
 
       <main className="page">
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => setActivePage('browser')} />}
-        {activePage === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
+        {activePage === 'browser' && (
+          <RepoBrowser onNavigateToDiff={navigateToDiff} onNavigateToChangesets={navigateToChangesets} />
+        )}
         {activePage === 'diff' && (
           <CommitDiffPage commitHash={diffCommitHash} onBack={() => setActivePage('browser')} />
+        )}
+        {activePage === 'changesets' && (
+          <IncomingChangesetPage sliceId={changesetSliceId} onBack={() => setActivePage('browser')} />
         )}
       </main>
 
@@ -199,7 +210,7 @@ function OverviewPage({ onBrowseRepo }) {
   );
 }
 
-function RepoBrowser({ onNavigateToDiff }) {
+function RepoBrowser({ onNavigateToDiff, onNavigateToChangesets }) {
   const [browseMode, setBrowseMode] = useState('root'); // 'root' | 'slice'
   const [sliceId, setSliceId] = useState('');
   const [commitHash, setCommitHash] = useState(''); // For root mode
@@ -537,6 +548,16 @@ function RepoBrowser({ onNavigateToDiff }) {
                   placeholder="Leave empty for HEAD"
                 />
               </label>
+              {sliceId && (
+                <button
+                  type="button"
+                  className="ghost changeset-nav-btn"
+                  data-testid="view-changesets-btn"
+                  onClick={() => onNavigateToChangesets(sliceId)}
+                >
+                  View Incoming Changesets
+                </button>
+              )}
             </>
           )}
         </div>
@@ -767,6 +788,313 @@ function CommitDiffPage({ commitHash, onBack }) {
         {!isLoading && !error && diffData && (diffData.changes || []).length === 0 && (
           <div className="panel-empty">No changes found in this commit.</div>
         )}
+      </div>
+    </section>
+  );
+}
+
+function IncomingChangesetPage({ sliceId, onBack }) {
+  const [changesets, setChangesets] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedChangeset, setSelectedChangeset] = useState(null);
+  const [reviewData, setReviewData] = useState(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [mergeResult, setMergeResult] = useState(null);
+
+  useEffect(() => {
+    if (!sliceId) return;
+    let active = true;
+    const controller = new AbortController();
+
+    const loadChangesets = async () => {
+      setIsLoading(true);
+      setError('');
+      try {
+        const response = await fetch(
+          `${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/changesets`,
+          { signal: controller.signal }
+        );
+        if (!response.ok) throw new Error(`Request failed (${response.status})`);
+        const payload = await response.json();
+        if (active) setChangesets(payload.changesets || []);
+      } catch (err) {
+        if (active && err?.name !== 'AbortError') {
+          setError('Unable to load changesets.');
+        }
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+
+    loadChangesets();
+    return () => { active = false; controller.abort(); };
+  }, [sliceId]);
+
+  const handleSelectChangeset = async (changeset) => {
+    setSelectedChangeset(changeset);
+    setReviewData(null);
+    setReviewError('');
+    setMergeResult(null);
+    setReviewLoading(true);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/v1/changesets/${encodeURIComponent(changeset.changeset_id)}/review`
+      );
+      if (!response.ok) throw new Error(`Request failed (${response.status})`);
+      const payload = await response.json();
+      setReviewData(payload);
+    } catch (err) {
+      setReviewError('Unable to load changeset review.');
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  const handleMerge = async () => {
+    if (!selectedChangeset) return;
+    setMergeLoading(true);
+    setMergeResult(null);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/v1/changesets/${encodeURIComponent(selectedChangeset.changeset_id)}/merge`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+      );
+      if (!response.ok) throw new Error(`Request failed (${response.status})`);
+      const payload = await response.json();
+      setMergeResult(payload);
+    } catch (err) {
+      setMergeResult({ status: 'MERGE_STATUS_ERROR', error: 'Merge request failed.' });
+    } finally {
+      setMergeLoading(false);
+    }
+  };
+
+  const formatStatus = (status) => {
+    if (status === 0 || status === 'PENDING') return 'Pending';
+    if (status === 1 || status === 'APPROVED') return 'Approved';
+    if (status === 2 || status === 'REJECTED') return 'Rejected';
+    if (status === 3 || status === 'MERGED') return 'Merged';
+    return 'Unknown';
+  };
+
+  const statusClass = (status) => {
+    if (status === 0 || status === 'PENDING') return 'pending';
+    if (status === 1 || status === 'APPROVED') return 'approved';
+    if (status === 2 || status === 'REJECTED') return 'rejected';
+    if (status === 3 || status === 'MERGED') return 'merged';
+    return 'unknown';
+  };
+
+  const formatReviewStatus = (status) => {
+    if (status === 0 || status === 'READY_FOR_MERGE') return 'Ready for merge';
+    if (status === 1 || status === 'NEEDS_REBASE') return 'Needs rebase';
+    if (status === 2 || status === 'HAS_CONFLICTS') return 'Has conflicts';
+    return 'Unknown';
+  };
+
+  const reviewStatusClass = (status) => {
+    if (status === 0 || status === 'READY_FOR_MERGE') return 'ready';
+    if (status === 1 || status === 'NEEDS_REBASE') return 'rebase';
+    if (status === 2 || status === 'HAS_CONFLICTS') return 'conflicts';
+    return 'unknown';
+  };
+
+  const mergeStatusText = (status) => {
+    if (status === 0 || status === 'MERGE_STATUS_SUCCESS') return 'Merge successful';
+    if (status === 1 || status === 'MERGE_STATUS_CONFLICT') return 'Merge has conflicts';
+    if (status === 2 || status === 'MERGE_STATUS_ERROR') return 'Merge failed';
+    return 'Unknown';
+  };
+
+  const isMergeSuccess = (status) => status === 0 || status === 'MERGE_STATUS_SUCCESS';
+  const canMerge = reviewData && (reviewData.review_status === 0 || reviewData.review_status === 'READY_FOR_MERGE');
+
+  return (
+    <section className="changeset-page" data-testid="changeset-page">
+      <div className="changeset-header">
+        <button type="button" className="ghost diff-back-btn" onClick={onBack} data-testid="changeset-back-btn">
+          Back to browser
+        </button>
+        <div>
+          <p className="eyebrow">Incoming changesets</p>
+          <h2 data-testid="changeset-page-title">
+            Changesets for <span className="commit-hash">{sliceId}</span>
+          </h2>
+        </div>
+      </div>
+
+      <div className="changeset-layout">
+        <div className="changeset-list-panel">
+          <h3>Changeset list</h3>
+          {isLoading && <div className="diff-loading">Loading changesets...</div>}
+          {error && <div className="panel-error">{error}</div>}
+          {!isLoading && !error && changesets.length === 0 && (
+            <div className="panel-empty">No incoming changesets for this slice.</div>
+          )}
+          {!isLoading && changesets.length > 0 && (
+            <ul className="changeset-list" data-testid="changeset-list">
+              {changesets.map((cs) => (
+                <li
+                  key={cs.changeset_id}
+                  className={`changeset-item ${selectedChangeset?.changeset_id === cs.changeset_id ? 'selected' : ''}`}
+                  data-testid="changeset-item"
+                >
+                  <button
+                    type="button"
+                    className="changeset-item-btn"
+                    onClick={() => handleSelectChangeset(cs)}
+                    data-testid="changeset-select-btn"
+                  >
+                    <div className="changeset-item-top">
+                      <span className={`changeset-status changeset-status-${statusClass(cs.status)}`}>
+                        {formatStatus(cs.status)}
+                      </span>
+                      <span className="commit-hash" title={cs.changeset_hash}>
+                        {cs.changeset_hash ? cs.changeset_hash.slice(0, 7) : cs.changeset_id.slice(0, 7)}
+                      </span>
+                    </div>
+                    <div className="changeset-item-message">{cs.message || 'No message'}</div>
+                    <div className="changeset-item-meta">
+                      <span className="history-author">{cs.author || 'Unknown'}</span>
+                      <span className="history-date">{formatTimestamp(cs.created_at)}</span>
+                    </div>
+                    {cs.modified_files && cs.modified_files.length > 0 && (
+                      <div className="changeset-item-files">
+                        {cs.modified_files.length} file{cs.modified_files.length !== 1 ? 's' : ''} changed
+                      </div>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="changeset-detail-panel">
+          {!selectedChangeset && (
+            <div className="panel-empty">Select a changeset to view its details and diff summary.</div>
+          )}
+          {selectedChangeset && (
+            <div data-testid="changeset-detail">
+              <h3>Changeset details</h3>
+              <div className="changeset-detail-info">
+                <div className="detail-row">
+                  <span className="detail-label">ID</span>
+                  <span className="commit-hash">{selectedChangeset.changeset_id}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Author</span>
+                  <span>{selectedChangeset.author || 'Unknown'}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Message</span>
+                  <span>{selectedChangeset.message || 'No message'}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Base commit</span>
+                  <span className="commit-hash">{selectedChangeset.base_commit_hash ? selectedChangeset.base_commit_hash.slice(0, 12) : 'N/A'}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Status</span>
+                  <span className={`changeset-status changeset-status-${statusClass(selectedChangeset.status)}`}>
+                    {formatStatus(selectedChangeset.status)}
+                  </span>
+                </div>
+              </div>
+
+              {selectedChangeset.modified_files && selectedChangeset.modified_files.length > 0 && (
+                <div className="changeset-files-section">
+                  <h4>Modified files</h4>
+                  <ul className="changeset-files-list" data-testid="changeset-files-list">
+                    {selectedChangeset.modified_files.map((file) => (
+                      <li key={file} className="changeset-file-item">
+                        <span className="diff-file-path">{file}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {reviewLoading && <div className="diff-loading">Loading review...</div>}
+              {reviewError && <div className="panel-error">{reviewError}</div>}
+              {reviewData && (
+                <div className="changeset-review" data-testid="changeset-review">
+                  <h4>Review summary</h4>
+                  <div className="changeset-review-status">
+                    <span className={`review-badge review-badge-${reviewStatusClass(reviewData.review_status)}`} data-testid="review-status">
+                      {formatReviewStatus(reviewData.review_status)}
+                    </span>
+                  </div>
+                  {reviewData.diff && (
+                    <div className="diff-summary" data-testid="changeset-diff-summary">
+                      <span className="diff-stat diff-stat-added">+{reviewData.diff.files_added || 0} added</span>
+                      <span className="diff-stat diff-stat-modified">{reviewData.diff.files_modified || 0} modified</span>
+                      <span className="diff-stat diff-stat-deleted">-{reviewData.diff.files_deleted || 0} deleted</span>
+                      {(reviewData.diff.lines_added > 0 || reviewData.diff.lines_removed > 0) && (
+                        <span className="history-lines">
+                          <span className="lines-added">+{reviewData.diff.lines_added || 0} lines</span>
+                          <span className="lines-deleted">-{reviewData.diff.lines_removed || 0} lines</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {reviewData.warnings && reviewData.warnings.length > 0 && (
+                    <div className="changeset-warnings" data-testid="changeset-warnings">
+                      {reviewData.warnings.map((warning, i) => (
+                        <div key={i} className="changeset-warning">{warning}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="changeset-actions">
+                <button
+                  type="button"
+                  className="primary merge-btn"
+                  data-testid="merge-btn"
+                  onClick={handleMerge}
+                  disabled={mergeLoading || !canMerge}
+                >
+                  {mergeLoading ? 'Merging...' : 'Merge into slice'}
+                </button>
+                {!canMerge && reviewData && (
+                  <span className="merge-hint" data-testid="merge-hint">
+                    Changeset is not ready for merge ({formatReviewStatus(reviewData.review_status)})
+                  </span>
+                )}
+              </div>
+
+              {mergeResult && (
+                <div
+                  className={`merge-result merge-result-${isMergeSuccess(mergeResult.status) ? 'success' : 'error'}`}
+                  data-testid="merge-result"
+                >
+                  <strong>{mergeStatusText(mergeResult.status)}</strong>
+                  {mergeResult.new_commit_hash && (
+                    <span className="commit-hash">{mergeResult.new_commit_hash.slice(0, 12)}</span>
+                  )}
+                  {mergeResult.conflicts && mergeResult.conflicts.length > 0 && (
+                    <div className="merge-conflicts">
+                      <p>Conflicting files:</p>
+                      <ul>
+                        {mergeResult.conflicts.map((c) => (
+                          <li key={c.file_id}>{c.file_id} (slices: {(c.conflicting_slice_ids || []).join(', ')})</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {mergeResult.error && <p>{mergeResult.error}</p>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

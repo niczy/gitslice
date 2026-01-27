@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package slice.v1;
 
+import "google/api/annotations.proto";
+
 option go_package = "github.com/niczy/gitslice/proto;slicev1";
 
 service SliceService {
@@ -12,10 +14,19 @@ service SliceService {
   rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
 
   // Review a change list (check against slice head)
-  rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse);
+  rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/review"
+    };
+  }
 
   // Merge change list into slice (with conflict detection)
-  rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse);
+  rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets/{changeset_id}/merge"
+      body: "*"
+    };
+  }
 
   // Rebase change list on new slice head
   rpc RebaseChangeset(RebaseChangesetRequest) returns (RebaseChangesetResponse);
@@ -27,7 +38,11 @@ service SliceService {
   rpc GetSliceState(StateRequest) returns (StateResponse);
 
   // List pending change lists for a slice
-  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/changesets"
+    };
+  }
 
   // Get root slice info
   rpc GetRootSlice(GetRootSliceRequest) returns (GetRootSliceResponse);

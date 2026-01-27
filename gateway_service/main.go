@@ -13,6 +13,7 @@ import (
 	"github.com/niczy/gitslice/internal/config"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -68,6 +69,7 @@ func newGatewayMux(ctx context.Context, sliceAddr, adminAddr string) (*runtime.S
 
 	fileClient := filev1.NewFileServiceClient(sliceConn)
 	adminClient := adminv1.NewAdminServiceClient(adminConn)
+	sliceClient := slicev1.NewSliceServiceClient(sliceConn)
 
 	if err := filev1.RegisterFileServiceHandlerClient(ctx, gatewayMux, fileClient); err != nil {
 		_ = sliceConn.Close()
@@ -75,6 +77,11 @@ func newGatewayMux(ctx context.Context, sliceAddr, adminAddr string) (*runtime.S
 		return nil, func() {}, err
 	}
 	if err := adminv1.RegisterAdminServiceHandlerClient(ctx, gatewayMux, adminClient); err != nil {
+		_ = sliceConn.Close()
+		_ = adminConn.Close()
+		return nil, func() {}, err
+	}
+	if err := slicev1.RegisterSliceServiceHandlerClient(ctx, gatewayMux, sliceClient); err != nil {
 		_ = sliceConn.Close()
 		_ = adminConn.Close()
 		return nil, func() {}, err
