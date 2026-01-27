@@ -20,10 +20,13 @@ func main() {
 	// Initialize storage
 	st := storage.NewInMemoryStorage()
 
-	// Initialize root slice
+	// Initialize root slice and populate from git via changeset API
 	ctx := context.Background()
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		log.Fatalf("Failed to initialize root slice: %v", err)
+	}
+	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
+		log.Printf("Warning: genesis population failed: %v", err)
 	}
 
 	grpcAddr := cfg.GetSliceServiceAddr()
