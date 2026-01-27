@@ -469,7 +469,7 @@ test.describe('File History - Genesis Commit', () => {
     await expect(item.locator('.change-type')).toHaveText('Add');
 
     // Verify the genesis commit hash prefix is shown
-    await expect(item.getByText('genesis')).toBeVisible();
+    await expect(item.locator('.commit-hash')).toContainText('genesis');
   });
 
   test('shows genesis entry alongside later modifications', async ({ page }) => {
