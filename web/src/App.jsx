@@ -201,6 +201,10 @@ function RepoBrowser() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
+  const [fileHistory, setFileHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
   const breadcrumbs = useMemo(() => {
@@ -267,6 +271,51 @@ function RepoBrowser() {
     }
     const queryString = params.toString();
     return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
+  };
+
+  // Build URL for file history endpoint based on mode
+  const buildHistoryUrl = (filePath) => {
+    const encodedPath = filePath ? encodePath(filePath) : '';
+    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
+
+    if (browseMode === 'root') {
+      return `${apiBaseUrl}/v1/files/history${pathSuffix}`;
+    }
+    // Slice mode
+    return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
+  };
+
+  // Fetch file history from the API
+  const fetchFileHistory = async (filePath) => {
+    if (!filePath) {
+      return;
+    }
+
+    setHistoryLoading(true);
+    setHistoryError('');
+
+    try {
+      const response = await fetch(buildHistoryUrl(filePath));
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      const payload = await response.json();
+      setFileHistory(payload.changes || []);
+    } catch (err) {
+      setHistoryError('Unable to load file history.');
+      setFileHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // Toggle history panel
+  const toggleHistory = () => {
+    const newShowHistory = !showHistory;
+    setShowHistory(newShowHistory);
+    if (newShowHistory && selectedFile && fileHistory.length === 0) {
+      fetchFileHistory(selectedFile);
+    }
   };
 
   // Check if we can load (root mode always ready, slice mode needs sliceId)
@@ -366,6 +415,9 @@ function RepoBrowser() {
     setFileContent('');
     setIsLoading(true);
     setError('');
+    setShowHistory(false);
+    setFileHistory([]);
+    setHistoryError('');
 
     try {
       const response = await fetch(buildFileUrl(entry.path));
@@ -541,20 +593,104 @@ function RepoBrowser() {
                 </div>
               </div>
             </div>
-            {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
+            <div className="code-header-actions">
+              {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
+              {selectedFile && (
+                <button
+                  type="button"
+                  className={`history-toggle ${showHistory ? 'active' : ''}`}
+                  onClick={toggleHistory}
+                  data-testid="history-toggle"
+                  title={showHistory ? 'Show file content' : 'Show commit history'}
+                >
+                  {showHistory ? '📄 Content' : '📜 History'}
+                </button>
+              )}
+            </div>
           </div>
           <div className="code-content">
             {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-            {selectedFile && (
+            {selectedFile && !showHistory && (
               <pre className="file-preview">
                 <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
               </pre>
+            )}
+            {selectedFile && showHistory && (
+              <div className="history-panel" data-testid="history-panel">
+                {historyLoading && <div className="history-loading">Loading history...</div>}
+                {historyError && <div className="panel-error">{historyError}</div>}
+                {!historyLoading && !historyError && fileHistory.length === 0 && (
+                  <div className="panel-empty">No history available for this file.</div>
+                )}
+                {!historyLoading && fileHistory.length > 0 && (
+                  <ul className="history-list">
+                    {fileHistory.map((change) => (
+                      <li key={change.id} className="history-item" data-testid="history-item">
+                        <div className="history-item-header">
+                          <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                            {formatChangeType(change.change_type)}
+                          </span>
+                          <span className="commit-hash" title={change.commit_hash}>
+                            {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
+                          </span>
+                        </div>
+                        <div className="history-item-message">{change.message || 'No message'}</div>
+                        <div className="history-item-meta">
+                          <span className="history-author">{change.author || 'Unknown'}</span>
+                          <span className="history-date">{formatTimestamp(change.timestamp)}</span>
+                          {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                            <span className="history-lines">
+                              <span className="lines-added">+{change.lines_added || 0}</span>
+                              <span className="lines-deleted">-{change.lines_deleted || 0}</span>
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+function normalizeChangeType(value) {
+  if (value === 1 || value === 'CHANGE_TYPE_ADD' || value === 'ADD') {
+    return 'add';
+  }
+  if (value === 2 || value === 'CHANGE_TYPE_MODIFY' || value === 'MODIFY') {
+    return 'modify';
+  }
+  if (value === 3 || value === 'CHANGE_TYPE_DELETE' || value === 'DELETE') {
+    return 'delete';
+  }
+  if (value === 4 || value === 'CHANGE_TYPE_RENAME' || value === 'RENAME') {
+    return 'rename';
+  }
+  return 'unknown';
+}
+
+function formatChangeType(value) {
+  const type = normalizeChangeType(value);
+  return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function formatTimestamp(timestamp) {
+  if (!timestamp) {
+    return 'Unknown date';
+  }
+  const date = new Date(timestamp * 1000);
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function normalizeEntryType(value) {
