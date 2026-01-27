@@ -47,6 +47,12 @@ type InMemoryStorage struct {
 	// Versioned file storage
 	commitSnapshots  map[string]*models.CommitSnapshot // commitHash -> snapshot
 	versionedContent map[string]*models.FileContent    // contentHash -> content
+
+	// File change history
+	fileChanges         map[string]*models.FileChangeRecord   // changeID -> record
+	fileChangesByPath   map[string][]string                   // "sliceID:path" -> []changeID (newest first)
+	fileChangesByCommit map[string][]string                   // commitHash -> []changeID
+	fileChangesByDir    map[string][]string                   // "sliceID:dirPrefix" -> []changeID (newest first)
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
@@ -64,8 +70,12 @@ func NewInMemoryStorage() *InMemoryStorage {
 		sliceCommits:     make(map[string][]*models.Commit),
 		lockedSlices:     make(map[string]bool),
 		fileLocks:        make(map[string]string),
-		commitSnapshots:  make(map[string]*models.CommitSnapshot),
-		versionedContent: make(map[string]*models.FileContent),
+		commitSnapshots:     make(map[string]*models.CommitSnapshot),
+		versionedContent:    make(map[string]*models.FileContent),
+		fileChanges:         make(map[string]*models.FileChangeRecord),
+		fileChangesByPath:   make(map[string][]string),
+		fileChangesByCommit: make(map[string][]string),
+		fileChangesByDir:    make(map[string][]string),
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -868,4 +878,319 @@ func (s *InMemoryStorage) ListFilesAtCommit(ctx context.Context, commitHash, pat
 
 	sort.Strings(files)
 	return files, nil
+}
+
+// ============ File Change History Operations ============
+
+// AddFileChange records a file change associated with a commit.
+func (s *InMemoryStorage) AddFileChange(ctx context.Context, change *models.FileChangeRecord) error {
+	if change.ID == "" || change.Path == "" || change.CommitHash == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Store the change record
+	changeCopy := *change
+	s.fileChanges[change.ID] = &changeCopy
+
+	// Index by path (prepend for newest-first ordering)
+	pathKey := change.SliceID + ":" + change.Path
+	s.fileChangesByPath[pathKey] = append([]string{change.ID}, s.fileChangesByPath[pathKey]...)
+
+	// Index by commit
+	s.fileChangesByCommit[change.CommitHash] = append(s.fileChangesByCommit[change.CommitHash], change.ID)
+
+	// Index by directory prefixes (for directory history queries)
+	s.indexChangeByDirectories(change.SliceID, change.Path, change.ID)
+
+	return nil
+}
+
+// indexChangeByDirectories adds change ID to all parent directory indexes.
+func (s *InMemoryStorage) indexChangeByDirectories(sliceID, path, changeID string) {
+	// Index each directory level
+	parts := strings.Split(path, "/")
+	for i := range len(parts) - 1 {
+		dirPrefix := strings.Join(parts[:i+1], "/") + "/"
+		dirKey := sliceID + ":" + dirPrefix
+		s.fileChangesByDir[dirKey] = append([]string{changeID}, s.fileChangesByDir[dirKey]...)
+	}
+
+	// Also index root directory (empty prefix means all files)
+	rootKey := sliceID + ":"
+	s.fileChangesByDir[rootKey] = append([]string{changeID}, s.fileChangesByDir[rootKey]...)
+}
+
+// AddFileChanges records multiple file changes in a batch.
+func (s *InMemoryStorage) AddFileChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
+	for _, change := range changes {
+		if err := s.AddFileChange(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetFileHistory retrieves the change history for a specific file path.
+func (s *InMemoryStorage) GetFileHistory(ctx context.Context, sliceID, path string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	pathKey := sliceID + ":" + path
+	changeIDs := s.fileChangesByPath[pathKey]
+
+	return s.getChangesFromIDs(changeIDs, limit, fromCommit)
+}
+
+// GetDirectoryHistory retrieves change history for all files under a directory.
+func (s *InMemoryStorage) GetDirectoryHistory(ctx context.Context, sliceID, pathPrefix string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Normalize path prefix
+	if pathPrefix != "" && !strings.HasSuffix(pathPrefix, "/") {
+		pathPrefix += "/"
+	}
+
+	dirKey := sliceID + ":" + pathPrefix
+	changeIDs := s.fileChangesByDir[dirKey]
+
+	return s.getChangesFromIDs(changeIDs, limit, fromCommit)
+}
+
+// GetCommitChanges retrieves all file changes made in a specific commit.
+func (s *InMemoryStorage) GetCommitChanges(ctx context.Context, commitHash string) ([]*models.FileChangeRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	changeIDs := s.fileChangesByCommit[commitHash]
+	if len(changeIDs) == 0 {
+		return []*models.FileChangeRecord{}, nil
+	}
+
+	var result []*models.FileChangeRecord
+	for _, id := range changeIDs {
+		if change, exists := s.fileChanges[id]; exists {
+			changeCopy := *change
+			result = append(result, &changeCopy)
+		}
+	}
+
+	return result, nil
+}
+
+// QueryFileHistory performs a flexible query on file change history.
+func (s *InMemoryStorage) QueryFileHistory(ctx context.Context, query *models.FileHistoryQuery) (*models.FileHistoryResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var candidates []*models.FileChangeRecord
+
+	// Determine which index to use
+	if query.Path != "" {
+		// Exact path match
+		pathKey := query.SliceID + ":" + query.Path
+		changeIDs := s.fileChangesByPath[pathKey]
+		for _, id := range changeIDs {
+			if change, exists := s.fileChanges[id]; exists {
+				candidates = append(candidates, change)
+			}
+		}
+	} else if query.PathPrefix != "" {
+		// Directory prefix match
+		prefix := query.PathPrefix
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		dirKey := query.SliceID + ":" + prefix
+		changeIDs := s.fileChangesByDir[dirKey]
+		for _, id := range changeIDs {
+			if change, exists := s.fileChanges[id]; exists {
+				candidates = append(candidates, change)
+			}
+		}
+	} else {
+		// All changes for slice
+		dirKey := query.SliceID + ":"
+		changeIDs := s.fileChangesByDir[dirKey]
+		for _, id := range changeIDs {
+			if change, exists := s.fileChanges[id]; exists {
+				candidates = append(candidates, change)
+			}
+		}
+	}
+
+	// Apply filters
+	var filtered []*models.FileChangeRecord
+	for _, change := range candidates {
+		if !s.matchesQueryFilters(change, query) {
+			continue
+		}
+		filtered = append(filtered, change)
+	}
+
+	// Sort by timestamp descending (newest first)
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Timestamp.After(filtered[j].Timestamp)
+	})
+
+	totalCount := len(filtered)
+
+	// Apply offset and limit
+	if query.Offset > 0 {
+		if query.Offset >= len(filtered) {
+			filtered = nil
+		} else {
+			filtered = filtered[query.Offset:]
+		}
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 50 // Default limit
+	}
+
+	hasMore := len(filtered) > limit
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	// Create copies
+	var result []*models.FileChangeRecord
+	for _, change := range filtered {
+		changeCopy := *change
+		result = append(result, &changeCopy)
+	}
+
+	return &models.FileHistoryResult{
+		Changes:    result,
+		TotalCount: totalCount,
+		HasMore:    hasMore,
+	}, nil
+}
+
+// matchesQueryFilters checks if a change matches the query filters.
+func (s *InMemoryStorage) matchesQueryFilters(change *models.FileChangeRecord, query *models.FileHistoryQuery) bool {
+	// Filter by change types
+	if len(query.ChangeTypes) > 0 {
+		found := false
+		for _, ct := range query.ChangeTypes {
+			if change.ChangeType == ct {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Filter by author
+	if query.Author != "" && change.Author != query.Author {
+		return false
+	}
+
+	// Filter by time range
+	if query.FromTimestamp != nil && change.Timestamp.Before(*query.FromTimestamp) {
+		return false
+	}
+	if query.ToTimestamp != nil && change.Timestamp.After(*query.ToTimestamp) {
+		return false
+	}
+
+	return true
+}
+
+// GetDirectorySummary gets an aggregated summary of changes for a directory.
+func (s *InMemoryStorage) GetDirectorySummary(ctx context.Context, sliceID, pathPrefix string) (*models.DirectoryChangeSummary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Normalize path prefix
+	if pathPrefix != "" && !strings.HasSuffix(pathPrefix, "/") {
+		pathPrefix += "/"
+	}
+
+	dirKey := sliceID + ":" + pathPrefix
+	changeIDs := s.fileChangesByDir[dirKey]
+
+	if len(changeIDs) == 0 {
+		return &models.DirectoryChangeSummary{
+			Path:          pathPrefix,
+			TotalChanges:  0,
+			FilesChanged:  0,
+			ChangesByType: make(map[models.ChangeType]int),
+		}, nil
+	}
+
+	uniqueFiles := make(map[string]bool)
+	changesByType := make(map[models.ChangeType]int)
+	var lastChange *models.FileChangeRecord
+	var latestTimestamp time.Time
+
+	for _, id := range changeIDs {
+		change, exists := s.fileChanges[id]
+		if !exists {
+			continue
+		}
+
+		uniqueFiles[change.Path] = true
+		changesByType[change.ChangeType]++
+
+		if lastChange == nil || change.Timestamp.After(latestTimestamp) {
+			changeCopy := *change
+			lastChange = &changeCopy
+			latestTimestamp = change.Timestamp
+		}
+	}
+
+	return &models.DirectoryChangeSummary{
+		Path:          pathPrefix,
+		TotalChanges:  len(changeIDs),
+		FilesChanged:  len(uniqueFiles),
+		LastChange:    lastChange,
+		ChangesByType: changesByType,
+	}, nil
+}
+
+// getChangesFromIDs retrieves changes from a list of IDs with pagination.
+func (s *InMemoryStorage) getChangesFromIDs(changeIDs []string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	if len(changeIDs) == 0 {
+		return []*models.FileChangeRecord{}, nil
+	}
+
+	// Find starting point if fromCommit is specified
+	startIdx := 0
+	if fromCommit != "" {
+		for i, id := range changeIDs {
+			if change, exists := s.fileChanges[id]; exists {
+				if change.CommitHash == fromCommit {
+					startIdx = i + 1
+					break
+				}
+			}
+		}
+	}
+
+	if startIdx >= len(changeIDs) {
+		return []*models.FileChangeRecord{}, nil
+	}
+
+	// Apply limit
+	endIdx := len(changeIDs)
+	if limit > 0 && startIdx+limit < endIdx {
+		endIdx = startIdx + limit
+	}
+
+	var result []*models.FileChangeRecord
+	for _, id := range changeIDs[startIdx:endIdx] {
+		if change, exists := s.fileChanges[id]; exists {
+			changeCopy := *change
+			result = append(result, &changeCopy)
+		}
+	}
+
+	return result, nil
 }
