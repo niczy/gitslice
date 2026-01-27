@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -49,7 +50,8 @@ func EnsureRootSliceInitialized(ctx context.Context, st storage.Storage) error {
 	return nil
 }
 
-// populateRootSliceFromGit scans the current git repository and adds all tracked files to the root slice
+// populateRootSliceFromGit scans the current git repository and adds all tracked files
+// to the root slice using the changeset workflow so the initialization appears in commit history.
 func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID string) error {
 	// Skip git population during tests
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "1" || os.Getenv("SKIP_GIT_POPULATION") == "1" {
@@ -80,29 +82,24 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 		return nil
 	}
 
-	log.Printf("Found %d files in git repository, adding to root slice under %s", len(files), genesisMountPath)
+	log.Printf("Found %d files in git repository, adding to root slice under %s via changeset", len(files), genesisMountPath)
 
-	// Collect all unique directories we need to create
+	// Phase 1: Create directory and file entries in storage, collect all paths
 	dirsToCreate := make(map[string]bool)
-	dirEntries := make(map[string]*models.DirectoryEntry)
+	var allModifiedFiles []string
 
-	// Process each file and extract parent directories
 	for _, filePath := range files {
 		if filePath == "" {
 			continue
 		}
-
-		// Prefix path with genesis mount path for organization
 		slicePath := normalizeSlicePath(filePath)
-
-		// Extract all parent directories
 		dirs := extractParentDirs(slicePath)
 		for _, dir := range dirs {
 			dirsToCreate[dir] = true
 		}
 	}
 
-	// Create directory entries in order (parent before child)
+	// Create directory entries
 	sortedDirs := sortDirsByDepth(dirsToCreate)
 	for _, dirPath := range sortedDirs {
 		dirEntry := &models.DirectoryEntry{
@@ -112,30 +109,26 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 			ParentID: sliceID,
 			Size:     0,
 		}
-
 		if err := st.AddEntry(ctx, dirEntry); err != nil {
 			log.Printf("Warning: failed to add directory entry %s: %v", dirPath, err)
 			continue
 		}
-
-		dirEntries[dirPath] = dirEntry
-
 		if err := st.AddFileToSlice(ctx, dirPath, sliceID); err != nil {
 			log.Printf("Warning: failed to add directory %s to slice: %v", dirPath, err)
 		}
+		allModifiedFiles = append(allModifiedFiles, dirPath)
 	}
 
-	// Now create file entries
+	// Create file entries and content
+	now := time.Now()
+	var fileChangeRecords []*models.FileChangeRecord
 	fileCount := 0
 	for _, filePath := range files {
 		if filePath == "" {
 			continue
 		}
 
-		// Prefix path with genesis mount path for organization
 		slicePath := normalizeSlicePath(filePath)
-
-		// Read file content from actual git repo location
 		fullPath := filepath.Join(repoRoot, filePath)
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
@@ -143,7 +136,8 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 			continue
 		}
 
-		// Create directory entry for the file
+		contentHash := fmt.Sprintf("%x", len(content))
+
 		fileEntry := &models.DirectoryEntry{
 			ID:       generateEntryID(sliceID, slicePath),
 			Path:     slicePath,
@@ -152,36 +146,129 @@ func populateRootSliceFromGit(ctx context.Context, st storage.Storage, sliceID s
 			Content:  content,
 			Size:     int64(len(content)),
 		}
-
 		if err := st.AddEntry(ctx, fileEntry); err != nil {
 			log.Printf("Warning: failed to add file entry %s: %v", slicePath, err)
 			continue
 		}
 
-		// Add file path to slice
 		if err := st.AddFileToSlice(ctx, slicePath, sliceID); err != nil {
 			log.Printf("Warning: failed to add file %s to root slice: %v", slicePath, err)
 			continue
 		}
 
-		// Also store in file content store for compatibility
 		fileContent := &models.FileContent{
 			FileID:  slicePath,
 			Path:    slicePath,
 			Content: content,
 			Size:    int64(len(content)),
-			Hash:    fmt.Sprintf("%x", len(content)),
+			Hash:    contentHash,
 		}
-
 		if err := st.AddFileContent(ctx, fileContent); err != nil {
 			log.Printf("Warning: failed to store content for %s: %v", slicePath, err)
 			continue
 		}
 
+		allModifiedFiles = append(allModifiedFiles, slicePath)
+
+		// Build file change record for history tracking
+		fileChangeRecords = append(fileChangeRecords, &models.FileChangeRecord{
+			ID:         fmt.Sprintf("genesis-%s", slicePath),
+			SliceID:    sliceID,
+			Path:       slicePath,
+			ChangeType: models.ChangeTypeAdd,
+			NewHash:    contentHash,
+			Author:     "system",
+			Message:    "Genesis: initialize repository files",
+			Timestamp:  now,
+		})
+
 		fileCount++
 	}
 
-	log.Printf("Successfully populated root slice with %d directories and %d files", len(sortedDirs), fileCount)
+	// Phase 2: Create and merge a changeset so the initialization shows in history
+	genesisCommitHash := fmt.Sprintf("genesis-commit-%d", now.UnixNano())
+	genesisMessage := "Genesis: initialize repository files"
+
+	cs := &models.Changeset{
+		ID:            fmt.Sprintf("cs-genesis-%d", now.UnixNano()),
+		Hash:          fmt.Sprintf("hash-genesis-%d", now.UnixNano()),
+		SliceID:       sliceID,
+		ModifiedFiles: allModifiedFiles,
+		Status:        models.ChangesetStatusMerged,
+		Author:        "system",
+		Message:       genesisMessage,
+		CreatedAt:     now,
+		MergedAt:      &now,
+	}
+
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		return fmt.Errorf("failed to create genesis changeset: %w", err)
+	}
+
+	// Create the commit record on the root slice
+	if err := st.AddSliceCommit(ctx, sliceID, &models.Commit{
+		CommitHash: genesisCommitHash,
+		ParentHash: "",
+		Timestamp:  now,
+		Message:    genesisMessage,
+	}); err != nil {
+		log.Printf("Warning: failed to add genesis commit: %v", err)
+	}
+
+	// Update slice metadata with the genesis commit
+	metadata, err := st.GetSliceMetadata(ctx, sliceID)
+	if err == nil {
+		metadata.HeadCommitHash = genesisCommitHash
+		metadata.ModifiedFiles = allModifiedFiles
+		metadata.ModifiedFilesCount = len(allModifiedFiles)
+		metadata.LastModified = now
+		if err := st.UpdateSliceMetadata(ctx, sliceID, metadata); err != nil {
+			log.Printf("Warning: failed to update root slice metadata: %v", err)
+		}
+	}
+
+	// Create commit snapshot for versioned file access
+	snapshotFiles := make(map[string]string)
+	for _, f := range allModifiedFiles {
+		snapshotFiles[f] = f
+	}
+	snapshot := &models.CommitSnapshot{
+		CommitHash: genesisCommitHash,
+		SliceID:    sliceID,
+		Files:      snapshotFiles,
+		Timestamp:  now,
+	}
+	if err := st.SaveCommitSnapshot(ctx, snapshot); err != nil {
+		log.Printf("Warning: failed to save genesis commit snapshot: %v", err)
+	}
+
+	// Record file change history so genesis files appear in history queries
+	// Set the commit hash on all records now that we have it
+	for _, rec := range fileChangeRecords {
+		rec.CommitHash = genesisCommitHash
+	}
+	if err := st.AddFileChanges(ctx, fileChangeRecords); err != nil {
+		log.Printf("Warning: failed to record genesis file changes: %v", err)
+	}
+
+	// Update global state with genesis commit
+	state, _ := st.GetGlobalState(ctx)
+	if state == nil {
+		state = &models.GlobalState{}
+	}
+	globalCommit := &models.GlobalCommit{
+		CommitHash:     genesisCommitHash,
+		Timestamp:      now,
+		MergedSliceIDs: []string{sliceID},
+	}
+	state.GlobalCommitHash = genesisCommitHash
+	state.Timestamp = now
+	state.History = append([]*models.GlobalCommit{globalCommit}, state.History...)
+	if err := st.UpdateGlobalState(ctx, state); err != nil {
+		log.Printf("Warning: failed to update global state with genesis commit: %v", err)
+	}
+
+	log.Printf("Successfully populated root slice with %d directories and %d files via genesis changeset %s", len(sortedDirs), fileCount, cs.ID)
 	return nil
 }
 
