@@ -40,6 +40,13 @@ func NewService(st storage.Storage) slicev1.SliceServiceServer {
 	return newSliceServiceServer(st)
 }
 
+// RunGenesisInit populates the root slice from the git repository by creating
+// and merging a changeset through the service's own RPC methods.
+func RunGenesisInit(ctx context.Context, st storage.Storage) error {
+	svc := newSliceServiceServer(st)
+	return svc.PopulateGenesisFromGit(ctx)
+}
+
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 

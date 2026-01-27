@@ -652,6 +652,9 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
+	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
+		t.Fatalf("failed to run genesis init: %v", err)
+	}
 
 	repoRoot := runGitOrFail(t, ".", "rev-parse", "--show-toplevel")
 	readmePath := filepath.Join(repoRoot, "README.md")
