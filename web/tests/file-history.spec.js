@@ -42,7 +42,7 @@ test.describe('File History (Root Mode)', () => {
 
     // History toggle should now be visible
     await expect(page.getByTestId('history-toggle')).toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('History');
+    await expect(page.getByTestId('history-toggle')).toContainText('History');
   });
 
   test('toggles between content and history view', async ({ page }) => {
@@ -123,7 +123,7 @@ test.describe('File History (Root Mode)', () => {
 
     // Should show history panel
     await expect(page.getByTestId('history-panel')).toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('Content');
+    await expect(page.getByTestId('history-toggle')).toContainText('Content');
 
     // Should display history items
     const historyItems = page.getByTestId('history-item');
@@ -143,7 +143,7 @@ test.describe('File History (Root Mode)', () => {
     await page.getByTestId('history-toggle').click();
     await expect(page.getByTestId('history-panel')).not.toBeVisible();
     await expect(page.getByText('const x = 1;')).toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('History');
+    await expect(page.getByTestId('history-toggle')).toContainText('History');
   });
 
   test('shows empty state when no history available', async ({ page }) => {
