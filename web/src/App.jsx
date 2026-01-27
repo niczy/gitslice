@@ -23,7 +23,13 @@ const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
 function App() {
   const [activePage, setActivePage] = useState('landing');
+  const [diffCommitHash, setDiffCommitHash] = useState('');
   const githubUrl = 'https://github.com/niczy/gitslice';
+
+  const navigateToDiff = (commitHash) => {
+    setDiffCommitHash(commitHash);
+    setActivePage('diff');
+  };
 
   return (
     <div className="app-shell">
@@ -48,7 +54,11 @@ function App() {
       </header>
 
       <main className="page">
-        {activePage === 'landing' ? <OverviewPage onBrowseRepo={() => setActivePage('browser')} /> : <RepoBrowser />}
+        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => setActivePage('browser')} />}
+        {activePage === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
+        {activePage === 'diff' && (
+          <CommitDiffPage commitHash={diffCommitHash} onBack={() => setActivePage('browser')} />
+        )}
       </main>
 
       <footer className="footer">
@@ -189,7 +199,7 @@ function OverviewPage({ onBrowseRepo }) {
   );
 }
 
-function RepoBrowser() {
+function RepoBrowser({ onNavigateToDiff }) {
   const [browseMode, setBrowseMode] = useState('root'); // 'root' | 'slice'
   const [sliceId, setSliceId] = useState('');
   const [commitHash, setCommitHash] = useState(''); // For root mode
@@ -630,9 +640,20 @@ function RepoBrowser() {
                           <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
                             {formatChangeType(change.change_type)}
                           </span>
-                          <span className="commit-hash" title={change.commit_hash}>
+                          <a
+                            className="commit-hash commit-diff-link"
+                            title={change.commit_hash}
+                            href="#"
+                            data-testid="commit-diff-link"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (change.commit_hash && onNavigateToDiff) {
+                                onNavigateToDiff(change.commit_hash);
+                              }
+                            }}
+                          >
                             {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
-                          </span>
+                          </a>
                         </div>
                         <div className="history-item-message">{change.message || 'No message'}</div>
                         <div className="history-item-meta">
@@ -653,6 +674,99 @@ function RepoBrowser() {
             )}
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function CommitDiffPage({ commitHash, onBack }) {
+  const [diffData, setDiffData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!commitHash) return;
+    let active = true;
+    const controller = new AbortController();
+
+    const loadDiff = async () => {
+      setIsLoading(true);
+      setError('');
+      try {
+        const response = await fetch(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`Request failed (${response.status})`);
+        const payload = await response.json();
+        if (active) setDiffData(payload);
+      } catch (err) {
+        if (active && err?.name !== 'AbortError') {
+          setError('Unable to load commit changes.');
+        }
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+
+    loadDiff();
+    return () => { active = false; controller.abort(); };
+  }, [commitHash]);
+
+  return (
+    <section className="commit-diff-page" data-testid="commit-diff-page">
+      <div className="diff-header">
+        <button type="button" className="ghost diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
+          Back to browser
+        </button>
+        <div>
+          <p className="eyebrow">Commit diff</p>
+          <h2 data-testid="diff-commit-title">
+            Commit <span className="commit-hash">{commitHash ? commitHash.slice(0, 12) : ''}</span>
+          </h2>
+        </div>
+        {diffData && (
+          <div className="diff-summary" data-testid="diff-summary">
+            <span className="diff-stat diff-stat-added">+{diffData.files_added || 0} added</span>
+            <span className="diff-stat diff-stat-modified">{diffData.files_modified || 0} modified</span>
+            <span className="diff-stat diff-stat-deleted">-{diffData.files_deleted || 0} deleted</span>
+            {(diffData.files_renamed || 0) > 0 && (
+              <span className="diff-stat diff-stat-renamed">{diffData.files_renamed} renamed</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="diff-content">
+        {isLoading && <div className="diff-loading">Loading commit changes...</div>}
+        {error && <div className="panel-error">{error}</div>}
+        {!isLoading && !error && diffData && (
+          <ul className="diff-file-list" data-testid="diff-file-list">
+            {(diffData.changes || []).map((change) => (
+              <li key={change.id || change.path} className="diff-file-item" data-testid="diff-file-item">
+                <div className="diff-file-header">
+                  <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                    {formatChangeType(change.change_type)}
+                  </span>
+                  <span className="diff-file-path" data-testid="diff-file-path">{change.path}</span>
+                  {change.old_path && change.old_path !== change.path && (
+                    <span className="diff-file-old-path">(was: {change.old_path})</span>
+                  )}
+                </div>
+                <div className="diff-file-stats">
+                  {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                    <span className="history-lines">
+                      <span className="lines-added">+{change.lines_added || 0}</span>
+                      <span className="lines-deleted">-{change.lines_deleted || 0}</span>
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {!isLoading && !error && diffData && (diffData.changes || []).length === 0 && (
+          <div className="panel-empty">No changes found in this commit.</div>
+        )}
       </div>
     </section>
   );
