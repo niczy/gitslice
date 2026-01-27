@@ -189,6 +189,328 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 }
 
+func TestFileChangeHistory(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		factory func(t *testing.T) Storage
+	}{
+		{
+			name: "in-memory",
+			factory: func(t *testing.T) Storage {
+				t.Helper()
+				return NewInMemoryStorage()
+			},
+		},
+		{
+			name: "redis",
+			factory: func(t *testing.T) Storage {
+				t.Helper()
+				mr := miniredis.RunT(t)
+				client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+				store := NewInMemoryObjectStore()
+				t.Cleanup(func() {
+					_ = client.Close()
+					mr.Close()
+				})
+				return NewRedisStorage(client, store, "test-history")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runFileChangeHistoryTests(ctx, t, tc.factory(t))
+		})
+	}
+}
+
+func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	// Setup: Create a slice first
+	slice := &models.Slice{ID: "slice-history", Name: "History Test", Description: "For testing file history"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	baseTime := time.Now().Add(-time.Hour)
+
+	// Test 1: AddFileChange and GetFileHistory
+	t.Run("AddFileChange", func(t *testing.T) {
+		change1 := &models.FileChangeRecord{
+			ID:           "change-1",
+			SliceID:      slice.ID,
+			CommitHash:   "commit-abc",
+			Path:         "src/main.go",
+			ChangeType:   models.ChangeTypeAdd,
+			NewHash:      "hash123",
+			LinesAdded:   50,
+			Author:       "alice",
+			Message:      "Initial commit",
+			Timestamp:    baseTime,
+		}
+		if err := st.AddFileChange(ctx, change1); err != nil {
+			t.Fatalf("AddFileChange failed: %v", err)
+		}
+
+		change2 := &models.FileChangeRecord{
+			ID:           "change-2",
+			SliceID:      slice.ID,
+			CommitHash:   "commit-def",
+			Path:         "src/main.go",
+			ChangeType:   models.ChangeTypeModify,
+			OldHash:      "hash123",
+			NewHash:      "hash456",
+			LinesAdded:   10,
+			LinesDeleted: 5,
+			Author:       "bob",
+			Message:      "Fix bug",
+			Timestamp:    baseTime.Add(10 * time.Minute),
+		}
+		if err := st.AddFileChange(ctx, change2); err != nil {
+			t.Fatalf("AddFileChange second failed: %v", err)
+		}
+
+		// Verify GetFileHistory returns changes in order (newest first)
+		history, err := st.GetFileHistory(ctx, slice.ID, "src/main.go", 10, "")
+		if err != nil {
+			t.Fatalf("GetFileHistory failed: %v", err)
+		}
+		if len(history) != 2 {
+			t.Fatalf("expected 2 changes, got %d", len(history))
+		}
+		// Newest first
+		if history[0].ID != "change-2" {
+			t.Errorf("expected newest change first, got %s", history[0].ID)
+		}
+		if history[1].ID != "change-1" {
+			t.Errorf("expected oldest change second, got %s", history[1].ID)
+		}
+	})
+
+	// Test 2: AddFileChanges batch
+	t.Run("AddFileChanges batch", func(t *testing.T) {
+		changes := []*models.FileChangeRecord{
+			{
+				ID:         "change-3",
+				SliceID:    slice.ID,
+				CommitHash: "commit-ghi",
+				Path:       "src/utils/helper.go",
+				ChangeType: models.ChangeTypeAdd,
+				NewHash:    "hashutil1",
+				Author:     "charlie",
+				Message:    "Add helper",
+				Timestamp:  baseTime.Add(20 * time.Minute),
+			},
+			{
+				ID:         "change-4",
+				SliceID:    slice.ID,
+				CommitHash: "commit-ghi",
+				Path:       "src/utils/config.go",
+				ChangeType: models.ChangeTypeAdd,
+				NewHash:    "hashutil2",
+				Author:     "charlie",
+				Message:    "Add helper",
+				Timestamp:  baseTime.Add(20 * time.Minute),
+			},
+		}
+		if err := st.AddFileChanges(ctx, changes); err != nil {
+			t.Fatalf("AddFileChanges failed: %v", err)
+		}
+
+		// Verify both were added
+		history1, _ := st.GetFileHistory(ctx, slice.ID, "src/utils/helper.go", 10, "")
+		history2, _ := st.GetFileHistory(ctx, slice.ID, "src/utils/config.go", 10, "")
+		if len(history1) != 1 || len(history2) != 1 {
+			t.Errorf("expected 1 change each, got %d and %d", len(history1), len(history2))
+		}
+	})
+
+	// Test 3: GetDirectoryHistory
+	t.Run("GetDirectoryHistory", func(t *testing.T) {
+		// Get all changes under src/utils/
+		history, err := st.GetDirectoryHistory(ctx, slice.ID, "src/utils", 10, "")
+		if err != nil {
+			t.Fatalf("GetDirectoryHistory failed: %v", err)
+		}
+		if len(history) != 2 {
+			t.Errorf("expected 2 changes under src/utils/, got %d", len(history))
+		}
+
+		// Get all changes under src/
+		historyAll, err := st.GetDirectoryHistory(ctx, slice.ID, "src", 10, "")
+		if err != nil {
+			t.Fatalf("GetDirectoryHistory src/ failed: %v", err)
+		}
+		if len(historyAll) != 4 {
+			t.Errorf("expected 4 changes under src/, got %d", len(historyAll))
+		}
+	})
+
+	// Test 4: GetCommitChanges
+	t.Run("GetCommitChanges", func(t *testing.T) {
+		changes, err := st.GetCommitChanges(ctx, "commit-ghi")
+		if err != nil {
+			t.Fatalf("GetCommitChanges failed: %v", err)
+		}
+		if len(changes) != 2 {
+			t.Errorf("expected 2 changes in commit-ghi, got %d", len(changes))
+		}
+
+		// Non-existent commit should return empty
+		empty, err := st.GetCommitChanges(ctx, "nonexistent")
+		if err != nil {
+			t.Fatalf("GetCommitChanges nonexistent failed: %v", err)
+		}
+		if len(empty) != 0 {
+			t.Errorf("expected 0 changes for nonexistent commit, got %d", len(empty))
+		}
+	})
+
+	// Test 5: Pagination with fromCommit
+	t.Run("Pagination", func(t *testing.T) {
+		// Get first page
+		page1, err := st.GetFileHistory(ctx, slice.ID, "src/main.go", 1, "")
+		if err != nil {
+			t.Fatalf("GetFileHistory page1 failed: %v", err)
+		}
+		if len(page1) != 1 {
+			t.Fatalf("expected 1 change in page1, got %d", len(page1))
+		}
+
+		// Get second page using fromCommit
+		page2, err := st.GetFileHistory(ctx, slice.ID, "src/main.go", 1, page1[0].CommitHash)
+		if err != nil {
+			t.Fatalf("GetFileHistory page2 failed: %v", err)
+		}
+		if len(page2) != 1 {
+			t.Fatalf("expected 1 change in page2, got %d", len(page2))
+		}
+		if page2[0].ID == page1[0].ID {
+			t.Error("page2 should have different change than page1")
+		}
+	})
+
+	// Test 6: QueryFileHistory with filters
+	t.Run("QueryFileHistory", func(t *testing.T) {
+		// Query by author
+		result, err := st.QueryFileHistory(ctx, &models.FileHistoryQuery{
+			SliceID: slice.ID,
+			Author:  "alice",
+			Limit:   10,
+		})
+		if err != nil {
+			t.Fatalf("QueryFileHistory by author failed: %v", err)
+		}
+		if len(result.Changes) != 1 {
+			t.Errorf("expected 1 change by alice, got %d", len(result.Changes))
+		}
+
+		// Query by change type
+		result2, err := st.QueryFileHistory(ctx, &models.FileHistoryQuery{
+			SliceID:     slice.ID,
+			ChangeTypes: []models.ChangeType{models.ChangeTypeAdd},
+			Limit:       10,
+		})
+		if err != nil {
+			t.Fatalf("QueryFileHistory by type failed: %v", err)
+		}
+		if len(result2.Changes) != 3 {
+			t.Errorf("expected 3 add changes, got %d", len(result2.Changes))
+		}
+
+		// Query by path prefix
+		result3, err := st.QueryFileHistory(ctx, &models.FileHistoryQuery{
+			SliceID:    slice.ID,
+			PathPrefix: "src/utils",
+			Limit:      10,
+		})
+		if err != nil {
+			t.Fatalf("QueryFileHistory by prefix failed: %v", err)
+		}
+		if len(result3.Changes) != 2 {
+			t.Errorf("expected 2 changes under src/utils, got %d", len(result3.Changes))
+		}
+
+		// Query with time filter
+		midTime := baseTime.Add(15 * time.Minute)
+		result4, err := st.QueryFileHistory(ctx, &models.FileHistoryQuery{
+			SliceID:       slice.ID,
+			FromTimestamp: &midTime,
+			Limit:         10,
+		})
+		if err != nil {
+			t.Fatalf("QueryFileHistory by time failed: %v", err)
+		}
+		if len(result4.Changes) != 2 {
+			t.Errorf("expected 2 changes after midTime, got %d", len(result4.Changes))
+		}
+	})
+
+	// Test 7: GetDirectorySummary
+	t.Run("GetDirectorySummary", func(t *testing.T) {
+		summary, err := st.GetDirectorySummary(ctx, slice.ID, "src")
+		if err != nil {
+			t.Fatalf("GetDirectorySummary failed: %v", err)
+		}
+		if summary.TotalChanges != 4 {
+			t.Errorf("expected 4 total changes, got %d", summary.TotalChanges)
+		}
+		if summary.FilesChanged != 3 {
+			t.Errorf("expected 3 unique files, got %d", summary.FilesChanged)
+		}
+		if summary.LastChange == nil {
+			t.Error("expected LastChange to be set")
+		}
+		if summary.ChangesByType[models.ChangeTypeAdd] != 3 {
+			t.Errorf("expected 3 add changes, got %d", summary.ChangesByType[models.ChangeTypeAdd])
+		}
+		if summary.ChangesByType[models.ChangeTypeModify] != 1 {
+			t.Errorf("expected 1 modify change, got %d", summary.ChangesByType[models.ChangeTypeModify])
+		}
+	})
+
+	// Test 8: Empty results
+	t.Run("EmptyResults", func(t *testing.T) {
+		history, err := st.GetFileHistory(ctx, slice.ID, "nonexistent/path.go", 10, "")
+		if err != nil {
+			t.Fatalf("GetFileHistory nonexistent failed: %v", err)
+		}
+		if len(history) != 0 {
+			t.Errorf("expected 0 changes for nonexistent path, got %d", len(history))
+		}
+
+		summary, err := st.GetDirectorySummary(ctx, slice.ID, "nonexistent")
+		if err != nil {
+			t.Fatalf("GetDirectorySummary nonexistent failed: %v", err)
+		}
+		if summary.TotalChanges != 0 {
+			t.Errorf("expected 0 changes for nonexistent dir, got %d", summary.TotalChanges)
+		}
+	})
+
+	// Test 9: Invalid input
+	t.Run("InvalidInput", func(t *testing.T) {
+		invalidChange := &models.FileChangeRecord{
+			ID:   "", // Missing ID
+			Path: "test.go",
+		}
+		if err := st.AddFileChange(ctx, invalidChange); err != ErrInvalidInput {
+			t.Errorf("expected ErrInvalidInput, got %v", err)
+		}
+
+		invalidChange2 := &models.FileChangeRecord{
+			ID:   "valid-id",
+			Path: "", // Missing path
+		}
+		if err := st.AddFileChange(ctx, invalidChange2); err != ErrInvalidInput {
+			t.Errorf("expected ErrInvalidInput for missing path, got %v", err)
+		}
+	})
+}
+
 func TestRedisStorageRebuildIndexes(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)

@@ -1431,3 +1431,345 @@ func (s *RedisStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPr
 	sort.Strings(files)
 	return files, nil
 }
+
+// ============ File Change History Operations ============
+
+// AddFileChange records a file change associated with a commit.
+func (s *RedisStorage) AddFileChange(ctx context.Context, change *models.FileChangeRecord) error {
+	if change.ID == "" || change.Path == "" || change.CommitHash == "" {
+		return ErrInvalidInput
+	}
+	ctx = ensureCtx(ctx)
+
+	// Store the change record in object store
+	raw, err := json.Marshal(change)
+	if err != nil {
+		return err
+	}
+	if err := s.objectStore.PutObject(ctx, s.key("file_change", change.ID), raw); err != nil {
+		return err
+	}
+
+	// Use negative timestamp for descending order (newest first)
+	score := float64(-change.Timestamp.UnixNano())
+
+	// Index by path (sorted set for time-ordered retrieval)
+	pathKey := s.key("file_changes_by_path", change.SliceID, change.Path)
+	if err := s.rdb.ZAdd(ctx, pathKey, redis.Z{Score: score, Member: change.ID}).Err(); err != nil {
+		return err
+	}
+
+	// Index by commit (set for all changes in a commit)
+	commitKey := s.key("file_changes_by_commit", change.CommitHash)
+	if err := s.rdb.SAdd(ctx, commitKey, change.ID).Err(); err != nil {
+		return err
+	}
+
+	// Index by directory prefixes
+	if err := s.indexChangeByDirectories(ctx, change.SliceID, change.Path, change.ID, score); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// indexChangeByDirectories adds change ID to all parent directory indexes.
+func (s *RedisStorage) indexChangeByDirectories(ctx context.Context, sliceID, path, changeID string, score float64) error {
+	parts := strings.Split(path, "/")
+	for i := range len(parts) - 1 {
+		dirPrefix := strings.Join(parts[:i+1], "/") + "/"
+		dirKey := s.key("file_changes_by_dir", sliceID, dirPrefix)
+		if err := s.rdb.ZAdd(ctx, dirKey, redis.Z{Score: score, Member: changeID}).Err(); err != nil {
+			return err
+		}
+	}
+
+	// Also index root directory
+	rootKey := s.key("file_changes_by_dir", sliceID, "")
+	return s.rdb.ZAdd(ctx, rootKey, redis.Z{Score: score, Member: changeID}).Err()
+}
+
+// AddFileChanges records multiple file changes in a batch.
+func (s *RedisStorage) AddFileChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
+	for _, change := range changes {
+		if err := s.AddFileChange(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetFileHistory retrieves the change history for a specific file path.
+func (s *RedisStorage) GetFileHistory(ctx context.Context, sliceID, path string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	ctx = ensureCtx(ctx)
+
+	pathKey := s.key("file_changes_by_path", sliceID, path)
+	return s.getChangesFromSortedSet(ctx, pathKey, limit, fromCommit)
+}
+
+// GetDirectoryHistory retrieves change history for all files under a directory.
+func (s *RedisStorage) GetDirectoryHistory(ctx context.Context, sliceID, pathPrefix string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	ctx = ensureCtx(ctx)
+
+	// Normalize path prefix
+	if pathPrefix != "" && !strings.HasSuffix(pathPrefix, "/") {
+		pathPrefix += "/"
+	}
+
+	dirKey := s.key("file_changes_by_dir", sliceID, pathPrefix)
+	return s.getChangesFromSortedSet(ctx, dirKey, limit, fromCommit)
+}
+
+// GetCommitChanges retrieves all file changes made in a specific commit.
+func (s *RedisStorage) GetCommitChanges(ctx context.Context, commitHash string) ([]*models.FileChangeRecord, error) {
+	ctx = ensureCtx(ctx)
+
+	commitKey := s.key("file_changes_by_commit", commitHash)
+	changeIDs, err := s.rdb.SMembers(ctx, commitKey).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(changeIDs) == 0 {
+		return []*models.FileChangeRecord{}, nil
+	}
+
+	var result []*models.FileChangeRecord
+	for _, id := range changeIDs {
+		change, err := s.loadFileChange(ctx, id)
+		if err != nil {
+			continue
+		}
+		result = append(result, change)
+	}
+
+	return result, nil
+}
+
+// QueryFileHistory performs a flexible query on file change history.
+func (s *RedisStorage) QueryFileHistory(ctx context.Context, query *models.FileHistoryQuery) (*models.FileHistoryResult, error) {
+	ctx = ensureCtx(ctx)
+
+	var candidates []*models.FileChangeRecord
+	var err error
+
+	// Determine which index to use
+	if query.Path != "" {
+		pathKey := s.key("file_changes_by_path", query.SliceID, query.Path)
+		candidates, err = s.getAllChangesFromSortedSet(ctx, pathKey)
+	} else if query.PathPrefix != "" {
+		prefix := query.PathPrefix
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		dirKey := s.key("file_changes_by_dir", query.SliceID, prefix)
+		candidates, err = s.getAllChangesFromSortedSet(ctx, dirKey)
+	} else {
+		dirKey := s.key("file_changes_by_dir", query.SliceID, "")
+		candidates, err = s.getAllChangesFromSortedSet(ctx, dirKey)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply filters
+	var filtered []*models.FileChangeRecord
+	for _, change := range candidates {
+		if !matchesQueryFilters(change, query) {
+			continue
+		}
+		filtered = append(filtered, change)
+	}
+
+	// Sort by timestamp descending
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Timestamp.After(filtered[j].Timestamp)
+	})
+
+	totalCount := len(filtered)
+
+	// Apply offset and limit
+	if query.Offset > 0 {
+		if query.Offset >= len(filtered) {
+			filtered = nil
+		} else {
+			filtered = filtered[query.Offset:]
+		}
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	hasMore := len(filtered) > limit
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	return &models.FileHistoryResult{
+		Changes:    filtered,
+		TotalCount: totalCount,
+		HasMore:    hasMore,
+	}, nil
+}
+
+// matchesQueryFilters checks if a change matches the query filters.
+func matchesQueryFilters(change *models.FileChangeRecord, query *models.FileHistoryQuery) bool {
+	if len(query.ChangeTypes) > 0 {
+		found := false
+		for _, ct := range query.ChangeTypes {
+			if change.ChangeType == ct {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	if query.Author != "" && change.Author != query.Author {
+		return false
+	}
+
+	if query.FromTimestamp != nil && change.Timestamp.Before(*query.FromTimestamp) {
+		return false
+	}
+	if query.ToTimestamp != nil && change.Timestamp.After(*query.ToTimestamp) {
+		return false
+	}
+
+	return true
+}
+
+// GetDirectorySummary gets an aggregated summary of changes for a directory.
+func (s *RedisStorage) GetDirectorySummary(ctx context.Context, sliceID, pathPrefix string) (*models.DirectoryChangeSummary, error) {
+	ctx = ensureCtx(ctx)
+
+	if pathPrefix != "" && !strings.HasSuffix(pathPrefix, "/") {
+		pathPrefix += "/"
+	}
+
+	dirKey := s.key("file_changes_by_dir", sliceID, pathPrefix)
+	changes, err := s.getAllChangesFromSortedSet(ctx, dirKey)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(changes) == 0 {
+		return &models.DirectoryChangeSummary{
+			Path:          pathPrefix,
+			TotalChanges:  0,
+			FilesChanged:  0,
+			ChangesByType: make(map[models.ChangeType]int),
+		}, nil
+	}
+
+	uniqueFiles := make(map[string]bool)
+	changesByType := make(map[models.ChangeType]int)
+	var lastChange *models.FileChangeRecord
+	var latestTimestamp time.Time
+
+	for _, change := range changes {
+		uniqueFiles[change.Path] = true
+		changesByType[change.ChangeType]++
+
+		if lastChange == nil || change.Timestamp.After(latestTimestamp) {
+			changeCopy := *change
+			lastChange = &changeCopy
+			latestTimestamp = change.Timestamp
+		}
+	}
+
+	return &models.DirectoryChangeSummary{
+		Path:          pathPrefix,
+		TotalChanges:  len(changes),
+		FilesChanged:  len(uniqueFiles),
+		LastChange:    lastChange,
+		ChangesByType: changesByType,
+	}, nil
+}
+
+// loadFileChange loads a file change record from object store.
+func (s *RedisStorage) loadFileChange(ctx context.Context, changeID string) (*models.FileChangeRecord, error) {
+	raw, err := s.objectStore.GetObject(ctx, s.key("file_change", changeID))
+	if err != nil {
+		return nil, err
+	}
+
+	var change models.FileChangeRecord
+	if err := json.Unmarshal(raw, &change); err != nil {
+		return nil, err
+	}
+	return &change, nil
+}
+
+// getChangesFromSortedSet retrieves changes from a Redis sorted set with pagination.
+func (s *RedisStorage) getChangesFromSortedSet(ctx context.Context, key string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	// Get all IDs from sorted set (already sorted by score = -timestamp, so newest first)
+	changeIDs, err := s.rdb.ZRange(ctx, key, 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(changeIDs) == 0 {
+		return []*models.FileChangeRecord{}, nil
+	}
+
+	// Find starting point if fromCommit is specified
+	startIdx := 0
+	if fromCommit != "" {
+		for i, id := range changeIDs {
+			change, err := s.loadFileChange(ctx, id)
+			if err != nil {
+				continue
+			}
+			if change.CommitHash == fromCommit {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
+
+	if startIdx >= len(changeIDs) {
+		return []*models.FileChangeRecord{}, nil
+	}
+
+	// Apply limit
+	endIdx := len(changeIDs)
+	if limit > 0 && startIdx+limit < endIdx {
+		endIdx = startIdx + limit
+	}
+
+	var result []*models.FileChangeRecord
+	for _, id := range changeIDs[startIdx:endIdx] {
+		change, err := s.loadFileChange(ctx, id)
+		if err != nil {
+			continue
+		}
+		result = append(result, change)
+	}
+
+	return result, nil
+}
+
+// getAllChangesFromSortedSet retrieves all changes from a sorted set.
+func (s *RedisStorage) getAllChangesFromSortedSet(ctx context.Context, key string) ([]*models.FileChangeRecord, error) {
+	changeIDs, err := s.rdb.ZRange(ctx, key, 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*models.FileChangeRecord
+	for _, id := range changeIDs {
+		change, err := s.loadFileChange(ctx, id)
+		if err != nil {
+			continue
+		}
+		result = append(result, change)
+	}
+
+	return result, nil
+}

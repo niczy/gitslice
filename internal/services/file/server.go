@@ -249,3 +249,195 @@ func sliceHasPath(slice *models.Slice, path string) bool {
 	}
 	return false
 }
+
+// GetFileHistory retrieves the change history for a specific file.
+func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetFileHistoryRequest) (*filev1.GetFileHistoryResponse, error) {
+	if req.Path == "" {
+		return nil, status.Error(codes.InvalidArgument, "path is required")
+	}
+
+	sliceID := req.SliceId
+	if sliceID == "" {
+		rootSlice, err := s.storage.GetRootSlice(ctx)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to get root slice")
+		}
+		sliceID = rootSlice.ID
+	}
+
+	normalizedPath := cleanPath(req.Path)
+	limit := int(req.Limit)
+	if limit <= 0 {
+		limit = 50
+	}
+
+	changes, err := s.storage.GetFileHistory(ctx, sliceID, normalizedPath, limit+1, req.FromCommit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get file history: %v", err))
+	}
+
+	hasMore := len(changes) > limit
+	if hasMore {
+		changes = changes[:limit]
+	}
+
+	var nextCommit string
+	if hasMore && len(changes) > 0 {
+		nextCommit = changes[len(changes)-1].CommitHash
+	}
+
+	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
+	for _, change := range changes {
+		protoChanges = append(protoChanges, modelToProtoChange(change))
+	}
+
+	return &filev1.GetFileHistoryResponse{
+		Changes:    protoChanges,
+		HasMore:    hasMore,
+		NextCommit: nextCommit,
+	}, nil
+}
+
+// GetDirectoryHistory retrieves change history for all files under a directory.
+func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1.GetDirectoryHistoryRequest) (*filev1.GetDirectoryHistoryResponse, error) {
+	sliceID := req.SliceId
+	if sliceID == "" {
+		rootSlice, err := s.storage.GetRootSlice(ctx)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to get root slice")
+		}
+		sliceID = rootSlice.ID
+	}
+
+	normalizedPath := cleanPath(req.Path)
+	limit := int(req.Limit)
+	if limit <= 0 {
+		limit = 100
+	}
+
+	changes, err := s.storage.GetDirectoryHistory(ctx, sliceID, normalizedPath, limit+1, req.FromCommit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory history: %v", err))
+	}
+
+	hasMore := len(changes) > limit
+	if hasMore {
+		changes = changes[:limit]
+	}
+
+	var nextCommit string
+	if hasMore && len(changes) > 0 {
+		nextCommit = changes[len(changes)-1].CommitHash
+	}
+
+	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
+	for _, change := range changes {
+		protoChanges = append(protoChanges, modelToProtoChange(change))
+	}
+
+	// Get summary
+	summary, err := s.storage.GetDirectorySummary(ctx, sliceID, normalizedPath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory summary: %v", err))
+	}
+
+	return &filev1.GetDirectoryHistoryResponse{
+		Changes:    protoChanges,
+		HasMore:    hasMore,
+		NextCommit: nextCommit,
+		Summary:    modelToProtoSummary(summary),
+	}, nil
+}
+
+// GetCommitChanges retrieves all file changes made in a specific commit.
+func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.GetCommitChangesRequest) (*filev1.GetCommitChangesResponse, error) {
+	if req.CommitHash == "" {
+		return nil, status.Error(codes.InvalidArgument, "commit_hash is required")
+	}
+
+	changes, err := s.storage.GetCommitChanges(ctx, req.CommitHash)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get commit changes: %v", err))
+	}
+
+	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
+	var added, modified, deleted, renamed int32
+	for _, change := range changes {
+		protoChanges = append(protoChanges, modelToProtoChange(change))
+		switch change.ChangeType {
+		case models.ChangeTypeAdd:
+			added++
+		case models.ChangeTypeModify:
+			modified++
+		case models.ChangeTypeDelete:
+			deleted++
+		case models.ChangeTypeRename:
+			renamed++
+		}
+	}
+
+	return &filev1.GetCommitChangesResponse{
+		CommitHash:    req.CommitHash,
+		Changes:       protoChanges,
+		FilesAdded:    added,
+		FilesModified: modified,
+		FilesDeleted:  deleted,
+		FilesRenamed:  renamed,
+	}, nil
+}
+
+// modelToProtoChange converts a model FileChangeRecord to protobuf.
+func modelToProtoChange(change *models.FileChangeRecord) *filev1.FileChangeRecord {
+	return &filev1.FileChangeRecord{
+		Id:           change.ID,
+		SliceId:      change.SliceID,
+		CommitHash:   change.CommitHash,
+		Path:         change.Path,
+		OldPath:      change.OldPath,
+		ChangeType:   modelToProtoChangeType(change.ChangeType),
+		OldHash:      change.OldHash,
+		NewHash:      change.NewHash,
+		LinesAdded:   int32(change.LinesAdded),
+		LinesDeleted: int32(change.LinesDeleted),
+		Author:       change.Author,
+		Message:      change.Message,
+		Timestamp:    change.Timestamp.Unix(),
+	}
+}
+
+// modelToProtoChangeType converts model ChangeType to protobuf.
+func modelToProtoChangeType(ct models.ChangeType) filev1.ChangeType {
+	switch ct {
+	case models.ChangeTypeAdd:
+		return filev1.ChangeType_CHANGE_TYPE_ADD
+	case models.ChangeTypeModify:
+		return filev1.ChangeType_CHANGE_TYPE_MODIFY
+	case models.ChangeTypeDelete:
+		return filev1.ChangeType_CHANGE_TYPE_DELETE
+	case models.ChangeTypeRename:
+		return filev1.ChangeType_CHANGE_TYPE_RENAME
+	default:
+		return filev1.ChangeType_CHANGE_TYPE_UNSPECIFIED
+	}
+}
+
+// modelToProtoSummary converts a model DirectoryChangeSummary to protobuf.
+func modelToProtoSummary(summary *models.DirectoryChangeSummary) *filev1.DirectoryChangeSummary {
+	changesByType := make(map[string]int32)
+	for ct, count := range summary.ChangesByType {
+		changesByType[string(ct)] = int32(count)
+	}
+
+	var lastChange *filev1.FileChangeRecord
+	if summary.LastChange != nil {
+		lastChange = modelToProtoChange(summary.LastChange)
+	}
+
+	return &filev1.DirectoryChangeSummary{
+		Path:          summary.Path,
+		TotalChanges:  int32(summary.TotalChanges),
+		FilesChanged:  int32(summary.FilesChanged),
+		ChangesByType: changesByType,
+		LastChange:    lastChange,
+	}
+}
