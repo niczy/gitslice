@@ -793,6 +793,119 @@ body {
   color: #ef4444;
 }
 
+/* Commit diff link in history */
+.commit-diff-link {
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 150ms ease;
+}
+
+.commit-diff-link:hover {
+  background: rgba(56, 189, 248, 0.25);
+  text-decoration: underline;
+}
+
+/* Commit diff page */
+.commit-diff-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.diff-header {
+  margin-bottom: 24px;
+}
+
+.diff-back-btn {
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}
+
+.diff-summary {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.diff-stat {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.diff-stat-added {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.diff-stat-modified {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.diff-stat-deleted {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.diff-stat-renamed {
+  color: #a855f7;
+  background: rgba(168, 85, 247, 0.12);
+}
+
+.diff-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.diff-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diff-file-item {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.diff-file-path {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.diff-file-old-path {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.diff-file-stats {
+  flex-shrink: 0;
+}
+
 .footer {
   text-align: center;
   margin-top: 32px;
