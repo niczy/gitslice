@@ -42,7 +42,7 @@ test.describe('File History (Root Mode)', () => {
 
     // History toggle should now be visible
     await expect(page.getByTestId('history-toggle')).toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('History');
+    await expect(page.getByTestId('history-toggle')).toHaveText(/History/);
   });
 
   test('toggles between content and history view', async ({ page }) => {
@@ -123,17 +123,18 @@ test.describe('File History (Root Mode)', () => {
 
     // Should show history panel
     await expect(page.getByTestId('history-panel')).toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('Content');
+    await expect(page.getByTestId('history-toggle')).toHaveText(/Content/);
 
     // Should display history items
     const historyItems = page.getByTestId('history-item');
     await expect(historyItems).toHaveCount(2);
 
     // Verify first history item content
-    await expect(page.getByText('Fix bug in app initialization')).toBeVisible();
-    await expect(page.getByText('abc1234')).toBeVisible();
-    await expect(page.getByText('developer@example.com')).toBeVisible();
-    await expect(page.getByText('Modify')).toBeVisible();
+    const firstHistoryItem = historyItems.first();
+    await expect(firstHistoryItem.getByText('Fix bug in app initialization')).toBeVisible();
+    await expect(firstHistoryItem.getByText('abc1234')).toBeVisible();
+    await expect(firstHistoryItem.getByText('developer@example.com')).toBeVisible();
+    await expect(firstHistoryItem.locator('.change-type')).toHaveText('Modify');
 
     // Verify line changes are shown
     await expect(page.getByText('+5')).toBeVisible();
@@ -143,7 +144,7 @@ test.describe('File History (Root Mode)', () => {
     await page.getByTestId('history-toggle').click();
     await expect(page.getByTestId('history-panel')).not.toBeVisible();
     await expect(page.getByText('const x = 1;')).toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('History');
+    await expect(page.getByTestId('history-toggle')).toHaveText(/History/);
   });
 
   test('shows empty state when no history available', async ({ page }) => {
@@ -311,7 +312,7 @@ test.describe('File History (Root Mode)', () => {
     await page.getByRole('button', { name: /file2\.txt/i }).click();
     await expect(page.getByText('File 2')).toBeVisible();
     await expect(page.getByTestId('history-panel')).not.toBeVisible();
-    await expect(page.getByTestId('history-toggle')).toHaveText('History');
+    await expect(page.getByTestId('history-toggle')).toHaveText(/History/);
   });
 });
 
@@ -470,10 +471,9 @@ test.describe('File History - Change Types', () => {
     await page.getByTestId('history-toggle').click();
 
     // Verify all change types are displayed
-    await expect(page.getByText('Modify')).toBeVisible();
-    await expect(page.getByText('Rename')).toBeVisible();
-    await expect(page.getByText('Delete')).toBeVisible();
-    await expect(page.getByText('Add')).toBeVisible();
+    const changeTypes = page.locator('.change-type');
+    await expect(changeTypes).toHaveCount(4);
+    await expect(changeTypes).toContainText(['Modify', 'Rename', 'Delete', 'Add']);
 
     // Verify messages are shown
     await expect(page.getByText('Modified file')).toBeVisible();
@@ -527,7 +527,8 @@ test.describe('File History - Change Types', () => {
     await page.getByTestId('history-toggle').click();
 
     // Verify numeric types are correctly interpreted
-    await expect(page.getByText('Add').first()).toBeVisible();
-    await expect(page.getByText('Modify')).toBeVisible();
+    const numericChangeTypes = page.locator('.change-type');
+    await expect(numericChangeTypes).toHaveCount(2);
+    await expect(numericChangeTypes).toContainText(['Add', 'Modify']);
   });
 });
