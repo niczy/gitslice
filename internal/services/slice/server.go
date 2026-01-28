@@ -596,12 +596,16 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 			changeType = models.ChangeTypeAdd
 		}
 
-		linesAdded := 0
 		var newHash string
+		linesAdded := 0
 		content, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
 		if err == nil && content != nil {
-			linesAdded = strings.Count(string(content.Content), "\n") + 1
 			newHash = content.Hash
+			// Only report line counts for new files where the entire content is the delta.
+			// For modifications we lack a proper diff against the parent, so leave at 0.
+			if changeType == models.ChangeTypeAdd {
+				linesAdded = strings.Count(string(content.Content), "\n") + 1
+			}
 		}
 
 		changes = append(changes, &models.FileChangeRecord{
