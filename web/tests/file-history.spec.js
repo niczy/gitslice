@@ -649,7 +649,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await expect(page.getByTestId('history-toggle')).not.toBeVisible();
 
     // Click the directory
-    await page.getByRole('button', { name: /^o$/ }).click();
+    await page.getByRole('button', { name: /\bo\b/ }).click();
 
     // History toggle should now be visible
     await expect(page.getByTestId('history-toggle')).toBeVisible();
@@ -749,7 +749,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.getByTestId('topbar-repo-browser').click();
 
     // Click the 'o' directory to expand and select it
-    await page.getByRole('button', { name: /^o$/ }).click();
+    await page.getByRole('button', { name: /\bo\b/ }).click();
 
     // Click history toggle
     await page.getByTestId('history-toggle').click();
@@ -833,7 +833,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.locator('[data-testid="slice-id"]').fill('root_slice');
 
     // Click directory
-    await page.getByRole('button', { name: /^o$/ }).click();
+    await page.getByRole('button', { name: /\bo\b/ }).click();
 
     // Toggle history
     await page.getByTestId('history-toggle').click();
