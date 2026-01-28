@@ -684,6 +684,80 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	}
 }
 
+func TestGenesisCreatesFileChangeRecords(t *testing.T) {
+	t.Setenv("RUN_INTEGRATION_TESTS", "")
+	t.Setenv("SKIP_GIT_POPULATION", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
+		t.Fatalf("failed to run genesis init: %v", err)
+	}
+
+	// Get root slice to find head commit
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to get root slice: %v", err)
+	}
+
+	metadata, err := st.GetSliceMetadata(ctx, rootSlice.ID)
+	if err != nil {
+		t.Fatalf("failed to get slice metadata: %v", err)
+	}
+
+	if metadata.HeadCommitHash == "" {
+		t.Fatalf("expected head commit hash after genesis, got empty")
+	}
+
+	// Verify commit changes were recorded
+	changes, err := st.GetCommitChanges(ctx, metadata.HeadCommitHash)
+	if err != nil {
+		t.Fatalf("failed to get commit changes: %v", err)
+	}
+
+	if len(changes) == 0 {
+		t.Fatalf("expected file change records from genesis commit, got none")
+	}
+
+	// Verify all changes are of type "add" since genesis is the first commit
+	for _, change := range changes {
+		if change.ChangeType != models.ChangeTypeAdd {
+			t.Errorf("expected change type 'add' for genesis file %s, got %q", change.Path, change.ChangeType)
+		}
+		if change.Author != "system" {
+			t.Errorf("expected author 'system' for genesis file %s, got %q", change.Path, change.Author)
+		}
+		if change.Message != "Genesis: initialize repository files" {
+			t.Errorf("expected genesis message for file %s, got %q", change.Path, change.Message)
+		}
+		if change.CommitHash != metadata.HeadCommitHash {
+			t.Errorf("expected commit hash %s for file %s, got %s", metadata.HeadCommitHash, change.Path, change.CommitHash)
+		}
+	}
+
+	// Verify we can also query file history for a specific file
+	fileClient := fileservice.NewService(st)
+	histResp, err := fileClient.GetFileHistory(ctx, &filev1.GetFileHistoryRequest{
+		Path: "o/genesis/projects/gitslice/README.md",
+	})
+	if err != nil {
+		t.Fatalf("failed to get file history for README.md: %v", err)
+	}
+	if len(histResp.Changes) == 0 {
+		t.Fatalf("expected history entries for README.md, got none")
+	}
+	if histResp.Changes[0].ChangeType != filev1.ChangeType_CHANGE_TYPE_ADD {
+		t.Errorf("expected CHANGE_TYPE_ADD for README.md genesis entry, got %v", histResp.Changes[0].ChangeType)
+	}
+
+	t.Logf("Genesis created %d file change records with commit %s", len(changes), metadata.HeadCommitHash)
+}
+
 func TestFileBrowserIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
