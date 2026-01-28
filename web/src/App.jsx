@@ -207,6 +207,7 @@ function RepoBrowser({ onNavigateToDiff }) {
   const [treeEntries, setTreeEntries] = useState({});
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedDirectory, setSelectedDirectory] = useState(null);
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -217,11 +218,14 @@ function RepoBrowser({ onNavigateToDiff }) {
   const [historyError, setHistoryError] = useState('');
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
+  const selectedPath = selectedFile || selectedDirectory;
+
   const breadcrumbs = useMemo(() => {
-    if (!selectedFile) {
+    const activePath = selectedFile || selectedDirectory;
+    if (!activePath) {
       return [{ name: 'root', path: '' }];
     }
-    const parts = selectedFile.split('/');
+    const parts = activePath.split('/');
     return [
       { name: 'root', path: '' },
       ...parts.map((part, index) => ({
@@ -229,13 +233,14 @@ function RepoBrowser({ onNavigateToDiff }) {
         path: parts.slice(0, index + 1).join('/'),
       })),
     ];
-  }, [selectedFile]);
+  }, [selectedFile, selectedDirectory]);
 
   // Reset tree when browse mode or slice changes
   useEffect(() => {
     setTreeEntries({});
     setExpandedPaths(['']);
     setSelectedFile(null);
+    setSelectedDirectory(null);
     setFileContent('');
   }, [browseMode, sliceId, commitHash, sliceHash]);
 
@@ -295,9 +300,21 @@ function RepoBrowser({ onNavigateToDiff }) {
     return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
   };
 
-  // Fetch file history from the API
-  const fetchFileHistory = async (filePath) => {
-    if (!filePath) {
+  // Build URL for directory history endpoint based on mode
+  const buildDirectoryHistoryUrl = (dirPath) => {
+    const encodedPath = dirPath ? encodePath(dirPath) : '';
+    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
+
+    if (browseMode === 'root') {
+      return `${apiBaseUrl}/v1/directories/history${pathSuffix}`;
+    }
+    // Slice mode
+    return `${apiBaseUrl}/v1/slices/${sliceId}/directories/history${pathSuffix}`;
+  };
+
+  // Fetch history from the API (works for both files and directories)
+  const fetchHistory = async (path, isDirectory = false) => {
+    if (!path) {
       return;
     }
 
@@ -305,26 +322,34 @@ function RepoBrowser({ onNavigateToDiff }) {
     setHistoryError('');
 
     try {
-      const response = await fetch(buildHistoryUrl(filePath));
+      const url = isDirectory ? buildDirectoryHistoryUrl(path) : buildHistoryUrl(path);
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
       const payload = await response.json();
       setFileHistory(payload.changes || []);
     } catch (err) {
-      setHistoryError('Unable to load file history.');
+      setHistoryError(isDirectory ? 'Unable to load directory history.' : 'Unable to load file history.');
       setFileHistory([]);
     } finally {
       setHistoryLoading(false);
     }
   };
 
+  const fetchFileHistory = (filePath) => fetchHistory(filePath, false);
+  const fetchDirectoryHistory = (dirPath) => fetchHistory(dirPath, true);
+
   // Toggle history panel
   const toggleHistory = () => {
     const newShowHistory = !showHistory;
     setShowHistory(newShowHistory);
-    if (newShowHistory && selectedFile && fileHistory.length === 0) {
-      fetchFileHistory(selectedFile);
+    if (newShowHistory && fileHistory.length === 0) {
+      if (selectedFile) {
+        fetchFileHistory(selectedFile);
+      } else if (selectedDirectory) {
+        fetchDirectoryHistory(selectedDirectory);
+      }
     }
   };
 
@@ -418,10 +443,18 @@ function RepoBrowser({ onNavigateToDiff }) {
     const entryKind = normalizeEntryType(entry.type);
     if (entryKind === 'directory') {
       await toggleDirectory(entry);
+      setSelectedFile(null);
+      setSelectedDirectory(entry.path);
+      setFileContent('');
+      setShowHistory(false);
+      setFileHistory([]);
+      setHistoryError('');
+      setError('');
       return;
     }
 
     setSelectedFile(entry.path);
+    setSelectedDirectory(null);
     setFileContent('');
     setIsLoading(true);
     setError('');
@@ -587,7 +620,7 @@ function RepoBrowser({ onNavigateToDiff }) {
                 </button>
               )}
               <div>
-                <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
+                <h3>{selectedPath ? selectedPath : 'Select a file'}</h3>
                 <div className="breadcrumbs">
                   {breadcrumbs.map((crumb, index) => (
                     <button
@@ -605,32 +638,35 @@ function RepoBrowser({ onNavigateToDiff }) {
             </div>
             <div className="code-header-actions">
               {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
-              {selectedFile && (
+              {selectedPath && (
                 <button
                   type="button"
                   className={`history-toggle ${showHistory ? 'active' : ''}`}
                   onClick={toggleHistory}
                   data-testid="history-toggle"
-                  title={showHistory ? 'Show file content' : 'Show commit history'}
+                  title={showHistory ? (selectedFile ? 'Show file content' : 'Hide history') : 'Show commit history'}
                 >
-                  {showHistory ? '📄 Content' : '📜 History'}
+                  {showHistory ? (selectedFile ? '📄 Content' : '📄 Hide History') : '📜 History'}
                 </button>
               )}
             </div>
           </div>
           <div className="code-content">
-            {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+            {!selectedPath && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+            {selectedDirectory && !showHistory && (
+              <div className="panel-empty">Directory selected. Click History to view change history for this folder.</div>
+            )}
             {selectedFile && !showHistory && (
               <pre className="file-preview">
                 <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
               </pre>
             )}
-            {selectedFile && showHistory && (
+            {selectedPath && showHistory && (
               <div className="history-panel" data-testid="history-panel">
                 {historyLoading && <div className="history-loading">Loading history...</div>}
                 {historyError && <div className="panel-error">{historyError}</div>}
                 {!historyLoading && !historyError && fileHistory.length === 0 && (
-                  <div className="panel-empty">No history available for this file.</div>
+                  <div className="panel-empty">No history available for this {selectedDirectory ? 'directory' : 'file'}.</div>
                 )}
                 {!historyLoading && fileHistory.length > 0 && (
                   <ul className="history-list">

@@ -628,6 +628,282 @@ test.describe('File History - Genesis Commit', () => {
   });
 });
 
+test.describe('Directory History - Genesis Folder', () => {
+  test('shows history toggle when a directory is selected', async ({ page }) => {
+    await page.route('**/v1/files/entries**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            { name: 'o', path: 'o', type: 'ENTRY_TYPE_DIRECTORY', size: 0 },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Before clicking directory, history toggle should not be visible
+    await expect(page.getByTestId('history-toggle')).not.toBeVisible();
+
+    // Click the directory
+    await page.getByRole('button', { name: /^o$/ }).click();
+
+    // History toggle should now be visible
+    await expect(page.getByTestId('history-toggle')).toBeVisible();
+  });
+
+  test('shows genesis history for a directory', async ({ page }) => {
+    // Mock entries with genesis directory structure
+    await page.route('**/v1/files/entries**', async (route) => {
+      const url = route.request().url();
+      if (url.includes('/entries/o/genesis')) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            entries: [
+              { name: 'projects', path: 'o/genesis/projects', type: 'ENTRY_TYPE_DIRECTORY', size: 0 },
+            ],
+          }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            entries: [
+              { name: 'o', path: 'o', type: 'ENTRY_TYPE_DIRECTORY', size: 0 },
+            ],
+          }),
+        });
+      }
+    });
+
+    // Mock directory history for genesis folder
+    await page.route('**/v1/directories/history/o/genesis**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changes: [
+            {
+              id: 'genesis-dir-1',
+              slice_id: 'root_slice',
+              commit_hash: 'genesis-commit-1234567890',
+              path: 'o/genesis/projects/gitslice/README.md',
+              change_type: 'CHANGE_TYPE_ADD',
+              lines_added: 10,
+              lines_deleted: 0,
+              author: 'system',
+              message: 'Genesis: initialize repository files',
+              timestamp: 1704067200,
+            },
+            {
+              id: 'genesis-dir-2',
+              slice_id: 'root_slice',
+              commit_hash: 'genesis-commit-1234567890',
+              path: 'o/genesis/projects/gitslice/main.go',
+              change_type: 'CHANGE_TYPE_ADD',
+              lines_added: 25,
+              lines_deleted: 0,
+              author: 'system',
+              message: 'Genesis: initialize repository files',
+              timestamp: 1704067200,
+            },
+          ],
+          has_more: false,
+        }),
+      });
+    });
+
+    // Also mock directory history for 'o' in case it's needed
+    await page.route('**/v1/directories/history/o', async (route) => {
+      if (route.request().url().includes('/o/genesis')) return;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changes: [
+            {
+              id: 'genesis-dir-root-1',
+              slice_id: 'root_slice',
+              commit_hash: 'genesis-commit-1234567890',
+              path: 'o/genesis/projects/gitslice/README.md',
+              change_type: 'CHANGE_TYPE_ADD',
+              lines_added: 10,
+              lines_deleted: 0,
+              author: 'system',
+              message: 'Genesis: initialize repository files',
+              timestamp: 1704067200,
+            },
+          ],
+          has_more: false,
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Click the 'o' directory to expand and select it
+    await page.getByRole('button', { name: /^o$/ }).click();
+
+    // Click history toggle
+    await page.getByTestId('history-toggle').click();
+
+    // Should show history panel with genesis entries
+    await expect(page.getByTestId('history-panel')).toBeVisible();
+    const historyItems = page.getByTestId('history-item');
+    await expect(historyItems).toHaveCount(1);
+
+    // Verify genesis commit details
+    await expect(historyItems.first().getByText('Genesis: initialize repository files')).toBeVisible();
+    await expect(historyItems.first().getByText('system')).toBeVisible();
+    await expect(historyItems.first().locator('.change-type')).toHaveText('Add');
+  });
+
+  test('shows directory prompt when directory selected without history open', async ({ page }) => {
+    await page.route('**/v1/files/entries**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            { name: 'genesis', path: 'o/genesis', type: 'ENTRY_TYPE_DIRECTORY', size: 0 },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Click directory
+    await page.getByRole('button', { name: /genesis/ }).click();
+
+    // Should show prompt to view history
+    await expect(page.getByText('Directory selected. Click History to view change history for this folder.')).toBeVisible();
+  });
+
+  test('shows genesis directory history in slice mode', async ({ page }) => {
+    await page.route('**/v1/slices/root_slice/entries**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            { name: 'o', path: 'o', type: 'ENTRY_TYPE_DIRECTORY', size: 0 },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/directories/history/o**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changes: [
+            {
+              id: 'genesis-slice-dir-1',
+              slice_id: 'root_slice',
+              commit_hash: 'genesis-commit-1234567890',
+              path: 'o/genesis/projects/gitslice/go.mod',
+              change_type: 'CHANGE_TYPE_ADD',
+              lines_added: 5,
+              lines_deleted: 0,
+              author: 'system',
+              message: 'Genesis: initialize repository files',
+              timestamp: 1704067200,
+            },
+          ],
+          has_more: false,
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Switch to slice mode
+    await page.locator('[data-testid="browse-mode"]').selectOption('slice');
+    await page.locator('[data-testid="slice-id"]').fill('root_slice');
+
+    // Click directory
+    await page.getByRole('button', { name: /^o$/ }).click();
+
+    // Toggle history
+    await page.getByTestId('history-toggle').click();
+
+    await expect(page.getByTestId('history-panel')).toBeVisible();
+    const historyItems = page.getByTestId('history-item');
+    await expect(historyItems).toHaveCount(1);
+
+    await expect(historyItems.first().getByText('Genesis: initialize repository files')).toBeVisible();
+    await expect(historyItems.first().getByText('system')).toBeVisible();
+  });
+
+  test('resets directory history when selecting a file', async ({ page }) => {
+    await page.route('**/v1/files/entries**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            { name: 'src', path: 'src', type: 'ENTRY_TYPE_DIRECTORY', size: 0 },
+            { name: 'readme.md', path: 'readme.md', type: 'ENTRY_TYPE_FILE', size: 50 },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/directories/history/src**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changes: [
+            {
+              id: 'dir-change-1',
+              commit_hash: 'abc123',
+              change_type: 'CHANGE_TYPE_ADD',
+              author: 'system',
+              message: 'Genesis: initialize repository files',
+              timestamp: 1704067200,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/files/readme.md', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: { path: 'readme.md', content: Buffer.from('# Hello').toString('base64'), size: 7 },
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Select directory and view history
+    await page.getByRole('button', { name: /src/ }).click();
+    await page.getByTestId('history-toggle').click();
+    await expect(page.getByTestId('history-panel')).toBeVisible();
+
+    // Now select a file - should reset to content view
+    await page.getByRole('button', { name: /readme\.md/ }).click();
+    await expect(page.getByText('# Hello')).toBeVisible();
+    await expect(page.getByTestId('history-panel')).not.toBeVisible();
+  });
+});
+
 test.describe('File History - Change Types', () => {
   test('displays all change types with correct styling', async ({ page }) => {
     // Mock entries
