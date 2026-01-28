@@ -502,6 +502,7 @@ function RepoBrowser({ onNavigateToDiff }) {
                 className={`tree-entry ${entryKind}`}
                 style={{ paddingLeft: `${depth * 18 + 12}px` }}
                 onClick={() => handleEntryClick(entry)}
+                data-testid={`tree-entry-${entryKind}-${entry.name}`}
               >
                 <span className="tree-caret">{entryKind === 'directory' ? (isExpanded ? '▾' : '▸') : '•'}</span>
                 <span className="entry-icon">{entryKind === 'directory' ? '📁' : '📄'}</span>
