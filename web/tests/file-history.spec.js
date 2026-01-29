@@ -645,11 +645,15 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
+    // Wait for tree to load
+    const directoryButton = page.locator('button.tree-entry.directory').filter({ hasText: 'o' });
+    await directoryButton.waitFor({ state: 'visible' });
+
     // Before clicking directory, history toggle should not be visible
     await expect(page.getByTestId('history-toggle')).not.toBeVisible();
 
     // Click the directory
-    await page.locator('button.tree-entry.directory').filter({ hasText: 'o' }).click();
+    await directoryButton.click();
 
     // History toggle should now be visible
     await expect(page.getByTestId('history-toggle')).toBeVisible();
@@ -748,8 +752,10 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    // Click the 'o' directory to expand and select it
-    await page.locator('button.tree-entry.directory').filter({ hasText: 'o' }).click();
+    // Wait for tree to load and click the 'o' directory
+    const directoryButton = page.locator('button.tree-entry.directory').filter({ hasText: 'o' });
+    await directoryButton.waitFor({ state: 'visible' });
+    await directoryButton.click();
 
     // Click history toggle
     await page.getByTestId('history-toggle').click();
@@ -781,8 +787,10 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    // Click directory
-    await page.locator('button.tree-entry.directory').filter({ hasText: 'genesis' }).click();
+    // Wait for tree to load and click directory
+    const directoryButton = page.locator('button.tree-entry.directory').filter({ hasText: 'genesis' });
+    await directoryButton.waitFor({ state: 'visible' });
+    await directoryButton.click();
 
     // Should show prompt to view history
     await expect(page.getByText('Directory selected. Click History to view change history for this folder.')).toBeVisible();
@@ -832,8 +840,10 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.locator('[data-testid="browse-mode"]').selectOption('slice');
     await page.locator('[data-testid="slice-id"]').fill('root_slice');
 
-    // Click directory
-    await page.locator('button.tree-entry.directory').filter({ hasText: 'o' }).click();
+    // Wait for tree to load and click directory
+    const directoryButton = page.locator('button.tree-entry.directory').filter({ hasText: 'o' });
+    await directoryButton.waitFor({ state: 'visible' });
+    await directoryButton.click();
 
     // Toggle history
     await page.getByTestId('history-toggle').click();
@@ -892,8 +902,12 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    // Select directory and view history
-    await page.locator('button.tree-entry.directory').filter({ hasText: 'src' }).click();
+    // Wait for tree to load and select directory
+    const directoryButton = page.locator('button.tree-entry.directory').filter({ hasText: 'src' });
+    await directoryButton.waitFor({ state: 'visible' });
+    await directoryButton.click();
+
+    // View history
     await page.getByTestId('history-toggle').click();
     await expect(page.getByTestId('history-panel')).toBeVisible();
 
