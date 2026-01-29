@@ -649,7 +649,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await expect(page.getByTestId('history-toggle')).not.toBeVisible();
 
     // Click the directory
-    await page.getByTestId('tree-entry-directory-o').click();
+    await page.locator('button.tree-entry.directory').filter({ hasText: 'o' }).click();
 
     // History toggle should now be visible
     await expect(page.getByTestId('history-toggle')).toBeVisible();
@@ -749,7 +749,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.getByTestId('topbar-repo-browser').click();
 
     // Click the 'o' directory to expand and select it
-    await page.getByTestId('tree-entry-directory-o').click();
+    await page.locator('button.tree-entry.directory').filter({ hasText: 'o' }).click();
 
     // Click history toggle
     await page.getByTestId('history-toggle').click();
@@ -782,7 +782,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.getByTestId('topbar-repo-browser').click();
 
     // Click directory
-    await page.getByTestId('tree-entry-directory-genesis').click();
+    await page.locator('button.tree-entry.directory').filter({ hasText: 'genesis' }).click();
 
     // Should show prompt to view history
     await expect(page.getByText('Directory selected. Click History to view change history for this folder.')).toBeVisible();
@@ -833,7 +833,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.locator('[data-testid="slice-id"]').fill('root_slice');
 
     // Click directory
-    await page.getByTestId('tree-entry-directory-o').click();
+    await page.locator('button.tree-entry.directory').filter({ hasText: 'o' }).click();
 
     // Toggle history
     await page.getByTestId('history-toggle').click();
@@ -893,7 +893,7 @@ test.describe('Directory History - Genesis Folder', () => {
     await page.getByTestId('topbar-repo-browser').click();
 
     // Select directory and view history
-    await page.getByTestId('tree-entry-directory-src').click();
+    await page.locator('button.tree-entry.directory').filter({ hasText: 'src' }).click();
     await page.getByTestId('history-toggle').click();
     await expect(page.getByTestId('history-panel')).toBeVisible();
 
