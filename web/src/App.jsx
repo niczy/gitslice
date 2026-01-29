@@ -442,7 +442,7 @@ function RepoBrowser({ onNavigateToDiff }) {
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
     if (entryKind === 'directory') {
-      await toggleDirectory(entry);
+      // Set selected state immediately before async operations
       setSelectedFile(null);
       setSelectedDirectory(entry.path);
       setFileContent('');
@@ -450,6 +450,8 @@ function RepoBrowser({ onNavigateToDiff }) {
       setFileHistory([]);
       setHistoryError('');
       setError('');
+      // Expand/collapse directory (fire and forget)
+      toggleDirectory(entry);
       return;
     }
 
