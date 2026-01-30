@@ -123,10 +123,17 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		}
 
 		if len(parts) == 1 {
-			entry.Type = filev1.EntryType_ENTRY_TYPE_FILE
-			entry.HasChildren = false
-			if content, ok := contentByPath[filePath]; ok {
-				entry.Size = contentSize(content)
+			// Only classify as FILE if not already known to be a DIRECTORY.
+			// slice.Files may contain both bare directory paths and nested
+			// file paths; Go map iteration order is random, so a bare
+			// directory path could be processed after a nested path and
+			// incorrectly downgrade the entry from DIRECTORY to FILE.
+			if entry.Type != filev1.EntryType_ENTRY_TYPE_DIRECTORY {
+				entry.Type = filev1.EntryType_ENTRY_TYPE_FILE
+				entry.HasChildren = false
+				if content, ok := contentByPath[filePath]; ok {
+					entry.Size = contentSize(content)
+				}
 			}
 		} else {
 			entry.Type = filev1.EntryType_ENTRY_TYPE_DIRECTORY

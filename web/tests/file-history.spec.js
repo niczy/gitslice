@@ -6,14 +6,18 @@ async function navigateToGenesisFile(page, fileName) {
   await page.goto('/');
   await page.getByTestId('topbar-repo-browser').click();
 
-  // Navigate: o -> genesis -> projects -> gitslice
+  // Navigate: o -> genesis -> projects -> gitslice (wait for each level to load)
   await page.getByRole('button', { name: /📁.*o/i }).click();
+  await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
   await page.getByRole('button', { name: /📁.*genesis/i }).click();
+  await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
   await page.getByRole('button', { name: /📁.*projects/i }).click();
+  await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
   await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
   // Select the requested file
   const fileRegex = new RegExp(fileName.replace('.', '\\.'), 'i');
+  await expect(page.getByRole('button', { name: fileRegex })).toBeVisible();
   await page.getByRole('button', { name: fileRegex }).click();
 }
 
@@ -114,9 +118,13 @@ test.describe('File History (Slice Mode)', () => {
 
     // Navigate to a file: o -> genesis -> projects -> gitslice -> README.md
     await page.getByRole('button', { name: /📁.*o/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*genesis/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*projects/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
+    await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
     await page.getByRole('button', { name: /README\.md/i }).click();
 
     // Open history
