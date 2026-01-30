@@ -21,20 +21,83 @@ const features = [
 
 const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
+const routeDefaults = {
+  page: 'landing',
+  commitHash: '',
+};
+
+const parseRoute = () => {
+  const { pathname, search } = window.location;
+  const params = new URLSearchParams(search);
+  let page = params.get('page') || routeDefaults.page;
+
+  if (pathname.startsWith('/browser')) {
+    page = 'browser';
+  }
+  if (pathname.startsWith('/diff')) {
+    page = 'diff';
+  }
+
+  const commitHash = params.get('commit') || '';
+
+  if (!['landing', 'browser', 'diff'].includes(page)) {
+    page = routeDefaults.page;
+  }
+
+  return {
+    page,
+    commitHash,
+  };
+};
+
+const buildRouteUrl = (route) => {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.pathname = route.page === 'landing' ? '/' : `/${route.page}`;
+
+  if (route.page === 'diff' && route.commitHash) {
+    url.searchParams.set('commit', route.commitHash);
+  }
+
+  return url;
+};
+
 function App() {
-  const [activePage, setActivePage] = useState('landing');
-  const [diffCommitHash, setDiffCommitHash] = useState('');
+  const [route, setRoute] = useState(() => parseRoute());
   const githubUrl = 'https://github.com/niczy/gitslice';
 
+  const navigate = (nextRoute, { replace = false } = {}) => {
+    setRoute(nextRoute);
+    const url = buildRouteUrl(nextRoute);
+    if (replace) {
+      window.history.replaceState(nextRoute, '', url);
+    } else {
+      window.history.pushState(nextRoute, '', url);
+    }
+  };
+
+  useEffect(() => {
+    const initialRoute = parseRoute();
+    setRoute(initialRoute);
+    window.history.replaceState(initialRoute, '', buildRouteUrl(initialRoute));
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setRoute(parseRoute());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const navigateToDiff = (commitHash) => {
-    setDiffCommitHash(commitHash);
-    setActivePage('diff');
+    navigate({ page: 'diff', commitHash });
   };
 
   return (
     <div className="app-shell">
       <header className="top-bar">
-        <button type="button" className="brand" onClick={() => setActivePage('landing')}>
+        <button type="button" className="brand" onClick={() => navigate({ page: 'landing', commitHash: '' })}>
           <span className="brand-icon">◆</span>
           <span className="brand-text">Git Slice</span>
         </button>
@@ -46,7 +109,7 @@ function App() {
             type="button"
             className="primary"
             data-testid="topbar-repo-browser"
-            onClick={() => setActivePage('browser')}
+            onClick={() => navigate({ page: 'browser', commitHash: '' })}
           >
             Repo Browser
           </button>
@@ -54,10 +117,10 @@ function App() {
       </header>
 
       <main className="page">
-        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => setActivePage('browser')} />}
-        {activePage === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
-        {activePage === 'diff' && (
-          <CommitDiffPage commitHash={diffCommitHash} onBack={() => setActivePage('browser')} />
+        {route.page === 'landing' && <OverviewPage onBrowseRepo={() => navigate({ page: 'browser', commitHash: '' })} />}
+        {route.page === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
+        {route.page === 'diff' && (
+          <CommitDiffPage commitHash={route.commitHash} onBack={() => navigate({ page: 'browser', commitHash: '' })} />
         )}
       </main>
 
