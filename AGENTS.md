@@ -7,6 +7,7 @@ These guidelines apply to the entire repository.
 - If `.proto` files are updated, regenerate the Go stubs with the commands in `README.md` and include the generated files in the commit.
 - Keep documentation changes concise and prefer updating existing sections instead of adding new top-level files unless necessary.
 - Keep the integration test (`workflow_test/integration_test.go`) exercising the CLI and services end to end; ensure it stays up to date when altering related behavior and run it with `RUN_INTEGRATION_TESTS=1 make test` during relevant changes.
+- For Playwright tests, install web dependencies and browsers before running: `cd web && npm install` then `npx playwright install --with-deps`. Start the web app locally (e.g. `npm run dev -- --host 127.0.0.1 --port 5173`) and run tests with `npm run test:e2e`.
 
 ## GitHub Workflow
 

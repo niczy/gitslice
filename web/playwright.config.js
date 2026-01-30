@@ -7,7 +7,7 @@ export default defineConfig({
     timeout: 5000,
   },
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:5173',
     headless: true,
   },
   projects: [
@@ -20,10 +20,4 @@ export default defineConfig({
       use: { ...devices['Desktop Firefox'] },
     },
   ],
-  webServer: {
-    command: 'npm run build && npm run preview -- --host --port 4173',
-    port: 4173,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60 * 1000,
-  },
 });
