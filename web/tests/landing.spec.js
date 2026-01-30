@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test('renders Git Slice landing content and navigation', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByTestId('topbar-repo-browser')).toBeVisible();
 
   await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
   await expect(page.getByText(/Introducing Git Slice/i)).toBeVisible();

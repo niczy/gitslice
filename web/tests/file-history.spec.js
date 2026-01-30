@@ -3,14 +3,18 @@ import { test, expect } from '@playwright/test';
 test.describe('File History', () => {
   test('does not show history controls before a file is selected', async ({ page }) => {
     await page.goto('/');
+    await expect(page.getByTestId('topbar-repo-browser')).toBeVisible();
     await page.getByTestId('topbar-repo-browser').click();
+    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
 
     await expect(page.getByTestId('history-toggle')).not.toBeVisible();
   });
 
   test('shows a genesis commit item after toggling history', async ({ page }) => {
     await page.goto('/');
+    await expect(page.getByTestId('topbar-repo-browser')).toBeVisible();
     await page.getByTestId('topbar-repo-browser').click();
+    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
 
     const readmeButton = page.getByRole('button', { name: /README\.md/i });
     const loadError = page.getByText('Unable to load entries. Confirm the file gateway is running and the slice exists.');
