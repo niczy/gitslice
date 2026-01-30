@@ -128,3 +128,9 @@ web-test-e2e: web-install build
 		$(MAKE) -C $$root_dir start-servers; \
 		sleep 5; \
 		cd web && npm run test:e2e'
+		for i in $$(seq 1 30); do \
+			if curl -sf http://127.0.0.1:5173/ >/dev/null; then \
+				break; \
+			fi; \
+			sleep 1; \
+		done; \
