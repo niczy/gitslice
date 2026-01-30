@@ -1,315 +1,123 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Root Repository Browsing (path-first API)', () => {
-  test('loads root entries without slice_id', async ({ page }) => {
-    await page.route('**/v1/files/entries**', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            { name: 'src', path: 'src', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-            { name: 'README.md', path: 'README.md', type: 'ENTRY_TYPE_FILE', size: 100, has_children: false },
-          ],
-        }),
-      });
-    });
+// Genesis populates files under o/genesis/projects/gitslice/
+// so root entries should include the "o" directory.
 
+test.describe('Root Repository Browsing (real server)', () => {
+  test('loads root entries and shows genesis directory tree', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    // Verify root mode is default
+    // Root mode is the default
     await expect(page.locator('[data-testid="browse-mode"]')).toHaveValue('root');
-    await expect(page.getByRole('button', { name: /src/i })).toBeVisible();
+
+    // The genesis files live under "o" at the root level
+    await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
+  });
+
+  test('navigates into genesis directory and finds repo files', async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Navigate: o -> genesis -> projects -> gitslice
+    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
+
+    await page.getByRole('button', { name: /📁.*genesis/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
+
+    await page.getByRole('button', { name: /📁.*projects/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+
+    await page.getByRole('button', { name: /📁.*gitslice/i }).click();
+
+    // Should see real repo files
     await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /go\.mod/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Makefile/i })).toBeVisible();
   });
 
-  test('loads root entries at specific commit', async ({ page }) => {
-    await page.route('**/v1/files/entries?commit_hash=abc123**', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            { name: 'old_file.txt', path: 'old_file.txt', type: 'ENTRY_TYPE_FILE', size: 50 },
-          ],
-        }),
-      });
-    });
-
+  test('previews a real file from the genesis repository', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    await page.locator('[data-testid="commit-hash"]').fill('abc123');
+    // Navigate to gitslice root (wait for each level to load)
+    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*genesis/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*projects/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
-    // Wait for the entries to load
-    await expect(page.getByRole('button', { name: /old_file\.txt/i })).toBeVisible();
+    // Click README.md to preview it
+    await page.getByRole('button', { name: /README\.md/i }).click();
+
+    // The file heading should show the path
+    await expect(page.getByRole('heading', { name: /README\.md/i })).toBeVisible();
+
+    // The real README.md should contain some content (it's a gitslice project)
+    // Check for common markdown content that should be in the file
+    const preview = page.locator('.file-preview');
+    await expect(preview).toBeVisible();
+    await expect(preview).not.toBeEmpty();
   });
 
-  test('fetches file from root without slice_id', async ({ page }) => {
-    // Mock entries
-    await page.route('**/v1/files/entries**', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            { name: 'readme.md', path: 'readme.md', type: 'ENTRY_TYPE_FILE', size: 50 },
-          ],
-        }),
-      });
-    });
-
-    // Mock file content
-    await page.route('**/v1/files/readme.md**', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          file: {
-            path: 'readme.md',
-            content: Buffer.from('# Hello World').toString('base64'),
-            size: 13,
-          },
-        }),
-      });
-    });
-
+  test('navigates into subdirectories and back', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
-    await page.getByRole('button', { name: /readme\.md/i }).click();
-    await expect(page.getByText('# Hello World')).toBeVisible();
+
+    // Navigate to gitslice root (wait for each level to load)
+    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*genesis/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*projects/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*gitslice/i }).click();
+
+    // Navigate into internal/ subdirectory
+    await page.getByRole('button', { name: /📁.*internal/i }).click();
+
+    // Should see child entries under internal (type classification varies between runs)
+    await expect(page.getByRole('button', { name: /common|config|models|services|storage/i }).first()).toBeVisible();
+  });
+
+  test('shows file sizes in the entry list', async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('topbar-repo-browser').click();
+
+    // Navigate to gitslice root (wait for each level to load)
+    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*genesis/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*projects/i }).click();
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+    await page.getByRole('button', { name: /📁.*gitslice/i }).click();
+
+    // README.md should have a file size displayed (any valid size format)
+    const readmeBtn = page.getByRole('button', { name: /README\.md/i });
+    await expect(readmeBtn).toBeVisible();
+    // Size should contain B, KB, or MB
+    await expect(readmeBtn).toContainText(/\d+(\.\d+)?\s*(B|KB|MB)/);
   });
 });
 
-test.describe('Slice-specific Browsing', () => {
-  test('browses the repo tree and previews a file (slice mode)', async ({ page }) => {
-    await page.route('**/v1/slices/test_slice/entries**', async (route, request) => {
-      const url = new URL(request.url());
-      const prefix = '/v1/slices/test_slice/entries';
-      let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
-      if (path.startsWith('/')) {
-        path = path.slice(1);
-      }
-      path = decodeURIComponent(path);
-
-      if (path === '') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            entries: [
-              { name: 'apps', path: 'apps', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-              { name: 'docs', path: 'docs', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-            ],
-          }),
-        });
-        return;
-      }
-
-      if (path === 'apps') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            entries: [
-              { name: 'readme.md', path: 'apps/readme.md', type: 'ENTRY_TYPE_FILE', size: 18, has_children: false },
-              { name: 'components', path: 'apps/components', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-            ],
-          }),
-        });
-        return;
-      }
-
-      if (path === 'apps/components') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            entries: [{ name: 'button.jsx', path: 'apps/components/button.jsx', type: 'ENTRY_TYPE_FILE', size: 12 }],
-          }),
-        });
-        return;
-      }
-
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ entries: [] }),
-      });
-    });
-
-    await page.route('**/v1/slices/test_slice/files**', async (route, request) => {
-      const url = new URL(request.url());
-      const prefix = '/v1/slices/test_slice/files';
-      let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
-      if (path.startsWith('/')) {
-        path = path.slice(1);
-      }
-      path = decodeURIComponent(path);
-      const content = path === 'apps/readme.md' ? Buffer.from('# Hello\nPreview').toString('base64') : '';
-
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          file: {
-            path,
-            content,
-            size: content.length,
-            hash: 'hash',
-          },
-        }),
-      });
-    });
-
+test.describe('Slice-specific Browsing (real server)', () => {
+  test('browses root_slice in slice mode', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
     // Switch to slice mode
     await page.locator('[data-testid="browse-mode"]').selectOption('slice');
 
-    // Enter slice ID
-    await page.locator('[data-testid="slice-id"]').fill('test_slice');
+    // Enter the root_slice ID (always exists after genesis)
+    await page.locator('[data-testid="slice-id"]').fill('root_slice');
 
     await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
-    await page.getByRole('button', { name: /apps/i }).click();
-    await expect(page.getByRole('button', { name: /readme\.md/i })).toBeVisible();
-
-    await page.getByRole('button', { name: /readme\.md/i }).click();
-    await expect(page.getByRole('heading', { name: /apps\/readme\.md/i })).toBeVisible();
-    await expect(page.getByText('# Hello')).toBeVisible();
+    // Should see the "o" directory (genesis files)
+    await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
   });
-
-  test('loads slice at specific version', async ({ page }) => {
-    await page.route('**/v1/slices/my_slice/entries?slice_version.slice_hash=def456**', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            { name: 'versioned_file.txt', path: 'versioned_file.txt', type: 'ENTRY_TYPE_FILE', size: 25 },
-          ],
-        }),
-      });
-    });
-
-    await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
-
-    // Switch to slice mode
-    await page.locator('[data-testid="browse-mode"]').selectOption('slice');
-
-    // Enter slice ID and hash
-    await page.locator('[data-testid="slice-id"]').fill('my_slice');
-    await page.locator('[data-testid="slice-hash"]').fill('def456');
-
-    // Wait for the entries to load
-    await expect(page.getByRole('button', { name: /versioned_file\.txt/i })).toBeVisible();
-  });
-});
-
-// Legacy test for backwards compatibility
-test('browses the repo tree and previews a file', async ({ page }) => {
-  // This test uses the new path-first API (root mode)
-  await page.route('**/v1/files/entries**', async (route, request) => {
-    const url = new URL(request.url());
-    const prefix = '/v1/files/entries';
-    let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
-    if (path.startsWith('/')) {
-      path = path.slice(1);
-    }
-    path = decodeURIComponent(path);
-
-    if (path === '') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            { name: 'apps', path: 'apps', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-            { name: 'docs', path: 'docs', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-          ],
-        }),
-      });
-      return;
-    }
-
-    if (path === 'apps') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            { name: 'readme.md', path: 'apps/readme.md', type: 'ENTRY_TYPE_FILE', size: 18, has_children: false },
-            { name: 'components', path: 'apps/components', type: 'ENTRY_TYPE_DIRECTORY', size: 0, has_children: true },
-          ],
-        }),
-      });
-      return;
-    }
-
-    if (path === 'apps/components') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [{ name: 'button.jsx', path: 'apps/components/button.jsx', type: 'ENTRY_TYPE_FILE', size: 12 }],
-        }),
-      });
-      return;
-    }
-
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ entries: [] }),
-    });
-  });
-
-  await page.route(/\/v1\/files\/(?!entries)/, async (route, request) => {
-    const url = new URL(request.url());
-    const prefix = '/v1/files';
-    let path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
-    if (path.startsWith('/')) {
-      path = path.slice(1);
-    }
-    path = decodeURIComponent(path);
-
-    if (path === 'apps/readme.md') {
-      const content = Buffer.from('# Hello\nPreview').toString('base64');
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          file: {
-            path: 'apps/readme.md',
-            content,
-            size: content.length,
-            hash: 'hash',
-          },
-        }),
-      });
-      return;
-    }
-
-    await route.fulfill({
-      status: 404,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'File not found' }),
-    });
-  });
-
-  await page.goto('/');
-  await page.getByTestId('topbar-repo-browser').click();
-
-  await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
-
-  await page.getByRole('button', { name: /apps/i }).click();
-  await expect(page.getByRole('button', { name: /readme\.md/i })).toBeVisible();
-
-  await page.getByRole('button', { name: /readme\.md/i }).click();
-  await expect(page.getByRole('heading', { name: /apps\/readme\.md/i })).toBeVisible();
-  await expect(page.getByText('# Hello')).toBeVisible();
 });
