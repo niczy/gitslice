@@ -310,7 +310,7 @@ function RepoBrowser({ onNavigateToDiff }) {
         throw new Error(`Request failed (${response.status})`);
       }
       const payload = await response.json();
-      setFileHistory(payload.changes || []);
+      setFileHistory((payload.changes || []).map(normalizeChange));
     } catch (err) {
       setHistoryError('Unable to load file history.');
       setFileHistory([]);
@@ -698,7 +698,7 @@ function CommitDiffPage({ commitHash, onBack }) {
         });
         if (!response.ok) throw new Error(`Request failed (${response.status})`);
         const payload = await response.json();
-        if (active) setDiffData(payload);
+        if (active) setDiffData(normalizeDiffResponse(payload));
       } catch (err) {
         if (active && err?.name !== 'AbortError') {
           setError('Unable to load commit changes.');
@@ -770,6 +770,32 @@ function CommitDiffPage({ commitHash, onBack }) {
       </div>
     </section>
   );
+}
+
+// Normalize camelCase API response keys to snake_case used in templates.
+// The gRPC-gateway returns camelCase JSON (e.g. changeType, commitHash).
+function normalizeChange(c) {
+  return {
+    ...c,
+    change_type: c.change_type ?? c.changeType,
+    commit_hash: c.commit_hash ?? c.commitHash,
+    lines_added: c.lines_added ?? c.linesAdded ?? 0,
+    lines_deleted: c.lines_deleted ?? c.linesDeleted ?? 0,
+    old_path: c.old_path ?? c.oldPath,
+    slice_id: c.slice_id ?? c.sliceId,
+  };
+}
+
+function normalizeDiffResponse(data) {
+  return {
+    ...data,
+    commit_hash: data.commit_hash ?? data.commitHash,
+    files_added: data.files_added ?? data.filesAdded ?? 0,
+    files_modified: data.files_modified ?? data.filesModified ?? 0,
+    files_deleted: data.files_deleted ?? data.filesDeleted ?? 0,
+    files_renamed: data.files_renamed ?? data.filesRenamed ?? 0,
+    changes: (data.changes || []).map(normalizeChange),
+  };
 }
 
 function normalizeChangeType(value) {
