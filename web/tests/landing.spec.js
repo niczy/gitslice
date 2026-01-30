@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
+import { gotoWithRetry } from './test-helpers';
 
 test('renders Git Slice landing content and navigation', async ({ page }) => {
-  await page.goto('/');
+  await gotoWithRetry(page, '/');
   await expect(page.getByTestId('topbar-repo-browser')).toBeVisible();
 
   await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
