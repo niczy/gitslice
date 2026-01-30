@@ -120,7 +120,10 @@ web-install:
 web-build: web-install
 	cd web && npm run build
 
-web-test-e2e: web-install
-	cd web && npm run build
+web-test-e2e: web-install build
 	cd web && npx playwright install --with-deps
-	cd web && npm run test:e2e
+	@bash -c 'set -euo pipefail; \
+		trap "$(MAKE) stop-servers" EXIT; \
+		$(MAKE) start-servers; \
+		sleep 5; \
+		cd web && npm run test:e2e'
