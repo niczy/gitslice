@@ -1,5 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import './styles.css';
+
+// ---------------------------------------------------------------------------
+// Hash-based routing helpers
+// ---------------------------------------------------------------------------
+
+function parseHash() {
+  const hash = window.location.hash.replace(/^#\/?/, '');
+  if (hash.startsWith('diff/')) {
+    return { page: 'diff', commitHash: decodeURIComponent(hash.slice(5)) };
+  }
+  if (hash === 'browser') {
+    return { page: 'browser', commitHash: '' };
+  }
+  return { page: 'landing', commitHash: '' };
+}
+
+function buildHash(page, commitHash) {
+  if (page === 'diff' && commitHash) {
+    return `#/diff/${encodeURIComponent(commitHash)}`;
+  }
+  if (page === 'browser') {
+    return '#/browser';
+  }
+  return '#/';
+}
 
 const features = [
   {
@@ -22,19 +47,37 @@ const features = [
 const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
 function App() {
-  const [activePage, setActivePage] = useState('landing');
-  const [diffCommitHash, setDiffCommitHash] = useState('');
+  const [activePage, setActivePage] = useState(() => parseHash().page);
+  const [diffCommitHash, setDiffCommitHash] = useState(() => parseHash().commitHash);
   const githubUrl = 'https://github.com/niczy/gitslice';
 
+  const navigate = useCallback((page, commitHash = '') => {
+    setActivePage(page);
+    if (page === 'diff') {
+      setDiffCommitHash(commitHash);
+    }
+    window.history.pushState(null, '', buildHash(page, commitHash));
+  }, []);
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const onPopState = () => {
+      const { page, commitHash } = parseHash();
+      setActivePage(page);
+      setDiffCommitHash(commitHash);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   const navigateToDiff = (commitHash) => {
-    setDiffCommitHash(commitHash);
-    setActivePage('diff');
+    navigate('diff', commitHash);
   };
 
   return (
     <div className="app-shell">
       <header className="top-bar">
-        <button type="button" className="brand" onClick={() => setActivePage('landing')}>
+        <button type="button" className="brand" onClick={() => navigate('landing')}>
           <span className="brand-icon">◆</span>
           <span className="brand-text">Git Slice</span>
         </button>
@@ -46,7 +89,7 @@ function App() {
             type="button"
             className="primary"
             data-testid="topbar-repo-browser"
-            onClick={() => setActivePage('browser')}
+            onClick={() => navigate('browser')}
           >
             Repo Browser
           </button>
@@ -54,10 +97,10 @@ function App() {
       </header>
 
       <main className="page">
-        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => setActivePage('browser')} />}
+        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
         {activePage === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
         {activePage === 'diff' && (
-          <CommitDiffPage commitHash={diffCommitHash} onBack={() => setActivePage('browser')} />
+          <CommitDiffPage commitHash={diffCommitHash} onBack={() => navigate('browser')} />
         )}
       </main>
 
