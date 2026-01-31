@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
 
 // ---------------------------------------------------------------------------
@@ -10,7 +10,7 @@ function parseHash() {
   if (hash.startsWith('diff/')) {
     return { page: 'diff', commitHash: decodeURIComponent(hash.slice(5)) };
   }
-  if (hash === 'browser') {
+  if (hash === 'browser' || hash.startsWith('browser?')) {
     return { page: 'browser', commitHash: '' };
   }
   return { page: 'landing', commitHash: '' };
@@ -49,6 +49,7 @@ const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 function App() {
   const [activePage, setActivePage] = useState(() => parseHash().page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => parseHash().commitHash);
+  const [browserKey, setBrowserKey] = useState(0);
   const githubUrl = 'https://github.com/niczy/gitslice';
 
   const navigate = useCallback((page, commitHash = '') => {
@@ -65,6 +66,10 @@ function App() {
       const { page, commitHash } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
+      // Force RepoBrowser remount so it re-reads state from hash
+      if (page === 'browser') {
+        setBrowserKey((k) => k + 1);
+      }
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -98,7 +103,7 @@ function App() {
 
       <main className={`page${activePage === 'browser' ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
-        {activePage === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
+        {activePage === 'browser' && <RepoBrowser key={browserKey} onNavigateToDiff={navigateToDiff} />}
         {activePage === 'diff' && (
           <CommitDiffPage commitHash={diffCommitHash} onBack={() => navigate('browser')} />
         )}
@@ -243,10 +248,26 @@ function OverviewPage({ onBrowseRepo }) {
 }
 
 function RepoBrowser({ onNavigateToDiff }) {
-  const [browseMode, setBrowseMode] = useState('root'); // 'root' | 'slice'
-  const [sliceId, setSliceId] = useState('');
-  const [commitHash, setCommitHash] = useState(''); // For root mode
-  const [sliceHash, setSliceHash] = useState(''); // For slice mode
+  // Parse initial browser state from URL hash on mount
+  const initialBrowserState = useMemo(() => {
+    const raw = window.location.hash.replace(/^#\/?/, '');
+    if (raw.startsWith('browser?')) {
+      const params = new URLSearchParams(raw.slice(raw.indexOf('?') + 1));
+      return {
+        file: params.get('file') || '',
+        mode: params.get('mode') || 'root',
+        slice: params.get('slice') || '',
+        commit: params.get('commit') || '',
+        sliceHash: params.get('sliceHash') || '',
+      };
+    }
+    return null;
+  }, []);
+
+  const [browseMode, setBrowseMode] = useState(initialBrowserState?.mode || 'root');
+  const [sliceId, setSliceId] = useState(initialBrowserState?.slice || '');
+  const [commitHash, setCommitHash] = useState(initialBrowserState?.commit || '');
+  const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
   const [treeEntries, setTreeEntries] = useState({});
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -258,6 +279,9 @@ function RepoBrowser({ onNavigateToDiff }) {
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+
+  // File to restore after root tree entries load (from URL hash)
+  const pendingFileRef = useRef(initialBrowserState?.file || null);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
   const breadcrumbs = useMemo(() => {
@@ -397,7 +421,55 @@ function RepoBrowser({ onNavigateToDiff }) {
         if (!active) {
           return;
         }
-        setTreeEntries({ '': payload.entries || [] });
+
+        const rootEntries = payload.entries || [];
+
+        // Restore file selection from URL hash if pending
+        const pendingFile = pendingFileRef.current;
+        if (pendingFile) {
+          pendingFileRef.current = null;
+
+          const parts = pendingFile.split('/');
+          const allEntries = { '': rootEntries };
+          const pathsToExpand = [''];
+
+          // Load parent directory entries along the file path
+          for (let i = 1; i < parts.length; i++) {
+            if (!active) return;
+            const parentPath = parts.slice(0, i).join('/');
+            pathsToExpand.push(parentPath);
+            try {
+              const dirResp = await fetch(buildEntriesUrl(parentPath), { signal: controller.signal });
+              if (dirResp.ok) {
+                const dirData = await dirResp.json();
+                allEntries[parentPath] = dirData.entries || [];
+              }
+            } catch (e) {
+              if (e?.name === 'AbortError') return;
+              break;
+            }
+          }
+
+          if (!active) return;
+          setTreeEntries(allEntries);
+          setExpandedPaths(pathsToExpand);
+          setSelectedFile(pendingFile);
+
+          // Load file content
+          try {
+            const fileResp = await fetch(buildFileUrl(pendingFile), { signal: controller.signal });
+            if (fileResp.ok && active) {
+              const fileData = await fileResp.json();
+              setFileContent(decodeBase64(fileData?.file?.content || ''));
+            }
+          } catch (e) {
+            if (active && e?.name !== 'AbortError') {
+              setError('Unable to load the file.');
+            }
+          }
+        } else {
+          setTreeEntries({ '': rootEntries });
+        }
       } catch (err) {
         if (!active || err?.name === 'AbortError') {
           return;
@@ -457,6 +529,18 @@ function RepoBrowser({ onNavigateToDiff }) {
     setExpandedPaths((prev) => [...prev, entry.path]);
   };
 
+  // Push current browser state to navigation history
+  const pushBrowserState = useCallback((file) => {
+    const params = new URLSearchParams();
+    if (file) params.set('file', file);
+    if (browseMode !== 'root') params.set('mode', browseMode);
+    if (sliceId) params.set('slice', sliceId);
+    if (commitHash) params.set('commit', commitHash);
+    if (sliceHash) params.set('sliceHash', sliceHash);
+    const qs = params.toString();
+    window.history.pushState(null, '', qs ? `#/browser?${qs}` : '#/browser');
+  }, [browseMode, sliceId, commitHash, sliceHash]);
+
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
     if (entryKind === 'directory') {
@@ -470,6 +554,7 @@ function RepoBrowser({ onNavigateToDiff }) {
     }
 
     setSelectedFile(entry.path);
+    pushBrowserState(entry.path);
     setFileContent('');
     setIsLoading(true);
     setError('');
