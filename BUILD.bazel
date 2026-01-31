@@ -1,0 +1,7 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/niczy/gitslice
+# gazelle:proto disable_global
+# gazelle:go_naming_convention import_alias
+
+gazelle(name = "gazelle")

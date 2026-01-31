@@ -1,4 +1,7 @@
-.PHONY: install proto build build-slice build-admin build-gateway build-cli start-servers stop-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-slice build-admin build-gateway build-cli \
+       start-servers stop-servers test test-integration clean install_gs \
+       web-install web-build web-test-e2e setup-googleapis \
+       bazel-build bazel-test bazel-copy-binaries gazelle
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
@@ -12,6 +15,13 @@ ADMIN_SERVICE_PORT ?= 50052
 WEB_PORTS ?= 5173 4173 5174
 STOP_SERVER_PORTS := $(SLICE_SERVICE_PORT) $(ADMIN_SERVICE_PORT) $(GATEWAY_PORT) $(WEB_PORTS)
 VITE_FILE_API_PROXY_TARGET ?= http://localhost:$(GATEWAY_PORT)
+
+# Bazel binary output paths
+BAZEL_BIN := bazel-bin
+SLICE_BAZEL_BIN := $(BAZEL_BIN)/slice_service/slice_service_/slice_service
+ADMIN_BAZEL_BIN := $(BAZEL_BIN)/admin_service/admin_service_/admin_service
+GATEWAY_BAZEL_BIN := $(BAZEL_BIN)/gateway_service/gateway_service_/gateway_service
+CLI_BAZEL_BIN := $(BAZEL_BIN)/gs_cli/gs_cli_/gs_cli
 
 install:
 	go mod download
@@ -49,23 +59,36 @@ proto: setup-googleapis
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/admin && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/file && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto'
 
-build: proto
-	go build -o slice_service_server ./slice_service/
-	go build -o admin_service_server ./admin_service/
-	go build -o gateway_service_server ./gateway_service/
-	go build -o gs_cli/gs_cli ./gs_cli/
+# Primary build target: generate protos then build with Bazel
+build: proto bazel-build bazel-copy-binaries
 
+# Bazel build all targets
+bazel-build:
+	bazel build //...
+
+# Copy Bazel output binaries to repo root for backwards compatibility
+bazel-copy-binaries:
+	cp -fL $(SLICE_BAZEL_BIN) slice_service_server
+	cp -fL $(ADMIN_BAZEL_BIN) admin_service_server
+	cp -fL $(GATEWAY_BAZEL_BIN) gateway_service_server
+	cp -fL $(CLI_BAZEL_BIN) gs_cli/gs_cli
+
+# Individual build targets (build + copy single binary)
 build-slice: proto
-	go build -o slice_service_server ./slice_service/
+	bazel build //slice_service
+	cp -fL $(SLICE_BAZEL_BIN) slice_service_server
 
 build-admin: proto
-	go build -o admin_service_server ./admin_service/
+	bazel build //admin_service
+	cp -fL $(ADMIN_BAZEL_BIN) admin_service_server
 
 build-gateway: proto
-	go build -o gateway_service_server ./gateway_service/
+	bazel build //gateway_service
+	cp -fL $(GATEWAY_BAZEL_BIN) gateway_service_server
 
 build-cli: proto
-	go build -o gs_cli/gs_cli ./gs_cli/
+	bazel build //gs_cli
+	cp -fL $(CLI_BAZEL_BIN) gs_cli/gs_cli
 
 start-servers: build
 	@$(MAKE) stop-servers
@@ -103,16 +126,26 @@ stop-servers:
 		fi; \
 	done
 
-test: install proto
-	go test ./...
+# Run all tests via Bazel
+test: proto
+	bazel test //...
+
+# Run integration tests only
+test-integration: proto
+	bazel test //workflow_test:workflow_test
 
 clean:
 	rm -f slice_service_server admin_service_server gateway_service_server gs_cli/gs_cli
 	find proto -name "*.pb.go" -delete
 	find proto -name "*.pb.gw.go" -delete
+	bazel clean 2>/dev/null || true
 
 install_gs: build-cli
 	cp gs_cli/gs_cli $(GOPATH)/bin/gs
+
+# Update BUILD.bazel files using gazelle
+gazelle:
+	bazel run //:gazelle
 
 web-install:
 	cd web && npm ci

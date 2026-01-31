@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "slice",
+    srcs = [
+        "genesis.go",
+        "server.go",
+    ],
+    importpath = "github.com/niczy/gitslice/internal/services/slice",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/common",
+        "//internal/models",
+        "//internal/storage",
+        "//proto/slice",
+        "@org_golang_google_grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)

@@ -1,0 +1,40 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "workflow_test",
+    srcs = [
+        "advanced_features_test.go",
+        "cache_test.go",
+        "changeset_workflow_test.go",
+        "checkout_test.go",
+        "commit_history_test.go",
+        "conflict_resolution_test.go",
+        "file_history_test.go",
+        "global_state_test.go",
+        "integration_test.go",
+        "metadata_helpers_test.go",
+        "slice_management_test.go",
+        "test_helpers.go",
+        "working_directory_test.go",
+    ],
+    env = {
+        "RUN_INTEGRATION_TESTS": "1",
+    },
+    importpath = "github.com/niczy/gitslice/workflow_test",
+    tags = ["integration"],
+    deps = [
+        "//internal/common",
+        "//internal/models",
+        "//internal/services/admin",
+        "//internal/services/file",
+        "//internal/services/slice",
+        "//internal/storage",
+        "//proto/admin",
+        "//proto/file",
+        "//proto/slice",
+        "@com_github_alicebob_miniredis_v2",
+        "@com_github_redis_go_redis_v9",
+        "@org_golang_google_grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+    ],
+)

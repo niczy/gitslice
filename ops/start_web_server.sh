@@ -68,15 +68,17 @@ wait_for_port() {
 
 cd "$REPO_ROOT"
 
+build_all_services() {
+  log "Building all services with Bazel (with proto generation)..."
+  make build
+}
+
 start_slice_service() {
   log "Stopping existing slice service..."
   pkill -f "$SLICE_BIN" >/dev/null 2>&1 || true
 
   # Wait a moment for ports to be released
   sleep 2
-
-  log "Building slice service (with proto generation)..."
-  make build-slice
 
   log "Starting slice service (log: $SLICE_LOG)..."
   nohup "$SLICE_BIN" > "$SLICE_LOG" 2>&1 &
@@ -96,9 +98,6 @@ start_admin_service() {
   # Wait a moment for ports to be released
   sleep 2
 
-  log "Building admin service (with proto generation)..."
-  make build-admin
-
   log "Starting admin service (log: $ADMIN_LOG)..."
   nohup "$ADMIN_BIN" > "$ADMIN_LOG" 2>&1 &
   local pid=$!
@@ -117,9 +116,6 @@ start_gateway_service() {
 
   # Wait a moment for ports to be released
   sleep 2
-
-  log "Building gateway service..."
-  make build-gateway
 
   log "Starting gateway service (log: $GATEWAY_LOG)..."
   GATEWAY_PORT="$GATEWAY_PORT" nohup "$GATEWAY_BIN" > "$GATEWAY_LOG" 2>&1 &
@@ -152,6 +148,7 @@ start_web_preview() {
 }
 
 log "=== Starting all services ==="
+build_all_services
 start_slice_service
 start_admin_service
 start_gateway_service

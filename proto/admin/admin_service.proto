@@ -4,7 +4,7 @@ package admin.v1;
 
 import "google/api/annotations.proto";
 
-option go_package = "github.com/niczy/gitslice/proto;adminv1";
+option go_package = "github.com/niczy/gitslice/proto/admin;adminv1";
 
  service AdminService {
   // Trigger batch merge to global

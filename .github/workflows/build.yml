@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24'
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
@@ -25,19 +25,28 @@ jobs:
         cache: 'npm'
         cache-dependency-path: web/package-lock.json
 
+    - name: Install Bazelisk
+      run: |
+        curl -fsSL -o /usr/local/bin/bazel \
+          https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x /usr/local/bin/bazel
+
     - name: Install protoc
       run: |
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
 
-    - name: Install dependencies
+    - name: Install protoc plugins
       run: make install
 
     - name: Generate proto code
       run: make proto
 
-    - name: Build all
-      run: make build
+    - name: Bazel build all
+      run: bazel build //...
+
+    - name: Copy binaries for smoke tests
+      run: make bazel-copy-binaries
 
     - name: Run slice service
       run: |
@@ -49,24 +58,15 @@ jobs:
 
     - name: Test CLI help
       run: |
-        timeout 2s ./gs_cli || true
+        timeout 2s ./gs_cli/gs_cli || true
 
-    - name: Run workflow tests (stub)
-      run: |
-        cd workflow_test
-        go test -v -run TestCLIBuild
+    - name: Bazel test (unit tests)
+      run: bazel test //... --test_tag_filters=-integration
 
-    - name: Run full test suite with mocks
+    - name: Bazel test (integration)
       env:
         RUN_INTEGRATION_TESTS: "1"
-      run: |
-        go test ./...
-
-    - name: Test coverage for workflow tests
-      run: |
-        cd workflow_test
-        go test -cover -coverprofile=coverage.out -run TestCLIBuild
-        go tool cover -func=coverage.out
+      run: bazel test //workflow_test:workflow_test
 
     - name: Run web build and e2e tests
       run: make web-test-e2e

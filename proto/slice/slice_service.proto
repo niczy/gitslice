@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package slice.v1;
 
-option go_package = "github.com/niczy/gitslice/proto;slicev1";
+option go_package = "github.com/niczy/gitslice/proto/slice;slicev1";
 
 service SliceService {
   // Checkout slice for editing

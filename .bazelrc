@@ -1,0 +1,8 @@
+# Ensure hermetic builds
+build --incompatible_strict_action_env
+
+# Show test errors in output
+test --test_output=errors
+
+# Enable race detector for Go tests
+test --@rules_go//go/config:race
