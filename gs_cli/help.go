@@ -19,7 +19,7 @@ func printHelp() {
 func printSliceHelp() {
 	fmt.Println("Usage: gs slice <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  checkout  Checkout a slice to working directory using metadata TOML")
+	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID")
 	fmt.Println("  clone     Alias for checkout")
 }
 

@@ -13,7 +13,7 @@ import (
 func handleStatus(ctx context.Context, cli *CLI) {
 	// Check if in a gitslice directory
 	if _, err := os.Stat(".gs"); os.IsNotExist(err) {
-		log.Println("Not in a gitslice directory. Run 'gs init <metadata-toml-path>' to initialize.")
+		log.Println("Not in a gitslice directory. Run 'gs init <slice-id>' to initialize.")
 		return
 	}
 
@@ -41,16 +41,13 @@ func handleStatus(ctx context.Context, cli *CLI) {
 
 func handleInit(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs init <metadata-toml-path>")
+		log.Println("Usage: gs init <slice-id>")
 		return
 	}
 
-	metadataPath, err := validateMetadataPath(args[0])
+	sliceID, err := normalizeSliceID(args[0])
 	if err != nil {
-		log.Fatalf("Invalid metadata path: %v", err)
-	}
-	if _, err := readSliceMetadata(metadataPath); err != nil {
-		log.Fatalf("Failed to read slice metadata: %v", err)
+		log.Fatalf("Invalid slice ID: %v", err)
 	}
 
 	// Check if directory is empty
@@ -69,7 +66,7 @@ func handleInit(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	// Write config file
-	if err := writeMetadataPathConfig(metadataPath); err != nil {
+	if err := writeSliceIDConfig(sliceID); err != nil {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
@@ -80,27 +77,22 @@ func handleInit(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
 
-	fmt.Printf("Initialized empty gitslice repository with metadata: %s\n", metadataPath)
+	fmt.Printf("Initialized empty gitslice repository for slice: %s\n", sliceID)
 }
 
 func handleLog(ctx context.Context, cli *CLI, args []string) {
 	if len(args) > 1 {
-		log.Println("Usage: gs log [<metadata-toml-path>]")
+		log.Println("Usage: gs log [<slice-id>]")
 		return
 	}
 
 	var sliceID string
 	var err error
 	if len(args) == 1 {
-		metadataPath, err := validateMetadataPath(args[0])
+		sliceID, err = normalizeSliceID(args[0])
 		if err != nil {
-			log.Fatalf("Invalid metadata path: %v", err)
+			log.Fatalf("Invalid slice ID: %v", err)
 		}
-		meta, err := readSliceMetadata(metadataPath)
-		if err != nil {
-			log.Fatalf("Failed to read slice metadata: %v", err)
-		}
-		sliceID = meta.SliceID
 	} else {
 		sliceID, err = sliceIDFromConfig()
 		if err != nil {
@@ -156,7 +148,7 @@ func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 		cfgSliceID, err := sliceIDFromConfig()
 		if err != nil {
 			log.Printf("Failed to read slice binding: %v", err)
-			log.Println("Please run 'gs init <metadata-toml-path>' first or specify parent with --parent")
+			log.Println("Please run 'gs init <slice-id>' first or specify parent with --parent")
 			return
 		}
 		parentSliceID = cfgSliceID

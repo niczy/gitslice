@@ -10,10 +10,10 @@ func TestCommitLogAndShow(t *testing.T) {
 	sliceID := "commit-history"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
-	_ = runCLIOrFail(t, workdir, "init", metadataPath)
+	sliceArg := sliceIDArg(sliceID)
+	_ = runCLIOrFail(t, workdir, "init", sliceArg)
 
-	output := runCLIOrFail(t, workdir, "log", metadataPath)
+	output := runCLIOrFail(t, workdir, "log", sliceArg)
 	if !strings.Contains(output, "Commit history") {
 		t.Fatalf("expected log output to include commit history heading, got: %s", output)
 	}

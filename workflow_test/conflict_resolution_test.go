@@ -233,8 +233,8 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 	}
 
 	workdir := t.TempDir()
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceA)
-	if _, err := runCLIWithDir(workdir, "init", metadataPath); err != nil {
+	sliceArg := sliceIDArg(sliceA)
+	if _, err := runCLIWithDir(workdir, "init", sliceArg); err != nil {
 		t.Fatalf("failed to init working dir: %v", err)
 	}
 

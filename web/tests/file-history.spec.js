@@ -112,9 +112,11 @@ test.describe('File History (Slice Mode)', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    // Switch to slice mode with root_slice
-    await page.locator('[data-testid="browse-mode"]').selectOption('slice');
-    await page.locator('[data-testid="slice-id"]').fill('root_slice');
+    // Ensure root_slice is selected from the slice list
+    const rootSliceItem = page.getByTestId('slice-item').filter({ hasText: 'root_slice' });
+    await expect(rootSliceItem).toBeVisible();
+    await rootSliceItem.click();
+    await expect(page.getByTestId('selected-slice')).toContainText('root_slice');
 
     // Navigate to a file: o -> genesis -> projects -> gitslice -> README.md
     await page.getByRole('button', { name: /📁.*o/i }).click();

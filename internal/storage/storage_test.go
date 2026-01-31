@@ -88,9 +88,26 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err := st.AddFileToSlice(ctx, "file-1", slice.ID); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
+	if err := st.AddFileToSlice(ctx, "file-2", slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice new file failed: %v", err)
+	}
+	afterAdd, err := st.GetSlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice after AddFileToSlice failed: %v", err)
+	}
+	if len(afterAdd.Files) != 1 || afterAdd.Files[0] != "file-1" {
+		t.Fatalf("slice files should be immutable, got: %#v", afterAdd.Files)
+	}
 	slice2 := &models.Slice{ID: "slice-2", Name: "Beta", Description: "Second", Files: []string{"file-1"}, Owners: []string{"bob"}, CreatedBy: "bob"}
 	if err := st.CreateSlice(ctx, slice2); err != nil {
 		t.Fatalf("CreateSlice second failed: %v", err)
+	}
+	count, err := st.CountSlices(ctx)
+	if err != nil {
+		t.Fatalf("CountSlices failed: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 slices, got %d", count)
 	}
 	if err := st.AddFileToSlice(ctx, "file-1", slice2.ID); err != nil {
 		t.Fatalf("AddFileToSlice second failed: %v", err)
@@ -138,6 +155,24 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	cs.Status = models.ChangesetStatusMerged
 	if err := st.UpdateChangeset(ctx, cs); err != nil {
 		t.Fatalf("UpdateChangeset failed: %v", err)
+	}
+
+	emptySlice := &models.Slice{ID: "slice-empty", Name: "Empty", Description: "Empty", Files: []string{}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, emptySlice); err != nil {
+		t.Fatalf("CreateSlice empty failed: %v", err)
+	}
+	if err := st.SetSliceFiles(ctx, emptySlice.ID, []string{"file-9"}); err != nil {
+		t.Fatalf("SetSliceFiles failed: %v", err)
+	}
+	emptyFetched, err := st.GetSlice(ctx, emptySlice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice after SetSliceFiles failed: %v", err)
+	}
+	if len(emptyFetched.Files) != 1 || emptyFetched.Files[0] != "file-9" {
+		t.Fatalf("SetSliceFiles mismatch: %#v", emptyFetched.Files)
+	}
+	if err := st.SetSliceFiles(ctx, emptySlice.ID, []string{"file-10"}); err != ErrSliceFilesImmutable {
+		t.Fatalf("expected ErrSliceFilesImmutable, got %v", err)
 	}
 
 	// Entries
@@ -240,16 +275,16 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 	// Test 1: AddFileChange and GetFileHistory
 	t.Run("AddFileChange", func(t *testing.T) {
 		change1 := &models.FileChangeRecord{
-			ID:           "change-1",
-			SliceID:      slice.ID,
-			CommitHash:   "commit-abc",
-			Path:         "src/main.go",
-			ChangeType:   models.ChangeTypeAdd,
-			NewHash:      "hash123",
-			LinesAdded:   50,
-			Author:       "alice",
-			Message:      "Initial commit",
-			Timestamp:    baseTime,
+			ID:         "change-1",
+			SliceID:    slice.ID,
+			CommitHash: "commit-abc",
+			Path:       "src/main.go",
+			ChangeType: models.ChangeTypeAdd,
+			NewHash:    "hash123",
+			LinesAdded: 50,
+			Author:     "alice",
+			Message:    "Initial commit",
+			Timestamp:  baseTime,
 		}
 		if err := st.AddFileChange(ctx, change1); err != nil {
 			t.Fatalf("AddFileChange failed: %v", err)

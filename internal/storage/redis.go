@@ -363,6 +363,22 @@ func (s *RedisStorage) ListSlices(ctx context.Context, limit, offset int) ([]*mo
 	return result, nil
 }
 
+// CountSlices returns the total number of slices stored.
+func (s *RedisStorage) CountSlices(ctx context.Context) (int, error) {
+	ctx = ensureCtx(ctx)
+	count, err := s.rdb.SCard(ctx, s.key("slices")).Result()
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		state, loadErr := s.loadDurableState(ctx)
+		if loadErr == nil {
+			return len(state.Slices), nil
+		}
+	}
+	return int(count), nil
+}
+
 // ListSlicesByOwner returns slices owned by the provided owner.
 func (s *RedisStorage) ListSlicesByOwner(ctx context.Context, owner string, limit, offset int) ([]*models.Slice, error) {
 	ctx = ensureCtx(ctx)
@@ -584,32 +600,70 @@ func (s *RedisStorage) AddFileToSlice(ctx context.Context, fileID, sliceID strin
 		return err
 	}
 
-	exists := false
-	for _, f := range slice.Files {
-		if f == fileID {
-			exists = true
-			break
+	if slice.IsRoot {
+		hasFile := false
+		for _, existing := range slice.Files {
+			if existing == fileID {
+				hasFile = true
+				break
+			}
 		}
-	}
-	if !exists {
-		slice.Files = append(slice.Files, fileID)
+		if !hasFile {
+			updated := *slice
+			updated.Files = append(updated.Files, fileID)
+
+			if err := s.withDurableState(ctx, func(state *durableState) error {
+				stored := &updated
+				if stateSlice, ok := state.Slices[sliceID]; ok {
+					copySlice := *stateSlice
+					copySlice.Files = append(copySlice.Files, fileID)
+					stored = &copySlice
+				}
+				state.Slices[sliceID] = stored
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			raw, err := marshal(&updated)
+			if err != nil {
+				return err
+			}
+			if err := s.rdb.Set(ctx, s.key("slice", sliceID), raw, 0).Err(); err != nil {
+				return err
+			}
+
+			if err := s.cacheSlice(ctx, &updated, nil); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
+	return s.rdb.SAdd(ctx, s.key("file_index", fileID), sliceID).Err()
+}
+
+// SetSliceFiles sets the immutable file list for a slice.
+func (s *RedisStorage) SetSliceFiles(ctx context.Context, sliceID string, files []string) error {
+	ctx = ensureCtx(ctx)
+	slice, err := s.GetSlice(ctx, sliceID)
+	if err != nil {
+		return err
+	}
+
+	if len(slice.Files) > 0 {
+		return ErrSliceFilesImmutable
+	}
+
+	copySlice := *slice
+	copySlice.Files = append([]string{}, files...)
+
 	if err := s.withDurableState(ctx, func(state *durableState) error {
-		stored := slice
+		stored := &copySlice
 		if stateSlice, ok := state.Slices[sliceID]; ok {
-			copySlice := *stateSlice
-			exists := false
-			for _, f := range copySlice.Files {
-				if f == fileID {
-					exists = true
-					break
-				}
+			if len(stateSlice.Files) > 0 {
+				return ErrSliceFilesImmutable
 			}
-			if !exists {
-				copySlice.Files = append(copySlice.Files, fileID)
-			}
-			stored = &copySlice
 		}
 		state.Slices[sliceID] = stored
 		return nil
@@ -617,15 +671,16 @@ func (s *RedisStorage) AddFileToSlice(ctx context.Context, fileID, sliceID strin
 		return err
 	}
 
-	if err := s.cacheSlice(ctx, slice, nil); err != nil {
+	raw, err := marshal(&copySlice)
+	if err != nil {
 		return err
 	}
 
-	if slice.IsRoot {
-		return nil
+	if err := s.rdb.Set(ctx, s.key("slice", sliceID), raw, 0).Err(); err != nil {
+		return err
 	}
 
-	return s.rdb.SAdd(ctx, s.key("file_index", fileID), sliceID).Err()
+	return s.cacheSlice(ctx, &copySlice, nil)
 }
 
 // GetActiveSlicesForFile returns slices currently referencing a file.

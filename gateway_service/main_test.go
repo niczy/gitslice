@@ -49,9 +49,14 @@ func TestGatewayListEntries(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("add file content: %v", err)
 		}
-		if err := st.AddFileToSlice(ctx, file.id, rootSlice.ID); err != nil {
-			t.Fatalf("add file to slice: %v", err)
-		}
+	}
+
+	fileIDs := []string{}
+	for _, file := range files {
+		fileIDs = append(fileIDs, file.id)
+	}
+	if err := st.SetSliceFiles(ctx, rootSlice.ID, fileIDs); err != nil && err != storage.ErrSliceFilesImmutable {
+		t.Fatalf("set slice files: %v", err)
 	}
 
 	sliceAddr := startGRPCServer(t, func(srv *grpc.Server) {

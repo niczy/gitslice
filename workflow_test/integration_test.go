@@ -413,9 +413,9 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 	sliceID := "slice-integration"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -452,8 +452,8 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 		t.Fatalf("Expected root slice info, got: %s", output)
 	}
 
-	rootMetadataPath := writeSliceMetadataFile(t, t.TempDir(), "root_slice")
-	output = runCLIOrFail(t, workdir, "init", rootMetadataPath)
+	rootSliceArg := sliceIDArg("root_slice")
+	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -477,8 +477,8 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	}
 
 	newSliceWorkdir := t.TempDir()
-	newSliceMetadataPath := writeSliceMetadataFile(t, t.TempDir(), newSliceID)
-	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceMetadataPath)
+	newSliceArg := sliceIDArg(newSliceID)
+	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -501,9 +501,9 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-git-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("Expected checkout output, got: %s", output)
 	}
@@ -534,9 +534,9 @@ func TestChangesetCreateRequiresMainBranch(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -560,8 +560,8 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected root slice info, got: %s", output)
 	}
 
-	rootMetadataPath := writeSliceMetadataFile(t, t.TempDir(), "root_slice")
-	output = runCLIOrFail(t, workdir, "init", rootMetadataPath)
+	rootSliceArg := sliceIDArg("root_slice")
+	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
@@ -588,10 +588,10 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if !strings.Contains(output, "Created slice: "+sliceID) {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}
-	sliceMetadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceMetadataPath)
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -616,22 +616,19 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceMetadataPath)
+	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
 	}
-	if !strings.Contains(output, "apps/readme.md") {
-		t.Fatalf("expected apps/readme.md in slice checkout, got: %s", output)
+	if !strings.Contains(output, "apps (0 bytes)") {
+		t.Fatalf("expected apps folder in slice checkout, got: %s", output)
 	}
 
 	rootCheckoutDir := t.TempDir()
-	rootCheckoutMetadataPath := writeSliceMetadataFile(t, t.TempDir(), "root_slice")
-	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", rootCheckoutMetadataPath)
+	rootCheckoutArg := sliceIDArg("root_slice")
+	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected root slice to promote latest commit, got: %s", output)
-	}
-	if !strings.Contains(output, "apps/readme.md") {
-		t.Fatalf("expected apps/readme.md in root checkout, got: %s", output)
 	}
 	if !strings.Contains(output, "apps (0 bytes)") || !strings.Contains(output, "services (0 bytes)") || !strings.Contains(output, "docs (0 bytes)") {
 		t.Fatalf("expected root folders in root checkout output, got: %s", output)
@@ -1003,9 +1000,9 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-history-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}

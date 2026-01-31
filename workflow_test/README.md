@@ -8,7 +8,7 @@ This directory contains comprehensive integration tests for the gitslice CLI bas
 
 | File | Description | Test Count |
 |------|-------------|------------|
-| `slice_management_test.go` | Tests for metadata-based initialization and checkout | 12 |
+| `slice_management_test.go` | Tests for slice-ID-based initialization and checkout | 12 |
 | `changeset_workflow_test.go` | Tests for changeset CRUD operations (create, review, merge, rebase, list, abandon) | 24 |
 | `conflict_resolution_test.go` | Tests for conflict detection and resolution | 19 |
 | `commit_history_test.go` | Tests for log, show, and diff commands | 32 |
@@ -62,7 +62,7 @@ go test -v -run TestConflict
 
 ```bash
 # Run a single test
-go test -v -run TestSliceCheckoutFromMetadata
+go test -v -run TestSliceCheckoutByID
 ```
 
 ### Run Tests with Coverage
@@ -77,9 +77,9 @@ go tool cover -html=coverage.out
 ### Categories
 
 1. **Slice Management** (`slice_management_test.go`)
-   - Bind metadata TOML files
+   - Bind slice IDs
    - Initialize working directories
-   - Checkout slices from metadata
+   - Checkout slices from slice IDs
 
 2. **Changeset Workflow** (`changeset_workflow_test.go`)
    - Create changesets from modifications

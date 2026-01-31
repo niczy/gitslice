@@ -11,6 +11,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -139,6 +140,10 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 
 		allModifiedFiles = append(allModifiedFiles, slicePath)
 		fileCount++
+	}
+
+	if err := s.storage.SetSliceFiles(ctx, sliceID, allModifiedFiles); err != nil && err != storage.ErrSliceFilesImmutable {
+		return fmt.Errorf("failed to set root slice files: %w", err)
 	}
 
 	// Phase 2: Create and merge a changeset via the service's own RPC methods.
