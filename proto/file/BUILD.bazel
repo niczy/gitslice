@@ -25,13 +25,13 @@ go_proto_library(
     ],
 )
 
-# Pre-generated grpc-gateway code as a separate library
+# Combined library: embeds Bazel-generated code and adds pre-generated grpc-gateway
 go_library(
-    name = "file_gateway",
+    name = "file",
     srcs = ["file_service.pb.gw.go"],
+    embed = [":file_go_proto"],
     importpath = "github.com/niczy/gitslice/proto/file",
     deps = [
-        ":file_go_proto",
         "@com_github_grpc_ecosystem_grpc_gateway_v2//runtime",
         "@com_github_grpc_ecosystem_grpc_gateway_v2//utilities",
         "@org_golang_google_grpc//:go_default_library",
@@ -39,14 +39,7 @@ go_library(
         "@org_golang_google_grpc//grpclog",
         "@org_golang_google_grpc//metadata",
         "@org_golang_google_grpc//status",
-        "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/emptypb",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
-)
-
-# Combined alias that includes both
-alias(
-    name = "file",
-    actual = ":file_gateway",
 )
