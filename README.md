@@ -45,11 +45,91 @@
     └── build.yml
 ```
 
-## Getting Started
+## Building with Bazel
+
+This project uses Bazel for hermetic, reproducible builds.
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- [Bazelisk](https://bazel.build/install/bazelisk) (manages Bazel versions automatically)
+
+```bash
+# macOS
+brew install bazelisk
+
+# Linux
+curl -Lo /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+chmod +x /usr/local/bin/bazel
+```
+
+### Build
+
+```bash
+# Build all services
+bazel build //...
+
+# Build specific service
+bazel build //slice_service:slice_service_server
+bazel build //admin_service:admin_service_server
+bazel build //gateway_service:gateway_service_server
+bazel build //gs_cli:gs_cli
+
+# Build web frontend
+bazel build //web:build
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+bazel test //...
+
+# Run only unit tests (fast)
+bazel test //... --test_tag_filters=-integration
+
+# Run integration tests (slow)
+bazel test //workflow_test:integration_test --test_tag_filters=integration
+```
+
+### Generated Binaries
+
+Binaries are output to `bazel-bin/`:
+- `bazel-bin/slice_service/slice_service_server`
+- `bazel-bin/admin_service/admin_service_server`
+- `bazel-bin/gateway_service/gateway_service_server`
+- `bazel-bin/gs_cli/gs_cli`
+
+### Run
+
+```bash
+# Run slice service (SliceService on :50051)
+bazel run //slice_service:slice_service_server
+
+# Run admin service (listens on :50052)
+bazel run //admin_service:admin_service_server
+
+# Run gateway service (HTTP gRPC-Gateway on :8080)
+bazel run //gateway_service:gateway_service_server
+
+# Run CLI
+bazel run //gs_cli:gs_cli -- --help
+```
+
+### Auto-generate BUILD Files
+
+If you add new Go files, use Gazelle to update BUILD files:
+
+```bash
+bazel run //:gazelle
+```
+
+## Legacy Build (Make/Go modules)
+
+The project can still be built using traditional Go tools and Make (deprecated):
+
+### Prerequisites
+
+- Go 1.24 or higher
 - Protocol Buffers compiler (protoc)
 - protoc-gen-go
 - protoc-gen-go-grpc
@@ -81,59 +161,46 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 ### Build
 
 ```bash
-# Build slice service
+# Build using Make
+make build
+
+# Or build manually
 go build -o slice_service_server ./slice_service/
-
-# Build admin service
 go build -o admin_service_server ./admin_service/
-
-# Build CLI
+go build -o gateway_service_server ./gateway_service/
 go build -o gs_cli ./gs_cli/
-```
-
-### Run
-
-```bash
-# Run slice service (SliceService on :50051)
-./slice_service_server
-
-# Run admin service (listens on :50052)
-./admin_service_server
-
-# Run gateway service (HTTP gRPC-Gateway on :8080)
-./gateway_service_server
-
-# Run CLI (override addresses if needed)
-./gs_cli --help
 ```
 
 ## Development
 
 ### Adding New Proto Definitions
 
-1. Add or modify `.proto` files in `proto/slice/` or `proto/admin/`
-2. Regenerate the golang code using protoc
-3. Update the service implementations as needed
-4. Run tests and ensure builds pass
+1. Add or modify `.proto` files in `proto/slice/`, `proto/file/`, or `proto/admin/`
+2. Update the `proto/BUILD.bazel` and respective subdirectory BUILD files if needed
+3. Run `bazel build //proto/...` to regenerate Go code
+4. Update the service implementations as needed
+5. Run tests and ensure builds pass
 
 ### Running Tests
 
 ```bash
-# Run all tests (installs dependencies first)
-make test
+# Run all tests with Bazel (recommended)
+bazel test //...
 
 # Run integration tests
-RUN_INTEGRATION_TESTS=1 make test
+RUN_INTEGRATION_TESTS=1 bazel test //workflow_test:integration_test
+
+# Legacy: Run tests with Make
+make test
 ```
 
 ## CI/CD
 
-GitHub Actions workflow is configured to:
-- Install Go and dependencies
-- Generate proto code
-- Build all services
-- Test server startup
-- Test CLI help command
+GitHub Actions workflow is configured to use Bazel:
+- Mount Bazel cache for faster builds
+- Build all services with Bazel
+- Run all tests with Bazel
+- Test server startup and CLI commands
 
 See `.github/workflows/build.yml` for details.
 
@@ -162,6 +229,10 @@ See the `spec/` directory for detailed design specifications:
 - [Scalability Review](spec/SCALABILITY_REVIEW.md)
 
 For the web landing page, see [web/README.md](web/README.md).
+
+## Migration Plan
+
+See [plans/BAZEL_MIGRATION_PLAN.md](plans/BAZEL_MIGRATION_PLAN.md) for details on the Bazel migration.
 
 ## License
 

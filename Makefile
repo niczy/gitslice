@@ -1,4 +1,4 @@
-.PHONY: install proto build build-slice build-admin build-gateway build-cli start-servers stop-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-slice build-admin build-gateway build-cli start-servers stop-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis bazel-build bazel-test bazel-clean
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
@@ -124,3 +124,13 @@ web-test-e2e: web-install
 	cd web && npm run build
 	cd web && npx playwright install --with-deps
 	cd web && npm run test:e2e
+
+# Bazel targets (recommended for new development)
+bazel-build:
+	bazel build //...
+
+bazel-test:
+	bazel test //...
+
+bazel-clean:
+	bazel clean

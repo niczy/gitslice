@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "storage",
+    srcs = [
+        "memory.go",
+        "objectstore.go",
+        "redis.go",
+        "storage.go",
+    ],
+    importpath = "github.com/niczy/gitslice/internal/storage",
+    deps = [
+        "//internal/models",
+        "@com_github_alicebob_miniredis_v2//:miniredis",
+        "@com_github_aws_aws_sdk_go_v2_service_s3//:s3",
+        "@com_github_aws_aws_sdk_go_v2_service_s3//types",
+        "@com_github_redis_go_redis_v9//:go-redis",
+    ],
+)
+
+go_test(
+    name = "storage_test",
+    srcs = ["storage_test.go"],
+    embed = [":storage"],
+    deps = [
+        "//internal/models",
+        "@com_github_alicebob_miniredis_v2//:miniredis",
+    ],
+)

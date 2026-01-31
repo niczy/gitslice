@@ -1,0 +1,6 @@
+# Proto build rules are in subdirectories:
+# - proto/slice/BUILD.bazel
+# - proto/file/BUILD.bazel
+# - proto/admin/BUILD.bazel
+
+package(default_visibility = ["//visibility:public"])

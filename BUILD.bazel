@@ -1,0 +1,28 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# Gazelle target for generating BUILD files
+# Usage: bazel run //:gazelle
+# Update deps: bazel run //:gazelle -- update-repos -from_file=go.mod -to_macro=deps.bzl%go_dependencies
+
+gazelle(name = "gazelle")
+
+# Build all services
+filegroup(
+    name = "all_services",
+    srcs = [
+        "//admin_service:admin_service_server",
+        "//gateway_service:gateway_service_server",
+        "//slice_service:slice_service_server",
+        "//gs_cli:gs_cli",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Run all tests
+test_suite(
+    name = "all_tests",
+    tests = [
+        "//internal/storage:storage_test",
+        "//workflow_test:integration_test",
+    ],
+)

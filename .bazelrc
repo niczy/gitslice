@@ -1,0 +1,32 @@
+# Build settings
+build --jobs=auto
+build --enable_bzlmod
+
+# Go settings
+# Note: Static linking disabled on macOS (causes linker errors)
+# build --@rules_go//go/config:static
+
+# Test settings
+test --test_output=errors
+test --test_verbose_timeout_warnings
+
+# Remote caching (enable when ready)
+# build --remote_cache=grpc://cache.example.com:9092
+
+# Disk cache for local development
+build --disk_cache=~/.cache/bazel-disk-cache
+
+# UI settings
+common --color=yes
+common --curses=yes
+
+# Performance
+build --experimental_remote_merkle_tree_cache
+build --experimental_remote_merkle_tree_cache_size=1000
+
+# Proto compilation
+build --proto_compiler=@protobuf//:protoc
+
+# Platform-specific settings (macOS)
+build:macos --copt=-Wno-unused-command-line-argument
+build:macos --copt=-Wno-nullability-completeness

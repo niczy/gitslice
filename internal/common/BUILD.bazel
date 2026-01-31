@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "common",
+    srcs = [
+        "health.go",
+        "init.go",
+        "validation.go",
+    ],
+    importpath = "github.com/niczy/gitslice/internal/common",
+    deps = [
+        "//internal/models",
+        "//internal/storage",
+    ],
+)

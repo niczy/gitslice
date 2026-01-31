@@ -1,0 +1,50 @@
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Admin service proto
+proto_library(
+    name = "admin_service_proto",
+    srcs = ["admin_service.proto"],
+    deps = [
+        "//proto/google/api:annotations_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+# Go proto library for admin service (generates .pb.go and _grpc.pb.go)
+go_proto_library(
+    name = "admin_go_proto",
+    compilers = ["@rules_go//proto:go_grpc"],
+    importpath = "github.com/niczy/gitslice/proto/admin",
+    proto = ":admin_service_proto",
+    deps = [
+        "//proto/google/api:annotations_go_proto",
+    ],
+)
+
+# Pre-generated grpc-gateway code as a separate library
+go_library(
+    name = "admin_gateway",
+    srcs = ["admin_service.pb.gw.go"],
+    importpath = "github.com/niczy/gitslice/proto/admin",
+    deps = [
+        ":admin_go_proto",
+        "@com_github_grpc_ecosystem_grpc_gateway_v2//runtime",
+        "@com_github_grpc_ecosystem_grpc_gateway_v2//utilities",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//grpclog",
+        "@org_golang_google_grpc//metadata",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# Combined alias that includes both
+alias(
+    name = "admin",
+    actual = ":admin_gateway",
+)

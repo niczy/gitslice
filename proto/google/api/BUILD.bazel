@@ -1,0 +1,31 @@
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+
+package(default_visibility = ["//visibility:public"])
+
+proto_library(
+    name = "http_proto",
+    srcs = ["http.proto"],
+    deps = ["@protobuf//:descriptor_proto"],
+    strip_import_prefix = "/proto",
+)
+
+proto_library(
+    name = "annotations_proto",
+    srcs = ["annotations.proto"],
+    deps = [
+        ":http_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+    strip_import_prefix = "/proto",
+)
+
+# Combined go_proto_library for both http and annotations
+go_proto_library(
+    name = "annotations_go_proto",
+    importpath = "google.golang.org/genproto/googleapis/api/annotations",
+    protos = [
+        ":http_proto",
+        ":annotations_proto",
+    ],
+)

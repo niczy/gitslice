@@ -1,0 +1,5 @@
+.git
+node_modules
+web/node_modules
+bazel-*
+third_party/googleapis/

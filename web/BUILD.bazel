@@ -1,0 +1,29 @@
+package(default_visibility = ["//visibility:public"])
+
+# Source files
+filegroup(
+    name = "srcs",
+    srcs = glob([
+        "src/**/*.js",
+        "src/**/*.jsx",
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "src/**/*.css",
+    ]),
+)
+
+# Public assets
+filegroup(
+    name = "assets",
+    srcs = glob(["public/**/*"]),
+)
+
+# Web build is done via npm directly for now
+# Use: cd web && npm run build
+exports_files([
+    "package.json",
+    "package-lock.json",
+    "vite.config.js",
+    "index.html",
+    "tsconfig.json",
+])

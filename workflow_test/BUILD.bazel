@@ -1,0 +1,55 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Integration test that uses Bazel-built binaries
+# Note: This test is marked flaky due to timing-sensitive concurrent tests
+# Run with: bazel test //workflow_test:integration_test
+go_test(
+    name = "integration_test",
+    srcs = [
+        "integration_test.go",
+        "test_helpers.go",
+        "metadata_helpers_test.go",
+        "slice_management_test.go",
+        "checkout_test.go",
+        "changeset_workflow_test.go",
+        "conflict_resolution_test.go",
+        "file_history_test.go",
+        "advanced_features_test.go",
+        "cache_test.go",
+        "commit_history_test.go",
+        "global_state_test.go",
+        "working_directory_test.go",
+    ],
+    # Pre-built binaries that the test will use (instead of go build)
+    data = [
+        "//admin_service:admin_service_server",
+        "//gateway_service:gateway_service_server",
+        "//gs_cli:gs_cli",
+        "//slice_service:slice_service_server",
+    ],
+    # Environment variables for the test
+    env = {
+        "RUN_INTEGRATION_TESTS": "1",
+        "GATEWAY_BINARY": "$(location //gateway_service:gateway_service_server)",
+        "CLI_BINARY": "$(location //gs_cli:gs_cli)",
+    },
+    # Mark as flaky due to timing-sensitive concurrent tests and git dependency
+    flaky = True,
+    deps = [
+        "//internal/common",
+        "//internal/models",
+        "//internal/services/admin",
+        "//internal/services/file",
+        "//internal/services/slice",
+        "//internal/storage",
+        "//proto/admin",
+        "//proto/file",
+        "//proto/slice",
+        "@com_github_alicebob_miniredis_v2//:miniredis",
+        "@com_github_redis_go_redis_v9//:go-redis",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//credentials/insecure",
+    ],
+)

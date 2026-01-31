@@ -9,9 +9,9 @@ admin_service_server
 gateway_service_server
 gs_cli/gs_cli
 
-# Generated protobuf files
-*.pb.go
-*.pb.gw.go
+# Generated protobuf files (excluded - pre-generated files are used)
+# *.pb.go
+# *.pb.gw.go
 
 # Test binary, built with `go test -c`
 *.test
@@ -49,3 +49,10 @@ logs/
 bin/
 include/
 readme.txt
+
+# Bazel
+/bazel-*
+.bazelrc.user
+user.bazelrc
+MODULE.bazel.lock
+

@@ -1,0 +1,28 @@
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Slice service proto
+proto_library(
+    name = "slice_service_proto",
+    srcs = ["slice_service.proto"],
+    deps = [
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+# Go proto library for slice service (generates .pb.go and _grpc.pb.go)
+go_proto_library(
+    name = "slice_go_proto",
+    compilers = ["@rules_go//proto:go_grpc"],
+    importpath = "github.com/niczy/gitslice/proto/slice",
+    proto = ":slice_service_proto",
+)
+
+# Alias for easier imports
+alias(
+    name = "slice",
+    actual = ":slice_go_proto",
+)
