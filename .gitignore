@@ -19,9 +19,6 @@ gs_cli/gs_cli
 # Output of the go coverage tool
 *.out
 
-# Go workspace file
-go.work
-
 # Dependency directories
 vendor/
 third_party/
