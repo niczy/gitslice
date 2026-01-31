@@ -27,13 +27,13 @@ For detailed data model definitions and protobuf schemas, see [DATA_MODEL.md](./
 
 For detailed algorithms and operations, see [ALGORITHMS.md](./ALGORITHMS.md).
 
-### Slice Filesystem Layout
+### Slice Identifiers
 
-Slices are represented as normal files in the repository and are addressed by their on-disk paths. User-owned slices live under `/u/<USER_NAME>/slices/...` and organization-owned slices live under `/o/<ORG_NAME>/slices/...`. The slice path is the canonical identifier that flows through the system (what the API and CLI refer to as a slice ID). Example slice paths:
+Slices are stored in the metadata layer (in-memory or Redis-backed storage) and are addressed by stable slice IDs rather than on-disk files. The slice ID is the canonical identifier that flows through the API and CLI. Example slice IDs:
 
-- `/u/alice/slices/payments`
-- `/u/andrew/slices/infra/terraform`
-- `/o/acme/slices/platform/core-api`
+- `root_slice`
+- `payments_slice`
+- `platform-core-api`
 
 ### Metadata Indexes (Hybrid Approach)
 
@@ -45,7 +45,7 @@ Slices are represented as normal files in the repository and are addressed by th
 Key: slice:{slice_id}:files
 Type: Set
 Value: {file_id1, file_id2, ...}
-Purpose: Fast file listing for checkout, push operations
+Purpose: Fast file listing for checkout, push operations (immutable for non-root slices; root slice reflects merged files)
 Redis Set for O(1) membership and O(N) iteration
 ```
 

@@ -49,27 +49,27 @@ type InMemoryStorage struct {
 	versionedContent map[string]*models.FileContent    // contentHash -> content
 
 	// File change history
-	fileChanges         map[string]*models.FileChangeRecord   // changeID -> record
-	fileChangesByPath   map[string][]string                   // "sliceID:path" -> []changeID (newest first)
-	fileChangesByCommit map[string][]string                   // commitHash -> []changeID
-	fileChangesByDir    map[string][]string                   // "sliceID:dirPrefix" -> []changeID (newest first)
+	fileChanges         map[string]*models.FileChangeRecord // changeID -> record
+	fileChangesByPath   map[string][]string                 // "sliceID:path" -> []changeID (newest first)
+	fileChangesByCommit map[string][]string                 // commitHash -> []changeID
+	fileChangesByDir    map[string][]string                 // "sliceID:dirPrefix" -> []changeID (newest first)
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
 func NewInMemoryStorage() *InMemoryStorage {
 	return &InMemoryStorage{
-		slices:           make(map[string]*models.Slice),
-		sliceMetadata:    make(map[string]*models.SliceMetadata),
-		fileIndex:        make(map[string]map[string]bool),
-		fileContents:     make(map[string]*models.FileContent),
-		entries:          make(map[string]*models.DirectoryEntry),
-		entriesByPath:    make(map[string]string),
-		entriesBySlice:   make(map[string][]string),
-		changesets:       make(map[string]*models.Changeset),
-		sliceChangesets:  make(map[string][]string),
-		sliceCommits:     make(map[string][]*models.Commit),
-		lockedSlices:     make(map[string]bool),
-		fileLocks:        make(map[string]string),
+		slices:              make(map[string]*models.Slice),
+		sliceMetadata:       make(map[string]*models.SliceMetadata),
+		fileIndex:           make(map[string]map[string]bool),
+		fileContents:        make(map[string]*models.FileContent),
+		entries:             make(map[string]*models.DirectoryEntry),
+		entriesByPath:       make(map[string]string),
+		entriesBySlice:      make(map[string][]string),
+		changesets:          make(map[string]*models.Changeset),
+		sliceChangesets:     make(map[string][]string),
+		sliceCommits:        make(map[string][]*models.Commit),
+		lockedSlices:        make(map[string]bool),
+		fileLocks:           make(map[string]string),
 		commitSnapshots:     make(map[string]*models.CommitSnapshot),
 		versionedContent:    make(map[string]*models.FileContent),
 		fileChanges:         make(map[string]*models.FileChangeRecord),
@@ -201,6 +201,14 @@ func (s *InMemoryStorage) ListSlices(ctx context.Context, limit, offset int) ([]
 	}
 
 	return slices[offset:end], nil
+}
+
+// CountSlices returns the total number of slices stored.
+func (s *InMemoryStorage) CountSlices(ctx context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return len(s.slices), nil
 }
 
 // ListSlicesByOwner retrieves slices owned by a specific user
@@ -349,18 +357,17 @@ func (s *InMemoryStorage) AddFileToSlice(ctx context.Context, fileID, sliceID st
 		return ErrSliceNotFound
 	}
 
-	hasFile := false
-	for _, existing := range slice.Files {
-		if existing == fileID {
-			hasFile = true
-			break
-		}
-	}
-	if !hasFile {
-		slice.Files = append(slice.Files, fileID)
-	}
-
 	if slice.IsRoot {
+		hasFile := false
+		for _, existing := range slice.Files {
+			if existing == fileID {
+				hasFile = true
+				break
+			}
+		}
+		if !hasFile {
+			slice.Files = append(slice.Files, fileID)
+		}
 		return nil
 	}
 
@@ -395,6 +402,27 @@ func (s *InMemoryStorage) RemoveFileFromSlice(ctx context.Context, fileID, slice
 			delete(s.fileIndex, fileID)
 		}
 	}
+	return nil
+}
+
+// SetSliceFiles sets the immutable file list for a slice.
+func (s *InMemoryStorage) SetSliceFiles(ctx context.Context, sliceID string, files []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slice, exists := s.slices[sliceID]
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	if len(slice.Files) > 0 {
+		return ErrSliceFilesImmutable
+	}
+
+	copied := make([]string, len(files))
+	copy(copied, files)
+	slice.Files = copied
+
 	return nil
 }
 

@@ -7,7 +7,7 @@ test.describe('Navigation history and URL reloading', () => {
     await page.getByTestId('topbar-repo-browser').click();
 
     await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
-    expect(new URL(page.url()).hash).toBe('#/browser');
+    await expect(page).toHaveURL(/#\/browser\?slice=/);
   });
 
   test('navigating back to landing updates the URL hash', async ({ page }) => {
@@ -39,7 +39,7 @@ test.describe('Navigation history and URL reloading', () => {
     // Reload the page
     await page.reload();
     await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
-    expect(new URL(page.url()).hash).toBe('#/browser');
+    await expect(page).toHaveURL(/#\/browser\?slice=/);
   });
 
   test('browser back button navigates to the previous page', async ({ page }) => {
@@ -50,6 +50,7 @@ test.describe('Navigation history and URL reloading', () => {
     await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
 
     // Press browser back
+    await page.goBack();
     await page.goBack();
     await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
   });
@@ -63,9 +64,11 @@ test.describe('Navigation history and URL reloading', () => {
 
     // Back to landing
     await page.goBack();
+    await page.goBack();
     await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
 
     // Forward to browser
+    await page.goForward();
     await page.goForward();
     await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
   });

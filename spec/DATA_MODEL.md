@@ -25,11 +25,11 @@ This document describes the planned data models for the slice-based version cont
 - Changeset models
 - Batch merge models
 
-Slices are identified by their filesystem paths. User-owned slices live under `/u/<USER_NAME>/slices/...`, and organization-owned slices live under `/o/<ORG_NAME>/slices/...`. These paths are treated as canonical slice identifiers (what other documents call slice IDs), for example:
+Slices are identified by stable slice IDs stored in the metadata layer (in-memory or Redis-backed storage), not by files in the repository. The slice ID is the canonical identifier used by the API and CLI, for example:
 
-- `/u/alice/slices/payments`
-- `/u/andrew/slices/infra/terraform`
-- `/o/acme/slices/platform/core-api`
+- `root_slice`
+- `payments_slice`
+- `platform-core-api`
 
 ---
 
@@ -57,7 +57,7 @@ Objects:
 - SliceDef: Slice definition
   - hash = SHA256(slice_name + file_set + parent_hash)
   - Contains: {name, file_set: Set<file_id>, parent_slice_def_hash}
-  - Versioned - slice definitions can evolve
+  - Immutable after creation; file sets do not change once defined (root slice file set is system-managed as merges promote files)
 
 - ChangeList: Collection of modifications to be merged into a slice
   - hash = SHA256(slice_id + base_commit + modified_files + timestamps)

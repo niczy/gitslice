@@ -30,18 +30,13 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <metadata-toml-path> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <slice-id> [--commit <commit-hash>]")
 		return
 	}
 
-	metadataPath, err := validateMetadataPath(args[0])
+	sliceID, err := normalizeSliceID(args[0])
 	if err != nil {
-		log.Fatalf("Invalid metadata path: %v", err)
-	}
-
-	meta, err := readSliceMetadata(metadataPath)
-	if err != nil {
-		log.Fatalf("Failed to read slice metadata: %v", err)
+		log.Fatalf("Invalid slice ID: %v", err)
 	}
 
 	// Parse flags
@@ -60,13 +55,13 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := os.MkdirAll(".gs", 0o755); err != nil {
 		log.Fatalf("Failed to create .gs directory: %v", err)
 	}
-	if err := writeMetadataPathConfig(metadataPath); err != nil {
+	if err := writeSliceIDConfig(sliceID); err != nil {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
 	// Call slice service
 	req := &slicev1.CheckoutRequest{
-		SliceId:    meta.SliceID,
+		SliceId:    sliceID,
 		CommitHash: *commitHash,
 	}
 
@@ -156,7 +151,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	// Display checkout results
-	fmt.Printf("Checked out slice: %s\n", meta.SliceID)
+	fmt.Printf("Checked out slice: %s\n", sliceID)
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
 	fmt.Printf("Files: %d\n", len(resp.Files))
 

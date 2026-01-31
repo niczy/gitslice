@@ -12,9 +12,9 @@ func TestChangesetWorkflow(t *testing.T) {
 	sliceID := "changeset-workflow"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
