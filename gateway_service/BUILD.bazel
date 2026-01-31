@@ -11,7 +11,7 @@ go_library(
         "//proto/admin",
         "//proto/file",
         "@com_github_grpc_ecosystem_grpc_gateway_v2//runtime",
-        "@org_golang_google_grpc",
+        "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//status",
@@ -36,6 +36,6 @@ go_test(
         "//internal/services/slice",
         "//internal/storage",
         "//proto/file",
-        "@org_golang_google_grpc",
+        "@org_golang_google_grpc//:grpc",
     ],
 )

@@ -19,7 +19,7 @@ go_library(
     deps = [
         "//proto/admin",
         "//proto/slice",
-        "@org_golang_google_grpc",
+        "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
     ],
 )

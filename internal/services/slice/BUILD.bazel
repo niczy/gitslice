@@ -13,7 +13,7 @@ go_library(
         "//internal/models",
         "//internal/storage",
         "//proto/slice",
-        "@org_golang_google_grpc",
+        "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
     ],

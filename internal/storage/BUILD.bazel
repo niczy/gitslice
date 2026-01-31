@@ -12,9 +12,9 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/models",
-        "@com_github_aws_aws_sdk_go_v2_service_s3",
+        "@com_github_aws_aws_sdk_go_v2_service_s3//:s3",
         "@com_github_aws_aws_sdk_go_v2_service_s3//types",
-        "@com_github_redis_go_redis_v9",
+        "@com_github_redis_go_redis_v9//:redis",
     ],
 )
 
@@ -24,7 +24,7 @@ go_test(
     embed = [":storage"],
     deps = [
         "//internal/models",
-        "@com_github_alicebob_miniredis_v2",
-        "@com_github_redis_go_redis_v9",
+        "@com_github_alicebob_miniredis_v2//:miniredis",
+        "@com_github_redis_go_redis_v9//:redis",
     ],
 )
