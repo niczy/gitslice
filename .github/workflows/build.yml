@@ -13,11 +13,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.23'
-
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
@@ -25,48 +20,13 @@ jobs:
         cache: 'npm'
         cache-dependency-path: web/package-lock.json
 
-    - name: Install protoc
+    - name: Set up Bazelisk
+      uses: bazelbuild/setup-bazelisk@v3
+
+    - name: Build and test with Bazel
       run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
-
-    - name: Install dependencies
-      run: make install
-
-    - name: Generate proto code
-      run: make proto
-
-    - name: Build all
-      run: make build
-
-    - name: Run slice service
-      run: |
-        timeout 5s ./slice_service_server || true
-
-    - name: Run admin service
-      run: |
-        timeout 5s ./admin_service_server || true
-
-    - name: Test CLI help
-      run: |
-        timeout 2s ./gs_cli || true
-
-    - name: Run workflow tests (stub)
-      run: |
-        cd workflow_test
-        go test -v -run TestCLIBuild
-
-    - name: Run full test suite with mocks
-      env:
-        RUN_INTEGRATION_TESTS: "1"
-      run: |
-        go test ./...
-
-    - name: Test coverage for workflow tests
-      run: |
-        cd workflow_test
-        go test -cover -coverprofile=coverage.out -run TestCLIBuild
-        go tool cover -func=coverage.out
+        bazel build //...
+        bazel test //...
 
     - name: Run web build and e2e tests
       run: make web-test-e2e

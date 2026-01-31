@@ -1,0 +1,35 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "workflow_test",
+    srcs = [
+        "advanced_features_test.go",
+        "cache_test.go",
+        "changeset_workflow_test.go",
+        "checkout_test.go",
+        "commit_history_test.go",
+        "conflict_resolution_test.go",
+        "file_history_test.go",
+        "global_state_test.go",
+        "integration_test.go",
+        "metadata_helpers_test.go",
+        "slice_management_test.go",
+        "test_helpers.go",
+        "working_directory_test.go",
+    ],
+    deps = [
+        "//internal/common",
+        "//internal/models",
+        "//internal/services/admin",
+        "//internal/services/file",
+        "//internal/services/slice",
+        "//internal/storage",
+        "//proto/admin:admin_go",
+        "//proto/file:file_go",
+        "//proto/slice:slice_go",
+        "@com_github_alicebob_miniredis_v2//:go_default_library",
+        "@com_github_redis_go_redis_v9//:go_default_library",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//credentials/insecure:go_default_library",
+    ],
+)

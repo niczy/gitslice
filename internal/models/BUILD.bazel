@@ -1,0 +1,14 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "models",
+    srcs = [
+        "changeset.go",
+        "commit.go",
+        "conflict.go",
+        "file_change.go",
+        "slice.go",
+    ],
+    importpath = "github.com/niczy/gitslice/internal/models",
+    visibility = ["//visibility:public"],
+)

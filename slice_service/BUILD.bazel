@@ -1,0 +1,32 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "slice_service_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/niczy/gitslice/slice_service",
+    deps = [
+        "//internal/common",
+        "//internal/config",
+        "//internal/services/file",
+        "//internal/services/slice",
+        "//internal/storage",
+        "//proto/file:file_go",
+    ],
+)
+
+go_binary(
+    name = "slice_service",
+    embed = [":slice_service_lib"],
+)
+
+go_test(
+    name = "slice_service_test",
+    srcs = ["main_test.go"],
+    embed = [":slice_service_lib"],
+    deps = [
+        "//internal/models",
+        "//internal/services/slice",
+        "//internal/storage",
+        "//proto/slice:slice_go",
+    ],
+)

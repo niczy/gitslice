@@ -1,0 +1,18 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "admin_service_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/niczy/gitslice/admin_service",
+    deps = [
+        "//internal/common",
+        "//internal/config",
+        "//internal/services/admin",
+        "//internal/storage",
+    ],
+)
+
+go_binary(
+    name = "admin_service",
+    embed = [":admin_service_lib"],
+)

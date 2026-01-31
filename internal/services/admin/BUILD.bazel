@@ -1,0 +1,16 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "admin",
+    srcs = ["server.go"],
+    importpath = "github.com/niczy/gitslice/internal/services/admin",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/models",
+        "//internal/storage",
+        "//proto/admin:admin_go",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//codes:go_default_library",
+        "@org_golang_google_grpc//status:go_default_library",
+    ],
+)

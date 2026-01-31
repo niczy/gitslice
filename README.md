@@ -91,6 +91,16 @@ go build -o admin_service_server ./admin_service/
 go build -o gs_cli ./gs_cli/
 ```
 
+### Build with Bazel
+
+```bash
+# Build all Go targets
+bazel build //...
+
+# Run unit tests
+bazel test //...
+```
+
 ### Run
 
 ```bash
