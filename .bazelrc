@@ -1,4 +1,1 @@
 common --enable_bzlmod=0
-build --enable_bzlmod=0
-test --enable_bzlmod=0
-query --enable_bzlmod=0

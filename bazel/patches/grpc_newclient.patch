@@ -1,0 +1,17 @@
+diff --git a/newclient.go b/newclient.go
+new file mode 100644
+index 0000000..91de287
+--- /dev/null
++++ b/newclient.go
+@@ -0,0 +1,11 @@
++package grpc
++
++import "context"
++
++// NewClient creates a client connection to the given target.
++//
++// This provides compatibility for grpc-gateway generated code expecting
++// grpc.NewClient while using older grpc-go releases.
++func NewClient(target string, opts ...DialOption) (*ClientConn, error) {
++	return DialContext(context.Background(), target, opts...)
++}

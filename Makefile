@@ -48,6 +48,8 @@ proto: setup-googleapis
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/slice && protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/admin && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/file && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto'
+	@sed -i.bak 's/grpc.NewClient(endpoint, opts...)/grpc.DialContext(ctx, endpoint, opts...)/' proto/admin/admin_service.pb.gw.go proto/file/file_service.pb.gw.go
+	@rm -f proto/admin/admin_service.pb.gw.go.bak proto/file/file_service.pb.gw.go.bak
 
 build: proto
 	go build -o slice_service_server ./slice_service/

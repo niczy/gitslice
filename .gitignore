@@ -22,6 +22,13 @@ gs_cli/gs_cli
 # Go workspace file
 go.work
 
+# Bazel module files (we use WORKSPACE)
+MODULE.bazel
+MODULE.bazel.lock
+
+# Bazel output directories
+bazel-*
+
 # Dependency directories
 vendor/
 third_party/
