@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-// Genesis populates files under o/genesis/projects/gitslice/
-// so root entries should include the "o" directory.
+// Genesis populates files under /gitslice/
+// so root entries should include the "gitslice" directory.
 
 test.describe('Root Repository Browsing (real server)', () => {
   test('loads root entries and shows genesis directory tree', async ({ page }) => {
@@ -11,8 +11,8 @@ test.describe('Root Repository Browsing (real server)', () => {
     await expect(page.getByTestId('slice-list')).toBeVisible();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
-    // The genesis files live under "o" at the root level
-    await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
+    // The genesis files live under "gitslice" at the root level
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
   });
 
   test('navigates into genesis directory and finds repo files', async ({ page }) => {
@@ -20,16 +20,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await page.getByTestId('topbar-repo-browser').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
-    // Navigate: o -> genesis -> projects -> gitslice
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
-
+    // Navigate: gitslice
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     // Should see real repo files
@@ -43,13 +34,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await page.getByTestId('topbar-repo-browser').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
-    // Navigate to gitslice root (wait for each level to load)
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+    // Navigate to gitslice root
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     // Click README.md to preview it
@@ -70,13 +55,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await page.getByTestId('topbar-repo-browser').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
-    // Navigate to gitslice root (wait for each level to load)
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+    // Navigate to gitslice root
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     // Navigate into internal/ subdirectory
@@ -91,13 +70,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await page.getByTestId('topbar-repo-browser').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
-    // Navigate to gitslice root (wait for each level to load)
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
+    // Navigate to gitslice root
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     // README.md should have a file size displayed (any valid size format)
@@ -118,7 +91,7 @@ test.describe('Slice-specific Browsing (real server)', () => {
 
     await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
-    // Should see the "o" directory (genesis files)
-    await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
+    // Should see the "gitslice" directory (genesis files)
+    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
   });
 });

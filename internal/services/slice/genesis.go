@@ -170,5 +170,54 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 
 	log.Printf("Successfully populated root slice with %d directories and %d files via genesis changeset %s (commit %s)",
 		len(sortedDirs), fileCount, csResp.ChangesetId, mergeResp.NewCommitHash)
+
+	if err := s.ensureDefaultSlices(ctx, sliceID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) ensureDefaultSlices(ctx context.Context, rootSliceID string) error {
+	defaults := []struct {
+		ID          string
+		Name        string
+		FolderPath  string
+		Description string
+	}{
+		{
+			ID:          "gs_cli",
+			Name:        "gs_cli",
+			FolderPath:  "gs_cli",
+			Description: "Slice for /gitslice/gs_cli",
+		},
+		{
+			ID:          "slice_service",
+			Name:        "slice_service",
+			FolderPath:  "slice_service",
+			Description: "Slice for /gitslice/slice_service",
+		},
+	}
+
+	for _, def := range defaults {
+		if _, err := s.storage.GetSlice(ctx, def.ID); err == nil {
+			continue
+		} else if err != storage.ErrSliceNotFound {
+			return fmt.Errorf("failed to check slice %s: %w", def.ID, err)
+		}
+
+		resp, err := s.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+			ParentSliceId: rootSliceID,
+			FolderPath:    common.NormalizeSlicePath(def.FolderPath),
+			NewSliceId:    def.ID,
+			Name:          def.Name,
+			Description:   def.Description,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create slice %s: %w", def.ID, err)
+		}
+
+		log.Printf("Created slice %s with %d files from %s", def.ID, len(resp.Files), def.FolderPath)
+	}
+
 	return nil
 }

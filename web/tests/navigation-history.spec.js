@@ -77,12 +77,6 @@ test.describe('Navigation history and URL reloading', () => {
     await page.goto('/#/browser');
 
     // Navigate to a file with history, then to the diff page
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
@@ -104,12 +98,6 @@ test.describe('Navigation history and URL reloading', () => {
     await page.goto('/#/browser');
 
     // Navigate to diff page via file history
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
