@@ -487,9 +487,9 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 	sliceID := "slice-integration"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -526,8 +526,8 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 		t.Fatalf("Expected root slice info, got: %s", output)
 	}
 
-	rootMetadataPath := writeSliceMetadataFile(t, t.TempDir(), "root_slice")
-	output = runCLIOrFail(t, workdir, "init", rootMetadataPath)
+	rootSliceArg := sliceIDArg("root_slice")
+	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -551,8 +551,8 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 	}
 
 	newSliceWorkdir := t.TempDir()
-	newSliceMetadataPath := writeSliceMetadataFile(t, t.TempDir(), newSliceID)
-	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceMetadataPath)
+	newSliceArg := sliceIDArg(newSliceID)
+	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -575,9 +575,9 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-git-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("Expected checkout output, got: %s", output)
 	}
@@ -608,9 +608,9 @@ func TestChangesetCreateRequiresMainBranch(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
@@ -634,8 +634,8 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected root slice info, got: %s", output)
 	}
 
-	rootMetadataPath := writeSliceMetadataFile(t, t.TempDir(), "root_slice")
-	output = runCLIOrFail(t, workdir, "init", rootMetadataPath)
+	rootSliceArg := sliceIDArg("root_slice")
+	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
@@ -662,10 +662,10 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if !strings.Contains(output, "Created slice: "+sliceID) {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}
-	sliceMetadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceMetadataPath)
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -690,22 +690,19 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceMetadataPath)
+	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
 	}
-	if !strings.Contains(output, "apps/readme.md") {
-		t.Fatalf("expected apps/readme.md in slice checkout, got: %s", output)
+	if !strings.Contains(output, "apps (0 bytes)") {
+		t.Fatalf("expected apps folder in slice checkout, got: %s", output)
 	}
 
 	rootCheckoutDir := t.TempDir()
-	rootCheckoutMetadataPath := writeSliceMetadataFile(t, t.TempDir(), "root_slice")
-	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", rootCheckoutMetadataPath)
+	rootCheckoutArg := sliceIDArg("root_slice")
+	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg)
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected root slice to promote latest commit, got: %s", output)
-	}
-	if !strings.Contains(output, "apps/readme.md") {
-		t.Fatalf("expected apps/readme.md in root checkout, got: %s", output)
 	}
 	if !strings.Contains(output, "apps (0 bytes)") || !strings.Contains(output, "services (0 bytes)") || !strings.Contains(output, "docs (0 bytes)") {
 		t.Fatalf("expected root folders in root checkout output, got: %s", output)
@@ -725,6 +722,9 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
+		t.Fatalf("failed to run genesis init: %v", err)
 	}
 
 	repoRoot := runGitOrFail(t, ".", "rev-parse", "--show-toplevel")
@@ -753,6 +753,80 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	if !bytes.Equal(resp.File.Content, expectedContent) {
 		t.Fatalf("unexpected root slice content: %q", string(resp.File.Content))
 	}
+}
+
+func TestGenesisCreatesFileChangeRecords(t *testing.T) {
+	t.Setenv("RUN_INTEGRATION_TESTS", "")
+	t.Setenv("SKIP_GIT_POPULATION", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
+		t.Fatalf("failed to run genesis init: %v", err)
+	}
+
+	// Get root slice to find head commit
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to get root slice: %v", err)
+	}
+
+	metadata, err := st.GetSliceMetadata(ctx, rootSlice.ID)
+	if err != nil {
+		t.Fatalf("failed to get slice metadata: %v", err)
+	}
+
+	if metadata.HeadCommitHash == "" {
+		t.Fatalf("expected head commit hash after genesis, got empty")
+	}
+
+	// Verify commit changes were recorded
+	changes, err := st.GetCommitChanges(ctx, metadata.HeadCommitHash)
+	if err != nil {
+		t.Fatalf("failed to get commit changes: %v", err)
+	}
+
+	if len(changes) == 0 {
+		t.Fatalf("expected file change records from genesis commit, got none")
+	}
+
+	// Verify all changes are of type "add" since genesis is the first commit
+	for _, change := range changes {
+		if change.ChangeType != models.ChangeTypeAdd {
+			t.Errorf("expected change type 'add' for genesis file %s, got %q", change.Path, change.ChangeType)
+		}
+		if change.Author != "system" {
+			t.Errorf("expected author 'system' for genesis file %s, got %q", change.Path, change.Author)
+		}
+		if change.Message != "Genesis: initialize repository files" {
+			t.Errorf("expected genesis message for file %s, got %q", change.Path, change.Message)
+		}
+		if change.CommitHash != metadata.HeadCommitHash {
+			t.Errorf("expected commit hash %s for file %s, got %s", metadata.HeadCommitHash, change.Path, change.CommitHash)
+		}
+	}
+
+	// Verify we can also query file history for a specific file
+	fileClient := fileservice.NewService(st)
+	histResp, err := fileClient.GetFileHistory(ctx, &filev1.GetFileHistoryRequest{
+		Path: "o/genesis/projects/gitslice/README.md",
+	})
+	if err != nil {
+		t.Fatalf("failed to get file history for README.md: %v", err)
+	}
+	if len(histResp.Changes) == 0 {
+		t.Fatalf("expected history entries for README.md, got none")
+	}
+	if histResp.Changes[0].ChangeType != filev1.ChangeType_CHANGE_TYPE_ADD {
+		t.Errorf("expected CHANGE_TYPE_ADD for README.md genesis entry, got %v", histResp.Changes[0].ChangeType)
+	}
+
+	t.Logf("Genesis created %d file change records with commit %s", len(changes), metadata.HeadCommitHash)
 }
 
 func TestFileBrowserIntegration(t *testing.T) {
@@ -1000,9 +1074,9 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-history-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}

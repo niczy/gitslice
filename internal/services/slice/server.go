@@ -40,6 +40,13 @@ func NewService(st storage.Storage) slicev1.SliceServiceServer {
 	return newSliceServiceServer(st)
 }
 
+// RunGenesisInit populates the root slice from the git repository by creating
+// and merging a changeset through the service's own RPC methods.
+func RunGenesisInit(ctx context.Context, st storage.Storage) error {
+	svc := newSliceServiceServer(st)
+	return svc.PopulateGenesisFromGit(ctx)
+}
+
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 
@@ -266,6 +273,11 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		// Create commit snapshot for versioned file access
 		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, now); err != nil {
 			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
+		}
+
+		// Record file change history for each modified file
+		if err := s.recordFileChanges(ctx, cs, newCommit, parentHash, now); err != nil {
+			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
 		}
 
 		if err := s.promoteSlice(ctx, cs.SliceID, newCommit, cs.ModifiedFiles, now); err != nil {
@@ -562,4 +574,56 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 	}
 
 	return s.storage.SaveCommitSnapshot(ctx, snapshot)
+}
+
+// recordFileChanges creates FileChangeRecord entries for each file in the changeset.
+func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.Changeset, commitHash string, parentHash string, timestamp time.Time) error {
+	// Build set of files that existed in the previous commit
+	previousFiles := make(map[string]bool)
+	if parentHash != "" {
+		snapshot, err := s.storage.GetCommitSnapshot(ctx, parentHash)
+		if err == nil && snapshot != nil {
+			for path := range snapshot.Files {
+				previousFiles[path] = true
+			}
+		}
+	}
+
+	var changes []*models.FileChangeRecord
+	for _, filePath := range cs.ModifiedFiles {
+		changeType := models.ChangeTypeModify
+		if !previousFiles[filePath] {
+			changeType = models.ChangeTypeAdd
+		}
+
+		var newHash string
+		linesAdded := 0
+		content, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
+		if err == nil && content != nil {
+			newHash = content.Hash
+			// Only report line counts for new files where the entire content is the delta.
+			// For modifications we lack a proper diff against the parent, so leave at 0.
+			if changeType == models.ChangeTypeAdd {
+				linesAdded = strings.Count(string(content.Content), "\n") + 1
+			}
+		}
+
+		changes = append(changes, &models.FileChangeRecord{
+			ID:         fmt.Sprintf("%s-%s", commitHash, filePath),
+			SliceID:    cs.SliceID,
+			CommitHash: commitHash,
+			Path:       filePath,
+			ChangeType: changeType,
+			LinesAdded: linesAdded,
+			NewHash:    newHash,
+			Author:     cs.Author,
+			Message:    cs.Message,
+			Timestamp:  timestamp,
+		})
+	}
+
+	if len(changes) == 0 {
+		return nil
+	}
+	return s.storage.AddFileChanges(ctx, changes)
 }

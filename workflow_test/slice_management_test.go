@@ -7,27 +7,27 @@ import (
 	"testing"
 )
 
-func TestSliceCheckoutFromMetadata(t *testing.T) {
+func TestSliceCheckoutByID(t *testing.T) {
 	workdir := t.TempDir()
 	sliceID := "slice-metadata-checkout"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
 }
 
-func TestSliceInitStoresMetadataPath(t *testing.T) {
+func TestSliceInitStoresSliceID(t *testing.T) {
 	workdir := t.TempDir()
 	sliceID := "test-init-slice"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "init", metadataPath)
+	output := runCLIOrFail(t, workdir, "init", sliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice repository") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
@@ -47,22 +47,22 @@ func TestSliceInitStoresMetadataPath(t *testing.T) {
 		t.Fatalf("failed to read config file: %v", err)
 	}
 
-	if strings.TrimSpace(string(content)) != metadataPath {
-		t.Errorf("expected config to contain metadata path '%s', got: %s", metadataPath, string(content))
+	if strings.TrimSpace(string(content)) != sliceArg {
+		t.Errorf("expected config to contain slice ID '%s', got: %s", sliceArg, string(content))
 	}
 }
 
 func TestSliceInitWithPath(t *testing.T) {
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), "init-unsupported")
-	assertUnsupportedCommand(t, "init", metadataPath, "--path", "./work/my-team")
+	sliceArg := sliceIDArg("init-unsupported")
+	assertUnsupportedCommand(t, "init", sliceArg, "--path", "./work/my-team")
 }
 
 func TestSliceInitForce(t *testing.T) {
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), "init-force")
-	assertUnsupportedCommand(t, "init", metadataPath, "--force")
+	sliceArg := sliceIDArg("init-force")
+	assertUnsupportedCommand(t, "init", sliceArg, "--force")
 }
 
 func TestSliceInitDescription(t *testing.T) {
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), "init-description")
-	assertUnsupportedCommand(t, "init", metadataPath, "--description", "My team's services")
+	sliceArg := sliceIDArg("init-description")
+	assertUnsupportedCommand(t, "init", sliceArg, "--description", "My team's services")
 }

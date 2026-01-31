@@ -75,10 +75,16 @@ service AdminService {
   // Get global state
   rpc GetGlobalState(GlobalStateRequest) returns (GlobalStateResponse);
 
+  // List slices stored in the system
+  rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse);
+
   // Stream conflict updates
   rpc WatchConflicts(WatchConflictsRequest) returns (stream ConflictUpdate);
 }
 ```
+
+HTTP (gRPC-Gateway):
+- `GET /v1/slices` lists slice definitions stored in the metadata layer.
 
 ### File Service: FileService
 

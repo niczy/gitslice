@@ -8,14 +8,15 @@ import (
 )
 
 var (
-	ErrSliceNotFound      = errors.New("slice not found")
-	ErrSliceAlreadyExists = errors.New("slice already exists")
-	ErrInvalidInput       = errors.New("invalid input")
-	ErrChangesetNotFound  = errors.New("changeset not found")
-	ErrEntryNotFound      = errors.New("entry not found")
-	ErrEntryExists        = errors.New("entry already exists")
-	ErrLockHeld           = errors.New("resource locked")
-	ErrCommitNotFound     = errors.New("commit not found")
+	ErrSliceNotFound       = errors.New("slice not found")
+	ErrSliceAlreadyExists  = errors.New("slice already exists")
+	ErrInvalidInput        = errors.New("invalid input")
+	ErrChangesetNotFound   = errors.New("changeset not found")
+	ErrEntryNotFound       = errors.New("entry not found")
+	ErrEntryExists         = errors.New("entry already exists")
+	ErrLockHeld            = errors.New("resource locked")
+	ErrCommitNotFound      = errors.New("commit not found")
+	ErrSliceFilesImmutable = errors.New("slice files are immutable")
 )
 
 // Storage defines the interface for data storage operations
@@ -25,10 +26,12 @@ type Storage interface {
 	CreateSlice(ctx context.Context, slice *models.Slice) error
 	GetSlice(ctx context.Context, sliceID string) (*models.Slice, error)
 	ListSlices(ctx context.Context, limit, offset int) ([]*models.Slice, error)
+	CountSlices(ctx context.Context) (int, error)
 	ListSlicesByOwner(ctx context.Context, owner string, limit, offset int) ([]*models.Slice, error)
 	SearchSlices(ctx context.Context, query string, limit, offset int) ([]*models.Slice, error)
 	GetSliceMetadata(ctx context.Context, sliceID string) (*models.SliceMetadata, error)
 	UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error
+	SetSliceFiles(ctx context.Context, sliceID string, files []string) error
 	GetRootSlice(ctx context.Context) (*models.Slice, error)
 	InitializeRootSlice(ctx context.Context) error
 	AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error

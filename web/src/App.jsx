@@ -1,5 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
+
+// ---------------------------------------------------------------------------
+// Hash-based routing helpers
+// ---------------------------------------------------------------------------
+
+function parseHash() {
+  const hash = window.location.hash.replace(/^#\/?/, '');
+  if (hash.startsWith('diff/')) {
+    return { page: 'diff', commitHash: decodeURIComponent(hash.slice(5)) };
+  }
+  if (hash === 'browser' || hash.startsWith('browser?')) {
+    return { page: 'browser', commitHash: '' };
+  }
+  return { page: 'landing', commitHash: '' };
+}
+
+function buildHash(page, commitHash) {
+  if (page === 'diff' && commitHash) {
+    return `#/diff/${encodeURIComponent(commitHash)}`;
+  }
+  if (page === 'browser') {
+    return '#/browser';
+  }
+  return '#/';
+}
 
 const features = [
   {
@@ -22,13 +47,42 @@ const features = [
 const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
 function App() {
-  const [activePage, setActivePage] = useState('landing');
+  const [activePage, setActivePage] = useState(() => parseHash().page);
+  const [diffCommitHash, setDiffCommitHash] = useState(() => parseHash().commitHash);
+  const [browserKey, setBrowserKey] = useState(0);
   const githubUrl = 'https://github.com/niczy/gitslice';
 
+  const navigate = useCallback((page, commitHash = '') => {
+    setActivePage(page);
+    if (page === 'diff') {
+      setDiffCommitHash(commitHash);
+    }
+    window.history.pushState(null, '', buildHash(page, commitHash));
+  }, []);
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const onPopState = () => {
+      const { page, commitHash } = parseHash();
+      setActivePage(page);
+      setDiffCommitHash(commitHash);
+      // Force RepoBrowser remount so it re-reads state from hash
+      if (page === 'browser') {
+        setBrowserKey((k) => k + 1);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const navigateToDiff = (commitHash) => {
+    navigate('diff', commitHash);
+  };
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${activePage === 'browser' ? ' app-shell--browser' : ''}`}>
       <header className="top-bar">
-        <button type="button" className="brand" onClick={() => setActivePage('landing')}>
+        <button type="button" className="brand" onClick={() => navigate('landing')}>
           <span className="brand-icon">◆</span>
           <span className="brand-text">Git Slice</span>
         </button>
@@ -40,15 +94,19 @@ function App() {
             type="button"
             className="primary"
             data-testid="topbar-repo-browser"
-            onClick={() => setActivePage('browser')}
+            onClick={() => navigate('browser')}
           >
             Repo Browser
           </button>
         </div>
       </header>
 
-      <main className="page">
-        {activePage === 'landing' ? <OverviewPage onBrowseRepo={() => setActivePage('browser')} /> : <RepoBrowser />}
+      <main className={`page${activePage === 'browser' ? ' page--browser' : ''}`}>
+        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
+        {activePage === 'browser' && <RepoBrowser key={browserKey} onNavigateToDiff={navigateToDiff} />}
+        {activePage === 'diff' && (
+          <CommitDiffPage commitHash={diffCommitHash} onBack={() => navigate('browser')} />
+        )}
       </main>
 
       <footer className="footer">
@@ -72,7 +130,7 @@ function OverviewPage({ onBrowseRepo }) {
           <h1>Slice-based workflows for shipping more confidently.</h1>
           <p className="lede">
             Git Slice lets teams carve out focused slices of work, run them end-to-end, and merge back with clarity. Each slice is
-            defined by a metadata file path, so teams can standardize how a given area of the repo is scoped and tested.
+            stored in the slice service, so teams can standardize how a given area of the repo is scoped and tested.
           </p>
           <div className="cta-row">
             <button type="button" className="primary" onClick={onBrowseRepo}>
@@ -108,14 +166,14 @@ function OverviewPage({ onBrowseRepo }) {
             <div className="step-number">1</div>
             <div>
               <h3>Carve out the slice</h3>
-              <p>Define the slice in a metadata file that lists the files, directories, and services required for the task.</p>
+              <p>Define the slice in the service with the immutable set of files, directories, and services required for the task.</p>
             </div>
           </div>
           <div className="step">
             <div className="step-number">2</div>
             <div>
               <h3>Iterate quickly</h3>
-              <p>Use the CLI to check out the slice by its metadata file path and run targeted tests.</p>
+              <p>Use the CLI to check out the slice by its slice ID and run targeted tests.</p>
             </div>
           </div>
           <div className="step">
@@ -132,27 +190,27 @@ function OverviewPage({ onBrowseRepo }) {
         <div className="section-header">
           <p className="eyebrow">Quick start</p>
           <h2>Go from repo to slice in minutes</h2>
-          <p>Use the CLI to check out a slice using its metadata file path.</p>
+          <p>Use the CLI to check out a slice using its slice ID.</p>
         </div>
         <div className="quickstart-grid">
           <div className="quickstart-step">
-            <h3>1. Define a slice file</h3>
+            <h3>1. Create a slice</h3>
             <pre className="code-block">
-              <code>cat slices/auth-refresh.toml</code>
+              <code>gs fork auth-refresh ./services/auth --parent root_slice</code>
             </pre>
-            <p>Store the slice definition in a file path such as <code>slices/auth-refresh.toml</code>.</p>
+            <p>Store the slice definition in the service and reference it by a stable slice ID.</p>
           </div>
           <div className="quickstart-step">
             <h3>2. Check out the slice</h3>
             <pre className="code-block">
-              <code>gs slice checkout /abs/path/to/slices/auth-refresh.toml</code>
+              <code>gs slice checkout auth-refresh</code>
             </pre>
-            <p>Use the slice metadata path to pull just the required scope into a local workspace.</p>
+            <p>Use the slice ID to pull just the required scope into a local workspace.</p>
           </div>
           <div className="quickstart-step">
             <h3>3. Validate the slice</h3>
             <pre className="code-block">
-              <code>gs slice checkout /abs/path/to/slices/auth-refresh.toml --commit HEAD</code>
+              <code>gs slice checkout auth-refresh --commit HEAD</code>
             </pre>
             <p>Pin a commit when needed so the slice scope is reproducible for reviewers and CI.</p>
           </div>
@@ -189,22 +247,41 @@ function OverviewPage({ onBrowseRepo }) {
   );
 }
 
-function RepoBrowser() {
-  const [browseMode, setBrowseMode] = useState('root'); // 'root' | 'slice'
-  const [sliceId, setSliceId] = useState('');
-  const [commitHash, setCommitHash] = useState(''); // For root mode
-  const [sliceHash, setSliceHash] = useState(''); // For slice mode
+function RepoBrowser({ onNavigateToDiff }) {
+  // Parse initial browser state from URL hash on mount
+  const initialBrowserState = useMemo(() => {
+    const raw = window.location.hash.replace(/^#\/?/, '');
+    if (raw.startsWith('browser?')) {
+      const params = new URLSearchParams(raw.slice(raw.indexOf('?') + 1));
+      return {
+        file: params.get('file') || '',
+        slice: params.get('slice') || '',
+        sliceHash: params.get('sliceHash') || '',
+      };
+    }
+    return null;
+  }, []);
+
+  const [sliceId, setSliceId] = useState(initialBrowserState?.slice || '');
+  const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
+  const [slices, setSlices] = useState([]);
+  const [sliceFilter, setSliceFilter] = useState('');
+  const [slicesLoading, setSlicesLoading] = useState(false);
+  const [slicesError, setSlicesError] = useState('');
   const [treeEntries, setTreeEntries] = useState({});
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 900);
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+
+  // File to restore after root tree entries load (from URL hash)
+  const pendingFileRef = useRef(initialBrowserState?.file || null);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
   const breadcrumbs = useMemo(() => {
@@ -221,13 +298,42 @@ function RepoBrowser() {
     ];
   }, [selectedFile]);
 
-  // Reset tree when browse mode or slice changes
+  const loadSlices = useCallback(async () => {
+    setSlicesLoading(true);
+    setSlicesError('');
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/slices?limit=200`);
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      const payload = await response.json();
+      const loaded = (payload.slices || []).map(normalizeSliceInfo);
+      setSlices(loaded);
+      setSliceId((prev) => {
+        if (prev) {
+          return prev;
+        }
+        const root = loaded.find((slice) => slice.is_root);
+        return root ? root.slice_id : loaded[0]?.slice_id || '';
+      });
+    } catch (err) {
+      setSlicesError('Unable to load slices.');
+    } finally {
+      setSlicesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSlices();
+  }, [loadSlices]);
+
+  // Reset tree when slice changes
   useEffect(() => {
     setTreeEntries({});
     setExpandedPaths(['']);
     setSelectedFile(null);
     setFileContent('');
-  }, [browseMode, sliceId, commitHash, sliceHash]);
+  }, [sliceId, sliceHash]);
 
   const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
 
@@ -237,14 +343,6 @@ function RepoBrowser() {
     const encodedPath = path ? encodePath(path) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
 
-    if (browseMode === 'root') {
-      if (commitHash) {
-        params.set('commit_hash', commitHash);
-      }
-      const queryString = params.toString();
-      return `${apiBaseUrl}/v1/files/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
-    }
-    // Slice mode
     if (sliceHash) {
       params.set('slice_version.slice_hash', sliceHash);
     }
@@ -258,14 +356,6 @@ function RepoBrowser() {
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
     const params = new URLSearchParams();
 
-    if (browseMode === 'root') {
-      if (commitHash) {
-        params.set('commit_hash', commitHash);
-      }
-      const queryString = params.toString();
-      return `${apiBaseUrl}/v1/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
-    }
-    // Slice mode
     if (sliceHash) {
       params.set('slice_version.slice_hash', sliceHash);
     }
@@ -277,11 +367,6 @@ function RepoBrowser() {
   const buildHistoryUrl = (filePath) => {
     const encodedPath = filePath ? encodePath(filePath) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
-
-    if (browseMode === 'root') {
-      return `${apiBaseUrl}/v1/files/history${pathSuffix}`;
-    }
-    // Slice mode
     return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
   };
 
@@ -300,7 +385,7 @@ function RepoBrowser() {
         throw new Error(`Request failed (${response.status})`);
       }
       const payload = await response.json();
-      setFileHistory(payload.changes || []);
+      setFileHistory((payload.changes || []).map(normalizeChange));
     } catch (err) {
       setHistoryError('Unable to load file history.');
       setFileHistory([]);
@@ -318,8 +403,7 @@ function RepoBrowser() {
     }
   };
 
-  // Check if we can load (root mode always ready, slice mode needs sliceId)
-  const canLoad = browseMode === 'root' || (browseMode === 'slice' && sliceId);
+  const canLoad = sliceId !== '';
 
   useEffect(() => {
     if (!canLoad) {
@@ -344,7 +428,55 @@ function RepoBrowser() {
         if (!active) {
           return;
         }
-        setTreeEntries({ '': payload.entries || [] });
+
+        const rootEntries = payload.entries || [];
+
+        // Restore file selection from URL hash if pending
+        const pendingFile = pendingFileRef.current;
+        if (pendingFile) {
+          pendingFileRef.current = null;
+
+          const parts = pendingFile.split('/');
+          const allEntries = { '': rootEntries };
+          const pathsToExpand = [''];
+
+          // Load parent directory entries along the file path
+          for (let i = 1; i < parts.length; i++) {
+            if (!active) return;
+            const parentPath = parts.slice(0, i).join('/');
+            pathsToExpand.push(parentPath);
+            try {
+              const dirResp = await fetch(buildEntriesUrl(parentPath), { signal: controller.signal });
+              if (dirResp.ok) {
+                const dirData = await dirResp.json();
+                allEntries[parentPath] = dirData.entries || [];
+              }
+            } catch (e) {
+              if (e?.name === 'AbortError') return;
+              break;
+            }
+          }
+
+          if (!active) return;
+          setTreeEntries(allEntries);
+          setExpandedPaths(pathsToExpand);
+          setSelectedFile(pendingFile);
+
+          // Load file content
+          try {
+            const fileResp = await fetch(buildFileUrl(pendingFile), { signal: controller.signal });
+            if (fileResp.ok && active) {
+              const fileData = await fileResp.json();
+              setFileContent(decodeBase64(fileData?.file?.content || ''));
+            }
+          } catch (e) {
+            if (active && e?.name !== 'AbortError') {
+              setError('Unable to load the file.');
+            }
+          }
+        } else {
+          setTreeEntries({ '': rootEntries });
+        }
       } catch (err) {
         if (!active || err?.name === 'AbortError') {
           return;
@@ -363,7 +495,7 @@ function RepoBrowser() {
       active = false;
       controller.abort();
     };
-  }, [browseMode, sliceId, commitHash, sliceHash]);
+  }, [sliceId, sliceHash]);
 
   const fetchEntries = async (path) => {
     if (!canLoad) {
@@ -404,6 +536,22 @@ function RepoBrowser() {
     setExpandedPaths((prev) => [...prev, entry.path]);
   };
 
+  // Push current browser state to navigation history
+  const pushBrowserState = useCallback((file) => {
+    const params = new URLSearchParams();
+    if (file) params.set('file', file);
+    if (sliceId) params.set('slice', sliceId);
+    if (sliceHash) params.set('sliceHash', sliceHash);
+    const qs = params.toString();
+    window.history.pushState(null, '', qs ? `#/browser?${qs}` : '#/browser');
+  }, [sliceId, sliceHash]);
+
+  useEffect(() => {
+    if (sliceId) {
+      pushBrowserState(selectedFile || '');
+    }
+  }, [pushBrowserState, selectedFile, sliceId, sliceHash]);
+
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
     if (entryKind === 'directory') {
@@ -411,7 +559,13 @@ function RepoBrowser() {
       return;
     }
 
+    // Close sidebar on mobile after selecting a file
+    if (window.innerWidth <= 900) {
+      setSidebarOpen(false);
+    }
+
     setSelectedFile(entry.path);
+    pushBrowserState(entry.path);
     setFileContent('');
     setIsLoading(true);
     setError('');
@@ -473,51 +627,97 @@ function RepoBrowser() {
     );
   };
 
+  const filteredSlices = useMemo(() => {
+    const query = sliceFilter.trim().toLowerCase();
+    if (!query) {
+      return slices;
+    }
+    return slices.filter((slice) => {
+      const name = (slice.name || slice.slice_id || '').toLowerCase();
+      const description = (slice.description || '').toLowerCase();
+      return name.includes(query) || description.includes(query);
+    });
+  }, [sliceFilter, slices]);
+
   return (
     <section className="repo-browser">
-      <div className="repo-header">
-        <div>
-          <p className="eyebrow">Monorepo navigator</p>
-          <h2>Browse the fetched code</h2>
-          <p>
-            The file service streams content directly from slice storage. Expand folders to explore the tree and open a file to
-            preview it.
-          </p>
-        </div>
-        <div className="repo-controls">
-          <label>
-            Browse Mode
-            <select
-              data-testid="browse-mode"
-              value={browseMode}
-              onChange={(event) => setBrowseMode(event.target.value)}
-            >
-              <option value="root">Root Repository</option>
-              <option value="slice">Specific Slice</option>
-            </select>
-          </label>
+      <div className="repo-shell">
+        <aside className="slice-sidebar">
+          <div className="panel-header">
+            <h3>Slices</h3>
+            <div className="panel-header-actions">
+              {slicesLoading && <span className="status">Loading…</span>}
+              <button
+                type="button"
+                className="sidebar-toggle"
+                onClick={loadSlices}
+                aria-label="Refresh slices"
+                title="Refresh slices"
+              >
+                ↻
+              </button>
+            </div>
+          </div>
+          <div className="slice-search">
+            <input
+              data-testid="slice-filter"
+              value={sliceFilter}
+              onChange={(event) => setSliceFilter(event.target.value)}
+              placeholder="Filter slices..."
+            />
+          </div>
+          <div className="sidebar-content">
+            {slicesError && <div className="panel-error">{slicesError}</div>}
+            {!slicesLoading && !slicesError && filteredSlices.length === 0 && (
+              <div className="panel-empty">No slices found.</div>
+            )}
+            {!slicesError && filteredSlices.length > 0 && (
+              <ul className="slice-list" data-testid="slice-list">
+                {filteredSlices.map((slice) => (
+                  <li key={slice.slice_id}>
+                    <button
+                      type="button"
+                      className={`slice-entry ${sliceId === slice.slice_id ? 'active' : ''}`}
+                      onClick={() => {
+                        setSliceId(slice.slice_id);
+                        setSliceHash('');
+                      }}
+                      data-testid="slice-item"
+                    >
+                      <div className="slice-entry-title">
+                        <span className="slice-name">{slice.name || slice.slice_id}</span>
+                        {slice.is_root && <span className="slice-badge">root</span>}
+                      </div>
+                      <div className="slice-entry-meta">
+                        <span className="slice-id">{slice.slice_id}</span>
+                        {typeof slice.file_count === 'number' && (
+                          <span className="slice-count">{slice.file_count} files</span>
+                        )}
+                      </div>
+                      {slice.description && <div className="slice-entry-desc">{slice.description}</div>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
 
-          {browseMode === 'root' ? (
-            <label>
-              Commit Hash (optional)
-              <input
-                data-testid="commit-hash"
-                value={commitHash}
-                onChange={(event) => setCommitHash(event.target.value)}
-                placeholder="Leave empty for HEAD"
-              />
-            </label>
-          ) : (
-            <>
-              <label>
-                Slice ID
-                <input
-                  data-testid="slice-id"
-                  value={sliceId}
-                  onChange={(event) => setSliceId(event.target.value)}
-                  placeholder="my_slice"
-                />
-              </label>
+        <div className="repo-main">
+          <div className="repo-header">
+            <div>
+              <p className="eyebrow">Monorepo navigator</p>
+              <h2>Browse the fetched code</h2>
+              <p>
+                The file service streams content directly from slice storage. Expand folders to explore the tree and open a file
+                to preview it.
+              </p>
+            </div>
+            <div className="repo-controls">
+              <div className="selected-slice" data-testid="selected-slice">
+                <span className="label">Selected slice</span>
+                <span className="value">{sliceId || 'Choose a slice'}</span>
+              </div>
               <label>
                 Slice Hash (optional)
                 <input
@@ -527,135 +727,276 @@ function RepoBrowser() {
                   placeholder="Leave empty for HEAD"
                 />
               </label>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
-        <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
-          <div className="panel-header">
-            <h3>File tree</h3>
-            <div className="panel-header-actions">
-              {isLoading && <span className="status">Loading…</span>}
-              <button
-                type="button"
-                className="sidebar-toggle"
-                onClick={() => setSidebarOpen(false)}
-                aria-label="Close sidebar"
-                title="Close sidebar"
-              >
-                ✕
-              </button>
             </div>
           </div>
-          <div className="sidebar-content">
-            {error && <div className="panel-error">{error}</div>}
-            {!canLoad && browseMode === 'slice' && (
-              <div className="panel-empty">Enter a Slice ID to browse files.</div>
-            )}
-            {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
-              <div className="panel-empty">No entries found.</div>
-            )}
-            {canLoad && renderTree('')}
-          </div>
-        </aside>
 
-        <div className="repo-code">
-          <div className="code-header">
-            <div className="code-header-left">
-              {!sidebarOpen && (
-                <button
-                  type="button"
-                  className="sidebar-toggle open-btn"
-                  onClick={() => setSidebarOpen(true)}
-                  aria-label="Open sidebar"
-                  title="Open file tree"
-                  data-testid="sidebar-toggle"
-                >
-                  ☰
-                </button>
-              )}
-              <div>
-                <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
-                <div className="breadcrumbs">
-                  {breadcrumbs.map((crumb, index) => (
-                    <button
-                      key={crumb.path || 'root'}
-                      type="button"
-                      className="breadcrumb"
-                      onClick={() => handleBreadcrumbClick(crumb.path)}
-                    >
-                      {crumb.name}
-                      {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
-                    </button>
-                  ))}
+          <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
+            <div
+              className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
+              onClick={() => setSidebarOpen(false)}
+            />
+            <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
+              <div className="panel-header">
+                <h3>File tree</h3>
+                <div className="panel-header-actions">
+                  {isLoading && <span className="status">Loading…</span>}
+                  <button
+                    type="button"
+                    className="sidebar-toggle"
+                    onClick={() => setSidebarOpen(false)}
+                    aria-label="Close sidebar"
+                    title="Close sidebar"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
-            </div>
-            <div className="code-header-actions">
-              {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
-              {selectedFile && (
-                <button
-                  type="button"
-                  className={`history-toggle ${showHistory ? 'active' : ''}`}
-                  onClick={toggleHistory}
-                  data-testid="history-toggle"
-                  title={showHistory ? 'Show file content' : 'Show commit history'}
-                >
-                  {showHistory ? '📄 Content' : '📜 History'}
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="code-content">
-            {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-            {selectedFile && !showHistory && (
-              <pre className="file-preview">
-                <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
-              </pre>
-            )}
-            {selectedFile && showHistory && (
-              <div className="history-panel" data-testid="history-panel">
-                {historyLoading && <div className="history-loading">Loading history...</div>}
-                {historyError && <div className="panel-error">{historyError}</div>}
-                {!historyLoading && !historyError && fileHistory.length === 0 && (
-                  <div className="panel-empty">No history available for this file.</div>
+              <div className="sidebar-content">
+                {error && <div className="panel-error">{error}</div>}
+                {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
+                {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
+                  <div className="panel-empty">No entries found.</div>
                 )}
-                {!historyLoading && fileHistory.length > 0 && (
-                  <ul className="history-list">
-                    {fileHistory.map((change) => (
-                      <li key={change.id} className="history-item" data-testid="history-item">
-                        <div className="history-item-header">
-                          <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
-                            {formatChangeType(change.change_type)}
-                          </span>
-                          <span className="commit-hash" title={change.commit_hash}>
-                            {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
-                          </span>
-                        </div>
-                        <div className="history-item-message">{change.message || 'No message'}</div>
-                        <div className="history-item-meta">
-                          <span className="history-author">{change.author || 'Unknown'}</span>
-                          <span className="history-date">{formatTimestamp(change.timestamp)}</span>
-                          {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                            <span className="history-lines">
-                              <span className="lines-added">+{change.lines_added || 0}</span>
-                              <span className="lines-deleted">-{change.lines_deleted || 0}</span>
-                            </span>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                {canLoad && renderTree('')}
+              </div>
+            </aside>
+
+            <div className="repo-code">
+              <div className="code-header">
+                <div className="code-header-left">
+                  {!sidebarOpen && (
+                    <button
+                      type="button"
+                      className="sidebar-toggle open-btn"
+                      onClick={() => setSidebarOpen(true)}
+                      aria-label="Open sidebar"
+                      title="Open file tree"
+                      data-testid="sidebar-toggle"
+                    >
+                      ☰
+                    </button>
+                  )}
+                  <div>
+                    <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
+                    <div className="breadcrumbs">
+                      {breadcrumbs.map((crumb, index) => (
+                        <button
+                          key={crumb.path || 'root'}
+                          type="button"
+                          className="breadcrumb"
+                          onClick={() => handleBreadcrumbClick(crumb.path)}
+                        >
+                          {crumb.name}
+                          {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="code-header-actions">
+                  {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
+                  {selectedFile && (
+                    <button
+                      type="button"
+                      className={`history-toggle ${showHistory ? 'active' : ''}`}
+                      onClick={toggleHistory}
+                      data-testid="history-toggle"
+                      title={showHistory ? 'Show file content' : 'Show commit history'}
+                    >
+                      {showHistory ? '📄 Content' : '📜 History'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="code-content">
+                {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+                {selectedFile && !showHistory && (
+                  <pre className="file-preview">
+                    <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
+                  </pre>
+                )}
+                {selectedFile && showHistory && (
+                  <div className="history-panel" data-testid="history-panel">
+                    {historyLoading && <div className="history-loading">Loading history...</div>}
+                    {historyError && <div className="panel-error">{historyError}</div>}
+                    {!historyLoading && !historyError && fileHistory.length === 0 && (
+                      <div className="panel-empty">No history available for this file.</div>
+                    )}
+                    {!historyLoading && fileHistory.length > 0 && (
+                      <ul className="history-list">
+                        {fileHistory.map((change) => (
+                          <li key={change.id} className="history-item" data-testid="history-item">
+                            <div className="history-item-header">
+                              <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                                {formatChangeType(change.change_type)}
+                              </span>
+                              <a
+                                className="commit-hash commit-diff-link"
+                                title={change.commit_hash}
+                                href="#"
+                                data-testid="commit-diff-link"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  if (change.commit_hash && onNavigateToDiff) {
+                                    onNavigateToDiff(change.commit_hash);
+                                  }
+                                }}
+                              >
+                                {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
+                              </a>
+                            </div>
+                            <div className="history-item-message">{change.message || 'No message'}</div>
+                            <div className="history-item-meta">
+                              <span className="history-author">{change.author || 'Unknown'}</span>
+                              <span className="history-date">{formatTimestamp(change.timestamp)}</span>
+                              {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                                <span className="history-lines">
+                                  <span className="lines-added">+{change.lines_added || 0}</span>
+                                  <span className="lines-deleted">-{change.lines_deleted || 0}</span>
+                                </span>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
+            </div>
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+function CommitDiffPage({ commitHash, onBack }) {
+  const [diffData, setDiffData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!commitHash) return;
+    let active = true;
+    const controller = new AbortController();
+
+    const loadDiff = async () => {
+      setIsLoading(true);
+      setError('');
+      try {
+        const response = await fetch(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`Request failed (${response.status})`);
+        const payload = await response.json();
+        if (active) setDiffData(normalizeDiffResponse(payload));
+      } catch (err) {
+        if (active && err?.name !== 'AbortError') {
+          setError('Unable to load commit changes.');
+        }
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+
+    loadDiff();
+    return () => { active = false; controller.abort(); };
+  }, [commitHash]);
+
+  return (
+    <section className="commit-diff-page" data-testid="commit-diff-page">
+      <div className="diff-header">
+        <button type="button" className="ghost diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
+          Back to browser
+        </button>
+        <div>
+          <p className="eyebrow">Commit diff</p>
+          <h2 data-testid="diff-commit-title">
+            Commit <span className="commit-hash">{commitHash ? commitHash.slice(0, 12) : ''}</span>
+          </h2>
+        </div>
+        {diffData && (
+          <div className="diff-summary" data-testid="diff-summary">
+            <span className="diff-stat diff-stat-added">+{diffData.files_added || 0} added</span>
+            <span className="diff-stat diff-stat-modified">{diffData.files_modified || 0} modified</span>
+            <span className="diff-stat diff-stat-deleted">-{diffData.files_deleted || 0} deleted</span>
+            {(diffData.files_renamed || 0) > 0 && (
+              <span className="diff-stat diff-stat-renamed">{diffData.files_renamed} renamed</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="diff-content">
+        {isLoading && <div className="diff-loading">Loading commit changes...</div>}
+        {error && <div className="panel-error">{error}</div>}
+        {!isLoading && !error && diffData && (
+          <ul className="diff-file-list" data-testid="diff-file-list">
+            {(diffData.changes || []).map((change) => (
+              <li key={change.id || change.path} className="diff-file-item" data-testid="diff-file-item">
+                <div className="diff-file-header">
+                  <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                    {formatChangeType(change.change_type)}
+                  </span>
+                  <span className="diff-file-path" data-testid="diff-file-path">{change.path}</span>
+                  {change.old_path && change.old_path !== change.path && (
+                    <span className="diff-file-old-path">(was: {change.old_path})</span>
+                  )}
+                </div>
+                <div className="diff-file-stats">
+                  {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                    <span className="history-lines">
+                      <span className="lines-added">+{change.lines_added || 0}</span>
+                      <span className="lines-deleted">-{change.lines_deleted || 0}</span>
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {!isLoading && !error && diffData && (diffData.changes || []).length === 0 && (
+          <div className="panel-empty">No changes found in this commit.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// Normalize camelCase API response keys to snake_case used in templates.
+// The gRPC-gateway returns camelCase JSON (e.g. changeType, commitHash).
+function normalizeChange(c) {
+  return {
+    ...c,
+    change_type: c.change_type ?? c.changeType,
+    commit_hash: c.commit_hash ?? c.commitHash,
+    lines_added: c.lines_added ?? c.linesAdded ?? 0,
+    lines_deleted: c.lines_deleted ?? c.linesDeleted ?? 0,
+    old_path: c.old_path ?? c.oldPath,
+    slice_id: c.slice_id ?? c.sliceId,
+  };
+}
+
+function normalizeDiffResponse(data) {
+  return {
+    ...data,
+    commit_hash: data.commit_hash ?? data.commitHash,
+    files_added: data.files_added ?? data.filesAdded ?? 0,
+    files_modified: data.files_modified ?? data.filesModified ?? 0,
+    files_deleted: data.files_deleted ?? data.filesDeleted ?? 0,
+    files_renamed: data.files_renamed ?? data.filesRenamed ?? 0,
+    changes: (data.changes || []).map(normalizeChange),
+  };
+}
+
+function normalizeSliceInfo(slice) {
+  return {
+    ...slice,
+    slice_id: slice.slice_id ?? slice.sliceId,
+    file_count: slice.file_count ?? slice.fileCount,
+    is_root: slice.is_root ?? slice.isRoot ?? false,
+  };
 }
 
 function normalizeChangeType(value) {

@@ -2,24 +2,14 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
-func writeSliceMetadataFile(t *testing.T, dir, sliceID string) string {
-	t.Helper()
-
-	path := filepath.Join(dir, fmt.Sprintf("%s.toml", sliceID))
-	content := []byte(fmt.Sprintf("slice_id = %q\n", sliceID))
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatalf("failed to write metadata file: %v", err)
-	}
-	return path
+func sliceIDArg(sliceID string) string {
+	return sliceID
 }
 
 func createSliceFromRoot(t *testing.T, sliceID, folderPath string) {

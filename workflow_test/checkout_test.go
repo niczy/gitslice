@@ -10,9 +10,9 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	sliceID := "checkout-slice"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -20,9 +20,9 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 
 func TestCheckoutSliceNotFound(t *testing.T) {
 	workdir := t.TempDir()
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), "nonexistent-slice")
+	sliceArg := sliceIDArg("nonexistent-slice")
 
-	_, err := runCLIWithDir(workdir, "slice", "checkout", metadataPath)
+	_, err := runCLIWithDir(workdir, "slice", "checkout", sliceArg)
 	if err == nil {
 		t.Fatalf("expected checkout to fail for missing slice")
 	}
@@ -33,9 +33,9 @@ func TestCheckoutSliceWithCommitHash(t *testing.T) {
 	sliceID := "checkout-commit"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath, "--commit", "HEAD")
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg, "--commit", "HEAD")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -46,9 +46,9 @@ func TestCheckoutEmptySlice(t *testing.T) {
 	sliceID := "empty-checkout"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -59,9 +59,9 @@ func TestStreamCheckoutSlice(t *testing.T) {
 	sliceID := "stream-checkout"
 
 	createSliceFromRoot(t, sliceID, "")
-	metadataPath := writeSliceMetadataFile(t, t.TempDir(), sliceID)
+	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", metadataPath)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}

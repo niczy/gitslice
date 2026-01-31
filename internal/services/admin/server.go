@@ -253,6 +253,46 @@ func (s *adminServiceServer) GetGlobalState(ctx context.Context, req *adminv1.Gl
 	return response, nil
 }
 
+func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSlicesRequest) (*adminv1.ListSlicesResponse, error) {
+	log.Printf("ListSlices called: limit=%v offset=%v", req.Limit, req.Offset)
+
+	limit := int(req.Limit)
+	offset := int(req.Offset)
+	if limit <= 0 {
+		limit = int(^uint(0) >> 1)
+	}
+
+	slices, err := s.storage.ListSlices(ctx, limit, offset)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
+	}
+
+	total, err := s.storage.CountSlices(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to count slices: %v", err))
+	}
+
+	response := &adminv1.ListSlicesResponse{
+		Slices: make([]*adminv1.SliceInfo, 0, len(slices)),
+		Total:  int32(total),
+	}
+
+	for _, slice := range slices {
+		response.Slices = append(response.Slices, &adminv1.SliceInfo{
+			SliceId:     slice.ID,
+			Name:        slice.Name,
+			Description: slice.Description,
+			Owners:      slice.Owners,
+			CreatedAt:   slice.CreatedAt.Unix(),
+			UpdatedAt:   slice.UpdatedAt.Unix(),
+			FileCount:   int32(len(slice.Files)),
+			IsRoot:      slice.IsRoot,
+		})
+	}
+
+	return response, nil
+}
+
 func (s *adminServiceServer) WatchConflicts(req *adminv1.WatchConflictsRequest, stream adminv1.AdminService_WatchConflictsServer) error {
 	log.Printf("WatchConflicts called: slice_id=%v", req.SliceId)
 
