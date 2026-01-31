@@ -90,6 +90,36 @@ body {
   width: 100%;
 }
 
+/* Full-width browser page – uses entire viewport */
+.page--browser {
+  max-width: none;
+  padding: 20px 20px 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page--browser .repo-browser {
+  flex: 1;
+  min-height: 0;
+}
+
+.page--browser .repo-header {
+  flex-shrink: 0;
+}
+
+.page--browser .repo-layout {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+.app-shell--browser .footer {
+  display: none;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
@@ -390,6 +420,10 @@ body {
   width: 0;
   padding: 0;
   border: none;
+}
+
+.sidebar-overlay {
+  display: none;
 }
 
 .repo-sidebar .panel-header {
@@ -928,36 +962,63 @@ body {
   }
 }
 
-/* Mobile landscape / small tablet */
+/* Mobile landscape / small tablet – sliding sidebar overlay */
 @media (max-width: 900px) {
-  .repo-layout {
-    grid-template-columns: 1fr;
-    height: auto;
-    min-height: auto;
-    gap: 12px;
+  .page--browser {
+    padding: 16px 12px 0;
   }
 
+  .sidebar-overlay.visible {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 20;
+    backdrop-filter: blur(2px);
+  }
+
+  .repo-layout,
   .repo-layout.sidebar-collapsed {
     grid-template-columns: 1fr;
+    min-height: 0;
+    gap: 0;
   }
 
   .repo-sidebar {
-    height: auto;
-    max-height: 300px;
-    position: relative;
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 300px;
+    max-width: 85vw;
+    z-index: 21;
+    border-radius: 0 16px 16px 0;
+    height: 100%;
+    max-height: none;
+  }
+
+  .repo-sidebar.open {
+    opacity: 1;
+    transform: translateX(0);
   }
 
   .repo-sidebar.closed {
-    display: none;
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+    width: 300px;
+    max-width: 85vw;
+    border: 1px solid var(--border);
+    display: flex;
+  }
+
+  .sidebar-content {
+    max-height: none;
+    flex: 1;
   }
 
   .repo-code {
     min-height: 400px;
-    height: auto;
-  }
-
-  .sidebar-content {
-    max-height: 220px;
   }
 }
 
@@ -987,6 +1048,10 @@ body {
 
   .page {
     padding: 20px 16px 60px;
+  }
+
+  .page--browser {
+    padding: 12px 8px 0;
   }
 
   .hero {
@@ -1048,7 +1113,6 @@ body {
 
   .sidebar-content {
     padding: 0 14px 14px;
-    max-height: 200px;
   }
 
   .repo-code {
@@ -1124,6 +1188,10 @@ body {
 @media (max-width: 480px) {
   .page {
     padding: 16px 12px 48px;
+  }
+
+  .page--browser {
+    padding: 8px 6px 0;
   }
 
   .hero {

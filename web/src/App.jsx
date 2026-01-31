@@ -75,7 +75,7 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${activePage === 'browser' ? ' app-shell--browser' : ''}`}>
       <header className="top-bar">
         <button type="button" className="brand" onClick={() => navigate('landing')}>
           <span className="brand-icon">◆</span>
@@ -96,7 +96,7 @@ function App() {
         </div>
       </header>
 
-      <main className="page">
+      <main className={`page${activePage === 'browser' ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
         {activePage === 'browser' && <RepoBrowser onNavigateToDiff={navigateToDiff} />}
         {activePage === 'diff' && (
@@ -253,7 +253,7 @@ function RepoBrowser({ onNavigateToDiff }) {
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 900);
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -464,6 +464,11 @@ function RepoBrowser({ onNavigateToDiff }) {
       return;
     }
 
+    // Close sidebar on mobile after selecting a file
+    if (window.innerWidth <= 900) {
+      setSidebarOpen(false);
+    }
+
     setSelectedFile(entry.path);
     setFileContent('');
     setIsLoading(true);
@@ -586,6 +591,10 @@ function RepoBrowser({ onNavigateToDiff }) {
       </div>
 
       <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
+        <div
+          className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
+          onClick={() => setSidebarOpen(false)}
+        />
         <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
           <div className="panel-header">
             <h3>File tree</h3>
