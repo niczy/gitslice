@@ -1,7 +1,27 @@
 load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//proto:compiler.bzl", "go_proto_compiler")
 
 # gazelle:prefix github.com/niczy/gitslice
 # gazelle:proto disable_global
 # gazelle:go_naming_convention import_alias
 
 gazelle(name = "gazelle")
+
+# Custom proto compiler for gRPC-gateway .pb.gw.go files.
+# Used by proto/admin and proto/file go_proto_library targets.
+go_proto_compiler(
+    name = "grpc_gateway_compiler",
+    options = ["logtostderr=true"],
+    plugin = "@com_github_grpc_ecosystem_grpc_gateway_v2//protoc-gen-grpc-gateway",
+    suffix = ".pb.gw.go",
+    deps = [
+        "@com_github_grpc_ecosystem_grpc_gateway_v2//runtime",
+        "@com_github_grpc_ecosystem_grpc_gateway_v2//utilities",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//grpclog",
+        "@org_golang_google_grpc//metadata",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//proto",
+    ],
+    visibility = ["//visibility:public"],
+)

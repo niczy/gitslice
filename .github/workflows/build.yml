@@ -31,17 +31,6 @@ jobs:
           https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
         sudo chmod +x /usr/local/bin/bazel
 
-    - name: Install protoc
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
-
-    - name: Install protoc plugins
-      run: make install
-
-    - name: Generate proto code
-      run: make proto
-
     - name: Bazel build all
       run: bazel build //...
 

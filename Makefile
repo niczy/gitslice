@@ -59,8 +59,8 @@ proto: setup-googleapis
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/admin && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/file && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto'
 
-# Primary build target: generate protos then build with Bazel
-build: proto bazel-build bazel-copy-binaries
+# Primary build target: Bazel handles proto generation and Go compilation
+build: bazel-build bazel-copy-binaries
 
 # Bazel build all targets
 bazel-build:
@@ -74,19 +74,19 @@ bazel-copy-binaries:
 	cp -fL $(CLI_BAZEL_BIN) gs_cli/gs_cli
 
 # Individual build targets (build + copy single binary)
-build-slice: proto
+build-slice:
 	bazel build //slice_service
 	cp -fL $(SLICE_BAZEL_BIN) slice_service_server
 
-build-admin: proto
+build-admin:
 	bazel build //admin_service
 	cp -fL $(ADMIN_BAZEL_BIN) admin_service_server
 
-build-gateway: proto
+build-gateway:
 	bazel build //gateway_service
 	cp -fL $(GATEWAY_BAZEL_BIN) gateway_service_server
 
-build-cli: proto
+build-cli:
 	bazel build //gs_cli
 	cp -fL $(CLI_BAZEL_BIN) gs_cli/gs_cli
 
@@ -127,11 +127,11 @@ stop-servers:
 	done
 
 # Run all tests via Bazel
-test: proto
+test:
 	bazel test //...
 
 # Run integration tests only
-test-integration: proto
+test-integration:
 	bazel test //workflow_test:workflow_test
 
 clean:
