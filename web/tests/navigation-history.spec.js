@@ -51,6 +51,8 @@ test.describe('Navigation history and URL reloading', () => {
 
     // Press browser back
     await page.goBack();
+    await expect(page).toHaveURL(/#\/browser(\?|$)/);
+    await page.goBack();
     await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
   });
@@ -64,10 +66,14 @@ test.describe('Navigation history and URL reloading', () => {
 
     // Back to landing
     await page.goBack();
+    await expect(page).toHaveURL(/#\/browser(\?|$)/);
+    await page.goBack();
     await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
 
     // Forward to browser
+    await page.goForward();
+    await expect(page).toHaveURL(/#\/browser(\?|$)/);
     await page.goForward();
     await expect(page).toHaveURL(/#\/browser\?slice=/);
     await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
