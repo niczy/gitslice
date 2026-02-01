@@ -716,6 +716,9 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	t.Setenv("RUN_INTEGRATION_TESTS", "")
 	t.Setenv("SKIP_GIT_POPULATION", "")
 
+	tempDir := setupTempGitRepo(t)
+	t.Chdir(tempDir)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -727,12 +730,7 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 		t.Fatalf("failed to run genesis init: %v", err)
 	}
 
-	repoRoot := runGitOrFail(t, ".", "rev-parse", "--show-toplevel")
-	readmePath := filepath.Join(repoRoot, "README.md")
-	expectedContent, err := os.ReadFile(readmePath)
-	if err != nil {
-		t.Fatalf("failed to read README.md: %v", err)
-	}
+	expectedContent := []byte("# Test Repo\n")
 
 	fileClient := fileservice.NewService(st)
 	resp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{
@@ -758,6 +756,9 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 func TestGenesisCreatesFileChangeRecords(t *testing.T) {
 	t.Setenv("RUN_INTEGRATION_TESTS", "")
 	t.Setenv("SKIP_GIT_POPULATION", "")
+
+	tempDir := setupTempGitRepo(t)
+	t.Chdir(tempDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

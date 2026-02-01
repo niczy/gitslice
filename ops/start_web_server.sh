@@ -4,9 +4,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RAW_LOG_DIR="${LOG_DIR:-$REPO_ROOT/logs}"
 WEB_DIR="$REPO_ROOT/web"
-SLICE_BIN="$REPO_ROOT/slice_service_server"
-ADMIN_BIN="$REPO_ROOT/admin_service_server"
-GATEWAY_BIN="$REPO_ROOT/gateway_service_server"
+BAZEL_BIN="$REPO_ROOT/bazel-bin"
+SLICE_BIN="$BAZEL_BIN/slice_service/slice_service_server_/slice_service_server"
+ADMIN_BIN="$BAZEL_BIN/admin_service/admin_service_server_/admin_service_server"
+GATEWAY_BIN="$BAZEL_BIN/gateway_service/gateway_service_server_/gateway_service_server"
 LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pwd)"
 WEB_LOG="$LOG_DIR/web_preview.log"
 SLICE_LOG="$LOG_DIR/slice_service.log"
@@ -75,8 +76,8 @@ start_slice_service() {
   # Wait a moment for ports to be released
   sleep 2
 
-  log "Building slice service (with proto generation)..."
-  make build-slice
+  log "Building slice service..."
+  bazel build //slice_service:slice_service_server
 
   log "Starting slice service (log: $SLICE_LOG)..."
   nohup "$SLICE_BIN" > "$SLICE_LOG" 2>&1 &
@@ -96,8 +97,8 @@ start_admin_service() {
   # Wait a moment for ports to be released
   sleep 2
 
-  log "Building admin service (with proto generation)..."
-  make build-admin
+  log "Building admin service..."
+  bazel build //admin_service:admin_service_server
 
   log "Starting admin service (log: $ADMIN_LOG)..."
   nohup "$ADMIN_BIN" > "$ADMIN_LOG" 2>&1 &
@@ -119,7 +120,7 @@ start_gateway_service() {
   sleep 2
 
   log "Building gateway service..."
-  make build-gateway
+  bazel build //gateway_service:gateway_service_server
 
   log "Starting gateway service (log: $GATEWAY_LOG)..."
   GATEWAY_PORT="$GATEWAY_PORT" nohup "$GATEWAY_BIN" > "$GATEWAY_LOG" 2>&1 &
