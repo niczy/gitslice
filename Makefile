@@ -74,6 +74,6 @@ web-install:
 web-build: web-install
 	cd web && npm run build
 
-web-test-e2e: build web-install
+web-test-e2e: web-install
 	cd web && npx playwright install --with-deps
 	cd web && npm run test:e2e
