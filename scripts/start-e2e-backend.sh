@@ -21,13 +21,13 @@ for bin in "$SLICE_BIN" "$ADMIN_BIN" "$GATEWAY_BIN"; do
   fi
 done
 
-PIDS=()
+PIDS=""
 cleanup() {
   log "Stopping e2e backend services..."
-  for pid in "${PIDS[@]}"; do
+  for pid in $PIDS; do
     kill "$pid" 2>/dev/null || true
   done
-  for pid in "${PIDS[@]}"; do
+  for pid in $PIDS; do
     wait "$pid" 2>/dev/null || true
   done
   log "Stopped."
@@ -38,13 +38,13 @@ cd "$REPO_ROOT"
 
 # Start slice service
 SLICE_SERVICE_PORT="$E2E_SLICE_PORT" "$SLICE_BIN" &
-PIDS+=($!)
-log "Slice service started (PID ${PIDS[-1]}, port $E2E_SLICE_PORT)"
+PIDS="$PIDS $!"
+log "Slice service started (PID $!, port $E2E_SLICE_PORT)"
 
 # Start admin service
 ADMIN_SERVICE_PORT="$E2E_ADMIN_PORT" "$ADMIN_BIN" &
-PIDS+=($!)
-log "Admin service started (PID ${PIDS[-1]}, port $E2E_ADMIN_PORT)"
+PIDS="$PIDS $!"
+log "Admin service started (PID $!, port $E2E_ADMIN_PORT)"
 
 # Wait for gRPC services to bind
 sleep 2
@@ -54,8 +54,8 @@ SLICE_SERVICE_PORT="$E2E_SLICE_PORT" \
 ADMIN_SERVICE_PORT="$E2E_ADMIN_PORT" \
 GATEWAY_PORT="$E2E_GATEWAY_PORT" \
 "$GATEWAY_BIN" &
-PIDS+=($!)
-log "Gateway service started (PID ${PIDS[-1]}, port $E2E_GATEWAY_PORT)"
+PIDS="$PIDS $!"
+log "Gateway service started (PID $!, port $E2E_GATEWAY_PORT)"
 
 # Wait for gateway health endpoint
 for i in $(seq 1 60); do
