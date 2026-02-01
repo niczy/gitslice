@@ -115,14 +115,6 @@ bazel run //gateway_service:gateway_service_server
 bazel run //gs_cli:gs_cli -- --help
 ```
 
-### Auto-generate BUILD Files
-
-If you add new Go files, use Gazelle to update BUILD files:
-
-```bash
-bazel run //:gazelle
-```
-
 ## Legacy Build (Make/Go modules)
 
 The project can still be built using traditional Go tools and Make (deprecated):

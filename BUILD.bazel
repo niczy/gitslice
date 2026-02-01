@@ -1,11 +1,3 @@
-load("@gazelle//:def.bzl", "gazelle")
-
-# Gazelle target for generating BUILD files
-# Usage: bazel run //:gazelle
-# Update deps: bazel run //:gazelle -- update-repos -from_file=go.mod -to_macro=deps.bzl%go_dependencies
-
-gazelle(name = "gazelle")
-
 # Build all services
 filegroup(
     name = "all_services",
