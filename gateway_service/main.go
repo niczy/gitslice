@@ -5,7 +5,10 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -45,10 +48,24 @@ func main() {
 		Handler: httpMux,
 	}
 
+	// Graceful shutdown on SIGINT/SIGTERM
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("Received %v, shutting down gateway gracefully...", sig)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Gateway shutdown error: %v", err)
+		}
+	}()
+
 	log.Printf("Gateway listening on %s", gatewayAddr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to serve gateway: %v", err)
 	}
+	log.Println("Gateway server stopped")
 }
 
 func newGatewayMux(ctx context.Context, sliceAddr, adminAddr string) (*runtime.ServeMux, func(), error) {
