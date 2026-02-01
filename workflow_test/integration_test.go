@@ -662,7 +662,7 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 
 	fileClient := fileservice.NewService(st)
 	resp, err := fileClient.GetFile(ctx, &filev1.GetFileRequest{
-		Path: "/o/genesis/projects/gitslice/README.md",
+		Path: "/genesis/README.md",
 		Version: &filev1.GetFileRequest_SliceVersion{
 			SliceVersion: &filev1.SliceVersion{SliceId: "root_slice"},
 		},
@@ -673,7 +673,7 @@ func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	if resp.File == nil {
 		t.Fatalf("expected file response, got nil")
 	}
-	if resp.File.Path != "o/genesis/projects/gitslice/README.md" {
+	if resp.File.Path != "genesis/README.md" {
 		t.Fatalf("expected normalized path, got %q", resp.File.Path)
 	}
 	if !bytes.Equal(resp.File.Content, expectedContent) {
@@ -740,7 +740,7 @@ func TestGenesisCreatesFileChangeRecords(t *testing.T) {
 	// Verify we can also query file history for a specific file
 	fileClient := fileservice.NewService(st)
 	histResp, err := fileClient.GetFileHistory(ctx, &filev1.GetFileHistoryRequest{
-		Path: "o/genesis/projects/gitslice/README.md",
+		Path: "genesis/README.md",
 	})
 	if err != nil {
 		t.Fatalf("failed to get file history for README.md: %v", err)

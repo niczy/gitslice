@@ -11,7 +11,7 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 )
 
-const GenesisMountPath = "/o/genesis/projects/gitslice"
+const GenesisMountPath = "/genesis"
 
 // EnsureRootSliceInitialized initializes the root slice if it doesn't exist.
 // It returns an error only if initialization fails critically.
@@ -33,8 +33,8 @@ func EnsureRootSliceInitialized(ctx context.Context, st storage.Storage) error {
 }
 
 // ExtractParentDirs returns all parent directories for a given path
-// e.g. "o/genesis/projects/gitslice/internal/common/init.go"
-// -> ["o", "o/genesis", "o/genesis/projects", ...]
+// e.g. "genesis/internal/common/init.go"
+// -> ["genesis", "genesis/internal", "genesis/internal/common", ...]
 func ExtractParentDirs(filePath string) []string {
 	var dirs []string
 	parts := strings.Split(filePath, "/")
