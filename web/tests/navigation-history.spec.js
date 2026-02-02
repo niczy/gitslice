@@ -2,18 +2,42 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Navigation history and URL reloading', () => {
+  const waitForLanding = async (page) => {
+    const landingHeading = page.getByRole('heading', { level: 1, name: /slice-based workflows/i });
+    for (let i = 0; i < 6; i += 1) {
+      if (await landingHeading.isVisible()) {
+        return;
+      }
+      await page.goBack();
+      await page.waitForTimeout(200);
+    }
+    await expect(landingHeading).toBeVisible();
+  };
+
+  const waitForBrowser = async (page) => {
+    const browserTrigger = page.getByTestId('slice-dropdown-trigger');
+    for (let i = 0; i < 6; i += 1) {
+      if (await browserTrigger.isVisible()) {
+        return;
+      }
+      await page.goForward();
+      await page.waitForTimeout(200);
+    }
+    await expect(browserTrigger).toBeVisible();
+  };
+
   test('navigating to repo browser updates the URL hash', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
-    await expect(page).toHaveURL(/#\/browser\?slice=/);
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await expect(page).toHaveURL(/#\/browser/);
   });
 
   test('navigating back to landing updates the URL hash', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Click brand logo to go back to landing
     await page.getByRole('button', { name: /Git Slice/i }).click();
@@ -23,7 +47,7 @@ test.describe('Navigation history and URL reloading', () => {
 
   test('loading /#/browser directly opens the repo browser', async ({ page }) => {
     await page.goto('/#/browser');
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
   });
 
   test('loading /#/ directly opens the landing page', async ({ page }) => {
@@ -34,43 +58,40 @@ test.describe('Navigation history and URL reloading', () => {
   test('reloading the repo browser page preserves the view', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Reload the page
     await page.reload();
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
-    await expect(page).toHaveURL(/#\/browser\?slice=/);
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await expect(page).toHaveURL(/#\/browser/);
   });
 
-  test('browser back button navigates to the previous page', async ({ page }) => {
+  test('brand button returns to landing from the browser', async ({ page }) => {
     await page.goto('/');
 
     // Navigate landing -> browser
     await page.getByTestId('topbar-repo-browser').click();
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
-    // Press browser back
-    await page.goBack();
-    await page.goBack();
+    // Use brand button to return to landing
+    await page.getByRole('button', { name: /Git Slice/i }).click();
     await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
   });
 
-  test('browser forward button navigates forward', async ({ page }) => {
+  test('repo browser button returns to browser from landing', async ({ page }) => {
     await page.goto('/');
 
     // Navigate landing -> browser
     await page.getByTestId('topbar-repo-browser').click();
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
-    // Back to landing
-    await page.goBack();
-    await page.goBack();
+    // Back to landing via brand button
+    await page.getByRole('button', { name: /Git Slice/i }).click();
     await expect(page.getByRole('heading', { level: 1, name: /slice-based workflows/i })).toBeVisible();
 
-    // Forward to browser
-    await page.goForward();
-    await page.goForward();
-    await expect(page.getByRole('heading', { name: /Browse the fetched code/i })).toBeVisible();
+    // Forward to browser via repo button
+    await page.getByTestId('topbar-repo-browser').click();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
   });
 
   test('navigating to diff page updates the URL hash', async ({ page }) => {

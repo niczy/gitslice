@@ -52,6 +52,12 @@ function App() {
   const [browserKey, setBrowserKey] = useState(0);
   const githubUrl = 'https://github.com/niczy/gitslice';
 
+  // Slice data (shared across pages)
+  const [slices, setSlices] = useState([]);
+  const [currentSliceId, setCurrentSliceId] = useState('');
+  const [slicesLoading, setSlicesLoading] = useState(false);
+  const [slicesError, setSlicesError] = useState('');
+
   const navigate = useCallback((page, commitHash = '') => {
     setActivePage(page);
     if (page === 'diff') {
@@ -66,7 +72,6 @@ function App() {
       const { page, commitHash } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
-      // Force RepoBrowser remount so it re-reads state from hash
       if (page === 'browser') {
         setBrowserKey((k) => k + 1);
       }
@@ -75,9 +80,55 @@ function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
+  // Load slices on mount
+  useEffect(() => {
+    const loadSlices = async () => {
+      setSlicesLoading(true);
+      setSlicesError('');
+      try {
+        const response = await fetch(`${apiBaseUrl}/v1/slices?limit=200`);
+        if (!response.ok) {
+          throw new Error(`Request failed (${response.status})`);
+        }
+        const payload = await response.json();
+        const loaded = (payload.slices || []).map(normalizeSliceInfo);
+        setSlices(loaded);
+        // Set default slice if none selected
+        setCurrentSliceId((prev) => {
+          if (prev) return prev;
+          const root = loaded.find((slice) => slice.is_root);
+          return root ? root.slice_id : loaded[0]?.slice_id || '';
+        });
+      } catch (err) {
+        setSlicesError('Unable to load slices.');
+      } finally {
+        setSlicesLoading(false);
+      }
+    };
+    loadSlices();
+  }, []);
+
   const navigateToDiff = (commitHash) => {
     navigate('diff', commitHash);
   };
+
+  const refreshSlices = useCallback(async () => {
+    setSlicesLoading(true);
+    setSlicesError('');
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/slices?limit=200`);
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      const payload = await response.json();
+      const loaded = (payload.slices || []).map(normalizeSliceInfo);
+      setSlices(loaded);
+    } catch (err) {
+      setSlicesError('Unable to load slices.');
+    } finally {
+      setSlicesLoading(false);
+    }
+  }, []);
 
   return (
     <div className={`app-shell${activePage === 'browser' ? ' app-shell--browser' : ''}`}>
@@ -87,6 +138,16 @@ function App() {
           <span className="brand-text">Git Slice</span>
         </button>
         <div className="top-bar-actions">
+          {activePage === 'browser' && (
+            <SliceDropdown
+              slices={slices}
+              currentSliceId={currentSliceId}
+              onSelectSlice={setCurrentSliceId}
+              loading={slicesLoading}
+              error={slicesError}
+              onRefresh={refreshSlices}
+            />
+          )}
           <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer" data-testid="topbar-github-link">
             GitHub
           </a>
@@ -103,7 +164,15 @@ function App() {
 
       <main className={`page${activePage === 'browser' ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
-        {activePage === 'browser' && <RepoBrowser key={browserKey} onNavigateToDiff={navigateToDiff} />}
+        {activePage === 'browser' && (
+          <RepoBrowser
+            key={browserKey}
+            slices={slices}
+            currentSliceId={currentSliceId}
+            onSliceChange={setCurrentSliceId}
+            onNavigateToDiff={navigateToDiff}
+          />
+        )}
         {activePage === 'diff' && (
           <CommitDiffPage commitHash={diffCommitHash} onBack={() => navigate('browser')} />
         )}
@@ -117,6 +186,119 @@ function App() {
           </a>
         </p>
       </footer>
+    </div>
+  );
+}
+
+function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, onRefresh }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const dropdownRef = useRef(null);
+
+  const currentSlice = useMemo(() =>
+    slices.find((s) => s.slice_id === currentSliceId),
+    [slices, currentSliceId]
+  );
+
+  const filteredSlices = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return slices;
+    return slices.filter((slice) => {
+      const name = (slice.name || slice.slice_id || '').toLowerCase();
+      const description = (slice.description || '').toLowerCase();
+      return name.includes(query) || description.includes(query);
+    });
+  }, [filter, slices]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen]);
+
+  const handleSelect = (sliceId) => {
+    onSelectSlice(sliceId);
+    setIsOpen(false);
+    setFilter('');
+  };
+
+  return (
+    <div className="slice-dropdown" ref={dropdownRef}>
+      <button
+        type="button"
+        className="slice-dropdown-trigger"
+        onClick={() => setIsOpen(!isOpen)}
+        data-testid="slice-dropdown-trigger"
+      >
+        <span>{currentSlice ? (currentSlice.name || currentSlice.slice_id) : 'Select slice'}</span>
+        <span className="slice-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
+      </button>
+      {isOpen && (
+        <div className="slice-dropdown-menu" data-testid="slice-dropdown-menu">
+          <div className="slice-dropdown-header">
+            <h4>Slices</h4>
+            <div className="slice-search">
+              <input
+                type="text"
+                placeholder="Filter slices..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                data-testid="slice-dropdown-filter"
+                autoFocus
+              />
+            </div>
+          </div>
+          <ul className="slice-dropdown-list" data-testid="slice-list">
+            {loading && (
+              <li className="slice-dropdown-loading">Loading…</li>
+            )}
+            {error && (
+              <li className="slice-dropdown-error">
+                {error}
+                <button type="button" onClick={onRefresh} style={{ marginLeft: '8px' }}>
+                  Retry
+                </button>
+              </li>
+            )}
+            {!loading && !error && filteredSlices.length === 0 && (
+              <li className="slice-dropdown-empty">No slices found.</li>
+            )}
+            {!loading && !error && filteredSlices.map((slice) => (
+              <li key={slice.slice_id}>
+                <button
+                  type="button"
+                  className={`slice-dropdown-item ${currentSliceId === slice.slice_id ? 'active' : ''}`}
+                  onClick={() => handleSelect(slice.slice_id)}
+                  data-testid="slice-dropdown-item"
+                >
+                  <div className="slice-dropdown-item-title">
+                    <span className="slice-name">{slice.name || slice.slice_id}</span>
+                    {slice.is_root && <span className="slice-badge">root</span>}
+                  </div>
+                  <div className="slice-dropdown-item-meta">
+                    <span>{slice.slice_id}</span>
+                    {typeof slice.file_count === 'number' && (
+                      <span>{slice.file_count} files</span>
+                    )}
+                  </div>
+                  {slice.description && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {slice.description}
+                    </div>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -153,7 +335,7 @@ function OverviewPage({ onBrowseRepo }) {
         </div>
       </section>
 
-      <section id="overview" className="section card">
+      <section id="overview" className="section">
         <div className="section-header">
           <h2>How slices keep changes focused</h2>
           <p>
@@ -186,7 +368,7 @@ function OverviewPage({ onBrowseRepo }) {
         </div>
       </section>
 
-      <section className="section card quickstart">
+      <section className="section quickstart">
         <div className="section-header">
           <p className="eyebrow">Quick start</p>
           <h2>Go from repo to slice in minutes</h2>
@@ -225,7 +407,7 @@ function OverviewPage({ onBrowseRepo }) {
         </div>
         <div className="feature-grid">
           {features.map((feature) => (
-            <div key={feature.title} className="feature card">
+            <div key={feature.title} className="feature">
               <h3>{feature.title}</h3>
               <p>{feature.description}</p>
             </div>
@@ -233,7 +415,7 @@ function OverviewPage({ onBrowseRepo }) {
         </div>
       </section>
 
-      <section className="section cta card">
+      <section className="section cta">
         <div>
           <p className="eyebrow">Ready to slice?</p>
           <h2>Bring slice-based delivery to your team.</h2>
@@ -247,7 +429,7 @@ function OverviewPage({ onBrowseRepo }) {
   );
 }
 
-function RepoBrowser({ onNavigateToDiff }) {
+function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }) {
   // Parse initial browser state from URL hash on mount
   const initialBrowserState = useMemo(() => {
     const raw = window.location.hash.replace(/^#\/?/, '');
@@ -262,12 +444,7 @@ function RepoBrowser({ onNavigateToDiff }) {
     return null;
   }, []);
 
-  const [sliceId, setSliceId] = useState(initialBrowserState?.slice || '');
   const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
-  const [slices, setSlices] = useState([]);
-  const [sliceFilter, setSliceFilter] = useState('');
-  const [slicesLoading, setSlicesLoading] = useState(false);
-  const [slicesError, setSlicesError] = useState('');
   const [treeEntries, setTreeEntries] = useState({});
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -298,34 +475,17 @@ function RepoBrowser({ onNavigateToDiff }) {
     ];
   }, [selectedFile]);
 
-  const loadSlices = useCallback(async () => {
-    setSlicesLoading(true);
-    setSlicesError('');
-    try {
-      const response = await fetch(`${apiBaseUrl}/v1/slices?limit=200`);
-      if (!response.ok) {
-        throw new Error(`Request failed (${response.status})`);
-      }
-      const payload = await response.json();
-      const loaded = (payload.slices || []).map(normalizeSliceInfo);
-      setSlices(loaded);
-      setSliceId((prev) => {
-        if (prev) {
-          return prev;
-        }
-        const root = loaded.find((slice) => slice.is_root);
-        return root ? root.slice_id : loaded[0]?.slice_id || '';
-      });
-    } catch (err) {
-      setSlicesError('Unable to load slices.');
-    } finally {
-      setSlicesLoading(false);
-    }
-  }, []);
+  const sliceId = currentSliceId;
 
+  // Update slice from URL if present
   useEffect(() => {
-    loadSlices();
-  }, [loadSlices]);
+    if (initialBrowserState?.slice && initialBrowserState.slice !== currentSliceId) {
+      const sliceExists = slices.some(s => s.slice_id === initialBrowserState.slice);
+      if (sliceExists) {
+        onSliceChange(initialBrowserState.slice);
+      }
+    }
+  }, [initialBrowserState, slices, currentSliceId, onSliceChange]);
 
   // Reset tree when slice changes
   useEffect(() => {
@@ -611,10 +771,10 @@ function RepoBrowser({ onNavigateToDiff }) {
               <button
                 type="button"
                 className={`tree-entry ${entryKind}`}
-                style={{ paddingLeft: `${depth * 18 + 12}px` }}
+                style={{ paddingLeft: `${depth * 14 + 8}px` }}
                 onClick={() => handleEntryClick(entry)}
               >
-                <span className="tree-caret">{entryKind === 'directory' ? (isExpanded ? '▾' : '▸') : '•'}</span>
+                <span className="tree-caret">{entryKind === 'directory' ? (isExpanded ? '▼' : '▶') : '•'}</span>
                 <span className="entry-icon">{entryKind === 'directory' ? '📁' : '📄'}</span>
                 <span className="entry-name">{entry.name}</span>
                 {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
@@ -627,242 +787,141 @@ function RepoBrowser({ onNavigateToDiff }) {
     );
   };
 
-  const filteredSlices = useMemo(() => {
-    const query = sliceFilter.trim().toLowerCase();
-    if (!query) {
-      return slices;
-    }
-    return slices.filter((slice) => {
-      const name = (slice.name || slice.slice_id || '').toLowerCase();
-      const description = (slice.description || '').toLowerCase();
-      return name.includes(query) || description.includes(query);
-    });
-  }, [sliceFilter, slices]);
-
   return (
     <section className="repo-browser">
-      <div className="repo-shell">
-        <aside className="slice-sidebar">
-          <div className="panel-header">
-            <h3>Slices</h3>
-            <div className="panel-header-actions">
-              {slicesLoading && <span className="status">Loading…</span>}
-              <button
-                type="button"
-                className="sidebar-toggle"
-                onClick={loadSlices}
-                aria-label="Refresh slices"
-                title="Refresh slices"
-              >
-                ↻
-              </button>
-            </div>
-          </div>
-          <div className="slice-search">
-            <input
-              data-testid="slice-filter"
-              value={sliceFilter}
-              onChange={(event) => setSliceFilter(event.target.value)}
-              placeholder="Filter slices..."
-            />
-          </div>
-          <div className="sidebar-content">
-            {slicesError && <div className="panel-error">{slicesError}</div>}
-            {!slicesLoading && !slicesError && filteredSlices.length === 0 && (
-              <div className="panel-empty">No slices found.</div>
-            )}
-            {!slicesError && filteredSlices.length > 0 && (
-              <ul className="slice-list" data-testid="slice-list">
-                {filteredSlices.map((slice) => (
-                  <li key={slice.slice_id}>
-                    <button
-                      type="button"
-                      className={`slice-entry ${sliceId === slice.slice_id ? 'active' : ''}`}
-                      onClick={() => {
-                        setSliceId(slice.slice_id);
-                        setSliceHash('');
-                      }}
-                      data-testid="slice-item"
-                    >
-                      <div className="slice-entry-title">
-                        <span className="slice-name">{slice.name || slice.slice_id}</span>
-                        {slice.is_root && <span className="slice-badge">root</span>}
-                      </div>
-                      <div className="slice-entry-meta">
-                        <span className="slice-id">{slice.slice_id}</span>
-                        {typeof slice.file_count === 'number' && (
-                          <span className="slice-count">{slice.file_count} files</span>
-                        )}
-                      </div>
-                      {slice.description && <div className="slice-entry-desc">{slice.description}</div>}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </aside>
-
-        <div className="repo-main">
-          <div className="repo-header">
-            <div>
-              <p className="eyebrow">Monorepo navigator</p>
-              <h2>Browse the fetched code</h2>
-              <p>
-                The file service streams content directly from slice storage. Expand folders to explore the tree and open a file
-                to preview it.
-              </p>
-            </div>
-            <div className="repo-controls">
-              <div className="selected-slice" data-testid="selected-slice">
-                <span className="label">Selected slice</span>
-                <span className="value">{sliceId || 'Choose a slice'}</span>
+      <div className="repo-main">
+        <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
+          <div
+            className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
+            onClick={() => setSidebarOpen(false)}
+          />
+          <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
+            <div className="panel-header">
+              <h3>File tree</h3>
+              <div className="panel-header-actions">
+                {isLoading && <span className="status">Loading…</span>}
+                <button
+                  type="button"
+                  className="sidebar-toggle"
+                  onClick={() => setSidebarOpen(false)}
+                  aria-label="Close sidebar"
+                  title="Close sidebar"
+                >
+                  ✕
+                </button>
               </div>
-              <label>
-                Slice Hash (optional)
-                <input
-                  data-testid="slice-hash"
-                  value={sliceHash}
-                  onChange={(event) => setSliceHash(event.target.value)}
-                  placeholder="Leave empty for HEAD"
-                />
-              </label>
             </div>
-          </div>
+            <div className="sidebar-content">
+              {error && <div className="panel-error">{error}</div>}
+              {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
+              {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
+                <div className="panel-empty">No entries found.</div>
+              )}
+              {canLoad && renderTree('')}
+            </div>
+          </aside>
 
-          <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
-            <div
-              className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
-              onClick={() => setSidebarOpen(false)}
-            />
-            <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
-              <div className="panel-header">
-                <h3>File tree</h3>
-                <div className="panel-header-actions">
-                  {isLoading && <span className="status">Loading…</span>}
+          <div className="repo-code">
+            <div className="code-header">
+              <div className="code-header-left">
+                {!sidebarOpen && (
                   <button
                     type="button"
-                    className="sidebar-toggle"
-                    onClick={() => setSidebarOpen(false)}
-                    aria-label="Close sidebar"
-                    title="Close sidebar"
+                    className="sidebar-toggle open-btn"
+                    onClick={() => setSidebarOpen(true)}
+                    aria-label="Open sidebar"
+                    title="Open file tree"
+                    data-testid="sidebar-toggle"
                   >
-                    ✕
+                    ☰
                   </button>
-                </div>
-              </div>
-              <div className="sidebar-content">
-                {error && <div className="panel-error">{error}</div>}
-                {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
-                {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
-                  <div className="panel-empty">No entries found.</div>
                 )}
-                {canLoad && renderTree('')}
-              </div>
-            </aside>
-
-            <div className="repo-code">
-              <div className="code-header">
-                <div className="code-header-left">
-                  {!sidebarOpen && (
-                    <button
-                      type="button"
-                      className="sidebar-toggle open-btn"
-                      onClick={() => setSidebarOpen(true)}
-                      aria-label="Open sidebar"
-                      title="Open file tree"
-                      data-testid="sidebar-toggle"
-                    >
-                      ☰
-                    </button>
-                  )}
-                  <div>
-                    <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
-                    <div className="breadcrumbs">
-                      {breadcrumbs.map((crumb, index) => (
-                        <button
-                          key={crumb.path || 'root'}
-                          type="button"
-                          className="breadcrumb"
-                          onClick={() => handleBreadcrumbClick(crumb.path)}
-                        >
-                          {crumb.name}
-                          {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
-                        </button>
-                      ))}
-                    </div>
+                <div>
+                  <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
+                  <div className="breadcrumbs">
+                    {breadcrumbs.map((crumb, index) => (
+                      <button
+                        key={crumb.path || 'root'}
+                        type="button"
+                        className="breadcrumb"
+                        onClick={() => handleBreadcrumbClick(crumb.path)}
+                      >
+                        {crumb.name}
+                        {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <div className="code-header-actions">
-                  {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
-                  {selectedFile && (
-                    <button
-                      type="button"
-                      className={`history-toggle ${showHistory ? 'active' : ''}`}
-                      onClick={toggleHistory}
-                      data-testid="history-toggle"
-                      title={showHistory ? 'Show file content' : 'Show commit history'}
-                    >
-                      {showHistory ? '📄 Content' : '📜 History'}
-                    </button>
-                  )}
-                </div>
               </div>
-              <div className="code-content">
-                {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-                {selectedFile && !showHistory && (
-                  <pre className="file-preview">
-                    <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
-                  </pre>
+              <div className="code-header-actions">
+                {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
+                {selectedFile && (
+                  <button
+                    type="button"
+                    className={`history-toggle ${showHistory ? 'active' : ''}`}
+                    onClick={toggleHistory}
+                    data-testid="history-toggle"
+                    title={showHistory ? 'Show file content' : 'Show commit history'}
+                  >
+                    {showHistory ? '📄 Content' : '📜 History'}
+                  </button>
                 )}
-                {selectedFile && showHistory && (
-                  <div className="history-panel" data-testid="history-panel">
-                    {historyLoading && <div className="history-loading">Loading history...</div>}
-                    {historyError && <div className="panel-error">{historyError}</div>}
-                    {!historyLoading && !historyError && fileHistory.length === 0 && (
-                      <div className="panel-empty">No history available for this file.</div>
-                    )}
-                    {!historyLoading && fileHistory.length > 0 && (
-                      <ul className="history-list">
-                        {fileHistory.map((change) => (
-                          <li key={change.id} className="history-item" data-testid="history-item">
-                            <div className="history-item-header">
-                              <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
-                                {formatChangeType(change.change_type)}
+              </div>
+            </div>
+            <div className="code-content">
+              {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+              {selectedFile && !showHistory && (
+                <pre className="file-preview">
+                  <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
+                </pre>
+              )}
+              {selectedFile && showHistory && (
+                <div className="history-panel" data-testid="history-panel">
+                  {historyLoading && <div className="history-loading">Loading history...</div>}
+                  {historyError && <div className="panel-error">{historyError}</div>}
+                  {!historyLoading && !historyError && fileHistory.length === 0 && (
+                    <div className="panel-empty">No history available for this file.</div>
+                  )}
+                  {!historyLoading && fileHistory.length > 0 && (
+                    <ul className="history-list">
+                      {fileHistory.map((change) => (
+                        <li key={change.id} className="history-item" data-testid="history-item">
+                          <div className="history-item-header">
+                            <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                              {formatChangeType(change.change_type)}
+                            </span>
+                            <a
+                              className="commit-hash commit-diff-link"
+                              title={change.commit_hash}
+                              href="#"
+                              data-testid="commit-diff-link"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                if (change.commit_hash && onNavigateToDiff) {
+                                  onNavigateToDiff(change.commit_hash);
+                                }
+                              }}
+                            >
+                              {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
+                            </a>
+                          </div>
+                          <div className="history-item-message">{change.message || 'No message'}</div>
+                          <div className="history-item-meta">
+                            <span className="history-author">{change.author || 'Unknown'}</span>
+                            <span className="history-date">{formatTimestamp(change.timestamp)}</span>
+                            {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                              <span className="history-lines">
+                                <span className="lines-added">+{change.lines_added || 0}</span>
+                                <span className="lines-deleted">-{change.lines_deleted || 0}</span>
                               </span>
-                              <a
-                                className="commit-hash commit-diff-link"
-                                title={change.commit_hash}
-                                href="#"
-                                data-testid="commit-diff-link"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  if (change.commit_hash && onNavigateToDiff) {
-                                    onNavigateToDiff(change.commit_hash);
-                                  }
-                                }}
-                              >
-                                {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
-                              </a>
-                            </div>
-                            <div className="history-item-message">{change.message || 'No message'}</div>
-                            <div className="history-item-meta">
-                              <span className="history-author">{change.author || 'Unknown'}</span>
-                              <span className="history-date">{formatTimestamp(change.timestamp)}</span>
-                              {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                                <span className="history-lines">
-                                  <span className="lines-added">+{change.lines_added || 0}</span>
-                                  <span className="lines-deleted">-{change.lines_deleted || 0}</span>
-                                </span>
-                              )}
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-              </div>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -965,7 +1024,6 @@ function CommitDiffPage({ commitHash, onBack }) {
 }
 
 // Normalize camelCase API response keys to snake_case used in templates.
-// The gRPC-gateway returns camelCase JSON (e.g. changeType, commitHash).
 function normalizeChange(c) {
   return {
     ...c,
@@ -1060,7 +1118,6 @@ function decodeBase64(value) {
 }
 
 function formatBytes(value) {
-  // Convert to number to handle string values from API
   const numValue = typeof value === 'number' ? value : parseFloat(value);
 
   if (!numValue || isNaN(numValue)) {

@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_LOG_DIR="${LOG_DIR:-./logs}"
 NGINX_LOG_DIR="${NGINX_LOG_DIR:-/var/log/nginx}"
+CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
 log() {
@@ -29,8 +30,8 @@ if ! curl -sf "http://localhost:${GATEWAY_PORT}/health" >/dev/null 2>&1; then
   log "ERROR: Gateway service is not healthy on port ${GATEWAY_PORT}"
   exit 1
 fi
-if ! nc -z localhost 50052 2>/dev/null; then
-  log "ERROR: Admin service is not listening on port 50052"
+if ! nc -z localhost "${CORE_SERVICE_PORT}" 2>/dev/null; then
+  log "ERROR: Core gRPC server is not listening on port ${CORE_SERVICE_PORT}"
   exit 1
 fi
 log "All services verified healthy"
@@ -50,7 +51,6 @@ setup_cronjob
 
 log "Deployment complete!"
 log "Services:"
-log "  - Slice service (gRPC):  localhost:50051"
+log "  - Core gRPC server:       localhost:${CORE_SERVICE_PORT}"
 log "  - HTTP Gateway:           localhost:${GATEWAY_PORT}"
-log "  - Admin service (gRPC):   localhost:50052"
 log "  - Web preview:            localhost:4173"

@@ -8,6 +8,8 @@ test.describe('Root Repository Browsing (real server)', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
+    // Open the slice dropdown
+    await page.getByTestId('slice-dropdown-trigger').click();
     await expect(page.getByTestId('slice-list')).toBeVisible();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
@@ -18,6 +20,9 @@ test.describe('Root Repository Browsing (real server)', () => {
   test('navigates into genesis directory and finds repo files', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    
+    // Open the slice dropdown and select root_slice
+    await page.getByTestId('slice-dropdown-trigger').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
     // Navigate: o -> genesis -> projects -> gitslice
@@ -41,6 +46,9 @@ test.describe('Root Repository Browsing (real server)', () => {
   test('previews a real file from the genesis repository', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    
+    // Open the slice dropdown and select root_slice
+    await page.getByTestId('slice-dropdown-trigger').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
     // Navigate to gitslice root (wait for each level to load)
@@ -68,6 +76,9 @@ test.describe('Root Repository Browsing (real server)', () => {
   test('navigates into subdirectories and back', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    
+    // Open the slice dropdown and select root_slice
+    await page.getByTestId('slice-dropdown-trigger').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
     // Navigate to gitslice root (wait for each level to load)
@@ -89,6 +100,9 @@ test.describe('Root Repository Browsing (real server)', () => {
   test('shows file sizes in the entry list', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    
+    // Open the slice dropdown and select root_slice
+    await page.getByTestId('slice-dropdown-trigger').click();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
     // Navigate to gitslice root (wait for each level to load)
@@ -113,6 +127,9 @@ test.describe('Slice-specific Browsing (real server)', () => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
 
+    // Open the slice dropdown and select root_slice
+    await page.getByTestId('slice-dropdown-trigger').click();
+    
     // Select root_slice from the list (always exists after genesis)
     await page.getByRole('button', { name: /root_slice/i }).click();
 

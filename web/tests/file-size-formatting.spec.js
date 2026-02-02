@@ -10,6 +10,16 @@ test.describe('File size formatting (real server)', () => {
 
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+
+    // Open slice dropdown and ensure root_slice is selected
+    await page.getByTestId('slice-dropdown-trigger').click();
+    const rootSliceItem = page
+      .getByTestId('slice-dropdown-item')
+      .filter({ hasText: /root_slice|root slice/i });
+    await expect(rootSliceItem).toBeVisible();
+    await rootSliceItem.click();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
 
     // Navigate to gitslice root: o -> genesis -> projects -> gitslice (wait for each level)
     await page.getByRole('button', { name: /📁.*o/i }).click();
@@ -42,6 +52,16 @@ test.describe('File size formatting (real server)', () => {
 
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+
+    // Open slice dropdown and ensure root_slice is selected
+    await page.getByTestId('slice-dropdown-trigger').click();
+    const rootSliceItem = page
+      .getByTestId('slice-dropdown-item')
+      .filter({ hasText: /root_slice|root slice/i });
+    await expect(rootSliceItem).toBeVisible();
+    await rootSliceItem.click();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
 
     // Navigate to gitslice root (wait for each level to load)
     await page.getByRole('button', { name: /📁.*o/i }).click();
@@ -56,7 +76,7 @@ test.describe('File size formatting (real server)', () => {
     await page.getByRole('button', { name: /📁.*internal/i }).click();
 
     // Should see nested entries without errors (some may render as files, some as directories)
-    await expect(page.getByRole('button', { name: /common|config|models|services|storage/i }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: /common|config|gateway|models|storage|store/i }).first()).toBeVisible();
     expect(errors).toHaveLength(0);
   });
 });

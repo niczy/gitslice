@@ -495,14 +495,14 @@ message ConflictUpdate {
 
 ## Implementation Notes: Prototype Status
 
-The current prototype uses an in-memory storage backend and implements the core unary RPCs in the slice and admin services. The storage and service logic lives in `internal/storage` and `internal/services`, respectively. For details on how data is stored and locked, see [`internal/storage/memory.go`](../internal/storage/memory.go) and the service handlers in [`internal/services/slice/server.go`](../internal/services/slice/server.go) and [`internal/services/admin/server.go`](../internal/services/admin/server.go).
+The current prototype uses an in-memory storage backend and implements the core unary RPCs in the slice and admin services. The storage and service logic lives in `internal/storage` and `services`, respectively. For details on how data is stored and locked, see [`internal/storage/memory.go`](../internal/storage/memory.go) and the service handlers in [`services/slice/server.go`](../services/slice/server.go) and [`services/admin/server.go`](../services/admin/server.go).
 
 Key behaviors in the prototype:
 - **No object store integration:** File contents and metadata are stored in-memory; `content_url` is unused.
 - **No auth or permission checks:** Requests are accepted without authentication.
 - **Streaming RPCs are defined but not implemented:** `StreamCheckoutSlice` and `StreamCreateChangeset` return `UNIMPLEMENTED` until server support is added.
 - **Conflict tracking is in-memory:** Locks and conflict ownership are managed via `InMemoryStorage`.
-- **FileService gateway:** `gateway_service` hosts the FileService gRPC-Gateway on `:8080` for HTTP access to `ListEntries` and `GetFile`.
+- **FileService gateway:** the core server hosts the FileService gRPC-Gateway on `:8080` for HTTP access to `ListEntries` and `GetFile`.
 
 ## Error Handling
 

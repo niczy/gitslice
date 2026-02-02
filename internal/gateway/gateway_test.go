@@ -1,4 +1,4 @@
-package main
+package gateway
 
 import (
 	"context"
@@ -13,11 +13,10 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
-	adminservice "github.com/niczy/gitslice/internal/services/admin"
-	fileservice "github.com/niczy/gitslice/internal/services/file"
-	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
-	filev1 "github.com/niczy/gitslice/proto/file"
+	adminservice "github.com/niczy/gitslice/services/admin"
+	fileservice "github.com/niczy/gitslice/services/file"
+	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
 )
 
@@ -59,11 +58,8 @@ func TestGatewayListEntries(t *testing.T) {
 		t.Fatalf("set slice files: %v", err)
 	}
 
-	sliceAddr := startGRPCServer(t, func(srv *grpc.Server) {
-		filev1.RegisterFileServiceServer(srv, fileservice.NewService(st))
-	}, sliceservice.NewGRPCServer(st))
-	adminAddr := startGRPCServer(t, func(srv *grpc.Server) {}, adminservice.NewGRPCServer(st))
-	gatewayURL := startGatewayServer(t, sliceAddr, adminAddr)
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
 
 	resp := fetchEntries(t, fmt.Sprintf("%s/v1/files/entries", gatewayURL))
 	names := map[string]bool{}
@@ -119,7 +115,7 @@ func fetchEntries(t *testing.T, url string) entriesResponse {
 	return entriesResponse{}
 }
 
-func startGRPCServer(t *testing.T, register func(*grpc.Server), srv *grpc.Server) string {
+func startGRPCServer(t *testing.T, st storage.Storage) string {
 	t.Helper()
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -127,7 +123,10 @@ func startGRPCServer(t *testing.T, register func(*grpc.Server), srv *grpc.Server
 		t.Fatalf("listen: %v", err)
 	}
 
-	register(srv)
+	srv := grpc.NewServer()
+	sliceservice.RegisterGRPCServer(srv, st)
+	fileservice.RegisterGRPCServer(srv, st)
+	adminservice.RegisterGRPCServer(srv, st)
 
 	go func() {
 		if err := srv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
@@ -142,16 +141,16 @@ func startGRPCServer(t *testing.T, register func(*grpc.Server), srv *grpc.Server
 	return lis.Addr().String()
 }
 
-func startGatewayServer(t *testing.T, sliceAddr, adminAddr string) string {
+func startGatewayServer(t *testing.T, grpcAddr string) string {
 	t.Helper()
 
 	ctx := context.Background()
-	gatewayMux, closeConns, err := newGatewayMux(ctx, sliceAddr, adminAddr)
+	gatewayMux, closeConns, err := NewMux(ctx, grpcAddr)
 	if err != nil {
 		t.Fatalf("register gateway mux: %v", err)
 	}
 
-	server := &http.Server{Handler: withCORS(gatewayMux)}
+	server := &http.Server{Handler: WithCORS(gatewayMux)}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen gateway: %v", err)

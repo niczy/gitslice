@@ -28,10 +28,15 @@ func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
 	}
 }
 
+// RegisterGRPCServer registers the slice service handlers on an existing gRPC server.
+func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
+	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServer(st))
+}
+
 // NewGRPCServer constructs a gRPC server for the slice service using the provided storage backend.
 func NewGRPCServer(st storage.Storage) *grpc.Server {
 	srv := grpc.NewServer()
-	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServer(st))
+	RegisterGRPCServer(srv, st)
 	return srv
 }
 

@@ -14,8 +14,9 @@ import (
 )
 
 var (
+	coreServerAddr  = flag.String("addr", "", "Core gRPC service address (overrides slice-addr/admin-addr)")
 	sliceServerAddr = flag.String("slice-addr", "localhost:50051", "Slice service address")
-	adminServerAddr = flag.String("admin-addr", "localhost:50052", "Admin service address")
+	adminServerAddr = flag.String("admin-addr", "localhost:50051", "Admin service address")
 )
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
@@ -28,6 +29,11 @@ type CLI struct {
 
 func main() {
 	flag.Parse()
+
+	if *coreServerAddr != "" {
+		*sliceServerAddr = *coreServerAddr
+		*adminServerAddr = *coreServerAddr
+	}
 
 	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr)
 	if err != nil {

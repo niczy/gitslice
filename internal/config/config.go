@@ -9,17 +9,16 @@ import (
 // Config holds all configuration values for gitslice services.
 type Config struct {
 	// Service ports
-	SliceServicePort  string
-	AdminServicePort  string
-	GatewayPort       string
+	CoreServicePort string
+	GatewayPort     string
 
 	// Storage type (memory, redis)
-	StorageType       string
+	StorageType string
 
 	// Redis configuration (if storage type is redis)
-	RedisAddr         string
-	RedisPassword     string
-	RedisDB           int
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
 
 	// Object store configuration
 	S3Endpoint        string
@@ -31,9 +30,18 @@ type Config struct {
 
 // LoadConfig loads configuration from environment variables with defaults.
 func LoadConfig() *Config {
+	corePort := getEnv("CORE_SERVICE_PORT", "")
+	if corePort == "" {
+		if value, ok := os.LookupEnv("SLICE_SERVICE_PORT"); ok && value != "" {
+			corePort = value
+		} else if value, ok := os.LookupEnv("ADMIN_SERVICE_PORT"); ok && value != "" {
+			corePort = value
+		} else {
+			corePort = "50051"
+		}
+	}
 	return &Config{
-		SliceServicePort:  getEnv("SLICE_SERVICE_PORT", "50051"),
-		AdminServicePort:  getEnv("ADMIN_SERVICE_PORT", "50052"),
+		CoreServicePort:   corePort,
 		GatewayPort:       getEnv("GATEWAY_PORT", "8080"),
 		StorageType:       getEnv("STORAGE_TYPE", "memory"),
 		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
@@ -47,14 +55,19 @@ func LoadConfig() *Config {
 	}
 }
 
-// GetSliceServiceAddr returns the full address for the slice service.
-func (c *Config) GetSliceServiceAddr() string {
-	return fmt.Sprintf(":%s", c.SliceServicePort)
+// GetCoreServiceAddr returns the full address for the core gRPC server.
+func (c *Config) GetCoreServiceAddr() string {
+	return fmt.Sprintf(":%s", c.CoreServicePort)
 }
 
-// GetAdminServiceAddr returns the full address for the admin service.
+// GetSliceServiceAddr returns the full address for the slice service (legacy alias).
+func (c *Config) GetSliceServiceAddr() string {
+	return c.GetCoreServiceAddr()
+}
+
+// GetAdminServiceAddr returns the full address for the admin service (legacy alias).
 func (c *Config) GetAdminServiceAddr() string {
-	return fmt.Sprintf(":%s", c.AdminServicePort)
+	return c.GetCoreServiceAddr()
 }
 
 // GetGatewayAddr returns the full address for the HTTP gateway.

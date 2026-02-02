@@ -5,6 +5,16 @@ import { test, expect } from '@playwright/test';
 async function navigateToGenesisFile(page, fileName) {
   await page.goto('/');
   await page.getByTestId('topbar-repo-browser').click();
+  await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+
+  // Open slice dropdown and ensure root_slice is selected
+  await page.getByTestId('slice-dropdown-trigger').click();
+  const rootSliceItem = page
+    .getByTestId('slice-dropdown-item')
+    .filter({ hasText: /root_slice|root slice/i });
+  await expect(rootSliceItem).toBeVisible();
+  await rootSliceItem.click();
+  await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
 
   // Navigate: o -> genesis -> projects -> gitslice (wait for each level to load)
   await page.getByRole('button', { name: /📁.*o/i }).click();
@@ -111,12 +121,16 @@ test.describe('File History (Slice Mode)', () => {
   test('shows history for root_slice files', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('topbar-repo-browser').click();
+    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
-    // Ensure root_slice is selected from the slice list
-    const rootSliceItem = page.getByTestId('slice-item').filter({ hasText: 'root_slice' });
+    // Open slice dropdown and ensure root_slice is selected
+    await page.getByTestId('slice-dropdown-trigger').click();
+    const rootSliceItem = page
+      .getByTestId('slice-dropdown-item')
+      .filter({ hasText: /root_slice|root slice/i });
     await expect(rootSliceItem).toBeVisible();
     await rootSliceItem.click();
-    await expect(page.getByTestId('selected-slice')).toContainText('root_slice');
+    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
 
     // Navigate to a file: o -> genesis -> projects -> gitslice -> README.md
     await page.getByRole('button', { name: /📁.*o/i }).click();
