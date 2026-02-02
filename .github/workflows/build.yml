@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24'
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
@@ -39,13 +39,9 @@ jobs:
     - name: Build all
       run: make build
 
-    - name: Run slice service
+    - name: Run core server
       run: |
-        timeout 5s ./slice_service_server || true
-
-    - name: Run admin service
-      run: |
-        timeout 5s ./admin_service_server || true
+        timeout 5s ./core_server || true
 
     - name: Test CLI help
       run: |
@@ -60,7 +56,7 @@ jobs:
       env:
         RUN_INTEGRATION_TESTS: "1"
       run: |
-        go test ./...
+        make test
 
     - name: Test coverage for workflow tests
       run: |

@@ -6,9 +6,9 @@ The architecture spec targets a distributed system backed by an object store and
 
 ## Current Prototype Constraints
 
-- **Process-local state:** Slice and admin services each create their own `InMemoryStorage`, so state is not shared across processes and is lost on restart. See [`slice_service/main.go`](../slice_service/main.go) and [`admin_service/main.go`](../admin_service/main.go).
+- **Process-local state:** The core server uses an `InMemoryStorage`, so state is not shared across processes and is lost on restart. See [`servers/core/main.go`](../servers/core/main.go).
 - **Global mutex contention:** `internal/storage/memory.go` guards all maps behind one RWMutex, which serializes high-volume operations.
-- **In-memory scans:** Listing slices and batch merge paths iterate full in-memory collections, which will not scale as slice counts grow. See [`internal/storage/memory.go`](../internal/storage/memory.go) and [`internal/services/admin/server.go`](../internal/services/admin/server.go).
+- **In-memory scans:** Listing slices and batch merge paths iterate full in-memory collections, which will not scale as slice counts grow. See [`internal/storage/memory.go`](../internal/storage/memory.go) and [`services/admin/server.go`](../services/admin/server.go).
 - **No durable blob store:** File contents and metadata live in memory only, bypassing the planned content-addressable object store.
 
 ## Recommendations to Reach Design Targets

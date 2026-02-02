@@ -1,4 +1,4 @@
-.PHONY: install proto build build-slice build-admin build-gateway build-cli start-servers stop-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-core build-cli start-servers stop-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
@@ -6,11 +6,10 @@ GOOGLEAPIS_DIR := third_party/googleapis
 # Pin to specific googleapis commit for reproducible builds
 # This commit is from 2024-05-13, matching our genproto dependency date
 GOOGLEAPIS_COMMIT := 0d38cae77aba1a9da2b4d5f27c3eabf7e48cf0e3
+CORE_SERVICE_PORT ?= 50051
 GATEWAY_PORT ?= 8080
-SLICE_SERVICE_PORT ?= 50051
-ADMIN_SERVICE_PORT ?= 50052
 WEB_PORTS ?= 5173 4173 5174
-STOP_SERVER_PORTS := $(SLICE_SERVICE_PORT) $(ADMIN_SERVICE_PORT) $(GATEWAY_PORT) $(WEB_PORTS)
+STOP_SERVER_PORTS := $(CORE_SERVICE_PORT) $(GATEWAY_PORT) $(WEB_PORTS)
 VITE_FILE_API_PROXY_TARGET ?= http://localhost:$(GATEWAY_PORT)
 
 install:
@@ -49,31 +48,19 @@ proto: setup-googleapis
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/admin && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/file && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto'
 
-build: proto
-	go build -o slice_service_server ./slice_service/
-	go build -o admin_service_server ./admin_service/
-	go build -o gateway_service_server ./gateway_service/
-	go build -o gs_cli/gs_cli ./gs_cli/
+build: proto build-core build-cli
 
-build-slice: proto
-	go build -o slice_service_server ./slice_service/
-
-build-admin: proto
-	go build -o admin_service_server ./admin_service/
-
-build-gateway: proto
-	go build -o gateway_service_server ./gateway_service/
+build-core: proto
+	go build -o core_server ./servers/core
 
 build-cli: proto
 	go build -o gs_cli/gs_cli ./gs_cli/
 
 start-servers: build
 	@$(MAKE) stop-servers
-	GATEWAY_PORT=$(GATEWAY_PORT) ./slice_service_server &
-	./admin_service_server &
-	GATEWAY_PORT=$(GATEWAY_PORT) ./gateway_service_server &
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) GATEWAY_PORT=$(GATEWAY_PORT) ./core_server &
 	cd web && VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) npm run dev &
-	@echo "Services started (slice, admin, gateway on :$(GATEWAY_PORT), web). Press Ctrl+C to stop."
+	@echo "Services started (core on :$(CORE_SERVICE_PORT), gateway on :$(GATEWAY_PORT), web). Press Ctrl+C to stop."
 
 stop-servers:
 	@tool=""; \
@@ -105,9 +92,13 @@ stop-servers:
 
 test: install proto
 	go test ./...
+	cd services/admin && go test ./...
+	cd services/file && go test ./...
+	cd services/slice && go test ./...
+	cd servers/core && go test ./...
 
 clean:
-	rm -f slice_service_server admin_service_server gateway_service_server gs_cli/gs_cli
+	rm -f core_server slice_service_server admin_service_server gateway_service_server gs_cli/gs_cli
 	find proto -name "*.pb.go" -delete
 	find proto -name "*.pb.gw.go" -delete
 

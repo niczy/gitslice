@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,29 +21,29 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/gateway"
 	"github.com/niczy/gitslice/internal/models"
-	adminservice "github.com/niczy/gitslice/internal/services/admin"
-	fileservice "github.com/niczy/gitslice/internal/services/file"
-	sliceservice "github.com/niczy/gitslice/internal/services/slice"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	adminservice "github.com/niczy/gitslice/services/admin"
+	fileservice "github.com/niczy/gitslice/services/file"
+	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
-	sliceServiceAddr  string
-	adminServiceAddr  string
+	grpcServiceAddr   string
 	gatewayServiceURL string
 	cliBinaryPath     string
-	gatewayBinaryPath string
 
-	sliceServer *grpc.Server
-	adminServer *grpc.Server
-	gatewayCmd  *exec.Cmd
-	testStorage *storage.RedisStorage
+	grpcServer      *grpc.Server
+	gatewayServer   *http.Server
+	gatewayListener net.Listener
+	gatewayClose    func()
+	testStorage     *storage.RedisStorage
 )
 
 // TestMain sets up and tears down services for all tests
@@ -72,27 +73,13 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Warning: Failed to initialize root slice: %v\n", err)
 	}
 
-	sliceServiceAddr, sliceServer, err = startSliceService(st)
+	grpcServiceAddr, grpcServer, err = startGRPCServer(st)
 	if err != nil {
-		fmt.Printf("Failed to start slice service: %v\n", err)
+		fmt.Printf("Failed to start gRPC services: %v\n", err)
 		os.Exit(1)
 	}
 
-	adminServiceAddr, adminServer, err = startAdminService(st)
-	if err != nil {
-		fmt.Printf("Failed to start admin service: %v\n", err)
-		stopServers()
-		os.Exit(1)
-	}
-
-	gatewayBinaryPath, err = buildGatewayBinary()
-	if err != nil {
-		fmt.Printf("Failed to build gateway: %v\n", err)
-		stopServers()
-		os.Exit(1)
-	}
-
-	gatewayServiceURL, gatewayCmd, err = startGatewayService(sliceServiceAddr, adminServiceAddr, gatewayBinaryPath)
+	gatewayServiceURL, gatewayServer, gatewayListener, gatewayClose, err = startGatewayServer(grpcServiceAddr)
 	if err != nil {
 		fmt.Printf("Failed to start gateway: %v\n", err)
 		stopServers()
@@ -115,47 +102,74 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func startSliceService(st storage.Storage) (string, *grpc.Server, error) {
+func startGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
 	}
 
-	srv := sliceservice.NewGRPCServer(st)
-	filev1.RegisterFileServiceServer(srv, fileservice.NewService(st))
+	srv := grpc.NewServer()
+	sliceservice.RegisterGRPCServer(srv, st)
+	fileservice.RegisterGRPCServer(srv, st)
+	adminservice.RegisterGRPCServer(srv, st)
+
 	go srv.Serve(lis)
 
 	return lis.Addr().String(), srv, nil
 }
 
-func startAdminService(st storage.Storage) (string, *grpc.Server, error) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+func startGatewayServer(grpcAddr string) (string, *http.Server, net.Listener, func(), error) {
+	ctx := context.Background()
+	gatewayMux, closeConns, err := gateway.NewMux(ctx, grpcAddr)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, nil, err
 	}
 
-	srv := adminservice.NewGRPCServer(st)
-	go srv.Serve(lis)
+	httpMux := http.NewServeMux()
+	httpMux.HandleFunc("/health", common.HealthCheckHandler("test-gateway"))
+	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("test-gateway", func(ctx context.Context) bool {
+		return gateway.GRPCReady(ctx, grpcAddr)
+	}))
+	httpMux.Handle("/", gateway.WithCORS(gatewayMux))
 
-	return lis.Addr().String(), srv, nil
+	server := &http.Server{Handler: httpMux}
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		closeConns()
+		return "", nil, nil, nil, err
+	}
+
+	go func() {
+		if err := server.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("gateway serve failed: %v\n", err)
+		}
+	}()
+
+	url := "http://" + lis.Addr().String()
+	if err := waitForHTTP(url+"/health", 5*time.Second); err != nil {
+		_ = server.Close()
+		_ = lis.Close()
+		closeConns()
+		return "", nil, nil, nil, err
+	}
+	return url, server, lis, closeConns, nil
 }
 
 func stopServers() {
-	if sliceServer != nil {
-		sliceServer.GracefulStop()
+	if grpcServer != nil {
+		grpcServer.GracefulStop()
 	}
-	if adminServer != nil {
-		adminServer.GracefulStop()
+	if gatewayServer != nil {
+		_ = gatewayServer.Close()
 	}
-	if gatewayCmd != nil && gatewayCmd.Process != nil {
-		_ = gatewayCmd.Process.Kill()
-		_ = gatewayCmd.Wait()
+	if gatewayListener != nil {
+		_ = gatewayListener.Close()
+	}
+	if gatewayClose != nil {
+		gatewayClose()
 	}
 	if cliBinaryPath != "" {
 		_ = os.RemoveAll(filepath.Dir(cliBinaryPath))
-	}
-	if gatewayBinaryPath != "" {
-		_ = os.RemoveAll(filepath.Dir(gatewayBinaryPath))
 	}
 }
 
@@ -173,83 +187,6 @@ func buildCLIBinary() (string, error) {
 	}
 
 	return binaryPath, nil
-}
-
-func buildGatewayBinary() (string, error) {
-	tmpDir, err := os.MkdirTemp("", "gs-gateway-bin-")
-	if err != nil {
-		return "", err
-	}
-
-	binaryPath := filepath.Join(tmpDir, "gateway_service")
-	cmd := exec.Command("go", "build", "-o", binaryPath, "./gateway_service")
-	cmd.Dir = ".."
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("build failed: %w\nOutput:\n%s", err, string(output))
-	}
-
-	return binaryPath, nil
-}
-
-func startGatewayService(sliceAddr, adminAddr, binaryPath string) (string, *exec.Cmd, error) {
-	slicePort, err := portFromAddr(sliceAddr)
-	if err != nil {
-		return "", nil, err
-	}
-	adminPort, err := portFromAddr(adminAddr)
-	if err != nil {
-		return "", nil, err
-	}
-
-	gatewayPort, err := freePort()
-	if err != nil {
-		return "", nil, err
-	}
-
-	cmd := exec.Command(binaryPath)
-	cmd.Env = append(os.Environ(),
-		"SLICE_SERVICE_PORT="+slicePort,
-		"ADMIN_SERVICE_PORT="+adminPort,
-		"GATEWAY_PORT="+gatewayPort,
-	)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-
-	if err := cmd.Start(); err != nil {
-		return "", nil, err
-	}
-
-	gatewayURL := "http://127.0.0.1:" + gatewayPort
-	if err := waitForHTTP(gatewayURL+"/health", 5*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return "", nil, fmt.Errorf("gateway failed to start: %w\nOutput:\n%s", err, output.String())
-	}
-
-	return gatewayURL, cmd, nil
-}
-
-func freePort() (string, error) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
-	}
-	defer lis.Close()
-
-	addr, ok := lis.Addr().(*net.TCPAddr)
-	if !ok {
-		return "", fmt.Errorf("unexpected address type %T", lis.Addr())
-	}
-	return fmt.Sprintf("%d", addr.Port), nil
-}
-
-func portFromAddr(addr string) (string, error) {
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", err
-	}
-	return port, nil
 }
 
 func waitForHTTP(url string, timeout time.Duration) error {
@@ -278,7 +215,7 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	fullArgs := append([]string{"--slice-addr", sliceServiceAddr, "--admin-addr", adminServiceAddr}, args...)
+	fullArgs := append([]string{"--slice-addr", grpcServiceAddr, "--admin-addr", grpcServiceAddr}, args...)
 	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
 	if workdir != "" {
 		cmd.Dir = workdir
@@ -333,7 +270,7 @@ func extractCommitHash(output string) string {
 func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
 	t.Helper()
 
-	conn, err := grpc.Dial(sliceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(grpcServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial slice service: %v", err)
 	}
@@ -348,7 +285,7 @@ func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
 func newAdminClient(t *testing.T) adminv1.AdminServiceClient {
 	t.Helper()
 
-	conn, err := grpc.Dial(adminServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(grpcServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial admin service: %v", err)
 	}
@@ -363,7 +300,7 @@ func newAdminClient(t *testing.T) adminv1.AdminServiceClient {
 func newFileClient(t *testing.T) filev1.FileServiceClient {
 	t.Helper()
 
-	conn, err := grpc.Dial(sliceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(grpcServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial slice service for file client: %v", err)
 	}
@@ -944,9 +881,9 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	addr, srv, err := startAdminService(st)
+	addr, srv, err := startGRPCServer(st)
 	if err != nil {
-		t.Fatalf("failed to start admin service: %v", err)
+		t.Fatalf("failed to start gRPC services: %v", err)
 	}
 	defer srv.GracefulStop()
 
@@ -1112,24 +1049,18 @@ func TestRedisRestartRebuildsEndToEnd(t *testing.T) {
 		t.Fatalf("failed to init root slice: %v", err)
 	}
 
-	sliceAddr, sliceSrv, err := startSliceService(st)
+	addr, srv, err := startGRPCServer(st)
 	if err != nil {
-		t.Fatalf("failed to start slice service: %v", err)
+		t.Fatalf("failed to start gRPC services: %v", err)
 	}
-	defer sliceSrv.GracefulStop()
+	defer srv.GracefulStop()
 
-	adminAddr, adminSrv, err := startAdminService(st)
-	if err != nil {
-		t.Fatalf("failed to start admin service: %v", err)
-	}
-	defer adminSrv.GracefulStop()
-
-	sliceConn, err := grpc.DialContext(ctx, sliceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	sliceConn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("failed to dial slice service: %v", err)
 	}
 	defer sliceConn.Close()
-	adminConn, err := grpc.DialContext(ctx, adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	adminConn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("failed to dial admin service: %v", err)
 	}

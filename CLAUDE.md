@@ -10,8 +10,7 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 
 1. **Build Verification**
    ```bash
-   go build -o /tmp/slice_service ./slice_service/
-   go build -o /tmp/admin_service ./admin_service/
+   go build -o /tmp/core_server ./servers/core/
    go build -o /tmp/gs ./gs_cli/
    ```
    - Ensure all services compile without errors
@@ -24,7 +23,12 @@ Before committing and pushing code, **ALWAYS** run the following checks:
    go test -v ./internal/storage/... -timeout 30s
 
    # Service tests
-   go test -v ./internal/services/... -timeout 30s
+   (cd services/admin && go test -v ./... -timeout 30s)
+   (cd services/file && go test -v ./... -timeout 30s)
+   (cd services/slice && go test -v ./... -timeout 30s)
+
+   # Core server tests
+   (cd servers/core && go test -v ./... -timeout 30s)
 
    # Integration tests (requires RUN_INTEGRATION_TESTS=1)
    RUN_INTEGRATION_TESTS=1 go test -v ./workflow_test/... -timeout 60s
@@ -49,7 +53,7 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 1. **Duplicate Variable Declarations**
    - ❌ `ctx := context.Background()` declared twice
    - ✅ Declare once, reuse the variable
-   - Example: Lesson learned from PR #28 (duplicate ctx in slice_service/main.go)
+   - Example: Lesson learned from PR #28 (duplicate ctx in servers/core/main.go)
 
 2. **Missing Imports**
    - Always verify imports after refactoring
@@ -59,7 +63,7 @@ Before committing and pushing code, **ALWAYS** run the following checks:
    - Use `internal/config` package for configuration
    - Environment variables should have defaults
    - **Configuration Consistency**: When services read configurable addresses, all references must use config
-   - Example: If admin service uses `cfg.GetAdminServiceAddr()`, gateway must also use it (not hardcode `:50052`)
+   - Example: If the core server uses `cfg.GetCoreServiceAddr()`, gateway must also use it (not hardcode `:50051`)
 
 4. **Input Validation**
    - Use `internal/common/validation.go` functions
@@ -84,7 +88,8 @@ Before committing and pushing code, **ALWAYS** run the following checks:
   - All port numbers and addresses
   - Environment variable handling
 
-- **`internal/services/`** - gRPC service implementations
+- **`internal/gateway/`** - gRPC-Gateway helpers
+- **`services/`** - gRPC service implementations
   - `admin/` - Admin service
   - `slice/` - Slice service
   - `file/` - File service (read-only)
@@ -101,8 +106,7 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 
 ### Service Ports
 
-- Slice Service (gRPC): `50051` (configurable via `SLICE_SERVICE_PORT`)
-- Admin Service (gRPC): `50052` (configurable via `ADMIN_SERVICE_PORT`)
+- Core gRPC server: `50051` (configurable via `CORE_SERVICE_PORT`; legacy envs still accepted)
 - HTTP Gateway: `8080` (configurable via `GATEWAY_PORT`)
 
 ### Important Patterns
@@ -146,7 +150,7 @@ vim proto/admin/admin_service.proto
 make build
 
 # 3. Implement any new RPC handlers in the service
-vim internal/services/admin/server.go
+vim services/admin/server.go
 
 # 4. Verify it builds and works
 make test
@@ -220,7 +224,7 @@ Follow conventional commits:
 
 Example:
 ```
-fix: remove duplicate ctx declaration in slice_service
+fix: remove duplicate ctx declaration in core server
 
 Removed duplicate 'ctx := context.Background()' declaration on line 53
 that was causing compilation error. Reusing the ctx variable declared
@@ -272,8 +276,7 @@ RUN_INTEGRATION_TESTS=1 go test -v ./workflow_test/...
 
 ```bash
 # Service Ports
-SLICE_SERVICE_PORT=50051
-ADMIN_SERVICE_PORT=50052
+CORE_SERVICE_PORT=50051
 GATEWAY_PORT=8080
 
 # Storage
@@ -297,8 +300,7 @@ S3_REGION=us-east-1
 ./ops/restart_all.sh
 
 # Build all
-go build -o slice_service_server ./slice_service/
-go build -o admin_service_server ./admin_service/
+go build -o core_server ./servers/core/
 go build -o gs ./gs_cli/
 
 # Run specific tests

@@ -6,12 +6,10 @@
 
 ```
 .
-├── admin_service/         # Admin service server implementation
-│   └── main.go
 ├── gs_cli/                # CLI client implementation
 │   └── main.go
-├── internal/              # Storage and service implementations
-│   ├── services/
+├── internal/              # Storage and shared implementations
+│   ├── gateway/
 │   └── storage/
 ├── ops/                   # Ops assets (NGINX config, etc.)
 ├── proto/                  # Protocol Buffer definitions and generated code
@@ -28,8 +26,12 @@
 │       ├── admin_service.proto
 │       ├── admin_service.pb.go
 │       └── admin_service_grpc.pb.go
-├── slice_service/         # Slice + File service server implementation
-│   └── main.go
+├── services/              # RPC service implementations
+│   ├── admin/
+│   ├── file/
+│   └── slice/
+├── servers/               # Binary servers
+│   └── core/              # Core server (gRPC + gateway)
 ├── spec/                 # Design specifications
 │   ├── PRODUCT_VISION.md
 │   ├── DATA_MODEL.md
@@ -54,6 +56,10 @@
 - protoc-gen-go
 - protoc-gen-go-grpc
 - protoc-gen-grpc-gateway
+
+### Go Workspace
+
+This repository uses a Go workspace (`go.work`) to wire together the service and server modules (each service/server has its own `go.mod`). Run Go commands from the repo root to pick up the workspace configuration.
 
 ### Install Dependencies
 
@@ -81,27 +87,18 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 ### Build
 
 ```bash
-# Build slice service
-go build -o slice_service_server ./slice_service/
-
-# Build admin service
-go build -o admin_service_server ./admin_service/
+# Build core server (gRPC + gateway)
+go build -o core_server ./servers/core/
 
 # Build CLI
-go build -o gs_cli ./gs_cli/
+go build -o gs_cli/gs_cli ./gs_cli/
 ```
 
 ### Run
 
 ```bash
-# Run slice service (SliceService on :50051)
-./slice_service_server
-
-# Run admin service (listens on :50052)
-./admin_service_server
-
-# Run gateway service (HTTP gRPC-Gateway on :8080)
-./gateway_service_server
+# Run core server (gRPC on :50051, gateway on :8080)
+CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
 # Run CLI (override addresses if needed)
 ./gs_cli --help

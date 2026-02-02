@@ -9,11 +9,9 @@ A source control system that scales to billions of files and millions of commits
 ## Prototype Architecture (Current)
 
 The current implementation is a single-process prototype with in-memory storage:
-- **Slice service**: `slice_service/main.go` runs the SliceService + FileService gRPC server on `:50051`.
-- **Gateway service**: `gateway_service/main.go` runs the FileService/AdminService gRPC-Gateway HTTP API on `:8080`.
-- **Admin service**: `admin_service/main.go` runs the AdminService gRPC server on `:50052`.
+- **Core server**: `servers/core/main.go` runs the SliceService/AdminService/FileService gRPC server on `:50051` and the HTTP gateway on `:8080`.
 - **Storage layer**: `internal/storage/memory.go` backs all metadata and file contents in-memory.
-- **CLI**: `gs_cli/main.go` connects to both gRPC services via `--slice-addr` and `--admin-addr`.
+- **CLI**: `gs_cli/main.go` connects to the core gRPC server via `--addr` (or the legacy `--slice-addr`/`--admin-addr` flags).
 - **Ops**: `ops/nginx.conf` contains a basic reverse proxy layout for the gRPC endpoints.
 - **Web**: `web/` contains a static Vite + React landing page (see `web/README.md`).
 

@@ -6,6 +6,9 @@ require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.95.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0
+	github.com/niczy/gitslice/services/admin v0.0.0
+	github.com/niczy/gitslice/services/file v0.0.0
+	github.com/niczy/gitslice/services/slice v0.0.0
 	github.com/redis/go-redis/v9 v9.17.2
 	google.golang.org/genproto/googleapis/api v0.0.0-20240513163218-0867130af1f8
 	google.golang.org/grpc v1.64.0
@@ -31,3 +34,9 @@ require (
 	golang.org/x/text v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240513163218-0867130af1f8 // indirect
 )
+
+replace github.com/niczy/gitslice/services/admin => ./services/admin
+
+replace github.com/niczy/gitslice/services/file => ./services/file
+
+replace github.com/niczy/gitslice/services/slice => ./services/slice

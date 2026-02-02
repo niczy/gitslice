@@ -4,14 +4,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RAW_LOG_DIR="${LOG_DIR:-$REPO_ROOT/logs}"
 WEB_DIR="$REPO_ROOT/web"
-SLICE_BIN="$REPO_ROOT/slice_service_server"
-ADMIN_BIN="$REPO_ROOT/admin_service_server"
-GATEWAY_BIN="$REPO_ROOT/gateway_service_server"
+CORE_BIN="$REPO_ROOT/core_server"
 LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pwd)"
 WEB_LOG="$LOG_DIR/web_preview.log"
-SLICE_LOG="$LOG_DIR/slice_service.log"
-ADMIN_LOG="$LOG_DIR/admin_service.log"
-GATEWAY_LOG="$LOG_DIR/gateway_service.log"
+CORE_LOG="$LOG_DIR/core_server.log"
+CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
 log() {
@@ -22,7 +19,7 @@ wait_for_health() {
   local service_name="$1"
   local health_url="$2"
   local max_attempts="${3:-30}"
-  local log_file="${4:-$SLICE_LOG}"
+  local log_file="${4:-$CORE_LOG}"
   local attempt=0
 
   log "Waiting for $service_name to be healthy at $health_url..."
@@ -46,7 +43,7 @@ wait_for_port() {
   local service_name="$1"
   local port="$2"
   local max_attempts="${3:-30}"
-  local log_file="${4:-$SLICE_LOG}"
+  local log_file="${4:-$CORE_LOG}"
   local attempt=0
 
   log "Waiting for $service_name to listen on port $port..."
@@ -68,66 +65,28 @@ wait_for_port() {
 
 cd "$REPO_ROOT"
 
-start_slice_service() {
-  log "Stopping existing slice service..."
-  pkill -f "$SLICE_BIN" >/dev/null 2>&1 || true
+start_core_server() {
+  log "Stopping existing core server..."
+  pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
 
   # Wait a moment for ports to be released
   sleep 2
 
-  log "Building slice service (with proto generation)..."
-  make build-slice
+  log "Building core server (with proto generation)..."
+  make build-core
 
-  log "Starting slice service (log: $SLICE_LOG)..."
-  nohup "$SLICE_BIN" > "$SLICE_LOG" 2>&1 &
+  log "Starting core server (log: $CORE_LOG)..."
+  CORE_SERVICE_PORT="$CORE_SERVICE_PORT" GATEWAY_PORT="$GATEWAY_PORT" nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
   local pid=$!
-  log "Slice service started with PID $pid"
+  log "Core server started with PID $pid"
 
-  if ! wait_for_port "Slice service" 50051 30 "$SLICE_LOG"; then
-    log "ERROR: Failed to start slice service. Check $SLICE_LOG for details"
+  if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "$CORE_LOG"; then
+    log "ERROR: Failed to start core gRPC. Check $CORE_LOG for details"
     exit 1
   fi
-}
 
-start_admin_service() {
-  log "Stopping existing admin service..."
-  pkill -f "$ADMIN_BIN" >/dev/null 2>&1 || true
-
-  # Wait a moment for ports to be released
-  sleep 2
-
-  log "Building admin service (with proto generation)..."
-  make build-admin
-
-  log "Starting admin service (log: $ADMIN_LOG)..."
-  nohup "$ADMIN_BIN" > "$ADMIN_LOG" 2>&1 &
-  local pid=$!
-  log "Admin service started with PID $pid"
-
-  # Admin service is gRPC only - wait for port to be listening
-  if ! wait_for_port "Admin service" 50052 30 "$ADMIN_LOG"; then
-    log "ERROR: Failed to start admin service. Check $ADMIN_LOG for details"
-    exit 1
-  fi
-}
-
-start_gateway_service() {
-  log "Stopping existing gateway service..."
-  pkill -f "$GATEWAY_BIN" >/dev/null 2>&1 || true
-
-  # Wait a moment for ports to be released
-  sleep 2
-
-  log "Building gateway service..."
-  make build-gateway
-
-  log "Starting gateway service (log: $GATEWAY_LOG)..."
-  GATEWAY_PORT="$GATEWAY_PORT" nohup "$GATEWAY_BIN" > "$GATEWAY_LOG" 2>&1 &
-  local pid=$!
-  log "Gateway service started with PID $pid"
-
-  if ! wait_for_health "Gateway service" "http://localhost:${GATEWAY_PORT}/health" 30 "$GATEWAY_LOG"; then
-    log "ERROR: Failed to start gateway service. Check $GATEWAY_LOG for details"
+  if ! wait_for_health "Gateway" "http://localhost:${GATEWAY_PORT}/health" 30 "$CORE_LOG"; then
+    log "ERROR: Failed to start gateway. Check $CORE_LOG for details"
     exit 1
   fi
 }
@@ -152,8 +111,6 @@ start_web_preview() {
 }
 
 log "=== Starting all services ==="
-start_slice_service
-start_admin_service
-start_gateway_service
+start_core_server
 start_web_preview
 log "=== All services started ==="

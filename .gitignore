@@ -7,6 +7,7 @@
 slice_service_server
 admin_service_server
 gateway_service_server
+core_server
 gs_cli/gs_cli
 
 # Generated protobuf files
@@ -18,9 +19,6 @@ gs_cli/gs_cli
 
 # Output of the go coverage tool
 *.out
-
-# Go workspace file
-go.work
 
 # Dependency directories
 vendor/

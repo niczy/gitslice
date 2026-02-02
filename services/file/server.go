@@ -11,6 +11,7 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -22,6 +23,11 @@ type fileServiceServer struct {
 
 func newFileServiceServer(st storage.Storage) *fileServiceServer {
 	return &fileServiceServer{storage: st}
+}
+
+// RegisterGRPCServer registers the file service handlers on an existing gRPC server.
+func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
+	filev1.RegisterFileServiceServer(srv, newFileServiceServer(st))
 }
 
 // NewService constructs the file service implementation for use without gRPC.

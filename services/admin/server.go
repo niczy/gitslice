@@ -27,11 +27,21 @@ func newAdminServiceServer(st storage.Storage) *adminServiceServer {
 	}
 }
 
+// RegisterGRPCServer registers the admin service handlers on an existing gRPC server.
+func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
+	adminv1.RegisterAdminServiceServer(srv, newAdminServiceServer(st))
+}
+
 // NewGRPCServer constructs a gRPC server for the admin service using the provided storage backend.
 func NewGRPCServer(st storage.Storage) *grpc.Server {
 	srv := grpc.NewServer()
-	adminv1.RegisterAdminServiceServer(srv, newAdminServiceServer(st))
+	RegisterGRPCServer(srv, st)
 	return srv
+}
+
+// NewService constructs the admin service implementation for use without gRPC.
+func NewService(st storage.Storage) adminv1.AdminServiceServer {
+	return newAdminServiceServer(st)
 }
 
 func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchMergeRequest) (*adminv1.BatchMergeResponse, error) {

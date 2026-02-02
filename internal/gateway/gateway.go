@@ -1,16 +1,12 @@
-package main
+package gateway
 
 import (
 	"context"
-	"errors"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/niczy/gitslice/internal/common"
-	"github.com/niczy/gitslice/internal/config"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	"google.golang.org/grpc"
@@ -19,78 +15,35 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func main() {
-	cfg := config.LoadConfig()
-
-	sliceAddr := "localhost" + cfg.GetSliceServiceAddr()
-	adminAddr := "localhost" + cfg.GetAdminServiceAddr()
-	gatewayAddr := cfg.GetGatewayAddr()
-
-	ctx := context.Background()
-	gatewayMux, closeConns, err := newGatewayMux(ctx, sliceAddr, adminAddr)
-	if err != nil {
-		log.Fatalf("Failed to create gateway mux: %v", err)
-	}
-	defer closeConns()
-
-	httpMux := http.NewServeMux()
-	httpMux.HandleFunc("/health", common.HealthCheckHandler("gateway-service"))
-	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("gateway-service", func(ctx context.Context) bool {
-		return grpcReady(ctx, sliceAddr) && grpcReady(ctx, adminAddr)
-	}))
-	httpMux.Handle("/", withCORS(gatewayMux))
-
-	server := &http.Server{
-		Addr:    gatewayAddr,
-		Handler: httpMux,
-	}
-
-	log.Printf("Gateway listening on %s", gatewayAddr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Failed to serve gateway: %v", err)
-	}
-}
-
-func newGatewayMux(ctx context.Context, sliceAddr, adminAddr string) (*runtime.ServeMux, func(), error) {
-	gatewayMux := runtime.NewServeMux()
+// NewMux constructs a gRPC-Gateway mux backed by a single gRPC connection.
+func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), error) {
+	mux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
-	sliceConn, err := grpc.DialContext(ctx, sliceAddr, opts...)
+	conn, err := grpc.DialContext(ctx, grpcAddr, opts...)
 	if err != nil {
 		return nil, func() {}, err
 	}
 
-	adminConn, err := grpc.DialContext(ctx, adminAddr, opts...)
-	if err != nil {
-		_ = sliceConn.Close()
+	fileClient := filev1.NewFileServiceClient(conn)
+	adminClient := adminv1.NewAdminServiceClient(conn)
+
+	if err := filev1.RegisterFileServiceHandlerClient(ctx, mux, fileClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := adminv1.RegisterAdminServiceHandlerClient(ctx, mux, adminClient); err != nil {
+		_ = conn.Close()
 		return nil, func() {}, err
 	}
 
-	fileClient := filev1.NewFileServiceClient(sliceConn)
-	adminClient := adminv1.NewAdminServiceClient(adminConn)
-
-	if err := filev1.RegisterFileServiceHandlerClient(ctx, gatewayMux, fileClient); err != nil {
-		_ = sliceConn.Close()
-		_ = adminConn.Close()
-		return nil, func() {}, err
-	}
-	if err := adminv1.RegisterAdminServiceHandlerClient(ctx, gatewayMux, adminClient); err != nil {
-		_ = sliceConn.Close()
-		_ = adminConn.Close()
+	if err := registerFileEntriesOverrides(mux, fileClient); err != nil {
+		_ = conn.Close()
 		return nil, func() {}, err
 	}
 
-	if err := registerFileEntriesOverrides(gatewayMux, fileClient); err != nil {
-		_ = sliceConn.Close()
-		_ = adminConn.Close()
-		return nil, func() {}, err
-	}
-
-	closeConns := func() {
-		_ = sliceConn.Close()
-		_ = adminConn.Close()
-	}
-	return gatewayMux, closeConns, nil
+	closeConn := func() { _ = conn.Close() }
+	return mux, closeConn, nil
 }
 
 func registerFileEntriesOverrides(mux *runtime.ServeMux, client filev1.FileServiceClient) error {
@@ -162,7 +115,8 @@ func handleListEntries(
 	runtime.ForwardResponseMessage(annotatedContext, mux, outboundMarshaler, w, r, resp, mux.GetForwardResponseOptions()...)
 }
 
-func grpcReady(ctx context.Context, addr string) bool {
+// GRPCReady returns true if the gRPC endpoint is reachable within the timeout.
+func GRPCReady(ctx context.Context, addr string) bool {
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -173,7 +127,8 @@ func grpcReady(ctx context.Context, addr string) bool {
 	return conn.Close() == nil
 }
 
-func withCORS(handler http.Handler) http.Handler {
+// WithCORS adds permissive CORS headers for local development.
+func WithCORS(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
