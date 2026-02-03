@@ -46,6 +46,42 @@ const features = [
 
 const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
+// ---------------------------------------------------------------------------
+// Agent Session Types
+// ---------------------------------------------------------------------------
+
+const AGENT_STATUS = {
+  IDLE: 'idle',
+  RUNNING: 'running',
+  COMPLETED: 'completed',
+  ERROR: 'error',
+};
+
+const AGENT_PROVIDERS = ['Codex', 'Gemini', 'Claude', 'Grok', 'Kimi'];
+
+// Mock terminal lines for fake sessions
+const MOCK_TERMINAL_LINES = [
+  { type: 'output', text: '$ npm install' },
+  { type: 'output', text: 'added 142 packages in 2.3s' },
+  { type: 'output', text: '' },
+  { type: 'output', text: '$ npm run build' },
+  { type: 'output', text: '> gitslice@1.0.0 build' },
+  { type: 'output', text: '> tsc && vite build' },
+  { type: 'output', text: '' },
+  { type: 'success', text: '✓ 42 modules transformed.' },
+  { type: 'success', text: '✓ built in 1.23s' },
+  { type: 'output', text: '' },
+  { type: 'output', text: '$ gs slice status' },
+  { type: 'output', text: 'Slice: auth-refresh' },
+  { type: 'output', text: 'Status: ready to merge' },
+  { type: 'output', text: 'Files changed: 12' },
+  { type: 'prompt', text: '$ _' },
+];
+
+// ---------------------------------------------------------------------------
+// Main App Component
+// ---------------------------------------------------------------------------
+
 function App() {
   const [activePage, setActivePage] = useState(() => parseHash().page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => parseHash().commitHash);
@@ -57,6 +93,21 @@ function App() {
   const [currentSliceId, setCurrentSliceId] = useState('');
   const [slicesLoading, setSlicesLoading] = useState(false);
   const [slicesError, setSlicesError] = useState('');
+
+  // Agent sessions state
+  const [agentSessions, setAgentSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [isOverlayOpen, setIsOverlayOpen] = useState(false);
+  const [isOverlayClosing, setIsOverlayClosing] = useState(false);
+  const [selectedOverlayIndex, setSelectedOverlayIndex] = useState(0);
+  const [closingSessions, setClosingSessions] = useState(new Set());
+  const [selectedAgentType, setSelectedAgentType] = useState('Codex');
+  const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
+  const agentMenuRef = useRef(null);
+  const holdModeRef = useRef(false);
+  const commandKeyDownRef = useRef(false);
+  const commandHoldTimeoutRef = useRef(null);
+  const COMMAND_HOLD_DELAY_MS = 600;
 
   const navigate = useCallback((page, commitHash = '') => {
     setActivePage(page);
@@ -130,6 +181,222 @@ function App() {
     }
   }, []);
 
+  // Agent session handlers
+  const createAgentSession = useCallback((provider = selectedAgentType) => {
+    const newSession = {
+      id: `session-${Date.now()}`,
+      name: `${provider} Agent ${agentSessions.length + 1}`,
+      provider,
+      status: AGENT_STATUS.RUNNING,
+      createdAt: Date.now(),
+      terminalLines: [...MOCK_TERMINAL_LINES],
+    };
+    setAgentSessions((prev) => [...prev, newSession]);
+    setActiveSessionId(newSession.id);
+  }, [agentSessions.length, selectedAgentType]);
+
+  const closeAgentSession = useCallback((sessionId, e) => {
+    e?.stopPropagation();
+    // Add to closing set for animation
+    setClosingSessions((prev) => new Set([...prev, sessionId]));
+    // Wait for animation to complete before removing
+    setTimeout(() => {
+      setAgentSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      setClosingSessions((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+      if (activeSessionId === sessionId) {
+        const remaining = agentSessions.filter((s) => s.id !== sessionId);
+        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+      }
+    }, 250);
+  }, [agentSessions, activeSessionId]);
+
+  const selectSession = useCallback((sessionId) => {
+    setActiveSessionId(sessionId);
+    // Trigger closing animation
+    setIsOverlayClosing(true);
+    setTimeout(() => {
+      setIsOverlayOpen(false);
+      setIsOverlayClosing(false);
+    }, 200);
+  }, []);
+
+  // Close overlay helper
+  const closeOverlay = useCallback(() => {
+    if (isOverlayOpen) {
+      setIsOverlayClosing(true);
+      setTimeout(() => {
+        setIsOverlayOpen(false);
+        setIsOverlayClosing(false);
+      }, 200);
+    }
+  }, [isOverlayOpen]);
+
+  const minimizeActiveSession = useCallback(() => {
+    if (activeSessionId === null || isOverlayOpen) return;
+    setIsFullScreenClosing(true);
+    setTimeout(() => {
+      setActiveSessionId(null);
+      setIsFullScreenClosing(false);
+    }, 300);
+  }, [activeSessionId, isOverlayOpen]);
+
+  useEffect(() => {
+    if (!isOverlayOpen) {
+      holdModeRef.current = false;
+    }
+  }, [isOverlayOpen]);
+
+  useEffect(() => {
+    if (!isAgentMenuOpen) return;
+    const handleOutsideClick = (event) => {
+      if (!agentMenuRef.current?.contains(event.target)) {
+        setIsAgentMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handleOutsideClick);
+    return () => window.removeEventListener('mousedown', handleOutsideClick);
+  }, [isAgentMenuOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (commandHoldTimeoutRef.current) {
+        clearTimeout(commandHoldTimeoutRef.current);
+        commandHoldTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // Unified keyboard handling for overlay
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't trigger if typing in input (unless it's Enter or Escape)
+      const isTypingTarget = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+      if (isTypingTarget && !e.metaKey && !e.ctrlKey && e.key !== 'Enter' && e.key !== 'Escape') {
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        createAgentSession();
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'm' || e.key === 'M')) {
+        if (activeSessionId !== null) {
+          e.preventDefault();
+          minimizeActiveSession();
+        }
+        return;
+      }
+
+      // Track CMD key state
+      if (e.metaKey || e.ctrlKey) {
+        if (!commandKeyDownRef.current) {
+          commandKeyDownRef.current = true;
+          if (commandHoldTimeoutRef.current) {
+            clearTimeout(commandHoldTimeoutRef.current);
+          }
+          // CMD pressed - open overlay after a short hold
+          commandHoldTimeoutRef.current = setTimeout(() => {
+            if (!commandKeyDownRef.current) return;
+            if (agentSessions.length > 0 && !isOverlayOpen && !holdModeRef.current) {
+              holdModeRef.current = true;
+              setIsOverlayOpen(true);
+              // If there's an active session (maximized), select it in the carousel
+              if (activeSessionId) {
+                const activeIndex = agentSessions.findIndex(s => s.id === activeSessionId);
+                setSelectedOverlayIndex(activeIndex >= 0 ? activeIndex : 0);
+              } else {
+                setSelectedOverlayIndex(0);
+              }
+            }
+          }, COMMAND_HOLD_DELAY_MS);
+        }
+      }
+
+      // Handle navigation when overlay is open
+      if (isOverlayOpen) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          setSelectedOverlayIndex((prev) => 
+            prev > 0 ? prev - 1 : agentSessions.length - 1
+          );
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          setSelectedOverlayIndex((prev) => 
+            prev < agentSessions.length - 1 ? prev + 1 : 0
+          );
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          const session = agentSessions[selectedOverlayIndex];
+          if (session) {
+            holdModeRef.current = false;
+            selectSession(session.id);
+          }
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          holdModeRef.current = false;
+          setIsOverlayClosing(true);
+          setTimeout(() => {
+            setIsOverlayOpen(false);
+            setIsOverlayClosing(false);
+          }, 200);
+        }
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      // Check if CMD key was released
+      if (!e.metaKey && !e.ctrlKey && commandKeyDownRef.current) {
+        commandKeyDownRef.current = false;
+        if (commandHoldTimeoutRef.current) {
+          clearTimeout(commandHoldTimeoutRef.current);
+          commandHoldTimeoutRef.current = null;
+        }
+        // If we were in hold mode and overlay is open, maximize the selected session
+        if (holdModeRef.current && isOverlayOpen) {
+          holdModeRef.current = false;
+          const session = agentSessions[selectedOverlayIndex];
+          if (session) {
+            // Maximize the currently selected session
+            selectSession(session.id);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [
+    isOverlayOpen,
+    agentSessions,
+    selectedOverlayIndex,
+    selectSession,
+    activeSessionId,
+    minimizeActiveSession,
+    createAgentSession,
+  ]);
+
+  // Update selected index when sessions change
+  useEffect(() => {
+    if (selectedOverlayIndex >= agentSessions.length) {
+      setSelectedOverlayIndex(Math.max(0, agentSessions.length - 1));
+    }
+  }, [agentSessions.length, selectedOverlayIndex]);
+
+  const showAgentButton = activePage === 'browser';
+  const hasAgentSessions = agentSessions.length > 0;
+  const [isFullScreenClosing, setIsFullScreenClosing] = useState(false);
+  const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
+
   return (
     <div className={`app-shell${activePage === 'browser' ? ' app-shell--browser' : ''}`}>
       <header className="top-bar">
@@ -178,6 +445,125 @@ function App() {
         )}
       </main>
 
+      {showAgentButton && (
+        <div className="agent-launcher" ref={agentMenuRef}>
+          <button
+            type="button"
+            className="agent-start-btn"
+            onClick={() => {
+              setIsAgentMenuOpen(false);
+              createAgentSession(selectedAgentType);
+            }}
+            title="Start new agent session (Cmd+K)"
+          >
+            <span className="agent-icon">🤖</span>
+            <span className="agent-text">{selectedAgentType}</span>
+          </button>
+          <button
+            type="button"
+            className="agent-provider-toggle"
+            aria-label="Choose agent provider"
+            aria-expanded={isAgentMenuOpen}
+            onClick={() => setIsAgentMenuOpen((prev) => !prev)}
+          >
+            <span className={`agent-provider-arrow${isAgentMenuOpen ? ' open' : ''}`}>▾</span>
+          </button>
+          {isAgentMenuOpen && (
+            <div className="agent-provider-menu">
+              {AGENT_PROVIDERS.map((provider) => (
+                <button
+                  key={provider}
+                  type="button"
+                  className={`agent-provider-item${provider === selectedAgentType ? ' active' : ''}`}
+                  onClick={() => {
+                    setSelectedAgentType(provider);
+                    setIsAgentMenuOpen(false);
+                  }}
+                >
+                  {provider}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Agent Sessions Overlay */}
+      {(isOverlayOpen || isOverlayClosing) && hasAgentSessions && (
+        <div className={`agent-overlay ${isOverlayClosing ? 'closing' : ''}`}>
+          <div className="agent-overlay-backdrop" />
+          <div className="agent-overlay-content">
+            <div className="agent-carousel">
+              {agentSessions.map((session, index) => (
+                <div
+                  key={session.id}
+                  className={`agent-carousel-item ${index === selectedOverlayIndex ? 'selected' : ''}`}
+                  onClick={() => selectSession(session.id)}
+                  style={{
+                    transform: `translateX(${(index - selectedOverlayIndex) * 320}px) scale(${index === selectedOverlayIndex ? 1.05 : 0.85})`,
+                    zIndex: index === selectedOverlayIndex ? 10 : 5 - Math.abs(index - selectedOverlayIndex),
+                    opacity: Math.abs(index - selectedOverlayIndex) > 2 ? 0 : 1,
+                  }}
+                >
+                  <div className="agent-carousel-header">
+                    <span className="agent-carousel-name">{session.name}</span>
+                    <span className={`agent-carousel-status status-${session.status}`}>
+                      {session.status}
+                    </span>
+                  </div>
+                  <div className="agent-carousel-preview">
+                    <div className="agent-terminal-mock">
+                      {session.terminalLines.slice(0, 6).map((line, i) => (
+                        <div key={i} className={`terminal-line terminal-${line.type}`}>
+                          {line.text}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="agent-overlay-hint">
+              Hold Cmd to open, release to select. Use ← → to navigate, Enter to select.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full-screen Agent Session */}
+      {(isFullScreenSession || isFullScreenClosing) && (
+        <div className={`agent-fullscreen ${isFullScreenClosing ? 'closing' : ''}`}>
+          <AgentSession
+            session={agentSessions.find(s => s.id === activeSessionId)}
+            onClose={minimizeActiveSession}
+            onMinimize={minimizeActiveSession}
+          />
+        </div>
+      )}
+
+      {/* Minimized Agent Sessions Bar */}
+      {hasAgentSessions && !isOverlayOpen && (
+        <div className="agent-sessions-bar">
+          {agentSessions.map((session) => (
+            <div
+              key={session.id}
+              className={`agent-session-pill ${session.id === activeSessionId ? 'active' : ''} ${closingSessions.has(session.id) ? 'removing' : ''}`}
+              onClick={() => setActiveSessionId(session.id)}
+            >
+              <span className="agent-session-icon">🤖</span>
+              <span className="agent-session-name">{session.name}</span>
+              <button
+                type="button"
+                className="agent-session-close"
+                onClick={(e) => closeAgentSession(session.id, e)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <footer className="footer">
         <p>
           Git Slice • Slice smart. Ship faster. •{' '}
@@ -189,6 +575,157 @@ function App() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Agent Session Component
+// ---------------------------------------------------------------------------
+
+function AgentSession({ session, onClose, onMinimize }) {
+  const [inputValue, setInputValue] = useState('');
+  const [lines, setLines] = useState([]);
+  const [displayedLines, setDisplayedLines] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const terminalRef = useRef(null);
+
+  // Staggered loading animation for initial lines
+  useEffect(() => {
+    if (session?.terminalLines) {
+      setLines(session.terminalLines);
+      setDisplayedLines(0);
+      let index = 0;
+      const interval = setInterval(() => {
+        index++;
+        setDisplayedLines(index);
+        if (index >= session.terminalLines.length) {
+          clearInterval(interval);
+        }
+      }, 50); // 50ms between each line appearing
+      return () => clearInterval(interval);
+    }
+  }, [session?.id]); // Reset when session changes
+
+  useEffect(() => {
+    // Scroll to bottom when lines change
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [lines, displayedLines]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!inputValue.trim() || isProcessing) return;
+
+    setIsProcessing(true);
+    const command = inputValue;
+    
+    // Remove the prompt line and add the command
+    setLines((prev) => [
+      ...prev.slice(0, -1),
+      { type: 'prompt', text: `$ ${command}` },
+    ]);
+    setInputValue('');
+
+    // Simulate processing delay with intermediate outputs
+    await new Promise((r) => setTimeout(r, 400));
+    setLines((prev) => [...prev, { type: 'output', text: 'Processing command...' }]);
+    
+    await new Promise((r) => setTimeout(r, 500));
+    setLines((prev) => [...prev, { type: 'output', text: `Executing: ${command}` }]);
+    
+    await new Promise((r) => setTimeout(r, 600));
+    
+    // Add result based on command
+    const results = [
+      { type: 'success', text: '✓ Command executed successfully' },
+      { type: 'output', text: `Output: ${Math.floor(Math.random() * 1000)} items processed` },
+      { type: 'output', text: 'Time: 0.42s' },
+    ];
+    
+    setLines((prev) => [...prev, ...results, { type: 'prompt', text: '$ _' }]);
+    setIsProcessing(false);
+  };
+
+  if (!session) return null;
+
+  // Only show lines up to the displayed count for initial animation
+  const visibleLines = lines.slice(0, Math.max(displayedLines, lines.length - 1));
+
+  return (
+    <div className="agent-session-container">
+      <div className="agent-session-header">
+        <div className="agent-session-title">
+          <span className="agent-session-title-icon">🤖</span>
+          <span>{session.name}</span>
+          <span className={`agent-status-badge status-${session.status}`}>
+            {session.status}
+          </span>
+        </div>
+        <div className="agent-session-actions">
+          <button
+            type="button"
+            className="agent-session-action-btn"
+            onClick={onMinimize}
+            title="Minimize (Cmd+M)"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="agent-session-action-btn"
+            onClick={onClose}
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <div className="agent-session-body">
+        <div className="agent-terminal" ref={terminalRef}>
+          {visibleLines.map((line, index) => (
+            <div 
+              key={index} 
+              className={`terminal-line terminal-${line.type}`}
+              style={{ animationDelay: `${index * 30}ms` }}
+            >
+              {line.type === 'prompt' && (
+                <span className="terminal-prompt">$ </span>
+              )}
+              <span className={`terminal-text terminal-text-${line.type}`}>
+                {line.text.replace(/^\$ /, '').replace(/_$/, '')}
+                {line.text.endsWith('_') && <span className="terminal-cursor">_</span>}
+              </span>
+            </div>
+          ))}
+          {isProcessing && (
+            <div className="terminal-line terminal-output">
+              <span className="terminal-processing">
+                <span className="processing-dot">.</span>
+                <span className="processing-dot">.</span>
+                <span className="processing-dot">.</span>
+              </span>
+            </div>
+          )}
+        </div>
+        <form className="agent-input-form" onSubmit={handleSubmit}>
+          <span className="agent-input-prompt">$</span>
+          <input
+            type="text"
+            className="agent-input"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder={isProcessing ? 'Processing...' : 'Type a command...'}
+            autoFocus
+            disabled={isProcessing}
+          />
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Slice Dropdown Component
+// ---------------------------------------------------------------------------
 
 function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, onRefresh }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -302,6 +839,10 @@ function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, 
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Overview Page Component
+// ---------------------------------------------------------------------------
 
 function OverviewPage({ onBrowseRepo }) {
   return (
@@ -428,6 +969,10 @@ function OverviewPage({ onBrowseRepo }) {
     </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Repo Browser Component
+// ---------------------------------------------------------------------------
 
 function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }) {
   // Parse initial browser state from URL hash on mount
@@ -930,6 +1475,10 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
   );
 }
 
+// ---------------------------------------------------------------------------
+// Commit Diff Page Component
+// ---------------------------------------------------------------------------
+
 function CommitDiffPage({ commitHash, onBack }) {
   const [diffData, setDiffData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1023,7 +1572,10 @@ function CommitDiffPage({ commitHash, onBack }) {
   );
 }
 
-// Normalize camelCase API response keys to snake_case used in templates.
+// ---------------------------------------------------------------------------
+// Utility Functions
+// ---------------------------------------------------------------------------
+
 function normalizeChange(c) {
   return {
     ...c,
