@@ -78,6 +78,89 @@ const MOCK_TERMINAL_LINES = [
   { type: 'prompt', text: '$ _' },
 ];
 
+const MOCK_SESSION_CHANGES = [
+  {
+    filePath: 'services/auth/handler.go',
+    status: 'modified',
+    linesAdded: 12,
+    linesDeleted: 4,
+    summary: 'Refresh token flow now retries with a new nonce before failing.',
+    hunks: [
+      { type: 'context', content: '@@ -34,6 +38,11 @@ func RefreshToken(ctx) {' },
+      { type: 'remove', content: '-  if tokenExpired {' },
+      { type: 'add', content: '+  if tokenExpired {' },
+      { type: 'add', content: '+    nonce := generateNonce()' },
+      { type: 'add', content: '+    logDebug("nonce", nonce)' },
+      { type: 'context', content: '     return ErrTokenExpired' },
+      { type: 'context', content: '   }' },
+    ],
+  },
+  {
+    filePath: 'services/auth/cache/refresh_store.go',
+    status: 'modified',
+    linesAdded: 6,
+    linesDeleted: 2,
+    summary: 'Store refresh state for 15 minutes to reduce churn.',
+    hunks: [
+      { type: 'context', content: '@@ -71,8 +71,12 @@ func (s *RefreshStore) Put(...) {' },
+      { type: 'remove', content: '-  ttl := 5 * time.Minute' },
+      { type: 'add', content: '+  ttl := 15 * time.Minute' },
+      { type: 'add', content: '+  s.metrics.Record("refresh_ttl", ttl)' },
+      { type: 'context', content: '   return s.cache.Set(key, value, ttl)' },
+    ],
+  },
+  {
+    filePath: 'services/web/src/components/LoginCard.tsx',
+    status: 'added',
+    linesAdded: 24,
+    linesDeleted: 0,
+    summary: 'Introduce a branded login card layout for SSO.',
+    hunks: [
+      { type: 'context', content: '@@ -0,0 +1,8 @@' },
+      { type: 'add', content: '+export const LoginCard = () => (' },
+      { type: 'add', content: '+  <section className="login-card">' },
+      { type: 'add', content: '+    <h2>Welcome back</h2>' },
+      { type: 'add', content: '+    <p>Use SSO to continue.</p>' },
+      { type: 'add', content: '+  </section>' },
+      { type: 'add', content: '+);' },
+    ],
+  },
+  {
+    filePath: 'services/web/src/styles/login.css',
+    status: 'added',
+    linesAdded: 18,
+    linesDeleted: 0,
+    summary: 'Add gradient background and spacing for the login card.',
+    hunks: [
+      { type: 'context', content: '@@ -0,0 +1,6 @@' },
+      { type: 'add', content: '+.login-card {' },
+      { type: 'add', content: '+  padding: 24px;' },
+      { type: 'add', content: '+  border-radius: 16px;' },
+      { type: 'add', content: '+  background: linear-gradient(135deg, #eef2ff, #fdf2f8);' },
+      { type: 'add', content: '+}' },
+    ],
+  },
+  {
+    filePath: 'services/checkout/README.md',
+    status: 'modified',
+    linesAdded: 3,
+    linesDeleted: 1,
+    summary: 'Update local checkout instructions for new env var.',
+    hunks: [
+      { type: 'context', content: '@@ -12,7 +12,9 @@' },
+      { type: 'remove', content: '-export CHECKOUT_MODE=legacy' },
+      { type: 'add', content: '+export CHECKOUT_MODE=smart' },
+      { type: 'add', content: '+export CHECKOUT_RETRIES=2' },
+    ],
+  },
+];
+
+const MOCK_SESSION_CHANGE_SETS = [
+  [MOCK_SESSION_CHANGES[0], MOCK_SESSION_CHANGES[1]],
+  [MOCK_SESSION_CHANGES[2], MOCK_SESSION_CHANGES[3]],
+  [MOCK_SESSION_CHANGES[4], MOCK_SESSION_CHANGES[0]],
+];
+
 // ---------------------------------------------------------------------------
 // Main App Component
 // ---------------------------------------------------------------------------
@@ -183,13 +266,19 @@ function App() {
 
   // Agent session handlers
   const createAgentSession = useCallback((provider = selectedAgentType) => {
+    const sessionId = `session-${Date.now()}`;
+    const changeSet = MOCK_SESSION_CHANGE_SETS[agentSessions.length % MOCK_SESSION_CHANGE_SETS.length] || [];
     const newSession = {
-      id: `session-${Date.now()}`,
+      id: sessionId,
       name: `${provider} Agent ${agentSessions.length + 1}`,
       provider,
       status: AGENT_STATUS.RUNNING,
       createdAt: Date.now(),
       terminalLines: [...MOCK_TERMINAL_LINES],
+      changes: changeSet.map((change, index) => ({
+        ...change,
+        id: `${sessionId}-change-${index}`,
+      })),
     };
     setAgentSessions((prev) => [...prev, newSession]);
     setActiveSessionId(newSession.id);
@@ -396,6 +485,10 @@ function App() {
   const hasAgentSessions = agentSessions.length > 0;
   const [isFullScreenClosing, setIsFullScreenClosing] = useState(false);
   const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
+  const currentSliceDirty = useMemo(
+    () => agentSessions.some((session) => (session.changes || []).length > 0),
+    [agentSessions]
+  );
 
   return (
     <div className={`app-shell${activePage === 'browser' ? ' app-shell--browser' : ''}`}>
@@ -409,6 +502,7 @@ function App() {
             <SliceDropdown
               slices={slices}
               currentSliceId={currentSliceId}
+              isDirty={currentSliceDirty}
               onSelectSlice={setCurrentSliceId}
               loading={slicesLoading}
               error={slicesError}
@@ -438,6 +532,7 @@ function App() {
             currentSliceId={currentSliceId}
             onSliceChange={setCurrentSliceId}
             onNavigateToDiff={navigateToDiff}
+            agentSessions={agentSessions}
           />
         )}
         {activePage === 'diff' && (
@@ -727,7 +822,7 @@ function AgentSession({ session, onClose, onMinimize }) {
 // Slice Dropdown Component
 // ---------------------------------------------------------------------------
 
-function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, onRefresh }) {
+function SliceDropdown({ slices, currentSliceId, isDirty, onSelectSlice, loading, error, onRefresh }) {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const dropdownRef = useRef(null);
@@ -775,6 +870,11 @@ function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, 
         data-testid="slice-dropdown-trigger"
       >
         <span>{currentSlice ? (currentSlice.name || currentSlice.slice_id) : 'Select slice'}</span>
+        {currentSlice && (
+          <span className={`slice-status-badge ${isDirty ? 'dirty' : 'clean'}`}>
+            {isDirty ? 'dirty' : 'clean'}
+          </span>
+        )}
         <span className="slice-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
       </button>
       {isOpen && (
@@ -974,7 +1074,7 @@ function OverviewPage({ onBrowseRepo }) {
 // Repo Browser Component
 // ---------------------------------------------------------------------------
 
-function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }) {
+function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff, agentSessions = [] }) {
   // Parse initial browser state from URL hash on mount
   const initialBrowserState = useMemo(() => {
     const raw = window.location.hash.replace(/^#\/?/, '');
@@ -1001,6 +1101,8 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [modifiedFilesOpen, setModifiedFilesOpen] = useState(false);
+  const modifiedFilesRef = useRef(null);
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
@@ -1019,6 +1121,44 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
       })),
     ];
   }, [selectedFile]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (modifiedFilesRef.current && !modifiedFilesRef.current.contains(event.target)) {
+        setModifiedFilesOpen(false);
+      }
+    };
+    if (modifiedFilesOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [modifiedFilesOpen]);
+
+  const modifiedFiles = useMemo(() => {
+    const fileMap = new Map();
+    agentSessions.forEach((session) => {
+      (session.changes || []).forEach((change) => {
+        if (!fileMap.has(change.filePath)) {
+          fileMap.set(change.filePath, {
+            filePath: change.filePath,
+            status: change.status,
+            linesAdded: change.linesAdded || 0,
+            linesDeleted: change.linesDeleted || 0,
+            sessions: [session.name],
+          });
+          return;
+        }
+        const existing = fileMap.get(change.filePath);
+        existing.status = change.status;
+        existing.linesAdded += change.linesAdded || 0;
+        existing.linesDeleted += change.linesDeleted || 0;
+        if (!existing.sessions.includes(session.name)) {
+          existing.sessions.push(session.name);
+        }
+      });
+    });
+    return Array.from(fileMap.values());
+  }, [agentSessions]);
 
   const sliceId = currentSliceId;
 
@@ -1399,6 +1539,48 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
                 </div>
               </div>
               <div className="code-header-actions">
+                <div className="modified-files-dropdown" ref={modifiedFilesRef}>
+                  <button
+                    type="button"
+                    className="modified-files-trigger"
+                    onClick={() => setModifiedFilesOpen((prev) => !prev)}
+                    aria-expanded={modifiedFilesOpen}
+                    data-testid="modified-files-trigger"
+                  >
+                    Modified files
+                    <span className="modified-files-count">{modifiedFiles.length}</span>
+                    <span className="modified-files-arrow">{modifiedFilesOpen ? '▲' : '▼'}</span>
+                  </button>
+                  {modifiedFilesOpen && (
+                    <div className="modified-files-menu" data-testid="modified-files-menu">
+                      {modifiedFiles.length === 0 && (
+                        <div className="modified-files-empty">No modified files yet.</div>
+                      )}
+                      {modifiedFiles.length > 0 && (
+                        <ul>
+                          {modifiedFiles.map((file) => (
+                            <li key={file.filePath} className="modified-files-item">
+                              <div className="modified-files-item-header">
+                                <span className={`modified-files-status status-${file.status}`}>
+                                  {file.status}
+                                </span>
+                                <span className="modified-files-path">{file.filePath}</span>
+                              </div>
+                              <div className="modified-files-meta">
+                                <span className="modified-files-lines">
+                                  +{file.linesAdded} / -{file.linesDeleted}
+                                </span>
+                                <span className="modified-files-sessions">
+                                  {file.sessions.join(', ')}
+                                </span>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
                 {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
                 {selectedFile && (
                   <button
@@ -1411,6 +1593,9 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
                     {showHistory ? '📄 Content' : '📜 History'}
                   </button>
                 )}
+                <button type="button" className="primary merge-btn" data-testid="merge-slice-btn">
+                  Merge slice
+                </button>
               </div>
             </div>
             <div className="code-content">
@@ -1467,6 +1652,66 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
                   )}
                 </div>
               )}
+              <div className="agent-diff-panel" data-testid="agent-diff-panel">
+                <div className="agent-diff-header">
+                  <div>
+                    <h4>Agent session diffs</h4>
+                    <p>Mock diffs showing the changes proposed in each agent session.</p>
+                  </div>
+                  <span className="agent-diff-count">{agentSessions.length} sessions</span>
+                </div>
+                {agentSessions.length === 0 && (
+                  <div className="panel-empty">Start an agent session to see its diffs here.</div>
+                )}
+                {agentSessions.length > 0 && (
+                  <div className="agent-diff-list">
+                    {agentSessions.map((session) => (
+                      <div key={session.id} className="agent-diff-session">
+                        <div className="agent-diff-session-header">
+                          <div>
+                            <span className="agent-diff-session-name">{session.name}</span>
+                            <span className={`agent-diff-session-status status-${session.status}`}>
+                              {session.status}
+                            </span>
+                          </div>
+                          <span className="agent-diff-session-meta">
+                            {(session.changes || []).length} changes
+                          </span>
+                        </div>
+                        <div className="agent-diff-changes">
+                          {(session.changes || []).map((change) => (
+                            <div key={change.id} className="agent-diff-change">
+                              <div className="agent-diff-change-header">
+                                <span className={`agent-diff-chip status-${change.status}`}>
+                                  {change.status}
+                                </span>
+                                <span className="agent-diff-file">{change.filePath}</span>
+                                <span className="agent-diff-lines">
+                                  +{change.linesAdded} / -{change.linesDeleted}
+                                </span>
+                              </div>
+                              <div className="agent-diff-summary">{change.summary}</div>
+                              <pre className="agent-diff-preview">
+                                <code>
+                                  {change.hunks.map((line, index) => (
+                                    <span
+                                      key={`${change.id}-line-${index}`}
+                                      className={`agent-diff-line line-${line.type}`}
+                                    >
+                                      {line.content}
+                                      {index < change.hunks.length - 1 ? '\n' : ''}
+                                    </span>
+                                  ))}
+                                </code>
+                              </pre>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
