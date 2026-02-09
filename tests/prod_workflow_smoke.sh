@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI_BIN="${CLI_BIN:-$REPO_ROOT/gs_cli/gs_cli}"
-GRPC_ADDR="${GRPC_ADDR:-api.agenttools.dev:80}"
+GRPC_ADDR="${GRPC_ADDR:-api.agenttools.dev:443}"
+GRPC_TLS="${GRPC_TLS:-true}"
 FALLBACK_GRPC_ADDR="${FALLBACK_GRPC_ADDR:-}"
 
 log() {
@@ -16,7 +17,13 @@ build_cli() {
 }
 
 run_gs() {
-  "$CLI_BIN" --addr "$1" "${@:2}"
+	local addr="$1"
+	shift
+	local tls_flag=()
+	if [[ "${GRPC_TLS,,}" == "1" || "${GRPC_TLS,,}" == "true" || "${GRPC_TLS,,}" == "yes" ]]; then
+		tls_flag=(--tls)
+	fi
+	"$CLI_BIN" --addr "$addr" "${tls_flag[@]}" "$@"
 }
 
 

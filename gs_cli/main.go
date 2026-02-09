@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -17,6 +19,7 @@ var (
 	coreServerAddr  = flag.String("addr", "", "Core gRPC service address (overrides slice-addr/admin-addr)")
 	sliceServerAddr = flag.String("slice-addr", "localhost:50051", "Slice service address")
 	adminServerAddr = flag.String("admin-addr", "localhost:50051", "Admin service address")
+	useTLS          = flag.Bool("tls", false, "Use TLS for gRPC connections")
 )
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
@@ -35,7 +38,7 @@ func main() {
 		*adminServerAddr = *coreServerAddr
 	}
 
-	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr)
+	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr, *useTLS)
 	if err != nil {
 		log.Fatalf("Failed to initialize CLI: %v", err)
 	}
@@ -74,13 +77,18 @@ func main() {
 }
 
 // NewCLI creates a new CLI instance with connections to the gitslice services.
-func NewCLI(sliceAddr, adminAddr string) (*CLI, error) {
-	sliceConn, err := grpc.Dial(sliceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func NewCLI(sliceAddr, adminAddr string, tlsEnabled bool) (*CLI, error) {
+	transportCreds := insecure.NewCredentials()
+	if tlsEnabled {
+		transportCreds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
+	}
+
+	sliceConn, err := grpc.Dial(sliceAddr, grpc.WithTransportCredentials(transportCreds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to slice service: %w", err)
 	}
 
-	adminConn, err := grpc.Dial(adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	adminConn, err := grpc.Dial(adminAddr, grpc.WithTransportCredentials(transportCreds))
 	if err != nil {
 		sliceConn.Close()
 		return nil, fmt.Errorf("failed to connect to admin service: %w", err)
