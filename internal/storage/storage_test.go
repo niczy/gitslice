@@ -2,12 +2,12 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/niczy/gitslice/internal/models"
-	"github.com/redis/go-redis/v9"
 )
 
 func TestStorageCompliance(t *testing.T) {
@@ -24,20 +24,23 @@ func TestStorageCompliance(t *testing.T) {
 				return NewInMemoryStorage()
 			},
 		},
-		{
-			name: "redis",
+	}
+	if dsn := os.Getenv("TEST_POSTGRES_DSN"); dsn != "" {
+		cases = append(cases, struct {
+			name    string
+			factory func(t *testing.T) Storage
+		}{
+			name: "postgres",
 			factory: func(t *testing.T) Storage {
 				t.Helper()
-				mr := miniredis.RunT(t)
-				client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-				store := NewInMemoryObjectStore()
-				t.Cleanup(func() {
-					_ = client.Close()
-					mr.Close()
-				})
-				return NewRedisStorage(client, store, "test")
+				st, err := NewPostgresStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-storage-%d", time.Now().UnixNano()))
+				if err != nil {
+					t.Fatalf("NewPostgresStorage failed: %v", err)
+				}
+				t.Cleanup(func() { _ = st.Close() })
+				return st
 			},
-		},
+		})
 	}
 
 	for _, tc := range cases {
@@ -66,6 +69,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	meta, err := st.GetSliceMetadata(ctx, slice.ID)
 	if err != nil {
 		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	if meta.HeadCommitHash != fmt.Sprintf("init-%s", slice.ID) {
+		t.Fatalf("unexpected initial head commit hash: %s", meta.HeadCommitHash)
 	}
 	meta.HeadCommitHash = "commit-1"
 	meta.ModifiedFiles = []string{"file-1"}
@@ -111,6 +117,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if err := st.AddFileToSlice(ctx, "file-1", slice2.ID); err != nil {
 		t.Fatalf("AddFileToSlice second failed: %v", err)
+	}
+	if err := st.RemoveFileFromSlice(ctx, "file-unknown", "slice-missing"); err != nil {
+		t.Fatalf("RemoveFileFromSlice for missing slice should be no-op: %v", err)
 	}
 
 	conflicts, err := st.ListConflicts(ctx)
@@ -209,6 +218,54 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil || storedState.GlobalCommitHash != state.GlobalCommitHash {
 		t.Fatalf("GetGlobalState mismatch: %v", err)
 	}
+	replaced := &models.GlobalState{GlobalCommitHash: "global-2", Timestamp: time.Now(), History: []*models.GlobalCommit{{CommitHash: "global-2", Timestamp: time.Now()}}}
+	if err := st.UpdateGlobalState(ctx, replaced); err != nil {
+		t.Fatalf("UpdateGlobalState replacement failed: %v", err)
+	}
+	replacedState, err := st.GetGlobalState(ctx)
+	if err != nil {
+		t.Fatalf("GetGlobalState replacement failed: %v", err)
+	}
+	if replacedState.GlobalCommitHash != "global-2" || len(replacedState.History) != 1 || replacedState.History[0].CommitHash != "global-2" {
+		t.Fatalf("global state should be replaced, got: %#v", replacedState)
+	}
+
+	// Versioned content + snapshot lookup
+	content := &models.FileContent{
+		FileID:  "versioned-file",
+		Path:    "src/versioned.go",
+		Content: []byte("package main"),
+		Size:    int64(len("package main")),
+		Hash:    "hash-versioned-1",
+	}
+	if err := st.AddFileContent(ctx, content); err != nil {
+		t.Fatalf("AddFileContent versioned failed: %v", err)
+	}
+	snapshot := &models.CommitSnapshot{
+		CommitHash: "commit-snapshot-1",
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			content.Path: content.Hash,
+		},
+		Timestamp: time.Now(),
+	}
+	if err := st.SaveCommitSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+	versioned, err := st.GetFileAtCommit(ctx, snapshot.CommitHash, content.Path)
+	if err != nil {
+		t.Fatalf("GetFileAtCommit failed: %v", err)
+	}
+	if versioned.Hash != content.Hash {
+		t.Fatalf("GetFileAtCommit hash mismatch: got %s want %s", versioned.Hash, content.Hash)
+	}
+	filesAtCommit, err := st.ListFilesAtCommit(ctx, snapshot.CommitHash, "src/")
+	if err != nil {
+		t.Fatalf("ListFilesAtCommit failed: %v", err)
+	}
+	if len(filesAtCommit) != 1 || filesAtCommit[0] != content.Path {
+		t.Fatalf("ListFilesAtCommit mismatch: %#v", filesAtCommit)
+	}
 
 	// Root slice init
 	if err := st.InitializeRootSlice(ctx); err != nil {
@@ -238,20 +295,23 @@ func TestFileChangeHistory(t *testing.T) {
 				return NewInMemoryStorage()
 			},
 		},
-		{
-			name: "redis",
+	}
+	if dsn := os.Getenv("TEST_POSTGRES_DSN"); dsn != "" {
+		cases = append(cases, struct {
+			name    string
+			factory func(t *testing.T) Storage
+		}{
+			name: "postgres",
 			factory: func(t *testing.T) Storage {
 				t.Helper()
-				mr := miniredis.RunT(t)
-				client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-				store := NewInMemoryObjectStore()
-				t.Cleanup(func() {
-					_ = client.Close()
-					mr.Close()
-				})
-				return NewRedisStorage(client, store, "test-history")
+				st, err := NewPostgresStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-history-%d", time.Now().UnixNano()))
+				if err != nil {
+					t.Fatalf("NewPostgresStorage failed: %v", err)
+				}
+				t.Cleanup(func() { _ = st.Close() })
+				return st
 			},
-		},
+		})
 	}
 
 	for _, tc := range cases {
@@ -546,16 +606,22 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 	})
 }
 
-func TestRedisStorageRebuildIndexes(t *testing.T) {
+func TestPostgresStoragePersistsAcrossRestart(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set TEST_POSTGRES_DSN to run postgres persistence test")
+	}
+
 	ctx := context.Background()
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	store := NewInMemoryObjectStore()
-	rs := NewRedisStorage(client, store, "rebuild")
+	namespace := fmt.Sprintf("restart-%d", time.Now().UnixNano())
+	rs, err := NewPostgresStorage(ctx, dsn, store, namespace)
 	t.Cleanup(func() {
-		_ = client.Close()
-		mr.Close()
+		_ = rs.Close()
 	})
+	if err != nil {
+		t.Fatalf("NewPostgresStorage failed: %v", err)
+	}
 
 	slice1 := &models.Slice{ID: "slice-1", Name: "Alpha", Files: []string{"file-1"}}
 	slice2 := &models.Slice{ID: "slice-2", Name: "Beta", Files: []string{"file-1", "file-2"}}
@@ -577,11 +643,16 @@ func TestRedisStorageRebuildIndexes(t *testing.T) {
 	if err := rs.UpdateGlobalState(ctx, &models.GlobalState{GlobalCommitHash: "gc1", Timestamp: time.Now()}); err != nil {
 		t.Fatalf("UpdateGlobalState failed: %v", err)
 	}
+	if err := rs.AddFileToSlice(ctx, "file-3", slice1.ID); err != nil {
+		t.Fatalf("AddFileToSlice file-3 failed: %v", err)
+	}
 
-	mr.FlushAll()
-
-	if err := rs.RebuildIndexes(ctx); err != nil {
-		t.Fatalf("RebuildIndexes failed: %v", err)
+	if err := rs.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	rs, err = NewPostgresStorage(ctx, dsn, store, namespace)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
 	}
 
 	slices, err := rs.ListSlices(ctx, 10, 0)
@@ -598,6 +669,13 @@ func TestRedisStorageRebuildIndexes(t *testing.T) {
 	}
 	if len(mapped) != 2 {
 		t.Fatalf("expected file-1 to map to 2 slices after rebuild, got %d", len(mapped))
+	}
+	mappedFile3, err := rs.GetActiveSlicesForFile(ctx, "file-3")
+	if err != nil {
+		t.Fatalf("GetActiveSlicesForFile file-3 failed: %v", err)
+	}
+	if len(mappedFile3) != 1 || mappedFile3[0] != slice1.ID {
+		t.Fatalf("expected file-3 to map to %s after rebuild, got %#v", slice1.ID, mappedFile3)
 	}
 
 	restoredCS, err := rs.GetChangeset(ctx, cs.ID)

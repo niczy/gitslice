@@ -1,6 +1,6 @@
 # Gitslice
 
-**High-level summary:** Gitslice is a prototype slice-based version control system with gRPC services, a CLI, and a lightweight web landing page. The current implementation runs entirely in-memory while the design docs outline the long-term distributed architecture.
+**High-level summary:** Gitslice is a prototype slice-based version control system with gRPC services, a CLI, and a lightweight web landing page. Storage backends include in-memory and PostgreSQL (with GCS object storage for payloads).
 
 ## Project Structure
 
@@ -98,6 +98,13 @@ go build -o gs_cli/gs_cli ./gs_cli/
 
 ```bash
 # Run core server (gRPC on :50051, gateway on :8080)
+CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+
+# Run core server with PostgreSQL + GCS storage
+STORAGE_TYPE=postgres \
+POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
+GCS_BUCKET=gitslice-objects \
+GCS_CREDENTIALS_FILE=/path/to/service-account.json \
 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
 # Run CLI (override addresses if needed)

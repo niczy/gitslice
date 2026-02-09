@@ -96,7 +96,8 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 
 - **`internal/storage/`** - Storage layer
   - `memory.go` - In-memory storage (development)
-  - `redis.go` - Redis-backed storage (production)
+  - `postgres.go` - PostgreSQL-backed storage (durable metadata)
+  - `objectstore.go` - GCS-compatible object storage backend
 
 - **`gs_cli/`** - CLI client
   - Split into command files (not monolithic)
@@ -280,17 +281,15 @@ CORE_SERVICE_PORT=50051
 GATEWAY_PORT=8080
 
 # Storage
-STORAGE_TYPE=memory  # or "redis"
-REDIS_ADDR=localhost:6379
-REDIS_PASSWORD=
-REDIS_DB=0
+STORAGE_TYPE=memory  # or "postgres"
+POSTGRES_DSN=postgres://user:pass@localhost:5432/gitslice?sslmode=disable
 
-# Object Store (S3)
-S3_ENDPOINT=
-S3_ACCESS_KEY_ID=
-S3_SECRET_ACCESS_KEY=
-S3_BUCKET=gitslice-objects
-S3_REGION=us-east-1
+# Object Store (GCS)
+GCS_BUCKET=gitslice-objects
+GCS_ENDPOINT=
+GCS_CREDENTIALS_FILE=
+GCS_CREDENTIALS_JSON=
+GCS_DISABLE_AUTH=false
 ```
 
 ### Useful Commands

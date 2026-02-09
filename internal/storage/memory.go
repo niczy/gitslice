@@ -606,6 +606,9 @@ func (s *InMemoryStorage) AddFileContent(ctx context.Context, content *models.Fi
 	defer s.mu.Unlock()
 
 	s.fileContents[content.FileID] = content
+	if content.Hash != "" {
+		s.versionedContent[content.Hash] = content
+	}
 	return nil
 }
 
