@@ -51,7 +51,7 @@
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- Go 1.24 or higher
 - Protocol Buffers compiler (protoc)
 - protoc-gen-go
 - protoc-gen-go-grpc
@@ -134,18 +134,58 @@ GitHub Actions workflow is configured to:
 
 See `.github/workflows/build.yml` for details.
 
-## SSL Certificates for NGINX
+## Operations
 
-Generate a self-signed certificate and key for `agenttools.dev` and `api.agenttools.dev` with:
+### Hourly Auto-Update and Restart
+
+`ops/restart_all.sh` is the canonical deploy script. It:
+- Acquires a lock to avoid overlapping cron runs
+- Pulls latest changes (`git fetch --prune` + `git pull --ff-only`) when upstream is configured
+- Rebuilds/restarts core + gateway + web preview via `ops/start_web_server.sh`
+- Verifies service health before exiting
+- Ensures an hourly user crontab entry exists
+
+Install or refresh the hourly cron entry:
 
 ```bash
-sudo mkdir -p /etc/ssl/private /etc/ssl/certs
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /etc/ssl/private/agenttools.dev.key \
-  -out /etc/ssl/certs/agenttools.dev.crt \
-  -subj "/CN=agenttools.dev" \
-  -addext "subjectAltName=DNS:agenttools.dev,DNS:api.agenttools.dev"
+bash ops/restart_all.sh
 ```
+
+Cron target installed by the script:
+
+```bash
+0 * * * * PATH=/home/<user>/.local/go/bin:/home/<user>/.local/protoc/bin:/home/<user>/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash /home/<user>/workspace/gitslice/ops/restart_all.sh >> /home/<user>/workspace/gitslice/logs/cron.log 2>&1
+```
+
+### PM2 Process Supervision
+
+For long-running service supervision, use the included PM2 ecosystem file:
+
+```bash
+npm install -g pm2
+pm2 start ops/ecosystem.config.cjs
+pm2 save
+```
+
+To restore PM2 apps on reboot (user crontab approach):
+
+```bash
+@reboot PATH=/home/<user>/.local/go/bin:/home/<user>/.local/protoc/bin:/home/<user>/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /home/<user>/.nvm/versions/node/<node-version>/bin/pm2 resurrect >> /home/<user>/workspace/gitslice/logs/pm2_reboot.log 2>&1
+```
+
+### NGINX (Cloudflare in Front, Origin HTTP)
+
+`ops/nginx.conf` is configured for HTTP origin traffic (no local TLS termination). Cloudflare serves public HTTPS and proxies to origin HTTP.
+
+Apply config:
+
+```bash
+sudo cp ops/nginx.conf /etc/nginx/nginx.conf
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+Cloudflare SSL/TLS mode should match your origin setup (HTTP origin commonly uses `Flexible`).
 
 ## Documentation
 
