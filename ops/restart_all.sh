@@ -7,6 +7,11 @@ CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 LOCK_FILE="${REPO_ROOT}/.restart_all.lock"
 DEFAULT_PATH="$HOME/.local/go/bin:$HOME/.local/protoc/bin:$HOME/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+NVM_NODE_BIN="${NVM_NODE_BIN:-}"
+
+if [ -z "$NVM_NODE_BIN" ] && [ -d "$HOME/.nvm/versions/node" ]; then
+  NVM_NODE_BIN="$(find "$HOME/.nvm/versions/node" -mindepth 2 -maxdepth 2 -type d -name bin 2>/dev/null | sort -V | tail -n 1 || true)"
+fi
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -26,6 +31,12 @@ ensure_path() {
     *":$HOME/go/bin:"*) ;;
     *) PATH="$HOME/go/bin:$PATH" ;;
   esac
+  if [ -n "$NVM_NODE_BIN" ] && [ -d "$NVM_NODE_BIN" ]; then
+    case ":$PATH:" in
+      *":$NVM_NODE_BIN:"*) ;;
+      *) PATH="$NVM_NODE_BIN:$PATH" ;;
+    esac
+  fi
   export PATH
 }
 
@@ -71,6 +82,9 @@ log "All services verified healthy"
 
 setup_cronjob() {
   local cron_path="$DEFAULT_PATH"
+  if [ -n "$NVM_NODE_BIN" ] && [ -d "$NVM_NODE_BIN" ]; then
+    cron_path="$NVM_NODE_BIN:$cron_path"
+  fi
   local cron_line="0 * * * * PATH=$cron_path bash $REPO_ROOT/ops/restart_all.sh >> $REPO_ROOT/logs/cron.log 2>&1"
 
   # Replace only this job and preserve other user cron entries.
