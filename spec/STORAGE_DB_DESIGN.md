@@ -9,6 +9,20 @@
 
 ## Scope and Data Ownership
 
+### Path Tracking Decision (DB vs S3)
+
+We **should track file paths and directory paths in PostgreSQL**, not in S3 object keys.
+
+- S3 object keys should represent immutable blob identity (`blobs/sha256/<hash>`) and optional snapshot artifacts.
+- Repository semantics (`slice_id`, file `path`, directory hierarchy, rename/move history) belong to transactional metadata in Postgres.
+- A single blob hash may be referenced by multiple `(slice_id, path)` rows, so path cannot be inferred from object storage.
+
+Therefore:
+
+- Store canonical path mappings in `directory_entries(slice_id, path, parent_id, ...)` and `file_contents(slice_id, path, content_hash, ...)`.
+- Keep S3 path-free from logical repo structure to preserve deduplication and immutability.
+- Use DB indexes for path lookups/history (`(slice_id, path)`), while S3 only serves bytes by content key.
+
 ### PostgreSQL (authoritative metadata)
 
 PostgreSQL is the source of truth for:
