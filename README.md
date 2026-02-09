@@ -196,11 +196,15 @@ To restore PM2 apps on reboot (user crontab approach):
 @reboot PATH=/home/<user>/.nvm/versions/node/<node-version>/bin:/home/<user>/.local/go/bin:/home/<user>/.local/protoc/bin:/home/<user>/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /home/<user>/.nvm/versions/node/<node-version>/bin/pm2 resurrect >> /home/<user>/workspace/gitslice/logs/pm2_reboot.log 2>&1
 ```
 
-### NGINX (Cloudflare in Front, Origin HTTP)
+### NGINX (Cloudflare in Front, Origin TLS)
 
-`ops/nginx.conf` is configured for HTTP origin traffic (no local TLS termination). Cloudflare serves public HTTPS and proxies to origin HTTP.
+`ops/nginx.conf` is configured to terminate TLS on the origin (port `443`) and serve HTTP/2 via ALPN. This avoids cleartext HTTP/2 (h2c) pitfalls on port `80` and is compatible with Cloudflare's proxying behavior.
 
-`api.agenttools.dev` routes gRPC service paths (`/slice.v1.SliceService/` and `/admin.v1.AdminService/`) to the core server and is configured as an HTTP/2 listener (`listen 80 http2`) for plaintext gRPC (h2c) CLI traffic. `agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths. CLI clients should target `api.agenttools.dev` for gRPC connectivity.
+`api.agenttools.dev` routes gRPC service paths (`/slice.v1.SliceService/` and `/admin.v1.AdminService/`) to the core server. `agenttools.dev` serves the web app and `/v1/` REST gateway paths. Both hosts are served over HTTPS on port `443` with HTTP/2 enabled on the listener.
+
+Certificate/key are expected to exist on the origin host (Cloudflare Origin CA is recommended). Current operator paths:
+- `/home/nic/cert/agenttools.dev.pem`
+- `/home/nic/cert/agenttools.dev.pri`
 
 Apply config:
 
@@ -210,7 +214,7 @@ sudo nginx -t
 sudo systemctl restart nginx
 ```
 
-Cloudflare SSL/TLS mode should match your origin setup (HTTP origin commonly uses `Flexible`).
+Cloudflare SSL/TLS mode should match your origin setup. When terminating TLS at the origin, use `Full` or `Full (strict)` (recommended with Origin CA).
 
 ## Documentation
 
