@@ -25,7 +25,7 @@ This document describes the planned data models for the slice-based version cont
 - Changeset models
 - Batch merge models
 
-Slices are identified by stable slice IDs stored in the metadata layer (in-memory or Redis-backed storage), not by files in the repository. The slice ID is the canonical identifier used by the API and CLI, for example:
+Slices are identified by stable slice IDs stored in the metadata layer (in-memory or PostgreSQL-backed storage), not by files in the repository. The slice ID is the canonical identifier used by the API and CLI, for example:
 
 - `root_slice`
 - `payments_slice`

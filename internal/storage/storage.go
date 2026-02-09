@@ -19,8 +19,8 @@ var (
 	ErrSliceFilesImmutable = errors.New("slice files are immutable")
 )
 
-// Storage defines the interface for data storage operations
-// This allows us to swap implementations (in-memory, Redis, etc.)
+// Storage defines the interface for data storage operations.
+// This allows us to swap implementations (in-memory, PostgreSQL, etc.).
 type Storage interface {
 	// Slice operations
 	CreateSlice(ctx context.Context, slice *models.Slice) error

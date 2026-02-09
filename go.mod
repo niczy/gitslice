@@ -3,29 +3,19 @@ module github.com/niczy/gitslice
 go 1.24
 
 require (
-	github.com/alicebob/miniredis/v2 v2.35.0
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.95.0
+	cloud.google.com/go/storage v1.43.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0
+	github.com/jackc/pgx/v5 v5.7.6
 	github.com/niczy/gitslice/services/admin v0.0.0
 	github.com/niczy/gitslice/services/file v0.0.0
 	github.com/niczy/gitslice/services/slice v0.0.0
-	github.com/redis/go-redis/v9 v9.17.2
+	google.golang.org/api v0.224.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20240513163218-0867130af1f8
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.34.1
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.41.0 // indirect
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.4 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.16 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.16 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.16 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.4 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.7 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.16 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.16 // indirect
-	github.com/aws/smithy-go v1.24.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect

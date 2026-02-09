@@ -1,27 +1,27 @@
-# Storage DB Design: PostgreSQL + S3
+# Storage DB Design: PostgreSQL + GCS
 
 ## Goals
 
 - Preserve correctness for all current `Storage` interface operations under high write/read concurrency.
 - Make metadata strongly consistent and durable through PostgreSQL transactions.
-- Keep large/immutable payloads in S3 with content-addressed keys.
-- Support incremental rollout from current in-memory/Redis-backed implementation.
+- Keep large/immutable payloads in GCS with content-addressed keys.
+- Support incremental rollout from current in-memory implementation.
 
 ## Scope and Data Ownership
 
-### Path Tracking Decision (DB vs S3)
+### Path Tracking Decision (DB vs GCS)
 
-We **should track file paths and directory paths in PostgreSQL**, not in S3 object keys.
+We **should track file paths and directory paths in PostgreSQL**, not in GCS object keys.
 
-- S3 object keys should represent immutable blob identity (`blobs/sha256/<hash>`) and optional snapshot artifacts.
+- GCS object keys should represent immutable blob identity (`blobs/sha256/<hash>`) and optional snapshot artifacts.
 - Repository semantics (`slice_id`, file `path`, directory hierarchy, rename/move history) belong to transactional metadata in Postgres.
 - A single blob hash may be referenced by multiple `(slice_id, path)` rows, so path cannot be inferred from object storage.
 
 Therefore:
 
 - Store canonical path mappings in `directory_entries(slice_id, path, parent_id, ...)` and `file_contents(slice_id, path, content_hash, ...)`.
-- Keep S3 path-free from logical repo structure to preserve deduplication and immutability.
-- Use DB indexes for path lookups/history (`(slice_id, path)`), while S3 only serves bytes by content key.
+- Keep GCS path-free from logical repo structure to preserve deduplication and immutability.
+- Use DB indexes for path lookups/history (`(slice_id, path)`), while GCS only serves bytes by content key.
 
 ### PostgreSQL (authoritative metadata)
 
@@ -34,15 +34,15 @@ PostgreSQL is the source of truth for:
 - Commit history and queryable change logs (`AddSliceCommit`, `GetFileHistory`, `GetCommitChanges`)
 - Global singleton state (`GetGlobalState`, `GetRootSlice`)
 
-### S3 (immutable object payloads)
+### GCS (immutable object payloads)
 
-S3 stores:
+GCS stores:
 
 - File blobs: `blobs/sha256/<hash>`
 - Large commit snapshots: `snapshots/<commit_hash>.json`
 - Optional exported manifests for bootstrap/audit: `manifests/<slice_id>/<commit_hash>.json`
 
-Metadata rows reference S3 object keys; S3 is never used as the transactional coordinator.
+Metadata rows reference GCS object keys; GCS is never used as the transactional coordinator.
 
 ## Logical Schema
 
@@ -62,7 +62,7 @@ The schema below focuses on correctness and query behavior used by the existing 
 - `directory_entries(entry_id PK, slice_id FK->slices, parent_id NULL FK->directory_entries, path text, name text, type text, created_at, updated_at, UNIQUE(slice_id, path))`
 - `file_contents(file_id PK, slice_id FK->slices, path text, content_hash text, byte_size bigint, created_at, UNIQUE(slice_id, path))`
 - `slice_files(slice_id FK->slices, file_id text, PRIMARY KEY(slice_id, file_id))`
-- `commit_snapshots(commit_hash PK, slice_id FK->slices, timestamp timestamptz, snapshot_inline jsonb NULL, snapshot_s3_key NULL, created_at)`
+- `commit_snapshots(commit_hash PK, slice_id FK->slices, timestamp timestamptz, snapshot_inline jsonb NULL, snapshot_gcs_key NULL, created_at)`
 
 ### Conflict/index model
 
@@ -95,6 +95,18 @@ To fully cover the current in-memory domain models and `Storage` interface behav
 
 If these are omitted, parity gaps will appear versus current API/CLI expectations.
 
+### In-memory Compatibility Contract
+
+To keep the DB-backed implementation behaviorally compatible with the current `InMemoryStorage` contract, preserve these semantics:
+
+- `CreateSlice` initializes `slice_metadata.head_commit_hash` as `init-<slice_id>`.
+- `InitializeRootSlice` sets root metadata head commit to `root-initial`.
+- `RemoveFileFromSlice` updates file membership/index state only and must not mutate immutable `slice.Files`.
+- `UpdateGlobalState` replaces the stored snapshot with the provided value (no implicit merge with prior history).
+- `AddFileContent` writes both checkout content (`file_content/<file_id>`) and, when `hash` is present, versioned content (`versioned_content/<hash>`) used by commit snapshot lookups.
+
+These rules should be enforced in backend contract tests run against memory and DB-backed implementations.
+
 ## File and Directory Change History Design
 
 Change history should be tracked in PostgreSQL as an append-only event log, with directory history derived from file events.
@@ -109,7 +121,7 @@ Use `file_changes` as the source of truth for history events:
 
 ### How directory history is represented
 
-Do not store a separate mutable "directory history" object in S3.
+Do not store a separate mutable "directory history" object in GCS.
 
 - Directory history for `path_prefix` is computed by querying `file_changes` where `path LIKE '<prefix>/%'` (or equivalent index-friendly predicate).
 - Optional materialized aggregates can be maintained in Postgres for hot directories, but raw `file_changes` remains the authoritative log.
@@ -138,7 +150,7 @@ Indexes:
 
 - History rows are inserted in the same transaction as `slice_commits` append and head update.
 - If commit transaction rolls back, no history rows become visible.
-- Consumers never read history from S3; S3 remains blob/snapshot storage only.
+- Consumers never read history from GCS; GCS remains blob/snapshot storage only.
 
 ## Index Strategy
 
@@ -200,7 +212,7 @@ Correctness properties:
 ## 3) Blob write + metadata pointer (`AddFileContent`)
 
 - Compute hash locally.
-- Upload blob to S3 key by hash (idempotent).
+- Upload blob to GCS key by hash (idempotent).
 - `BEGIN`
 - Upsert `file_contents` row with `(slice_id, path, content_hash, byte_size)`.
 - Insert history entry if called from commit flow.
@@ -208,7 +220,7 @@ Correctness properties:
 
 Failure policy:
 
-- If DB commit fails after S3 write, object may be orphaned; enqueue with `object_gc_candidates` asynchronously.
+- If DB commit fails after GCS write, object may be orphaned; enqueue with `object_gc_candidates` asynchronously.
 
 ## 4) Commit append (`AddSliceCommit`, snapshots)
 
@@ -229,7 +241,7 @@ Correctness properties:
 
 - Default: `READ COMMITTED` for most flows with row-level locks.
 - Use `SERIALIZABLE` only for highly contended reconciliation paths where predicate anomalies matter (for example complex conflict resolution scans).
-- Keep transactions short; do not hold DB transactions while uploading to S3.
+- Keep transactions short; do not hold DB transactions while uploading to GCS.
 
 ## High-Concurrency Patterns
 
@@ -251,9 +263,9 @@ Correctness properties:
 ## Operational Safety
 
 - Migrations: forward-only SQL migrations with online-safe DDL where possible (`CONCURRENTLY` for indexes).
-- Backups: PITR for Postgres + S3 versioning.
-- Recovery drill: restore DB, verify referenced S3 objects, rebuild derived caches if introduced.
-- Observability: emit metrics for lock conflicts, txn retries, DB latency, S3 latency, GC backlog.
+- Backups: PITR for Postgres + GCS versioning.
+- Recovery drill: restore DB, verify referenced GCS objects, rebuild derived caches if introduced.
+- Observability: emit metrics for lock conflicts, txn retries, DB latency, GCS latency, GC backlog.
 
 ## Phased Implementation Plan
 
@@ -281,7 +293,7 @@ Correctness properties:
 - Move conflict detection/index writes to DB transactions.
 - Validate under concurrent workload tests.
 
-### Phase 4 — S3 durability hardening
+### Phase 4 — GCS durability hardening
 
 - Finalize content-addressed blob writes and orphan-GC job.
 - Add consistency checker for dangling metadata/object references.
@@ -289,6 +301,6 @@ Correctness properties:
 
 ### Phase 5 — Rollout and deprecation
 
-- Deploy dual-read validation in staging (compare memory/redis vs postgres responses for sampled calls).
+- Deploy dual-read validation in staging (compare memory vs postgres responses for sampled calls).
 - Cut over to Postgres primary storage.
 - Remove legacy durable-state-in-object-store path after confidence window.

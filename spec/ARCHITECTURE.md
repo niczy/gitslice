@@ -27,7 +27,7 @@ For detailed algorithms and operations, see [ALGORITHMS.md](./ALGORITHMS.md).
 
 ### Slice Identifiers
 
-Slices are stored in the metadata layer (in-memory or Redis-backed storage) and are addressed by stable slice IDs rather than on-disk files. The slice ID is the canonical identifier that flows through the API and CLI. Example slice IDs:
+Slices are stored in the metadata layer (in-memory or PostgreSQL-backed storage) and are addressed by stable slice IDs rather than on-disk files. The slice ID is the canonical identifier that flows through the API and CLI. Example slice IDs:
 
 - `root_slice`
 - `payments_slice`

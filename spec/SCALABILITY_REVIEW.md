@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The architecture spec targets a distributed system backed by an object store and Redis indexes, but the current prototype is a single-process, in-memory implementation. This document summarizes the gaps and near-term steps to align the codebase with the target architecture.
+The architecture spec originally targeted a distributed system backed by an object store and Redis-style indexes, but the current implementation path is PostgreSQL + GCS with in-memory compatibility. This document summarizes the gaps and near-term steps to align the codebase with that target architecture.
 
 ## Current Prototype Constraints
 
@@ -11,12 +11,12 @@ The architecture spec targets a distributed system backed by an object store and
 - **In-memory scans:** Listing slices and batch merge paths iterate full in-memory collections, which will not scale as slice counts grow. See [`internal/storage/memory.go`](../internal/storage/memory.go) and [`services/admin/server.go`](../services/admin/server.go).
 - **No durable blob store:** File contents and metadata live in memory only, bypassing the planned content-addressable object store.
 
-## Recommended Persistent Storage Design: PostgreSQL + S3
+## Recommended Persistent Storage Design: PostgreSQL + GCS
 
 To align the existing `Storage` interface with production durability requirements, use a split backend:
 
 - **PostgreSQL for transactional metadata and indexes** (slices, entries, changesets, commits, locks).
-- **S3-compatible object storage for immutable blobs** (file content, snapshots, large payloads).
+- **GCS-compatible object storage for immutable blobs** (file content, snapshots, large payloads).
 
 This preserves the current in-memory programming model while adding crash safety, multi-instance consistency, and recovery.
 
@@ -33,7 +33,7 @@ This preserves the current in-memory programming model while adding crash safety
 - `global_state` singleton row for root slice and system pointers.
 - `locks` table (or advisory locks) for `LockSliceAndFiles` semantics.
 
-#### S3 (immutable binary/state objects)
+#### GCS (immutable binary/state objects)
 
 - Content-addressed blobs under `blobs/sha256/<hash>` for file content.
 - Snapshot payloads under `snapshots/<commit_hash>.json` when snapshot manifests are large.
@@ -44,9 +44,9 @@ This preserves the current in-memory programming model while adding crash safety
 
 - `AddFileContent`:
   1. Hash content.
-  2. Write blob to S3 (idempotent by hash key).
+  2. Write blob to GCS (idempotent by hash key).
   3. Upsert PostgreSQL metadata row with blob key, size, and checksum.
-- `GetSliceFiles` / `GetSliceFileByPath`: query PostgreSQL for manifest rows, then hydrate content bytes from S3 only when needed.
+- `GetSliceFiles` / `GetSliceFileByPath`: query PostgreSQL for manifest rows, then hydrate content bytes from GCS only when needed.
 - `CreateSlice`, `CreateChangeset`, `UpdateChangeset`, `AddSliceCommit`: single PostgreSQL transactions with row-level locking.
 - `ResolveConflict`: transactionally update `file_slice_index` and conflict rows, then commit.
 - `GetFileHistory` and directory history queries: execute directly from indexed `file_changes` in PostgreSQL.
@@ -54,26 +54,26 @@ This preserves the current in-memory programming model while adding crash safety
 ### Consistency and Transactions
 
 - Use PostgreSQL as the commit boundary for metadata correctness.
-- For write paths touching both Postgres and S3:
-  - Upload object to S3 first.
+- For write paths touching both Postgres and GCS:
+  - Upload object to GCS first.
   - Commit metadata transaction second.
   - If metadata commit fails, leave unreferenced object for async GC.
 - Add an `object_gc_candidates` table populated when metadata references are removed.
-- Run a periodic GC job to delete unreferenced S3 keys safely after grace period.
+- Run a periodic GC job to delete unreferenced GCS keys safely after grace period.
 
 ### Operational Notes
 
 - **Schema migrations:** use versioned SQL migrations checked into repo.
 - **Connection management:** pgx pool with bounded max connections per service instance.
-- **Backups:** PostgreSQL PITR + S3 versioning.
-- **Recovery:** restore PostgreSQL first, then validate referenced S3 keys; rebuild derived indexes if needed.
-- **Multi-region path (future):** primary Postgres region with read replicas; S3 cross-region replication for blobs.
+- **Backups:** PostgreSQL PITR + GCS versioning.
+- **Recovery:** restore PostgreSQL first, then validate referenced GCS keys; rebuild derived indexes if needed.
+- **Multi-region path (future):** primary Postgres region with read replicas; GCS cross-region replication for blobs.
 
 ### Why This Fits Current Code
 
-- The existing `ObjectStore` abstraction already supports an S3 backend (`internal/storage/objectstore.go`).
+- The existing `ObjectStore` abstraction already supports a GCS backend (`internal/storage/objectstore.go`).
 - The current `Storage` interface cleanly maps to relational operations plus blob lookup without service API changes (`internal/storage/storage.go`).
-- `RedisStorage` can be replaced incrementally with a `PostgresStorage` implementation while preserving handler code in `services/`.
+- `PostgresStorage` preserves the existing `Storage` interface so handler code in `services/` remains unchanged.
 
 ## Detailed Schema and Transaction Design
 

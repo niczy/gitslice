@@ -1,19 +1,17 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
 	"sync"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	gcsstorage "cloud.google.com/go/storage"
 )
 
 // ObjectStore defines a minimal API used by storage implementations to persist file content.
 // The interface is intentionally tiny to support lightweight in-memory fakes in tests while
-// enabling an S3-backed implementation for production.
+// enabling a GCS-backed implementation for production.
 type ObjectStore interface {
 	PutObject(ctx context.Context, key string, body []byte) error
 	GetObject(ctx context.Context, key string) ([]byte, error)
@@ -70,50 +68,39 @@ func (s *InMemoryObjectStore) DeleteObject(ctx context.Context, key string) erro
 	return nil
 }
 
-// S3Client captures the subset of the AWS SDK client used by S3ObjectStore.
-type S3Client interface {
-	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
-	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
-	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
-}
-
-// S3ObjectStore stores file content in an S3-compatible bucket.
-type S3ObjectStore struct {
-	client S3Client
+// GCSObjectStore stores file content in a Google Cloud Storage bucket.
+type GCSObjectStore struct {
+	client *gcsstorage.Client
 	bucket string
 }
 
-// NewS3ObjectStore creates an object store backed by S3.
-func NewS3ObjectStore(client S3Client, bucket string) *S3ObjectStore {
-	return &S3ObjectStore{client: client, bucket: bucket}
+// NewGCSObjectStore creates an object store backed by GCS.
+func NewGCSObjectStore(client *gcsstorage.Client, bucket string) *GCSObjectStore {
+	return &GCSObjectStore{client: client, bucket: bucket}
 }
 
-// PutObject uploads the payload to S3.
-func (s *S3ObjectStore) PutObject(ctx context.Context, key string, body []byte) error {
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: &s.bucket,
-		Key:    &key,
-		Body:   bytes.NewReader(body),
-	})
-	return err
+// PutObject uploads the payload to GCS.
+func (s *GCSObjectStore) PutObject(ctx context.Context, key string, body []byte) error {
+	w := s.client.Bucket(s.bucket).Object(key).NewWriter(ctx)
+	if _, err := w.Write(body); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
 }
 
-// GetObject downloads an object from S3.
-func (s *S3ObjectStore) GetObject(ctx context.Context, key string) ([]byte, error) {
-	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: &s.bucket,
-		Key:    &key,
-	})
+// GetObject downloads an object from GCS.
+func (s *GCSObjectStore) GetObject(ctx context.Context, key string) ([]byte, error) {
+	r, err := s.client.Bucket(s.bucket).Object(key).NewReader(ctx)
 	if err != nil {
-		var notFound *types.NoSuchKey
-		if errors.As(err, &notFound) {
+		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return nil, ErrEntryNotFound
 		}
 		return nil, err
 	}
-	defer out.Body.Close()
+	defer r.Close()
 
-	data, err := io.ReadAll(out.Body)
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
@@ -121,14 +108,10 @@ func (s *S3ObjectStore) GetObject(ctx context.Context, key string) ([]byte, erro
 	return data, nil
 }
 
-// DeleteObject removes an object from S3.
-func (s *S3ObjectStore) DeleteObject(ctx context.Context, key string) error {
-	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: &s.bucket,
-		Key:    &key,
-	})
-	var notFound *types.NoSuchKey
-	if errors.As(err, &notFound) {
+// DeleteObject removes an object from GCS.
+func (s *GCSObjectStore) DeleteObject(ctx context.Context, key string) error {
+	err := s.client.Bucket(s.bucket).Object(key).Delete(ctx)
+	if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 		return ErrEntryNotFound
 	}
 	return err

@@ -17,9 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gateway"
 	"github.com/niczy/gitslice/internal/models"
@@ -43,7 +40,7 @@ var (
 	gatewayServer   *http.Server
 	gatewayListener net.Listener
 	gatewayClose    func()
-	testStorage     *storage.RedisStorage
+	testStorage     storage.Storage
 )
 
 // TestMain sets up and tears down services for all tests
@@ -53,20 +50,25 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
-	mr, err := miniredis.Run()
-	if err != nil {
-		fmt.Printf("Failed to start mock redis: %v\n", err)
-		os.Exit(1)
+	var st storage.Storage
+	var closeStorage func()
+	var err error
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn != "" {
+		objectStore := storage.NewInMemoryObjectStore()
+		pg, err := storage.NewPostgresStorage(context.Background(), dsn, objectStore, fmt.Sprintf("integration-%d", time.Now().UnixNano()))
+		if err != nil {
+			fmt.Printf("Failed to initialize postgres storage: %v\n", err)
+			os.Exit(1)
+		}
+		st = pg
+		closeStorage = func() { _ = pg.Close() }
+	} else {
+		st = storage.NewInMemoryStorage()
+		closeStorage = func() {}
 	}
-
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	objectStore := storage.NewInMemoryObjectStore()
-	st := storage.NewRedisStorage(client, objectStore, "integration")
 	testStorage = st
-	defer func() {
-		_ = client.Close()
-		mr.Close()
-	}()
+	defer closeStorage()
 
 	// Initialize root slice
 	if err := st.InitializeRootSlice(nil); err != nil {
@@ -1034,17 +1036,22 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 	}
 }
 
-func TestRedisRestartRebuildsEndToEnd(t *testing.T) {
+func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set TEST_POSTGRES_DSN to run postgres restart persistence test")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	mr := miniredis.RunT(t)
-	defer mr.Close()
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
-
 	objectStore := storage.NewInMemoryObjectStore()
-	st := storage.NewRedisStorage(client, objectStore, "restart-e2e")
+	namespace := fmt.Sprintf("restart-e2e-%d", time.Now().UnixNano())
+	st, err := storage.NewPostgresStorage(ctx, dsn, objectStore, namespace)
+	if err != nil {
+		t.Fatalf("failed to create postgres storage: %v", err)
+	}
+
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("failed to init root slice: %v", err)
 	}
@@ -1060,14 +1067,8 @@ func TestRedisRestartRebuildsEndToEnd(t *testing.T) {
 		t.Fatalf("failed to dial slice service: %v", err)
 	}
 	defer sliceConn.Close()
-	adminConn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("failed to dial admin service: %v", err)
-	}
-	defer adminConn.Close()
 
 	sliceClient := slicev1.NewSliceServiceClient(sliceConn)
-	adminClient := adminv1.NewAdminServiceClient(adminConn)
 
 	sliceID := fmt.Sprintf("restart-slice-%d", time.Now().UnixNano())
 	fileID := fmt.Sprintf("persist-%d.txt", time.Now().UnixNano())
@@ -1085,25 +1086,50 @@ func TestRedisRestartRebuildsEndToEnd(t *testing.T) {
 		t.Fatalf("merge failed: %v", err)
 	}
 
-	mr.FlushAll()
-	if err := st.RebuildIndexes(ctx); err != nil {
-		t.Fatalf("rebuild after flush failed: %v", err)
+	if err := st.Close(); err != nil {
+		t.Fatalf("failed closing initial storage: %v", err)
 	}
 
-	globalState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	st, err = storage.NewPostgresStorage(ctx, dsn, objectStore, namespace)
 	if err != nil {
-		t.Fatalf("failed to read global state after rebuild: %v", err)
+		t.Fatalf("failed to reopen postgres storage: %v", err)
+	}
+	defer st.Close()
+
+	addr2, srv2, err := startGRPCServer(st)
+	if err != nil {
+		t.Fatalf("failed to start gRPC services after restart: %v", err)
+	}
+	defer srv2.GracefulStop()
+
+	sliceConn2, err := grpc.DialContext(ctx, addr2, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to dial restarted slice service: %v", err)
+	}
+	defer sliceConn2.Close()
+	adminConn2, err := grpc.DialContext(ctx, addr2, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to dial restarted admin service: %v", err)
+	}
+	defer adminConn2.Close()
+
+	sliceClient2 := slicev1.NewSliceServiceClient(sliceConn2)
+	adminClient2 := adminv1.NewAdminServiceClient(adminConn2)
+
+	globalState, err := adminClient2.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	if err != nil {
+		t.Fatalf("failed to read global state after restart: %v", err)
 	}
 	if globalState.GlobalCommitHash != mergeResp.NewCommitHash {
-		t.Fatalf("expected global commit %s after rebuild, got %s", mergeResp.NewCommitHash, globalState.GlobalCommitHash)
+		t.Fatalf("expected global commit %s after restart, got %s", mergeResp.NewCommitHash, globalState.GlobalCommitHash)
 	}
 
-	sliceState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
+	sliceState, err := sliceClient2.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
 	if err != nil {
-		t.Fatalf("failed to read slice state after rebuild: %v", err)
+		t.Fatalf("failed to read slice state after restart: %v", err)
 	}
 	if sliceState.LatestCommitHash != mergeResp.NewCommitHash {
-		t.Fatalf("expected slice head %s after rebuild, got %s", mergeResp.NewCommitHash, sliceState.LatestCommitHash)
+		t.Fatalf("expected slice head %s after restart, got %s", mergeResp.NewCommitHash, sliceState.LatestCommitHash)
 	}
 }
 

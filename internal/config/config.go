@@ -12,20 +12,18 @@ type Config struct {
 	CoreServicePort string
 	GatewayPort     string
 
-	// Storage type (memory, redis)
+	// Storage type (memory, postgres)
 	StorageType string
 
-	// Redis configuration (if storage type is redis)
-	RedisAddr     string
-	RedisPassword string
-	RedisDB       int
+	// Postgres configuration (if storage type is postgres)
+	PostgresDSN string
 
-	// Object store configuration
-	S3Endpoint        string
-	S3AccessKeyID     string
-	S3SecretAccessKey string
-	S3Bucket          string
-	S3Region          string
+	// Object store configuration (GCS)
+	GCSBucket          string
+	GCSEndpoint        string
+	GCSCredentialsFile string
+	GCSCredentialsJSON string
+	GCSDisableAuth     bool
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -41,17 +39,15 @@ func LoadConfig() *Config {
 		}
 	}
 	return &Config{
-		CoreServicePort:   corePort,
-		GatewayPort:       getEnv("GATEWAY_PORT", "8080"),
-		StorageType:       getEnv("STORAGE_TYPE", "memory"),
-		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
-		RedisDB:           getEnvInt("REDIS_DB", 0),
-		S3Endpoint:        getEnv("S3_ENDPOINT", ""),
-		S3AccessKeyID:     getEnv("S3_ACCESS_KEY_ID", ""),
-		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
-		S3Bucket:          getEnv("S3_BUCKET", "gitslice-objects"),
-		S3Region:          getEnv("S3_REGION", "us-east-1"),
+		CoreServicePort:    corePort,
+		GatewayPort:        getEnv("GATEWAY_PORT", "8080"),
+		StorageType:        getEnv("STORAGE_TYPE", "memory"),
+		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
+		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),
+		GCSEndpoint:        getEnv("GCS_ENDPOINT", ""),
+		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),
+		GCSCredentialsJSON: getEnv("GCS_CREDENTIALS_JSON", ""),
+		GCSDisableAuth:     getEnvBool("GCS_DISABLE_AUTH", false),
 	}
 }
 
@@ -83,12 +79,14 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvInt retrieves an integer environment variable or returns a default value.
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intVal, err := strconv.Atoi(value); err == nil {
-			return intVal
-		}
+func getEnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
 	}
-	return defaultValue
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
