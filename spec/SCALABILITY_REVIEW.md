@@ -11,15 +11,70 @@ The architecture spec targets a distributed system backed by an object store and
 - **In-memory scans:** Listing slices and batch merge paths iterate full in-memory collections, which will not scale as slice counts grow. See [`internal/storage/memory.go`](../internal/storage/memory.go) and [`services/admin/server.go`](../services/admin/server.go).
 - **No durable blob store:** File contents and metadata live in memory only, bypassing the planned content-addressable object store.
 
-## Recommendations to Reach Design Targets
+## Recommended Persistent Storage Design: PostgreSQL + S3
 
-- **Introduce a shared backend:** Implement the `Storage` interface with a Redis-backed index layer plus an S3-compatible object store, as described in [ARCHITECTURE.md](./ARCHITECTURE.md).
-- **Shard locks and indexes:** Move from a single mutex to per-slice or per-file locks (stored in Redis), and replace full scans with keyed lookups.
-- **Queue-based batch merge:** Replace full-slice scans with a bounded queue and cursor-based pagination to keep memory bounded.
-- **Durability + recovery:** Persist slice manifests and commits to the object store and provide a bootstrap routine to rebuild Redis indexes after restart.
+To align the existing `Storage` interface with production durability requirements, use a split backend:
 
-## Redis vs. Relational DB (Context)
+- **PostgreSQL for transactional metadata and indexes** (slices, entries, changesets, commits, locks).
+- **S3-compatible object storage for immutable blobs** (file content, snapshots, large payloads).
 
-- **Redis strengths:** Fast set membership and intersection for conflict detection, plus native data structures for queues and locks (see [ARCHITECTURE.md](./ARCHITECTURE.md)).
-- **Relational strengths:** Strong transactional guarantees and flexible reporting, but slower set operations for conflict detection at scale.
-- **Hybrid approach:** Redis for hot indexes and locks, with an object store (or relational backing store) for durable state.
+This preserves the current in-memory programming model while adding crash safety, multi-instance consistency, and recovery.
+
+### Data Placement
+
+#### PostgreSQL (source of truth for metadata)
+
+- `slices` + `slice_metadata` tables for slice identity, owner, parent, timestamps, and head commit pointers.
+- `slice_commits` and `commit_snapshots` tables for commit ordering and snapshot manifests.
+- `changesets` table for lifecycle state and merge metadata.
+- `directory_entries` table with `(slice_id, path)` unique index for path lookups.
+- `file_changes` append-only table indexed by `(slice_id, path, committed_at DESC)` for history queries.
+- `file_slice_index` table for conflict detection (file -> active slices), replacing in-memory maps.
+- `global_state` singleton row for root slice and system pointers.
+- `locks` table (or advisory locks) for `LockSliceAndFiles` semantics.
+
+#### S3 (immutable binary/state objects)
+
+- Content-addressed blobs under `blobs/sha256/<hash>` for file content.
+- Snapshot payloads under `snapshots/<commit_hash>.json` when snapshot manifests are large.
+- Optional archival export under `manifests/<slice_id>/<commit_hash>.json` for offline rebuild.
+- Enable bucket versioning + lifecycle rules (hot storage for recent objects, infrequent-access/archive for old snapshots).
+
+### Storage API Mapping
+
+- `AddFileContent`:
+  1. Hash content.
+  2. Write blob to S3 (idempotent by hash key).
+  3. Upsert PostgreSQL metadata row with blob key, size, and checksum.
+- `GetSliceFiles` / `GetSliceFileByPath`: query PostgreSQL for manifest rows, then hydrate content bytes from S3 only when needed.
+- `CreateSlice`, `CreateChangeset`, `UpdateChangeset`, `AddSliceCommit`: single PostgreSQL transactions with row-level locking.
+- `ResolveConflict`: transactionally update `file_slice_index` and conflict rows, then commit.
+- `GetFileHistory` and directory history queries: execute directly from indexed `file_changes` in PostgreSQL.
+
+### Consistency and Transactions
+
+- Use PostgreSQL as the commit boundary for metadata correctness.
+- For write paths touching both Postgres and S3:
+  - Upload object to S3 first.
+  - Commit metadata transaction second.
+  - If metadata commit fails, leave unreferenced object for async GC.
+- Add an `object_gc_candidates` table populated when metadata references are removed.
+- Run a periodic GC job to delete unreferenced S3 keys safely after grace period.
+
+### Operational Notes
+
+- **Schema migrations:** use versioned SQL migrations checked into repo.
+- **Connection management:** pgx pool with bounded max connections per service instance.
+- **Backups:** PostgreSQL PITR + S3 versioning.
+- **Recovery:** restore PostgreSQL first, then validate referenced S3 keys; rebuild derived indexes if needed.
+- **Multi-region path (future):** primary Postgres region with read replicas; S3 cross-region replication for blobs.
+
+### Why This Fits Current Code
+
+- The existing `ObjectStore` abstraction already supports an S3 backend (`internal/storage/objectstore.go`).
+- The current `Storage` interface cleanly maps to relational operations plus blob lookup without service API changes (`internal/storage/storage.go`).
+- `RedisStorage` can be replaced incrementally with a `PostgresStorage` implementation while preserving handler code in `services/`.
+
+## Detailed Schema and Transaction Design
+
+For the concrete PostgreSQL schema, index strategy, transaction boundaries, concurrency model, invariants, and phased rollout plan, see [STORAGE_DB_DESIGN.md](./STORAGE_DB_DESIGN.md).

@@ -199,6 +199,7 @@ See the `spec/` directory for detailed design specifications:
 - [API Design](spec/API_DESIGN.md)
 - [Architecture](spec/ARCHITECTURE.md)
 - [Scalability Review](spec/SCALABILITY_REVIEW.md)
+- [Storage DB Design](spec/STORAGE_DB_DESIGN.md)
 
 For the web landing page, see [web/README.md](web/README.md).
 
