@@ -184,7 +184,7 @@ To restore PM2 apps on reboot (user crontab approach):
 
 `ops/nginx.conf` is configured for HTTP origin traffic (no local TLS termination). Cloudflare serves public HTTPS and proxies to origin HTTP.
 
-`api.agenttools.dev` routes gRPC service paths (`/slice.v1.SliceService/` and `/admin.v1.AdminService/`) to the core server and is configured as an HTTP/2 listener (`listen 80 http2`) for plaintext gRPC (h2c) CLI traffic. `agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths. CLI clients should target `api.agenttools.dev` for gRPC connectivity.
+`api.agenttools.dev` routes gRPC service paths (`/slice.v1.SliceService/` and `/admin.v1.AdminService/`) to the core server using a standard HTTP origin listener (`listen 80`). `agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths. CLI clients should target `api.agenttools.dev` for gRPC connectivity.
 
 Apply config:
 
