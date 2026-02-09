@@ -10,6 +10,8 @@ WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
+MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
+PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -65,7 +67,46 @@ wait_for_port() {
 
 cd "$REPO_ROOT"
 
+ensure_node_runtime() {
+  if ! command -v node >/dev/null 2>&1; then
+    log "ERROR: node is not in PATH. Install Node.js >= ${MIN_NODE_MAJOR}."
+    exit 1
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    log "ERROR: npm is not in PATH. Install Node.js >= ${MIN_NODE_MAJOR}."
+    exit 1
+  fi
+
+  local node_version node_major
+  node_version="$(node -v 2>/dev/null || true)"
+  node_major="$(echo "$node_version" | sed -E 's/^v([0-9]+).*/\1/')"
+  if [ -z "$node_major" ] || [ "$node_major" -lt "$MIN_NODE_MAJOR" ]; then
+    log "ERROR: Node.js $node_version is unsupported. Need Node.js >= ${MIN_NODE_MAJOR}."
+    exit 1
+  fi
+
+  log "Using Node.js $node_version ($(command -v node))"
+}
+
+stop_pm2_gitslice_apps() {
+  if ! command -v pm2 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Prevent PM2 autorestart from racing the manual restart flow.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" pm2 stop gitslice-core >/dev/null 2>&1 || true
+    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" pm2 stop gitslice-web >/dev/null 2>&1 || true
+  else
+    pm2 stop gitslice-core >/dev/null 2>&1 || true
+    pm2 stop gitslice-web >/dev/null 2>&1 || true
+  fi
+}
+
 start_core_server() {
+  cd "$REPO_ROOT"
+  stop_pm2_gitslice_apps
+
   log "Stopping existing core server..."
   pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
 
@@ -91,7 +132,7 @@ start_core_server() {
   fi
 }
 
-start_web_preview() {
+build_web_preview() {
   cd "$WEB_DIR"
 
   if [ ! -d node_modules ]; then
@@ -101,6 +142,10 @@ start_web_preview() {
 
   log "Building web preview..."
   npm run build
+}
+
+start_web_preview() {
+  cd "$WEB_DIR"
 
   log "Stopping existing web preview..."
   pkill -f "vite preview" >/dev/null 2>&1 || true
@@ -111,6 +156,8 @@ start_web_preview() {
 }
 
 log "=== Starting all services ==="
+ensure_node_runtime
+build_web_preview
 start_core_server
 start_web_preview
 log "=== All services started ==="
