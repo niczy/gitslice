@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	gcsstorage "cloud.google.com/go/storage"
@@ -115,4 +118,76 @@ func (s *GCSObjectStore) DeleteObject(ctx context.Context, key string) error {
 		return ErrEntryNotFound
 	}
 	return err
+}
+
+// FilesystemObjectStore stores object payloads under a local directory.
+type FilesystemObjectStore struct {
+	baseDir string
+}
+
+// NewFilesystemObjectStore creates an object store backed by the local filesystem.
+func NewFilesystemObjectStore(baseDir string) *FilesystemObjectStore {
+	return &FilesystemObjectStore{baseDir: baseDir}
+}
+
+func (s *FilesystemObjectStore) objectPath(key string) (string, error) {
+	if key == "" {
+		return "", errors.New("object key is empty")
+	}
+	cleanKey := filepath.Clean(key)
+	if cleanKey == "." || strings.HasPrefix(cleanKey, "..") {
+		return "", errors.New("invalid object key")
+	}
+	fullPath := filepath.Join(s.baseDir, cleanKey)
+	base := filepath.Clean(s.baseDir) + string(os.PathSeparator)
+	if !strings.HasPrefix(fullPath, base) {
+		return "", errors.New("object path escapes base directory")
+	}
+	return fullPath, nil
+}
+
+// PutObject writes the payload to disk.
+func (s *FilesystemObjectStore) PutObject(ctx context.Context, key string, body []byte) error {
+	_ = ctx
+	fullPath, err := s.objectPath(key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(fullPath, body, 0644)
+}
+
+// GetObject reads a payload from disk.
+func (s *FilesystemObjectStore) GetObject(ctx context.Context, key string) ([]byte, error) {
+	_ = ctx
+	fullPath, err := s.objectPath(key)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
+// DeleteObject removes a payload from disk.
+func (s *FilesystemObjectStore) DeleteObject(ctx context.Context, key string) error {
+	_ = ctx
+	fullPath, err := s.objectPath(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(fullPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+	return nil
 }

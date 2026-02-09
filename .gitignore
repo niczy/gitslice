@@ -45,6 +45,10 @@ test-results/
 # Logs
 logs/
 .restart_all.lock
+.objectstore/
+.objectstore-e2e/
+.postgres/
+ops/prod.env
 
 bin/
 include/

@@ -3,21 +3,17 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"strings"
 
-	gcsstorage "cloud.google.com/go/storage"
+	"github.com/niczy/gitslice/internal/bootstrap"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/gateway"
-	"github.com/niczy/gitslice/internal/storage"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	fileservice "github.com/niczy/gitslice/services/file"
 	sliceservice "github.com/niczy/gitslice/services/slice"
-	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 )
 
@@ -25,7 +21,7 @@ func main() {
 	cfg := config.LoadConfig()
 
 	ctx := context.Background()
-	st, closeStorage, err := initStorage(ctx, cfg)
+	st, closeStorage, err := bootstrap.InitStorage(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage backend: %v", err)
 	}
@@ -33,9 +29,6 @@ func main() {
 
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		log.Fatalf("Failed to initialize root slice: %v", err)
-	}
-	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
-		log.Printf("Warning: genesis population failed: %v", err)
 	}
 
 	grpcAddr := cfg.GetCoreServiceAddr()
@@ -79,57 +72,4 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to serve gateway: %v", err)
 	}
-}
-
-func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func(), error) {
-	switch strings.ToLower(cfg.StorageType) {
-	case "memory":
-		return storage.NewInMemoryStorage(), func() {}, nil
-	case "postgres":
-		if cfg.PostgresDSN == "" {
-			return nil, nil, fmt.Errorf("POSTGRES_DSN is required for STORAGE_TYPE=postgres")
-		}
-		objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
-		if err != nil {
-			return nil, nil, err
-		}
-		st, err := storage.NewPostgresStorage(ctx, cfg.PostgresDSN, objectStore, "core")
-		if err != nil {
-			closeObjectStore()
-			return nil, nil, err
-		}
-		return st, func() {
-			_ = st.Close()
-			closeObjectStore()
-		}, nil
-	default:
-		return nil, nil, fmt.Errorf("unsupported STORAGE_TYPE: %s", cfg.StorageType)
-	}
-}
-
-func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectStore, func(), error) {
-	if cfg.GCSBucket == "" {
-		return nil, nil, fmt.Errorf("GCS_BUCKET is required")
-	}
-
-	clientOpts := []option.ClientOption{}
-	if cfg.GCSEndpoint != "" {
-		clientOpts = append(clientOpts, option.WithEndpoint(cfg.GCSEndpoint))
-	}
-	if cfg.GCSDisableAuth {
-		clientOpts = append(clientOpts, option.WithoutAuthentication())
-	}
-	if cfg.GCSCredentialsFile != "" {
-		clientOpts = append(clientOpts, option.WithCredentialsFile(cfg.GCSCredentialsFile))
-	}
-	if cfg.GCSCredentialsJSON != "" {
-		clientOpts = append(clientOpts, option.WithCredentialsJSON([]byte(cfg.GCSCredentialsJSON)))
-	}
-
-	client, err := gcsstorage.NewClient(ctx, clientOpts...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return storage.NewGCSObjectStore(client, cfg.GCSBucket), func() { _ = client.Close() }, nil
 }

@@ -10,7 +10,11 @@ module.exports = {
       error_file: "/home/nic/workspace/gitslice/logs/pm2-core.err.log",
       env: {
         CORE_SERVICE_PORT: "50051",
-        GATEWAY_PORT: "8080"
+        GATEWAY_PORT: "8080",
+        STORAGE_TYPE: process.env.STORAGE_TYPE || "postgres",
+        POSTGRES_DSN: process.env.POSTGRES_DSN || "postgresql://nic@127.0.0.1:55432/gitslice?sslmode=disable",
+        OBJECT_STORE_TYPE: process.env.OBJECT_STORE_TYPE || "filesystem",
+        OBJECT_STORE_DIR: process.env.OBJECT_STORE_DIR || "/home/nic/workspace/gitslice/.objectstore"
       }
     },
     {

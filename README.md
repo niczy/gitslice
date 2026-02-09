@@ -107,6 +107,13 @@ GCS_BUCKET=gitslice-objects \
 GCS_CREDENTIALS_FILE=/path/to/service-account.json \
 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
+# Run core server with PostgreSQL + local filesystem object store
+STORAGE_TYPE=postgres \
+POSTGRES_DSN='postgresql://user@127.0.0.1:55432/gitslice?sslmode=disable' \
+OBJECT_STORE_TYPE=filesystem \
+OBJECT_STORE_DIR=/path/to/objectstore \
+CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+
 # Run CLI (override addresses if needed)
 ./gs_cli --help
 ```
@@ -148,9 +155,18 @@ See `.github/workflows/build.yml` for details.
 `ops/restart_all.sh` is the canonical deploy script. It:
 - Acquires a lock to avoid overlapping cron runs
 - Pulls latest changes (`git fetch --prune` + `git pull --ff-only`) when upstream is configured
-- Rebuilds/restarts core + gateway + web preview via `ops/start_web_server.sh`
+- Rebuilds/restarts core + gateway + web preview via `ops/start_web_server.sh` (Postgres by default)
 - Verifies service health before exiting
 - Ensures an hourly user crontab entry exists
+
+Runtime config can be provided in `ops/prod.env` (see `ops/prod.env.example`).
+If `STORAGE_TYPE=postgres` and `POSTGRES_DSN` is unset, `ops/start_web_server.sh` bootstraps a local PostgreSQL instance via `ops/ensure_local_postgres.sh`.
+
+Genesis repository population is manual. Run:
+
+```bash
+bash ops/run_genesis_init.sh
+```
 
 Install or refresh the hourly cron entry:
 

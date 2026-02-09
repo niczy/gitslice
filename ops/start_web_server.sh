@@ -12,9 +12,20 @@ CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
 PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
+ENV_FILE="${ENV_FILE:-$REPO_ROOT/ops/prod.env}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+load_env_file() {
+  if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+    log "Loaded runtime env from $ENV_FILE"
+  fi
 }
 
 wait_for_health() {
@@ -66,6 +77,7 @@ wait_for_port() {
 }
 
 cd "$REPO_ROOT"
+load_env_file
 
 # Avoid inheriting restart_all.sh's flock FD into long-lived daemons.
 exec 9>&- 2>/dev/null || true
@@ -110,6 +122,21 @@ start_core_server() {
   cd "$REPO_ROOT"
   stop_pm2_gitslice_apps
 
+  local runtime_storage_type="${STORAGE_TYPE:-postgres}"
+  local runtime_postgres_dsn="${POSTGRES_DSN:-}"
+  local runtime_object_store_type="${OBJECT_STORE_TYPE:-filesystem}"
+  local runtime_object_store_dir="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
+
+  if [ "$runtime_storage_type" = "postgres" ] && [ -z "$runtime_postgres_dsn" ]; then
+    log "POSTGRES_DSN not set; bootstrapping local postgres instance..."
+    runtime_postgres_dsn="$("$REPO_ROOT/ops/ensure_local_postgres.sh")"
+  fi
+
+  if [ "$runtime_storage_type" = "postgres" ] && \
+     { [ "$runtime_object_store_type" = "filesystem" ] || [ "$runtime_object_store_type" = "file" ] || [ "$runtime_object_store_type" = "fs" ]; }; then
+    mkdir -p "$runtime_object_store_dir"
+  fi
+
   log "Stopping existing core server..."
   pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
 
@@ -119,8 +146,19 @@ start_core_server() {
   log "Building core server (with proto generation)..."
   make build-core
 
-  log "Starting core server (log: $CORE_LOG)..."
-  CORE_SERVICE_PORT="$CORE_SERVICE_PORT" GATEWAY_PORT="$GATEWAY_PORT" nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
+  log "Starting core server with STORAGE_TYPE=$runtime_storage_type (log: $CORE_LOG)..."
+  CORE_SERVICE_PORT="$CORE_SERVICE_PORT" \
+  GATEWAY_PORT="$GATEWAY_PORT" \
+  STORAGE_TYPE="$runtime_storage_type" \
+  POSTGRES_DSN="$runtime_postgres_dsn" \
+  OBJECT_STORE_TYPE="$runtime_object_store_type" \
+  OBJECT_STORE_DIR="$runtime_object_store_dir" \
+  GCS_BUCKET="${GCS_BUCKET:-gitslice-objects}" \
+  GCS_ENDPOINT="${GCS_ENDPOINT:-}" \
+  GCS_CREDENTIALS_FILE="${GCS_CREDENTIALS_FILE:-}" \
+  GCS_CREDENTIALS_JSON="${GCS_CREDENTIALS_JSON:-}" \
+  GCS_DISABLE_AUTH="${GCS_DISABLE_AUTH:-false}" \
+  nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
   local pid=$!
   log "Core server started with PID $pid"
 

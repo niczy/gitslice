@@ -18,7 +18,11 @@ type Config struct {
 	// Postgres configuration (if storage type is postgres)
 	PostgresDSN string
 
-	// Object store configuration (GCS)
+	// Object store configuration (filesystem, gcs)
+	ObjectStoreType string
+	ObjectStoreDir  string
+
+	// GCS object store configuration
 	GCSBucket          string
 	GCSEndpoint        string
 	GCSCredentialsFile string
@@ -43,6 +47,8 @@ func LoadConfig() *Config {
 		GatewayPort:        getEnv("GATEWAY_PORT", "8080"),
 		StorageType:        getEnv("STORAGE_TYPE", "memory"),
 		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
+		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:     getEnv("OBJECT_STORE_DIR", "/tmp/gitslice-objectstore"),
 		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),
 		GCSEndpoint:        getEnv("GCS_ENDPOINT", ""),
 		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),
