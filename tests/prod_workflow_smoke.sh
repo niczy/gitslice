@@ -5,8 +5,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI_BIN="${CLI_BIN:-$REPO_ROOT/gs_cli/gs_cli}"
 GRPC_ADDR="${GRPC_ADDR:-api.agenttools.dev:443}"
 GRPC_TLS="${GRPC_TLS:-true}"
-FALLBACK_GRPC_ADDR="${FALLBACK_GRPC_ADDR:-}"
-FALLBACK_GRPC_TLS="${FALLBACK_GRPC_TLS:-false}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -24,10 +22,9 @@ is_truthy() {
 
 run_gs() {
   local addr="$1"
-  local tls="$2"
-  shift 2
+  shift
   local tls_flag=()
-  if is_truthy "$tls"; then
+  if is_truthy "$GRPC_TLS"; then
     tls_flag=(--tls)
   fi
   "$CLI_BIN" --addr "$addr" "${tls_flag[@]}" "$@"
@@ -50,23 +47,10 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ACTIVE_ADDR="$GRPC_ADDR"
-ACTIVE_TLS="$GRPC_TLS"
-if ! root_output="$(run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" root 2>&1)"; then
+if ! root_output="$(run_gs "$ACTIVE_ADDR" root 2>&1)"; then
   log "Primary endpoint failed ($ACTIVE_ADDR): $root_output"
   proxy_hint_if_needed "$root_output"
-  if [[ -n "$FALLBACK_GRPC_ADDR" ]]; then
-    ACTIVE_ADDR="$FALLBACK_GRPC_ADDR"
-    ACTIVE_TLS="$FALLBACK_GRPC_TLS"
-    log "Retrying with configured fallback endpoint: $ACTIVE_ADDR (tls=$ACTIVE_TLS)"
-    root_output="$(run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" root 2>&1)"
-  elif nc -z localhost 50051 >/dev/null 2>&1; then
-    ACTIVE_ADDR="localhost:50051"
-    ACTIVE_TLS="false"
-    log "Retrying with local fallback endpoint: $ACTIVE_ADDR (tls=$ACTIVE_TLS)"
-    root_output="$(run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" root 2>&1)"
-  else
-    exit 1
-  fi
+  exit 1
 fi
 
 printf '%s\n' "$root_output"
@@ -82,8 +66,8 @@ mkdir -p "$CHECKOUT_DIR"
 log "Checking out root slice $ROOT_SLICE_ID"
 (
   cd "$CHECKOUT_DIR"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" slice checkout "$ROOT_SLICE_ID"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" status
+  run_gs "$ACTIVE_ADDR" slice checkout "$ROOT_SLICE_ID"
+  run_gs "$ACTIVE_ADDR" status
 )
 
 UNIQUE_FILE="smoke-tests/prod-$(date +%s)-$$.txt"
@@ -91,7 +75,7 @@ CHANGESET_MSG="prod smoke $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 create_output="$(
   cd "$CHECKOUT_DIR"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" changeset create --message "$CHANGESET_MSG" --files "$UNIQUE_FILE" --author "prod-smoke"
+  run_gs "$ACTIVE_ADDR" changeset create --message "$CHANGESET_MSG" --files "$UNIQUE_FILE" --author "prod-smoke"
 )"
 printf '%s\n' "$create_output"
 
@@ -104,11 +88,11 @@ fi
 log "Reviewing, listing, rebasing, and merging changeset $CHANGESET_ID"
 (
   cd "$CHECKOUT_DIR"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" changeset review "$CHANGESET_ID"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" changeset list --limit 5
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" changeset rebase "$CHANGESET_ID"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" changeset merge "$CHANGESET_ID"
-  run_gs "$ACTIVE_ADDR" "$ACTIVE_TLS" log
+  run_gs "$ACTIVE_ADDR" changeset review "$CHANGESET_ID"
+  run_gs "$ACTIVE_ADDR" changeset list --limit 5
+  run_gs "$ACTIVE_ADDR" changeset rebase "$CHANGESET_ID"
+  run_gs "$ACTIVE_ADDR" changeset merge "$CHANGESET_ID"
+  run_gs "$ACTIVE_ADDR" log
 )
 
 log "Smoke workflow passed against $ACTIVE_ADDR"
