@@ -5,7 +5,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI_BIN="${CLI_BIN:-$REPO_ROOT/gs_cli/gs_cli}"
 GRPC_ADDR="${GRPC_ADDR:-api.agenttools.dev:443}"
 GRPC_TLS="${GRPC_TLS:-true}"
-FALLBACK_GRPC_ADDR="${FALLBACK_GRPC_ADDR:-}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -16,14 +15,19 @@ build_cli() {
   make -C "$REPO_ROOT" build-cli >/dev/null
 }
 
+is_truthy() {
+  local value="${1,,}"
+  [[ "$value" == "1" || "$value" == "true" || "$value" == "yes" ]]
+}
+
 run_gs() {
-	local addr="$1"
-	shift
-	local tls_flag=()
-	if [[ "${GRPC_TLS,,}" == "1" || "${GRPC_TLS,,}" == "true" || "${GRPC_TLS,,}" == "yes" ]]; then
-		tls_flag=(--tls)
-	fi
-	"$CLI_BIN" --addr "$addr" "${tls_flag[@]}" "$@"
+  local addr="$1"
+  shift
+  local tls_flag=()
+  if is_truthy "$GRPC_TLS"; then
+    tls_flag=(--tls)
+  fi
+  "$CLI_BIN" --addr "$addr" "${tls_flag[@]}" "$@"
 }
 
 
@@ -46,13 +50,7 @@ ACTIVE_ADDR="$GRPC_ADDR"
 if ! root_output="$(run_gs "$ACTIVE_ADDR" root 2>&1)"; then
   log "Primary endpoint failed ($ACTIVE_ADDR): $root_output"
   proxy_hint_if_needed "$root_output"
-  if [[ -n "$FALLBACK_GRPC_ADDR" ]]; then
-    ACTIVE_ADDR="$FALLBACK_GRPC_ADDR"
-    log "Retrying with fallback endpoint: $ACTIVE_ADDR"
-    root_output="$(run_gs "$ACTIVE_ADDR" root 2>&1)"
-  else
-    exit 1
-  fi
+  exit 1
 fi
 
 printf '%s\n' "$root_output"

@@ -67,6 +67,9 @@ wait_for_port() {
 
 cd "$REPO_ROOT"
 
+# Avoid inheriting restart_all.sh's flock FD into long-lived daemons.
+exec 9>&- 2>/dev/null || true
+
 ensure_node_runtime() {
   if ! command -v node >/dev/null 2>&1; then
     log "ERROR: node is not in PATH. Install Node.js >= ${MIN_NODE_MAJOR}."
