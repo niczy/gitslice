@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -261,6 +262,41 @@ func (s *adminServiceServer) GetGlobalState(ctx context.Context, req *adminv1.Gl
 	}
 
 	return response, nil
+}
+
+func (s *adminServiceServer) ImportGitRepo(ctx context.Context, req *adminv1.ImportGitRepoRequest) (*adminv1.ImportGitRepoResponse, error) {
+	repoPath := strings.TrimSpace(req.GetRepoPath())
+	repoURL := strings.TrimSpace(req.GetRepoUrl())
+	ref := strings.TrimSpace(req.GetRef())
+	sliceID := strings.TrimSpace(req.GetSliceId())
+	mountPath := strings.TrimSpace(req.GetMountPath())
+	maxCommits := int(req.GetMaxCommits())
+
+	if (repoPath == "" && repoURL == "") || (repoPath != "" && repoURL != "") {
+		return nil, status.Error(codes.InvalidArgument, "exactly one of repo_path or repo_url must be set")
+	}
+
+	// Defaults.
+	if sliceID == "" {
+		sliceID = "root_slice"
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	log.Printf("ImportGitRepo called: repo_path=%q repo_url=%q ref=%q slice_id=%q mount_path=%q reset=%v first_parent=%v max_commits=%d",
+		repoPath, repoURL, ref, sliceID, mountPath, req.GetResetStorage(), req.GetFirstParent(), maxCommits)
+
+	res, err := importGitRepo(ctx, s.storage, repoPath, repoURL, ref, sliceID, mountPath, req.GetResetStorage(), req.GetFirstParent(), maxCommits)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("git import failed: %v", err))
+	}
+
+	return &adminv1.ImportGitRepoResponse{
+		ImportedCommits: int32(res.ImportedCommits),
+		HeadCommitHash:  res.HeadCommitHash,
+		Warnings:        res.Warnings,
+	}, nil
 }
 
 func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSlicesRequest) (*adminv1.ListSlicesResponse, error) {

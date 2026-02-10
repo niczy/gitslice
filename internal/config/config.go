@@ -18,7 +18,18 @@ type Config struct {
 	// Postgres configuration (if storage type is postgres)
 	PostgresDSN string
 
-	// Object store configuration (GCS)
+	// Object store configuration (filesystem, GCS)
+	//
+	// For STORAGE_TYPE=postgres we persist metadata/state in Postgres and store blob
+	// payloads (file content) in an object store.
+	//
+	// OBJECT_STORE_TYPE may be:
+	// - "gcs" (default)
+	// - "filesystem" (stores objects under OBJECT_STORE_DIR)
+	ObjectStoreType string
+	ObjectStoreDir  string
+
+	// GCS object store configuration (when OBJECT_STORE_TYPE=gcs)
 	GCSBucket          string
 	GCSEndpoint        string
 	GCSCredentialsFile string
@@ -43,6 +54,8 @@ func LoadConfig() *Config {
 		GatewayPort:        getEnv("GATEWAY_PORT", "8080"),
 		StorageType:        getEnv("STORAGE_TYPE", "memory"),
 		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
+		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:     getEnv("OBJECT_STORE_DIR", ""),
 		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),
 		GCSEndpoint:        getEnv("GCS_ENDPOINT", ""),
 		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),

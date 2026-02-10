@@ -24,6 +24,7 @@ const (
 	AdminService_ResolveConflict_FullMethodName = "/admin.v1.AdminService/ResolveConflict"
 	AdminService_GetGlobalState_FullMethodName  = "/admin.v1.AdminService/GetGlobalState"
 	AdminService_ListSlices_FullMethodName      = "/admin.v1.AdminService/ListSlices"
+	AdminService_ImportGitRepo_FullMethodName   = "/admin.v1.AdminService/ImportGitRepo"
 	AdminService_WatchConflicts_FullMethodName  = "/admin.v1.AdminService/WatchConflicts"
 )
 
@@ -41,6 +42,9 @@ type AdminServiceClient interface {
 	GetGlobalState(ctx context.Context, in *GlobalStateRequest, opts ...grpc.CallOption) (*GlobalStateResponse, error)
 	// List slices stored in the system
 	ListSlices(ctx context.Context, in *ListSlicesRequest, opts ...grpc.CallOption) (*ListSlicesResponse, error)
+	// Import a local git repository into the root slice commit-by-commit.
+	// This is intended for admin/ops use on the server host.
+	ImportGitRepo(ctx context.Context, in *ImportGitRepoRequest, opts ...grpc.CallOption) (*ImportGitRepoResponse, error)
 	// Stream conflict updates (bidirectional streaming)
 	WatchConflicts(ctx context.Context, in *WatchConflictsRequest, opts ...grpc.CallOption) (AdminService_WatchConflictsClient, error)
 }
@@ -98,6 +102,15 @@ func (c *adminServiceClient) ListSlices(ctx context.Context, in *ListSlicesReque
 	return out, nil
 }
 
+func (c *adminServiceClient) ImportGitRepo(ctx context.Context, in *ImportGitRepoRequest, opts ...grpc.CallOption) (*ImportGitRepoResponse, error) {
+	out := new(ImportGitRepoResponse)
+	err := c.cc.Invoke(ctx, AdminService_ImportGitRepo_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *adminServiceClient) WatchConflicts(ctx context.Context, in *WatchConflictsRequest, opts ...grpc.CallOption) (AdminService_WatchConflictsClient, error) {
 	stream, err := c.cc.NewStream(ctx, &AdminService_ServiceDesc.Streams[0], AdminService_WatchConflicts_FullMethodName, opts...)
 	if err != nil {
@@ -144,6 +157,9 @@ type AdminServiceServer interface {
 	GetGlobalState(context.Context, *GlobalStateRequest) (*GlobalStateResponse, error)
 	// List slices stored in the system
 	ListSlices(context.Context, *ListSlicesRequest) (*ListSlicesResponse, error)
+	// Import a local git repository into the root slice commit-by-commit.
+	// This is intended for admin/ops use on the server host.
+	ImportGitRepo(context.Context, *ImportGitRepoRequest) (*ImportGitRepoResponse, error)
 	// Stream conflict updates (bidirectional streaming)
 	WatchConflicts(*WatchConflictsRequest, AdminService_WatchConflictsServer) error
 	mustEmbedUnimplementedAdminServiceServer()
@@ -167,6 +183,9 @@ func (UnimplementedAdminServiceServer) GetGlobalState(context.Context, *GlobalSt
 }
 func (UnimplementedAdminServiceServer) ListSlices(context.Context, *ListSlicesRequest) (*ListSlicesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSlices not implemented")
+}
+func (UnimplementedAdminServiceServer) ImportGitRepo(context.Context, *ImportGitRepoRequest) (*ImportGitRepoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ImportGitRepo not implemented")
 }
 func (UnimplementedAdminServiceServer) WatchConflicts(*WatchConflictsRequest, AdminService_WatchConflictsServer) error {
 	return status.Errorf(codes.Unimplemented, "method WatchConflicts not implemented")
@@ -274,6 +293,24 @@ func _AdminService_ListSlices_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_ImportGitRepo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportGitRepoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ImportGitRepo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ImportGitRepo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ImportGitRepo(ctx, req.(*ImportGitRepoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AdminService_WatchConflicts_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchConflictsRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -321,6 +358,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSlices",
 			Handler:    _AdminService_ListSlices_Handler,
+		},
+		{
+			MethodName: "ImportGitRepo",
+			Handler:    _AdminService_ImportGitRepo_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

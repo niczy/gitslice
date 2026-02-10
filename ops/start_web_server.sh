@@ -10,6 +10,12 @@ WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
+# In production we don't want to auto-scan the local git repo and populate genesis.
+# Leave overrideable for one-off maintenance runs.
+SKIP_GIT_POPULATION="${SKIP_GIT_POPULATION:-1}"
+# If using Postgres metadata in production, avoid requiring GCS ADC creds by default.
+OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
+OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
 PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
 
@@ -120,9 +126,14 @@ start_core_server() {
   make build-core
 
   log "Starting core server (log: $CORE_LOG)..."
-  CORE_SERVICE_PORT="$CORE_SERVICE_PORT" GATEWAY_PORT="$GATEWAY_PORT" nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
+  CORE_SERVICE_PORT="$CORE_SERVICE_PORT" \
+    GATEWAY_PORT="$GATEWAY_PORT" \
+    SKIP_GIT_POPULATION="$SKIP_GIT_POPULATION" \
+    OBJECT_STORE_TYPE="$OBJECT_STORE_TYPE" \
+    OBJECT_STORE_DIR="$OBJECT_STORE_DIR" \
+    nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
   local pid=$!
-  log "Core server started with PID $pid"
+  log "Core server started with PID $pid (SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE)"
 
   if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "$CORE_LOG"; then
     log "ERROR: Failed to start core gRPC. Check $CORE_LOG for details"

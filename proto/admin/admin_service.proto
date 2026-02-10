@@ -37,10 +37,19 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
     };
   }
 
-  // List slices stored in the system
+ // List slices stored in the system
   rpc ListSlices(ListSlicesRequest) returns (ListSlicesResponse) {
     option (google.api.http) = {
       get: "/v1/slices"
+    };
+  }
+
+  // Import a local git repository into the root slice commit-by-commit.
+  // This is intended for admin/ops use on the server host.
+  rpc ImportGitRepo(ImportGitRepoRequest) returns (ImportGitRepoResponse) {
+    option (google.api.http) = {
+      post: "/v1/import/git"
+      body: "*"
     };
   }
 
@@ -106,6 +115,40 @@ message ListSlicesRequest {
 message ListSlicesResponse {
   repeated SliceInfo slices = 1;
   int32 total = 2;
+}
+
+message ImportGitRepoRequest {
+  // Local filesystem path to a git checkout on the server host.
+  string repo_path = 1;
+
+  // Remote git URL to clone on the server host (e.g. a GitHub URL).
+  // Exactly one of repo_path or repo_url must be set.
+  string repo_url = 8;
+
+  // Git ref to import (default: "HEAD").
+  string ref = 2;
+
+  // Target slice ID (default: root_slice).
+  string slice_id = 3;
+
+  // Mount path prefix for imported files (default: "/o/genesis/projects/<repo-name>").
+  // The server will store file paths as "<mount_path>/<repo-relative-path>".
+  string mount_path = 4;
+
+  // If true, reset the storage namespace before importing.
+  bool reset_storage = 5;
+
+  // If true, import the first-parent linear history (recommended; merges are not represented).
+  bool first_parent = 6;
+
+  // Optional cap for number of commits imported (0 = no cap).
+  int32 max_commits = 7;
+}
+
+message ImportGitRepoResponse {
+  int32 imported_commits = 1;
+  string head_commit_hash = 2;
+  repeated string warnings = 3;
 }
 
 message SliceInfo {

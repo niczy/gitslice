@@ -646,6 +646,176 @@ func (x *ListSlicesResponse) GetTotal() int32 {
 	return 0
 }
 
+type ImportGitRepoRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Local filesystem path to a git checkout on the server host.
+	RepoPath string `protobuf:"bytes,1,opt,name=repo_path,json=repoPath,proto3" json:"repo_path,omitempty"`
+	// Remote git URL to clone on the server host (e.g. a GitHub URL).
+	// Exactly one of repo_path or repo_url must be set.
+	RepoUrl string `protobuf:"bytes,8,opt,name=repo_url,json=repoUrl,proto3" json:"repo_url,omitempty"`
+	// Git ref to import (default: "HEAD").
+	Ref string `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Target slice ID (default: root_slice).
+	SliceId string `protobuf:"bytes,3,opt,name=slice_id,json=sliceId,proto3" json:"slice_id,omitempty"`
+	// Mount path prefix for imported files (default: "/o/genesis/projects/<repo-name>").
+	// The server will store file paths as "<mount_path>/<repo-relative-path>".
+	MountPath string `protobuf:"bytes,4,opt,name=mount_path,json=mountPath,proto3" json:"mount_path,omitempty"`
+	// If true, reset the storage namespace before importing.
+	ResetStorage bool `protobuf:"varint,5,opt,name=reset_storage,json=resetStorage,proto3" json:"reset_storage,omitempty"`
+	// If true, import the first-parent linear history (recommended; merges are not represented).
+	FirstParent bool `protobuf:"varint,6,opt,name=first_parent,json=firstParent,proto3" json:"first_parent,omitempty"`
+	// Optional cap for number of commits imported (0 = no cap).
+	MaxCommits    int32 `protobuf:"varint,7,opt,name=max_commits,json=maxCommits,proto3" json:"max_commits,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ImportGitRepoRequest) Reset() {
+	*x = ImportGitRepoRequest{}
+	mi := &file_admin_service_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImportGitRepoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImportGitRepoRequest) ProtoMessage() {}
+
+func (x *ImportGitRepoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_admin_service_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImportGitRepoRequest.ProtoReflect.Descriptor instead.
+func (*ImportGitRepoRequest) Descriptor() ([]byte, []int) {
+	return file_admin_service_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ImportGitRepoRequest) GetRepoPath() string {
+	if x != nil {
+		return x.RepoPath
+	}
+	return ""
+}
+
+func (x *ImportGitRepoRequest) GetRepoUrl() string {
+	if x != nil {
+		return x.RepoUrl
+	}
+	return ""
+}
+
+func (x *ImportGitRepoRequest) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *ImportGitRepoRequest) GetSliceId() string {
+	if x != nil {
+		return x.SliceId
+	}
+	return ""
+}
+
+func (x *ImportGitRepoRequest) GetMountPath() string {
+	if x != nil {
+		return x.MountPath
+	}
+	return ""
+}
+
+func (x *ImportGitRepoRequest) GetResetStorage() bool {
+	if x != nil {
+		return x.ResetStorage
+	}
+	return false
+}
+
+func (x *ImportGitRepoRequest) GetFirstParent() bool {
+	if x != nil {
+		return x.FirstParent
+	}
+	return false
+}
+
+func (x *ImportGitRepoRequest) GetMaxCommits() int32 {
+	if x != nil {
+		return x.MaxCommits
+	}
+	return 0
+}
+
+type ImportGitRepoResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ImportedCommits int32                  `protobuf:"varint,1,opt,name=imported_commits,json=importedCommits,proto3" json:"imported_commits,omitempty"`
+	HeadCommitHash  string                 `protobuf:"bytes,2,opt,name=head_commit_hash,json=headCommitHash,proto3" json:"head_commit_hash,omitempty"`
+	Warnings        []string               `protobuf:"bytes,3,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ImportGitRepoResponse) Reset() {
+	*x = ImportGitRepoResponse{}
+	mi := &file_admin_service_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImportGitRepoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImportGitRepoResponse) ProtoMessage() {}
+
+func (x *ImportGitRepoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_admin_service_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImportGitRepoResponse.ProtoReflect.Descriptor instead.
+func (*ImportGitRepoResponse) Descriptor() ([]byte, []int) {
+	return file_admin_service_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ImportGitRepoResponse) GetImportedCommits() int32 {
+	if x != nil {
+		return x.ImportedCommits
+	}
+	return 0
+}
+
+func (x *ImportGitRepoResponse) GetHeadCommitHash() string {
+	if x != nil {
+		return x.HeadCommitHash
+	}
+	return ""
+}
+
+func (x *ImportGitRepoResponse) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
 type SliceInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SliceId       string                 `protobuf:"bytes,1,opt,name=slice_id,json=sliceId,proto3" json:"slice_id,omitempty"`
@@ -662,7 +832,7 @@ type SliceInfo struct {
 
 func (x *SliceInfo) Reset() {
 	*x = SliceInfo{}
-	mi := &file_admin_service_proto_msgTypes[12]
+	mi := &file_admin_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -674,7 +844,7 @@ func (x *SliceInfo) String() string {
 func (*SliceInfo) ProtoMessage() {}
 
 func (x *SliceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[12]
+	mi := &file_admin_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -687,7 +857,7 @@ func (x *SliceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SliceInfo.ProtoReflect.Descriptor instead.
 func (*SliceInfo) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{12}
+	return file_admin_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SliceInfo) GetSliceId() string {
@@ -755,7 +925,7 @@ type WatchConflictsRequest struct {
 
 func (x *WatchConflictsRequest) Reset() {
 	*x = WatchConflictsRequest{}
-	mi := &file_admin_service_proto_msgTypes[13]
+	mi := &file_admin_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -767,7 +937,7 @@ func (x *WatchConflictsRequest) String() string {
 func (*WatchConflictsRequest) ProtoMessage() {}
 
 func (x *WatchConflictsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[13]
+	mi := &file_admin_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -780,7 +950,7 @@ func (x *WatchConflictsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchConflictsRequest.ProtoReflect.Descriptor instead.
 func (*WatchConflictsRequest) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{13}
+	return file_admin_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *WatchConflictsRequest) GetSliceId() string {
@@ -800,7 +970,7 @@ type ConflictUpdate struct {
 
 func (x *ConflictUpdate) Reset() {
 	*x = ConflictUpdate{}
-	mi := &file_admin_service_proto_msgTypes[14]
+	mi := &file_admin_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -812,7 +982,7 @@ func (x *ConflictUpdate) String() string {
 func (*ConflictUpdate) ProtoMessage() {}
 
 func (x *ConflictUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_admin_service_proto_msgTypes[14]
+	mi := &file_admin_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -825,7 +995,7 @@ func (x *ConflictUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConflictUpdate.ProtoReflect.Descriptor instead.
 func (*ConflictUpdate) Descriptor() ([]byte, []int) {
-	return file_admin_service_proto_rawDescGZIP(), []int{14}
+	return file_admin_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ConflictUpdate) GetNewConflicts() []*Conflict {
@@ -884,7 +1054,22 @@ const file_admin_service_proto_rawDesc = "" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\"W\n" +
 	"\x12ListSlicesResponse\x12+\n" +
 	"\x06slices\x18\x01 \x03(\v2\x13.admin.v1.SliceInfoR\x06slices\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x05R\x05total\"\xea\x01\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"\x83\x02\n" +
+	"\x14ImportGitRepoRequest\x12\x1b\n" +
+	"\trepo_path\x18\x01 \x01(\tR\brepoPath\x12\x19\n" +
+	"\brepo_url\x18\b \x01(\tR\arepoUrl\x12\x10\n" +
+	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x19\n" +
+	"\bslice_id\x18\x03 \x01(\tR\asliceId\x12\x1d\n" +
+	"\n" +
+	"mount_path\x18\x04 \x01(\tR\tmountPath\x12#\n" +
+	"\rreset_storage\x18\x05 \x01(\bR\fresetStorage\x12!\n" +
+	"\ffirst_parent\x18\x06 \x01(\bR\vfirstParent\x12\x1f\n" +
+	"\vmax_commits\x18\a \x01(\x05R\n" +
+	"maxCommits\"\x88\x01\n" +
+	"\x15ImportGitRepoResponse\x12)\n" +
+	"\x10imported_commits\x18\x01 \x01(\x05R\x0fimportedCommits\x12(\n" +
+	"\x10head_commit_hash\x18\x02 \x01(\tR\x0eheadCommitHash\x12\x1a\n" +
+	"\bwarnings\x18\x03 \x03(\tR\bwarnings\"\xea\x01\n" +
 	"\tSliceInfo\x12\x19\n" +
 	"\bslice_id\x18\x01 \x01(\tR\asliceId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -901,7 +1086,7 @@ const file_admin_service_proto_rawDesc = "" +
 	"\bslice_id\x18\x01 \x01(\tR\asliceId\"\x8c\x01\n" +
 	"\x0eConflictUpdate\x127\n" +
 	"\rnew_conflicts\x18\x01 \x03(\v2\x12.admin.v1.ConflictR\fnewConflicts\x12A\n" +
-	"\x12resolved_conflicts\x18\x02 \x03(\v2\x12.admin.v1.ConflictR\x11resolvedConflicts2\xe9\x04\n" +
+	"\x12resolved_conflicts\x18\x02 \x03(\v2\x12.admin.v1.ConflictR\x11resolvedConflicts2\xd6\x05\n" +
 	"\fAdminService\x12j\n" +
 	"\n" +
 	"BatchMerge\x12\x1b.admin.v1.BatchMergeRequest\x1a\x1c.admin.v1.BatchMergeResponse\"!\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/v1/global/batch-merge\x12^\n" +
@@ -910,7 +1095,8 @@ const file_admin_service_proto_rawDesc = "" +
 	"\x0eGetGlobalState\x12\x1c.admin.v1.GlobalStateRequest\x1a\x1d.admin.v1.GlobalStateResponse\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/global/state\x12[\n" +
 	"\n" +
 	"ListSlices\x12\x1b.admin.v1.ListSlicesRequest\x1a\x1c.admin.v1.ListSlicesResponse\"\x12\x82\xd3\xe4\x93\x02\f\x12\n" +
-	"/v1/slices\x12M\n" +
+	"/v1/slices\x12k\n" +
+	"\rImportGitRepo\x12\x1e.admin.v1.ImportGitRepoRequest\x1a\x1f.admin.v1.ImportGitRepoResponse\"\x19\x82\xd3\xe4\x93\x02\x13:\x01*\"\x0e/v1/import/git\x12M\n" +
 	"\x0eWatchConflicts\x12\x1f.admin.v1.WatchConflictsRequest\x1a\x18.admin.v1.ConflictUpdate0\x01B)Z'github.com/niczy/gitslice/proto;adminv1b\x06proto3"
 
 var (
@@ -925,7 +1111,7 @@ func file_admin_service_proto_rawDescGZIP() []byte {
 	return file_admin_service_proto_rawDescData
 }
 
-var file_admin_service_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_admin_service_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_admin_service_proto_goTypes = []any{
 	(*BatchMergeRequest)(nil),       // 0: admin.v1.BatchMergeRequest
 	(*BatchMergeResponse)(nil),      // 1: admin.v1.BatchMergeResponse
@@ -939,15 +1125,17 @@ var file_admin_service_proto_goTypes = []any{
 	(*GlobalCommitHistory)(nil),     // 9: admin.v1.GlobalCommitHistory
 	(*ListSlicesRequest)(nil),       // 10: admin.v1.ListSlicesRequest
 	(*ListSlicesResponse)(nil),      // 11: admin.v1.ListSlicesResponse
-	(*SliceInfo)(nil),               // 12: admin.v1.SliceInfo
-	(*WatchConflictsRequest)(nil),   // 13: admin.v1.WatchConflictsRequest
-	(*ConflictUpdate)(nil),          // 14: admin.v1.ConflictUpdate
+	(*ImportGitRepoRequest)(nil),    // 12: admin.v1.ImportGitRepoRequest
+	(*ImportGitRepoResponse)(nil),   // 13: admin.v1.ImportGitRepoResponse
+	(*SliceInfo)(nil),               // 14: admin.v1.SliceInfo
+	(*WatchConflictsRequest)(nil),   // 15: admin.v1.WatchConflictsRequest
+	(*ConflictUpdate)(nil),          // 16: admin.v1.ConflictUpdate
 }
 var file_admin_service_proto_depIdxs = []int32{
 	6,  // 0: admin.v1.ConflictsResponse.conflicts:type_name -> admin.v1.Conflict
 	6,  // 1: admin.v1.ResolveConflictResponse.resolved_conflict:type_name -> admin.v1.Conflict
 	9,  // 2: admin.v1.GlobalStateResponse.history:type_name -> admin.v1.GlobalCommitHistory
-	12, // 3: admin.v1.ListSlicesResponse.slices:type_name -> admin.v1.SliceInfo
+	14, // 3: admin.v1.ListSlicesResponse.slices:type_name -> admin.v1.SliceInfo
 	6,  // 4: admin.v1.ConflictUpdate.new_conflicts:type_name -> admin.v1.Conflict
 	6,  // 5: admin.v1.ConflictUpdate.resolved_conflicts:type_name -> admin.v1.Conflict
 	0,  // 6: admin.v1.AdminService.BatchMerge:input_type -> admin.v1.BatchMergeRequest
@@ -955,15 +1143,17 @@ var file_admin_service_proto_depIdxs = []int32{
 	4,  // 8: admin.v1.AdminService.ResolveConflict:input_type -> admin.v1.ResolveConflictRequest
 	7,  // 9: admin.v1.AdminService.GetGlobalState:input_type -> admin.v1.GlobalStateRequest
 	10, // 10: admin.v1.AdminService.ListSlices:input_type -> admin.v1.ListSlicesRequest
-	13, // 11: admin.v1.AdminService.WatchConflicts:input_type -> admin.v1.WatchConflictsRequest
-	1,  // 12: admin.v1.AdminService.BatchMerge:output_type -> admin.v1.BatchMergeResponse
-	3,  // 13: admin.v1.AdminService.GetConflicts:output_type -> admin.v1.ConflictsResponse
-	5,  // 14: admin.v1.AdminService.ResolveConflict:output_type -> admin.v1.ResolveConflictResponse
-	8,  // 15: admin.v1.AdminService.GetGlobalState:output_type -> admin.v1.GlobalStateResponse
-	11, // 16: admin.v1.AdminService.ListSlices:output_type -> admin.v1.ListSlicesResponse
-	14, // 17: admin.v1.AdminService.WatchConflicts:output_type -> admin.v1.ConflictUpdate
-	12, // [12:18] is the sub-list for method output_type
-	6,  // [6:12] is the sub-list for method input_type
+	12, // 11: admin.v1.AdminService.ImportGitRepo:input_type -> admin.v1.ImportGitRepoRequest
+	15, // 12: admin.v1.AdminService.WatchConflicts:input_type -> admin.v1.WatchConflictsRequest
+	1,  // 13: admin.v1.AdminService.BatchMerge:output_type -> admin.v1.BatchMergeResponse
+	3,  // 14: admin.v1.AdminService.GetConflicts:output_type -> admin.v1.ConflictsResponse
+	5,  // 15: admin.v1.AdminService.ResolveConflict:output_type -> admin.v1.ResolveConflictResponse
+	8,  // 16: admin.v1.AdminService.GetGlobalState:output_type -> admin.v1.GlobalStateResponse
+	11, // 17: admin.v1.AdminService.ListSlices:output_type -> admin.v1.ListSlicesResponse
+	13, // 18: admin.v1.AdminService.ImportGitRepo:output_type -> admin.v1.ImportGitRepoResponse
+	16, // 19: admin.v1.AdminService.WatchConflicts:output_type -> admin.v1.ConflictUpdate
+	13, // [13:20] is the sub-list for method output_type
+	6,  // [6:13] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -980,7 +1170,7 @@ func file_admin_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_admin_service_proto_rawDesc), len(file_admin_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

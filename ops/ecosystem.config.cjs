@@ -10,7 +10,12 @@ module.exports = {
       error_file: "/home/nic/workspace/gitslice/logs/pm2-core.err.log",
       env: {
         CORE_SERVICE_PORT: "50051",
-        GATEWAY_PORT: "8080"
+        GATEWAY_PORT: "8080",
+        // Prod default: don't auto-populate genesis by scanning the local git repo.
+        SKIP_GIT_POPULATION: "1",
+        // Prod default: store blobs on the local filesystem (avoid requiring GCS ADC creds).
+        OBJECT_STORE_TYPE: "filesystem",
+        OBJECT_STORE_DIR: "/home/nic/workspace/gitslice/.objectstore"
       }
     },
     {
