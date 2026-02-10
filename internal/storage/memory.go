@@ -93,7 +93,26 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	fresh := NewInMemoryStorage()
-	*s = *fresh
+	// Do not overwrite the mutex while it's locked; copy the state fields instead.
+	s.lockedSlices = fresh.lockedSlices
+	s.fileLocks = fresh.fileLocks
+	s.slices = fresh.slices
+	s.sliceMetadata = fresh.sliceMetadata
+	s.fileIndex = fresh.fileIndex
+	s.fileContents = fresh.fileContents
+	s.entries = fresh.entries
+	s.entriesByPath = fresh.entriesByPath
+	s.entriesBySlice = fresh.entriesBySlice
+	s.changesets = fresh.changesets
+	s.sliceChangesets = fresh.sliceChangesets
+	s.sliceCommits = fresh.sliceCommits
+	s.globalState = fresh.globalState
+	s.commitSnapshots = fresh.commitSnapshots
+	s.versionedContent = fresh.versionedContent
+	s.fileChanges = fresh.fileChanges
+	s.fileChangesByPath = fresh.fileChangesByPath
+	s.fileChangesByCommit = fresh.fileChangesByCommit
+	s.fileChangesByDir = fresh.fileChangesByDir
 	return nil
 }
 
