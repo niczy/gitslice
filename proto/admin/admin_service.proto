@@ -118,8 +118,12 @@ message ListSlicesResponse {
 }
 
 message ImportGitRepoRequest {
-  // Local filesystem path to a git checkout.
+  // Local filesystem path to a git checkout on the server host.
   string repo_path = 1;
+
+  // Remote git URL to clone on the server host (e.g. a GitHub URL).
+  // Exactly one of repo_path or repo_url must be set.
+  string repo_url = 8;
 
   // Git ref to import (default: "HEAD").
   string ref = 2;

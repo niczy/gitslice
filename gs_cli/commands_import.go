@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -28,7 +29,7 @@ func handleImportCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("import git", flag.ExitOnError)
-	repo := fs.String("repo", ".", "Path to local git checkout")
+	repo := fs.String("repo", ".", "Git repo source: local path on server host or remote URL (e.g. https://github.com/org/repo.git)")
 	ref := fs.String("ref", "HEAD", "Git ref to import (e.g. HEAD, main, <sha>)")
 	sliceID := fs.String("slice", "root_slice", "Target slice ID")
 	mount := fs.String("mount", "", "Mount path prefix (default: /o/genesis/projects/<repo-name>)")
@@ -38,14 +39,19 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 	timeout := fs.Duration("timeout", 30*time.Minute, "Timeout for the import operation")
 	fs.Parse(args)
 
+	repoArg := strings.TrimSpace(*repo)
 	req := &adminv1.ImportGitRepoRequest{
-		RepoPath:     *repo,
 		Ref:          *ref,
 		SliceId:      *sliceID,
 		MountPath:    *mount,
 		ResetStorage: *reset,
 		FirstParent:  *firstParent,
 		MaxCommits:   int32(*maxCommits),
+	}
+	if looksLikeGitURL(repoArg) {
+		req.RepoUrl = repoArg
+	} else {
+		req.RepoPath = repoArg
 	}
 
 	importCtx := ctx
@@ -62,7 +68,7 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 
 	displayMount := *mount
 	if displayMount == "" {
-		displayMount = "/o/genesis/projects/" + filepath.Base(filepath.Clean(*repo))
+		displayMount = "/o/genesis/projects/" + repoNameForDisplay(repoArg)
 	}
 
 	fmt.Printf("Imported %d commit(s) into slice %s at %s\n", resp.ImportedCommits, req.SliceId, displayMount)
@@ -73,4 +79,42 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 			fmt.Printf("  - %s\n", w)
 		}
 	}
+}
+
+func looksLikeGitURL(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "ssh://") {
+		return true
+	}
+	// Common GitHub SSH form: git@github.com:org/repo.git
+	if strings.HasPrefix(s, "git@") && strings.Contains(s, ":") {
+		return true
+	}
+	return false
+}
+
+func repoNameForDisplay(repoArg string) string {
+	repoArg = strings.TrimSpace(repoArg)
+	if repoArg == "" {
+		return "repo"
+	}
+	// For URLs, strip any trailing slashes and .git suffix, then take the last path segment.
+	if looksLikeGitURL(repoArg) {
+		s := strings.TrimSuffix(repoArg, "/")
+		s = strings.TrimSuffix(s, ".git")
+		// Split on both / and : (for git@github.com:org/repo).
+		s = strings.ReplaceAll(s, ":", "/")
+		parts := strings.Split(s, "/")
+		if len(parts) > 0 {
+			last := strings.TrimSpace(parts[len(parts)-1])
+			if last != "" {
+				return last
+			}
+		}
+		return "repo"
+	}
+	return filepath.Base(filepath.Clean(repoArg))
 }

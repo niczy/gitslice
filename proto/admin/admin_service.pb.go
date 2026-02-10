@@ -648,8 +648,11 @@ func (x *ListSlicesResponse) GetTotal() int32 {
 
 type ImportGitRepoRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Local filesystem path to a git checkout.
+	// Local filesystem path to a git checkout on the server host.
 	RepoPath string `protobuf:"bytes,1,opt,name=repo_path,json=repoPath,proto3" json:"repo_path,omitempty"`
+	// Remote git URL to clone on the server host (e.g. a GitHub URL).
+	// Exactly one of repo_path or repo_url must be set.
+	RepoUrl string `protobuf:"bytes,8,opt,name=repo_url,json=repoUrl,proto3" json:"repo_url,omitempty"`
 	// Git ref to import (default: "HEAD").
 	Ref string `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
 	// Target slice ID (default: root_slice).
@@ -700,6 +703,13 @@ func (*ImportGitRepoRequest) Descriptor() ([]byte, []int) {
 func (x *ImportGitRepoRequest) GetRepoPath() string {
 	if x != nil {
 		return x.RepoPath
+	}
+	return ""
+}
+
+func (x *ImportGitRepoRequest) GetRepoUrl() string {
+	if x != nil {
+		return x.RepoUrl
 	}
 	return ""
 }
@@ -1044,9 +1054,10 @@ const file_admin_service_proto_rawDesc = "" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\"W\n" +
 	"\x12ListSlicesResponse\x12+\n" +
 	"\x06slices\x18\x01 \x03(\v2\x13.admin.v1.SliceInfoR\x06slices\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x05R\x05total\"\xe8\x01\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"\x83\x02\n" +
 	"\x14ImportGitRepoRequest\x12\x1b\n" +
-	"\trepo_path\x18\x01 \x01(\tR\brepoPath\x12\x10\n" +
+	"\trepo_path\x18\x01 \x01(\tR\brepoPath\x12\x19\n" +
+	"\brepo_url\x18\b \x01(\tR\arepoUrl\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x19\n" +
 	"\bslice_id\x18\x03 \x01(\tR\asliceId\x12\x1d\n" +
 	"\n" +

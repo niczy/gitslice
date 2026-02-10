@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -67,12 +68,55 @@ func gitRepoRoot(ctx context.Context, repoPath string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func defaultMountPath(repoRoot string) string {
-	name := path.Base(filepath.ToSlash(repoRoot))
+func defaultMountPathFromName(name string) string {
+	name = strings.TrimSpace(name)
 	if name == "" || name == "." || name == "/" {
 		name = "repo"
 	}
 	return "/o/genesis/projects/" + name
+}
+
+func repoNameFromURL(repoURL string) string {
+	s := strings.TrimSpace(repoURL)
+	s = strings.TrimSuffix(s, "/")
+	s = strings.TrimSuffix(s, ".git")
+	if s == "" {
+		return "repo"
+	}
+	// git@github.com:org/repo -> split on ':' too.
+	s = strings.ReplaceAll(s, ":", "/")
+	parts := strings.Split(s, "/")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if last == "" {
+		return "repo"
+	}
+	return last
+}
+
+func prepareRepo(ctx context.Context, repoPath string, repoURL string) (repoDir string, repoName string, cleanup func(), err error) {
+	if strings.TrimSpace(repoURL) != "" {
+		parent, err := os.MkdirTemp("", "gitslice-import-")
+		if err != nil {
+			return "", "", func() {}, err
+		}
+		cleanup = func() { _ = os.RemoveAll(parent) }
+
+		cloneDir := filepath.Join(parent, "repo.git")
+		_, err = gitCombinedOutput(ctx, parent, "clone", "--bare", "--quiet", repoURL, cloneDir)
+		if err != nil {
+			cleanup()
+			return "", "", func() {}, err
+		}
+
+		return cloneDir, repoNameFromURL(repoURL), cleanup, nil
+	}
+
+	root, err := gitRepoRoot(ctx, repoPath)
+	if err != nil {
+		return "", "", func() {}, err
+	}
+	name := path.Base(filepath.ToSlash(root))
+	return root, name, func() {}, nil
 }
 
 func mountFile(mountPath string, repoRel string) (string, error) {
@@ -251,32 +295,25 @@ func deleteFileFromSlice(ctx context.Context, st storage.Storage, sliceID string
 	return nil
 }
 
-func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref string, sliceID string, mountPath string, reset bool, firstParent bool, maxCommits int) (*gitImportResult, error) {
+func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, repoURL string, ref string, sliceID string, mountPath string, reset bool, firstParent bool, maxCommits int) (*gitImportResult, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
 
-	repoRoot, err := gitRepoRoot(ctx, repoPath)
+	repoDir, repoName, cleanup, err := prepareRepo(ctx, repoPath, repoURL)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanup()
+
 	if mountPath == "" {
-		mountPath = defaultMountPath(repoRoot)
+		mountPath = defaultMountPathFromName(repoName)
 	}
 	if sliceID == "" {
 		sliceID = "root_slice"
 	}
 
 	warnings := []string{}
-	if reset {
-		if rs, ok := st.(resettableStorage); ok {
-			if err := rs.Reset(ctx); err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("storage backend does not support reset")
-		}
-	}
 
 	args := []string{"rev-list", "--reverse"}
 	if firstParent {
@@ -284,7 +321,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 	}
 	args = append(args, ref)
 
-	out, err := gitCombinedOutput(ctx, repoRoot, args...)
+	out, err := gitCombinedOutput(ctx, repoDir, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +334,14 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 	if bw, ok := st.(bulkWriter); ok {
 		var head string
 		err := bw.BulkWrite(ctx, func(mem *storage.InMemoryStorage) error {
+			// If requested, reset in-memory state inside the bulk write. This avoids deleting the
+			// persisted snapshot first (which would permanently wipe state if the import crashes).
+			if reset {
+				if err := mem.Reset(ctx); err != nil {
+					return err
+				}
+			}
+
 			if err := common.EnsureRootSliceInitialized(ctx, mem); err != nil {
 				return err
 			}
@@ -314,7 +359,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 			var prevCommit string
 
 			for idx, commitHash := range commits {
-				metaOut, err := gitCombinedOutput(ctx, repoRoot, "show", "-s", "--format=%an <%ae>%n%ct%n%s", commitHash)
+				metaOut, err := gitCombinedOutput(ctx, repoDir, "show", "-s", "--format=%an <%ae>%n%ct%n%s", commitHash)
 				if err != nil {
 					return err
 				}
@@ -325,10 +370,10 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 
 				var diffOut []byte
 				if idx == 0 {
-					diffOut, err = gitCombinedOutput(ctx, repoRoot, "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", commitHash)
+					diffOut, err = gitCombinedOutput(ctx, repoDir, "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", commitHash)
 				} else {
 					// Use a two-tree diff so merge commits include the diff vs their first parent.
-					diffOut, err = gitCombinedOutput(ctx, repoRoot, "diff", "--name-status", "-M", prevCommit, commitHash)
+					diffOut, err = gitCombinedOutput(ctx, repoDir, "diff", "--name-status", "-M", prevCommit, commitHash)
 				}
 				if err != nil {
 					return err
@@ -360,7 +405,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 						}
 
 						blobSpec := fmt.Sprintf("%s:%s", commitHash, repoRel)
-						content, err := gitCombinedOutput(ctx, repoRoot, "cat-file", "-p", blobSpec)
+						content, err := gitCombinedOutput(ctx, repoDir, "cat-file", "-p", blobSpec)
 						if err != nil {
 							addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", repoRel, commitHash, err))
 							continue
@@ -438,7 +483,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 						}
 
 						blobSpec := fmt.Sprintf("%s:%s", commitHash, newRel)
-						content, err := gitCombinedOutput(ctx, repoRoot, "cat-file", "-p", blobSpec)
+						content, err := gitCombinedOutput(ctx, repoDir, "cat-file", "-p", blobSpec)
 						if err != nil {
 							addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", newRel, commitHash, err))
 							continue
@@ -530,6 +575,16 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 	}
 
 	// Fallback: run against the provided storage backend directly (best-effort).
+	if reset {
+		if rs, ok := st.(resettableStorage); ok {
+			if err := rs.Reset(ctx); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("storage backend does not support reset")
+		}
+	}
+
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		return nil, err
 	}
@@ -548,7 +603,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 	head := ""
 
 	for idx, commitHash := range commits {
-		metaOut, err := gitCombinedOutput(ctx, repoRoot, "show", "-s", "--format=%an <%ae>%n%ct%n%s", commitHash)
+		metaOut, err := gitCombinedOutput(ctx, repoDir, "show", "-s", "--format=%an <%ae>%n%ct%n%s", commitHash)
 		if err != nil {
 			return nil, err
 		}
@@ -559,9 +614,9 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 
 		var diffOut []byte
 		if idx == 0 {
-			diffOut, err = gitCombinedOutput(ctx, repoRoot, "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", commitHash)
+			diffOut, err = gitCombinedOutput(ctx, repoDir, "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", commitHash)
 		} else {
-			diffOut, err = gitCombinedOutput(ctx, repoRoot, "diff", "--name-status", "-M", prevCommit, commitHash)
+			diffOut, err = gitCombinedOutput(ctx, repoDir, "diff", "--name-status", "-M", prevCommit, commitHash)
 		}
 		if err != nil {
 			return nil, err
@@ -593,7 +648,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 				}
 
 				blobSpec := fmt.Sprintf("%s:%s", commitHash, repoRel)
-				content, err := gitCombinedOutput(ctx, repoRoot, "cat-file", "-p", blobSpec)
+				content, err := gitCombinedOutput(ctx, repoDir, "cat-file", "-p", blobSpec)
 				if err != nil {
 					addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", repoRel, commitHash, err))
 					continue
@@ -671,7 +726,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, ref
 				}
 
 				blobSpec := fmt.Sprintf("%s:%s", commitHash, newRel)
-				content, err := gitCombinedOutput(ctx, repoRoot, "cat-file", "-p", blobSpec)
+				content, err := gitCombinedOutput(ctx, repoDir, "cat-file", "-p", blobSpec)
 				if err != nil {
 					addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", newRel, commitHash, err))
 					continue
