@@ -140,6 +140,7 @@ message FileChangeRecord {
   string author = 11;               // Who made this change
   string message = 12;              // Commit message
   int64 timestamp = 13;             // Unix timestamp of the change
+  string patch = 14;                // Unified diff content when available
 }
 
 // GetFileHistoryRequest retrieves change history for a specific file

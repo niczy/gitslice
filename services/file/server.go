@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -308,7 +310,7 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 
 	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
 	for _, change := range changes {
-		protoChanges = append(protoChanges, modelToProtoChange(change))
+		protoChanges = append(protoChanges, modelToProtoChange(change, ""))
 	}
 
 	return &filev1.GetFileHistoryResponse{
@@ -352,7 +354,7 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 
 	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
 	for _, change := range changes {
-		protoChanges = append(protoChanges, modelToProtoChange(change))
+		protoChanges = append(protoChanges, modelToProtoChange(change, ""))
 	}
 
 	// Get summary
@@ -383,7 +385,8 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
 	var added, modified, deleted, renamed int32
 	for _, change := range changes {
-		protoChanges = append(protoChanges, modelToProtoChange(change))
+		patch := s.buildChangePatch(ctx, change)
+		protoChanges = append(protoChanges, modelToProtoChange(change, patch))
 		switch change.ChangeType {
 		case models.ChangeTypeAdd:
 			added++
@@ -407,7 +410,7 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 }
 
 // modelToProtoChange converts a model FileChangeRecord to protobuf.
-func modelToProtoChange(change *models.FileChangeRecord) *filev1.FileChangeRecord {
+func modelToProtoChange(change *models.FileChangeRecord, patch string) *filev1.FileChangeRecord {
 	return &filev1.FileChangeRecord{
 		Id:           change.ID,
 		SliceId:      change.SliceID,
@@ -422,7 +425,84 @@ func modelToProtoChange(change *models.FileChangeRecord) *filev1.FileChangeRecor
 		Author:       change.Author,
 		Message:      change.Message,
 		Timestamp:    change.Timestamp.Unix(),
+		Patch:        patch,
 	}
+}
+
+func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models.FileChangeRecord) string {
+	if change == nil {
+		return ""
+	}
+
+	newPath := cleanPath(change.Path)
+	oldPath := cleanPath(change.OldPath)
+	if oldPath == "" {
+		oldPath = newPath
+	}
+
+	beforeLines := []string{}
+	afterLines := []string{}
+
+	shouldLoadBefore := change.OldHash != "" || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeDelete || change.ChangeType == models.ChangeTypeRename
+	if shouldLoadBefore {
+		parentHash, err := s.findParentCommitHash(ctx, change.SliceID, change.CommitHash)
+		if err == nil && parentHash != "" {
+			if prev, ferr := s.storage.GetFileAtCommit(ctx, parentHash, oldPath); ferr == nil && prev != nil {
+				beforeLines = splitLinesForDiff(string(prev.Content))
+			}
+		}
+	}
+
+	shouldLoadAfter := change.NewHash != "" || change.ChangeType == models.ChangeTypeAdd || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeRename
+	if shouldLoadAfter {
+		if curr, err := s.storage.GetFileAtCommit(ctx, change.CommitHash, newPath); err == nil && curr != nil {
+			afterLines = splitLinesForDiff(string(curr.Content))
+		}
+	}
+
+	if len(beforeLines) == 0 && len(afterLines) == 0 {
+		return ""
+	}
+
+	unified, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        beforeLines,
+		B:        afterLines,
+		FromFile: "a/" + oldPath,
+		ToFile:   "b/" + newPath,
+		Context:  3,
+	})
+	if err != nil {
+		return ""
+	}
+	return unified
+}
+
+func (s *fileServiceServer) findParentCommitHash(ctx context.Context, sliceID, commitHash string) (string, error) {
+	if sliceID == "" || commitHash == "" {
+		return "", nil
+	}
+
+	commits, err := s.storage.ListSliceCommits(ctx, sliceID, 0, "")
+	if err != nil {
+		return "", err
+	}
+	for _, c := range commits {
+		if c.CommitHash == commitHash {
+			return c.ParentHash, nil
+		}
+	}
+	return "", nil
+}
+
+func splitLinesForDiff(content string) []string {
+	if content == "" {
+		return []string{}
+	}
+	lines := strings.SplitAfter(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 // modelToProtoChangeType converts model ChangeType to protobuf.
@@ -450,7 +530,7 @@ func modelToProtoSummary(summary *models.DirectoryChangeSummary) *filev1.Directo
 
 	var lastChange *filev1.FileChangeRecord
 	if summary.LastChange != nil {
-		lastChange = modelToProtoChange(summary.LastChange)
+		lastChange = modelToProtoChange(summary.LastChange, "")
 	}
 
 	return &filev1.DirectoryChangeSummary{
