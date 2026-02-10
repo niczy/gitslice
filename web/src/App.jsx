@@ -10,6 +10,12 @@ function parseHash() {
   if (hash.startsWith('diff/')) {
     return { page: 'diff', commitHash: decodeURIComponent(hash.slice(5)) };
   }
+  if (hash === 'login') {
+    return { page: 'login', commitHash: '' };
+  }
+  if (hash === 'profile') {
+    return { page: 'profile', commitHash: '' };
+  }
   if (hash === 'browser' || hash.startsWith('browser?')) {
     return { page: 'browser', commitHash: '' };
   }
@@ -19,6 +25,12 @@ function parseHash() {
 function buildHash(page, commitHash) {
   if (page === 'diff' && commitHash) {
     return `#/diff/${encodeURIComponent(commitHash)}`;
+  }
+  if (page === 'login') {
+    return '#/login';
+  }
+  if (page === 'profile') {
+    return '#/profile';
   }
   if (page === 'browser') {
     return '#/browser';
@@ -45,6 +57,23 @@ const features = [
 ];
 
 const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
+
+function currentUsername() {
+  try {
+    return window.localStorage.getItem('gs_username') || '';
+  } catch {
+    return '';
+  }
+}
+
+function fetchWithAuth(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const username = currentUsername();
+  if (username) {
+    headers.set('Authorization', `User ${username}`);
+  }
+  return fetch(url, { ...options, headers });
+}
 
 // ---------------------------------------------------------------------------
 // Agent Session Types
@@ -87,6 +116,7 @@ function App() {
   const [diffCommitHash, setDiffCommitHash] = useState(() => parseHash().commitHash);
   const [browserKey, setBrowserKey] = useState(0);
   const githubUrl = 'https://github.com/niczy/gitslice';
+  const [username, setUsername] = useState(() => currentUsername());
 
   // Slice data (shared across pages)
   const [slices, setSlices] = useState([]);
@@ -137,7 +167,7 @@ function App() {
       setSlicesLoading(true);
       setSlicesError('');
       try {
-        const response = await fetch(`${apiBaseUrl}/v1/slices?limit=200`);
+        const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices?limit=200`);
         if (!response.ok) {
           throw new Error(`Request failed (${response.status})`);
         }
@@ -157,7 +187,7 @@ function App() {
       }
     };
     loadSlices();
-  }, []);
+  }, [username]);
 
   const navigateToDiff = (commitHash) => {
     navigate('diff', commitHash);
@@ -167,7 +197,7 @@ function App() {
     setSlicesLoading(true);
     setSlicesError('');
     try {
-      const response = await fetch(`${apiBaseUrl}/v1/slices?limit=200`);
+      const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices?limit=200`);
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
@@ -179,6 +209,35 @@ function App() {
     } finally {
       setSlicesLoading(false);
     }
+  }, []);
+
+  const doLogout = useCallback(() => {
+    try {
+      window.localStorage.removeItem('gs_username');
+    } catch {
+      // ignore
+    }
+    setUsername('');
+    setActivePage('landing');
+    window.history.pushState(null, '', buildHash('landing', ''));
+  }, []);
+
+  const doLogin = useCallback(async (nextUsername) => {
+    const trimmed = (nextUsername || '').trim();
+    const response = await fetch(`${apiBaseUrl}/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: trimmed }),
+    });
+    if (!response.ok) {
+      throw new Error('Invalid username');
+    }
+    try {
+      window.localStorage.setItem('gs_username', trimmed);
+    } catch {
+      // ignore
+    }
+    setUsername(trimmed);
   }, []);
 
   // Agent session handlers
@@ -415,6 +474,36 @@ function App() {
               onRefresh={refreshSlices}
             />
           )}
+          {username ? (
+            <>
+              <button
+                type="button"
+                className="ghost"
+                data-testid="topbar-profile"
+                onClick={() => navigate('profile')}
+                title="Profile"
+              >
+                {username}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                data-testid="topbar-logout"
+                onClick={doLogout}
+              >
+                Logout
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="ghost"
+              data-testid="topbar-login"
+              onClick={() => navigate('login')}
+            >
+              Login
+            </button>
+          )}
           <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer" data-testid="topbar-github-link">
             GitHub
           </a>
@@ -431,6 +520,12 @@ function App() {
 
       <main className={`page${activePage === 'browser' ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
+        {activePage === 'login' && (
+          <LoginPage onLogin={doLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
+        )}
+        {activePage === 'profile' && (
+          <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
+        )}
         {activePage === 'browser' && (
           <RepoBrowser
             key={browserKey}
@@ -971,9 +1066,197 @@ function OverviewPage({ onBrowseRepo }) {
 }
 
 // ---------------------------------------------------------------------------
-// Repo Browser Component
+// Login / Profile
 // ---------------------------------------------------------------------------
 
+function LoginPage({ onLogin, onLoggedIn, onCancel }) {
+  const [value, setValue] = useState(() => currentUsername());
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  return (
+    <section className="section auth-page" data-testid="login-page">
+      <div className="section-header">
+        <p className="eyebrow">Accounts</p>
+        <h2>Login</h2>
+        <p>Pick a username. This is fake auth: no password.</p>
+      </div>
+
+      <form
+        className="auth-card"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setError('');
+          setLoading(true);
+          try {
+            await onLogin(value);
+            onLoggedIn?.();
+          } catch (err) {
+            setError('Invalid username. Use 3-32 chars: letters, numbers, "_" or "-", starting with a letter/number.');
+          } finally {
+            setLoading(false);
+          }
+        }}
+      >
+        <label className="field">
+          <span className="field-label">Username</span>
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="e.g. nic"
+            autoFocus
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </label>
+        {error && <div className="panel-error">{error}</div>}
+        <div className="auth-actions">
+          <button type="submit" className="primary" disabled={loading}>
+            {loading ? 'Logging in…' : 'Login'}
+          </button>
+          <button type="button" className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function ProfilePage({ username, onLogout, onRequireLogin }) {
+  const [me, setMe] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [orgName, setOrgName] = useState('');
+  const [orgCreating, setOrgCreating] = useState(false);
+  const [orgError, setOrgError] = useState('');
+
+  const loadMe = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const resp = await fetchWithAuth(`${apiBaseUrl}/v1/me`);
+      if (resp.status === 401) {
+        onRequireLogin?.();
+        return;
+      }
+      if (!resp.ok) throw new Error('bad');
+      setMe(await resp.json());
+    } catch {
+      setError('Unable to load profile.');
+    } finally {
+      setLoading(false);
+    }
+  }, [onRequireLogin]);
+
+  useEffect(() => {
+    loadMe();
+  }, [loadMe]);
+
+  return (
+    <section className="section auth-page" data-testid="profile-page">
+      <div className="section-header">
+        <p className="eyebrow">Accounts</p>
+        <h2>Profile</h2>
+        <p>{username ? `Logged in as ${username}.` : 'Not logged in.'}</p>
+      </div>
+
+      <div className="profile-grid">
+        <div className="auth-card">
+          <h3 style={{ marginTop: 0 }}>Account</h3>
+          {loading && <div className="status">Loading…</div>}
+          {error && <div className="panel-error">{error}</div>}
+          {!loading && !error && me?.user && (
+            <div className="kv">
+              <div className="kv-row">
+                <span className="kv-key">Username</span>
+                <span className="kv-val">{me.user.username}</span>
+              </div>
+              <div className="kv-row">
+                <span className="kv-key">Created</span>
+                <span className="kv-val">
+                  {me.user.created_at ? new Date(me.user.created_at).toLocaleString() : 'unknown'}
+                </span>
+              </div>
+            </div>
+          )}
+          <div className="auth-actions" style={{ marginTop: '16px' }}>
+            <button type="button" className="ghost" onClick={loadMe}>
+              Refresh
+            </button>
+            <button type="button" className="ghost" onClick={onLogout}>
+              Logout
+            </button>
+          </div>
+        </div>
+
+        <div className="auth-card">
+          <h3 style={{ marginTop: 0 }}>Organizations</h3>
+          {!loading && !error && (me?.organizations || []).length === 0 && (
+            <div className="panel-empty">No organizations yet.</div>
+          )}
+          {!loading && !error && (me?.organizations || []).length > 0 && (
+            <ul className="org-list">
+              {(me.organizations || []).map((o) => (
+                <li key={o.slug} className="org-item">
+                  <div className="org-item-title">
+                    <span className="org-name">{o.name}</span>
+                    <span className="org-slug">{o.slug}</span>
+                  </div>
+                  <div className="org-item-meta">Created by {o.created_by || 'unknown'}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <form
+            className="org-create"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setOrgError('');
+              setOrgCreating(true);
+              try {
+                const resp = await fetchWithAuth(`${apiBaseUrl}/v1/orgs`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: orgName }),
+                });
+                if (!resp.ok) throw new Error('bad');
+                setOrgName('');
+                await loadMe();
+              } catch {
+                setOrgError('Unable to create organization.');
+              } finally {
+                setOrgCreating(false);
+              }
+            }}
+          >
+            <label className="field">
+              <span className="field-label">New organization</span>
+              <input
+                type="text"
+                value={orgName}
+                onChange={(e) => setOrgName(e.target.value)}
+                placeholder="e.g. Acme"
+              />
+            </label>
+            {orgError && <div className="panel-error">{orgError}</div>}
+            <div className="auth-actions">
+              <button type="submit" className="primary" disabled={orgCreating || !orgName.trim()}>
+                {orgCreating ? 'Creating…' : 'Create organization'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Repo Browser Component
+// ---------------------------------------------------------------------------
 function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }) {
   // Parse initial browser state from URL hash on mount
   const initialBrowserState = useMemo(() => {
@@ -1085,7 +1368,7 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
     setHistoryError('');
 
     try {
-      const response = await fetch(buildHistoryUrl(filePath));
+      const response = await fetchWithAuth(buildHistoryUrl(filePath));
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
@@ -1123,7 +1406,7 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
       setError('');
 
       try {
-        const response = await fetch(buildEntriesUrl(''), {
+        const response = await fetchWithAuth(buildEntriesUrl(''), {
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -1151,7 +1434,7 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
             const parentPath = parts.slice(0, i).join('/');
             pathsToExpand.push(parentPath);
             try {
-              const dirResp = await fetch(buildEntriesUrl(parentPath), { signal: controller.signal });
+              const dirResp = await fetchWithAuth(buildEntriesUrl(parentPath), { signal: controller.signal });
               if (dirResp.ok) {
                 const dirData = await dirResp.json();
                 allEntries[parentPath] = dirData.entries || [];
@@ -1169,7 +1452,7 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
 
           // Load file content
           try {
-            const fileResp = await fetch(buildFileUrl(pendingFile), { signal: controller.signal });
+            const fileResp = await fetchWithAuth(buildFileUrl(pendingFile), { signal: controller.signal });
             if (fileResp.ok && active) {
               const fileData = await fileResp.json();
               setFileContent(decodeBase64(fileData?.file?.content || ''));
@@ -1211,7 +1494,7 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
     setError('');
 
     try {
-      const response = await fetch(buildEntriesUrl(path));
+      const response = await fetchWithAuth(buildEntriesUrl(path));
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
@@ -1279,7 +1562,7 @@ function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff }
     setHistoryError('');
 
     try {
-      const response = await fetch(buildFileUrl(entry.path));
+      const response = await fetchWithAuth(buildFileUrl(entry.path));
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
@@ -1493,7 +1776,7 @@ function CommitDiffPage({ commitHash, onBack }) {
       setIsLoading(true);
       setError('');
       try {
-        const response = await fetch(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
+        const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`Request failed (${response.status})`);

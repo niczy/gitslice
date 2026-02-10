@@ -53,6 +53,12 @@ type InMemoryStorage struct {
 	fileChangesByPath   map[string][]string                 // "sliceID:path" -> []changeID (newest first)
 	fileChangesByCommit map[string][]string                 // commitHash -> []changeID
 	fileChangesByDir    map[string][]string                 // "sliceID:dirPrefix" -> []changeID (newest first)
+
+	// Accounts / Orgs
+	users      map[string]*models.User                          // username -> user
+	orgs       map[string]*models.Organization                  // orgSlug -> org
+	orgMembers map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
+	userOrgs   map[string]map[string]bool                       // username -> orgSlug -> true
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
@@ -76,6 +82,10 @@ func NewInMemoryStorage() *InMemoryStorage {
 		fileChangesByPath:   make(map[string][]string),
 		fileChangesByCommit: make(map[string][]string),
 		fileChangesByDir:    make(map[string][]string),
+		users:               make(map[string]*models.User),
+		orgs:                make(map[string]*models.Organization),
+		orgMembers:          make(map[string]map[string]*models.OrganizationMember),
+		userOrgs:            make(map[string]map[string]bool),
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -113,6 +123,10 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.fileChangesByPath = fresh.fileChangesByPath
 	s.fileChangesByCommit = fresh.fileChangesByCommit
 	s.fileChangesByDir = fresh.fileChangesByDir
+	s.users = fresh.users
+	s.orgs = fresh.orgs
+	s.orgMembers = fresh.orgMembers
+	s.userOrgs = fresh.userOrgs
 	return nil
 }
 

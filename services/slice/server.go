@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -71,6 +73,13 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
 
 	// Get file contents
 	files, err := s.storage.GetSliceFiles(ctx, req.SliceId)
@@ -126,6 +135,11 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.CreateChangesetRequest) (*slicev1.CreateChangesetResponse, error) {
 	log.Printf("CreateChangeset called: slice_id=%s, author=%s", req.SliceId, req.Author)
 
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
 	// Validate slice ID
 	if err := common.ValidateSliceID(req.SliceId); err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
@@ -138,9 +152,12 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		}
 	}
 
-	// Verify slice exists
-	if _, err := s.storage.GetSlice(ctx, req.SliceId); err != nil {
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	id := fmt.Sprintf("cs-%d", time.Now().UnixNano())
@@ -153,7 +170,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		BaseCommitHash: req.BaseCommitHash,
 		ModifiedFiles:  req.ModifiedFiles,
 		Status:         models.ChangesetStatusPending,
-		Author:         req.Author,
+		Author:         username,
 		Message:        req.Message,
 		CreatedAt:      time.Now(),
 	}
@@ -172,9 +189,21 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.ReviewChangesetRequest) (*slicev1.ReviewChangesetResponse, error) {
 	log.Printf("ReviewChangeset called: changeset_id=%s", req.ChangesetId)
 
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	diff := &slicev1.DiffSummary{
@@ -196,9 +225,21 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.MergeChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
 	log.Printf("MergeChangeset called: changeset_id=%s", req.ChangesetId)
 
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, cs.ModifiedFiles); err != nil {
@@ -301,9 +342,21 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {
 	log.Printf("RebaseChangeset called: changeset_id=%s", req.ChangesetId)
 
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	newBase := fmt.Sprintf("base-%d", time.Now().UnixNano())
@@ -322,6 +375,21 @@ func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.R
 
 func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.CommitHistoryRequest) (*slicev1.CommitHistoryResponse, error) {
 	log.Printf("GetSliceCommits called: slice_id=%s", req.SliceId)
+
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		if err == storage.ErrSliceNotFound {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice: %v", err))
+	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
 
 	commits, err := s.storage.ListSliceCommits(ctx, req.SliceId, int(req.Limit), req.FromCommitHash)
 	if err != nil {
@@ -347,6 +415,18 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.StateRequest) (*slicev1.StateResponse, error) {
 	log.Printf("GetSliceState called: slice_id=%s", req.SliceId)
 
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
 	// Get slice metadata
 	metadata, err := s.storage.GetSliceMetadata(ctx, req.SliceId)
 	if err != nil {
@@ -362,6 +442,18 @@ func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.Sta
 
 func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.ListChangesetsRequest) (*slicev1.ListChangesetsResponse, error) {
 	log.Printf("ListChangesets called: slice_id=%s", req.SliceId)
+
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
 
 	var statusFilter *models.ChangesetStatus
 	if req.StatusFilter >= 0 {
@@ -445,6 +537,11 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, new_slice_id=%s",
 		req.ParentSliceId, req.FolderPath, req.NewSliceId)
 
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
 	// Validate IDs and paths
 	if err := common.ValidateSliceID(req.ParentSliceId); err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid parent slice ID: %v", err))
@@ -461,6 +558,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	parentSlice, err := s.storage.GetSlice(ctx, req.ParentSliceId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("parent slice not found: %s", req.ParentSliceId))
+	}
+	if !authz.HasSliceViewAccess(parentSlice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for parent slice")
 	}
 
 	folderPath := strings.TrimSuffix(req.FolderPath, "/")
@@ -479,14 +579,20 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		Name:        req.Name,
 		Description: req.Description,
 		Files:       selectedFiles,
-		Owners:      parentSlice.Owners,
-		CreatedBy:   "user",
+		Owners:      []string{username},
+		CreatedBy:   username,
 		ParentSlice: parentSlice.ID,
 		IsRoot:      false,
 	}
 
 	if err := s.storage.CreateSlice(ctx, newSlice); err != nil {
-		return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("slice already exists: %s", req.NewSliceId))
+		if errors.Is(err, storage.ErrSliceAlreadyExists) {
+			return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("slice already exists: %s", req.NewSliceId))
+		}
+		if errors.Is(err, storage.ErrInvalidInput) {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice: %v", err))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create slice: %v", err))
 	}
 
 	return &slicev1.CreateSliceFromFolderResponse{

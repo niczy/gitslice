@@ -5,6 +5,7 @@ import "fmt"
 func printHelp() {
 	fmt.Println("Usage: gs <command> [options]")
 	fmt.Println("\nCommands:")
+	fmt.Println("  login      Set your username for fake auth")
 	fmt.Println("  slice       Manage slices")
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")

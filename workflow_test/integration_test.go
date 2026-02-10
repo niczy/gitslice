@@ -217,7 +217,7 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	fullArgs := append([]string{"--slice-addr", grpcServiceAddr, "--admin-addr", grpcServiceAddr}, args...)
+	fullArgs := append([]string{"--slice-addr", grpcServiceAddr, "--admin-addr", grpcServiceAddr, "--user", testUsername}, args...)
 	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
 	if workdir != "" {
 		cmd.Dir = workdir
@@ -697,6 +697,7 @@ func TestGenesisCreatesFileChangeRecords(t *testing.T) {
 func TestFileBrowserIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	if testStorage == nil {
 		t.Fatalf("expected test storage to be initialized")
@@ -710,9 +711,11 @@ func TestFileBrowserIntegration(t *testing.T) {
 	}
 
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
-		ID:    sliceID,
-		Name:  "Browser",
-		Files: files,
+		ID:        sliceID,
+		Name:      "Browser",
+		Files:     files,
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -877,6 +880,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	st := storage.NewInMemoryStorage()
 	if err := st.InitializeRootSlice(nil); err != nil {
@@ -899,10 +903,10 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 	sliceA := fmt.Sprintf("batch-merge-a-%d", time.Now().UnixNano())
 	sliceB := fmt.Sprintf("batch-merge-b-%d", time.Now().UnixNano())
 
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "Batch A", Files: []string{"file-a"}}); err != nil {
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "Batch A", Files: []string{"file-a"}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create slice A: %v", err)
 	}
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "Batch B", Files: []string{"file-b"}}); err != nil {
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "Batch B", Files: []string{"file-b"}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
@@ -965,6 +969,7 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	sliceClient := newSliceClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	historyResp, err := sliceClient.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceID, Limit: 5})
 	if err != nil {
@@ -991,6 +996,7 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 	adminClient := newAdminClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	resolveAllConflicts(ctx, t, adminClient)
 
@@ -1044,6 +1050,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	objectStore := storage.NewInMemoryObjectStore()
 	namespace := fmt.Sprintf("restart-e2e-%d", time.Now().UnixNano())
@@ -1072,7 +1079,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 
 	sliceID := fmt.Sprintf("restart-slice-%d", time.Now().UnixNano())
 	fileID := fmt.Sprintf("persist-%d.txt", time.Now().UnixNano())
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: "Persist", Files: []string{fileID}}); err != nil {
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: "Persist", Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 
@@ -1136,6 +1143,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	adminClient := newAdminClient(t)
 	sliceClient := newSliceClient(t)
@@ -1144,10 +1152,10 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 	sliceA := fmt.Sprintf("lock-a-%d", time.Now().UnixNano())
 	sliceB := fmt.Sprintf("lock-b-%d", time.Now().UnixNano())
 
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "LockA", Files: []string{sharedFile}}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "LockA", Files: []string{sharedFile}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create slice A: %v", err)
 	}
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "LockB", Files: []string{sharedFile}}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "LockB", Files: []string{sharedFile}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
@@ -1222,6 +1230,7 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	adminClient := newAdminClient(t)
 	sliceClient := newSliceClient(t)
@@ -1241,7 +1250,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		sliceID := fmt.Sprintf("concurrency-slice-%d-%d", i, time.Now().UnixNano())
 		slices = append(slices, sliceID)
 
-		if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}}); err != nil {
+		if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 			t.Fatalf("failed to create slice %d: %v", i, err)
 		}
 

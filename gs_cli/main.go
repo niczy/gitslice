@@ -20,6 +20,7 @@ var (
 	sliceServerAddr = flag.String("slice-addr", "localhost:50051", "Slice service address")
 	adminServerAddr = flag.String("admin-addr", "localhost:50051", "Admin service address")
 	useTLS          = flag.Bool("tls", false, "Use TLS for gRPC connections")
+	userFlag        = flag.String("user", "", "Username for fake login (overrides GS_USERNAME and ~/.gitslice/user)")
 )
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
@@ -44,8 +45,13 @@ func main() {
 	}
 	defer cli.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 	defer cancel()
+	username := resolveUsername(*userFlag)
+	ctx, err = withUserAuth(ctx, username)
+	if err != nil {
+		log.Fatalf("Invalid --user: %v", err)
+	}
 
 	args := flag.Args()
 	if len(args) < 1 {
@@ -54,6 +60,8 @@ func main() {
 	}
 
 	switch args[0] {
+	case "login":
+		handleLogin(username, args[1:])
 	case "slice":
 		handleSliceCommand(ctx, cli, args[1:])
 	case "changeset":

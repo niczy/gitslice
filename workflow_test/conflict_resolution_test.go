@@ -225,10 +225,10 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: sliceA, Files: []string{fileID}}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: sliceA, Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create base slice: %v", err)
 	}
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: sliceB, Files: []string{fileID}}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: sliceB, Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create conflicting slice: %v", err)
 	}
 

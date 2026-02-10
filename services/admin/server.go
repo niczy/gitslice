@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -47,6 +48,10 @@ func NewService(st storage.Storage) adminv1.AdminServiceServer {
 
 func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchMergeRequest) (*adminv1.BatchMergeResponse, error) {
 	log.Printf("BatchMerge called: max_slices=%v", req.MaxSlices)
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
 
 	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if errors.Is(err, storage.ErrSliceNotFound) {
@@ -67,7 +72,7 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 		return nil, status.Error(codes.FailedPrecondition, "conflicts present; resolve before merging")
 	}
 
-	allSlices, err := s.storage.ListSlices(ctx, int(^uint(0)>>1), 0)
+	allSlices, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
 	}
@@ -184,6 +189,10 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 
 func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.ConflictsRequest) (*adminv1.ConflictsResponse, error) {
 	log.Printf("GetConflicts called: slice_id=%v", req.SliceId)
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
 
 	conflicts, err := s.storage.ListConflicts(ctx)
 	if err != nil {
@@ -219,6 +228,10 @@ func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.Conf
 
 func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.ResolveConflictRequest) (*adminv1.ResolveConflictResponse, error) {
 	log.Printf("ResolveConflict called: file_id=%s preferred_slice_id=%s", req.FileId, req.PreferredSliceId)
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
 
 	if req.FileId == "" {
 		return nil, status.Error(codes.InvalidArgument, "file_id is required")
@@ -265,6 +278,11 @@ func (s *adminServiceServer) GetGlobalState(ctx context.Context, req *adminv1.Gl
 }
 
 func (s *adminServiceServer) ImportGitRepo(ctx context.Context, req *adminv1.ImportGitRepoRequest) (*adminv1.ImportGitRepoResponse, error) {
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
 	repoPath := strings.TrimSpace(req.GetRepoPath())
 	repoURL := strings.TrimSpace(req.GetRepoUrl())
 	ref := strings.TrimSpace(req.GetRef())
@@ -308,14 +326,39 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 		limit = int(^uint(0) >> 1)
 	}
 
-	slices, err := s.storage.ListSlices(ctx, limit, offset)
+	username := auth.UsernameFromGRPCContext(ctx)
+	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root slice: %v", err))
 	}
 
-	total, err := s.storage.CountSlices(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to count slices: %v", err))
+	var slices []*models.Slice
+	if username == "" {
+		slices = []*models.Slice{rootSlice}
+	} else {
+		owned, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
+		}
+		slices = make([]*models.Slice, 0, len(owned)+1)
+		slices = append(slices, rootSlice)
+		for _, slice := range owned {
+			if slice.IsRoot {
+				continue
+			}
+			slices = append(slices, slice)
+		}
+	}
+
+	total := len(slices)
+	if offset >= len(slices) {
+		slices = []*models.Slice{}
+	} else {
+		end := offset + limit
+		if end > len(slices) {
+			end = len(slices)
+		}
+		slices = slices[offset:end]
 	}
 
 	response := &adminv1.ListSlicesResponse{
@@ -341,6 +384,10 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 
 func (s *adminServiceServer) WatchConflicts(req *adminv1.WatchConflictsRequest, stream adminv1.AdminService_WatchConflictsServer) error {
 	log.Printf("WatchConflicts called: slice_id=%v", req.SliceId)
+	username := auth.UsernameFromGRPCContext(stream.Context())
+	if username == "" {
+		return status.Error(codes.Unauthenticated, "login required")
+	}
 
 	conflicts, err := s.storage.ListConflicts(stream.Context())
 	if err != nil {

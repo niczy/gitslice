@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -46,6 +47,11 @@ type postgresSnapshot struct {
 	FileChangesByPath   map[string][]string                 `json:"file_changes_by_path"`
 	FileChangesByCommit map[string][]string                 `json:"file_changes_by_commit"`
 	FileChangesByDir    map[string][]string                 `json:"file_changes_by_dir"`
+
+	Users      map[string]*models.User                          `json:"users"`
+	Orgs       map[string]*models.Organization                  `json:"orgs"`
+	OrgMembers map[string]map[string]*models.OrganizationMember `json:"org_members"`
+	UserOrgs   map[string]map[string]bool                       `json:"user_orgs"`
 }
 
 const createStorageStateTableSQL = `
@@ -273,6 +279,10 @@ func (s *PostgresStorage) exportSnapshotLocked() (*postgresSnapshot, error) {
 		FileChangesByPath:   s.mem.fileChangesByPath,
 		FileChangesByCommit: s.mem.fileChangesByCommit,
 		FileChangesByDir:    s.mem.fileChangesByDir,
+		Users:               s.mem.users,
+		Orgs:                s.mem.orgs,
+		OrgMembers:          s.mem.orgMembers,
+		UserOrgs:            s.mem.userOrgs,
 	}
 
 	// Round-trip through JSON to produce a deep copy.
@@ -310,6 +320,10 @@ func (s *PostgresStorage) applySnapshotLocked(snap *postgresSnapshot) {
 	s.mem.fileChangesByPath = snap.FileChangesByPath
 	s.mem.fileChangesByCommit = snap.FileChangesByCommit
 	s.mem.fileChangesByDir = snap.FileChangesByDir
+	s.mem.users = snap.Users
+	s.mem.orgs = snap.Orgs
+	s.mem.orgMembers = snap.OrgMembers
+	s.mem.userOrgs = snap.UserOrgs
 }
 
 func normalizeSnapshot(snap *postgresSnapshot) {
@@ -372,6 +386,18 @@ func normalizeSnapshot(snap *postgresSnapshot) {
 	}
 	if snap.FileChangesByDir == nil {
 		snap.FileChangesByDir = make(map[string][]string)
+	}
+	if snap.Users == nil {
+		snap.Users = make(map[string]*models.User)
+	}
+	if snap.Orgs == nil {
+		snap.Orgs = make(map[string]*models.Organization)
+	}
+	if snap.OrgMembers == nil {
+		snap.OrgMembers = make(map[string]map[string]*models.OrganizationMember)
+	}
+	if snap.UserOrgs == nil {
+		snap.UserOrgs = make(map[string]map[string]bool)
 	}
 }
 
@@ -439,6 +465,75 @@ func (s *PostgresStorage) SearchSlices(ctx context.Context, query string, limit,
 	err := s.withRead(ctx, func() error {
 		var err error
 		out, err = s.mem.SearchSlices(ctx, query, limit, offset)
+		return err
+	})
+	return out, err
+}
+
+func (s *PostgresStorage) EnsureUser(ctx context.Context, username string) (*models.User, error) {
+	// Fast path: if the user already exists, avoid persisting a full snapshot.
+	var existing *models.User
+	readErr := s.withRead(ctx, func() error {
+		u, err := s.mem.GetUser(ctx, username)
+		if err != nil {
+			return err
+		}
+		existing = u
+		return nil
+	})
+	if readErr == nil && existing != nil {
+		return existing, nil
+	}
+	if readErr != nil && !errors.Is(readErr, ErrEntryNotFound) && !errors.Is(readErr, ErrInvalidInput) {
+		return nil, readErr
+	}
+
+	var out *models.User
+	err := s.withWrite(ctx, func() error {
+		var err error
+		out, err = s.mem.EnsureUser(ctx, username)
+		return err
+	})
+	return out, err
+}
+
+func (s *PostgresStorage) GetUser(ctx context.Context, username string) (*models.User, error) {
+	var out *models.User
+	err := s.withRead(ctx, func() error {
+		var err error
+		out, err = s.mem.GetUser(ctx, username)
+		return err
+	})
+	return out, err
+}
+
+func (s *PostgresStorage) CreateOrganization(ctx context.Context, org *models.Organization) error {
+	return s.withWrite(ctx, func() error {
+		return s.mem.CreateOrganization(ctx, org)
+	})
+}
+
+func (s *PostgresStorage) GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error) {
+	var out *models.Organization
+	err := s.withRead(ctx, func() error {
+		var err error
+		out, err = s.mem.GetOrganization(ctx, orgSlug)
+		return err
+	})
+	return out, err
+}
+
+func (s *PostgresStorage) AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error {
+	return s.withWrite(ctx, func() error {
+		return s.mem.AddOrganizationMember(ctx, member)
+	})
+}
+
+func (s *PostgresStorage) ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error) {
+	var out []*models.Organization
+	err := s.withRead(ctx, func() error {
+		var err error
+		out, err = s.mem.ListOrganizationsForUser(ctx, username)
 		return err
 	})
 	return out, err

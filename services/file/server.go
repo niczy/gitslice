@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -82,6 +84,13 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	slice, err := s.storage.GetSlice(ctx, sliceID)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	normalizedPath := cleanPath(req.Path)
@@ -198,6 +207,13 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
 
 	normalizedPath := cleanPath(req.Path)
 	content, err := s.storage.GetSliceFileByPath(ctx, sliceID, normalizedPath)
@@ -285,6 +301,18 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 		sliceID = rootSlice.ID
 	}
 
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
 	normalizedPath := cleanPath(req.Path)
 	limit := int(req.Limit)
 	if limit <= 0 {
@@ -327,6 +355,18 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 			return nil, status.Error(codes.Internal, "failed to get root slice")
 		}
 		sliceID = rootSlice.ID
+	}
+
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+	}
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	normalizedPath := cleanPath(req.Path)
