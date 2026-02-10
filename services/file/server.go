@@ -90,22 +90,24 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		prefix = normalizedPath + "/"
 	}
 
-	fileSet := make(map[string]bool, len(slice.Files))
-	for _, file := range slice.Files {
-		normalized := cleanPath(file)
-		if normalized == "" {
+	entriesByName := map[string]*filev1.DirectoryEntry{}
+	matchedAny := false
+	exactFile := false
+
+	for _, raw := range slice.Files {
+		filePath := cleanPath(raw)
+		if filePath == "" {
 			continue
 		}
-		fileSet[normalized] = true
-	}
 
-	contentByPath := fileContentIndex(s.storage, ctx, sliceID)
+		if normalizedPath != "" && filePath == normalizedPath {
+			exactFile = true
+		}
 
-	entriesByName := map[string]*filev1.DirectoryEntry{}
-	for filePath := range fileSet {
 		if prefix != "" && !strings.HasPrefix(filePath, prefix) {
 			continue
 		}
+		matchedAny = true
 
 		remaining := strings.TrimPrefix(filePath, prefix)
 		if remaining == "" {
@@ -137,7 +139,8 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 			if entry.Type != filev1.EntryType_ENTRY_TYPE_DIRECTORY {
 				entry.Type = filev1.EntryType_ENTRY_TYPE_FILE
 				entry.HasChildren = false
-				if content, ok := contentByPath[filePath]; ok {
+				// Best-effort size lookup only for files directly under the requested path.
+				if content, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath); err == nil && content != nil {
 					entry.Size = contentSize(content)
 				}
 			}
@@ -148,8 +151,12 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	}
 
 	if len(entriesByName) == 0 && normalizedPath != "" {
-		if fileSet[normalizedPath] {
+		if exactFile {
 			return nil, status.Error(codes.FailedPrecondition, "path refers to a file")
+		}
+		if matchedAny {
+			// Path exists but contains no children (e.g. empty dir in model).
+			return &filev1.ListEntriesResponse{SliceId: sliceID, Path: normalizedPath, Entries: []*filev1.DirectoryEntry{}, Truncated: false}, nil
 		}
 		return nil, status.Error(codes.NotFound, "path not found")
 	}

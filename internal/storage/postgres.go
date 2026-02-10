@@ -23,6 +23,7 @@ type PostgresStorage struct {
 	namespace   string
 	mu          sync.Mutex
 	mem         *InMemoryStorage
+	loaded      bool
 }
 
 type postgresSnapshot struct {
@@ -124,7 +125,8 @@ func (s *PostgresStorage) Reset(ctx context.Context) error {
 		return err
 	}
 	s.mem = NewInMemoryStorage()
-	return nil
+	s.loaded = true
+	return s.persistLocked(ctx)
 }
 
 // BulkWrite applies multiple in-memory mutations and persists a single snapshot.
@@ -203,11 +205,19 @@ func (s *PostgresStorage) withWrite(ctx context.Context, fn func() error) error 
 }
 
 func (s *PostgresStorage) loadLocked(ctx context.Context) error {
+	if s.loaded {
+		return nil
+	}
+
 	var payload []byte
 	err := s.pool.QueryRow(ctx, `SELECT payload FROM storage_state WHERE namespace = $1`, s.namespace).Scan(&payload)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return s.persistLocked(ctx)
+			if err := s.persistLocked(ctx); err != nil {
+				return err
+			}
+			s.loaded = true
+			return nil
 		}
 		return err
 	}
@@ -218,6 +228,7 @@ func (s *PostgresStorage) loadLocked(ctx context.Context) error {
 	}
 
 	s.applySnapshotLocked(&snap)
+	s.loaded = true
 	return nil
 }
 
