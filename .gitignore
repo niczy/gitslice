@@ -46,6 +46,10 @@ test-results/
 logs/
 .restart_all.lock
 
+.objectstore/
+.objectstore-e2e/
+.postgres/
+
 bin/
 include/
 readme.txt

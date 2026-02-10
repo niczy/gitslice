@@ -8,6 +8,7 @@ func printHelp() {
 	fmt.Println("  slice       Manage slices")
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
+	fmt.Println("  import      Import external repositories")
 	fmt.Println("  init        Initialize working directory")
 	fmt.Println("  status      Show working directory status")
 	fmt.Println("  log         Show slice commit history")
@@ -39,4 +40,10 @@ func printConflictHelp() {
 	fmt.Println("  list       List conflicts for the current or specified slice")
 	fmt.Println("  resolve    Resolve a conflict in favor of a slice")
 	fmt.Println("  show       Show details for a conflicted file")
+}
+
+func printImportHelp() {
+	fmt.Println("Usage: gs import <command> [options]")
+	fmt.Println("\nCommands:")
+	fmt.Println("  git        Import a local git repository commit-by-commit into the root slice")
 }

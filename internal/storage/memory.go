@@ -84,6 +84,19 @@ func NewInMemoryStorage() *InMemoryStorage {
 	}
 }
 
+// Reset clears all in-memory state.
+//
+// This is intentionally not part of the Storage interface; it's an admin/ops escape hatch.
+func (s *InMemoryStorage) Reset(ctx context.Context) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fresh := NewInMemoryStorage()
+	*s = *fresh
+	return nil
+}
+
 // LockSliceAndFiles acquires a lock on the slice and the provided files.
 func (s *InMemoryStorage) LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error {
 	s.mu.Lock()
@@ -887,6 +900,10 @@ func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path 
 
 	// Return a copy
 	copyContent := *content
+	// The underlying blob store is keyed only by hash; the caller's requested
+	// path is the authoritative lookup key at a given commit.
+	copyContent.Path = path
+	copyContent.FileID = path
 	return &copyContent, nil
 }
 

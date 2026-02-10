@@ -108,6 +108,19 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 }
 
 func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectStore, func(), error) {
+	switch strings.ToLower(cfg.ObjectStoreType) {
+	case "filesystem", "fs", "file":
+		store, err := storage.NewFilesystemObjectStore(cfg.ObjectStoreDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, func() {}, nil
+	case "", "gcs":
+		// Continue below.
+	default:
+		return nil, nil, fmt.Errorf("unsupported OBJECT_STORE_TYPE: %s", cfg.ObjectStoreType)
+	}
+
 	if cfg.GCSBucket == "" {
 		return nil, nil, fmt.Errorf("GCS_BUCKET is required")
 	}

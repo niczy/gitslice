@@ -70,6 +70,8 @@ func main() {
 		handleRootSlice(ctx, cli)
 	case "fork":
 		handleForkSlice(ctx, cli, args[1:])
+	case "import":
+		handleImportCommand(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown command: %s", args[0])
 		printHelp()

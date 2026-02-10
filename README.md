@@ -107,6 +107,13 @@ GCS_BUCKET=gitslice-objects \
 GCS_CREDENTIALS_FILE=/path/to/service-account.json \
 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
+# Run core server with PostgreSQL + filesystem object store (no GCS required)
+STORAGE_TYPE=postgres \
+POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
+OBJECT_STORE_TYPE=filesystem \
+OBJECT_STORE_DIR="$PWD/.objectstore" \
+CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+
 # Run CLI (override addresses if needed)
 ./gs_cli --help
 ```
@@ -151,6 +158,7 @@ See `.github/workflows/build.yml` for details.
 - Rebuilds/restarts core + gateway + web preview via `ops/start_web_server.sh`
 - Verifies service health before exiting
 - Ensures an hourly user crontab entry exists
+- Starts `core_server` with `SKIP_GIT_POPULATION=1` by default (disable genesis auto-population from the local git checkout)
 
 Install or refresh the hourly cron entry:
 

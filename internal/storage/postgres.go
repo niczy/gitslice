@@ -110,6 +110,55 @@ func (s *PostgresStorage) Close() error {
 	return nil
 }
 
+// Reset clears the persisted snapshot for this storage namespace and resets in-memory state.
+//
+// This is intentionally not part of the Storage interface; it's an admin/ops escape hatch.
+// Object store blobs are not deleted.
+func (s *PostgresStorage) Reset(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ctx = ensureCtx(ctx)
+	_, err := s.pool.Exec(ctx, `DELETE FROM storage_state WHERE namespace=$1`, s.namespace)
+	if err != nil {
+		return err
+	}
+	s.mem = NewInMemoryStorage()
+	return nil
+}
+
+// BulkWrite applies multiple in-memory mutations and persists a single snapshot.
+//
+// This is an escape hatch for admin workflows that would otherwise perform
+// thousands of tiny writes (each persisting the full snapshot).
+func (s *PostgresStorage) BulkWrite(ctx context.Context, fn func(mem *InMemoryStorage) error) error {
+	if fn == nil {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ctx = ensureCtx(ctx)
+	if err := s.loadLocked(ctx); err != nil {
+		return err
+	}
+	before, err := s.exportSnapshotLocked()
+	if err != nil {
+		return err
+	}
+
+	if err := fn(s.mem); err != nil {
+		return err
+	}
+
+	if err := s.persistLocked(ctx); err != nil {
+		s.applySnapshotLocked(before)
+		return err
+	}
+	return nil
+}
+
 func (s *PostgresStorage) key(parts ...string) string {
 	if s.namespace == "" {
 		return strings.Join(parts, ":")
