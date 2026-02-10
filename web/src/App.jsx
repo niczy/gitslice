@@ -1560,6 +1560,11 @@ function CommitDiffPage({ commitHash, onBack }) {
                     </span>
                   )}
                 </div>
+                {change.patch && (
+                  <pre className="diff-patch" data-testid="diff-file-patch">
+                    {renderDiffPatch(change.patch)}
+                  </pre>
+                )}
               </li>
             ))}
           </ul>
@@ -1585,6 +1590,7 @@ function normalizeChange(c) {
     lines_deleted: c.lines_deleted ?? c.linesDeleted ?? 0,
     old_path: c.old_path ?? c.oldPath,
     slice_id: c.slice_id ?? c.sliceId,
+    patch: c.patch ?? c.Patch ?? '',
   };
 }
 
@@ -1600,6 +1606,26 @@ function normalizeDiffResponse(data) {
   };
 }
 
+
+function renderDiffPatch(patchText) {
+  return patchText.split('\n').map((line, index) => {
+    const className = line.startsWith('+') && !line.startsWith('+++')
+      ? 'diff-line-added'
+      : line.startsWith('-') && !line.startsWith('---')
+        ? 'diff-line-deleted'
+        : line.startsWith('@@')
+          ? 'diff-line-hunk'
+          : line.startsWith('---') || line.startsWith('+++')
+            ? 'diff-line-file'
+            : 'diff-line-context';
+    return (
+      <span key={`${index}-${line}`} className={`diff-line ${className}`}>
+        {line || ' '}
+        {'\n'}
+      </span>
+    );
+  });
+}
 function normalizeSliceInfo(slice) {
   return {
     ...slice,

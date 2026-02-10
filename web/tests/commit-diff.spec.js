@@ -100,4 +100,42 @@ test.describe('Commit Diff Page (real server)', () => {
     // Genesis adds files, so lines_added should be "+N" with N > 0
     await expect(firstItem.locator('.lines-added')).toContainText(/\+\d+/);
   });
+
+  test('renders unified patch content for changed files', async ({ page }) => {
+    const commitHash = 'commit-test-patch';
+    await page.route(`**/v1/commits/${commitHash}/changes`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 0,
+          files_modified: 1,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes: [
+            {
+              id: 'change-1',
+              path: 'README.md',
+              change_type: 'CHANGE_TYPE_MODIFY',
+              lines_added: 1,
+              lines_deleted: 1,
+              patch: '--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-Hello\n+Hello world\n',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto(`/#/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+
+    const patch = page.getByTestId('diff-file-patch').first();
+    await expect(patch).toBeVisible();
+    await expect(patch).toContainText(/--- a\//);
+    await expect(patch).toContainText(/\+\+\+ b\//);
+
+    const addedLine = patch.locator('.diff-line-added').first();
+    await expect(addedLine).toBeVisible();
+  });
 });
