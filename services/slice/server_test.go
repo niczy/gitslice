@@ -8,15 +8,16 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc/metadata"
 )
 
 const statusFilterAll = slicev1.ChangesetStatus(-1)
 
 func TestListChangesetsFiltersByStatus(t *testing.T) {
-	ctx := context.Background()
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "slice-1", Name: "slice-1"}
+	slice := &models.Slice{ID: "slice-1", Name: "slice-1", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}

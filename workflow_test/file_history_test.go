@@ -17,13 +17,16 @@ func TestFileHistoryRPCIntegration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	ctx = withTestUser(ctx)
 
 	// Create a unique slice for this test
 	sliceID := fmt.Sprintf("slice-history-rpc-%d", time.Now().UnixNano())
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
-		ID:    sliceID,
-		Name:  "History RPC Test",
-		Files: []string{"src/main.go", "src/utils/helper.go", "docs/readme.md"},
+		ID:        sliceID,
+		Name:      "History RPC Test",
+		Files:     []string{"src/main.go", "src/utils/helper.go", "docs/readme.md"},
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}

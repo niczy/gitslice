@@ -13,6 +13,7 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc/metadata"
 )
 
 // PopulateGenesisFromGit scans the current git repository and adds all tracked files
@@ -147,7 +148,9 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 	}
 
 	// Phase 2: Create and merge a changeset via the service's own RPC methods.
-	csResp, err := s.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+	// These are internal calls (not coming from gRPC), so attach fake auth.
+	authCtx := metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "User system"))
+	csResp, err := s.CreateChangeset(authCtx, &slicev1.CreateChangesetRequest{
 		SliceId:       sliceID,
 		ModifiedFiles: allModifiedFiles,
 		Author:        "system",
@@ -157,7 +160,7 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 		return fmt.Errorf("failed to create genesis changeset: %w", err)
 	}
 
-	mergeResp, err := s.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{
+	mergeResp, err := s.MergeChangeset(authCtx, &slicev1.MergeChangesetRequest{
 		ChangesetId: csResp.ChangesetId,
 	})
 	if err != nil {

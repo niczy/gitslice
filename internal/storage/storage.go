@@ -102,4 +102,13 @@ type Storage interface {
 
 	// GetDirectorySummary gets an aggregated summary of changes for a directory
 	GetDirectorySummary(ctx context.Context, sliceID, pathPrefix string) (*models.DirectoryChangeSummary, error)
+
+	// Accounts / Organizations (fake auth: identity is a username).
+	EnsureUser(ctx context.Context, username string) (*models.User, error)
+	GetUser(ctx context.Context, username string) (*models.User, error)
+
+	CreateOrganization(ctx context.Context, org *models.Organization) error
+	GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error)
+	AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error
+	ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error)
 }

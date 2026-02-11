@@ -118,6 +118,24 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 ./gs_cli --help
 ```
 
+## Fake Accounts / Organizations
+
+This repo uses a fake account system: you choose a username and the services trust it via request metadata.
+
+- The root slice (`root_slice`) is publicly viewable.
+- Non-root slices are only visible/accessible to their owners.
+- Organizations are user-created groups shown on the profile page (no invites yet).
+
+CLI usage:
+
+```bash
+# Persist a username to ~/.gitslice/user
+gs login your_name
+
+# Or pass per-command
+gs --user your_name fork my-slice ./some/folder --parent root_slice
+```
+
 ## Development
 
 ### Adding New Proto Definitions

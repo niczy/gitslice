@@ -13,6 +13,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/gateway"
+	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/storage"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	fileservice "github.com/niczy/gitslice/services/file"
@@ -68,6 +69,22 @@ func main() {
 	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("core-server", func(ctx context.Context) bool {
 		return gateway.GRPCReady(ctx, grpcDialAddr)
 	}))
+
+	accountsAPI := httpapi.NewAccountsAPI(st)
+	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
+	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))
+	httpMux.Handle("/v1/orgs", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			accountsAPI.ListOrgs(w, r)
+		case http.MethodPost:
+			accountsAPI.CreateOrg(w, r)
+		case http.MethodOptions:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})))
 	httpMux.Handle("/", gateway.WithCORS(gatewayMux))
 
 	server := &http.Server{

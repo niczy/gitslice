@@ -2187,10 +2187,146 @@ body {
   transform: translateY(-1px);
 }
 
+/* Auth / Profile */
+.auth-page .section-header {
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.auth-card {
+  max-width: 920px;
+  margin: 18px auto 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.06);
+}
+
+.field {
+  display: block;
+  margin: 0 0 12px;
+}
+
+.field-label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.auth-card input[type="text"] {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.auth-card input[type="text"]:focus {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
+}
+
+.auth-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.profile-grid {
+  max-width: 920px;
+  margin: 18px auto 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.kv {
+  display: grid;
+  gap: 8px;
+}
+
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.kv-key {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.kv-val {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.org-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.org-item-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.org-name {
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.org-slug {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.org-item-meta {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.org-create {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
 /* Tablet breakpoint */
 @media (max-width: 1024px) {
   .repo-layout {
     grid-template-columns: 220px 1fr;
+  }
+
+  .profile-grid {
+    grid-template-columns: 1fr;
   }
 }
 
