@@ -11,6 +11,8 @@ module.exports = {
       env: {
         CORE_SERVICE_PORT: "50051",
         GATEWAY_PORT: "8080",
+        STORAGE_TYPE: "postgres",
+        POSTGRES_DSN: "postgres://nic@127.0.0.1:55432/gitslice?sslmode=disable",
         // Prod default: don't auto-populate genesis by scanning the local git repo.
         SKIP_GIT_POPULATION: "1",
         // Prod default: store blobs on the local filesystem (avoid requiring GCS ADC creds).
