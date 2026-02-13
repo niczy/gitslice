@@ -1766,6 +1766,9 @@ function CommitDiffPage({ commitHash, onBack }) {
   const [diffData, setDiffData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [selectedFileId, setSelectedFileId] = useState(null);
+  const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
+  const fileRefs = useRef({});
 
   useEffect(() => {
     if (!commitHash) return;
@@ -1795,13 +1798,23 @@ function CommitDiffPage({ commitHash, onBack }) {
     return () => { active = false; controller.abort(); };
   }, [commitHash]);
 
+  const handleFileSelect = useCallback((fileKey) => {
+    setSelectedFileId(fileKey);
+    const el = fileRefs.current[fileKey];
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
+  const changes = diffData?.changes || [];
+
   return (
     <section className="commit-diff-page" data-testid="commit-diff-page">
-      <div className="diff-header">
+      <div className="diff-top-bar">
         <button type="button" className="ghost diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
           Back to browser
         </button>
-        <div>
+        <div className="diff-top-title">
           <p className="eyebrow">Commit diff</p>
           <h2 data-testid="diff-commit-title">
             Commit <span className="commit-hash">{commitHash ? commitHash.slice(0, 12) : ''}</span>
@@ -1817,44 +1830,117 @@ function CommitDiffPage({ commitHash, onBack }) {
             )}
           </div>
         )}
+        <div className="diff-view-toggle" data-testid="diff-view-toggle">
+          <button
+            type="button"
+            className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
+            onClick={() => setViewMode('unified')}
+            data-testid="diff-view-unified-btn"
+          >
+            Unified
+          </button>
+          <button
+            type="button"
+            className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
+            onClick={() => setViewMode('split')}
+            data-testid="diff-view-split-btn"
+          >
+            Side-by-side
+          </button>
+        </div>
       </div>
 
-      <div className="diff-content">
-        {isLoading && <div className="diff-loading">Loading commit changes...</div>}
-        {error && <div className="panel-error">{error}</div>}
-        {!isLoading && !error && diffData && (
-          <ul className="diff-file-list" data-testid="diff-file-list">
-            {(diffData.changes || []).map((change) => (
-              <li key={change.id || change.path} className="diff-file-item" data-testid="diff-file-item">
-                <div className="diff-file-header">
-                  <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
-                    {formatChangeType(change.change_type)}
-                  </span>
-                  <span className="diff-file-path" data-testid="diff-file-path">{change.path}</span>
-                  {change.old_path && change.old_path !== change.path && (
-                    <span className="diff-file-old-path">(was: {change.old_path})</span>
-                  )}
-                </div>
-                <div className="diff-file-stats">
-                  {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                    <span className="history-lines">
-                      <span className="lines-added">+{change.lines_added || 0}</span>
-                      <span className="lines-deleted">-{change.lines_deleted || 0}</span>
-                    </span>
-                  )}
-                </div>
-                {change.patch && (
-                  <pre className="diff-patch" data-testid="diff-file-patch">
-                    {renderDiffPatch(change.patch)}
-                  </pre>
-                )}
-              </li>
-            ))}
-          </ul>
+      <div className="diff-layout">
+        {/* Left file panel */}
+        {!isLoading && !error && changes.length > 0 && (
+          <nav className="diff-file-panel" data-testid="diff-file-panel">
+            <div className="diff-file-panel-header">Files ({changes.length})</div>
+            <ul className="diff-file-panel-list">
+              {changes.map((change) => {
+                const fileKey = change.id || change.path;
+                const fileName = change.path.split('/').pop();
+                const dirPath = change.path.split('/').slice(0, -1).join('/');
+                return (
+                  <li key={fileKey}>
+                    <button
+                      type="button"
+                      className={`diff-file-panel-item ${selectedFileId === fileKey ? 'diff-file-panel-item-active' : ''}`}
+                      onClick={() => handleFileSelect(fileKey)}
+                      title={change.path}
+                      data-testid="diff-file-panel-item"
+                    >
+                      <span className={`diff-file-panel-badge change-type-${normalizeChangeType(change.change_type)}`}>
+                        {normalizeChangeType(change.change_type).charAt(0).toUpperCase()}
+                      </span>
+                      <span className="diff-file-panel-name">
+                        {dirPath && <span className="diff-file-panel-dir">{dirPath}/</span>}
+                        {fileName}
+                      </span>
+                      {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                        <span className="diff-file-panel-stats">
+                          {change.lines_added > 0 && <span className="lines-added">+{change.lines_added}</span>}
+                          {change.lines_deleted > 0 && <span className="lines-deleted">-{change.lines_deleted}</span>}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
         )}
-        {!isLoading && !error && diffData && (diffData.changes || []).length === 0 && (
-          <div className="panel-empty">No changes found in this commit.</div>
-        )}
+
+        {/* Main diff content */}
+        <div className="diff-content">
+          {isLoading && <div className="diff-loading">Loading commit changes...</div>}
+          {error && <div className="panel-error">{error}</div>}
+          {!isLoading && !error && diffData && (
+            <ul className="diff-file-list" data-testid="diff-file-list">
+              {changes.map((change) => {
+                const fileKey = change.id || change.path;
+                return (
+                  <li
+                    key={fileKey}
+                    ref={(el) => { fileRefs.current[fileKey] = el; }}
+                    className={`diff-file-item ${selectedFileId === fileKey ? 'diff-file-item-selected' : ''}`}
+                    data-testid="diff-file-item"
+                  >
+                    <div className="diff-file-header">
+                      <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                        {formatChangeType(change.change_type)}
+                      </span>
+                      <span className="diff-file-path" data-testid="diff-file-path">{change.path}</span>
+                      {change.old_path && change.old_path !== change.path && (
+                        <span className="diff-file-old-path">(was: {change.old_path})</span>
+                      )}
+                    </div>
+                    <div className="diff-file-stats">
+                      {(change.lines_added > 0 || change.lines_deleted > 0) && (
+                        <span className="history-lines">
+                          <span className="lines-added">+{change.lines_added || 0}</span>
+                          <span className="lines-deleted">-{change.lines_deleted || 0}</span>
+                        </span>
+                      )}
+                    </div>
+                    {change.patch && viewMode === 'unified' && (
+                      <pre className="diff-patch" data-testid="diff-file-patch">
+                        {renderDiffPatch(change.patch)}
+                      </pre>
+                    )}
+                    {change.patch && viewMode === 'split' && (
+                      <div className="diff-split-container" data-testid="diff-file-patch">
+                        {renderSplitDiffPatch(change.patch)}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {!isLoading && !error && diffData && changes.length === 0 && (
+            <div className="panel-empty">No changes found in this commit.</div>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -1908,6 +1994,142 @@ function renderDiffPatch(patchText) {
       </span>
     );
   });
+}
+
+function parseSplitDiffLines(patchText) {
+  const lines = patchText.split('\n');
+  const rows = [];
+  let leftNum = 0;
+  let rightNum = 0;
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // File header lines (--- / +++)
+    if (line.startsWith('---') || line.startsWith('+++')) {
+      rows.push({ type: 'header', left: line, right: '', leftNum: null, rightNum: null });
+      i++;
+      continue;
+    }
+
+    // Hunk header
+    if (line.startsWith('@@')) {
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        leftNum = parseInt(match[1], 10);
+        rightNum = parseInt(match[2], 10);
+      }
+      rows.push({ type: 'hunk', left: line, right: '', leftNum: null, rightNum: null });
+      i++;
+      continue;
+    }
+
+    // Collect consecutive deletions and additions for pairing
+    if (line.startsWith('-')) {
+      const deletions = [];
+      while (i < lines.length && lines[i].startsWith('-') && !lines[i].startsWith('---')) {
+        deletions.push(lines[i]);
+        i++;
+      }
+      const additions = [];
+      while (i < lines.length && lines[i].startsWith('+') && !lines[i].startsWith('+++')) {
+        additions.push(lines[i]);
+        i++;
+      }
+
+      const maxLen = Math.max(deletions.length, additions.length);
+      for (let j = 0; j < maxLen; j++) {
+        const del = j < deletions.length ? deletions[j] : null;
+        const add = j < additions.length ? additions[j] : null;
+        rows.push({
+          type: del && add ? 'changed' : del ? 'deleted' : 'added',
+          left: del ? del.slice(1) : '',
+          right: add ? add.slice(1) : '',
+          leftNum: del ? leftNum++ : null,
+          rightNum: add ? rightNum++ : null,
+          leftClass: del ? 'diff-line-deleted' : 'diff-line-empty',
+          rightClass: add ? 'diff-line-added' : 'diff-line-empty',
+        });
+      }
+      continue;
+    }
+
+    // Pure additions (not preceded by deletions)
+    if (line.startsWith('+')) {
+      rows.push({
+        type: 'added',
+        left: '',
+        right: line.slice(1),
+        leftNum: null,
+        rightNum: rightNum++,
+        leftClass: 'diff-line-empty',
+        rightClass: 'diff-line-added',
+      });
+      i++;
+      continue;
+    }
+
+    // Context lines
+    if (line.length > 0 || (i < lines.length - 1)) {
+      const content = line.startsWith(' ') ? line.slice(1) : line;
+      rows.push({
+        type: 'context',
+        left: content,
+        right: content,
+        leftNum: leftNum++,
+        rightNum: rightNum++,
+        leftClass: 'diff-line-context',
+        rightClass: 'diff-line-context',
+      });
+    }
+    i++;
+  }
+  return rows;
+}
+
+function renderSplitDiffPatch(patchText) {
+  const rows = parseSplitDiffLines(patchText);
+  return (
+    <table className="diff-split-table">
+      <tbody>
+        {rows.map((row, idx) => {
+          if (row.type === 'header') {
+            return (
+              <tr key={idx} className="diff-split-row diff-split-header">
+                <td className="diff-split-gutter"></td>
+                <td className="diff-split-cell diff-line-file" colSpan={3}>{row.left}</td>
+              </tr>
+            );
+          }
+          if (row.type === 'hunk') {
+            return (
+              <tr key={idx} className="diff-split-row diff-split-hunk">
+                <td className="diff-split-gutter"></td>
+                <td className="diff-split-cell diff-line-hunk" colSpan={3}>{row.left}</td>
+              </tr>
+            );
+          }
+          return (
+            <tr key={idx} className="diff-split-row">
+              <td className="diff-split-gutter diff-split-gutter-left">
+                {row.leftNum != null ? row.leftNum : ''}
+              </td>
+              <td className={`diff-split-cell diff-split-left ${row.leftClass || ''}`}>
+                <span className="diff-split-text">{row.left || '\u00A0'}</span>
+              </td>
+              <td className="diff-split-gutter diff-split-gutter-right">
+                {row.rightNum != null ? row.rightNum : ''}
+              </td>
+              <td className={`diff-split-cell diff-split-right ${row.rightClass || ''}`}>
+                <span className="diff-split-text">{row.right || '\u00A0'}</span>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
 }
 function normalizeSliceInfo(slice) {
   return {
