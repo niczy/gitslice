@@ -75,6 +75,36 @@ func (s *fileServiceServer) resolveVersion(ctx context.Context, commitHash strin
 	return rootSlice.ID, metadata.HeadCommitHash, nil
 }
 
+func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID string, slice *models.Slice) ([]string, error) {
+	paths := make([]string, 0, len(slice.Files))
+	seen := make(map[string]bool, len(slice.Files))
+	for _, raw := range slice.Files {
+		p := cleanPath(raw)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+
+	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return paths, nil
+		}
+		return nil, err
+	}
+	for _, raw := range metadata.ModifiedFiles {
+		p := cleanPath(raw)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
 func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
 	// Resolve version from oneof
 	sliceID, _, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
@@ -104,8 +134,12 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	matchedAny := false
 	exactFile := false
 
-	for _, raw := range slice.Files {
-		filePath := cleanPath(raw)
+	effectivePaths, err := s.effectiveSlicePaths(ctx, sliceID, slice)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
+	}
+
+	for _, filePath := range effectivePaths {
 		if filePath == "" {
 			continue
 		}
@@ -217,9 +251,14 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 
 	normalizedPath := cleanPath(req.Path)
+	effectivePaths, effectiveErr := s.effectiveSlicePaths(ctx, sliceID, slice)
+	if effectiveErr != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", effectiveErr))
+	}
+
 	content, err := s.storage.GetSliceFileByPath(ctx, sliceID, normalizedPath)
 	if err != nil {
-		if sliceHasPath(slice, normalizedPath) {
+		if sliceHasPath(effectivePaths, normalizedPath) {
 			return nil, status.Error(codes.NotFound, "file content not available")
 		}
 		return nil, status.Error(codes.NotFound, "file not found")
@@ -278,8 +317,8 @@ func contentSize(content *models.FileContent) int64 {
 	return int64(len(content.Content))
 }
 
-func sliceHasPath(slice *models.Slice, path string) bool {
-	for _, file := range slice.Files {
+func sliceHasPath(paths []string, path string) bool {
+	for _, file := range paths {
 		if cleanPath(file) == path {
 			return true
 		}

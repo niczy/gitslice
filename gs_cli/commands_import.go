@@ -57,7 +57,7 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 	importCtx := ctx
 	if *timeout > 0 {
 		var cancel context.CancelFunc
-		importCtx, cancel = context.WithTimeout(context.Background(), *timeout)
+		importCtx, cancel = context.WithTimeout(ctx, *timeout)
 		defer cancel()
 	}
 
