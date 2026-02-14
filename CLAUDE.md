@@ -2,6 +2,8 @@
 
 This document contains important reminders and guidelines for Claude when working on the gitslice project.
 
+Before starting any development work in this repository, read `local_dev.md` and follow its operational notes.
+
 ## Pre-PR Checklist
 
 ### CRITICAL: Always Run Tests Before Creating PRs
