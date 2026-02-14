@@ -2,6 +2,7 @@
 
 These guidelines apply to the entire repository.
 
+- Before any development work, read `local_dev.md` and follow its operational notes.
 - Run `gofmt` on any modified Go files before committing.
 - Run `make test` when changing Go code or protos to catch regressions (this installs dependencies).
 - If `.proto` files are updated, regenerate the Go stubs with the commands in `README.md` and include the generated files in the commit.
