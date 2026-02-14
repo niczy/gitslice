@@ -57,9 +57,21 @@ type postgresSnapshot struct {
 const createStorageStateTableSQL = `
 CREATE TABLE IF NOT EXISTS storage_state (
 	namespace TEXT PRIMARY KEY,
-	payload JSONB NOT NULL,
+	payload TEXT NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+`
+
+const migrateStorageStateSQL = `
+DO $$
+BEGIN
+	IF EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name = 'storage_state' AND column_name = 'payload' AND data_type = 'jsonb'
+	) THEN
+		ALTER TABLE storage_state ALTER COLUMN payload TYPE TEXT USING payload::TEXT;
+	END IF;
+END $$;
 `
 
 func ensureCtx(ctx context.Context) context.Context {
@@ -92,6 +104,10 @@ func NewPostgresStorage(ctx context.Context, dsn string, objectStore ObjectStore
 		return nil, err
 	}
 	if _, err := pool.Exec(ctx, createStorageStateTableSQL); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if _, err := pool.Exec(ctx, migrateStorageStateSQL); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -158,6 +174,19 @@ func (s *PostgresStorage) BulkWrite(ctx context.Context, fn func(mem *InMemorySt
 
 	if err := fn(s.mem); err != nil {
 		return err
+	}
+
+	// Externalize file content to the object store so the snapshot stays compact.
+	for _, fc := range s.mem.fileContents {
+		if fc != nil && len(fc.Content) > 0 && fc.FileID != "" {
+			raw, jerr := json.Marshal(fc)
+			if jerr == nil {
+				_ = s.objectStore.PutObject(ctx, s.key("file_content", fc.FileID), raw)
+				if fc.Hash != "" {
+					_ = s.objectStore.PutObject(ctx, s.key("versioned_content", fc.Hash), raw)
+				}
+			}
+		}
 	}
 
 	if err := s.persistLocked(ctx); err != nil {
@@ -295,6 +324,28 @@ func (s *PostgresStorage) exportSnapshotLocked() (*postgresSnapshot, error) {
 		return nil, err
 	}
 	normalizeSnapshot(&copied)
+
+	// Strip large binary content from entries and file contents to keep the
+	// snapshot compact. File content is stored separately in the object store.
+	for k, entry := range copied.Entries {
+		if entry != nil && len(entry.Content) > 0 {
+			entry.Content = nil
+			copied.Entries[k] = entry
+		}
+	}
+	for k, fc := range copied.FileContents {
+		if fc != nil && len(fc.Content) > 0 {
+			fc.Content = nil
+			copied.FileContents[k] = fc
+		}
+	}
+	for k, vc := range copied.VersionedContent {
+		if vc != nil && len(vc.Content) > 0 {
+			vc.Content = nil
+			copied.VersionedContent[k] = vc
+		}
+	}
+
 	return &copied, nil
 }
 

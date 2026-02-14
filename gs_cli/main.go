@@ -45,7 +45,7 @@ func main() {
 	}
 	defer cli.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	defer cancel()
 	username := resolveUsername(*userFlag)
 	ctx, err = withUserAuth(ctx, username)
