@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/authz"
@@ -522,20 +523,33 @@ func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models
 	afterLines := []string{}
 
 	shouldLoadBefore := change.OldHash != "" || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeDelete || change.ChangeType == models.ChangeTypeRename
+	beforeUndiffable := false
 	if shouldLoadBefore {
 		parentHash, err := s.findParentCommitHash(ctx, change.SliceID, change.CommitHash)
 		if err == nil && parentHash != "" {
 			if prev, ferr := s.storage.GetFileAtCommit(ctx, parentHash, oldPath); ferr == nil && prev != nil {
-				beforeLines = splitLinesForDiff(string(prev.Content))
+				if lines, ok := splitLinesForDiff(prev.Content); ok {
+					beforeLines = lines
+				} else {
+					beforeUndiffable = true
+				}
 			}
 		}
 	}
 
 	shouldLoadAfter := change.NewHash != "" || change.ChangeType == models.ChangeTypeAdd || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeRename
+	afterUndiffable := false
 	if shouldLoadAfter {
 		if curr, err := s.storage.GetFileAtCommit(ctx, change.CommitHash, newPath); err == nil && curr != nil {
-			afterLines = splitLinesForDiff(string(curr.Content))
+			if lines, ok := splitLinesForDiff(curr.Content); ok {
+				afterLines = lines
+			} else {
+				afterUndiffable = true
+			}
 		}
+	}
+	if beforeUndiffable || afterUndiffable {
+		return ""
 	}
 
 	if len(beforeLines) == 0 && len(afterLines) == 0 {
@@ -572,15 +586,29 @@ func (s *fileServiceServer) findParentCommitHash(ctx context.Context, sliceID, c
 	return "", nil
 }
 
-func splitLinesForDiff(content string) []string {
-	if content == "" {
-		return []string{}
+func splitLinesForDiff(content []byte) ([]string, bool) {
+	if len(content) == 0 {
+		return []string{}, true
 	}
-	lines := strings.SplitAfter(content, "\n")
+	// Diff patches are encoded as protobuf string fields, so invalid UTF-8 or
+	// binary data cannot be returned safely as patch text.
+	if !utf8.Valid(content) || bytesContainsNUL(content) {
+		return nil, false
+	}
+	lines := strings.SplitAfter(string(content), "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	return lines
+	return lines, true
+}
+
+func bytesContainsNUL(content []byte) bool {
+	for _, b := range content {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // modelToProtoChangeType converts model ChangeType to protobuf.
