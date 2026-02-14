@@ -4,12 +4,22 @@ import { formatBytes } from '../utils/format.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
 import { decodeBase64, highlightCode } from '../utils/highlight.js';
+import SliceDropdown from './SliceDropdown.jsx';
 
 // ---------------------------------------------------------------------------
 // Repo Browser Component
 // ---------------------------------------------------------------------------
 
-export default function RepoBrowser({ slices, currentSliceId, onSliceChange, onNavigateToDiff, isActive }) {
+export default function RepoBrowser({
+  slices,
+  currentSliceId,
+  onSliceChange,
+  onNavigateToDiff,
+  isActive,
+  slicesLoading,
+  slicesError,
+  onRefreshSlices,
+}) {
   // Parse initial browser state from URL hash on mount
   const initialBrowserState = useMemo(() => {
     const raw = window.location.hash.replace(/^#\/?/, '');
@@ -392,6 +402,17 @@ export default function RepoBrowser({ slices, currentSliceId, onSliceChange, onN
               </div>
             </div>
             <div className="sidebar-content">
+              <div className="sidebar-slice-switcher">
+                <SliceDropdown
+                  slices={slices}
+                  currentSliceId={currentSliceId}
+                  onSelectSlice={onSliceChange}
+                  loading={slicesLoading}
+                  error={slicesError}
+                  onRefresh={onRefreshSlices}
+                  className="slice-dropdown--sidebar"
+                />
+              </div>
               {error && <div className="panel-error">{error}</div>}
               {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
               {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (

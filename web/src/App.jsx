@@ -14,7 +14,6 @@ import { normalizeSliceInfo } from './utils/normalize.js';
 import OverviewPage from './components/OverviewPage.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
-import SliceDropdown from './components/SliceDropdown.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
 import CommitDiffPage from './components/CommitDiffPage.jsx';
 import AgentSession from './components/AgentSession.jsx';
@@ -423,16 +422,6 @@ function App() {
           <span className="brand-text">Git Slice</span>
         </button>
         <div className="top-bar-actions">
-          {activePage === 'browser' && (
-            <SliceDropdown
-              slices={slices}
-              currentSliceId={currentSliceId}
-              onSelectSlice={setCurrentSliceId}
-              loading={slicesLoading}
-              error={slicesError}
-              onRefresh={refreshSlices}
-            />
-          )}
           {username ? (
             <>
               <button
@@ -495,6 +484,9 @@ function App() {
               onSliceChange={setCurrentSliceId}
               onNavigateToDiff={navigateToDiff}
               isActive={activePage === 'browser'}
+              slicesLoading={slicesLoading}
+              slicesError={slicesError}
+              onRefreshSlices={refreshSlices}
             />
           </div>
         )}

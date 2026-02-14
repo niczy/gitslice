@@ -917,6 +917,22 @@ body {
   position: relative;
 }
 
+.slice-dropdown--sidebar {
+  width: 100%;
+}
+
+.slice-dropdown--sidebar .slice-dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.slice-dropdown--sidebar .slice-dropdown-menu {
+  left: 0;
+  right: 0;
+  min-width: 0;
+  transform-origin: top center;
+}
+
 .slice-dropdown-trigger {
   display: flex;
   align-items: center;
@@ -1497,6 +1513,10 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 0 12px 12px;
+}
+
+.sidebar-slice-switcher {
+  margin-bottom: 12px;
 }
 
 .repo-code {
