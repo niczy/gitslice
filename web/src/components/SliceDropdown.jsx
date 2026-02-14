@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // Slice Dropdown Component
 // ---------------------------------------------------------------------------
 
-export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, onRefresh }) {
+export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, onRefresh, className = '' }) {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const dropdownRef = useRef(null);
@@ -44,7 +44,7 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
   };
 
   return (
-    <div className="slice-dropdown" ref={dropdownRef}>
+    <div className={`slice-dropdown ${className}`.trim()} ref={dropdownRef}>
       <button
         type="button"
         className="slice-dropdown-trigger"
