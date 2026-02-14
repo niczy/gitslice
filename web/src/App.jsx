@@ -198,17 +198,20 @@ function App() {
 
   // Agent session handlers
   const createAgentSession = useCallback((provider = selectedAgentType) => {
+    const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId);
     const newSession = {
       id: `session-${Date.now()}`,
       name: `${provider} Agent ${agentSessions.length + 1}`,
       provider,
+      sliceId: currentSliceId,
+      sliceName: currentSlice?.name || currentSliceId || 'No slice selected',
       status: AGENT_STATUS.RUNNING,
       createdAt: Date.now(),
       terminalLines: [...MOCK_TERMINAL_LINES],
     };
     setAgentSessions((prev) => [...prev, newSession]);
     setActiveSessionId(newSession.id);
-  }, [agentSessions.length, selectedAgentType]);
+  }, [agentSessions.length, selectedAgentType, slices, currentSliceId]);
 
   const closeAgentSession = useCallback((sessionId, e) => {
     e?.stopPropagation();
@@ -224,20 +227,28 @@ function App() {
       });
       if (activeSessionId === sessionId) {
         const remaining = agentSessions.filter((s) => s.id !== sessionId);
-        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+        const nextSession = remaining[0] || null;
+        setActiveSessionId(nextSession ? nextSession.id : null);
+        if (nextSession?.sliceId) {
+          setCurrentSliceId(nextSession.sliceId);
+        }
       }
     }, 250);
   }, [agentSessions, activeSessionId]);
 
   const selectSession = useCallback((sessionId) => {
+    const selectedSession = agentSessions.find((session) => session.id === sessionId);
     setActiveSessionId(sessionId);
+    if (selectedSession?.sliceId) {
+      setCurrentSliceId(selectedSession.sliceId);
+    }
     // Trigger closing animation
     setIsOverlayClosing(true);
     setTimeout(() => {
       setIsOverlayOpen(false);
       setIsOverlayClosing(false);
     }, 200);
-  }, []);
+  }, [agentSessions]);
 
   // Close overlay helper
   const closeOverlay = useCallback(() => {
@@ -565,7 +576,10 @@ function App() {
                   }}
                 >
                   <div className="agent-carousel-header">
-                    <span className="agent-carousel-name">{session.name}</span>
+                    <div className="agent-carousel-meta">
+                      <span className="agent-carousel-name">{session.name}</span>
+                      {session.sliceName && <span className="agent-carousel-slice">{session.sliceName}</span>}
+                    </div>
                     <span className={`agent-carousel-status status-${session.status}`}>
                       {session.status}
                     </span>
@@ -607,10 +621,18 @@ function App() {
             <div
               key={session.id}
               className={`agent-session-pill ${session.id === activeSessionId ? 'active' : ''} ${closingSessions.has(session.id) ? 'removing' : ''}`}
-              onClick={() => setActiveSessionId(session.id)}
+              onClick={() => {
+                setActiveSessionId(session.id);
+                if (session.sliceId) {
+                  setCurrentSliceId(session.sliceId);
+                }
+              }}
             >
               <span className="agent-session-icon">🤖</span>
-              <span className="agent-session-name">{session.name}</span>
+              <span className="agent-session-name">
+                {session.name}
+                {session.sliceName && <span className="agent-session-slice-pill">{session.sliceName}</span>}
+              </span>
               <button
                 type="button"
                 className="agent-session-close"

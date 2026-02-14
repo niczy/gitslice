@@ -57,6 +57,11 @@ export default function RepoBrowser({ slices, currentSliceId, onSliceChange, onN
 
   const sliceId = currentSliceId;
 
+  const currentSliceLabel = useMemo(() => {
+    const selectedSlice = slices.find((slice) => slice.slice_id === sliceId);
+    return selectedSlice?.name || sliceId;
+  }, [slices, sliceId]);
+
   // Update slice from URL if present
   useEffect(() => {
     if (initialBrowserState?.slice && initialBrowserState.slice !== currentSliceId) {
@@ -377,7 +382,7 @@ export default function RepoBrowser({ slices, currentSliceId, onSliceChange, onN
           />
           <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
             <div className="panel-header">
-              <h3>File tree</h3>
+              <h3>File tree {currentSliceLabel ? `· ${currentSliceLabel}` : ''}</h3>
               <div className="panel-header-actions">
                 {isLoading && <span className="status">Loading…</span>}
                 <button

@@ -80,6 +80,7 @@ export default function AgentSession({ session, onClose, onMinimize }) {
         <div className="agent-session-title">
           <span className="agent-session-title-icon">🤖</span>
           <span>{session.name}</span>
+          {session.sliceName && <span className="agent-session-slice">{session.sliceName}</span>}
           <span className={`agent-status-badge status-${session.status}`}>
             {session.status}
           </span>

@@ -309,7 +309,19 @@ body {
 }
 
 .agent-session-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   font-weight: 500;
+}
+
+.agent-session-slice-pill {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .agent-session-close {
@@ -470,6 +482,22 @@ body {
   font-size: 0.95rem;
   color: var(--text-primary);
   transition: color 200ms ease;
+}
+
+
+.agent-carousel-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-carousel-slice {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .agent-carousel-item.selected .agent-carousel-name {
@@ -652,6 +680,18 @@ body {
 .agent-session-title-icon {
   font-size: 1.2rem;
   animation: iconBounce 600ms cubic-bezier(0.34, 1.56, 0.64, 1) 200ms both;
+}
+
+
+.agent-session-slice {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
 }
 
 @keyframes iconBounce {
