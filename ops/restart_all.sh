@@ -61,6 +61,17 @@ update_repo() {
 
 cd "$REPO_ROOT"
 ensure_path
+
+# Source production environment file if it exists.  This lets the hourly
+# cronjob pick up STORAGE_TYPE, POSTGRES_DSN, and any other production
+# settings that are not available in the minimal cron environment.
+if [ -f "$REPO_ROOT/ops/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/ops/.env"
+  set +a
+fi
+
 acquire_lock
 
 update_repo
