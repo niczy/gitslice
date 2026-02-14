@@ -9,7 +9,9 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func authCtx() context.Context {
@@ -116,6 +118,64 @@ func TestGetFileFindsMetadataModifiedPath(t *testing.T) {
 	}
 	if string(resp.GetFile().GetContent()) != "hello" {
 		t.Fatalf("unexpected content: %q", string(resp.GetFile().GetContent()))
+	}
+}
+
+func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+
+	const (
+		sliceID    = "root_slice"
+		headCommit = "head-1"
+		stalePath  = "o/genesis/projects/org/repo/hello.py"
+	)
+
+	if err := st.AddFileToSlice(ctx, stalePath, sliceID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	meta, err := st.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = headCommit
+	meta.ModifiedFiles = []string{stalePath}
+	meta.ModifiedFilesCount = 1
+	if err := st.UpdateSliceMetadata(ctx, sliceID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: headCommit,
+		SliceID:    sliceID,
+		Files:      map[string]string{},
+		Timestamp:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if len(listResp.GetEntries()) != 0 {
+		t.Fatalf("expected stale path to be excluded, got %#v", listResp.GetEntries())
+	}
+
+	_, err = svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path:    stalePath,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
 	}
 }
 
