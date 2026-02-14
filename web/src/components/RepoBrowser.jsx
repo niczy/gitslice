@@ -41,6 +41,7 @@ export default function RepoBrowser({
   const [fileContent, setFileContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [fileError, setFileError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 900);
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
@@ -83,6 +84,7 @@ export default function RepoBrowser({
     setExpandedPaths(['']);
     setSelectedFile(null);
     setFileContent('');
+    setFileError('');
   }, [sliceId, sliceHash]);
 
   const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
@@ -118,6 +120,28 @@ export default function RepoBrowser({
     const encodedPath = filePath ? encodePath(filePath) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
     return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
+  };
+
+  // Fetch file history from the API
+  const readErrorMessage = async (response, fallbackMessage) => {
+    let detail = '';
+    try {
+      const text = await response.text();
+      if (text) {
+        try {
+          const payload = JSON.parse(text);
+          detail = payload?.message || payload?.error || '';
+        } catch {
+          detail = text;
+        }
+      }
+    } catch {
+      detail = '';
+    }
+    if (!detail) {
+      return `${fallbackMessage} (${response.status})`;
+    }
+    return `${fallbackMessage}: ${detail}`;
   };
 
   // Fetch file history from the API
@@ -166,6 +190,7 @@ export default function RepoBrowser({
     const loadRoot = async () => {
       setIsLoading(true);
       setError('');
+      setFileError('');
 
       try {
         const response = await fetchWithAuth(buildEntriesUrl(''), {
@@ -215,13 +240,18 @@ export default function RepoBrowser({
           // Load file content
           try {
             const fileResp = await fetchWithAuth(buildFileUrl(pendingFile), { signal: controller.signal });
-            if (fileResp.ok && active) {
+            if (!fileResp.ok) {
+              throw new Error(await readErrorMessage(fileResp, 'Unable to load file content'));
+            }
+            if (active) {
               const fileData = await fileResp.json();
+              setFileError('');
               setFileContent(decodeBase64(fileData?.file?.content || ''));
             }
           } catch (e) {
             if (active && e?.name !== 'AbortError') {
-              setError('Unable to load the file.');
+              setFileContent('');
+              setFileError(e?.message || 'Unable to load file content.');
             }
           }
         } else {
@@ -319,6 +349,7 @@ export default function RepoBrowser({
     setFileContent('');
     setIsLoading(true);
     setError('');
+    setFileError('');
     setShowHistory(false);
     setFileHistory([]);
     setHistoryError('');
@@ -326,13 +357,15 @@ export default function RepoBrowser({
     try {
       const response = await fetchWithAuth(buildFileUrl(entry.path));
       if (!response.ok) {
-        throw new Error(`Request failed (${response.status})`);
+        throw new Error(await readErrorMessage(response, 'Unable to load file content'));
       }
       const payload = await response.json();
       const content = payload?.file?.content || '';
+      setFileError('');
       setFileContent(decodeBase64(content));
     } catch (err) {
-      setError('Unable to load the file.');
+      setFileContent('');
+      setFileError(err?.message || 'Unable to load file content.');
     } finally {
       setIsLoading(false);
     }
@@ -471,10 +504,13 @@ export default function RepoBrowser({
             </div>
             <div className="code-content">
               {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+              {selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
               {selectedFile && !showHistory && (
-                <pre className="file-preview">
-                  <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'No content available yet.' }} />
-                </pre>
+                !fileError && (
+                  <pre className="file-preview">
+                    <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'File is empty.' }} />
+                  </pre>
+                )
               )}
               {selectedFile && showHistory && (
                 <div className="history-panel" data-testid="history-panel">

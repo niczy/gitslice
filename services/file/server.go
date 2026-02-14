@@ -77,6 +77,31 @@ func (s *fileServiceServer) resolveVersion(ctx context.Context, commitHash strin
 }
 
 func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID string, slice *models.Slice) ([]string, error) {
+	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	// Prefer current HEAD snapshot paths when available. This avoids listing stale
+	// file IDs that may remain in legacy metadata after deletes.
+	if metadata.HeadCommitHash != "" {
+		if snapshot, err := s.storage.GetCommitSnapshot(ctx, metadata.HeadCommitHash); err == nil && snapshot != nil {
+			paths := make([]string, 0, len(snapshot.Files))
+			for raw := range snapshot.Files {
+				p := cleanPath(raw)
+				if p == "" {
+					continue
+				}
+				paths = append(paths, p)
+			}
+			sort.Strings(paths)
+			return paths, nil
+		}
+	}
+
 	paths := make([]string, 0, len(slice.Files))
 	seen := make(map[string]bool, len(slice.Files))
 	for _, raw := range slice.Files {
@@ -88,13 +113,6 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 		paths = append(paths, p)
 	}
 
-	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
-	if err != nil {
-		if errors.Is(err, storage.ErrSliceNotFound) {
-			return paths, nil
-		}
-		return nil, err
-	}
 	for _, raw := range metadata.ModifiedFiles {
 		p := cleanPath(raw)
 		if p == "" || seen[p] {

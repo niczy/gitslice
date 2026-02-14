@@ -271,8 +271,24 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("InitializeRootSlice failed: %v", err)
 	}
-	if _, err := st.GetRootSlice(ctx); err != nil {
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
 		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "root-file", rootSlice.ID); err != nil {
+		t.Fatalf("AddFileToSlice root failed: %v", err)
+	}
+	if err := st.RemoveFileFromSlice(ctx, "root-file", rootSlice.ID); err != nil {
+		t.Fatalf("RemoveFileFromSlice root failed: %v", err)
+	}
+	rootAfterRemove, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice after remove failed: %v", err)
+	}
+	for _, fileID := range rootAfterRemove.Files {
+		if fileID == "root-file" {
+			t.Fatalf("root slice should not keep removed file, got %#v", rootAfterRemove.Files)
+		}
 	}
 
 	// Basic health

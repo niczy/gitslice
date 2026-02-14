@@ -442,6 +442,16 @@ func (s *InMemoryStorage) RemoveFileFromSlice(ctx context.Context, fileID, slice
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if slice, exists := s.slices[sliceID]; exists && slice.IsRoot {
+		filtered := make([]string, 0, len(slice.Files))
+		for _, existing := range slice.Files {
+			if existing != fileID {
+				filtered = append(filtered, existing)
+			}
+		}
+		slice.Files = filtered
+	}
+
 	if slices, exists := s.fileIndex[fileID]; exists {
 		delete(slices, sliceID)
 		if len(slices) == 0 {
