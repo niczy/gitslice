@@ -46,6 +46,9 @@ test-results/
 logs/
 .restart_all.lock
 
+# Production environment (may contain credentials)
+ops/.env
+
 .objectstore/
 .objectstore-e2e/
 .postgres/

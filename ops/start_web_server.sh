@@ -14,6 +14,8 @@ GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 # Leave overrideable for one-off maintenance runs.
 SKIP_GIT_POPULATION="${SKIP_GIT_POPULATION:-1}"
 # If using Postgres metadata in production, avoid requiring GCS ADC creds by default.
+STORAGE_TYPE="${STORAGE_TYPE:-postgres}"
+POSTGRES_DSN="${POSTGRES_DSN:-}"
 OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
 OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
@@ -128,12 +130,14 @@ start_core_server() {
   log "Starting core server (log: $CORE_LOG)..."
   CORE_SERVICE_PORT="$CORE_SERVICE_PORT" \
     GATEWAY_PORT="$GATEWAY_PORT" \
+    STORAGE_TYPE="$STORAGE_TYPE" \
+    POSTGRES_DSN="$POSTGRES_DSN" \
     SKIP_GIT_POPULATION="$SKIP_GIT_POPULATION" \
     OBJECT_STORE_TYPE="$OBJECT_STORE_TYPE" \
     OBJECT_STORE_DIR="$OBJECT_STORE_DIR" \
     nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
   local pid=$!
-  log "Core server started with PID $pid (SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE)"
+  log "Core server started with PID $pid (STORAGE_TYPE=$STORAGE_TYPE, SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE)"
 
   if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "$CORE_LOG"; then
     log "ERROR: Failed to start core gRPC. Check $CORE_LOG for details"
