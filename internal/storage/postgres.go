@@ -756,9 +756,74 @@ func (s *PostgresStorage) GetSliceFiles(ctx context.Context, sliceID string) ([]
 func (s *PostgresStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
 	var out *models.FileContent
 	err := s.withRead(ctx, func() error {
-		var err error
-		out, err = s.mem.GetSliceFileByPath(ctx, sliceID, path)
-		return err
+		entry, err := s.mem.GetEntryByPath(ctx, sliceID, path)
+		if err != nil {
+			return err
+		}
+
+		// Postgres snapshots intentionally strip large content bytes from in-memory
+		// entries. Rehydrate from object storage when possible.
+		candidateIDs := []string{entry.Path}
+		if entry.ID != "" && entry.ID != entry.Path {
+			candidateIDs = append(candidateIDs, entry.ID)
+		}
+		for _, fileID := range candidateIDs {
+			if fileID == "" {
+				continue
+			}
+			raw, err := s.objectStore.GetObject(ctx, s.key("file_content", fileID))
+			if err != nil {
+				continue
+			}
+			var hydrated models.FileContent
+			if err := json.Unmarshal(raw, &hydrated); err != nil {
+				continue
+			}
+			if hydrated.FileID == "" {
+				hydrated.FileID = fileID
+			}
+			if hydrated.Path == "" {
+				hydrated.Path = entry.Path
+			}
+			if hydrated.Size == 0 {
+				hydrated.Size = entry.Size
+			}
+			out = &hydrated
+			return nil
+		}
+
+		// Fall back to in-memory metadata when blob hydration fails.
+		file := &models.FileContent{
+			FileID:  entry.Path,
+			Path:    entry.Path,
+			Content: entry.Content,
+			Size:    entry.Size,
+		}
+		if fc, ok := s.mem.fileContents[entry.Path]; ok && fc != nil {
+			file.Hash = fc.Hash
+			if file.Size == 0 {
+				file.Size = fc.Size
+			}
+			if len(file.Content) == 0 {
+				file.Content = fc.Content
+			}
+		}
+		if file.Hash == "" {
+			if fc, ok := s.mem.fileContents[entry.ID]; ok && fc != nil {
+				file.Hash = fc.Hash
+				if file.Size == 0 {
+					file.Size = fc.Size
+				}
+				if len(file.Content) == 0 {
+					file.Content = fc.Content
+				}
+			}
+		}
+		if file.FileID == "" {
+			file.FileID = entry.ID
+		}
+		out = file
+		return nil
 	})
 	return out, err
 }

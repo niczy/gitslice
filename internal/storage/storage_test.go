@@ -640,6 +640,15 @@ func TestPostgresStoragePersistsAcrossRestart(t *testing.T) {
 	if err := rs.AddEntry(ctx, entry); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
+	if err := rs.AddFileContent(ctx, &models.FileContent{
+		FileID:  entry.Path,
+		Path:    entry.Path,
+		Content: []byte("hi"),
+		Size:    2,
+		Hash:    "hash-main-go",
+	}); err != nil {
+		t.Fatalf("AddFileContent failed: %v", err)
+	}
 	if err := rs.UpdateGlobalState(ctx, &models.GlobalState{GlobalCommitHash: "gc1", Timestamp: time.Now()}); err != nil {
 		t.Fatalf("UpdateGlobalState failed: %v", err)
 	}
@@ -685,6 +694,16 @@ func TestPostgresStoragePersistsAcrossRestart(t *testing.T) {
 	restoredEntry, err := rs.GetEntry(ctx, entry.ID)
 	if err != nil || restoredEntry.Path != entry.Path {
 		t.Fatalf("expected entry restored after rebuild: %v", err)
+	}
+	restoredFile, err := rs.GetSliceFileByPath(ctx, slice1.ID, entry.Path)
+	if err != nil {
+		t.Fatalf("expected file content restored after rebuild: %v", err)
+	}
+	if got := string(restoredFile.Content); got != "hi" {
+		t.Fatalf("expected restored file content hi, got %q", got)
+	}
+	if restoredFile.Hash != "hash-main-go" {
+		t.Fatalf("expected restored file hash hash-main-go, got %q", restoredFile.Hash)
 	}
 	restoredState, err := rs.GetGlobalState(ctx)
 	if err != nil || restoredState.GlobalCommitHash != "gc1" {
