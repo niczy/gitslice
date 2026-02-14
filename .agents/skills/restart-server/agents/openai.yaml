@@ -1,0 +1,4 @@
+interface:
+  display_name: "Restart Server"
+  short_description: "Restart production services safely"
+  default_prompt: "Restart the production gitslice services safely and verify they stay healthy."
