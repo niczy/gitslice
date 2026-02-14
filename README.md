@@ -1,240 +1,137 @@
 # Gitslice
 
-**High-level summary:** Gitslice is a prototype slice-based version control system with gRPC services, a CLI, and a lightweight web landing page. Storage backends include in-memory and PostgreSQL (with GCS object storage for payloads).
+Slice-based version control for massive monorepos. Define slices of the codebase your team owns, work independently, and merge seamlessly with automatic conflict detection.
 
-## Project Structure
+## Install
 
-```
-.
-├── gs_cli/                # CLI client implementation
-│   └── main.go
-├── internal/              # Storage and shared implementations
-│   ├── gateway/
-│   └── storage/
-├── ops/                   # Ops assets (NGINX config, etc.)
-├── proto/                  # Protocol Buffer definitions and generated code
-│   ├── slice/             # Slice service proto files
-│   │   ├── slice_service.proto
-│   │   ├── slice_service.pb.go
-│   │   └── slice_service_grpc.pb.go
-│   ├── file/              # File service proto files
-│   │   ├── file_service.proto
-│   │   ├── file_service.pb.go
-│   │   ├── file_service_grpc.pb.go
-│   │   └── file_service.pb.gw.go
-│   └── admin/             # Admin service proto files
-│       ├── admin_service.proto
-│       ├── admin_service.pb.go
-│       └── admin_service_grpc.pb.go
-├── services/              # RPC service implementations
-│   ├── admin/
-│   ├── file/
-│   └── slice/
-├── servers/               # Binary servers
-│   └── core/              # Core server (gRPC + gateway)
-├── spec/                 # Design specifications
-│   ├── PRODUCT_VISION.md
-│   ├── DATA_MODEL.md
-│   ├── ALGORITHMS.md
-│   ├── CLI_DESIGN.md
-│   ├── API_DESIGN.md
-│   └── ARCHITECTURE.md
-├── web/                  # Vite + React landing page
-│   └── README.md
-├── workflow_test/        # End-to-end integration tests
-│   └── integration_test.go
-└── .github/workflows/    # CI/CD workflows
-    └── build.yml
+```bash
+# Build from source
+go build -o gs ./gs_cli/
 ```
 
 ## Getting Started
 
-### Prerequisites
+### 1. Log in
 
-- Go 1.24 or higher
-- Protocol Buffers compiler (protoc)
-- protoc-gen-go
-- protoc-gen-go-grpc
-- protoc-gen-grpc-gateway
-
-### Go Workspace
-
-This repository uses a Go workspace (`go.work`) to wire together the service and server modules (each service/server has its own `go.mod`). Run Go commands from the repo root to pick up the workspace configuration.
-
-### Install Dependencies
+Gitslice uses a simple username system. Set your username once:
 
 ```bash
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
-go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest
-```
-
-### Generate Proto Code
-
-```bash
-cd proto/slice
-protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative slice_service.proto
-
-cd ../file
-protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto
-
-cd ../admin
-protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto
-```
-
-### Build
-
-```bash
-# Build core server (gRPC + gateway)
-go build -o core_server ./servers/core/
-
-# Build CLI
-go build -o gs_cli/gs_cli ./gs_cli/
-```
-
-### Run
-
-```bash
-# Run core server (gRPC on :50051, gateway on :8080)
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
-
-# Run core server with PostgreSQL + GCS storage
-STORAGE_TYPE=postgres \
-POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
-GCS_BUCKET=gitslice-objects \
-GCS_CREDENTIALS_FILE=/path/to/service-account.json \
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
-
-# Run core server with PostgreSQL + filesystem object store (no GCS required)
-STORAGE_TYPE=postgres \
-POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
-OBJECT_STORE_TYPE=filesystem \
-OBJECT_STORE_DIR="$PWD/.objectstore" \
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
-
-# Run CLI (override addresses if needed)
-./gs_cli --help
-```
-
-## Fake Accounts / Organizations
-
-This repo uses a fake account system: you choose a username and the services trust it via request metadata.
-
-- The root slice (`root_slice`) is publicly viewable.
-- Non-root slices are only visible/accessible to their owners.
-- Organizations are user-created groups shown on the profile page (no invites yet).
-
-CLI usage:
-
-```bash
-# Persist a username to ~/.gitslice/user
 gs login your_name
-
-# Or pass per-command
-gs --user your_name fork my-slice ./some/folder --parent root_slice
 ```
+
+### 2. Browse the root slice
+
+The root slice contains all files across every imported project:
+
+```bash
+gs root
+```
+
+### 3. Checkout a slice
+
+Download a slice's files to your local machine:
+
+```bash
+mkdir my-project && cd my-project
+gs slice checkout <slice-id>
+```
+
+### 4. Fork a slice
+
+Create a new slice from a folder in an existing slice:
+
+```bash
+gs fork my-team-slice /path/to/folder --parent root_slice
+```
+
+### 5. Make changes with changesets
+
+```bash
+# Create a changeset from your local modifications
+gs changeset create -m "Fix authentication bug"
+
+# List changesets for the current slice
+gs changeset list
+
+# Merge a changeset
+gs changeset merge <changeset-id>
+```
+
+### 6. Import a git repository
+
+Import an external repository into Gitslice:
+
+```bash
+gs import git -repo https://github.com/org/repo.git
+```
+
+## CLI Reference
+
+```
+gs login                   Set or show your username
+gs root                    Show root slice info
+gs slice checkout <id>     Checkout a slice to current directory
+gs slice clone <id>        Alias for checkout
+gs fork <id> <path>        Create a new slice from a folder
+gs changeset create        Create changeset from local changes
+gs changeset list          List changesets for current slice
+gs changeset review <id>   Review a changeset
+gs changeset merge <id>    Merge a changeset
+gs changeset rebase <id>   Rebase a changeset onto latest head
+gs conflict list           List conflicts for a slice
+gs conflict show <id>      Show conflict details
+gs conflict resolve <id>   Resolve a conflict
+gs import git              Import a git repository
+gs init <slice-id>         Initialize working directory for a slice
+gs status                  Show working directory status
+gs log [slice-id]          Show slice commit history
+```
+
+### Global Flags
+
+```
+--addr <host:port>     Server address (default: api.agenttools.dev:443)
+--tls                  Use TLS (default: true when using default addr)
+--user <name>          Username (overrides GS_USERNAME env and ~/.gitslice/user)
+```
+
+### Import Flags
+
+```
+gs import git [flags]
+
+  -repo <path-or-url>     Git repo (local path or remote URL)
+  -ref <ref>              Git ref to import (default: HEAD)
+  -slice <id>             Target slice (default: root_slice)
+  -mount <path>           Mount path prefix (default: /o/genesis/projects/<repo-name>)
+  -max-commits <n>        Limit number of commits imported (0 = all)
+  -first-parent           Import first-parent linear history (default: true)
+  -timeout <duration>     Timeout for the import (default: 30m)
+```
+
+## Web UI
+
+Browse the repository at [agenttools.dev](https://agenttools.dev). The web interface provides:
+
+- File browsing across all slices
+- Diff viewer for changesets
+- Slice management
+
+## Architecture
+
+Gitslice runs as a single server process exposing both gRPC (port 50051) and REST (port 8080) APIs. The CLI communicates via gRPC.
+
+For detailed design docs, see the `spec/` directory:
+
+- [Product Vision](spec/PRODUCT_VISION.md)
+- [Data Model](spec/DATA_MODEL.md)
+- [Architecture](spec/ARCHITECTURE.md)
+- [API Design](spec/API_DESIGN.md)
+- [CLI Design](spec/CLI_DESIGN.md)
 
 ## Development
 
-### Adding New Proto Definitions
-
-1. Add or modify `.proto` files in `proto/slice/` or `proto/admin/`
-2. Regenerate the golang code using protoc
-3. Update the service implementations as needed
-4. Run tests and ensure builds pass
-
-### Running Tests
-
-```bash
-# Run all tests (installs dependencies first)
-make test
-
-# Run integration tests
-RUN_INTEGRATION_TESTS=1 make test
-```
-
-## CI/CD
-
-GitHub Actions workflow is configured to:
-- Install Go and dependencies
-- Generate proto code
-- Build all services
-- Test server startup
-- Test CLI help command
-
-See `.github/workflows/build.yml` for details.
-
-## Operations
-
-### Hourly Auto-Update and Restart
-
-`ops/restart_all.sh` is the canonical deploy script. It:
-- Acquires a lock to avoid overlapping cron runs
-- Pulls latest changes (`git fetch --prune` + `git pull --ff-only`) when upstream is configured
-- Rebuilds/restarts core + gateway + web preview via `ops/start_web_server.sh`
-- Verifies service health before exiting
-- Ensures an hourly user crontab entry exists
-- Starts `core_server` with `SKIP_GIT_POPULATION=1` by default (disable genesis auto-population from the local git checkout)
-
-Install or refresh the hourly cron entry:
-
-```bash
-bash ops/restart_all.sh
-```
-
-Cron target installed by the script:
-
-```bash
-0 * * * * PATH=/home/<user>/.nvm/versions/node/<node-version>/bin:/home/<user>/.local/go/bin:/home/<user>/.local/protoc/bin:/home/<user>/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash /home/<user>/workspace/gitslice/ops/restart_all.sh >> /home/<user>/workspace/gitslice/logs/cron.log 2>&1
-```
-
-### PM2 Process Supervision
-
-For long-running service supervision, use the included PM2 ecosystem file:
-
-```bash
-npm install -g pm2
-pm2 start ops/ecosystem.config.cjs
-pm2 save
-```
-
-To restore PM2 apps on reboot (user crontab approach):
-
-```bash
-@reboot PATH=/home/<user>/.nvm/versions/node/<node-version>/bin:/home/<user>/.local/go/bin:/home/<user>/.local/protoc/bin:/home/<user>/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /home/<user>/.nvm/versions/node/<node-version>/bin/pm2 resurrect >> /home/<user>/workspace/gitslice/logs/pm2_reboot.log 2>&1
-```
-
-### NGINX (Cloudflare in Front, Origin HTTP)
-
-`ops/nginx.conf` is configured for HTTP origin traffic (no local TLS termination). Cloudflare serves public HTTPS and proxies to origin HTTP.
-
-`api.agenttools.dev` routes gRPC service paths (`/slice.v1.SliceService/` and `/admin.v1.AdminService/`) to the core server and is configured as an HTTP/2 listener (`listen 80 http2`) for plaintext gRPC (h2c) CLI traffic. `agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths. CLI clients should target `api.agenttools.dev` for gRPC connectivity.
-
-Apply config:
-
-```bash
-sudo cp ops/nginx.conf /etc/nginx/nginx.conf
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
-Cloudflare SSL/TLS mode should match your origin setup (HTTP origin commonly uses `Flexible`).
-
-## Documentation
-
-See the `spec/` directory for detailed design specifications:
-- [Product Vision](spec/PRODUCT_VISION.md)
-- [Data Model](spec/DATA_MODEL.md)
-- [Algorithms](spec/ALGORITHMS.md)
-- [CLI Design](spec/CLI_DESIGN.md)
-- [API Design](spec/API_DESIGN.md)
-- [Architecture](spec/ARCHITECTURE.md)
-- [Scalability Review](spec/SCALABILITY_REVIEW.md)
-- [Storage DB Design](spec/STORAGE_DB_DESIGN.md)
-
-For the web landing page, see [web/README.md](web/README.md).
+See [LOCAL_DEV.md](LOCAL_DEV.md) for build instructions, running locally, and testing.
 
 ## License
 
