@@ -138,4 +138,45 @@ test.describe('Commit Diff Page (real server)', () => {
     const addedLine = patch.locator('.diff-line-added').first();
     await expect(addedLine).toBeVisible();
   });
+
+  test('scrolls diff content container when selecting a file from the panel', async ({ page }) => {
+    const commitHash = 'commit-test-scroll';
+    const changes = Array.from({ length: 35 }, (_, index) => ({
+      id: `change-${index}`,
+      path: `src/deep/path/file-${index}.txt`,
+      change_type: 'CHANGE_TYPE_MODIFY',
+      lines_added: 1,
+      lines_deleted: 0,
+      patch: `@@ -1 +1 @@\n-old ${index}\n+new ${index}\n`,
+    }));
+
+    await page.route(`**/v1/commits/${commitHash}/changes`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 0,
+          files_modified: changes.length,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes,
+        }),
+      });
+    });
+
+    await page.goto(`/#/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+
+    const diffContent = page.locator('.diff-content');
+    await expect(diffContent).toBeVisible();
+    await expect.poll(async () => diffContent.evaluate((el) => el.scrollTop)).toBe(0);
+
+    const targetIndex = 30;
+    await page.getByTestId('diff-file-panel-item').nth(targetIndex).click();
+
+    await expect.poll(async () => diffContent.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    await expect.poll(async () => page.evaluate(() => window.scrollY)).toBe(0);
+  });
+
 });
