@@ -15,6 +15,8 @@ export default function CommitDiffPage({ commitHash, onBack }) {
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
   const fileRefs = useRef({});
+  const panelItemRefs = useRef({});
+  const diffContentRef = useRef(null);
 
   useEffect(() => {
     if (!commitHash) return;
@@ -46,9 +48,22 @@ export default function CommitDiffPage({ commitHash, onBack }) {
 
   const handleFileSelect = useCallback((fileKey) => {
     setSelectedFileId(fileKey);
-    const el = fileRefs.current[fileKey];
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    const panelItemEl = panelItemRefs.current[fileKey];
+    if (panelItemEl) {
+      panelItemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+
+    const fileEl = fileRefs.current[fileKey];
+    const diffContentEl = diffContentRef.current;
+    if (fileEl && diffContentEl) {
+      const fileRect = fileEl.getBoundingClientRect();
+      const containerRect = diffContentEl.getBoundingClientRect();
+      const targetTop = diffContentEl.scrollTop + (fileRect.top - containerRect.top) - 16;
+      diffContentEl.scrollTo({
+        top: Math.max(targetTop, 0),
+        behavior: 'smooth',
+      });
     }
   }, []);
 
@@ -109,6 +124,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
                 return (
                   <li key={fileKey}>
                     <button
+                      ref={(el) => { panelItemRefs.current[fileKey] = el; }}
                       type="button"
                       className={`diff-file-panel-item ${selectedFileId === fileKey ? 'diff-file-panel-item-active' : ''}`}
                       onClick={() => handleFileSelect(fileKey)}
@@ -137,7 +153,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
         )}
 
         {/* Main diff content */}
-        <div className="diff-content">
+        <div className="diff-content" ref={diffContentRef}>
           {isLoading && <div className="diff-loading">Loading commit changes...</div>}
           {error && <div className="panel-error">{error}</div>}
           {!isLoading && !error && diffData && (
