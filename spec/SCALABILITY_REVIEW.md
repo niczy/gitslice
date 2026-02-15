@@ -73,7 +73,7 @@ This preserves the current in-memory programming model while adding crash safety
 
 - The existing `ObjectStore` abstraction already supports a GCS backend (`internal/storage/objectstore.go`).
 - The current `Storage` interface cleanly maps to relational operations plus blob lookup without service API changes (`internal/storage/storage.go`).
-- `PostgresStorage` preserves the existing `Storage` interface so handler code in `services/` remains unchanged.
+- `PostgresNativeStorage` preserves the `Storage` interface so handler code in `services/` remains unchanged.
 
 ## Detailed Schema and Transaction Design
 

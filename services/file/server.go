@@ -151,7 +151,7 @@ func sliceFolderMountKey(slice *models.Slice) string {
 	return strings.Join(parts, "|")
 }
 
-func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID string, slice *models.Slice, resolvedCommit string) (map[string]string, []string, error) {
+func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID string, slice *models.Slice, resolvedCommit string, preferSnapshots bool) (map[string]string, []string, error) {
 	commit := strings.TrimSpace(resolvedCommit)
 	if commit == "" {
 		metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
@@ -165,11 +165,16 @@ func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID stri
 	}
 
 	key := sliceID + "|" + commit + "|" + sliceFolderMountKey(slice)
+	if preferSnapshots {
+		key += "|snap"
+	} else {
+		key += "|live"
+	}
 	if cached, ok := s.pathCache.get(key); ok && cached != nil {
 		return cached.pathMap, cached.displayPaths, nil
 	}
 
-	storedPaths, err := s.effectiveSlicePaths(ctx, sliceID, slice, commit)
+	storedPaths, err := s.effectiveSlicePaths(ctx, sliceID, slice, commit, preferSnapshots)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -196,7 +201,7 @@ func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID stri
 	return pathMap, displayPaths, nil
 }
 
-func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID string, slice *models.Slice, resolvedCommit string) ([]string, error) {
+func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID string, slice *models.Slice, resolvedCommit string, preferSnapshots bool) ([]string, error) {
 	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
 	if err != nil {
 		if errors.Is(err, storage.ErrSliceNotFound) {
@@ -212,7 +217,7 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 
 	// Prefer commit snapshot paths when available. This avoids listing stale
 	// file IDs that may remain in legacy metadata after deletes.
-	if commitHash != "" {
+	if preferSnapshots && commitHash != "" {
 		if snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash); err == nil && snapshot != nil {
 			paths := make([]string, 0, len(snapshot.Files))
 			for raw := range snapshot.Files {
@@ -255,6 +260,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	if err != nil {
 		return nil, err
 	}
+	preferSnapshots := req.GetCommitHash() != "" || (req.GetSliceVersion() != nil && req.GetSliceVersion().GetSliceHash() != "")
 
 	slice, err := s.storage.GetSlice(ctx, sliceID)
 	if err != nil {
@@ -480,7 +486,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		// Fall back to legacy path scanning if tree nodes are missing.
 	}
 
-	pathMap, displayPaths, err := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
+	pathMap, displayPaths, err := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit, preferSnapshots)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
 	}
@@ -616,6 +622,7 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	if err != nil {
 		return nil, err
 	}
+	preferSnapshots := req.GetCommitHash() != "" || (req.GetSliceVersion() != nil && req.GetSliceVersion().GetSliceHash() != "")
 
 	slice, err := s.storage.GetSlice(ctx, sliceID)
 	if err != nil {
@@ -689,7 +696,7 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		return &filev1.GetFileResponse{File: file}, nil
 	}
 
-	pathMap, _, mapErr := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
+	pathMap, _, mapErr := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit, preferSnapshots)
 	if mapErr != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", mapErr))
 	}

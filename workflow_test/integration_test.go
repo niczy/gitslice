@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn != "" {
 		objectStore := storage.NewInMemoryObjectStore()
-		pg, err := storage.NewPostgresStorage(context.Background(), dsn, objectStore, fmt.Sprintf("integration-%d", time.Now().UnixNano()))
+		pg, err := storage.NewPostgresNativeStorage(context.Background(), dsn, objectStore, fmt.Sprintf("integration-%d", time.Now().UnixNano()))
 		if err != nil {
 			fmt.Printf("Failed to initialize postgres storage: %v\n", err)
 			os.Exit(1)
@@ -1054,7 +1054,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 
 	objectStore := storage.NewInMemoryObjectStore()
 	namespace := fmt.Sprintf("restart-e2e-%d", time.Now().UnixNano())
-	st, err := storage.NewPostgresStorage(ctx, dsn, objectStore, namespace)
+	st, err := storage.NewPostgresNativeStorage(ctx, dsn, objectStore, namespace)
 	if err != nil {
 		t.Fatalf("failed to create postgres storage: %v", err)
 	}
@@ -1097,7 +1097,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 		t.Fatalf("failed closing initial storage: %v", err)
 	}
 
-	st, err = storage.NewPostgresStorage(ctx, dsn, objectStore, namespace)
+	st, err = storage.NewPostgresNativeStorage(ctx, dsn, objectStore, namespace)
 	if err != nil {
 		t.Fatalf("failed to reopen postgres storage: %v", err)
 	}

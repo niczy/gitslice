@@ -391,20 +391,20 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 
 	// Fast path: run the full import in a single Postgres BulkWrite so we persist once.
 	if bw, ok := st.(bulkWriter); ok {
+		// For native storage, reset is already durable and not "all or nothing" like snapshots.
+		// Execute it outside BulkWrite to avoid TRUNCATE inside an open transaction.
+		if reset {
+			if rs, ok := st.(resettableStorage); ok {
+				if err := rs.Reset(ctx); err != nil {
+					return nil, err
+				}
+			} else {
+				return nil, fmt.Errorf("storage backend does not support reset")
+			}
+		}
+
 		var head string
 		err := bw.BulkWrite(ctx, func(st storage.Storage) error {
-			// If requested, reset in-memory state inside the bulk write. This avoids deleting the
-			// persisted snapshot first (which would permanently wipe state if the import crashes).
-			if reset {
-				if rs, ok := st.(resettableStorage); ok {
-					if err := rs.Reset(ctx); err != nil {
-						return err
-					}
-				} else {
-					return fmt.Errorf("storage backend does not support reset")
-				}
-			}
-
 			if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 				return err
 			}
