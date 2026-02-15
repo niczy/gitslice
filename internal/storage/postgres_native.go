@@ -940,10 +940,15 @@ func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.Dire
 		return ErrInvalidInput
 	}
 
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID == "" {
+		return ErrInvalidInput
+	}
+
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, entry.ID, entry.ParentID, entry.Path, entry.Type, entry.ParentID, entry.Content, entry.Size)
+	`, entry.ID, sliceID, entry.Path, entry.Type, entry.ParentID, nil, entry.Size)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
@@ -990,8 +995,11 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 	ctx = ensureCtx(ctx)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, path, type, parent_id, content, size FROM directory_entries WHERE parent_id = $1
-	`, parentID)
+		SELECT id, path, type, parent_id, content, size
+		FROM directory_entries
+		WHERE slice_id = $1 AND parent_id = $2
+		ORDER BY path
+	`, sliceID, parentID)
 	if err != nil {
 		return nil, err
 	}

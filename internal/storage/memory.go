@@ -30,9 +30,10 @@ type InMemoryStorage struct {
 	fileContents map[string]*models.FileContent // fileID -> content
 
 	// Directory entries
-	entries        map[string]*models.DirectoryEntry // entryID -> entry
-	entriesByPath  map[string]string                 // sliceID:path -> entryID
-	entriesBySlice map[string][]string               // sliceID -> []entryID
+	entries         map[string]*models.DirectoryEntry // entryID -> entry
+	entriesByPath   map[string]string                 // sliceID:path -> entryID
+	entriesBySlice  map[string][]string               // sliceID -> []entryID
+	entriesByParent map[string][]string               // parentID -> []entryID (direct children)
 
 	// Changesets
 	changesets      map[string]*models.Changeset // changesetID -> changeset
@@ -71,6 +72,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		entries:             make(map[string]*models.DirectoryEntry),
 		entriesByPath:       make(map[string]string),
 		entriesBySlice:      make(map[string][]string),
+		entriesByParent:     make(map[string][]string),
 		changesets:          make(map[string]*models.Changeset),
 		sliceChangesets:     make(map[string][]string),
 		sliceCommits:        make(map[string][]*models.Commit),
@@ -113,6 +115,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.entries = fresh.entries
 	s.entriesByPath = fresh.entriesByPath
 	s.entriesBySlice = fresh.entriesBySlice
+	s.entriesByParent = fresh.entriesByParent
 	s.changesets = fresh.changesets
 	s.sliceChangesets = fresh.sliceChangesets
 	s.sliceCommits = fresh.sliceCommits
@@ -772,6 +775,32 @@ func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 	return out, nil
 }
 
+func sliceIDFromEntryID(entryID string) string {
+	if entryID == "" {
+		return ""
+	}
+	parts := strings.SplitN(entryID, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[0]
+}
+
+func inferSliceIDForEntry(entry *models.DirectoryEntry) string {
+	if entry == nil {
+		return ""
+	}
+	if s := sliceIDFromEntryID(entry.ID); s != "" {
+		return s
+	}
+	// For nested entries, ParentID is often an entry ID (sliceID:path).
+	if s := sliceIDFromEntryID(entry.ParentID); s != "" {
+		return s
+	}
+	// Legacy behavior: many callers set ParentID=sliceID.
+	return entry.ParentID
+}
+
 // AddEntry adds a directory entry
 func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryEntry) error {
 	s.mu.Lock()
@@ -780,14 +809,19 @@ func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryE
 	if entry.ID == "" {
 		return ErrInvalidInput
 	}
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID == "" {
+		return ErrInvalidInput
+	}
 
 	if _, exists := s.entries[entry.ID]; exists {
 		return ErrEntryExists
 	}
 
 	s.entries[entry.ID] = entry
-	s.entriesByPath[entry.ParentID+":"+entry.Path] = entry.ID
-	s.entriesBySlice[entry.ID] = append(s.entriesBySlice[entry.ID], entry.ID)
+	s.entriesByPath[sliceID+":"+entry.Path] = entry.ID
+	s.entriesBySlice[sliceID] = append(s.entriesBySlice[sliceID], entry.ID)
+	s.entriesByParent[entry.ParentID] = append(s.entriesByParent[entry.ParentID], entry.ID)
 
 	return nil
 }
@@ -831,11 +865,20 @@ func (s *InMemoryStorage) ListEntries(ctx context.Context, sliceID, parentID str
 	defer s.mu.RUnlock()
 
 	var result []*models.DirectoryEntry
-	for _, entry := range s.entries {
-		if entry.ParentID == parentID {
-			copy := *entry
-			result = append(result, &copy)
+	for _, entryID := range s.entriesByParent[parentID] {
+		entry, ok := s.entries[entryID]
+		if !ok {
+			continue
 		}
+		// Defensive: parentID index is global; ensure we don't leak across slices when
+		// entry IDs are slice-qualified. Legacy entries may not encode slice in ID.
+		if sliceID != "" {
+			if entrySlice := sliceIDFromEntryID(entry.ID); entrySlice != "" && entrySlice != sliceID {
+				continue
+			}
+		}
+		copy := *entry
+		result = append(result, &copy)
 	}
 
 	return result, nil
@@ -846,8 +889,36 @@ func (s *InMemoryStorage) UpdateEntry(ctx context.Context, entry *models.Directo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.entries[entry.ID]; !exists {
+	prev, exists := s.entries[entry.ID]
+	if !exists {
 		return ErrEntryNotFound
+	}
+
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID == "" {
+		return ErrInvalidInput
+	}
+
+	// Maintain indexes if parent/path changed.
+	if prev.ParentID != entry.ParentID {
+		// Remove from old parent list.
+		prevList := s.entriesByParent[prev.ParentID]
+		out := prevList[:0]
+		for _, id := range prevList {
+			if id != entry.ID {
+				out = append(out, id)
+			}
+		}
+		if len(out) == 0 {
+			delete(s.entriesByParent, prev.ParentID)
+		} else {
+			s.entriesByParent[prev.ParentID] = out
+		}
+		s.entriesByParent[entry.ParentID] = append(s.entriesByParent[entry.ParentID], entry.ID)
+	}
+	if prev.Path != entry.Path {
+		delete(s.entriesByPath, sliceID+":"+prev.Path)
+		s.entriesByPath[sliceID+":"+entry.Path] = entry.ID
 	}
 
 	s.entries[entry.ID] = entry
@@ -865,7 +936,38 @@ func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error
 	}
 
 	delete(s.entries, entryID)
-	delete(s.entriesByPath, entry.ParentID+":"+entry.Path)
+
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID != "" {
+		delete(s.entriesByPath, sliceID+":"+entry.Path)
+		// Remove from per-slice list.
+		ids := s.entriesBySlice[sliceID]
+		out := ids[:0]
+		for _, id := range ids {
+			if id != entryID {
+				out = append(out, id)
+			}
+		}
+		if len(out) == 0 {
+			delete(s.entriesBySlice, sliceID)
+		} else {
+			s.entriesBySlice[sliceID] = out
+		}
+	}
+
+	// Remove from parent index.
+	parentList := s.entriesByParent[entry.ParentID]
+	outParent := parentList[:0]
+	for _, id := range parentList {
+		if id != entryID {
+			outParent = append(outParent, id)
+		}
+	}
+	if len(outParent) == 0 {
+		delete(s.entriesByParent, entry.ParentID)
+	} else {
+		s.entriesByParent[entry.ParentID] = outParent
+	}
 
 	return nil
 }

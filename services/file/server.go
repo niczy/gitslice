@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -267,12 +268,240 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
+	normalizedPath := cleanPath(req.Path)
+
+	// Fast path for mounted slices: the root entries are the mount aliases, which we can
+	// list without scanning all underlying files. For nested paths we can translate the
+	// display path to the stored path and use the directory-entry tree when available.
+	if slice != nil && len(slice.FolderMounts) > 0 {
+		if normalizedPath == "" {
+			entries := make([]*filev1.DirectoryEntry, 0, len(slice.FolderMounts))
+			seen := make(map[string]struct{}, len(slice.FolderMounts))
+			for _, m := range slice.FolderMounts {
+				alias := cleanPath(m.Alias)
+				if alias == "" {
+					continue
+				}
+				if _, ok := seen[alias]; ok {
+					continue
+				}
+				seen[alias] = struct{}{}
+				entries = append(entries, &filev1.DirectoryEntry{
+					Name:        path.Base(alias),
+					Path:        alias,
+					Type:        filev1.EntryType_ENTRY_TYPE_DIRECTORY,
+					HasChildren: true,
+				})
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+
+			truncated := false
+			if req.Limit > 0 && int(req.Limit) < len(entries) {
+				entries = entries[:req.Limit]
+				truncated = true
+			}
+
+			return &filev1.ListEntriesResponse{
+				SliceId:   sliceID,
+				Path:      "",
+				Entries:   entries,
+				Truncated: truncated,
+			}, nil
+		}
+
+		// Enforce that requests stay under a mount alias to avoid leaking parent paths.
+		underAlias := false
+		for _, m := range slice.FolderMounts {
+			alias := cleanPath(m.Alias)
+			if alias == "" {
+				continue
+			}
+			if normalizedPath == alias || strings.HasPrefix(normalizedPath, alias+"/") {
+				underAlias = true
+				break
+			}
+		}
+		if !underAlias {
+			return nil, status.Error(codes.NotFound, "path not found")
+		}
+
+		backingSliceID := sliceID
+		if slice.ParentSlice != "" {
+			backingSliceID = slice.ParentSlice
+		}
+		storedParentPath := common.SliceStoredPath(slice, normalizedPath)
+		if storedParentPath == "" {
+			return nil, status.Error(codes.NotFound, "path not found")
+		}
+		if parentEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, storedParentPath); err == nil && parentEntry != nil {
+			if parentEntry.Type == "file" {
+				return nil, status.Error(codes.FailedPrecondition, "path refers to a file")
+			}
+			children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
+			if err == nil {
+				entries := make([]*filev1.DirectoryEntry, 0, len(children))
+				for _, child := range children {
+					if child == nil {
+						continue
+					}
+					displayChildPath := common.SliceDisplayPath(slice, child.Path)
+					if displayChildPath == "" {
+						continue
+					}
+					typ := filev1.EntryType_ENTRY_TYPE_FILE
+					hasChildren := false
+					if child.Type == "directory" {
+						typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
+						hasChildren = true
+					}
+					entries = append(entries, &filev1.DirectoryEntry{
+						Name:        path.Base(displayChildPath),
+						Path:        displayChildPath,
+						Type:        typ,
+						HasChildren: hasChildren,
+						Size:        child.Size,
+					})
+				}
+				sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+
+				truncated := false
+				if req.Limit > 0 && int(req.Limit) < len(entries) {
+					entries = entries[:req.Limit]
+					truncated = true
+				}
+				return &filev1.ListEntriesResponse{
+					SliceId:   sliceID,
+					Path:      normalizedPath,
+					Entries:   entries,
+					Truncated: truncated,
+				}, nil
+			}
+		}
+		// Fall back to legacy path scanning if directory entries are not materialized.
+	}
+
+	// Fast path for materialized directory trees: list direct children via directory entries
+	// instead of scanning all descendant file paths under a prefix.
+	{
+		backingSliceID := sliceID
+		if slice.ParentSlice != "" {
+			backingSliceID = slice.ParentSlice
+		}
+
+		if normalizedPath == "" {
+			// Detect whether directory nodes are materialized by probing a likely top-level dir.
+			treeLikely := false
+			if len(slice.Files) > 0 {
+				sample := common.CleanRelativePath(slice.Files[0])
+				if sample != "" {
+					top := strings.Split(sample, "/")[0]
+					if top != "" {
+						if e, err := s.storage.GetEntryByPath(ctx, backingSliceID, top); err == nil && e != nil {
+							// If "top" exists as an entry, we're likely materialized enough to use tree queries.
+							treeLikely = true
+						}
+					}
+				}
+			}
+
+			if treeLikely {
+				children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
+				if err == nil {
+					entries := make([]*filev1.DirectoryEntry, 0, len(children))
+					for _, child := range children {
+						if child == nil {
+							continue
+						}
+						displayChildPath := common.SliceDisplayPath(slice, child.Path)
+						if displayChildPath == "" {
+							continue
+						}
+						typ := filev1.EntryType_ENTRY_TYPE_FILE
+						hasChildren := false
+						if child.Type == "directory" {
+							typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
+							hasChildren = true
+						}
+						entries = append(entries, &filev1.DirectoryEntry{
+							Name:        path.Base(displayChildPath),
+							Path:        displayChildPath,
+							Type:        typ,
+							HasChildren: hasChildren,
+							Size:        child.Size,
+						})
+					}
+					sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+
+					truncated := false
+					if req.Limit > 0 && int(req.Limit) < len(entries) {
+						entries = entries[:req.Limit]
+						truncated = true
+					}
+					return &filev1.ListEntriesResponse{
+						SliceId:   sliceID,
+						Path:      "",
+						Entries:   entries,
+						Truncated: truncated,
+					}, nil
+				}
+			}
+		} else {
+			storedParentPath := common.SliceStoredPath(slice, normalizedPath)
+			if storedParentPath != "" {
+				if parentEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, storedParentPath); err == nil && parentEntry != nil {
+					if parentEntry.Type == "file" {
+						return nil, status.Error(codes.FailedPrecondition, "path refers to a file")
+					}
+					children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
+					if err == nil {
+						entries := make([]*filev1.DirectoryEntry, 0, len(children))
+						for _, child := range children {
+							if child == nil {
+								continue
+							}
+							displayChildPath := common.SliceDisplayPath(slice, child.Path)
+							if displayChildPath == "" {
+								continue
+							}
+							typ := filev1.EntryType_ENTRY_TYPE_FILE
+							hasChildren := false
+							if child.Type == "directory" {
+								typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
+								hasChildren = true
+							}
+							entries = append(entries, &filev1.DirectoryEntry{
+								Name:        path.Base(displayChildPath),
+								Path:        displayChildPath,
+								Type:        typ,
+								HasChildren: hasChildren,
+								Size:        child.Size,
+							})
+						}
+						sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+
+						truncated := false
+						if req.Limit > 0 && int(req.Limit) < len(entries) {
+							entries = entries[:req.Limit]
+							truncated = true
+						}
+						return &filev1.ListEntriesResponse{
+							SliceId:   sliceID,
+							Path:      normalizedPath,
+							Entries:   entries,
+							Truncated: truncated,
+						}, nil
+					}
+				}
+			}
+		}
+		// Fall back to legacy path scanning if tree nodes are missing.
+	}
+
 	pathMap, displayPaths, err := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
 	}
 
-	normalizedPath := cleanPath(req.Path)
 	if normalizedPath != "" {
 		if _, exists := pathMap[normalizedPath]; !exists {
 			for displayPath, storedPath := range pathMap {
@@ -418,14 +647,72 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 
 	requestPath := cleanPath(req.Path)
+
+	// Mounted slices can translate display paths to stored paths without scanning the
+	// full slice file set. Restrict requests to mount aliases to avoid leaking parent files.
+	if slice != nil && len(slice.FolderMounts) > 0 {
+		underAlias := false
+		for _, m := range slice.FolderMounts {
+			alias := cleanPath(m.Alias)
+			if alias == "" {
+				continue
+			}
+			if requestPath == alias || strings.HasPrefix(requestPath, alias+"/") {
+				underAlias = true
+				break
+			}
+		}
+		if !underAlias {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+
+		storedPath := common.SliceStoredPath(slice, requestPath)
+		if storedPath == "" {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+
+		backingSliceID := sliceID
+		if slice.ParentSlice != "" {
+			backingSliceID = slice.ParentSlice
+		}
+
+		effectiveCommit := strings.TrimSpace(resolvedCommit)
+		if slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+			if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
+				effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
+			}
+		}
+
+		var content *models.FileContent
+		if effectiveCommit != "" {
+			if c, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && c != nil {
+				content = c
+			}
+		}
+		if content == nil {
+			c, err := s.storage.GetSliceFileByPath(ctx, backingSliceID, storedPath)
+			if err != nil {
+				return nil, status.Error(codes.NotFound, "file not found")
+			}
+			content = c
+		}
+
+		file := &filev1.File{
+			Path:    common.SliceDisplayPath(slice, storedPath),
+			Content: content.Content,
+			Size:    contentSize(content),
+			Hash:    content.Hash,
+		}
+		return &filev1.GetFileResponse{File: file}, nil
+	}
+
 	pathMap, _, mapErr := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
 	if mapErr != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", mapErr))
 	}
 
 	// API requests are expressed in slice *display* paths. pathMap keys are display
-	// paths and values are stored paths. Do not translate the request into a stored
-	// path before looking it up, otherwise mounted slices won't resolve.
+	// paths and values are stored paths.
 	displayPath := requestPath
 	storedPath, found := pathMap[displayPath]
 	if !found && displayPath != "" {

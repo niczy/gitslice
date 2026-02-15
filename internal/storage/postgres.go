@@ -37,6 +37,7 @@ type postgresSnapshot struct {
 	Entries             map[string]*models.DirectoryEntry   `json:"entries"`
 	EntriesByPath       map[string]string                   `json:"entries_by_path"`
 	EntriesBySlice      map[string][]string                 `json:"entries_by_slice"`
+	EntriesByParent     map[string][]string                 `json:"entries_by_parent"`
 	Changesets          map[string]*models.Changeset        `json:"changesets"`
 	SliceChangesets     map[string][]string                 `json:"slice_changesets"`
 	SliceCommits        map[string][]*models.Commit         `json:"slice_commits"`
@@ -298,6 +299,7 @@ func (s *PostgresStorage) exportSnapshotLocked() (*postgresSnapshot, error) {
 		Entries:             s.mem.entries,
 		EntriesByPath:       s.mem.entriesByPath,
 		EntriesBySlice:      s.mem.entriesBySlice,
+		EntriesByParent:     s.mem.entriesByParent,
 		Changesets:          s.mem.changesets,
 		SliceChangesets:     s.mem.sliceChangesets,
 		SliceCommits:        s.mem.sliceCommits,
@@ -361,6 +363,7 @@ func (s *PostgresStorage) applySnapshotLocked(snap *postgresSnapshot) {
 	s.mem.entries = snap.Entries
 	s.mem.entriesByPath = snap.EntriesByPath
 	s.mem.entriesBySlice = snap.EntriesBySlice
+	s.mem.entriesByParent = snap.EntriesByParent
 	s.mem.changesets = snap.Changesets
 	s.mem.sliceChangesets = snap.SliceChangesets
 	s.mem.sliceCommits = snap.SliceCommits
@@ -404,6 +407,16 @@ func normalizeSnapshot(snap *postgresSnapshot) {
 	}
 	if snap.EntriesBySlice == nil {
 		snap.EntriesBySlice = make(map[string][]string)
+	}
+	if snap.EntriesByParent == nil {
+		snap.EntriesByParent = make(map[string][]string)
+		// Older snapshots didn't persist the parent index; rebuild it.
+		for id, entry := range snap.Entries {
+			if entry == nil {
+				continue
+			}
+			snap.EntriesByParent[entry.ParentID] = append(snap.EntriesByParent[entry.ParentID], id)
+		}
 	}
 	if snap.Changesets == nil {
 		snap.Changesets = make(map[string]*models.Changeset)

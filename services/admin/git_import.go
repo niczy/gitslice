@@ -230,12 +230,72 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func ensureDirectoryEntry(ctx context.Context, st storage.Storage, sliceID, dirPath string) error {
+	dirPath = common.CleanRelativePath(dirPath)
+	if dirPath == "" {
+		return nil
+	}
+
+	parentPath := path.Dir(dirPath)
+	if parentPath == "." || parentPath == "/" {
+		parentPath = ""
+	}
+
+	parentID := sliceID
+	if parentPath != "" {
+		parentID = common.GenerateEntryID(sliceID, parentPath)
+	}
+
+	entry := &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(sliceID, dirPath),
+		Path:     dirPath,
+		Type:     "directory",
+		ParentID: parentID,
+		Size:     0,
+	}
+
+	if err := st.AddEntry(ctx, entry); err != nil {
+		if errors.Is(err, storage.ErrEntryExists) {
+			// Keep parent links up to date.
+			return st.UpdateEntry(ctx, entry)
+		}
+		return err
+	}
+	return nil
+}
+
+func ensureParentDirectories(ctx context.Context, st storage.Storage, sliceID, filePath string) (string, error) {
+	filePath = common.CleanRelativePath(filePath)
+	if filePath == "" {
+		return sliceID, nil
+	}
+	dirPath := path.Dir(filePath)
+	if dirPath == "." || dirPath == "/" {
+		return sliceID, nil
+	}
+
+	// Create parents from shallow to deep.
+	parts := strings.Split(dirPath, "/")
+	for i := 1; i <= len(parts); i++ {
+		p := strings.Join(parts[:i], "/")
+		if err := ensureDirectoryEntry(ctx, st, sliceID, p); err != nil {
+			return "", err
+		}
+	}
+	return common.GenerateEntryID(sliceID, dirPath), nil
+}
+
 func upsertFile(ctx context.Context, st storage.Storage, sliceID string, mountedPath string, content []byte, contentHash string) error {
+	parentID, err := ensureParentDirectories(ctx, st, sliceID, mountedPath)
+	if err != nil {
+		return err
+	}
+
 	entry := &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(sliceID, mountedPath),
 		Path:     mountedPath,
 		Type:     "file",
-		ParentID: sliceID,
+		ParentID: parentID,
 		Size:     int64(len(content)),
 	}
 	if err := st.AddEntry(ctx, entry); err != nil {
