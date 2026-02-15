@@ -553,9 +553,24 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 	}
 
 	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
+	parentHashes := make(map[string]string)
 	var added, modified, deleted, renamed int32
 	for _, change := range changes {
-		patch := s.buildChangePatch(ctx, change)
+		parentHash := ""
+		if change != nil {
+			key := change.SliceID + "\x00" + change.CommitHash
+			if cached, ok := parentHashes[key]; ok {
+				parentHash = cached
+			} else {
+				resolvedParent, err := s.findParentCommitHash(ctx, change.SliceID, change.CommitHash)
+				if err == nil {
+					parentHash = resolvedParent
+				}
+				parentHashes[key] = parentHash
+			}
+		}
+
+		patch := s.buildChangePatch(ctx, change, parentHash)
 		protoChanges = append(protoChanges, modelToProtoChange(change, patch))
 		switch change.ChangeType {
 		case models.ChangeTypeAdd:
@@ -599,7 +614,7 @@ func modelToProtoChange(change *models.FileChangeRecord, patch string) *filev1.F
 	}
 }
 
-func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models.FileChangeRecord) string {
+func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models.FileChangeRecord, parentHash string) string {
 	if change == nil {
 		return ""
 	}
@@ -616,8 +631,7 @@ func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models
 	shouldLoadBefore := change.OldHash != "" || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeDelete || change.ChangeType == models.ChangeTypeRename
 	beforeUndiffable := false
 	if shouldLoadBefore {
-		parentHash, err := s.findParentCommitHash(ctx, change.SliceID, change.CommitHash)
-		if err == nil && parentHash != "" {
+		if parentHash != "" {
 			if prev, ferr := s.storage.GetFileAtCommit(ctx, parentHash, oldPath); ferr == nil && prev != nil {
 				if lines, ok := splitLinesForDiff(prev.Content); ok {
 					beforeLines = lines

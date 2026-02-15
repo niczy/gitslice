@@ -2,6 +2,8 @@ package fileservice
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,25 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+type listSliceCommitsCounter struct {
+	storage.Storage
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *listSliceCommitsCounter) ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.Storage.ListSliceCommits(ctx, sliceID, limit, fromCommitHash)
+}
+
+func (c *listSliceCommitsCounter) CallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
 
 func authCtx() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
@@ -308,5 +329,131 @@ func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	}
 	if got := resp.Changes[0].Patch; got != "" {
 		t.Fatalf("expected empty patch for binary/non-utf8 content, got %q", got)
+	}
+}
+
+func TestGetCommitChangesLooksUpParentCommitOncePerCommit(t *testing.T) {
+	ctx := authCtx()
+	baseStorage := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "root_slice"
+		parentHash = "c0"
+		commitHash = "c1"
+	)
+
+	if err := baseStorage.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+
+	if err := baseStorage.AddSliceCommit(ctx, sliceID, &models.Commit{CommitHash: commitHash, ParentHash: parentHash, Timestamp: time.Now().UTC(), Message: "batched updates"}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+
+	parentFiles := make(map[string]string)
+	headFiles := make(map[string]string)
+	for i := 0; i < 3; i++ {
+		path := fmt.Sprintf("o/genesis/projects/org/repo/file-%d.txt", i)
+		oldHash := fmt.Sprintf("old-%d", i)
+		newHash := fmt.Sprintf("new-%d", i)
+
+		if err := baseStorage.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: oldHash, Content: []byte("before\n")}); err != nil {
+			t.Fatalf("AddFileContent old failed: %v", err)
+		}
+		if err := baseStorage.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: newHash, Content: []byte("after\n")}); err != nil {
+			t.Fatalf("AddFileContent new failed: %v", err)
+		}
+
+		parentFiles[path] = oldHash
+		headFiles[path] = newHash
+
+		if err := baseStorage.AddFileChange(ctx, &models.FileChangeRecord{ID: fmt.Sprintf("fc-%d", i), SliceID: sliceID, CommitHash: commitHash, Path: path, ChangeType: models.ChangeTypeModify, OldHash: oldHash, NewHash: newHash, Timestamp: time.Now().UTC()}); err != nil {
+			t.Fatalf("AddFileChange failed: %v", err)
+		}
+	}
+
+	if err := baseStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: parentHash, SliceID: sliceID, Files: parentFiles}); err != nil {
+		t.Fatalf("SaveCommitSnapshot parent failed: %v", err)
+	}
+	if err := baseStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: commitHash, SliceID: sliceID, Files: headFiles}); err != nil {
+		t.Fatalf("SaveCommitSnapshot head failed: %v", err)
+	}
+
+	countedStorage := &listSliceCommitsCounter{Storage: baseStorage}
+	svc := newFileServiceServer(countedStorage)
+
+	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	if err != nil {
+		t.Fatalf("GetCommitChanges failed: %v", err)
+	}
+	if len(resp.Changes) != 3 {
+		t.Fatalf("expected 3 changes, got %d", len(resp.Changes))
+	}
+	if got := countedStorage.CallCount(); got != 1 {
+		t.Fatalf("expected one parent lookup, got %d", got)
+	}
+}
+
+func BenchmarkGetCommitChangesDiffLoading(b *testing.B) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "root_slice"
+		parentHash = "c0"
+		commitHash = "c1"
+		fileCount  = 100
+	)
+
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		b.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+
+	if err := st.AddSliceCommit(ctx, sliceID, &models.Commit{CommitHash: commitHash, ParentHash: parentHash, Timestamp: time.Now().UTC(), Message: "batched updates"}); err != nil {
+		b.Fatalf("AddSliceCommit failed: %v", err)
+	}
+
+	parentFiles := make(map[string]string, fileCount)
+	headFiles := make(map[string]string, fileCount)
+	for i := 0; i < fileCount; i++ {
+		path := fmt.Sprintf("o/genesis/projects/org/repo/file-%03d.txt", i)
+		oldHash := fmt.Sprintf("old-%03d", i)
+		newHash := fmt.Sprintf("new-%03d", i)
+
+		if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: oldHash, Content: []byte("line 1\nline 2\n")}); err != nil {
+			b.Fatalf("AddFileContent old failed: %v", err)
+		}
+		if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: newHash, Content: []byte("line 1\nline 2 changed\n")}); err != nil {
+			b.Fatalf("AddFileContent new failed: %v", err)
+		}
+
+		parentFiles[path] = oldHash
+		headFiles[path] = newHash
+
+		if err := st.AddFileChange(ctx, &models.FileChangeRecord{ID: fmt.Sprintf("fc-%03d", i), SliceID: sliceID, CommitHash: commitHash, Path: path, ChangeType: models.ChangeTypeModify, OldHash: oldHash, NewHash: newHash, Timestamp: time.Now().UTC()}); err != nil {
+			b.Fatalf("AddFileChange failed: %v", err)
+		}
+	}
+
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: parentHash, SliceID: sliceID, Files: parentFiles}); err != nil {
+		b.Fatalf("SaveCommitSnapshot parent failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: commitHash, SliceID: sliceID, Files: headFiles}); err != nil {
+		b.Fatalf("SaveCommitSnapshot head failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	req := &filev1.GetCommitChangesRequest{CommitHash: commitHash}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp, err := svc.GetCommitChanges(ctx, req)
+		if err != nil {
+			b.Fatalf("GetCommitChanges failed: %v", err)
+		}
+		if len(resp.Changes) != fileCount {
+			b.Fatalf("unexpected change count %d", len(resp.Changes))
+		}
 	}
 }
