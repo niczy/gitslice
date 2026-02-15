@@ -121,6 +121,88 @@ func TestGetFileFindsMetadataModifiedPath(t *testing.T) {
 	}
 }
 
+func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "multi",
+		Name:      "multi",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files: []string{
+			"o/genesis/projects/repo-a/README.md",
+			"o/genesis/projects/repo-b/main.go",
+		},
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "o/genesis/projects/repo-a", Alias: "repo-a"},
+			{SourcePath: "o/genesis/projects/repo-b", Alias: "repo-b"},
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	seed := map[string][]byte{
+		"o/genesis/projects/repo-a/README.md": []byte("repo-a"),
+		"o/genesis/projects/repo-b/main.go":   []byte("package main"),
+	}
+	for storedPath, content := range seed {
+		if err := st.AddFileContent(ctx, &models.FileContent{
+			FileID:  storedPath,
+			Path:    storedPath,
+			Content: content,
+			Size:    int64(len(content)),
+		}); err != nil {
+			t.Fatalf("AddFileContent failed for %s: %v", storedPath, err)
+		}
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID("multi", storedPath),
+			Path:     storedPath,
+			Type:     "file",
+			ParentID: "multi",
+			Content:  content,
+			Size:     int64(len(content)),
+		}); err != nil {
+			t.Fatalf("AddEntry failed for %s: %v", storedPath, err)
+		}
+	}
+
+	svc := newFileServiceServer(st)
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: "multi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(listResp.GetEntries()); got != 2 {
+		t.Fatalf("expected 2 root folders, got %d", got)
+	}
+	if listResp.GetEntries()[0].GetName() != "repo-a" || listResp.GetEntries()[1].GetName() != "repo-b" {
+		t.Fatalf("unexpected root entries: %#v", listResp.GetEntries())
+	}
+	for _, entry := range listResp.GetEntries() {
+		if entry.GetType() != filev1.EntryType_ENTRY_TYPE_DIRECTORY {
+			t.Fatalf("expected directory entry, got %v", entry.GetType())
+		}
+	}
+
+	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: "repo-a/README.md",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: "multi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "repo-a" {
+		t.Fatalf("unexpected content %q", got)
+	}
+}
+
 func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

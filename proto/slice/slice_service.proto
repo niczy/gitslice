@@ -258,6 +258,7 @@ message CreateSliceFromFolderRequest {
   string new_slice_id = 3;
   string name = 4;
   string description = 5;
+  repeated string folder_paths = 6;
 }
 
 // Response for slice creation from folder

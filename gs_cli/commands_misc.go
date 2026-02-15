@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
@@ -130,18 +131,25 @@ func handleRootSlice(ctx context.Context, cli *CLI) {
 
 func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 2 {
-		log.Println("Usage: gs fork <new-slice-id> <folder-path>")
+		log.Println("Usage: gs fork <new-slice-id> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
 		return
 	}
 
 	newSliceID := args[0]
-	folderPath := args[1]
+	folderPaths := parseForkFolderPaths(args[1])
 
 	fs := flag.NewFlagSet("fork", flag.ExitOnError)
 	parentID := fs.String("parent", "", "Parent slice ID")
 	name := fs.String("name", newSliceID, "Name of the new slice")
 	description := fs.String("description", "Forked slice", "Description of the new slice")
+	moreFolders := fs.String("folders", "", "Additional comma-separated folder paths to include in this slice")
 	fs.Parse(args[2:])
+
+	folderPaths = append(folderPaths, parseForkFolderPaths(*moreFolders)...)
+	if len(folderPaths) == 0 {
+		log.Println("At least one folder path is required")
+		return
+	}
 
 	parentSliceID := *parentID
 	if parentSliceID == "" {
@@ -156,7 +164,8 @@ func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 
 	req := &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: parentSliceID,
-		FolderPath:    folderPath,
+		FolderPath:    folderPaths[0],
+		FolderPaths:   folderPaths[1:],
 		NewSliceId:    newSliceID,
 		Name:          *name,
 		Description:   *description,
@@ -169,4 +178,26 @@ func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 
 	fmt.Printf("Created slice: %s\n", resp.SliceId)
 	fmt.Printf("Status: %s\n", resp.Status)
+}
+
+func parseForkFolderPaths(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		cleaned := strings.TrimSpace(part)
+		if cleaned == "" {
+			continue
+		}
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
 }

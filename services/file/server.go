@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/authz"
+	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -90,13 +90,32 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	if metadata.HeadCommitHash != "" {
 		if snapshot, err := s.storage.GetCommitSnapshot(ctx, metadata.HeadCommitHash); err == nil && snapshot != nil {
 			paths := make([]string, 0, len(snapshot.Files))
+			seen := make(map[string]bool, len(snapshot.Files))
 			for raw := range snapshot.Files {
-				p := cleanPath(raw)
+				p := common.CleanRelativePath(raw)
 				if p == "" {
 					continue
 				}
+				seen[p] = true
 				paths = append(paths, p)
 			}
+
+			// Also include paths that have concrete file content but were added
+			// out-of-band from snapshot updates (common in integration tests and
+			// maintenance scripts that call storage helpers directly).
+			contentByPath := fileContentIndex(s.storage, ctx, sliceID)
+			for _, raw := range append(slice.Files, metadata.ModifiedFiles...) {
+				p := common.CleanRelativePath(raw)
+				if p == "" || seen[p] {
+					continue
+				}
+				if _, hasContent := contentByPath[p]; !hasContent {
+					continue
+				}
+				seen[p] = true
+				paths = append(paths, p)
+			}
+
 			sort.Strings(paths)
 			return paths, nil
 		}
@@ -105,7 +124,7 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	paths := make([]string, 0, len(slice.Files))
 	seen := make(map[string]bool, len(slice.Files))
 	for _, raw := range slice.Files {
-		p := cleanPath(raw)
+		p := common.CleanRelativePath(raw)
 		if p == "" || seen[p] {
 			continue
 		}
@@ -114,7 +133,7 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	}
 
 	for _, raw := range metadata.ModifiedFiles {
-		p := cleanPath(raw)
+		p := common.CleanRelativePath(raw)
 		if p == "" || seen[p] {
 			continue
 		}
@@ -122,6 +141,26 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 		paths = append(paths, p)
 	}
 	return paths, nil
+}
+
+func (s *fileServiceServer) effectiveSlicePathMap(ctx context.Context, sliceID string, slice *models.Slice) (map[string]string, error) {
+	storedPaths, err := s.effectiveSlicePaths(ctx, sliceID, slice)
+	if err != nil {
+		return nil, err
+	}
+
+	pathMap := make(map[string]string, len(storedPaths))
+	for _, storedPath := range storedPaths {
+		displayPath := common.SliceDisplayPath(slice, storedPath)
+		if displayPath == "" {
+			continue
+		}
+		if _, exists := pathMap[displayPath]; exists {
+			continue
+		}
+		pathMap[displayPath] = storedPath
+	}
+	return pathMap, nil
 }
 
 func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
@@ -143,7 +182,27 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
+	pathMap, err := s.effectiveSlicePathMap(ctx, sliceID, slice)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
+	}
+
 	normalizedPath := cleanPath(req.Path)
+	if normalizedPath != "" {
+		if _, exists := pathMap[normalizedPath]; !exists {
+			for displayPath, storedPath := range pathMap {
+				if storedPath == normalizedPath {
+					normalizedPath = displayPath
+					break
+				}
+			}
+		}
+		candidateDisplayPath := common.SliceDisplayPath(slice, normalizedPath)
+		if candidateDisplayPath != "" {
+			normalizedPath = candidateDisplayPath
+		}
+	}
+
 	prefix := ""
 	if normalizedPath != "" {
 		prefix = normalizedPath + "/"
@@ -153,12 +212,13 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	matchedAny := false
 	exactFile := false
 
-	effectivePaths, err := s.effectiveSlicePaths(ctx, sliceID, slice)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
+	displayPaths := make([]string, 0, len(pathMap))
+	for filePath := range pathMap {
+		displayPaths = append(displayPaths, filePath)
 	}
+	sort.Strings(displayPaths)
 
-	for _, filePath := range effectivePaths {
+	for _, filePath := range displayPaths {
 		if filePath == "" {
 			continue
 		}
@@ -203,7 +263,8 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 				entry.Type = filev1.EntryType_ENTRY_TYPE_FILE
 				entry.HasChildren = false
 				// Best-effort size lookup only for files directly under the requested path.
-				if content, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath); err == nil && content != nil {
+				storedPath := pathMap[filePath]
+				if content, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath); err == nil && content != nil {
 					entry.Size = contentSize(content)
 				}
 			}
@@ -269,22 +330,37 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	normalizedPath := cleanPath(req.Path)
-	effectivePaths, effectiveErr := s.effectiveSlicePaths(ctx, sliceID, slice)
-	if effectiveErr != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", effectiveErr))
+	requestPath := cleanPath(req.Path)
+	normalizedPath := common.SliceStoredPath(slice, requestPath)
+	pathMap, mapErr := s.effectiveSlicePathMap(ctx, sliceID, slice)
+	if mapErr != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", mapErr))
 	}
 
-	content, err := s.storage.GetSliceFileByPath(ctx, sliceID, normalizedPath)
+	storedPath, found := pathMap[normalizedPath]
+	if !found {
+		for _, candidateStoredPath := range pathMap {
+			if candidateStoredPath == normalizedPath {
+				storedPath = candidateStoredPath
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "file not found")
+	}
+
+	content, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath)
 	if err != nil {
-		if sliceHasPath(effectivePaths, normalizedPath) {
+		if sliceHasPath(pathMap, normalizedPath) {
 			return nil, status.Error(codes.NotFound, "file content not available")
 		}
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
 
 	file := &filev1.File{
-		Path:    normalizedPath,
+		Path:    common.SliceDisplayPath(slice, normalizedPath),
 		Content: content.Content,
 		Size:    contentSize(content),
 		Hash:    content.Hash,
@@ -294,13 +370,7 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 }
 
 func cleanPath(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	cleaned := path.Clean("/" + trimmed)
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	if cleaned == "." {
-		return ""
-	}
-	return cleaned
+	return common.CleanRelativePath(raw)
 }
 
 func fileContentIndex(st storage.Storage, ctx context.Context, sliceID string) map[string]*models.FileContent {
@@ -336,9 +406,12 @@ func contentSize(content *models.FileContent) int64 {
 	return int64(len(content.Content))
 }
 
-func sliceHasPath(paths []string, path string) bool {
-	for _, file := range paths {
-		if cleanPath(file) == path {
+func sliceHasPath(pathMap map[string]string, path string) bool {
+	if _, ok := pathMap[path]; ok {
+		return true
+	}
+	for _, stored := range pathMap {
+		if stored == path {
 			return true
 		}
 	}
@@ -372,7 +445,7 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	normalizedPath := cleanPath(req.Path)
+	normalizedPath := common.SliceStoredPath(slice, cleanPath(req.Path))
 	limit := int(req.Limit)
 	if limit <= 0 {
 		limit = 50
@@ -428,7 +501,7 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	normalizedPath := cleanPath(req.Path)
+	normalizedPath := common.SliceStoredPath(slice, cleanPath(req.Path))
 	limit := int(req.Limit)
 	if limit <= 0 {
 		limit = 100

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,9 +92,13 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	// Build manifest with file metadata
 	var fileMetadata []*slicev1.FileMetadata
 	for _, file := range files {
+		storedPath := file.Path
+		if strings.TrimSpace(storedPath) == "" {
+			storedPath = file.FileID
+		}
 		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
 			FileId:     file.FileID,
-			Path:       file.Path,
+			Path:       common.SliceDisplayPath(slice, storedPath),
 			Size:       file.Size,
 			Hash:       file.Hash,
 			ContentUrl: "", // No presigned URL for in-memory storage
@@ -104,7 +110,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		for _, fileID := range slice.Files {
 			fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
 				FileId:     fileID,
-				Path:       fileID,
+				Path:       common.SliceDisplayPath(slice, fileID),
 				Size:       0,
 				Hash:       "",
 				ContentUrl: "",
@@ -534,8 +540,8 @@ func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetR
 }
 
 func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *slicev1.CreateSliceFromFolderRequest) (*slicev1.CreateSliceFromFolderResponse, error) {
-	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, new_slice_id=%s",
-		req.ParentSliceId, req.FolderPath, req.NewSliceId)
+	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, folder_paths=%d, new_slice_id=%s",
+		req.ParentSliceId, req.FolderPath, len(req.FolderPaths), req.NewSliceId)
 
 	username := auth.UsernameFromGRPCContext(ctx)
 	if username == "" {
@@ -549,10 +555,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	if err := common.ValidateSliceID(req.NewSliceId); err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid new slice ID: %v", err))
 	}
-	if req.FolderPath != "" {
-		if err := common.ValidateFilePath(req.FolderPath); err != nil {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid folder path: %v", err))
-		}
+	folderPaths, err := collectRequestedFolderPaths(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	parentSlice, err := s.storage.GetSlice(ctx, req.ParentSliceId)
@@ -563,26 +568,34 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		return nil, status.Error(codes.PermissionDenied, "not authorized for parent slice")
 	}
 
-	folderPath := strings.TrimSuffix(req.FolderPath, "/")
 	selectedFiles := make([]string, 0)
-	if folderPath != "" {
-		prefix := folderPath + "/"
-		for _, fileID := range parentSlice.Files {
-			if fileID == folderPath || strings.HasPrefix(fileID, prefix) {
-				selectedFiles = append(selectedFiles, fileID)
+	if len(folderPaths) > 0 {
+		selectedSet := make(map[string]struct{})
+		for _, folderPath := range folderPaths {
+			prefix := folderPath + "/"
+			for _, rawFileID := range parentSlice.Files {
+				fileID := common.CleanRelativePath(rawFileID)
+				if fileID == folderPath || strings.HasPrefix(fileID, prefix) {
+					selectedSet[fileID] = struct{}{}
+				}
 			}
 		}
+		for fileID := range selectedSet {
+			selectedFiles = append(selectedFiles, fileID)
+		}
+		sort.Strings(selectedFiles)
 	}
 
 	newSlice := &models.Slice{
-		ID:          req.NewSliceId,
-		Name:        req.Name,
-		Description: req.Description,
-		Files:       selectedFiles,
-		Owners:      []string{username},
-		CreatedBy:   username,
-		ParentSlice: parentSlice.ID,
-		IsRoot:      false,
+		ID:           req.NewSliceId,
+		Name:         req.Name,
+		Description:  req.Description,
+		Files:        selectedFiles,
+		FolderMounts: buildSliceFolderMounts(folderPaths),
+		Owners:       []string{username},
+		CreatedBy:    username,
+		ParentSlice:  parentSlice.ID,
+		IsRoot:       false,
 	}
 
 	if err := s.storage.CreateSlice(ctx, newSlice); err != nil {
@@ -600,6 +613,65 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		Status:  "created",
 		Files:   selectedFiles,
 	}, nil
+}
+
+func collectRequestedFolderPaths(req *slicev1.CreateSliceFromFolderRequest) ([]string, error) {
+	paths := make([]string, 0, len(req.GetFolderPaths())+1)
+	if raw := strings.TrimSpace(req.GetFolderPath()); raw != "" {
+		paths = append(paths, raw)
+	}
+	paths = append(paths, req.GetFolderPaths()...)
+
+	dedup := make(map[string]struct{}, len(paths))
+	normalized := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		cleaned := common.CleanRelativePath(raw)
+		if cleaned == "" {
+			continue
+		}
+		if err := common.ValidateFilePath(cleaned); err != nil {
+			return nil, fmt.Errorf("invalid folder path %q: %v", raw, err)
+		}
+		if _, exists := dedup[cleaned]; exists {
+			continue
+		}
+		dedup[cleaned] = struct{}{}
+		normalized = append(normalized, cleaned)
+	}
+	return normalized, nil
+}
+
+func buildSliceFolderMounts(folderPaths []string) []models.SliceFolderMount {
+	if len(folderPaths) == 0 {
+		return nil
+	}
+
+	mounts := make([]models.SliceFolderMount, 0, len(folderPaths))
+	usedAliases := make(map[string]struct{}, len(folderPaths))
+	for _, sourcePath := range folderPaths {
+		alias := path.Base(sourcePath)
+		if alias == "." || alias == "/" || alias == "" {
+			alias = strings.ReplaceAll(sourcePath, "/", "_")
+		}
+		if alias == "" {
+			alias = "folder"
+		}
+
+		baseAlias := alias
+		for n := 2; ; n++ {
+			if _, exists := usedAliases[alias]; !exists {
+				break
+			}
+			alias = fmt.Sprintf("%s_%d", baseAlias, n)
+		}
+		usedAliases[alias] = struct{}{}
+
+		mounts = append(mounts, models.SliceFolderMount{
+			SourcePath: sourcePath,
+			Alias:      alias,
+		})
+	}
+	return mounts
 }
 
 func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
