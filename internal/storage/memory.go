@@ -736,12 +736,40 @@ func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 		return nil, ErrEntryNotFound
 	}
 
-	return &models.FileContent{
-		FileID:  entry.ID,
-		Path:    entry.Path,
-		Content: entry.Content,
-		Size:    entry.Size,
-	}, nil
+	// Prefer file content stored in the fileContents map; DirectoryEntry.Content is
+	// best-effort metadata and should not be required for correctness.
+	var (
+		content []byte
+		hash    string
+		size    = entry.Size
+	)
+	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
+		content = fc.Content
+		hash = fc.Hash
+		if size == 0 {
+			size = fc.Size
+		}
+	} else if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
+		content = fc.Content
+		hash = fc.Hash
+		if size == 0 {
+			size = fc.Size
+		}
+	} else if len(entry.Content) > 0 {
+		// Backward-compatible fallback for legacy callers that stored bytes on entries.
+		content = entry.Content
+	}
+
+	out := &models.FileContent{
+		FileID: entry.Path,
+		Path:   entry.Path,
+		Size:   size,
+		Hash:   hash,
+	}
+	if len(content) > 0 {
+		out.Content = append([]byte(nil), content...)
+	}
+	return out, nil
 }
 
 // AddEntry adds a directory entry

@@ -847,7 +847,11 @@ func (s *PostgresStorage) AddFileContent(ctx context.Context, content *models.Fi
 				return err
 			}
 		}
-		return s.mem.AddFileContent(ctx, content)
+
+		// Keep in-memory snapshot lightweight: blobs live in the object store.
+		thin := *content
+		thin.Content = nil
+		return s.mem.AddFileContent(ctx, &thin)
 	})
 }
 
