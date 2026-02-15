@@ -236,7 +236,6 @@ func upsertFile(ctx context.Context, st storage.Storage, sliceID string, mounted
 		Path:     mountedPath,
 		Type:     "file",
 		ParentID: sliceID,
-		Content:  content,
 		Size:     int64(len(content)),
 	}
 	if err := st.AddEntry(ctx, entry); err != nil {
@@ -357,6 +356,26 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 
 			currentFileHashes := make(map[string]string)
 			var prevCommit string
+
+			// If we're importing into an existing slice without resetting it, start from
+			// the current slice HEAD snapshot so multiple imports accumulate into one
+			// slice namespace instead of clobbering the visible tree at HEAD.
+			if !reset {
+				if meta, err := mem.GetSliceMetadata(ctx, sliceID); err == nil && meta != nil {
+					prevCommit = strings.TrimSpace(meta.HeadCommitHash)
+					if prevCommit != "" {
+						if snap, err := mem.GetCommitSnapshot(ctx, prevCommit); err == nil && snap != nil {
+							for p, h := range snap.Files {
+								p = common.CleanRelativePath(p)
+								if p == "" || h == "" {
+									continue
+								}
+								currentFileHashes[p] = h
+							}
+						}
+					}
+				}
+			}
 
 			for idx, commitHash := range commits {
 				metaOut, err := gitCombinedOutput(ctx, repoDir, "show", "-s", "--format=%an <%ae>%n%ct%n%s", commitHash)
@@ -600,7 +619,24 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 
 	currentFileHashes := make(map[string]string)
 	var prevCommit string
+	// Same accumulation behavior for the non-bulk path.
 	head := ""
+	if !reset {
+		if meta, err := st.GetSliceMetadata(ctx, sliceID); err == nil && meta != nil {
+			prevCommit = strings.TrimSpace(meta.HeadCommitHash)
+			if prevCommit != "" {
+				if snap, err := st.GetCommitSnapshot(ctx, prevCommit); err == nil && snap != nil {
+					for p, h := range snap.Files {
+						p = common.CleanRelativePath(p)
+						if p == "" || h == "" {
+							continue
+						}
+						currentFileHashes[p] = h
+					}
+				}
+			}
+		}
+	}
 
 	for idx, commitHash := range commits {
 		metaOut, err := gitCombinedOutput(ctx, repoDir, "show", "-s", "--format=%an <%ae>%n%ct%n%s", commitHash)
