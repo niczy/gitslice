@@ -106,7 +106,8 @@ func prepareRepo(ctx context.Context, repoPath string, repoURL string, maxCommit
 		// This keeps imports fast and reduces memory/disk pressure on the server.
 		cloneArgs := []string{"clone", "--bare", "--quiet"}
 		if maxCommits > 0 {
-			cloneArgs = append(cloneArgs, "--depth", strconv.Itoa(maxCommits), "--no-single-branch")
+			// Default clone behavior is single-branch; keep it that way to minimize data transferred.
+			cloneArgs = append(cloneArgs, "--depth", strconv.Itoa(maxCommits))
 		}
 		cloneArgs = append(cloneArgs, repoURL, cloneDir)
 		_, err = gitCombinedOutput(ctx, parent, cloneArgs...)
