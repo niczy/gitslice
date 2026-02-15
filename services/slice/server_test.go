@@ -2,6 +2,7 @@ package sliceservice
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,4 +84,93 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 			t.Fatalf("expected cs-merged, got %s", resp.Changesets[0].ChangesetId)
 		}
 	})
+}
+
+func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	seedFiles := map[string][]byte{
+		"o/genesis/projects/repo-a/README.md":   []byte("repo a"),
+		"o/genesis/projects/repo-a/pkg/util.go": []byte("package repoa"),
+		"o/genesis/projects/repo-b/main.go":     []byte("package main"),
+	}
+	for filePath, content := range seedFiles {
+		if err := st.AddFileToSlice(ctx, filePath, "root_slice"); err != nil {
+			t.Fatalf("failed to add root file %s: %v", filePath, err)
+		}
+		if err := st.AddFileContent(ctx, &models.FileContent{
+			FileID:  filePath,
+			Path:    filePath,
+			Content: content,
+			Size:    int64(len(content)),
+		}); err != nil {
+			t.Fatalf("failed to add content for %s: %v", filePath, err)
+		}
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: "root_slice",
+		NewSliceId:    "multi-folder-slice",
+		Name:          "multi-folder-slice",
+		Description:   "multi folder test",
+		FolderPath:    "o/genesis/projects/repo-a",
+		FolderPaths:   []string{"o/genesis/projects/repo-b"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSliceFromFolder failed: %v", err)
+	}
+	if got, want := createResp.GetSliceId(), "multi-folder-slice"; got != want {
+		t.Fatalf("expected slice %q, got %q", want, got)
+	}
+
+	slice, err := st.GetSlice(ctx, "multi-folder-slice")
+	if err != nil {
+		t.Fatalf("failed to load created slice: %v", err)
+	}
+	if len(slice.FolderMounts) != 2 {
+		t.Fatalf("expected 2 folder mounts, got %d", len(slice.FolderMounts))
+	}
+
+	mounts := map[string]string{}
+	for _, mount := range slice.FolderMounts {
+		mounts[mount.SourcePath] = mount.Alias
+	}
+	if mounts["o/genesis/projects/repo-a"] != "repo-a" {
+		t.Fatalf("unexpected alias for repo-a: %q", mounts["o/genesis/projects/repo-a"])
+	}
+	if mounts["o/genesis/projects/repo-b"] != "repo-b" {
+		t.Fatalf("unexpected alias for repo-b: %q", mounts["o/genesis/projects/repo-b"])
+	}
+
+	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{
+		SliceId:    "multi-folder-slice",
+		CommitHash: "HEAD",
+	})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+
+	manifestPaths := map[string]bool{}
+	for _, fm := range checkoutResp.GetManifest().GetFileMetadata() {
+		manifestPaths[fm.GetPath()] = true
+		if strings.HasPrefix(fm.GetPath(), "o/genesis/projects/") {
+			t.Fatalf("checkout path should be slice-root relative, got %q", fm.GetPath())
+		}
+	}
+
+	expectedPaths := []string{
+		"repo-a/README.md",
+		"repo-a/pkg/util.go",
+		"repo-b/main.go",
+	}
+	for _, path := range expectedPaths {
+		if !manifestPaths[path] {
+			t.Fatalf("expected checkout path %q, got %#v", path, manifestPaths)
+		}
+	}
 }
