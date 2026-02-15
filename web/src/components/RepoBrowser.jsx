@@ -6,6 +6,46 @@ import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../uti
 import { decodeBase64, highlightCode } from '../utils/highlight.js';
 import SliceDropdown from './SliceDropdown.jsx';
 
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
+
+const IMAGE_MIME_TYPES = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+};
+
+const getFileExtension = (filePath) => {
+  if (!filePath || !filePath.includes('.')) {
+    return '';
+  }
+  return filePath.split('.').pop()?.toLowerCase() || '';
+};
+
+const getPreviewMeta = (filePath, encodedContent) => {
+  const extension = getFileExtension(filePath);
+  if (extension === 'pdf') {
+    return {
+      mode: 'pdf',
+      src: `data:application/pdf;base64,${encodedContent}`,
+    };
+  }
+
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return {
+      mode: 'image',
+      src: `data:${IMAGE_MIME_TYPES[extension] || 'image/*'};base64,${encodedContent}`,
+    };
+  }
+
+  return { mode: 'text', src: '' };
+};
+
 // ---------------------------------------------------------------------------
 // Repo Browser Component
 // ---------------------------------------------------------------------------
@@ -39,6 +79,7 @@ export default function RepoBrowser({
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
+  const [encodedFileContent, setEncodedFileContent] = useState('');
   const [draftContent, setDraftContent] = useState('');
   const [fileDrafts, setFileDrafts] = useState({});
   const [isEditingFile, setIsEditingFile] = useState(false);
@@ -55,6 +96,7 @@ export default function RepoBrowser({
   const pendingFileRef = useRef(initialBrowserState?.file || null);
   const hasAppliedInitialSliceRef = useRef(false);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
+  const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
 
   const breadcrumbs = useMemo(() => {
     if (!selectedFile) {
@@ -103,6 +145,7 @@ export default function RepoBrowser({
     setExpandedPaths(['']);
     setSelectedFile(null);
     setFileContent('');
+    setEncodedFileContent('');
     setDraftContent('');
     setFileDrafts({});
     setIsEditingFile(false);
@@ -268,11 +311,14 @@ export default function RepoBrowser({
             if (active) {
               const fileData = await fileResp.json();
               setFileError('');
-              setFileContent(decodeBase64(fileData?.file?.content || ''));
+              const content = fileData?.file?.content || '';
+              setEncodedFileContent(content);
+              setFileContent(decodeBase64(content));
             }
           } catch (e) {
             if (active && e?.name !== 'AbortError') {
               setFileContent('');
+              setEncodedFileContent('');
               setFileError(e?.message || 'Unable to load file content.');
             }
           }
@@ -369,6 +415,7 @@ export default function RepoBrowser({
 
     setSelectedFile(entry.path);
     setFileContent('');
+    setEncodedFileContent('');
     setDraftContent('');
     setIsLoading(true);
     setError('');
@@ -379,6 +426,7 @@ export default function RepoBrowser({
 
     if (Object.prototype.hasOwnProperty.call(fileDrafts, entry.path)) {
       setFileContent(fileDrafts[entry.path]);
+      setEncodedFileContent('');
       setDraftContent(fileDrafts[entry.path]);
       setIsEditingFile(false);
       setIsLoading(false);
@@ -393,12 +441,14 @@ export default function RepoBrowser({
       const payload = await response.json();
       const content = payload?.file?.content || '';
       setFileError('');
+      setEncodedFileContent(content);
       const decodedContent = decodeBase64(content);
       setFileContent(decodedContent);
       setDraftContent(decodedContent);
       setIsEditingFile(false);
     } catch (err) {
       setFileContent('');
+      setEncodedFileContent('');
       setFileError(err?.message || 'Unable to load file content.');
     } finally {
       setIsLoading(false);
@@ -496,6 +546,7 @@ export default function RepoBrowser({
     setExpandedPaths((prev) => [...new Set([...prev, '', ...pathsToExpand])]);
     setSelectedFile(cleanPath);
     setFileContent('');
+    setEncodedFileContent('');
     setDraftContent('');
     setFileError('');
     setShowHistory(false);
@@ -511,6 +562,7 @@ export default function RepoBrowser({
     }
     setFileDrafts((prev) => ({ ...prev, [selectedFile]: draftContent }));
     setFileContent(draftContent);
+    setEncodedFileContent('');
     setIsEditingFile(false);
     const parentPath = selectedFile.includes('/') ? selectedFile.split('/').slice(0, -1).join('/') : '';
     setTreeEntries((prev) => {
@@ -711,6 +763,16 @@ export default function RepoBrowser({
                       value={draftContent}
                       onChange={(event) => setDraftContent(event.target.value)}
                       spellCheck={false}
+                    />
+                  ) : previewMeta.mode === 'image' ? (
+                    <div className="media-preview-wrapper">
+                      <img className="media-preview-image" src={previewMeta.src} alt={selectedFile} />
+                    </div>
+                  ) : previewMeta.mode === 'pdf' ? (
+                    <iframe
+                      className="media-preview-pdf"
+                      src={previewMeta.src}
+                      title={`${selectedFile} PDF preview`}
                     />
                   ) : (
                     <pre className="file-preview">
