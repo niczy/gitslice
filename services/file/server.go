@@ -534,7 +534,7 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	normalizedPath := common.SliceStoredPath(slice, cleanPath(req.Path))
+	normalizedPath := cleanPath(req.Path)
 	limit := int(req.Limit)
 	if limit <= 0 {
 		limit = 50
@@ -543,6 +543,15 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 	changes, err := s.storage.GetFileHistory(ctx, sliceID, normalizedPath, limit+1, req.FromCommit)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get file history: %v", err))
+	}
+	if len(changes) == 0 {
+		storedPath := common.SliceStoredPath(slice, normalizedPath)
+		if storedPath != "" && storedPath != normalizedPath {
+			changes, err = s.storage.GetFileHistory(ctx, sliceID, storedPath, limit+1, req.FromCommit)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get file history: %v", err))
+			}
+		}
 	}
 
 	hasMore := len(changes) > limit
@@ -590,7 +599,7 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	normalizedPath := common.SliceStoredPath(slice, cleanPath(req.Path))
+	normalizedPath := cleanPath(req.Path)
 	limit := int(req.Limit)
 	if limit <= 0 {
 		limit = 100
@@ -599,6 +608,15 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 	changes, err := s.storage.GetDirectoryHistory(ctx, sliceID, normalizedPath, limit+1, req.FromCommit)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory history: %v", err))
+	}
+	if len(changes) == 0 {
+		storedPath := common.SliceStoredPath(slice, normalizedPath)
+		if storedPath != normalizedPath {
+			changes, err = s.storage.GetDirectoryHistory(ctx, sliceID, storedPath, limit+1, req.FromCommit)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory history: %v", err))
+			}
+		}
 	}
 
 	hasMore := len(changes) > limit
