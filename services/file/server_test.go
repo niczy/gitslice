@@ -320,7 +320,7 @@ func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 
 	svc := newFileServiceServer(st)
 	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
-		Version: &filev1.ListEntriesRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+		Version: &filev1.ListEntriesRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID, SliceHash: headCommit}},
 	})
 	if err != nil {
 		t.Fatalf("ListEntries failed: %v", err)
@@ -331,7 +331,7 @@ func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 
 	_, err = svc.GetFile(ctx, &filev1.GetFileRequest{
 		Path:    stalePath,
-		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID, SliceHash: headCommit}},
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -17,12 +18,117 @@ import (
 // PostgresNativeStorage implements the Storage interface using native PostgreSQL
 // tables as the source of truth for metadata. Blob payloads remain in an ObjectStore.
 //
-// This replaces the snapshot-based PostgresStorage where the entire state was
-// serialized as a single JSON blob in a storage_state row.
+// This replaces the deprecated snapshot-based storage_state blob backend.
 type PostgresNativeStorage struct {
 	pool        *pgxpool.Pool
 	objectStore ObjectStore
 	namespace   string
+}
+
+func nativeEntryID(sliceID, p string) string {
+	if p == "" {
+		// Root node uses the slice ID so callers can list root children via parentID=sliceID.
+		return sliceID
+	}
+	return generateEntryID(sliceID, p)
+}
+
+func nativeParentID(sliceID, p string) string {
+	if p == "" {
+		return ""
+	}
+	dir := path.Dir(p)
+	if dir == "." || dir == "/" || dir == "" {
+		return sliceID
+	}
+	return nativeEntryID(sliceID, dir)
+}
+
+func collectMaterializedPaths(rawFiles []string) []string {
+	paths := make([]string, 0, len(rawFiles))
+	seen := make(map[string]struct{}, len(rawFiles))
+	for _, raw := range rawFiles {
+		p := cleanRelativePath(raw)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func computeDirSet(paths []string) map[string]bool {
+	dirs := make(map[string]bool)
+	for _, p := range paths {
+		for _, d := range extractParentDirs(p) {
+			if d == "" {
+				continue
+			}
+			dirs[d] = true
+		}
+	}
+	for _, p := range paths {
+		prefix := p + "/"
+		i := sort.SearchStrings(paths, prefix)
+		if i < len(paths) && strings.HasPrefix(paths[i], prefix) {
+			dirs[p] = true
+		}
+	}
+	return dirs
+}
+
+func (s *PostgresNativeStorage) materializeDirectoryTreeTx(ctx context.Context, tx pgx.Tx, sliceID string, rawFiles []string, includeFiles bool) error {
+	paths := collectMaterializedPaths(rawFiles)
+	dirs := computeDirSet(paths)
+
+	batch := &pgx.Batch{}
+	enqueue := func(id, pth, typ, parent string, size int64) {
+		batch.Queue(`
+			INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
+			VALUES ($1,$2,$3,$4,$5,NULL,$6)
+			ON CONFLICT (slice_id, path) DO UPDATE SET
+				type = EXCLUDED.type,
+				parent_id = EXCLUDED.parent_id,
+				size = EXCLUDED.size,
+				updated_at = NOW()
+		`, id, sliceID, pth, typ, parent, size)
+	}
+
+	// Root node.
+	enqueue(nativeEntryID(sliceID, ""), "", "directory", "", 0)
+
+	// Directories parents-first.
+	for _, dirPath := range sortDirsByDepth(dirs) {
+		dirPath = cleanRelativePath(dirPath)
+		if dirPath == "" {
+			continue
+		}
+		enqueue(nativeEntryID(sliceID, dirPath), dirPath, "directory", nativeParentID(sliceID, dirPath), 0)
+	}
+
+	// Leaf files.
+	if includeFiles {
+		for _, p := range paths {
+			if dirs[p] {
+				continue
+			}
+			enqueue(nativeEntryID(sliceID, p), p, "file", nativeParentID(sliceID, p), 0)
+		}
+	}
+
+	res := tx.SendBatch(ctx, batch)
+	defer res.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := res.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pgSchemaFromNamespace(namespace string) string {
@@ -135,6 +241,32 @@ func (s *PostgresNativeStorage) Close() error {
 	return nil
 }
 
+// BulkWrite executes a sequence of storage operations and commits them as a single
+// database transaction. This is used by admin workflows like git import to avoid
+// slow per-operation commits.
+//
+// Note: object store writes happen inside the callback and may occur before the
+// DB transaction commits. This is safe for our content-addressed object store
+// layout (idempotent writes).
+func (s *PostgresNativeStorage) BulkWrite(ctx context.Context, fn func(st Storage) error) error {
+	ctx = ensureCtx(ctx)
+	if fn == nil {
+		return ErrInvalidInput
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	view := &postgresNativeTxView{PostgresNativeStorage: s, tx: tx}
+	if err := fn(view); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Reset clears all persisted native rows. This is an admin/ops escape hatch.
 // Object store blobs are not deleted.
 //
@@ -170,6 +302,482 @@ func (s *PostgresNativeStorage) objKey(parts ...string) string {
 		return strings.Join(parts, ":")
 	}
 	return fmt.Sprintf("%s:%s", s.namespace, strings.Join(parts, ":"))
+}
+
+type postgresNativeTxView struct {
+	*PostgresNativeStorage
+	tx pgx.Tx
+}
+
+// ---- Transactional overrides used by BulkWrite (git import) ----
+
+func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Slice) error {
+	ctx = ensureCtx(ctx)
+	if slice == nil || slice.ID == "" {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if slice.CreatedAt.IsZero() {
+		slice.CreatedAt = now
+	}
+	slice.UpdatedAt = now
+
+	filesJSON, _ := json.Marshal(slice.Files)
+	if slice.Files == nil {
+		filesJSON = []byte("[]")
+	}
+	ownersJSON, _ := json.Marshal(slice.Owners)
+	if slice.Owners == nil {
+		ownersJSON = []byte("[]")
+	}
+	mountsJSON, _ := json.Marshal(slice.FolderMounts)
+	if slice.FolderMounts == nil {
+		mountsJSON = []byte("[]")
+	}
+
+	_, err := s.tx.Exec(ctx, `
+		INSERT INTO slices (id, name, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11)
+	`, slice.ID, slice.Name, slice.Description, slice.CreatedBy,
+		slice.ParentSlice, slice.IsRoot, filesJSON, mountsJSON, ownersJSON,
+		slice.CreatedAt, slice.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrSliceAlreadyExists
+		}
+		return err
+	}
+
+	initialCommitHash := fmt.Sprintf("init-%s", slice.ID)
+	_, err = s.tx.Exec(ctx, `
+		INSERT INTO slice_metadata (slice_id, head_commit_hash, modified_files, last_modified, modified_files_count)
+		VALUES ($1, $2, '[]', $3, 0)
+	`, slice.ID, initialCommitHash, now)
+	if err != nil {
+		return err
+	}
+
+	for _, fileID := range slice.Files {
+		_, err = s.tx.Exec(ctx, `
+			INSERT INTO file_slice_index (file_id, slice_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, fileID, slice.ID)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Materialize directory-entry tree from the slice file set.
+	if err := s.materializeDirectoryTreeTx(ctx, s.tx, slice.ID, slice.Files, true); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *postgresNativeTxView) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at FROM slices WHERE id = $1`, sliceID)
+}
+
+func (s *postgresNativeTxView) GetRootSlice(ctx context.Context) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at FROM slices WHERE is_root = true LIMIT 1`)
+}
+
+func (s *postgresNativeTxView) InitializeRootSlice(ctx context.Context) error {
+	ctx = ensureCtx(ctx)
+
+	var count int
+	if err := s.tx.QueryRow(ctx, `SELECT COUNT(*) FROM slices WHERE is_root = true`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	rootSlice := &models.Slice{
+		ID:          "root_slice",
+		Name:        "Root Slice",
+		Description: "The root slice containing all files",
+		Files:       []string{},
+		Owners:      []string{"system"},
+		CreatedBy:   "system",
+		IsRoot:      true,
+	}
+	if err := s.CreateSlice(ctx, rootSlice); err != nil {
+		return err
+	}
+
+	_, err := s.tx.Exec(ctx, `UPDATE slice_metadata SET head_commit_hash = 'root-initial' WHERE slice_id = $1`, rootSlice.ID)
+	return err
+}
+
+func (s *postgresNativeTxView) GetSliceMetadata(ctx context.Context, sliceID string) (*models.SliceMetadata, error) {
+	ctx = ensureCtx(ctx)
+
+	var meta models.SliceMetadata
+	var modifiedFilesJSON []byte
+	err := s.tx.QueryRow(ctx, `
+		SELECT slice_id, head_commit_hash, modified_files, last_modified, modified_files_count
+		FROM slice_metadata WHERE slice_id = $1
+	`, sliceID).Scan(&meta.SliceID, &meta.HeadCommitHash, &modifiedFilesJSON, &meta.LastModified, &meta.ModifiedFilesCount)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrSliceNotFound
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(modifiedFilesJSON, &meta.ModifiedFiles); err != nil {
+		meta.ModifiedFiles = []string{}
+	}
+	return &meta, nil
+}
+
+func (s *postgresNativeTxView) UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error {
+	ctx = ensureCtx(ctx)
+	if metadata == nil {
+		return ErrInvalidInput
+	}
+	if metadata.LastModified.IsZero() {
+		metadata.LastModified = time.Now()
+	}
+	modifiedJSON, _ := json.Marshal(metadata.ModifiedFiles)
+	if metadata.ModifiedFiles == nil {
+		modifiedJSON = []byte("[]")
+	}
+	tag, err := s.tx.Exec(ctx, `
+		UPDATE slice_metadata
+		SET head_commit_hash = $1, modified_files = $2, last_modified = $3, modified_files_count = $4
+		WHERE slice_id = $5
+	`, metadata.HeadCommitHash, modifiedJSON, metadata.LastModified, metadata.ModifiedFilesCount, sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
+func (s *postgresNativeTxView) AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error {
+	ctx = ensureCtx(ctx)
+	if commit == nil {
+		return ErrInvalidInput
+	}
+	_, err := s.tx.Exec(ctx, `
+		INSERT INTO slice_commits (slice_id, commit_hash, parent_hash, message, committed_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (slice_id, commit_hash) DO NOTHING
+	`, sliceID, commit.CommitHash, commit.ParentHash, commit.Message, commit.Timestamp)
+	return err
+}
+
+func (s *postgresNativeTxView) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
+	ctx = ensureCtx(ctx)
+	var isRoot bool
+	var filesJSON []byte
+	err := s.tx.QueryRow(ctx, `SELECT is_root, files FROM slices WHERE id = $1`, sliceID).Scan(&isRoot, &filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+	if isRoot {
+		var files []string
+		if err := json.Unmarshal(filesJSON, &files); err != nil {
+			files = []string{}
+		}
+		for _, f := range files {
+			if f == fileID {
+				return nil
+			}
+		}
+		files = append(files, fileID)
+		sort.Strings(files)
+		filesJSON, _ = json.Marshal(files)
+		_, err = s.tx.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, filesJSON, sliceID)
+		return err
+	}
+	_, err = s.tx.Exec(ctx, `
+		INSERT INTO file_slice_index (file_id, slice_id)
+		VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, fileID, sliceID)
+	return err
+}
+
+func (s *postgresNativeTxView) RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error {
+	ctx = ensureCtx(ctx)
+	var isRoot bool
+	var filesJSON []byte
+	err := s.tx.QueryRow(ctx, `SELECT is_root, files FROM slices WHERE id = $1`, sliceID).Scan(&isRoot, &filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+	if isRoot {
+		var files []string
+		if err := json.Unmarshal(filesJSON, &files); err != nil {
+			return err
+		}
+		out := files[:0]
+		for _, f := range files {
+			if f != fileID {
+				out = append(out, f)
+			}
+		}
+		sort.Strings(out)
+		newJSON, _ := json.Marshal(out)
+		_, err = s.tx.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, newJSON, sliceID)
+		return err
+	}
+	_, err = s.tx.Exec(ctx, `DELETE FROM file_slice_index WHERE file_id = $1 AND slice_id = $2`, fileID, sliceID)
+	return err
+}
+
+func (s *postgresNativeTxView) AddEntry(ctx context.Context, entry *models.DirectoryEntry) error {
+	ctx = ensureCtx(ctx)
+	if entry == nil {
+		return ErrInvalidInput
+	}
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID == "" {
+		return ErrInvalidInput
+	}
+
+	p := cleanRelativePath(entry.Path)
+	typ := strings.TrimSpace(entry.Type)
+	if typ == "" {
+		typ = "file"
+	}
+	if p == "" {
+		typ = "directory"
+	}
+	insertID := entry.ID
+	if typ == "directory" {
+		// Directory IDs must be deterministic so child-parent pointers can be computed.
+		insertID = nativeEntryID(sliceID, p)
+	}
+
+	// Ensure parent directories exist.
+	if err := s.materializeDirectoryTreeTx(ctx, s.tx, sliceID, []string{p}, false); err != nil {
+		return err
+	}
+
+	_, err := s.tx.Exec(ctx, `
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
+		VALUES ($1, $2, $3, $4, $5, NULL, $6)
+		ON CONFLICT (slice_id, path) DO UPDATE SET
+			type = EXCLUDED.type,
+			parent_id = EXCLUDED.parent_id,
+			size = EXCLUDED.size,
+			updated_at = NOW()
+	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size)
+	return err
+}
+
+func (s *postgresNativeTxView) UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error {
+	ctx = ensureCtx(ctx)
+	if entry == nil {
+		return ErrInvalidInput
+	}
+	var sliceID string
+	if err := s.tx.QueryRow(ctx, `SELECT slice_id FROM directory_entries WHERE id = $1`, entry.ID).Scan(&sliceID); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+
+	p := cleanRelativePath(entry.Path)
+	typ := strings.TrimSpace(entry.Type)
+	if typ == "" {
+		typ = "file"
+	}
+	if p == "" {
+		typ = "directory"
+	}
+
+	// Ensure parent directories exist.
+	if err := s.materializeDirectoryTreeTx(ctx, s.tx, sliceID, []string{p}, false); err != nil {
+		return err
+	}
+
+	tag, err := s.tx.Exec(ctx, `
+		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, updated_at = NOW()
+		WHERE id = $5
+	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *postgresNativeTxView) DeleteEntry(ctx context.Context, entryID string) error {
+	ctx = ensureCtx(ctx)
+	tag, err := s.tx.Exec(ctx, `DELETE FROM directory_entries WHERE id = $1`, entryID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *postgresNativeTxView) AddFileContent(ctx context.Context, content *models.FileContent) error {
+	ctx = ensureCtx(ctx)
+	if content == nil || content.FileID == "" {
+		return ErrInvalidInput
+	}
+
+	// Store blob in object store (idempotent, content-addressed).
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	if err := s.objectStore.PutObject(ctx, s.objKey("file_content", content.FileID), raw); err != nil {
+		return err
+	}
+	if content.Hash != "" {
+		if err := s.objectStore.PutObject(ctx, s.objKey("versioned_content", content.Hash), raw); err != nil {
+			return err
+		}
+	}
+
+	_, err = s.tx.Exec(ctx, `
+		INSERT INTO file_contents (file_id, path, size, hash)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (file_id) DO UPDATE SET path = $2, size = $3, hash = $4
+	`, content.FileID, content.Path, content.Size, content.Hash)
+	if err != nil {
+		return err
+	}
+	if content.Hash != "" {
+		_, err = s.tx.Exec(ctx, `
+			INSERT INTO versioned_content (content_hash, file_id, path, size)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (content_hash) DO NOTHING
+		`, content.Hash, content.FileID, content.Path, content.Size)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *postgresNativeTxView) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
+	ctx = ensureCtx(ctx)
+	var cs models.CommitSnapshot
+	var filesJSON []byte
+	err := s.tx.QueryRow(ctx, `
+		SELECT commit_hash, slice_id, files, committed_at FROM commit_snapshots WHERE commit_hash = $1
+	`, commitHash).Scan(&cs.CommitHash, &cs.SliceID, &filesJSON, &cs.Timestamp)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrCommitNotFound
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(filesJSON, &cs.Files); err != nil {
+		cs.Files = make(map[string]string)
+	}
+	return &cs, nil
+}
+
+func (s *postgresNativeTxView) SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error {
+	ctx = ensureCtx(ctx)
+	if snapshot == nil || snapshot.CommitHash == "" {
+		return ErrInvalidInput
+	}
+	filesJSON, _ := json.Marshal(snapshot.Files)
+	if snapshot.Files == nil {
+		filesJSON = []byte("{}")
+	}
+	_, err := s.tx.Exec(ctx, `
+		INSERT INTO commit_snapshots (commit_hash, slice_id, files, committed_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (commit_hash) DO UPDATE SET slice_id = $2, files = $3, committed_at = $4
+	`, snapshot.CommitHash, snapshot.SliceID, filesJSON, snapshot.Timestamp)
+	return err
+}
+
+func (s *postgresNativeTxView) GetGlobalState(ctx context.Context) (*models.GlobalState, error) {
+	ctx = ensureCtx(ctx)
+	var gs models.GlobalState
+	var stateJSON []byte
+	err := s.tx.QueryRow(ctx, `
+		SELECT global_commit_hash, updated_at, state_json FROM global_state WHERE id = true
+	`).Scan(&gs.GlobalCommitHash, &gs.Timestamp, &stateJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return &models.GlobalState{
+				GlobalCommitHash: "global-init",
+				History:          []*models.GlobalCommit{},
+			}, nil
+		}
+		return nil, err
+	}
+	var stateData struct {
+		History []*models.GlobalCommit `json:"history"`
+	}
+	if err := json.Unmarshal(stateJSON, &stateData); err == nil {
+		gs.History = stateData.History
+	}
+	if gs.History == nil {
+		gs.History = []*models.GlobalCommit{}
+	}
+	return &gs, nil
+}
+
+func (s *postgresNativeTxView) UpdateGlobalState(ctx context.Context, state *models.GlobalState) error {
+	ctx = ensureCtx(ctx)
+	if state == nil {
+		return ErrInvalidInput
+	}
+	stateData := struct {
+		History []*models.GlobalCommit `json:"history"`
+	}{
+		History: state.History,
+	}
+	stateJSON, _ := json.Marshal(stateData)
+	_, err := s.tx.Exec(ctx, `
+		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
+		VALUES (true, $1, $2, $3)
+		ON CONFLICT (id) DO UPDATE SET global_commit_hash = $1, updated_at = $2, state_json = $3
+	`, state.GlobalCommitHash, state.Timestamp, stateJSON)
+	return err
+}
+
+func (s *postgresNativeTxView) AddFileChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
+	ctx = ensureCtx(ctx)
+	if len(changes) == 0 {
+		return nil
+	}
+	for _, change := range changes {
+		if change == nil || change.ID == "" {
+			continue
+		}
+		_, err := s.tx.Exec(ctx, `
+			INSERT INTO file_changes (id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			ON CONFLICT (id) DO NOTHING
+		`, change.ID, change.SliceID, change.CommitHash, change.Path, change.OldPath, string(change.ChangeType),
+			change.OldHash, change.NewHash, change.LinesAdded, change.LinesDeleted, change.Author, change.Message, change.Timestamp)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ============ Slice Operations ============
@@ -235,6 +843,12 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 		if err != nil {
 			return err
 		}
+	}
+
+	// Materialize directory-entry tree from the slice file set so ListEntries can
+	// list direct children without scanning all descendant paths.
+	if err := s.materializeDirectoryTreeTx(ctx, tx, slice.ID, slice.Files, true); err != nil {
+		return err
 	}
 
 	return tx.Commit(ctx)
@@ -1043,17 +1657,44 @@ func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.Dire
 		return ErrInvalidInput
 	}
 
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, entry.ID, sliceID, entry.Path, entry.Type, entry.ParentID, nil, entry.Size)
+	p := cleanRelativePath(entry.Path)
+	typ := strings.TrimSpace(entry.Type)
+	if typ == "" {
+		typ = "file"
+	}
+	if p == "" {
+		typ = "directory"
+	}
+	insertID := entry.ID
+	if typ == "directory" {
+		// Directory IDs must be deterministic so child-parent pointers can be computed.
+		insertID = nativeEntryID(sliceID, p)
+	}
+
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
-			return ErrEntryExists
-		}
 		return err
 	}
-	return nil
+	defer tx.Rollback(ctx)
+
+	// Ensure parent directories exist.
+	if err := s.materializeDirectoryTreeTx(ctx, tx, sliceID, []string{p}, false); err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
+		VALUES ($1, $2, $3, $4, $5, NULL, $6)
+		ON CONFLICT (slice_id, path) DO UPDATE SET
+			type = EXCLUDED.type,
+			parent_id = EXCLUDED.parent_id,
+			size = EXCLUDED.size,
+			updated_at = NOW()
+	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*models.DirectoryEntry, error) {
@@ -1117,17 +1758,45 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 func (s *PostgresNativeStorage) UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error {
 	ctx = ensureCtx(ctx)
 
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = $4, size = $5, updated_at = NOW()
-		WHERE id = $6
-	`, entry.Path, entry.Type, entry.ParentID, entry.Content, entry.Size, entry.ID)
+	var sliceID string
+	if err := s.pool.QueryRow(ctx, `SELECT slice_id FROM directory_entries WHERE id = $1`, entry.ID).Scan(&sliceID); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+
+	p := cleanRelativePath(entry.Path)
+	typ := strings.TrimSpace(entry.Type)
+	if typ == "" {
+		typ = "file"
+	}
+	if p == "" {
+		typ = "directory"
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Ensure parent directories exist.
+	if err := s.materializeDirectoryTreeTx(ctx, tx, sliceID, []string{p}, false); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, updated_at = NOW()
+		WHERE id = $5
+	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.ID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresNativeStorage) DeleteEntry(ctx context.Context, entryID string) error {

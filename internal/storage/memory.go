@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -210,6 +211,10 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 		}
 		s.fileIndex[fileID][slice.ID] = true
 	}
+
+	// Materialize directory-entry tree from the slice file set so file browsing can
+	// list direct children without scanning all paths.
+	s.materializeDirectoryTreeLocked(slice.ID, slice.Files, true)
 
 	return nil
 }
@@ -801,6 +806,154 @@ func inferSliceIDForEntry(entry *models.DirectoryEntry) string {
 	return entry.ParentID
 }
 
+func entryIDForPath(sliceID, p string) string {
+	if p == "" {
+		// Root node uses the slice ID so callers can list root children via parentID=sliceID.
+		return sliceID
+	}
+	return generateEntryID(sliceID, p)
+}
+
+func parentIDForPath(sliceID, p string) string {
+	if p == "" {
+		return ""
+	}
+	dir := path.Dir(p)
+	if dir == "." || dir == "/" || dir == "" {
+		return sliceID
+	}
+	return entryIDForPath(sliceID, dir)
+}
+
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(ss []string, s string) []string {
+	out := ss[:0]
+	for _, v := range ss {
+		if v != s {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *InMemoryStorage) upsertEntryLocked(sliceID string, e *models.DirectoryEntry) {
+	if e == nil || e.ID == "" {
+		return
+	}
+
+	if existing, ok := s.entries[e.ID]; ok {
+		// Keep indexes consistent if the parent changes.
+		if existing.ParentID != e.ParentID {
+			s.entriesByParent[existing.ParentID] = removeString(s.entriesByParent[existing.ParentID], e.ID)
+			if !containsString(s.entriesByParent[e.ParentID], e.ID) {
+				s.entriesByParent[e.ParentID] = append(s.entriesByParent[e.ParentID], e.ID)
+			}
+		}
+
+		// Replace the stored value with a copy to avoid external mutation.
+		c := *e
+		if len(e.Content) > 0 {
+			c.Content = append([]byte(nil), e.Content...)
+		}
+		s.entries[e.ID] = &c
+		s.entriesByPath[sliceID+":"+e.Path] = e.ID
+		return
+	}
+
+	c := *e
+	if len(e.Content) > 0 {
+		c.Content = append([]byte(nil), e.Content...)
+	}
+	s.entries[e.ID] = &c
+	s.entriesByPath[sliceID+":"+e.Path] = e.ID
+	s.entriesBySlice[sliceID] = append(s.entriesBySlice[sliceID], e.ID)
+	s.entriesByParent[e.ParentID] = append(s.entriesByParent[e.ParentID], e.ID)
+}
+
+func (s *InMemoryStorage) materializeDirectoryTreeLocked(sliceID string, rawFiles []string, includeFiles bool) {
+	// Ensure the root node exists.
+	s.upsertEntryLocked(sliceID, &models.DirectoryEntry{
+		ID:       entryIDForPath(sliceID, ""),
+		Path:     "",
+		Type:     "directory",
+		ParentID: "",
+		Size:     0,
+	})
+
+	paths := make([]string, 0, len(rawFiles))
+	seen := make(map[string]struct{}, len(rawFiles))
+	for _, raw := range rawFiles {
+		p := cleanRelativePath(raw)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	// Compute directory set from parent dirs and prefix relationships.
+	dirsToCreate := make(map[string]bool)
+	for _, p := range paths {
+		for _, d := range extractParentDirs(p) {
+			if d == "" {
+				continue
+			}
+			dirsToCreate[d] = true
+		}
+	}
+	for _, p := range paths {
+		prefix := p + "/"
+		i := sort.SearchStrings(paths, prefix)
+		if i < len(paths) && strings.HasPrefix(paths[i], prefix) {
+			dirsToCreate[p] = true
+		}
+	}
+
+	// Insert directories parents-first.
+	for _, dirPath := range sortDirsByDepth(dirsToCreate) {
+		dirPath = cleanRelativePath(dirPath)
+		if dirPath == "" {
+			continue
+		}
+		s.upsertEntryLocked(sliceID, &models.DirectoryEntry{
+			ID:       entryIDForPath(sliceID, dirPath),
+			Path:     dirPath,
+			Type:     "directory",
+			ParentID: parentIDForPath(sliceID, dirPath),
+			Size:     0,
+		})
+	}
+
+	// Insert leaf files.
+	if !includeFiles {
+		return
+	}
+	for _, p := range paths {
+		if dirsToCreate[p] {
+			continue
+		}
+		s.upsertEntryLocked(sliceID, &models.DirectoryEntry{
+			ID:       entryIDForPath(sliceID, p),
+			Path:     p,
+			Type:     "file",
+			ParentID: parentIDForPath(sliceID, p),
+			Size:     0,
+		})
+	}
+}
+
 // AddEntry adds a directory entry
 func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryEntry) error {
 	s.mu.Lock()
@@ -814,14 +967,33 @@ func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryE
 		return ErrInvalidInput
 	}
 
-	if _, exists := s.entries[entry.ID]; exists {
-		return ErrEntryExists
+	p := cleanRelativePath(entry.Path)
+	typ := strings.TrimSpace(entry.Type)
+	if typ == "" {
+		typ = "file"
 	}
 
-	s.entries[entry.ID] = entry
-	s.entriesByPath[sliceID+":"+entry.Path] = entry.ID
-	s.entriesBySlice[sliceID] = append(s.entriesBySlice[sliceID], entry.ID)
-	s.entriesByParent[entry.ParentID] = append(s.entriesByParent[entry.ParentID], entry.ID)
+	// Ensure parent directories exist (without creating placeholder file leaves).
+	s.materializeDirectoryTreeLocked(sliceID, []string{p}, false)
+
+	id := entry.ID
+	if typ == "directory" {
+		// Directory IDs must be deterministic so child-parent pointers can be computed.
+		id = entryIDForPath(sliceID, p)
+	}
+	if existingID, ok := s.entriesByPath[sliceID+":"+p]; ok {
+		// Path already exists (e.g. created from slice.Files); update that row.
+		id = existingID
+	}
+
+	s.upsertEntryLocked(sliceID, &models.DirectoryEntry{
+		ID:       id,
+		Path:     p,
+		Type:     typ,
+		ParentID: parentIDForPath(sliceID, p),
+		Content:  entry.Content,
+		Size:     entry.Size,
+	})
 
 	return nil
 }
@@ -889,18 +1061,36 @@ func (s *InMemoryStorage) UpdateEntry(ctx context.Context, entry *models.Directo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if entry == nil || entry.ID == "" {
+		return ErrInvalidInput
+	}
+
 	prev, exists := s.entries[entry.ID]
 	if !exists {
 		return ErrEntryNotFound
 	}
 
-	sliceID := inferSliceIDForEntry(entry)
+	// Derive slice ID from the stored entry; callers often pass legacy ParentID=sliceID.
+	sliceID := inferSliceIDForEntry(prev)
 	if sliceID == "" {
 		return ErrInvalidInput
 	}
 
+	p := cleanRelativePath(entry.Path)
+	if p == "" {
+		p = prev.Path
+	}
+	typ := strings.TrimSpace(entry.Type)
+	if typ == "" {
+		typ = prev.Type
+	}
+
+	// Ensure parent directories exist and recompute parent pointer from the path.
+	s.materializeDirectoryTreeLocked(sliceID, []string{p}, false)
+	newParent := parentIDForPath(sliceID, p)
+
 	// Maintain indexes if parent/path changed.
-	if prev.ParentID != entry.ParentID {
+	if prev.ParentID != newParent {
 		// Remove from old parent list.
 		prevList := s.entriesByParent[prev.ParentID]
 		out := prevList[:0]
@@ -914,14 +1104,21 @@ func (s *InMemoryStorage) UpdateEntry(ctx context.Context, entry *models.Directo
 		} else {
 			s.entriesByParent[prev.ParentID] = out
 		}
-		s.entriesByParent[entry.ParentID] = append(s.entriesByParent[entry.ParentID], entry.ID)
+		s.entriesByParent[newParent] = append(s.entriesByParent[newParent], entry.ID)
 	}
-	if prev.Path != entry.Path {
+	if prev.Path != p {
 		delete(s.entriesByPath, sliceID+":"+prev.Path)
-		s.entriesByPath[sliceID+":"+entry.Path] = entry.ID
+		s.entriesByPath[sliceID+":"+p] = entry.ID
 	}
 
-	s.entries[entry.ID] = entry
+	updated := *entry
+	updated.Path = p
+	updated.Type = typ
+	updated.ParentID = newParent
+	if len(entry.Content) > 0 {
+		updated.Content = append([]byte(nil), entry.Content...)
+	}
+	s.entries[entry.ID] = &updated
 	return nil
 }
 

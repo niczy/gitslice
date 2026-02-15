@@ -30,21 +30,6 @@ func TestStorageCompliance(t *testing.T) {
 			name    string
 			factory func(t *testing.T) Storage
 		}{
-			name: "postgres",
-			factory: func(t *testing.T) Storage {
-				t.Helper()
-				st, err := NewPostgresStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-storage-%d", time.Now().UnixNano()))
-				if err != nil {
-					t.Fatalf("NewPostgresStorage failed: %v", err)
-				}
-				t.Cleanup(func() { _ = st.Close() })
-				return st
-			},
-		})
-		cases = append(cases, struct {
-			name    string
-			factory func(t *testing.T) Storage
-		}{
 			name: "postgres-native",
 			factory: func(t *testing.T) Storage {
 				t.Helper()
@@ -225,8 +210,26 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("GetEntryByPath mismatch: %v", err)
 	}
 	entries, err := st.ListEntries(ctx, slice.ID, slice.ID)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("ListEntries unexpected: %v len=%d", err, len(entries))
+	if err != nil {
+		t.Fatalf("ListEntries root unexpected: %v", err)
+	}
+	var appDir *models.DirectoryEntry
+	for _, e := range entries {
+		if e != nil && e.Path == "app" && e.Type == "directory" {
+			appDir = e
+			break
+		}
+	}
+	if appDir == nil {
+		t.Fatalf("expected directory entry \"app\" at root, got %#v", entries)
+	}
+	l1, err := st.ListEntries(ctx, slice.ID, appDir.ID)
+	if err != nil || len(l1) != 1 || l1[0].Type != "directory" || l1[0].Path != fmt.Sprintf("app/%s", suffix) {
+		t.Fatalf("ListEntries app unexpected: %v got=%#v", err, l1)
+	}
+	l2, err := st.ListEntries(ctx, slice.ID, l1[0].ID)
+	if err != nil || len(l2) != 1 || l2[0].Type != "file" || l2[0].Path != entry.Path || l2[0].ID != entry.ID {
+		t.Fatalf("ListEntries app/<suffix> unexpected: %v got=%#v", err, l2)
 	}
 	entry.Size = 8
 	if err := st.UpdateEntry(ctx, entry); err != nil {
@@ -340,21 +343,6 @@ func TestFileChangeHistory(t *testing.T) {
 		},
 	}
 	if dsn := os.Getenv("TEST_POSTGRES_DSN"); dsn != "" {
-		cases = append(cases, struct {
-			name    string
-			factory func(t *testing.T) Storage
-		}{
-			name: "postgres",
-			factory: func(t *testing.T) Storage {
-				t.Helper()
-				st, err := NewPostgresStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-history-%d", time.Now().UnixNano()))
-				if err != nil {
-					t.Fatalf("NewPostgresStorage failed: %v", err)
-				}
-				t.Cleanup(func() { _ = st.Close() })
-				return st
-			},
-		})
 		cases = append(cases, struct {
 			name    string
 			factory func(t *testing.T) Storage
@@ -667,7 +655,7 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 	})
 }
 
-func TestPostgresStoragePersistsAcrossRestart(t *testing.T) {
+func TestPostgresNativeStoragePersistsAcrossRestart(t *testing.T) {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("set TEST_POSTGRES_DSN to run postgres persistence test")
@@ -676,12 +664,12 @@ func TestPostgresStoragePersistsAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	store := NewInMemoryObjectStore()
 	namespace := fmt.Sprintf("restart-%d", time.Now().UnixNano())
-	rs, err := NewPostgresStorage(ctx, dsn, store, namespace)
+	rs, err := NewPostgresNativeStorage(ctx, dsn, store, namespace)
 	t.Cleanup(func() {
 		_ = rs.Close()
 	})
 	if err != nil {
-		t.Fatalf("NewPostgresStorage failed: %v", err)
+		t.Fatalf("NewPostgresNativeStorage failed: %v", err)
 	}
 
 	slice1 := &models.Slice{ID: "slice-1", Name: "Alpha", Files: []string{"file-1"}}
@@ -720,7 +708,7 @@ func TestPostgresStoragePersistsAcrossRestart(t *testing.T) {
 	if err := rs.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	rs, err = NewPostgresStorage(ctx, dsn, store, namespace)
+	rs, err = NewPostgresNativeStorage(ctx, dsn, store, namespace)
 	if err != nil {
 		t.Fatalf("reopen failed: %v", err)
 	}
