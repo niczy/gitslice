@@ -25,7 +25,7 @@ type resettableStorage interface {
 }
 
 type bulkWriter interface {
-	BulkWrite(ctx context.Context, fn func(mem *storage.InMemoryStorage) error) error
+	BulkWrite(ctx context.Context, fn func(st storage.Storage) error) error
 }
 
 type gitImportResult struct {
@@ -392,21 +392,25 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 	// Fast path: run the full import in a single Postgres BulkWrite so we persist once.
 	if bw, ok := st.(bulkWriter); ok {
 		var head string
-		err := bw.BulkWrite(ctx, func(mem *storage.InMemoryStorage) error {
+		err := bw.BulkWrite(ctx, func(st storage.Storage) error {
 			// If requested, reset in-memory state inside the bulk write. This avoids deleting the
 			// persisted snapshot first (which would permanently wipe state if the import crashes).
 			if reset {
-				if err := mem.Reset(ctx); err != nil {
-					return err
+				if rs, ok := st.(resettableStorage); ok {
+					if err := rs.Reset(ctx); err != nil {
+						return err
+					}
+				} else {
+					return fmt.Errorf("storage backend does not support reset")
 				}
 			}
 
-			if err := common.EnsureRootSliceInitialized(ctx, mem); err != nil {
+			if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 				return err
 			}
-			if _, err := mem.GetSlice(ctx, sliceID); err != nil {
+			if _, err := st.GetSlice(ctx, sliceID); err != nil {
 				if errors.Is(err, storage.ErrSliceNotFound) && sliceID == "root_slice" {
-					if err := mem.InitializeRootSlice(ctx); err != nil {
+					if err := st.InitializeRootSlice(ctx); err != nil {
 						return err
 					}
 				} else {
@@ -421,10 +425,10 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 			// the current slice HEAD snapshot so multiple imports accumulate into one
 			// slice namespace instead of clobbering the visible tree at HEAD.
 			if !reset {
-				if meta, err := mem.GetSliceMetadata(ctx, sliceID); err == nil && meta != nil {
+				if meta, err := st.GetSliceMetadata(ctx, sliceID); err == nil && meta != nil {
 					prevCommit = strings.TrimSpace(meta.HeadCommitHash)
 					if prevCommit != "" {
-						if snap, err := mem.GetCommitSnapshot(ctx, prevCommit); err == nil && snap != nil {
+						if snap, err := st.GetCommitSnapshot(ctx, prevCommit); err == nil && snap != nil {
 							for p, h := range snap.Files {
 								p = common.CleanRelativePath(p)
 								if p == "" || h == "" {
@@ -492,7 +496,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 
 						oldHash := beforeHashes[mountedPath]
 						newHash := sha256Hex(content)
-						if err := upsertFile(ctx, mem, sliceID, mountedPath, content, newHash); err != nil {
+						if err := upsertFile(ctx, st, sliceID, mountedPath, content, newHash); err != nil {
 							return err
 						}
 						currentFileHashes[mountedPath] = newHash
@@ -524,7 +528,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 
 						oldHash := beforeHashes[mountedPath]
 						delete(currentFileHashes, mountedPath)
-						if err := deleteFileFromSlice(ctx, mem, sliceID, mountedPath); err != nil {
+						if err := deleteFileFromSlice(ctx, st, sliceID, mountedPath); err != nil {
 							return err
 						}
 						modifiedSet[mountedPath] = struct{}{}
@@ -557,7 +561,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 
 						oldHash := beforeHashes[oldMounted]
 						delete(currentFileHashes, oldMounted)
-						if err := deleteFileFromSlice(ctx, mem, sliceID, oldMounted); err != nil {
+						if err := deleteFileFromSlice(ctx, st, sliceID, oldMounted); err != nil {
 							return err
 						}
 
@@ -568,7 +572,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 							continue
 						}
 						newHash := sha256Hex(content)
-						if err := upsertFile(ctx, mem, sliceID, newMounted, content, newHash); err != nil {
+						if err := upsertFile(ctx, st, sliceID, newMounted, content, newHash); err != nil {
 							return err
 						}
 						currentFileHashes[newMounted] = newHash
@@ -599,7 +603,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 				}
 				sort.Strings(modifiedMountedPaths)
 
-				if err := mem.AddSliceCommit(ctx, sliceID, &models.Commit{
+				if err := st.AddSliceCommit(ctx, sliceID, &models.Commit{
 					CommitHash: meta.Hash,
 					ParentHash: prevCommit,
 					Timestamp:  meta.Timestamp,
@@ -608,7 +612,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 					return err
 				}
 
-				sliceMeta, err := mem.GetSliceMetadata(ctx, sliceID)
+				sliceMeta, err := st.GetSliceMetadata(ctx, sliceID)
 				if err != nil {
 					return err
 				}
@@ -616,11 +620,11 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 				sliceMeta.ModifiedFiles = modifiedMountedPaths
 				sliceMeta.ModifiedFilesCount = len(modifiedMountedPaths)
 				sliceMeta.LastModified = meta.Timestamp
-				if err := mem.UpdateSliceMetadata(ctx, sliceID, sliceMeta); err != nil {
+				if err := st.UpdateSliceMetadata(ctx, sliceID, sliceMeta); err != nil {
 					return err
 				}
 
-				if state, err := mem.GetGlobalState(ctx); err == nil && state != nil {
+				if state, err := st.GetGlobalState(ctx); err == nil && state != nil {
 					state.GlobalCommitHash = meta.Hash
 					state.Timestamp = meta.Timestamp
 					state.History = append([]*models.GlobalCommit{{
@@ -628,13 +632,13 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 						Timestamp:      meta.Timestamp,
 						MergedSliceIDs: []string{sliceID},
 					}}, state.History...)
-					_ = mem.UpdateGlobalState(ctx, state)
+					_ = st.UpdateGlobalState(ctx, state)
 				}
 
-				if err := saveCommitSnapshot(ctx, mem, sliceID, meta.Hash, meta.Timestamp, currentFileHashes); err != nil {
+				if err := saveCommitSnapshot(ctx, st, sliceID, meta.Hash, meta.Timestamp, currentFileHashes); err != nil {
 					return err
 				}
-				if err := addFileChangeRecords(ctx, mem, changeRecs); err != nil {
+				if err := addFileChangeRecords(ctx, st, changeRecs); err != nil {
 					return err
 				}
 
