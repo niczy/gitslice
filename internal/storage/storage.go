@@ -36,6 +36,7 @@ type Storage interface {
 	InitializeRootSlice(ctx context.Context) error
 	AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error
 	ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error)
+	GetCommitByHash(ctx context.Context, sliceID, commitHash string) (*models.Commit, error)
 
 	// File indexing
 	AddFileToSlice(ctx context.Context, fileID, sliceID string) error
