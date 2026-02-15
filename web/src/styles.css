@@ -1589,6 +1589,41 @@ body {
   gap: 8px;
 }
 
+.tree-loading-indicator {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.tree-loading-indicator.visible {
+  opacity: 1;
+}
+
+.tree-loading-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  animation: tree-loading-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes tree-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+
+  50% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+}
+
 .tree-action-btn {
   border: 1px solid var(--border);
   border-radius: 6px;
