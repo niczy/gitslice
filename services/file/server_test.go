@@ -224,6 +224,62 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 	}
 }
 
+func TestFileHistoryUsesDisplayPathForMountedSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "mounted",
+		Name:      "mounted",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "o/genesis/projects/repo-a", Alias: "repo-a"},
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	change := &models.FileChangeRecord{
+		ID:         "change-1",
+		SliceID:    "mounted",
+		CommitHash: "commit-1",
+		Path:       "repo-a/README.md",
+		ChangeType: models.ChangeTypeModify,
+		Author:     "tester",
+		Message:    "update readme",
+		Timestamp:  time.Now().UTC(),
+	}
+	if err := st.AddFileChange(ctx, change); err != nil {
+		t.Fatalf("AddFileChange failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+
+	historyResp, err := svc.GetFileHistory(ctx, &filev1.GetFileHistoryRequest{
+		SliceId: "mounted",
+		Path:    "repo-a/README.md",
+	})
+	if err != nil {
+		t.Fatalf("GetFileHistory failed: %v", err)
+	}
+	if got := len(historyResp.GetChanges()); got != 1 {
+		t.Fatalf("expected 1 history item, got %d", got)
+	}
+
+	dirResp, err := svc.GetDirectoryHistory(ctx, &filev1.GetDirectoryHistoryRequest{
+		SliceId: "mounted",
+		Path:    "repo-a",
+	})
+	if err != nil {
+		t.Fatalf("GetDirectoryHistory failed: %v", err)
+	}
+	if got := len(dirResp.GetChanges()); got != 1 {
+		t.Fatalf("expected 1 directory history item, got %d", got)
+	}
+}
+
 func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
