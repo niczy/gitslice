@@ -39,6 +39,9 @@ export default function RepoBrowser({
   const [expandedPaths, setExpandedPaths] = useState(['']);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
+  const [draftContent, setDraftContent] = useState('');
+  const [fileDrafts, setFileDrafts] = useState({});
+  const [isEditingFile, setIsEditingFile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileError, setFileError] = useState('');
@@ -100,6 +103,9 @@ export default function RepoBrowser({
     setExpandedPaths(['']);
     setSelectedFile(null);
     setFileContent('');
+    setDraftContent('');
+    setFileDrafts({});
+    setIsEditingFile(false);
     setFileError('');
   }, [sliceId, sliceHash]);
 
@@ -363,12 +369,21 @@ export default function RepoBrowser({
 
     setSelectedFile(entry.path);
     setFileContent('');
+    setDraftContent('');
     setIsLoading(true);
     setError('');
     setFileError('');
     setShowHistory(false);
     setFileHistory([]);
     setHistoryError('');
+
+    if (Object.prototype.hasOwnProperty.call(fileDrafts, entry.path)) {
+      setFileContent(fileDrafts[entry.path]);
+      setDraftContent(fileDrafts[entry.path]);
+      setIsEditingFile(false);
+      setIsLoading(false);
+      return;
+    }
 
     try {
       const response = await fetchWithAuth(buildFileUrl(entry.path));
@@ -378,13 +393,136 @@ export default function RepoBrowser({
       const payload = await response.json();
       const content = payload?.file?.content || '';
       setFileError('');
-      setFileContent(decodeBase64(content));
+      const decodedContent = decodeBase64(content);
+      setFileContent(decodedContent);
+      setDraftContent(decodedContent);
+      setIsEditingFile(false);
     } catch (err) {
       setFileContent('');
       setFileError(err?.message || 'Unable to load file content.');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const createFolder = () => {
+    if (!canLoad) {
+      return;
+    }
+
+    const rawPath = window.prompt('Enter folder path (for example: docs/guides):', '');
+    if (!rawPath) {
+      return;
+    }
+
+    const cleanPath = rawPath.trim().replace(/^\/+|\/+$/g, '');
+    if (!cleanPath) {
+      return;
+    }
+
+    const parts = cleanPath.split('/').filter(Boolean);
+    setTreeEntries((prev) => {
+      const next = { ...prev };
+      let parentPath = '';
+
+      for (const part of parts) {
+        const path = parentPath ? `${parentPath}/${part}` : part;
+        const parentEntries = next[parentPath] || [];
+        const alreadyExists = parentEntries.some((entry) => entry.path === path);
+        if (!alreadyExists) {
+          next[parentPath] = [
+            ...parentEntries,
+            { name: part, path, type: 'directory' },
+          ];
+        }
+        if (!next[path]) {
+          next[path] = [];
+        }
+        parentPath = path;
+      }
+
+      return next;
+    });
+
+    setExpandedPaths((prev) => [...new Set([...prev, '', ...parts.map((_, index) => parts.slice(0, index + 1).join('/'))])]);
+  };
+
+  const createFile = () => {
+    if (!canLoad) {
+      return;
+    }
+
+    const rawPath = window.prompt('Enter file path (for example: docs/notes.txt):', selectedFile ? `${selectedFile.split('/').slice(0, -1).join('/')}/` : '');
+    if (!rawPath) {
+      return;
+    }
+
+    const cleanPath = rawPath.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!cleanPath) {
+      return;
+    }
+
+    const parts = cleanPath.split('/').filter(Boolean);
+    const fileName = parts[parts.length - 1];
+    const parentParts = parts.slice(0, -1);
+
+    setTreeEntries((prev) => {
+      const next = { ...prev };
+      let parentPath = '';
+
+      for (const part of parentParts) {
+        const path = parentPath ? `${parentPath}/${part}` : part;
+        const parentEntries = next[parentPath] || [];
+        const exists = parentEntries.some((entry) => entry.path === path);
+        if (!exists) {
+          next[parentPath] = [...parentEntries, { name: part, path, type: 'directory' }];
+        }
+        if (!next[path]) {
+          next[path] = [];
+        }
+        parentPath = path;
+      }
+
+      const parentEntries = next[parentPath] || [];
+      const alreadyExists = parentEntries.some((entry) => entry.path === cleanPath);
+      if (!alreadyExists) {
+        next[parentPath] = [...parentEntries, { name: fileName, path: cleanPath, type: 'file', size: 0 }];
+      }
+
+      return next;
+    });
+
+    const pathsToExpand = parentParts.map((_, index) => parentParts.slice(0, index + 1).join('/'));
+    setExpandedPaths((prev) => [...new Set([...prev, '', ...pathsToExpand])]);
+    setSelectedFile(cleanPath);
+    setFileContent('');
+    setDraftContent('');
+    setFileError('');
+    setShowHistory(false);
+    setFileHistory([]);
+    setHistoryError('');
+    setIsEditingFile(true);
+    setFileDrafts((prev) => ({ ...prev, [cleanPath]: '' }));
+  };
+
+  const confirmFileEdit = () => {
+    if (!selectedFile) {
+      return;
+    }
+    setFileDrafts((prev) => ({ ...prev, [selectedFile]: draftContent }));
+    setFileContent(draftContent);
+    setIsEditingFile(false);
+    const parentPath = selectedFile.includes('/') ? selectedFile.split('/').slice(0, -1).join('/') : '';
+    setTreeEntries((prev) => {
+      const entries = prev[parentPath] || [];
+      const nextEntries = entries.map((entry) => {
+        if (entry.path !== selectedFile) {
+          return entry;
+        }
+        return { ...entry, size: draftContent.length };
+      });
+      return { ...prev, [parentPath]: nextEntries };
+    });
   };
 
   const handleBreadcrumbClick = async (path) => {
@@ -439,6 +577,22 @@ export default function RepoBrowser({
               <h3>File tree {currentSliceLabel ? `· ${currentSliceLabel}` : ''}</h3>
               <div className="panel-header-actions">
                 {isLoading && <span className="status">Loading…</span>}
+                <button
+                  type="button"
+                  className="tree-action-btn"
+                  onClick={createFolder}
+                  title="Create folder"
+                >
+                  + Folder
+                </button>
+                <button
+                  type="button"
+                  className="tree-action-btn"
+                  onClick={createFile}
+                  title="Create file"
+                >
+                  + File
+                </button>
                 <button
                   type="button"
                   className="sidebar-toggle"
@@ -505,6 +659,34 @@ export default function RepoBrowser({
               </div>
               <div className="code-header-actions">
                 {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
+                {selectedFile && !showHistory && (
+                  <>
+                    <button
+                      type="button"
+                      className={`history-toggle ${isEditingFile ? 'active' : ''}`}
+                      onClick={() => {
+                        if (isEditingFile) {
+                          setDraftContent(fileContent);
+                          setIsEditingFile(false);
+                        } else {
+                          setDraftContent(fileContent);
+                          setIsEditingFile(true);
+                        }
+                      }}
+                    >
+                      {isEditingFile ? 'Cancel' : '✏️ Edit'}
+                    </button>
+                    {isEditingFile && (
+                      <button
+                        type="button"
+                        className="history-toggle active"
+                        onClick={confirmFileEdit}
+                      >
+                        ✅ Confirm
+                      </button>
+                    )}
+                  </>
+                )}
                 {selectedFile && (
                   <button
                     type="button"
@@ -523,9 +705,18 @@ export default function RepoBrowser({
               {selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
               {selectedFile && !showHistory && (
                 !fileError && (
-                  <pre className="file-preview">
-                    <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'File is empty.' }} />
-                  </pre>
+                  isEditingFile ? (
+                    <textarea
+                      className="file-editor"
+                      value={draftContent}
+                      onChange={(event) => setDraftContent(event.target.value)}
+                      spellCheck={false}
+                    />
+                  ) : (
+                    <pre className="file-preview">
+                      <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'File is empty.' }} />
+                    </pre>
+                  )
                 )
               )}
               {selectedFile && showHistory && (

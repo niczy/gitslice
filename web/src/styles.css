@@ -1589,6 +1589,22 @@ body {
   gap: 8px;
 }
 
+.tree-action-btn {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.tree-action-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
 .sidebar-toggle {
   display: flex;
   align-items: center;
@@ -1816,6 +1832,21 @@ body {
 
 .file-preview code {
   white-space: pre;
+}
+
+.file-editor {
+  margin: 0;
+  background: #f6f8fa;
+  color: var(--text-primary);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
 }
 
 /* Syntax highlighting */
