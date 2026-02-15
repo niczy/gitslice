@@ -93,7 +93,7 @@ func repoNameFromURL(repoURL string) string {
 	return last
 }
 
-func prepareRepo(ctx context.Context, repoPath string, repoURL string) (repoDir string, repoName string, cleanup func(), err error) {
+func prepareRepo(ctx context.Context, repoPath string, repoURL string, maxCommits int) (repoDir string, repoName string, cleanup func(), err error) {
 	if strings.TrimSpace(repoURL) != "" {
 		parent, err := os.MkdirTemp("", "gitslice-import-")
 		if err != nil {
@@ -102,7 +102,14 @@ func prepareRepo(ctx context.Context, repoPath string, repoURL string) (repoDir 
 		cleanup = func() { _ = os.RemoveAll(parent) }
 
 		cloneDir := filepath.Join(parent, "repo.git")
-		_, err = gitCombinedOutput(ctx, parent, "clone", "--bare", "--quiet", repoURL, cloneDir)
+		// Avoid cloning full history when the caller only wants a bounded number of commits.
+		// This keeps imports fast and reduces memory/disk pressure on the server.
+		cloneArgs := []string{"clone", "--bare", "--quiet"}
+		if maxCommits > 0 {
+			cloneArgs = append(cloneArgs, "--depth", strconv.Itoa(maxCommits), "--no-single-branch")
+		}
+		cloneArgs = append(cloneArgs, repoURL, cloneDir)
+		_, err = gitCombinedOutput(ctx, parent, cloneArgs...)
 		if err != nil {
 			cleanup()
 			return "", "", func() {}, err
@@ -359,7 +366,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 		ref = "HEAD"
 	}
 
-	repoDir, repoName, cleanup, err := prepareRepo(ctx, repoPath, repoURL)
+	repoDir, repoName, cleanup, err := prepareRepo(ctx, repoPath, repoURL, maxCommits)
 	if err != nil {
 		return nil, err
 	}
