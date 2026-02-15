@@ -925,6 +925,13 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 	}, nil
 }
 
+// maxPatchableChanges is the threshold above which patch generation is skipped
+// even when requested, to avoid excessive storage reads on large commits.
+const maxPatchableChanges = 100
+
+// patchWorkers is the concurrency limit for parallel patch generation.
+const patchWorkers = 8
+
 // GetCommitChanges retrieves all file changes made in a specific commit.
 func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.GetCommitChangesRequest) (*filev1.GetCommitChangesResponse, error) {
 	if req.CommitHash == "" {
@@ -936,26 +943,10 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get commit changes: %v", err))
 	}
 
-	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
-	parentHashes := make(map[string]string)
+	protoChanges := make([]*filev1.FileChangeRecord, len(changes))
 	var added, modified, deleted, renamed int32
-	for _, change := range changes {
-		parentHash := ""
-		if change != nil {
-			key := change.SliceID + "\x00" + change.CommitHash
-			if cached, ok := parentHashes[key]; ok {
-				parentHash = cached
-			} else {
-				resolvedParent, err := s.findParentCommitHash(ctx, change.SliceID, change.CommitHash)
-				if err == nil {
-					parentHash = resolvedParent
-				}
-				parentHashes[key] = parentHash
-			}
-		}
-
-		patch := s.buildChangePatch(ctx, change, parentHash)
-		protoChanges = append(protoChanges, modelToProtoChange(change, patch))
+	for i, change := range changes {
+		protoChanges[i] = modelToProtoChange(change, "")
 		switch change.ChangeType {
 		case models.ChangeTypeAdd:
 			added++
@@ -966,6 +957,46 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 		case models.ChangeTypeRename:
 			renamed++
 		}
+	}
+
+	// Only compute patches when explicitly requested and the commit is not too large.
+	if req.IncludePatches && len(changes) <= maxPatchableChanges {
+		// Resolve parent hashes (sequential -- typically one unique key per commit).
+		parentHashes := make(map[string]string)
+		for _, change := range changes {
+			if change == nil {
+				continue
+			}
+			key := change.SliceID + "\x00" + change.CommitHash
+			if _, ok := parentHashes[key]; ok {
+				continue
+			}
+			resolvedParent, err := s.findParentCommitHash(ctx, change.SliceID, change.CommitHash)
+			if err == nil {
+				parentHashes[key] = resolvedParent
+			} else {
+				parentHashes[key] = ""
+			}
+		}
+
+		// Generate patches in parallel with bounded concurrency.
+		sem := make(chan struct{}, patchWorkers)
+		var wg sync.WaitGroup
+		for i, change := range changes {
+			if change == nil {
+				continue
+			}
+			parentHash := parentHashes[change.SliceID+"\x00"+change.CommitHash]
+
+			wg.Add(1)
+			sem <- struct{}{} // acquire slot
+			go func(idx int, ch *models.FileChangeRecord, ph string) {
+				defer wg.Done()
+				defer func() { <-sem }() // release slot
+				protoChanges[idx].Patch = s.buildChangePatch(ctx, ch, ph)
+			}(i, change, parentHash)
+		}
+		wg.Wait()
 	}
 
 	return &filev1.GetCommitChangesResponse{

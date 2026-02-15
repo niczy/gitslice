@@ -376,7 +376,7 @@ func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
-	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
 	if err != nil {
 		t.Fatalf("GetCommitChanges failed: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestGetCommitChangesLooksUpParentCommitOncePerCommit(t *testing.T) {
 	countedStorage := &listSliceCommitsCounter{Storage: baseStorage}
 	svc := newFileServiceServer(countedStorage)
 
-	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
 	if err != nil {
 		t.Fatalf("GetCommitChanges failed: %v", err)
 	}
@@ -499,7 +499,7 @@ func BenchmarkGetCommitChangesDiffLoading(b *testing.B) {
 	}
 
 	svc := newFileServiceServer(st)
-	req := &filev1.GetCommitChangesRequest{CommitHash: commitHash}
+	req := &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -510,6 +510,127 @@ func BenchmarkGetCommitChangesDiffLoading(b *testing.B) {
 		}
 		if len(resp.Changes) != fileCount {
 			b.Fatalf("unexpected change count %d", len(resp.Changes))
+		}
+	}
+}
+
+func TestGetCommitChangesOmitsPatchesByDefault(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "root_slice"
+		parentHash = "c0"
+		commitHash = "c1"
+		filePath   = "o/genesis/projects/org/repo/hello.txt"
+	)
+
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, sliceID, &models.Commit{CommitHash: commitHash, ParentHash: parentHash, Timestamp: time.Now().UTC(), Message: "edit"}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{FileID: filePath, Path: filePath, Hash: "old", Content: []byte("before\n")}); err != nil {
+		t.Fatalf("AddFileContent old failed: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{FileID: filePath, Path: filePath, Hash: "new", Content: []byte("after\n")}); err != nil {
+		t.Fatalf("AddFileContent new failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: parentHash, SliceID: sliceID, Files: map[string]string{filePath: "old"}}); err != nil {
+		t.Fatalf("SaveCommitSnapshot parent failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: commitHash, SliceID: sliceID, Files: map[string]string{filePath: "new"}}); err != nil {
+		t.Fatalf("SaveCommitSnapshot head failed: %v", err)
+	}
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{ID: "fc1", SliceID: sliceID, CommitHash: commitHash, Path: filePath, ChangeType: models.ChangeTypeModify, OldHash: "old", NewHash: "new", Timestamp: time.Now().UTC()}); err != nil {
+		t.Fatalf("AddFileChange failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+
+	// Without include_patches: no patch generated.
+	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	if err != nil {
+		t.Fatalf("GetCommitChanges (no patches) failed: %v", err)
+	}
+	if len(resp.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(resp.Changes))
+	}
+	if resp.Changes[0].Patch != "" {
+		t.Fatalf("expected empty patch without include_patches, got %q", resp.Changes[0].Patch)
+	}
+
+	// With include_patches: patch should be generated.
+	resp, err = svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
+	if err != nil {
+		t.Fatalf("GetCommitChanges (with patches) failed: %v", err)
+	}
+	if len(resp.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(resp.Changes))
+	}
+	if resp.Changes[0].Patch == "" {
+		t.Fatal("expected non-empty patch with include_patches=true")
+	}
+}
+
+func TestGetCommitChangesSkipsPatchesOverThreshold(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "root_slice"
+		parentHash = "c0"
+		commitHash = "c1"
+	)
+
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, sliceID, &models.Commit{CommitHash: commitHash, ParentHash: parentHash, Timestamp: time.Now().UTC(), Message: "big commit"}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+
+	// Create maxPatchableChanges+1 file changes to exceed the threshold.
+	count := maxPatchableChanges + 1
+	parentFiles := make(map[string]string, count)
+	headFiles := make(map[string]string, count)
+	for i := 0; i < count; i++ {
+		p := fmt.Sprintf("o/genesis/projects/org/repo/file-%03d.txt", i)
+		oldHash := fmt.Sprintf("old-%03d", i)
+		newHash := fmt.Sprintf("new-%03d", i)
+		if err := st.AddFileContent(ctx, &models.FileContent{FileID: p, Path: p, Hash: oldHash, Content: []byte("before\n")}); err != nil {
+			t.Fatalf("AddFileContent old failed: %v", err)
+		}
+		if err := st.AddFileContent(ctx, &models.FileContent{FileID: p, Path: p, Hash: newHash, Content: []byte("after\n")}); err != nil {
+			t.Fatalf("AddFileContent new failed: %v", err)
+		}
+		parentFiles[p] = oldHash
+		headFiles[p] = newHash
+		if err := st.AddFileChange(ctx, &models.FileChangeRecord{ID: fmt.Sprintf("fc-%03d", i), SliceID: sliceID, CommitHash: commitHash, Path: p, ChangeType: models.ChangeTypeModify, OldHash: oldHash, NewHash: newHash, Timestamp: time.Now().UTC()}); err != nil {
+			t.Fatalf("AddFileChange failed: %v", err)
+		}
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: parentHash, SliceID: sliceID, Files: parentFiles}); err != nil {
+		t.Fatalf("SaveCommitSnapshot parent failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: commitHash, SliceID: sliceID, Files: headFiles}); err != nil {
+		t.Fatalf("SaveCommitSnapshot head failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+
+	// Even with include_patches=true, patches should be skipped when over threshold.
+	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
+	if err != nil {
+		t.Fatalf("GetCommitChanges failed: %v", err)
+	}
+	if len(resp.Changes) != count {
+		t.Fatalf("expected %d changes, got %d", count, len(resp.Changes))
+	}
+	for i, ch := range resp.Changes {
+		if ch.Patch != "" {
+			t.Fatalf("expected empty patch for change %d over threshold, got %q", i, ch.Patch)
 		}
 	}
 }
