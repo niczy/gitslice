@@ -36,6 +36,14 @@ curl -sf https://agenttools.dev/v1/global/state
 ```bash
 pm2 ls --no-color
 ```
+8. Re-check stability after a short delay (catch post-start exits):
+```bash
+sleep 5
+ss -ltnp 2>/dev/null | rg '(:4173|:8080|:50051)'
+curl -sf http://127.0.0.1:8080/health
+curl -sf https://agenttools.dev/
+pm2 ls --no-color
+```
 
 ## Troubleshoot Failures
 
@@ -53,6 +61,7 @@ pm2 start /home/nic/workspace/gitslice/ops/ecosystem.config.cjs --update-env
 pm2 restart gitslice-core --update-env
 pm2 restart gitslice-web --update-env
 ```
+- If `restart_all.sh` reports success but listeners disappear (`8080` refused, public `502`, or PM2 shows `stopped`), immediately run the PM2-managed restart sequence above, then repeat the full listener + health verification.
 - Treat `globalCommitHash=global-init` with empty history from `/v1/global/state` as missing genesis population/import for the active server instance.
 
 ## Preserve Production Assumptions
