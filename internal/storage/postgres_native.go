@@ -25,6 +25,54 @@ type PostgresNativeStorage struct {
 	namespace   string
 }
 
+func pgSchemaFromNamespace(namespace string) string {
+	ns := strings.TrimSpace(namespace)
+	if ns == "" {
+		return "public"
+	}
+
+	// Preserve existing deployments: the core server uses namespace "core" but
+	// historically stored native tables in the default schema.
+	if ns == "core" || ns == "default" {
+		return "public"
+	}
+
+	// Sanitize into a safe SQL identifier (lower_snake, max 63 chars).
+	var b strings.Builder
+	b.Grow(len(ns) + 3)
+	b.WriteString("ns_")
+
+	prevUnderscore := false
+	for _, r := range ns {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			prevUnderscore = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r - 'A' + 'a')
+			prevUnderscore = false
+		case r >= '0' && r <= '9':
+			// Identifiers can't start with a digit; prefix already covers us.
+			b.WriteRune(r)
+			prevUnderscore = false
+		default:
+			if !prevUnderscore {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+		}
+	}
+
+	s := strings.Trim(b.String(), "_")
+	if s == "" || s == "ns" {
+		return "public"
+	}
+	if len(s) > 63 {
+		s = s[:63]
+	}
+	return s
+}
+
 // NewPostgresNativeStorage creates a new native PostgreSQL storage backend.
 // It runs schema migrations on startup to ensure tables exist.
 func NewPostgresNativeStorage(ctx context.Context, dsn string, objectStore ObjectStore, namespace string) (*PostgresNativeStorage, error) {
@@ -39,7 +87,27 @@ func NewPostgresNativeStorage(ctx context.Context, dsn string, objectStore Objec
 		namespace = "default"
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	schema := pgSchemaFromNamespace(namespace)
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		// Keep default behavior for the public schema.
+		if schema == "" || schema == "public" {
+			return nil
+		}
+		if _, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)); err != nil {
+			return fmt.Errorf("create schema %s: %w", schema, err)
+		}
+		if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
+			return fmt.Errorf("set search_path %s: %w", schema, err)
+		}
+		return nil
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}

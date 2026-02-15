@@ -111,8 +111,13 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 			return nil, nil, err
 		}
 
-		// Use native storage when POSTGRES_STORAGE_MODE=native.
-		if strings.ToLower(cfg.PostgresStorageMode) == "native" {
+		mode := strings.ToLower(strings.TrimSpace(cfg.PostgresStorageMode))
+		if mode == "" {
+			mode = "snapshot"
+		}
+
+		switch mode {
+		case "native":
 			st, err := storage.NewPostgresNativeStorage(ctx, cfg.PostgresDSN, objectStore, "core")
 			if err != nil {
 				closeObjectStore()
@@ -123,17 +128,53 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 				_ = st.Close()
 				closeObjectStore()
 			}, nil
-		}
+		case "native_read", "dual_write":
+			// Build both backends. Reads default to snapshot unless explicitly routed.
+			snap, err := storage.NewPostgresStorage(ctx, cfg.PostgresDSN, objectStore, "core")
+			if err != nil {
+				closeObjectStore()
+				return nil, nil, err
+			}
+			native, err := storage.NewPostgresNativeStorage(ctx, cfg.PostgresDSN, objectStore, "core")
+			if err != nil {
+				_ = snap.Close()
+				closeObjectStore()
+				return nil, nil, err
+			}
 
-		st, err := storage.NewPostgresStorage(ctx, cfg.PostgresDSN, objectStore, "core")
-		if err != nil {
-			closeObjectStore()
-			return nil, nil, err
+			if mode == "native_read" {
+				log.Printf("Using PostgreSQL native_read mode (reads routed to native when available; writes to snapshot)")
+				routed := storage.NewNativeReadStorage(snap, native)
+				return routed, func() {
+					_ = snap.Close()
+					_ = native.Close()
+					closeObjectStore()
+				}, nil
+			}
+
+			log.Printf("Using PostgreSQL dual_write mode (writes mirrored to native; reads from snapshot)")
+			dual := storage.NewDualWriteStorage(snap, native)
+			return dual, func() {
+				_ = snap.Close()
+				_ = native.Close()
+				closeObjectStore()
+			}, nil
+		case "snapshot":
+			fallthrough
+		default:
+			st, err := storage.NewPostgresStorage(ctx, cfg.PostgresDSN, objectStore, "core")
+			if err != nil {
+				closeObjectStore()
+				return nil, nil, err
+			}
+			if mode != "snapshot" {
+				log.Printf("Unknown POSTGRES_STORAGE_MODE=%q, falling back to snapshot", cfg.PostgresStorageMode)
+			}
+			return st, func() {
+				_ = st.Close()
+				closeObjectStore()
+			}, nil
 		}
-		return st, func() {
-			_ = st.Close()
-			closeObjectStore()
-		}, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported STORAGE_TYPE: %s", cfg.StorageType)
 	}
