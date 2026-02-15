@@ -156,7 +156,7 @@ func (s *PostgresStorage) Reset(ctx context.Context) error {
 //
 // This is an escape hatch for admin workflows that would otherwise perform
 // thousands of tiny writes (each persisting the full snapshot).
-func (s *PostgresStorage) BulkWrite(ctx context.Context, fn func(mem *InMemoryStorage) error) error {
+func (s *PostgresStorage) BulkWrite(ctx context.Context, fn func(st Storage) error) error {
 	if fn == nil {
 		return ErrInvalidInput
 	}

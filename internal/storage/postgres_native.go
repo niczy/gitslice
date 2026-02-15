@@ -135,6 +135,36 @@ func (s *PostgresNativeStorage) Close() error {
 	return nil
 }
 
+// Reset clears all persisted native rows. This is an admin/ops escape hatch.
+// Object store blobs are not deleted.
+//
+// Note: this affects the currently selected schema (search_path).
+func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
+	ctx = ensureCtx(ctx)
+	// Keep schema_migrations so we don't need to re-run DDL after a reset.
+	_, err := s.pool.Exec(ctx, `
+		TRUNCATE TABLE
+			organization_members,
+			organizations,
+			users,
+			file_changes,
+			global_state,
+			versioned_content,
+			commit_snapshots,
+			file_contents,
+			directory_entries,
+			slice_commits,
+			changesets,
+			file_locks,
+			slice_locks,
+			file_slice_index,
+			slice_metadata,
+			slices
+		RESTART IDENTITY CASCADE
+	`)
+	return err
+}
+
 func (s *PostgresNativeStorage) objKey(parts ...string) string {
 	if s.namespace == "" {
 		return strings.Join(parts, ":")

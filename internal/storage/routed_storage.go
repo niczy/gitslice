@@ -139,6 +139,55 @@ func NewDualWriteStorage(primary Storage, secondary Storage) *DualWriteStorage {
 	return &DualWriteStorage{Storage: primary, secondary: secondary}
 }
 
+// Reset clears state on both backends when supported. This is an admin/ops escape hatch.
+// Object store blobs are not deleted.
+func (s *DualWriteStorage) Reset(ctx context.Context) error {
+	if s == nil {
+		return ErrInvalidInput
+	}
+	if rs, ok := s.Storage.(interface {
+		Reset(context.Context) error
+	}); ok {
+		if err := rs.Reset(ctx); err != nil {
+			return err
+		}
+	}
+	if rs, ok := s.secondary.(interface {
+		Reset(context.Context) error
+	}); ok {
+		if err := rs.Reset(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BulkWrite applies multiple mutations and persists once when the primary supports it.
+//
+// When primary is snapshot PostgresStorage, this executes the callback against the in-memory
+// primary view (no per-call persistence) and mirrors writes to the secondary backend.
+func (s *DualWriteStorage) BulkWrite(ctx context.Context, fn func(st Storage) error) error {
+	if s == nil || fn == nil {
+		return ErrInvalidInput
+	}
+
+	type bulkWriter interface {
+		BulkWrite(ctx context.Context, fn func(st Storage) error) error
+	}
+	if bw, ok := s.Storage.(bulkWriter); ok {
+		return bw.BulkWrite(ctx, func(primary Storage) error {
+			dual := NewDualWriteStorage(primary, s.secondary)
+			if dual == nil {
+				return ErrInvalidInput
+			}
+			return fn(dual)
+		})
+	}
+
+	// Fallback: no bulk support; run directly.
+	return fn(s)
+}
+
 func (s *DualWriteStorage) CreateSlice(ctx context.Context, slice *models.Slice) error {
 	if err := s.Storage.CreateSlice(ctx, slice); err != nil {
 		return err
