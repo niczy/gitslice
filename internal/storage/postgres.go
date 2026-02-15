@@ -796,7 +796,7 @@ func (s *PostgresStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 		file := &models.FileContent{
 			FileID:  entry.Path,
 			Path:    entry.Path,
-			Content: entry.Content,
+			Content: append([]byte(nil), entry.Content...),
 			Size:    entry.Size,
 		}
 		if fc, ok := s.mem.fileContents[entry.Path]; ok && fc != nil {
@@ -805,7 +805,7 @@ func (s *PostgresStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 				file.Size = fc.Size
 			}
 			if len(file.Content) == 0 {
-				file.Content = fc.Content
+				file.Content = append([]byte(nil), fc.Content...)
 			}
 		}
 		if file.Hash == "" {
@@ -815,7 +815,7 @@ func (s *PostgresStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 					file.Size = fc.Size
 				}
 				if len(file.Content) == 0 {
-					file.Content = fc.Content
+					file.Content = append([]byte(nil), fc.Content...)
 				}
 			}
 		}

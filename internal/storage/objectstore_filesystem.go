@@ -43,13 +43,23 @@ func (s *FilesystemObjectStore) PutObject(ctx context.Context, key string, body 
 	_ = ctx
 
 	target := s.objectPath(key)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
-	// Atomic write: write to temp file then rename.
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+	// Atomic write: write to a unique temp file then rename.
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(target)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	if _, err := tmpFile.Write(body); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
