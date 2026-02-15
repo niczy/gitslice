@@ -271,9 +271,13 @@ export default function RepoBrowser({
 
         const rootEntries = payload.entries || [];
 
-        // Restore file selection from URL hash if pending
+        // Restore file selection from URL hash if pending.
+        // If the URL also requested a specific slice, wait to restore the file
+        // until that slice is active; otherwise refresh can load the wrong slice
+        // first, consume the pending file, and then drop the file selection.
         const pendingFile = pendingFileRef.current;
-        if (pendingFile) {
+        const shouldRestorePendingFile = !initialBrowserState?.slice || initialBrowserState.slice === sliceId;
+        if (pendingFile && shouldRestorePendingFile) {
           pendingFileRef.current = null;
 
           const parts = pendingFile.split('/');
