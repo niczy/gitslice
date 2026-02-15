@@ -422,8 +422,8 @@ function App() {
   const [isFullScreenClosing, setIsFullScreenClosing] = useState(false);
   const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
 
-  // Determine if we're on a page that should show browser-style layout
-  const isBrowserLayout = activePage === 'browser';
+  // Keep browser and diff pages on the same full-width layout to avoid visual width jumps.
+  const isBrowserLayout = activePage === 'browser' || activePage === 'diff';
 
   return (
     <div className={`app-shell${isBrowserLayout ? ' app-shell--browser' : ''}`}>
