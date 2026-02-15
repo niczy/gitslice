@@ -269,38 +269,111 @@ Correctness properties:
 
 ## Phased Implementation Plan
 
-### Phase 0 — Foundations
+This section is intentionally implementation-oriented. The current `PostgresStorage` snapshots an in-memory state blob into Postgres and still serves requests from in-memory maps. The plan below replaces that with real relational tables as the source of truth (metadata + indexes), with blobs stored in an object store.
 
-- Add config for Postgres DSN and migration tooling.
-- Introduce `PostgresStorage` skeleton implementing `Storage` interface behind feature flag.
-- Add integration test harness that can run same storage test suite against memory and postgres backends.
+### Phase 0 — Flags, Contracts, and Test Harness
 
-### Phase 1 — Metadata migration
+- Add `POSTGRES_STORAGE_MODE` with values:
+  - `snapshot` (current behavior; default)
+  - `native_read` (read path uses native tables for selected APIs; writes still use snapshot path)
+  - `dual_write` (writes go to both snapshot and native; reads still snapshot by default)
+  - `native` (read/write via native tables; snapshot disabled)
+- Add a storage conformance suite that runs `internal/storage/storage_test.go` against:
+  - `InMemoryStorage`
+  - `PostgresStorage` (snapshot)
+  - `PostgresNativeStorage` (native)
+- Add a focused end-to-end integration test (`workflow_test/integration_test.go`) that asserts:
+  - `ListEntries(path=X)` work is proportional to direct children of `X` (not proportional to total files in slice).
+  - `GetFile(path=Y)` works for:
+    - root browsing (`/v1/files/...` routes)
+    - slice browsing (`/v1/slices/{slice}/files/...` routes)
+    - commit browsing (`commit_hash` / `slice_version.slice_hash`)
 
-- Implement slice, changeset, entry, global state CRUD in Postgres.
-- Keep file content paths backed by current object store abstraction.
-- Verify parity with existing storage behavior through `internal/storage/storage_test.go` extensions.
+### Phase 1 — Native Schema + Migrations (Minimal Read Path First)
 
-### Phase 2 — Commit/history correctness
+Create migrations (forward-only) for a minimal schema that unblocks the file browser and CLI checkout:
 
-- Implement transactional commit append (`slice_commits`, `file_changes`, `slice_metadata` head updates).
-- Add cursor-based history queries and benchmark against target latency.
-- Add retry logic for serialization/deadlock failures.
+- `slices`, `slice_owners`, `slice_metadata` (slice registry + head pointer)
+- `entries` for tree navigation:
+  - `PRIMARY KEY (slice_id, path)`
+  - columns: `type`, `parent_path`, `size`, `content_hash` (nullable)
+  - indexes:
+    - `INDEX (slice_id, parent_path, type, path)` for direct-child listing
+    - `INDEX (slice_id, path)` (covered by PK)
+- `commit_snapshots` and `commit_files` for commit-pinned content:
+  - `commit_files(commit_hash, path, content_hash, PRIMARY KEY(commit_hash, path))`
+  - `INDEX (commit_hash, path)` (covered by PK)
+- `file_content_meta` and `versioned_content_meta` (optional but recommended):
+  - supports debugging/repair of missing blobs; avoids guessing which object key exists
 
-### Phase 3 — Locking and conflict paths
+Object store keys remain content-addressed and path-free:
 
-- Implement atomic slice+file lock acquisition/release with TTL and lock tokens.
-- Move conflict detection/index writes to DB transactions.
-- Validate under concurrent workload tests.
+- `file_content/<file_id>` for "latest by file id" payloads
+- `versioned_content/<hash>` for "immutable by hash" payloads
 
-### Phase 4 — GCS durability hardening
+### Phase 2 — Native Reads for FileService (Tree Queries, No Full Scans)
 
-- Finalize content-addressed blob writes and orphan-GC job.
-- Add consistency checker for dangling metadata/object references.
-- Document operational runbooks for backup/restore and GC.
+Implement `PostgresNativeStorage` (new type) and wire it into the `FileService` code path when `POSTGRES_STORAGE_MODE=native_read|native`:
 
-### Phase 5 — Rollout and deprecation
+- `ListEntries(slice_id, parent_path)` becomes:
+  - `SELECT ... FROM entries WHERE slice_id=$1 AND parent_path=$2 ORDER BY name LIMIT ...`
+  - `has_children` computed via `EXISTS (SELECT 1 FROM entries WHERE slice_id=$1 AND parent_path=$child_path LIMIT 1)`
+- `GetEntryByPath(slice_id, path)` becomes:
+  - `SELECT ... FROM entries WHERE slice_id=$1 AND path=$2`
+- `GetFileAtCommit(commit_hash, path)` becomes:
+  - `SELECT content_hash FROM commit_files WHERE commit_hash=$1 AND path=$2`
+  - then object store fetch by `versioned_content/<hash>`
+- `GetSliceFileByPath(slice_id, path)` becomes:
+  - `SELECT content_hash, size FROM entries WHERE slice_id=$1 AND path=$2 AND type='file'`
+  - then object store fetch by `versioned_content/<hash>` when available, otherwise `file_content/<file_id>`
 
-- Deploy dual-read validation in staging (compare memory vs postgres responses for sampled calls).
-- Cut over to Postgres primary storage.
-- Remove legacy durable-state-in-object-store path after confidence window.
+Hard rule: do not store blob bytes in memory in this mode. `DirectoryEntry.Content` should be unused/empty, and the in-process cache (if any) should be metadata-only.
+
+### Phase 3 — Dual-Write for Admin Import + Merge Paths
+
+Enable `POSTGRES_STORAGE_MODE=dual_write` in staging/local first and implement writes in native tables inside a single DB transaction per logical unit:
+
+- Admin git import:
+  - write `slices/slice_metadata` (or verify exist)
+  - upsert `entries` for created/updated paths (directories and files)
+  - upload blob bytes to object store (outside the DB transaction), then write `commit_files` and `commit_snapshots`
+  - append `slice_commits` and `file_changes` rows
+- Changeset merge path:
+  - update `entries` (apply A/M/D/R)
+  - update `slice_metadata.head_commit_hash`, `modified_files_count`
+  - write `commit_files` + `commit_snapshots` for the new commit
+
+Keep write ordering safe:
+
+1. Upload blob(s) to object store (idempotent, content-addressed).
+2. Commit DB transaction referencing uploaded blob keys/hashes.
+
+### Phase 4 — Backfill and Consistency Tooling
+
+Add an admin-only backfill command (CLI subcommand or one-off `cmd/` tool) that can migrate existing snapshot state into native tables:
+
+- Input: namespace + slice IDs (default: all) + commit snapshots
+- Implementation: page through existing storage APIs (snapshot path), upsert into native tables, and validate:
+  - `COUNT(entries)` parity per slice
+  - `COUNT(commit_files)` parity per commit
+  - spot-check `GetFileAtCommit` for random samples
+- Provide a repair mode:
+  - detect missing `versioned_content` objects for hashes referenced by `commit_files`
+  - re-upload from any available `file_content` object when possible
+
+### Phase 5 — Cutover Reads, Then Writes
+
+- Flip file browsing routes (`/v1/files/...` and `/v1/slices/...`) to native reads in production first:
+  - this directly addresses "tree is a tree" and avoids iterating all entries to list direct children.
+- Run dual-read sampling (compare snapshot vs native responses) for a defined window.
+- Cut over remaining APIs (conflicts, locks, changesets, commit history) to native reads.
+- Cut over writes to native-only (`POSTGRES_STORAGE_MODE=native`), keeping `snapshot` as emergency rollback for a short window.
+
+### Phase 6 — Remove Snapshot Storage
+
+- Delete or hard-disable the snapshot persistence path once confidence is high:
+  - remove `storage_state(payload TEXT)` reliance
+  - remove any code paths that rehydrate all blobs for metadata-only operations
+- Ensure ops defaults remain stable:
+  - object store configured (`OBJECT_STORE_TYPE=filesystem` + `OBJECT_STORE_DIR` or GCS)
+  - restart scripts continue to work unattended

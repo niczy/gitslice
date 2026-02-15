@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
@@ -23,15 +24,76 @@ import (
 type fileServiceServer struct {
 	filev1.UnimplementedFileServiceServer
 	storage storage.Storage
+
+	// Cache of computed displayPath->storedPath maps and their sorted keys. This avoids
+	// rebuilding and sorting the full slice path set on every ListEntries/GetFile call,
+	// which is very expensive for imported repos.
+	pathCache *slicePathCache
 }
 
 func newFileServiceServer(st storage.Storage) *fileServiceServer {
-	return &fileServiceServer{storage: st}
+	return &fileServiceServer{
+		storage:   st,
+		pathCache: newSlicePathCache(64),
+	}
 }
 
 // RegisterGRPCServer registers the file service handlers on an existing gRPC server.
 func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	filev1.RegisterFileServiceServer(srv, newFileServiceServer(st))
+}
+
+type slicePathCache struct {
+	mu       sync.RWMutex
+	items    map[string]*cachedPaths
+	order    []string
+	maxItems int
+}
+
+type cachedPaths struct {
+	pathMap      map[string]string // displayPath -> storedPath
+	displayPaths []string          // sorted keys of pathMap
+}
+
+func newSlicePathCache(maxItems int) *slicePathCache {
+	if maxItems <= 0 {
+		maxItems = 64
+	}
+	return &slicePathCache{
+		items:    make(map[string]*cachedPaths, maxItems),
+		order:    make([]string, 0, maxItems),
+		maxItems: maxItems,
+	}
+}
+
+func (c *slicePathCache) get(key string) (*cachedPaths, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.items[key]
+	return v, ok
+}
+
+func (c *slicePathCache) put(key string, v *cachedPaths) {
+	if c == nil || key == "" || v == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.items[key]; exists {
+		c.items[key] = v
+		return
+	}
+	c.items[key] = v
+	c.order = append(c.order, key)
+	if len(c.order) <= c.maxItems {
+		return
+	}
+	evict := c.order[0]
+	c.order = c.order[1:]
+	delete(c.items, evict)
 }
 
 // NewService constructs the file service implementation for use without gRPC.
@@ -76,7 +138,64 @@ func (s *fileServiceServer) resolveVersion(ctx context.Context, commitHash strin
 	return rootSlice.ID, metadata.HeadCommitHash, nil
 }
 
-func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID string, slice *models.Slice) ([]string, error) {
+func sliceFolderMountKey(slice *models.Slice) string {
+	if slice == nil || len(slice.FolderMounts) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(slice.FolderMounts))
+	for _, m := range slice.FolderMounts {
+		parts = append(parts, m.SourcePath+"=>"+m.Alias)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
+}
+
+func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID string, slice *models.Slice, resolvedCommit string) (map[string]string, []string, error) {
+	commit := strings.TrimSpace(resolvedCommit)
+	if commit == "" {
+		metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+		if err != nil {
+			if errors.Is(err, storage.ErrSliceNotFound) {
+				return map[string]string{}, []string{}, nil
+			}
+			return nil, nil, err
+		}
+		commit = strings.TrimSpace(metadata.HeadCommitHash)
+	}
+
+	key := sliceID + "|" + commit + "|" + sliceFolderMountKey(slice)
+	if cached, ok := s.pathCache.get(key); ok && cached != nil {
+		return cached.pathMap, cached.displayPaths, nil
+	}
+
+	storedPaths, err := s.effectiveSlicePaths(ctx, sliceID, slice, commit)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pathMap := make(map[string]string, len(storedPaths))
+	for _, storedPath := range storedPaths {
+		displayPath := common.SliceDisplayPath(slice, storedPath)
+		if displayPath == "" {
+			continue
+		}
+		if _, exists := pathMap[displayPath]; exists {
+			continue
+		}
+		pathMap[displayPath] = storedPath
+	}
+
+	displayPaths := make([]string, 0, len(pathMap))
+	for p := range pathMap {
+		displayPaths = append(displayPaths, p)
+	}
+	sort.Strings(displayPaths)
+
+	s.pathCache.put(key, &cachedPaths{pathMap: pathMap, displayPaths: displayPaths})
+	return pathMap, displayPaths, nil
+}
+
+func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID string, slice *models.Slice, resolvedCommit string) ([]string, error) {
 	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
 	if err != nil {
 		if errors.Is(err, storage.ErrSliceNotFound) {
@@ -85,37 +204,23 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 		return nil, err
 	}
 
-	// Prefer current HEAD snapshot paths when available. This avoids listing stale
+	commitHash := strings.TrimSpace(resolvedCommit)
+	if commitHash == "" {
+		commitHash = strings.TrimSpace(metadata.HeadCommitHash)
+	}
+
+	// Prefer commit snapshot paths when available. This avoids listing stale
 	// file IDs that may remain in legacy metadata after deletes.
-	if metadata.HeadCommitHash != "" {
-		if snapshot, err := s.storage.GetCommitSnapshot(ctx, metadata.HeadCommitHash); err == nil && snapshot != nil {
+	if commitHash != "" {
+		if snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash); err == nil && snapshot != nil {
 			paths := make([]string, 0, len(snapshot.Files))
-			seen := make(map[string]bool, len(snapshot.Files))
 			for raw := range snapshot.Files {
 				p := common.CleanRelativePath(raw)
 				if p == "" {
 					continue
 				}
-				seen[p] = true
 				paths = append(paths, p)
 			}
-
-			// Also include paths that have concrete file content but were added
-			// out-of-band from snapshot updates (common in integration tests and
-			// maintenance scripts that call storage helpers directly).
-			contentByPath := fileContentIndex(s.storage, ctx, sliceID)
-			for _, raw := range append(slice.Files, metadata.ModifiedFiles...) {
-				p := common.CleanRelativePath(raw)
-				if p == "" || seen[p] {
-					continue
-				}
-				if _, hasContent := contentByPath[p]; !hasContent {
-					continue
-				}
-				seen[p] = true
-				paths = append(paths, p)
-			}
-
 			sort.Strings(paths)
 			return paths, nil
 		}
@@ -143,29 +248,9 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	return paths, nil
 }
 
-func (s *fileServiceServer) effectiveSlicePathMap(ctx context.Context, sliceID string, slice *models.Slice) (map[string]string, error) {
-	storedPaths, err := s.effectiveSlicePaths(ctx, sliceID, slice)
-	if err != nil {
-		return nil, err
-	}
-
-	pathMap := make(map[string]string, len(storedPaths))
-	for _, storedPath := range storedPaths {
-		displayPath := common.SliceDisplayPath(slice, storedPath)
-		if displayPath == "" {
-			continue
-		}
-		if _, exists := pathMap[displayPath]; exists {
-			continue
-		}
-		pathMap[displayPath] = storedPath
-	}
-	return pathMap, nil
-}
-
 func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
 	// Resolve version from oneof
-	sliceID, _, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
+	sliceID, resolvedCommit, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +267,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	pathMap, err := s.effectiveSlicePathMap(ctx, sliceID, slice)
+	pathMap, displayPaths, err := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", err))
 	}
@@ -211,24 +296,26 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	entriesByName := map[string]*filev1.DirectoryEntry{}
 	matchedAny := false
 	exactFile := false
-
-	displayPaths := make([]string, 0, len(pathMap))
-	for filePath := range pathMap {
-		displayPaths = append(displayPaths, filePath)
+	if normalizedPath != "" {
+		_, exactFile = pathMap[normalizedPath]
 	}
-	sort.Strings(displayPaths)
 
-	for _, filePath := range displayPaths {
+	// When listing a directory, avoid scanning the entire slice path list.
+	// displayPaths is sorted, so we can binary-search the prefix range.
+	start := 0
+	if prefix != "" {
+		start = sort.SearchStrings(displayPaths, prefix)
+	}
+
+	for i := start; i < len(displayPaths); i++ {
+		filePath := displayPaths[i]
 		if filePath == "" {
 			continue
 		}
 
-		if normalizedPath != "" && filePath == normalizedPath {
-			exactFile = true
-		}
-
 		if prefix != "" && !strings.HasPrefix(filePath, prefix) {
-			continue
+			// Sorted order: once we pass the prefix range, we can stop.
+			break
 		}
 		matchedAny = true
 
@@ -262,10 +349,10 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 			if entry.Type != filev1.EntryType_ENTRY_TYPE_DIRECTORY {
 				entry.Type = filev1.EntryType_ENTRY_TYPE_FILE
 				entry.HasChildren = false
-				// Best-effort size lookup only for files directly under the requested path.
+				// Directory listings must stay metadata-only; do not fetch blob content here.
 				storedPath := pathMap[filePath]
-				if content, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath); err == nil && content != nil {
-					entry.Size = contentSize(content)
+				if meta, err := s.storage.GetEntryByPath(ctx, sliceID, storedPath); err == nil && meta != nil {
+					entry.Size = meta.Size
 				}
 			}
 		} else {
@@ -313,7 +400,7 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 
 	// Resolve version from oneof
-	sliceID, _, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
+	sliceID, resolvedCommit, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +419,7 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 
 	requestPath := cleanPath(req.Path)
 	normalizedPath := common.SliceStoredPath(slice, requestPath)
-	pathMap, mapErr := s.effectiveSlicePathMap(ctx, sliceID, slice)
+	pathMap, _, mapErr := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
 	if mapErr != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", mapErr))
 	}
@@ -351,12 +438,24 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
 
-	content, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath)
-	if err != nil {
-		if sliceHasPath(pathMap, normalizedPath) {
-			return nil, status.Error(codes.NotFound, "file content not available")
+	// Prefer loading content via the resolved commit snapshot. Forked slices may
+	// not have fully materialized directory entries, but commit snapshots can
+	// still serve versioned content.
+	var content *models.FileContent
+	if strings.TrimSpace(resolvedCommit) != "" {
+		if c, err := s.storage.GetFileAtCommit(ctx, resolvedCommit, storedPath); err == nil && c != nil {
+			content = c
 		}
-		return nil, status.Error(codes.NotFound, "file not found")
+	}
+	if content == nil {
+		c, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath)
+		if err != nil {
+			if sliceHasPath(pathMap, normalizedPath) {
+				return nil, status.Error(codes.NotFound, "file content not available")
+			}
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		content = c
 	}
 
 	file := &filev1.File{
@@ -371,29 +470,6 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 
 func cleanPath(raw string) string {
 	return common.CleanRelativePath(raw)
-}
-
-func fileContentIndex(st storage.Storage, ctx context.Context, sliceID string) map[string]*models.FileContent {
-	files, err := st.GetSliceFiles(ctx, sliceID)
-	if err != nil {
-		return map[string]*models.FileContent{}
-	}
-
-	result := make(map[string]*models.FileContent, len(files))
-	for _, file := range files {
-		if file == nil {
-			continue
-		}
-		filePath := cleanPath(file.Path)
-		if filePath == "" {
-			filePath = cleanPath(file.FileID)
-		}
-		if filePath == "" {
-			continue
-		}
-		result[filePath] = file
-	}
-	return result
 }
 
 func contentSize(content *models.FileContent) int64 {
