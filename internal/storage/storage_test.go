@@ -68,8 +68,20 @@ func TestStorageCompliance(t *testing.T) {
 func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	slice1ID := fmt.Sprintf("slice-1-%s", suffix)
+	slice2ID := fmt.Sprintf("slice-2-%s", suffix)
+	emptySliceID := fmt.Sprintf("slice-empty-%s", suffix)
+	file1ID := fmt.Sprintf("file-1-%s", suffix)
+	file2ID := fmt.Sprintf("file-2-%s", suffix)
+	file9ID := fmt.Sprintf("file-9-%s", suffix)
+	file10ID := fmt.Sprintf("file-10-%s", suffix)
+	entry1ID := fmt.Sprintf("entry-1-%s", suffix)
+	changeset1ID := fmt.Sprintf("cs-1-%s", suffix)
+	commit1Hash := fmt.Sprintf("commit-1-%s", suffix)
+
 	// Create primary slice
-	slice := &models.Slice{ID: "slice-1", Name: "Alpha", Description: "First", Files: []string{"file-1"}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	slice := &models.Slice{ID: slice1ID, Name: "Alpha", Description: "First", Files: []string{file1ID}, Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
@@ -88,15 +100,15 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if meta.HeadCommitHash != fmt.Sprintf("init-%s", slice.ID) {
 		t.Fatalf("unexpected initial head commit hash: %s", meta.HeadCommitHash)
 	}
-	meta.HeadCommitHash = "commit-1"
-	meta.ModifiedFiles = []string{"file-1"}
+	meta.HeadCommitHash = commit1Hash
+	meta.ModifiedFiles = []string{file1ID}
 	meta.ModifiedFilesCount = 1
 	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
 		t.Fatalf("UpdateSliceMetadata failed: %v", err)
 	}
 
 	// Commit history
-	commit := &models.Commit{CommitHash: "commit-1", ParentHash: "", Message: "init", Timestamp: time.Now()}
+	commit := &models.Commit{CommitHash: commit1Hash, ParentHash: "", Message: "init", Timestamp: time.Now()}
 	if err := st.AddSliceCommit(ctx, slice.ID, commit); err != nil {
 		t.Fatalf("AddSliceCommit failed: %v", err)
 	}
@@ -106,20 +118,20 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 
 	// File indexing and conflicts
-	if err := st.AddFileToSlice(ctx, "file-1", slice.ID); err != nil {
+	if err := st.AddFileToSlice(ctx, file1ID, slice.ID); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, "file-2", slice.ID); err != nil {
+	if err := st.AddFileToSlice(ctx, file2ID, slice.ID); err != nil {
 		t.Fatalf("AddFileToSlice new file failed: %v", err)
 	}
 	afterAdd, err := st.GetSlice(ctx, slice.ID)
 	if err != nil {
 		t.Fatalf("GetSlice after AddFileToSlice failed: %v", err)
 	}
-	if len(afterAdd.Files) != 1 || afterAdd.Files[0] != "file-1" {
+	if len(afterAdd.Files) != 1 || afterAdd.Files[0] != file1ID {
 		t.Fatalf("slice files should be immutable, got: %#v", afterAdd.Files)
 	}
-	slice2 := &models.Slice{ID: "slice-2", Name: "Beta", Description: "Second", Files: []string{"file-1"}, Owners: []string{"bob"}, CreatedBy: "bob"}
+	slice2 := &models.Slice{ID: slice2ID, Name: "Beta", Description: "Second", Files: []string{file1ID}, Owners: []string{"bob"}, CreatedBy: "bob"}
 	if err := st.CreateSlice(ctx, slice2); err != nil {
 		t.Fatalf("CreateSlice second failed: %v", err)
 	}
@@ -130,7 +142,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if count != 2 {
 		t.Fatalf("expected 2 slices, got %d", count)
 	}
-	if err := st.AddFileToSlice(ctx, "file-1", slice2.ID); err != nil {
+	if err := st.AddFileToSlice(ctx, file1ID, slice2.ID); err != nil {
 		t.Fatalf("AddFileToSlice second failed: %v", err)
 	}
 	if err := st.RemoveFileFromSlice(ctx, "file-unknown", "slice-missing"); err != nil {
@@ -141,7 +153,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil || len(conflicts) != 1 {
 		t.Fatalf("ListConflicts unexpected: %v len=%d", err, len(conflicts))
 	}
-	resolved, err := st.ResolveConflict(ctx, "file-1", slice.ID)
+	resolved, err := st.ResolveConflict(ctx, file1ID, slice.ID)
 	if err != nil {
 		t.Fatalf("ResolveConflict failed: %v", err)
 	}
@@ -150,20 +162,20 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 
 	// Locking
-	if err := st.LockSliceAndFiles(ctx, slice.ID, []string{"file-1"}); err != nil {
+	if err := st.LockSliceAndFiles(ctx, slice.ID, []string{file1ID}); err != nil {
 		t.Fatalf("LockSliceAndFiles failed: %v", err)
 	}
-	if err := st.LockSliceAndFiles(ctx, slice2.ID, []string{"file-1"}); err != ErrLockHeld {
+	if err := st.LockSliceAndFiles(ctx, slice2.ID, []string{file1ID}); err != ErrLockHeld {
 		t.Fatalf("expected ErrLockHeld, got %v", err)
 	}
-	st.UnlockSliceAndFiles(ctx, slice.ID, []string{"file-1"})
-	if err := st.LockSliceAndFiles(ctx, slice2.ID, []string{"file-1"}); err != nil {
+	st.UnlockSliceAndFiles(ctx, slice.ID, []string{file1ID})
+	if err := st.LockSliceAndFiles(ctx, slice2.ID, []string{file1ID}); err != nil {
 		t.Fatalf("Lock after unlock failed: %v", err)
 	}
-	st.UnlockSliceAndFiles(ctx, slice2.ID, []string{"file-1"})
+	st.UnlockSliceAndFiles(ctx, slice2.ID, []string{file1ID})
 
 	// Changesets
-	cs := &models.Changeset{ID: "cs-1", Hash: "h1", SliceID: slice.ID, ModifiedFiles: []string{"file-1"}, Status: models.ChangesetStatusPending, Author: "alice", Message: "msg", CreatedAt: time.Now()}
+	cs := &models.Changeset{ID: changeset1ID, Hash: "h1", SliceID: slice.ID, ModifiedFiles: []string{file1ID}, Status: models.ChangesetStatusPending, Author: "alice", Message: "msg", CreatedAt: time.Now()}
 	if err := st.CreateChangeset(ctx, cs); err != nil {
 		t.Fatalf("CreateChangeset failed: %v", err)
 	}
@@ -181,26 +193,26 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("UpdateChangeset failed: %v", err)
 	}
 
-	emptySlice := &models.Slice{ID: "slice-empty", Name: "Empty", Description: "Empty", Files: []string{}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	emptySlice := &models.Slice{ID: emptySliceID, Name: "Empty", Description: "Empty", Files: []string{}, Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, emptySlice); err != nil {
 		t.Fatalf("CreateSlice empty failed: %v", err)
 	}
-	if err := st.SetSliceFiles(ctx, emptySlice.ID, []string{"file-9"}); err != nil {
+	if err := st.SetSliceFiles(ctx, emptySlice.ID, []string{file9ID}); err != nil {
 		t.Fatalf("SetSliceFiles failed: %v", err)
 	}
 	emptyFetched, err := st.GetSlice(ctx, emptySlice.ID)
 	if err != nil {
 		t.Fatalf("GetSlice after SetSliceFiles failed: %v", err)
 	}
-	if len(emptyFetched.Files) != 1 || emptyFetched.Files[0] != "file-9" {
+	if len(emptyFetched.Files) != 1 || emptyFetched.Files[0] != file9ID {
 		t.Fatalf("SetSliceFiles mismatch: %#v", emptyFetched.Files)
 	}
-	if err := st.SetSliceFiles(ctx, emptySlice.ID, []string{"file-10"}); err != ErrSliceFilesImmutable {
+	if err := st.SetSliceFiles(ctx, emptySlice.ID, []string{file10ID}); err != ErrSliceFilesImmutable {
 		t.Fatalf("expected ErrSliceFilesImmutable, got %v", err)
 	}
 
 	// Entries
-	entry := &models.DirectoryEntry{ID: "entry-1", Path: "app/main.go", Type: "file", ParentID: slice.ID, Content: []byte("code"), Size: 4}
+	entry := &models.DirectoryEntry{ID: entry1ID, Path: fmt.Sprintf("app/%s/main.go", suffix), Type: "file", ParentID: slice.ID, Content: []byte("code"), Size: 4}
 	if err := st.AddEntry(ctx, entry); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
@@ -225,7 +237,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 
 	// Global state
-	state := &models.GlobalState{GlobalCommitHash: "global-1", Timestamp: time.Now(), History: []*models.GlobalCommit{{CommitHash: "global-1", Timestamp: time.Now()}}}
+	state := &models.GlobalState{GlobalCommitHash: "global-1-" + suffix, Timestamp: time.Now(), History: []*models.GlobalCommit{{CommitHash: "global-1-" + suffix, Timestamp: time.Now()}}}
 	if err := st.UpdateGlobalState(ctx, state); err != nil {
 		t.Fatalf("UpdateGlobalState failed: %v", err)
 	}
@@ -233,7 +245,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil || storedState.GlobalCommitHash != state.GlobalCommitHash {
 		t.Fatalf("GetGlobalState mismatch: %v", err)
 	}
-	replaced := &models.GlobalState{GlobalCommitHash: "global-2", Timestamp: time.Now(), History: []*models.GlobalCommit{{CommitHash: "global-2", Timestamp: time.Now()}}}
+	replaced := &models.GlobalState{GlobalCommitHash: "global-2-" + suffix, Timestamp: time.Now(), History: []*models.GlobalCommit{{CommitHash: "global-2-" + suffix, Timestamp: time.Now()}}}
 	if err := st.UpdateGlobalState(ctx, replaced); err != nil {
 		t.Fatalf("UpdateGlobalState replacement failed: %v", err)
 	}
@@ -241,23 +253,23 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil {
 		t.Fatalf("GetGlobalState replacement failed: %v", err)
 	}
-	if replacedState.GlobalCommitHash != "global-2" || len(replacedState.History) != 1 || replacedState.History[0].CommitHash != "global-2" {
+	if replacedState.GlobalCommitHash != ("global-2-"+suffix) || len(replacedState.History) != 1 || replacedState.History[0].CommitHash != ("global-2-"+suffix) {
 		t.Fatalf("global state should be replaced, got: %#v", replacedState)
 	}
 
 	// Versioned content + snapshot lookup
 	content := &models.FileContent{
-		FileID:  "versioned-file",
-		Path:    "src/versioned.go",
+		FileID:  "versioned-file-" + suffix,
+		Path:    "src/versioned-" + suffix + ".go",
 		Content: []byte("package main"),
 		Size:    int64(len("package main")),
-		Hash:    "hash-versioned-1",
+		Hash:    "hash-versioned-1-" + suffix,
 	}
 	if err := st.AddFileContent(ctx, content); err != nil {
 		t.Fatalf("AddFileContent versioned failed: %v", err)
 	}
 	snapshot := &models.CommitSnapshot{
-		CommitHash: "commit-snapshot-1",
+		CommitHash: "commit-snapshot-1-" + suffix,
 		SliceID:    slice.ID,
 		Files: map[string]string{
 			content.Path: content.Hash,
@@ -370,8 +382,10 @@ func TestFileChangeHistory(t *testing.T) {
 func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+
 	// Setup: Create a slice first
-	slice := &models.Slice{ID: "slice-history", Name: "History Test", Description: "For testing file history"}
+	slice := &models.Slice{ID: "slice-history-" + suffix, Name: "History Test", Description: "For testing file history"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
@@ -381,12 +395,12 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 	// Test 1: AddFileChange and GetFileHistory
 	t.Run("AddFileChange", func(t *testing.T) {
 		change1 := &models.FileChangeRecord{
-			ID:         "change-1",
+			ID:         "change-1-" + suffix,
 			SliceID:    slice.ID,
-			CommitHash: "commit-abc",
+			CommitHash: "commit-abc-" + suffix,
 			Path:       "src/main.go",
 			ChangeType: models.ChangeTypeAdd,
-			NewHash:    "hash123",
+			NewHash:    "hash123-" + suffix,
 			LinesAdded: 50,
 			Author:     "alice",
 			Message:    "Initial commit",
@@ -397,13 +411,13 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 		}
 
 		change2 := &models.FileChangeRecord{
-			ID:           "change-2",
+			ID:           "change-2-" + suffix,
 			SliceID:      slice.ID,
-			CommitHash:   "commit-def",
+			CommitHash:   "commit-def-" + suffix,
 			Path:         "src/main.go",
 			ChangeType:   models.ChangeTypeModify,
-			OldHash:      "hash123",
-			NewHash:      "hash456",
+			OldHash:      "hash123-" + suffix,
+			NewHash:      "hash456-" + suffix,
 			LinesAdded:   10,
 			LinesDeleted: 5,
 			Author:       "bob",
@@ -423,35 +437,36 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 			t.Fatalf("expected 2 changes, got %d", len(history))
 		}
 		// Newest first
-		if history[0].ID != "change-2" {
+		if history[0].ID != ("change-2-" + suffix) {
 			t.Errorf("expected newest change first, got %s", history[0].ID)
 		}
-		if history[1].ID != "change-1" {
+		if history[1].ID != ("change-1-" + suffix) {
 			t.Errorf("expected oldest change second, got %s", history[1].ID)
 		}
 	})
 
 	// Test 2: AddFileChanges batch
 	t.Run("AddFileChanges batch", func(t *testing.T) {
+		commitGHI := "commit-ghi-" + suffix
 		changes := []*models.FileChangeRecord{
 			{
-				ID:         "change-3",
+				ID:         "change-3-" + suffix,
 				SliceID:    slice.ID,
-				CommitHash: "commit-ghi",
+				CommitHash: commitGHI,
 				Path:       "src/utils/helper.go",
 				ChangeType: models.ChangeTypeAdd,
-				NewHash:    "hashutil1",
+				NewHash:    "hashutil1-" + suffix,
 				Author:     "charlie",
 				Message:    "Add helper",
 				Timestamp:  baseTime.Add(20 * time.Minute),
 			},
 			{
-				ID:         "change-4",
+				ID:         "change-4-" + suffix,
 				SliceID:    slice.ID,
-				CommitHash: "commit-ghi",
+				CommitHash: commitGHI,
 				Path:       "src/utils/config.go",
 				ChangeType: models.ChangeTypeAdd,
-				NewHash:    "hashutil2",
+				NewHash:    "hashutil2-" + suffix,
 				Author:     "charlie",
 				Message:    "Add helper",
 				Timestamp:  baseTime.Add(20 * time.Minute),
@@ -492,7 +507,7 @@ func runFileChangeHistoryTests(ctx context.Context, t *testing.T, st Storage) {
 
 	// Test 4: GetCommitChanges
 	t.Run("GetCommitChanges", func(t *testing.T) {
-		changes, err := st.GetCommitChanges(ctx, "commit-ghi")
+		changes, err := st.GetCommitChanges(ctx, "commit-ghi-"+suffix)
 		if err != nil {
 			t.Fatalf("GetCommitChanges failed: %v", err)
 		}
