@@ -389,61 +389,44 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		}
 
 		if normalizedPath == "" {
-			// Detect whether directory nodes are materialized by probing a likely top-level dir.
-			treeLikely := false
-			if len(slice.Files) > 0 {
-				sample := common.CleanRelativePath(slice.Files[0])
-				if sample != "" {
-					top := strings.Split(sample, "/")[0]
-					if top != "" {
-						if e, err := s.storage.GetEntryByPath(ctx, backingSliceID, top); err == nil && e != nil {
-							// If "top" exists as an entry, we're likely materialized enough to use tree queries.
-							treeLikely = true
-						}
+			children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
+			if err == nil && len(children) > 0 {
+				entries := make([]*filev1.DirectoryEntry, 0, len(children))
+				for _, child := range children {
+					if child == nil {
+						continue
 					}
+					displayChildPath := common.SliceDisplayPath(slice, child.Path)
+					if displayChildPath == "" {
+						continue
+					}
+					typ := filev1.EntryType_ENTRY_TYPE_FILE
+					hasChildren := false
+					if child.Type == "directory" {
+						typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
+						hasChildren = true
+					}
+					entries = append(entries, &filev1.DirectoryEntry{
+						Name:        path.Base(displayChildPath),
+						Path:        displayChildPath,
+						Type:        typ,
+						HasChildren: hasChildren,
+						Size:        child.Size,
+					})
 				}
-			}
+				sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
-			if treeLikely {
-				children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
-				if err == nil {
-					entries := make([]*filev1.DirectoryEntry, 0, len(children))
-					for _, child := range children {
-						if child == nil {
-							continue
-						}
-						displayChildPath := common.SliceDisplayPath(slice, child.Path)
-						if displayChildPath == "" {
-							continue
-						}
-						typ := filev1.EntryType_ENTRY_TYPE_FILE
-						hasChildren := false
-						if child.Type == "directory" {
-							typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
-							hasChildren = true
-						}
-						entries = append(entries, &filev1.DirectoryEntry{
-							Name:        path.Base(displayChildPath),
-							Path:        displayChildPath,
-							Type:        typ,
-							HasChildren: hasChildren,
-							Size:        child.Size,
-						})
-					}
-					sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-
-					truncated := false
-					if req.Limit > 0 && int(req.Limit) < len(entries) {
-						entries = entries[:req.Limit]
-						truncated = true
-					}
-					return &filev1.ListEntriesResponse{
-						SliceId:   sliceID,
-						Path:      "",
-						Entries:   entries,
-						Truncated: truncated,
-					}, nil
+				truncated := false
+				if req.Limit > 0 && int(req.Limit) < len(entries) {
+					entries = entries[:req.Limit]
+					truncated = true
 				}
+				return &filev1.ListEntriesResponse{
+					SliceId:   sliceID,
+					Path:      "",
+					Entries:   entries,
+					Truncated: truncated,
+				}, nil
 			}
 		} else {
 			storedParentPath := common.SliceStoredPath(slice, normalizedPath)

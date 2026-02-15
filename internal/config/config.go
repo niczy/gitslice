@@ -16,7 +16,7 @@ type Config struct {
 	StorageType string
 
 	// PostgresStorageMode controls the migration path from snapshot to native storage.
-	// Values: "snapshot" (default), "native"
+	// Values: "snapshot" (default), "native_read", "dual_write", "native"
 	PostgresStorageMode string
 
 	// Postgres configuration (if storage type is postgres or postgres_native)
@@ -59,13 +59,13 @@ func LoadConfig() *Config {
 		StorageType:         getEnv("STORAGE_TYPE", "memory"),
 		PostgresStorageMode: getEnv("POSTGRES_STORAGE_MODE", "snapshot"),
 		PostgresDSN:         getEnv("POSTGRES_DSN", ""),
-		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
-		ObjectStoreDir:     getEnv("OBJECT_STORE_DIR", ""),
-		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),
-		GCSEndpoint:        getEnv("GCS_ENDPOINT", ""),
-		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),
-		GCSCredentialsJSON: getEnv("GCS_CREDENTIALS_JSON", ""),
-		GCSDisableAuth:     getEnvBool("GCS_DISABLE_AUTH", false),
+		ObjectStoreType:     getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:      getEnv("OBJECT_STORE_DIR", ""),
+		GCSBucket:           getEnv("GCS_BUCKET", "gitslice-objects"),
+		GCSEndpoint:         getEnv("GCS_ENDPOINT", ""),
+		GCSCredentialsFile:  getEnv("GCS_CREDENTIALS_FILE", ""),
+		GCSCredentialsJSON:  getEnv("GCS_CREDENTIALS_JSON", ""),
+		GCSDisableAuth:      getEnvBool("GCS_DISABLE_AUTH", false),
 	}
 }
 
