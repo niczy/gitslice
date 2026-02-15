@@ -84,7 +84,9 @@ listing hashes, only fetch files that differ.
 
 ---
 
-### 6. Patch generation in `GetCommitChanges` is eager and unbounded
+### 6. ~~Patch generation in `GetCommitChanges` is eager and unbounded~~ **DONE**
+
+**Status:** Resolved
 
 **Severity:** Medium (performance)
 
@@ -93,10 +95,10 @@ content from storage twice per change (before + after). For commits touching man
 this is 2N storage reads with no parallelism and no way to opt out.
 
 **Fix (any combination):**
-- Add `bool include_patches = 2;` to `GetCommitChangesRequest` so clients can opt in
-- Parallelize blob fetches with a bounded worker pool (e.g., `errgroup` with limit)
-- Cap patches: skip diff generation for commits with >100 changed files, or skip individual
-  files larger than a threshold (e.g., 1MB)
+- ~~Add `bool include_patches = 2;` to `GetCommitChangesRequest` so clients can opt in~~ ✅
+- ~~Parallelize blob fetches with a bounded worker pool (e.g., `errgroup` with limit)~~ ✅ (8-worker bounded concurrency)
+- ~~Cap patches: skip diff generation for commits with >100 changed files, or skip individual
+  files larger than a threshold (e.g., 1MB)~~ ✅ (capped at 100 changed files)
 
 ---
 
@@ -228,7 +230,7 @@ slices with deep history.
 | 3 | No streaming for large files | Medium | Large |
 | 4 | ETag / conditional requests | Medium | Small |
 | 5 | Hash in `DirectoryEntry` | Medium | Small |
-| 6 | Opt-in patch generation | Medium | Small |
+| 6 | ~~Opt-in patch generation~~ | ~~Medium~~ | ~~Small~~ **DONE** |
 | 7 | Deduplicate `ListEntries` | Medium | Medium |
 | 8 | Unify `GetFile` code paths | Medium | Medium |
 | 9 | Path cache invalidation | Low | Small |

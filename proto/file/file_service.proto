@@ -185,6 +185,7 @@ message DirectoryChangeSummary {
 // GetCommitChangesRequest retrieves all file changes in a commit
 message GetCommitChangesRequest {
   string commit_hash = 1;           // Commit to get changes for
+  bool include_patches = 2;         // When true, compute unified diffs for each change
 }
 
 message GetCommitChangesResponse {
