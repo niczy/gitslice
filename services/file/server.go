@@ -418,23 +418,28 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 
 	requestPath := cleanPath(req.Path)
-	normalizedPath := common.SliceStoredPath(slice, requestPath)
 	pathMap, _, mapErr := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit)
 	if mapErr != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get slice metadata: %v", mapErr))
 	}
 
-	storedPath, found := pathMap[normalizedPath]
-	if !found {
-		for _, candidateStoredPath := range pathMap {
-			if candidateStoredPath == normalizedPath {
-				storedPath = candidateStoredPath
+	// API requests are expressed in slice *display* paths. pathMap keys are display
+	// paths and values are stored paths. Do not translate the request into a stored
+	// path before looking it up, otherwise mounted slices won't resolve.
+	displayPath := requestPath
+	storedPath, found := pathMap[displayPath]
+	if !found && displayPath != "" {
+		// Backward-compatible: accept stored paths if a client passes them through.
+		for dp, sp := range pathMap {
+			if sp == displayPath {
+				displayPath = dp
+				storedPath = sp
 				found = true
 				break
 			}
 		}
 	}
-	if !found {
+	if !found || storedPath == "" {
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
 
@@ -449,8 +454,16 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 	if content == nil {
 		c, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath)
+		if err != nil && slice.ParentSlice != "" {
+			// Forked slices are views over a parent slice; their directory entries
+			// may not be materialized, but the underlying blob lives in the parent.
+			if parentContent, perr := s.storage.GetSliceFileByPath(ctx, slice.ParentSlice, storedPath); perr == nil && parentContent != nil {
+				c = parentContent
+				err = nil
+			}
+		}
 		if err != nil {
-			if sliceHasPath(pathMap, normalizedPath) {
+			if sliceHasPath(pathMap, displayPath) {
 				return nil, status.Error(codes.NotFound, "file content not available")
 			}
 			return nil, status.Error(codes.NotFound, "file not found")
@@ -459,7 +472,7 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	}
 
 	file := &filev1.File{
-		Path:    common.SliceDisplayPath(slice, normalizedPath),
+		Path:    common.SliceDisplayPath(slice, storedPath),
 		Content: content.Content,
 		Size:    contentSize(content),
 		Hash:    content.Hash,
