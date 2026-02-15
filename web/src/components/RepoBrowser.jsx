@@ -50,6 +50,7 @@ export default function RepoBrowser({
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
+  const hasAppliedInitialSliceRef = useRef(false);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
 
   const breadcrumbs = useMemo(() => {
@@ -75,11 +76,21 @@ export default function RepoBrowser({
 
   // Update slice from URL if present
   useEffect(() => {
-    if (initialBrowserState?.slice && initialBrowserState.slice !== currentSliceId) {
-      const sliceExists = slices.some(s => s.slice_id === initialBrowserState.slice);
-      if (sliceExists) {
+    if (hasAppliedInitialSliceRef.current) {
+      return;
+    }
+
+    if (!initialBrowserState?.slice) {
+      hasAppliedInitialSliceRef.current = true;
+      return;
+    }
+
+    const sliceExists = slices.some((s) => s.slice_id === initialBrowserState.slice);
+    if (sliceExists) {
+      if (initialBrowserState.slice !== currentSliceId) {
         onSliceChange(initialBrowserState.slice);
       }
+      hasAppliedInitialSliceRef.current = true;
     }
   }, [initialBrowserState, slices, currentSliceId, onSliceChange]);
 
