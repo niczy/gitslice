@@ -110,6 +110,21 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 		if err != nil {
 			return nil, nil, err
 		}
+
+		// Use native storage when POSTGRES_STORAGE_MODE=native.
+		if strings.ToLower(cfg.PostgresStorageMode) == "native" {
+			st, err := storage.NewPostgresNativeStorage(ctx, cfg.PostgresDSN, objectStore, "core")
+			if err != nil {
+				closeObjectStore()
+				return nil, nil, err
+			}
+			log.Printf("Using native PostgreSQL storage mode")
+			return st, func() {
+				_ = st.Close()
+				closeObjectStore()
+			}, nil
+		}
+
 		st, err := storage.NewPostgresStorage(ctx, cfg.PostgresDSN, objectStore, "core")
 		if err != nil {
 			closeObjectStore()

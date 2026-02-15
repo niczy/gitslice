@@ -12,10 +12,14 @@ type Config struct {
 	CoreServicePort string
 	GatewayPort     string
 
-	// Storage type (memory, postgres)
+	// Storage type (memory, postgres, postgres_native)
 	StorageType string
 
-	// Postgres configuration (if storage type is postgres)
+	// PostgresStorageMode controls the migration path from snapshot to native storage.
+	// Values: "snapshot" (default), "native"
+	PostgresStorageMode string
+
+	// Postgres configuration (if storage type is postgres or postgres_native)
 	PostgresDSN string
 
 	// Object store configuration (filesystem, GCS)
@@ -50,10 +54,11 @@ func LoadConfig() *Config {
 		}
 	}
 	return &Config{
-		CoreServicePort:    corePort,
-		GatewayPort:        getEnv("GATEWAY_PORT", "8080"),
-		StorageType:        getEnv("STORAGE_TYPE", "memory"),
-		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
+		CoreServicePort:     corePort,
+		GatewayPort:         getEnv("GATEWAY_PORT", "8080"),
+		StorageType:         getEnv("STORAGE_TYPE", "memory"),
+		PostgresStorageMode: getEnv("POSTGRES_STORAGE_MODE", "snapshot"),
+		PostgresDSN:         getEnv("POSTGRES_DSN", ""),
 		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
 		ObjectStoreDir:     getEnv("OBJECT_STORE_DIR", ""),
 		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),

@@ -41,6 +41,21 @@ func TestStorageCompliance(t *testing.T) {
 				return st
 			},
 		})
+		cases = append(cases, struct {
+			name    string
+			factory func(t *testing.T) Storage
+		}{
+			name: "postgres-native",
+			factory: func(t *testing.T) Storage {
+				t.Helper()
+				st, err := NewPostgresNativeStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-native-%d", time.Now().UnixNano()))
+				if err != nil {
+					t.Fatalf("NewPostgresNativeStorage failed: %v", err)
+				}
+				t.Cleanup(func() { _ = st.Close() })
+				return st
+			},
+		})
 	}
 
 	for _, tc := range cases {
@@ -323,6 +338,21 @@ func TestFileChangeHistory(t *testing.T) {
 				st, err := NewPostgresStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-history-%d", time.Now().UnixNano()))
 				if err != nil {
 					t.Fatalf("NewPostgresStorage failed: %v", err)
+				}
+				t.Cleanup(func() { _ = st.Close() })
+				return st
+			},
+		})
+		cases = append(cases, struct {
+			name    string
+			factory func(t *testing.T) Storage
+		}{
+			name: "postgres-native-history",
+			factory: func(t *testing.T) Storage {
+				t.Helper()
+				st, err := NewPostgresNativeStorage(ctx, dsn, NewInMemoryObjectStore(), fmt.Sprintf("test-native-history-%d", time.Now().UnixNano()))
+				if err != nil {
+					t.Fatalf("NewPostgresNativeStorage failed: %v", err)
 				}
 				t.Cleanup(func() { _ = st.Close() })
 				return st

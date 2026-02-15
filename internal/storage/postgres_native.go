@@ -1,0 +1,1739 @@
+package storage
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/models"
+)
+
+// PostgresNativeStorage implements the Storage interface using native PostgreSQL
+// tables as the source of truth for metadata. Blob payloads remain in an ObjectStore.
+//
+// This replaces the snapshot-based PostgresStorage where the entire state was
+// serialized as a single JSON blob in a storage_state row.
+type PostgresNativeStorage struct {
+	pool        *pgxpool.Pool
+	objectStore ObjectStore
+	namespace   string
+}
+
+// NewPostgresNativeStorage creates a new native PostgreSQL storage backend.
+// It runs schema migrations on startup to ensure tables exist.
+func NewPostgresNativeStorage(ctx context.Context, dsn string, objectStore ObjectStore, namespace string) (*PostgresNativeStorage, error) {
+	ctx = ensureCtx(ctx)
+	if dsn == "" {
+		return nil, ErrInvalidInput
+	}
+	if objectStore == nil {
+		return nil, ErrInvalidInput
+	}
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("create pool: %w", err)
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping: %w", err)
+	}
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+
+	return &PostgresNativeStorage{
+		pool:        pool,
+		objectStore: objectStore,
+		namespace:   namespace,
+	}, nil
+}
+
+// Close closes the backing Postgres pool.
+func (s *PostgresNativeStorage) Close() error {
+	s.pool.Close()
+	return nil
+}
+
+func (s *PostgresNativeStorage) objKey(parts ...string) string {
+	if s.namespace == "" {
+		return strings.Join(parts, ":")
+	}
+	return fmt.Sprintf("%s:%s", s.namespace, strings.Join(parts, ":"))
+}
+
+// ============ Slice Operations ============
+
+func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.Slice) error {
+	ctx = ensureCtx(ctx)
+	if slice.ID == "" {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	slice.CreatedAt = now
+	slice.UpdatedAt = now
+
+	filesJSON, _ := json.Marshal(slice.Files)
+	if slice.Files == nil {
+		filesJSON = []byte("[]")
+	}
+	ownersJSON, _ := json.Marshal(slice.Owners)
+	if slice.Owners == nil {
+		ownersJSON = []byte("[]")
+	}
+	mountsJSON, _ := json.Marshal(slice.FolderMounts)
+	if slice.FolderMounts == nil {
+		mountsJSON = []byte("[]")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO slices (id, name, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11)
+	`, slice.ID, slice.Name, slice.Description, slice.CreatedBy,
+		slice.ParentSlice, slice.IsRoot, filesJSON, mountsJSON, ownersJSON,
+		slice.CreatedAt, slice.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrSliceAlreadyExists
+		}
+		return err
+	}
+
+	initialCommitHash := fmt.Sprintf("init-%s", slice.ID)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO slice_metadata (slice_id, head_commit_hash, modified_files, last_modified, modified_files_count)
+		VALUES ($1, $2, '[]', $3, 0)
+	`, slice.ID, initialCommitHash, now)
+	if err != nil {
+		return err
+	}
+
+	// Index files from the slice definition.
+	for _, fileID := range slice.Files {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO file_slice_index (file_id, slice_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, fileID, slice.ID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresNativeStorage) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at FROM slices WHERE id = $1`, sliceID)
+}
+
+func (s *PostgresNativeStorage) ListSlices(ctx context.Context, limit, offset int) ([]*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at
+		FROM slices ORDER BY created_at LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.collectSlices(rows)
+}
+
+func (s *PostgresNativeStorage) CountSlices(ctx context.Context) (int, error) {
+	ctx = ensureCtx(ctx)
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM slices`).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresNativeStorage) ListSlicesByOwner(ctx context.Context, owner string, limit, offset int) ([]*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at
+		FROM slices WHERE owners @> $1::jsonb ORDER BY created_at LIMIT $2 OFFSET $3
+	`, fmt.Sprintf(`[%q]`, owner), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.collectSlices(rows)
+}
+
+func (s *PostgresNativeStorage) SearchSlices(ctx context.Context, query string, limit, offset int) ([]*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	pattern := "%" + query + "%"
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at
+		FROM slices WHERE name ILIKE $1 OR description ILIKE $1 ORDER BY created_at LIMIT $2 OFFSET $3
+	`, pattern, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.collectSlices(rows)
+}
+
+func (s *PostgresNativeStorage) GetRootSlice(ctx context.Context) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at FROM slices WHERE is_root = true LIMIT 1`)
+}
+
+func (s *PostgresNativeStorage) InitializeRootSlice(ctx context.Context) error {
+	ctx = ensureCtx(ctx)
+
+	// Check if root already exists.
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM slices WHERE is_root = true`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	rootSlice := &models.Slice{
+		ID:          "root_slice",
+		Name:        "Root Slice",
+		Description: "The root slice containing all files",
+		Files:       []string{},
+		Owners:      []string{"system"},
+		CreatedBy:   "system",
+		IsRoot:      true,
+	}
+
+	// Use CreateSlice but override the initial head commit hash afterward.
+	if err := s.CreateSlice(ctx, rootSlice); err != nil {
+		return err
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		UPDATE slice_metadata SET head_commit_hash = 'root-initial' WHERE slice_id = $1
+	`, rootSlice.ID)
+	return err
+}
+
+func (s *PostgresNativeStorage) SetSliceFiles(ctx context.Context, sliceID string, files []string) error {
+	ctx = ensureCtx(ctx)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var currentFiles []byte
+	err = tx.QueryRow(ctx, `SELECT files FROM slices WHERE id = $1 FOR UPDATE`, sliceID).Scan(&currentFiles)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+
+	var existing []string
+	if err := json.Unmarshal(currentFiles, &existing); err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return ErrSliceFilesImmutable
+	}
+
+	filesJSON, _ := json.Marshal(files)
+	_, err = tx.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, filesJSON, sliceID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ============ Metadata Operations ============
+
+func (s *PostgresNativeStorage) GetSliceMetadata(ctx context.Context, sliceID string) (*models.SliceMetadata, error) {
+	ctx = ensureCtx(ctx)
+
+	var meta models.SliceMetadata
+	var modifiedFilesJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT slice_id, head_commit_hash, modified_files, last_modified, modified_files_count
+		FROM slice_metadata WHERE slice_id = $1
+	`, sliceID).Scan(&meta.SliceID, &meta.HeadCommitHash, &modifiedFilesJSON, &meta.LastModified, &meta.ModifiedFilesCount)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrSliceNotFound
+		}
+		return nil, err
+	}
+
+	if err := json.Unmarshal(modifiedFilesJSON, &meta.ModifiedFiles); err != nil {
+		meta.ModifiedFiles = []string{}
+	}
+
+	return &meta, nil
+}
+
+func (s *PostgresNativeStorage) UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error {
+	ctx = ensureCtx(ctx)
+
+	if metadata.LastModified.IsZero() {
+		metadata.LastModified = time.Now()
+	}
+
+	modifiedJSON, _ := json.Marshal(metadata.ModifiedFiles)
+	if metadata.ModifiedFiles == nil {
+		modifiedJSON = []byte("[]")
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE slice_metadata
+		SET head_commit_hash = $1, modified_files = $2, last_modified = $3, modified_files_count = $4
+		WHERE slice_id = $5
+	`, metadata.HeadCommitHash, modifiedJSON, metadata.LastModified, metadata.ModifiedFilesCount, sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
+// ============ Commit Operations ============
+
+func (s *PostgresNativeStorage) AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error {
+	ctx = ensureCtx(ctx)
+
+	// Verify slice exists.
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE id = $1)`, sliceID).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO slice_commits (slice_id, commit_hash, parent_hash, message, committed_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, sliceID, commit.CommitHash, commit.ParentHash, commit.Message, commit.Timestamp)
+	return err
+}
+
+func (s *PostgresNativeStorage) ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error) {
+	ctx = ensureCtx(ctx)
+
+	// Verify slice exists.
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE id = $1)`, sliceID).Scan(&exists)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrSliceNotFound
+	}
+
+	var rows pgx.Rows
+	if fromCommitHash != "" {
+		// Find the seq of the fromCommitHash, then get commits before it.
+		rows, err = s.pool.Query(ctx, `
+			SELECT commit_hash, parent_hash, message, committed_at
+			FROM slice_commits
+			WHERE slice_id = $1 AND seq < (
+				SELECT seq FROM slice_commits WHERE slice_id = $1 AND commit_hash = $2 LIMIT 1
+			)
+			ORDER BY seq DESC
+			LIMIT $3
+		`, sliceID, fromCommitHash, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT commit_hash, parent_hash, message, committed_at
+			FROM slice_commits WHERE slice_id = $1
+			ORDER BY seq DESC
+			LIMIT $2
+		`, sliceID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var commits []*models.Commit
+	for rows.Next() {
+		var c models.Commit
+		if err := rows.Scan(&c.CommitHash, &c.ParentHash, &c.Message, &c.Timestamp); err != nil {
+			return nil, err
+		}
+		commits = append(commits, &c)
+	}
+	if commits == nil {
+		commits = []*models.Commit{}
+	}
+	return commits, rows.Err()
+}
+
+// ============ File Indexing ============
+
+func (s *PostgresNativeStorage) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
+	ctx = ensureCtx(ctx)
+
+	// Check slice exists and whether it is root.
+	var isRoot bool
+	var filesJSON []byte
+	err := s.pool.QueryRow(ctx, `SELECT is_root, files FROM slices WHERE id = $1`, sliceID).Scan(&isRoot, &filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+
+	if isRoot {
+		var files []string
+		if err := json.Unmarshal(filesJSON, &files); err != nil {
+			files = []string{}
+		}
+		for _, f := range files {
+			if f == fileID {
+				return nil // Already present
+			}
+		}
+		files = append(files, fileID)
+		updated, _ := json.Marshal(files)
+		_, err = s.pool.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, updated, sliceID)
+		return err
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO file_slice_index (file_id, slice_id)
+		VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, fileID, sliceID)
+	return err
+}
+
+func (s *PostgresNativeStorage) GetActiveSlicesForFile(ctx context.Context, fileID string) ([]string, error) {
+	ctx = ensureCtx(ctx)
+
+	rows, err := s.pool.Query(ctx, `SELECT slice_id FROM file_slice_index WHERE file_id = $1`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sliceIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		sliceIDs = append(sliceIDs, id)
+	}
+	if sliceIDs == nil {
+		sliceIDs = []string{}
+	}
+	return sliceIDs, rows.Err()
+}
+
+func (s *PostgresNativeStorage) RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error {
+	ctx = ensureCtx(ctx)
+
+	// Handle root slice: remove from the files array.
+	var isRoot bool
+	var filesJSON []byte
+	err := s.pool.QueryRow(ctx, `SELECT is_root, files FROM slices WHERE id = $1`, sliceID).Scan(&isRoot, &filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// No-op for missing slice (matches in-memory behavior).
+			_, _ = s.pool.Exec(ctx, `DELETE FROM file_slice_index WHERE file_id = $1 AND slice_id = $2`, fileID, sliceID)
+			return nil
+		}
+		return err
+	}
+
+	if isRoot {
+		var files []string
+		if err := json.Unmarshal(filesJSON, &files); err != nil {
+			files = []string{}
+		}
+		filtered := make([]string, 0, len(files))
+		for _, f := range files {
+			if f != fileID {
+				filtered = append(filtered, f)
+			}
+		}
+		updated, _ := json.Marshal(filtered)
+		_, err = s.pool.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, updated, sliceID)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, err = s.pool.Exec(ctx, `DELETE FROM file_slice_index WHERE file_id = $1 AND slice_id = $2`, fileID, sliceID)
+	return err
+}
+
+func (s *PostgresNativeStorage) ListConflicts(ctx context.Context) ([]*models.FileConflict, error) {
+	ctx = ensureCtx(ctx)
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT file_id, array_agg(slice_id ORDER BY slice_id)
+		FROM file_slice_index
+		GROUP BY file_id
+		HAVING COUNT(*) >= 2
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var conflicts []*models.FileConflict
+	for rows.Next() {
+		var fileID string
+		var sliceIDs []string
+		if err := rows.Scan(&fileID, &sliceIDs); err != nil {
+			return nil, err
+		}
+		conflicts = append(conflicts, &models.FileConflict{
+			FileID:            fileID,
+			ConflictingSlices: sliceIDs,
+		})
+	}
+	return conflicts, rows.Err()
+}
+
+func (s *PostgresNativeStorage) ResolveConflict(ctx context.Context, fileID, preferredSliceID string) (*models.FileConflict, error) {
+	ctx = ensureCtx(ctx)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Get current slices for this file.
+	rows, err := tx.Query(ctx, `SELECT slice_id FROM file_slice_index WHERE file_id = $1`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	var sliceIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		sliceIDs = append(sliceIDs, id)
+	}
+	rows.Close()
+
+	if len(sliceIDs) == 0 {
+		return &models.FileConflict{FileID: fileID, ConflictingSlices: []string{}}, tx.Commit(ctx)
+	}
+
+	// Determine which slice to keep.
+	keepSlice := ""
+	if preferredSliceID != "" {
+		for _, id := range sliceIDs {
+			if id == preferredSliceID {
+				keepSlice = preferredSliceID
+				break
+			}
+		}
+	}
+	if keepSlice == "" && len(sliceIDs) > 0 {
+		sort.Strings(sliceIDs)
+		keepSlice = sliceIDs[0]
+	}
+
+	// Remove all other mappings.
+	_, err = tx.Exec(ctx, `DELETE FROM file_slice_index WHERE file_id = $1 AND slice_id != $2`, fileID, keepSlice)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return &models.FileConflict{FileID: fileID, ConflictingSlices: []string{keepSlice}}, nil
+}
+
+// ============ Locking ============
+
+func (s *PostgresNativeStorage) LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error {
+	ctx = ensureCtx(ctx)
+
+	// Verify slice exists.
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE id = $1)`, sliceID).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Check for conflicting file locks.
+	for _, fileID := range fileIDs {
+		var owner string
+		err := tx.QueryRow(ctx, `SELECT owner_slice_id FROM file_locks WHERE file_id = $1`, fileID).Scan(&owner)
+		if err == nil && owner != sliceID {
+			return ErrLockHeld
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return err
+		}
+	}
+
+	// Acquire slice lock.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO slice_locks (slice_id) VALUES ($1)
+		ON CONFLICT (slice_id) DO NOTHING
+	`, sliceID)
+	if err != nil {
+		return err
+	}
+
+	// Acquire file locks.
+	for _, fileID := range fileIDs {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO file_locks (file_id, owner_slice_id) VALUES ($1, $2)
+			ON CONFLICT (file_id) DO UPDATE SET owner_slice_id = $2
+		`, fileID, sliceID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresNativeStorage) UnlockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) {
+	ctx = ensureCtx(ctx)
+
+	_, _ = s.pool.Exec(ctx, `DELETE FROM slice_locks WHERE slice_id = $1`, sliceID)
+	for _, fileID := range fileIDs {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM file_locks WHERE file_id = $1 AND owner_slice_id = $2`, fileID, sliceID)
+	}
+}
+
+// ============ Index Maintenance ============
+
+func (s *PostgresNativeStorage) RebuildIndexes(ctx context.Context) error {
+	return nil
+}
+
+// ============ Changeset Operations ============
+
+func (s *PostgresNativeStorage) CreateChangeset(ctx context.Context, changeset *models.Changeset) error {
+	ctx = ensureCtx(ctx)
+
+	// Verify slice exists.
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE id = $1)`, changeset.SliceID).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	modifiedJSON, _ := json.Marshal(changeset.ModifiedFiles)
+	if changeset.ModifiedFiles == nil {
+		modifiedJSON = []byte("[]")
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO changesets (id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, changeset.ID, changeset.Hash, changeset.SliceID, changeset.BaseCommitHash,
+		modifiedJSON, int(changeset.Status), changeset.Author, changeset.Message,
+		changeset.CreatedAt, changeset.MergedAt)
+	return err
+}
+
+func (s *PostgresNativeStorage) GetChangeset(ctx context.Context, changesetID string) (*models.Changeset, error) {
+	ctx = ensureCtx(ctx)
+
+	var cs models.Changeset
+	var modifiedJSON []byte
+	var status int
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
+		FROM changesets WHERE id = $1
+	`, changesetID).Scan(&cs.ID, &cs.Hash, &cs.SliceID, &cs.BaseCommitHash,
+		&modifiedJSON, &status, &cs.Author, &cs.Message, &cs.CreatedAt, &cs.MergedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrChangesetNotFound
+		}
+		return nil, err
+	}
+
+	cs.Status = models.ChangesetStatus(status)
+	if err := json.Unmarshal(modifiedJSON, &cs.ModifiedFiles); err != nil {
+		cs.ModifiedFiles = []string{}
+	}
+
+	return &cs, nil
+}
+
+func (s *PostgresNativeStorage) ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error) {
+	ctx = ensureCtx(ctx)
+
+	var rows pgx.Rows
+	var err error
+
+	if status != nil {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
+			FROM changesets WHERE slice_id = $1 AND status = $2
+			ORDER BY created_at DESC LIMIT $3
+		`, sliceID, int(*status), limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
+			FROM changesets WHERE slice_id = $1
+			ORDER BY created_at DESC LIMIT $2
+		`, sliceID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*models.Changeset
+	for rows.Next() {
+		var cs models.Changeset
+		var modifiedJSON []byte
+		var statusInt int
+		if err := rows.Scan(&cs.ID, &cs.Hash, &cs.SliceID, &cs.BaseCommitHash,
+			&modifiedJSON, &statusInt, &cs.Author, &cs.Message, &cs.CreatedAt, &cs.MergedAt); err != nil {
+			return nil, err
+		}
+		cs.Status = models.ChangesetStatus(statusInt)
+		if err := json.Unmarshal(modifiedJSON, &cs.ModifiedFiles); err != nil {
+			cs.ModifiedFiles = []string{}
+		}
+		result = append(result, &cs)
+	}
+	if result == nil {
+		result = []*models.Changeset{}
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresNativeStorage) UpdateChangeset(ctx context.Context, changeset *models.Changeset) error {
+	ctx = ensureCtx(ctx)
+
+	modifiedJSON, _ := json.Marshal(changeset.ModifiedFiles)
+	if changeset.ModifiedFiles == nil {
+		modifiedJSON = []byte("[]")
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE changesets
+		SET hash = $1, slice_id = $2, base_commit_hash = $3, modified_files = $4,
+		    status = $5, author = $6, message = $7, merged_at = $8
+		WHERE id = $9
+	`, changeset.Hash, changeset.SliceID, changeset.BaseCommitHash, modifiedJSON,
+		int(changeset.Status), changeset.Author, changeset.Message, changeset.MergedAt, changeset.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrChangesetNotFound
+	}
+	return nil
+}
+
+// ============ File Content ============
+
+func (s *PostgresNativeStorage) GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error) {
+	ctx = ensureCtx(ctx)
+
+	// Get the file list from the slice.
+	var filesJSON []byte
+	err := s.pool.QueryRow(ctx, `SELECT files FROM slices WHERE id = $1`, sliceID).Scan(&filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrSliceNotFound
+		}
+		return nil, err
+	}
+
+	var fileIDs []string
+	if err := json.Unmarshal(filesJSON, &fileIDs); err != nil {
+		return nil, err
+	}
+
+	var files []*models.FileContent
+	for _, fileID := range fileIDs {
+		// Try to hydrate from object store.
+		raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", fileID))
+		if err == nil {
+			var fc models.FileContent
+			if err := json.Unmarshal(raw, &fc); err == nil {
+				files = append(files, &fc)
+				continue
+			}
+		}
+
+		// Fall back to metadata from file_contents table.
+		var fc models.FileContent
+		err = s.pool.QueryRow(ctx, `
+			SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
+		`, fileID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
+		if err == nil {
+			files = append(files, &fc)
+		}
+	}
+	return files, nil
+}
+
+func (s *PostgresNativeStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
+	ctx = ensureCtx(ctx)
+
+	// Look up the directory entry.
+	var entryID string
+	var entrySize int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, size FROM directory_entries WHERE slice_id = $1 AND path = $2
+	`, sliceID, path).Scan(&entryID, &entrySize)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+
+	// Try object store hydration using path as file ID.
+	for _, candidateID := range []string{path, entryID} {
+		if candidateID == "" {
+			continue
+		}
+		raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", candidateID))
+		if err != nil {
+			continue
+		}
+		var fc models.FileContent
+		if err := json.Unmarshal(raw, &fc); err != nil {
+			continue
+		}
+		if fc.FileID == "" {
+			fc.FileID = candidateID
+		}
+		if fc.Path == "" {
+			fc.Path = path
+		}
+		if fc.Size == 0 {
+			fc.Size = entrySize
+		}
+		return &fc, nil
+	}
+
+	// Fall back to file_contents table metadata.
+	var fc models.FileContent
+	err = s.pool.QueryRow(ctx, `
+		SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
+	`, path).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
+	if err == nil {
+		return &fc, nil
+	}
+
+	// Try by entry ID.
+	err = s.pool.QueryRow(ctx, `
+		SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
+	`, entryID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
+	if err == nil {
+		if fc.Path == "" {
+			fc.Path = path
+		}
+		return &fc, nil
+	}
+
+	// Last resort: return metadata-only entry.
+	return &models.FileContent{
+		FileID: path,
+		Path:   path,
+		Size:   entrySize,
+	}, nil
+}
+
+func (s *PostgresNativeStorage) AddFileContent(ctx context.Context, content *models.FileContent) error {
+	ctx = ensureCtx(ctx)
+	if content == nil || content.FileID == "" {
+		return ErrInvalidInput
+	}
+
+	// Store blob in object store.
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	if err := s.objectStore.PutObject(ctx, s.objKey("file_content", content.FileID), raw); err != nil {
+		return err
+	}
+	if content.Hash != "" {
+		if err := s.objectStore.PutObject(ctx, s.objKey("versioned_content", content.Hash), raw); err != nil {
+			return err
+		}
+	}
+
+	// Upsert metadata in DB.
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO file_contents (file_id, path, size, hash)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (file_id) DO UPDATE SET path = $2, size = $3, hash = $4
+	`, content.FileID, content.Path, content.Size, content.Hash)
+	if err != nil {
+		return err
+	}
+
+	if content.Hash != "" {
+		_, err = s.pool.Exec(ctx, `
+			INSERT INTO versioned_content (content_hash, file_id, path, size)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (content_hash) DO NOTHING
+		`, content.Hash, content.FileID, content.Path, content.Size)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ============ Directory Entries ============
+
+func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.DirectoryEntry) error {
+	ctx = ensureCtx(ctx)
+	if entry.ID == "" {
+		return ErrInvalidInput
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, entry.ID, entry.ParentID, entry.Path, entry.Type, entry.ParentID, entry.Content, entry.Size)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*models.DirectoryEntry, error) {
+	ctx = ensureCtx(ctx)
+
+	var e models.DirectoryEntry
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, path, type, parent_id, content, size FROM directory_entries WHERE id = $1
+	`, entryID).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &e, nil
+}
+
+func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, path string) (*models.DirectoryEntry, error) {
+	ctx = ensureCtx(ctx)
+
+	var e models.DirectoryEntry
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, path, type, parent_id, content, size FROM directory_entries
+		WHERE slice_id = $1 AND path = $2
+	`, sliceID, path).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &e, nil
+}
+
+func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error) {
+	ctx = ensureCtx(ctx)
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, path, type, parent_id, content, size FROM directory_entries WHERE parent_id = $1
+	`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*models.DirectoryEntry
+	for rows.Next() {
+		var e models.DirectoryEntry
+		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size); err != nil {
+			return nil, err
+		}
+		result = append(result, &e)
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresNativeStorage) UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error {
+	ctx = ensureCtx(ctx)
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = $4, size = $5, updated_at = NOW()
+		WHERE id = $6
+	`, entry.Path, entry.Type, entry.ParentID, entry.Content, entry.Size, entry.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) DeleteEntry(ctx context.Context, entryID string) error {
+	ctx = ensureCtx(ctx)
+
+	tag, err := s.pool.Exec(ctx, `DELETE FROM directory_entries WHERE id = $1`, entryID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+// ============ Global State ============
+
+func (s *PostgresNativeStorage) GetGlobalState(ctx context.Context) (*models.GlobalState, error) {
+	ctx = ensureCtx(ctx)
+
+	var gs models.GlobalState
+	var stateJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT global_commit_hash, updated_at, state_json FROM global_state WHERE id = true
+	`).Scan(&gs.GlobalCommitHash, &gs.Timestamp, &stateJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// Return default state.
+			return &models.GlobalState{
+				GlobalCommitHash: "global-init",
+				History:          []*models.GlobalCommit{},
+			}, nil
+		}
+		return nil, err
+	}
+
+	// Decode history from state_json.
+	var stateData struct {
+		History []*models.GlobalCommit `json:"history"`
+	}
+	if err := json.Unmarshal(stateJSON, &stateData); err == nil {
+		gs.History = stateData.History
+	}
+	if gs.History == nil {
+		gs.History = []*models.GlobalCommit{}
+	}
+
+	return &gs, nil
+}
+
+func (s *PostgresNativeStorage) UpdateGlobalState(ctx context.Context, state *models.GlobalState) error {
+	ctx = ensureCtx(ctx)
+
+	stateData := struct {
+		History []*models.GlobalCommit `json:"history"`
+	}{
+		History: state.History,
+	}
+	stateJSON, _ := json.Marshal(stateData)
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
+		VALUES (true, $1, $2, $3)
+		ON CONFLICT (id) DO UPDATE SET global_commit_hash = $1, updated_at = $2, state_json = $3
+	`, state.GlobalCommitHash, state.Timestamp, stateJSON)
+	return err
+}
+
+// ============ Health Check ============
+
+func (s *PostgresNativeStorage) Ping(ctx context.Context) error {
+	ctx = ensureCtx(ctx)
+	if err := s.pool.Ping(ctx); err != nil {
+		return err
+	}
+
+	key := s.objKey("healthcheck")
+	if err := s.objectStore.PutObject(ctx, key, []byte("ok")); err != nil {
+		return err
+	}
+	_, err := s.objectStore.GetObject(ctx, key)
+	_ = s.objectStore.DeleteObject(ctx, key)
+	return err
+}
+
+// ============ Commit Snapshots ============
+
+func (s *PostgresNativeStorage) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
+	ctx = ensureCtx(ctx)
+
+	var cs models.CommitSnapshot
+	var filesJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT commit_hash, slice_id, files, committed_at FROM commit_snapshots WHERE commit_hash = $1
+	`, commitHash).Scan(&cs.CommitHash, &cs.SliceID, &filesJSON, &cs.Timestamp)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrCommitNotFound
+		}
+		return nil, err
+	}
+
+	if err := json.Unmarshal(filesJSON, &cs.Files); err != nil {
+		cs.Files = make(map[string]string)
+	}
+
+	return &cs, nil
+}
+
+func (s *PostgresNativeStorage) SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error {
+	ctx = ensureCtx(ctx)
+	if snapshot.CommitHash == "" {
+		return ErrInvalidInput
+	}
+
+	filesJSON, _ := json.Marshal(snapshot.Files)
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO commit_snapshots (commit_hash, slice_id, files, committed_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (commit_hash) DO UPDATE SET slice_id = $2, files = $3, committed_at = $4
+	`, snapshot.CommitHash, snapshot.SliceID, filesJSON, snapshot.Timestamp)
+	return err
+}
+
+func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+	ctx = ensureCtx(ctx)
+
+	snapshot, err := s.GetCommitSnapshot(ctx, commitHash)
+	if err != nil {
+		return nil, err
+	}
+
+	contentHash, exists := snapshot.Files[path]
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	// Try object store.
+	raw, err := s.objectStore.GetObject(ctx, s.objKey("versioned_content", contentHash))
+	if err == nil {
+		var content models.FileContent
+		if err := json.Unmarshal(raw, &content); err == nil {
+			content.Path = path
+			content.FileID = path
+			return &content, nil
+		}
+	}
+
+	// Try versioned_content table metadata.
+	var fc models.FileContent
+	err = s.pool.QueryRow(ctx, `
+		SELECT file_id, path, size FROM versioned_content WHERE content_hash = $1
+	`, contentHash).Scan(&fc.FileID, &fc.Path, &fc.Size)
+	if err == nil {
+		fc.Hash = contentHash
+		fc.Path = path
+		fc.FileID = path
+		return &fc, nil
+	}
+
+	return nil, ErrEntryNotFound
+}
+
+func (s *PostgresNativeStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
+	ctx = ensureCtx(ctx)
+
+	snapshot, err := s.GetCommitSnapshot(ctx, commitHash)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for path := range snapshot.Files {
+		if pathPrefix == "" || strings.HasPrefix(path, pathPrefix) {
+			files = append(files, path)
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// ============ File Change History ============
+
+func (s *PostgresNativeStorage) AddFileChange(ctx context.Context, change *models.FileChangeRecord) error {
+	ctx = ensureCtx(ctx)
+	if change.ID == "" || change.Path == "" || change.CommitHash == "" {
+		return ErrInvalidInput
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO file_changes (id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, change.ID, change.SliceID, change.CommitHash, change.Path, change.OldPath,
+		string(change.ChangeType), change.OldHash, change.NewHash,
+		change.LinesAdded, change.LinesDeleted, change.Author, change.Message, change.Timestamp)
+	return err
+}
+
+func (s *PostgresNativeStorage) AddFileChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
+	ctx = ensureCtx(ctx)
+	for _, change := range changes {
+		if err := s.AddFileChange(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetFileHistory(ctx context.Context, sliceID, path string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	ctx = ensureCtx(ctx)
+
+	var rows pgx.Rows
+	var err error
+
+	if fromCommit != "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+			FROM file_changes
+			WHERE slice_id = $1 AND path = $2 AND committed_at < (
+				SELECT committed_at FROM file_changes WHERE slice_id = $1 AND path = $2 AND commit_hash = $3 LIMIT 1
+			)
+			ORDER BY committed_at DESC
+			LIMIT $4
+		`, sliceID, path, fromCommit, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+			FROM file_changes WHERE slice_id = $1 AND path = $2
+			ORDER BY committed_at DESC
+			LIMIT $3
+		`, sliceID, path, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.collectFileChanges(rows)
+}
+
+func (s *PostgresNativeStorage) GetDirectoryHistory(ctx context.Context, sliceID, pathPrefix string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
+	ctx = ensureCtx(ctx)
+
+	if pathPrefix != "" && !strings.HasSuffix(pathPrefix, "/") {
+		pathPrefix += "/"
+	}
+
+	var rows pgx.Rows
+	var err error
+
+	if fromCommit != "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+			FROM file_changes
+			WHERE slice_id = $1 AND path LIKE $2 AND committed_at < (
+				SELECT MIN(committed_at) FROM file_changes WHERE commit_hash = $3
+			)
+			ORDER BY committed_at DESC
+			LIMIT $4
+		`, sliceID, pathPrefix+"%", fromCommit, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+			FROM file_changes WHERE slice_id = $1 AND path LIKE $2
+			ORDER BY committed_at DESC
+			LIMIT $3
+		`, sliceID, pathPrefix+"%", limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.collectFileChanges(rows)
+}
+
+func (s *PostgresNativeStorage) GetCommitChanges(ctx context.Context, commitHash string) ([]*models.FileChangeRecord, error) {
+	ctx = ensureCtx(ctx)
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+		FROM file_changes WHERE commit_hash = $1 ORDER BY path
+	`, commitHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.collectFileChanges(rows)
+}
+
+func (s *PostgresNativeStorage) QueryFileHistory(ctx context.Context, query *models.FileHistoryQuery) (*models.FileHistoryResult, error) {
+	ctx = ensureCtx(ctx)
+
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+
+	if query.SliceID != "" {
+		conditions = append(conditions, fmt.Sprintf("slice_id = $%d", argIdx))
+		args = append(args, query.SliceID)
+		argIdx++
+	}
+	if query.Path != "" {
+		conditions = append(conditions, fmt.Sprintf("path = $%d", argIdx))
+		args = append(args, query.Path)
+		argIdx++
+	}
+	if query.PathPrefix != "" {
+		prefix := query.PathPrefix
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		conditions = append(conditions, fmt.Sprintf("path LIKE $%d", argIdx))
+		args = append(args, prefix+"%")
+		argIdx++
+	}
+	if len(query.ChangeTypes) > 0 {
+		types := make([]string, len(query.ChangeTypes))
+		for i, ct := range query.ChangeTypes {
+			types[i] = string(ct)
+		}
+		conditions = append(conditions, fmt.Sprintf("change_type = ANY($%d)", argIdx))
+		args = append(args, types)
+		argIdx++
+	}
+	if query.Author != "" {
+		conditions = append(conditions, fmt.Sprintf("author = $%d", argIdx))
+		args = append(args, query.Author)
+		argIdx++
+	}
+	if query.FromTimestamp != nil {
+		conditions = append(conditions, fmt.Sprintf("committed_at >= $%d", argIdx))
+		args = append(args, *query.FromTimestamp)
+		argIdx++
+	}
+	if query.ToTimestamp != nil {
+		conditions = append(conditions, fmt.Sprintf("committed_at <= $%d", argIdx))
+		args = append(args, *query.ToTimestamp)
+		argIdx++
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Get total count.
+	var totalCount int
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM file_changes %s", where)
+	err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&totalCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get paginated results.
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	offset := query.Offset
+
+	dataSQL := fmt.Sprintf(`
+		SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+		FROM file_changes %s ORDER BY committed_at DESC LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, dataSQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	changes, err := s.collectFileChanges(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	hasMore := offset+len(changes) < totalCount
+
+	return &models.FileHistoryResult{
+		Changes:    changes,
+		TotalCount: totalCount,
+		HasMore:    hasMore,
+	}, nil
+}
+
+func (s *PostgresNativeStorage) GetDirectorySummary(ctx context.Context, sliceID, pathPrefix string) (*models.DirectoryChangeSummary, error) {
+	ctx = ensureCtx(ctx)
+
+	if pathPrefix != "" && !strings.HasSuffix(pathPrefix, "/") {
+		pathPrefix += "/"
+	}
+
+	// Count total changes and unique files.
+	var totalChanges int
+	var filesChanged int
+	err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*), COUNT(DISTINCT path)
+		FROM file_changes WHERE slice_id = $1 AND path LIKE $2
+	`, sliceID, pathPrefix+"%").Scan(&totalChanges, &filesChanged)
+	if err != nil {
+		return nil, err
+	}
+
+	if totalChanges == 0 {
+		return &models.DirectoryChangeSummary{
+			Path:          pathPrefix,
+			TotalChanges:  0,
+			FilesChanged:  0,
+			ChangesByType: make(map[models.ChangeType]int),
+		}, nil
+	}
+
+	// Get changes by type.
+	changesByType := make(map[models.ChangeType]int)
+	rows, err := s.pool.Query(ctx, `
+		SELECT change_type, COUNT(*)
+		FROM file_changes WHERE slice_id = $1 AND path LIKE $2
+		GROUP BY change_type
+	`, sliceID, pathPrefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var ct string
+		var count int
+		if err := rows.Scan(&ct, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		changesByType[models.ChangeType(ct)] = count
+	}
+	rows.Close()
+
+	// Get last change.
+	var lastChange models.FileChangeRecord
+	var changeType string
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at
+		FROM file_changes WHERE slice_id = $1 AND path LIKE $2
+		ORDER BY committed_at DESC LIMIT 1
+	`, sliceID, pathPrefix+"%").Scan(
+		&lastChange.ID, &lastChange.SliceID, &lastChange.CommitHash, &lastChange.Path,
+		&lastChange.OldPath, &changeType, &lastChange.OldHash, &lastChange.NewHash,
+		&lastChange.LinesAdded, &lastChange.LinesDeleted, &lastChange.Author,
+		&lastChange.Message, &lastChange.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	lastChange.ChangeType = models.ChangeType(changeType)
+
+	return &models.DirectoryChangeSummary{
+		Path:          pathPrefix,
+		TotalChanges:  totalChanges,
+		FilesChanged:  filesChanged,
+		LastChange:    &lastChange,
+		ChangesByType: changesByType,
+	}, nil
+}
+
+// ============ Account Operations ============
+
+func (s *PostgresNativeStorage) EnsureUser(ctx context.Context, username string) (*models.User, error) {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	now := time.Now()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO users (username, created_at, updated_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (username) DO NOTHING
+	`, username, now, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetUser(ctx, username)
+}
+
+func (s *PostgresNativeStorage) GetUser(ctx context.Context, username string) (*models.User, error) {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	var u models.User
+	err := s.pool.QueryRow(ctx, `SELECT username, created_at, updated_at FROM users WHERE username = $1`, username).
+		Scan(&u.Username, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *PostgresNativeStorage) CreateOrganization(ctx context.Context, org *models.Organization) error {
+	ctx = ensureCtx(ctx)
+	if org == nil || org.Slug == "" || org.Name == "" || org.CreatedBy == "" {
+		return ErrInvalidInput
+	}
+	if !auth.ValidateUsername(org.CreatedBy) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if org.CreatedAt.IsZero() {
+		org.CreatedAt = now
+	}
+	org.UpdatedAt = now
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO organizations (slug, name, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, org.Slug, org.Name, org.CreatedBy, org.CreatedAt, org.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error) {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	if orgSlug == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var org models.Organization
+	err := s.pool.QueryRow(ctx, `SELECT slug, name, created_by, created_at, updated_at FROM organizations WHERE slug = $1`, orgSlug).
+		Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.CreatedAt, &org.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &org, nil
+}
+
+func (s *PostgresNativeStorage) AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error {
+	ctx = ensureCtx(ctx)
+	if member == nil || member.OrgSlug == "" || member.Username == "" || member.Role == "" {
+		return ErrInvalidInput
+	}
+	if !auth.ValidateUsername(member.Username) {
+		return ErrInvalidInput
+	}
+
+	// Verify org exists.
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = $1)`, member.OrgSlug).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrEntryNotFound
+	}
+
+	now := time.Now()
+	if member.CreatedAt.IsZero() {
+		member.CreatedAt = now
+	}
+	member.UpdatedAt = now
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO organization_members (org_slug, username, role, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, member.OrgSlug, member.Username, string(member.Role), member.CreatedAt, member.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error) {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.slug, o.name, o.created_by, o.created_at, o.updated_at
+		FROM organizations o
+		INNER JOIN organization_members m ON o.slug = m.org_slug
+		WHERE m.username = $1
+		ORDER BY o.slug
+	`, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orgs []*models.Organization
+	for rows.Next() {
+		var org models.Organization
+		if err := rows.Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.CreatedAt, &org.UpdatedAt); err != nil {
+			return nil, err
+		}
+		orgs = append(orgs, &org)
+	}
+	if orgs == nil {
+		orgs = []*models.Organization{}
+	}
+	return orgs, rows.Err()
+}
+
+// ============ Internal Helpers ============
+
+// queryable abstracts *pgxpool.Pool and pgx.Tx for shared scan methods.
+type queryable interface {
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+}
+
+func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql string, args ...interface{}) (*models.Slice, error) {
+	var sl models.Slice
+	var filesJSON, ownersJSON, mountsJSON []byte
+	var parentID *string
+
+	err := q.QueryRow(ctx, sql, args...).Scan(
+		&sl.ID, &sl.Name, &sl.Description, &sl.CreatedBy, &parentID,
+		&sl.IsRoot, &filesJSON, &mountsJSON, &ownersJSON,
+		&sl.CreatedAt, &sl.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrSliceNotFound
+		}
+		return nil, err
+	}
+
+	if parentID != nil {
+		sl.ParentSlice = *parentID
+	}
+	if err := json.Unmarshal(filesJSON, &sl.Files); err != nil {
+		sl.Files = []string{}
+	}
+	if err := json.Unmarshal(ownersJSON, &sl.Owners); err != nil {
+		sl.Owners = []string{}
+	}
+	if err := json.Unmarshal(mountsJSON, &sl.FolderMounts); err != nil {
+		sl.FolderMounts = nil
+	}
+
+	return &sl, nil
+}
+
+func (s *PostgresNativeStorage) collectSlices(rows pgx.Rows) ([]*models.Slice, error) {
+	var result []*models.Slice
+	for rows.Next() {
+		var sl models.Slice
+		var filesJSON, ownersJSON, mountsJSON []byte
+		var parentID *string
+		if err := rows.Scan(
+			&sl.ID, &sl.Name, &sl.Description, &sl.CreatedBy, &parentID,
+			&sl.IsRoot, &filesJSON, &mountsJSON, &ownersJSON,
+			&sl.CreatedAt, &sl.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if parentID != nil {
+			sl.ParentSlice = *parentID
+		}
+		if err := json.Unmarshal(filesJSON, &sl.Files); err != nil {
+			sl.Files = []string{}
+		}
+		if err := json.Unmarshal(ownersJSON, &sl.Owners); err != nil {
+			sl.Owners = []string{}
+		}
+		if err := json.Unmarshal(mountsJSON, &sl.FolderMounts); err != nil {
+			sl.FolderMounts = nil
+		}
+		result = append(result, &sl)
+	}
+	if result == nil {
+		result = []*models.Slice{}
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresNativeStorage) collectFileChanges(rows pgx.Rows) ([]*models.FileChangeRecord, error) {
+	var result []*models.FileChangeRecord
+	for rows.Next() {
+		var fc models.FileChangeRecord
+		var changeType string
+		if err := rows.Scan(
+			&fc.ID, &fc.SliceID, &fc.CommitHash, &fc.Path, &fc.OldPath,
+			&changeType, &fc.OldHash, &fc.NewHash,
+			&fc.LinesAdded, &fc.LinesDeleted, &fc.Author, &fc.Message, &fc.Timestamp,
+		); err != nil {
+			return nil, err
+		}
+		fc.ChangeType = models.ChangeType(changeType)
+		result = append(result, &fc)
+	}
+	if result == nil {
+		result = []*models.FileChangeRecord{}
+	}
+	return result, rows.Err()
+}
