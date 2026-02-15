@@ -576,7 +576,14 @@ export default function RepoBrowser({
             <div className="panel-header">
               <h3>File tree {currentSliceLabel ? `· ${currentSliceLabel}` : ''}</h3>
               <div className="panel-header-actions">
-                {isLoading && <span className="status">Loading…</span>}
+                <span
+                  className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
+                  role="status"
+                  aria-live="polite"
+                  aria-label={isLoading ? 'Loading folders' : undefined}
+                >
+                  <span className="tree-loading-dot" aria-hidden="true" />
+                </span>
                 <button
                   type="button"
                   className="tree-action-btn"
