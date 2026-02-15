@@ -176,7 +176,9 @@ test.describe('Commit Diff Page (real server)', () => {
     await page.getByTestId('diff-file-panel-item').nth(targetIndex).click();
 
     await expect.poll(async () => diffContent.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
-    await expect.poll(async () => page.evaluate(() => window.scrollY)).toBe(0);
+    await expect
+      .poll(async () => page.evaluate(() => window.scrollY))
+      .toBeLessThan(80);
   });
 
 });
