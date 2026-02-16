@@ -85,7 +85,9 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
-	httpMux.Handle("/", gateway.WithCORS(gatewayMux))
+	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
+	// /v1/slices/ both work without ServeMux issuing slash redirects.
+	httpMux.Handle("/", gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux)))
 
 	server := &http.Server{
 		Addr:    cfg.GetGatewayAddr(),
