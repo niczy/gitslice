@@ -27,7 +27,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
       setIsLoading(true);
       setError('');
       try {
-        const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
+        const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes?include_patches=true`, {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`Request failed (${response.status})`);
