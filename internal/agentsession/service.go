@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -44,6 +45,13 @@ type Service struct {
 	mu      sync.Mutex
 	seqHead map[string]uint64
 
+	nonceMu    sync.Mutex
+	usedNonces map[string]time.Time
+
+	replayMu       sync.Mutex
+	replaySeqs     map[string][]uint64
+	maxReplayFrame int
+
 	bootstrapDelay time.Duration
 	stopDelay      time.Duration
 }
@@ -56,6 +64,9 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		st:             st,
 		wsTokenSecret:  []byte(wsTokenSecret),
 		seqHead:        make(map[string]uint64),
+		usedNonces:     make(map[string]time.Time),
+		replaySeqs:     make(map[string][]uint64),
+		maxReplayFrame: 10000,
 		bootstrapDelay: 50 * time.Millisecond,
 		stopDelay:      50 * time.Millisecond,
 	}
@@ -202,6 +213,45 @@ func (s *Service) MintToken(ctx context.Context, userID, sessionID string) (*WST
 	}, nil
 }
 
+func (s *Service) ValidateAndConsumeWSToken(tokenString, expectedSessionID string) (string, error) {
+	tokenString = strings.TrimSpace(tokenString)
+	if tokenString == "" {
+		return "", storage.ErrInvalidInput
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("invalid signing method")
+		}
+		return s.wsTokenSecret, nil
+	})
+	if err != nil || token == nil || !token.Valid {
+		return "", storage.ErrInvalidInput
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", storage.ErrInvalidInput
+	}
+	sub := claimString(claims, "sub")
+	sid := claimString(claims, "sid")
+	jti := claimString(claims, "jti")
+	if sub == "" || sid == "" || jti == "" || sid != expectedSessionID {
+		return "", storage.ErrInvalidInput
+	}
+	if !claimAudienceContains(claims["aud"], wsTokenAudience) {
+		return "", storage.ErrInvalidInput
+	}
+	exp, ok := claimUnixTime(claims, "exp")
+	if !ok || time.Now().After(exp) {
+		return "", storage.ErrInvalidInput
+	}
+	if !s.consumeNonce(jti, exp) {
+		return "", storage.ErrAgentSessionConflict
+	}
+	return sub, nil
+}
+
 func (s *Service) ListEventsForUser(ctx context.Context, userID, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, uint64, error) {
 	if _, err := s.GetSessionForUser(ctx, userID, sessionID); err != nil {
 		return nil, 0, err
@@ -237,7 +287,11 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	eventCopy := *event
 	eventCopy.Seq = s.nextSeq(event.SessionID)
 	eventCopy.TS = time.Now().UTC()
-	return s.st.AppendAgentSessionEvent(ctx, &eventCopy)
+	if err := s.st.AppendAgentSessionEvent(ctx, &eventCopy); err != nil {
+		return err
+	}
+	s.rememberSeq(eventCopy.SessionID, eventCopy.Seq)
+	return nil
 }
 
 func (s *Service) AddAudit(ctx context.Context, sessionID, actorUserID, action string, metadata map[string]any) error {
@@ -320,12 +374,145 @@ func (s *Service) finalizeStop(sessionID, userID string) {
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopped)
 }
 
+func (s *Service) RecordActivity(ctx context.Context, sessionID string) error {
+	session, err := s.st.GetAgentSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	session.LastActivityAt = &now
+	session.UpdatedAt = now
+	stateChanged := false
+	if session.State == models.AgentSessionStateIdle {
+		session.State = models.AgentSessionStateRunning
+		stateChanged = true
+	}
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return err
+	}
+	if stateChanged {
+		_ = s.AppendStateEvent(ctx, sessionID, session.State)
+	}
+	return nil
+}
+
+func (s *Service) ReplayBounds(sessionID string) (tail uint64, head uint64, ok bool) {
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	seqs := s.replaySeqs[sessionID]
+	if len(seqs) == 0 {
+		return 0, 0, false
+	}
+	return seqs[0], seqs[len(seqs)-1], true
+}
+
 func (s *Service) nextSeq(sessionID string) uint64 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	next := s.seqHead[sessionID] + 1
-	s.seqHead[sessionID] = next
-	return next
+	if seq, ok := s.seqHead[sessionID]; ok {
+		seq++
+		s.seqHead[sessionID] = seq
+		s.mu.Unlock()
+		return seq
+	}
+	s.mu.Unlock()
+
+	seed := s.seedSeqHead(sessionID)
+
+	s.mu.Lock()
+	if existing, ok := s.seqHead[sessionID]; ok {
+		seed = existing
+	}
+	seed++
+	s.seqHead[sessionID] = seed
+	s.mu.Unlock()
+	return seed
+}
+
+func (s *Service) seedSeqHead(sessionID string) uint64 {
+	events, err := s.st.ListAgentSessionEvents(context.Background(), sessionID, 0, s.maxReplayFrame)
+	if err != nil || len(events) == 0 {
+		return 0
+	}
+	return events[len(events)-1].Seq
+}
+
+func (s *Service) consumeNonce(jti string, exp time.Time) bool {
+	now := time.Now()
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	for key, expiresAt := range s.usedNonces {
+		if expiresAt.Before(now) {
+			delete(s.usedNonces, key)
+		}
+	}
+	if _, exists := s.usedNonces[jti]; exists {
+		return false
+	}
+	s.usedNonces[jti] = exp
+	return true
+}
+
+func (s *Service) rememberSeq(sessionID string, seq uint64) {
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	seqs := append(s.replaySeqs[sessionID], seq)
+	if len(seqs) > s.maxReplayFrame {
+		seqs = seqs[len(seqs)-s.maxReplayFrame:]
+	}
+	s.replaySeqs[sessionID] = seqs
+}
+
+func claimString(claims jwt.MapClaims, key string) string {
+	raw, ok := claims[key]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
+func claimAudienceContains(raw any, want string) bool {
+	switch v := raw.(type) {
+	case string:
+		return strings.EqualFold(v, want)
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.EqualFold(s, want) {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range v {
+			if strings.EqualFold(item, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func claimUnixTime(claims jwt.MapClaims, key string) (time.Time, bool) {
+	raw, ok := claims[key]
+	if !ok {
+		return time.Time{}, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return time.Unix(int64(v), 0), true
+	case int64:
+		return time.Unix(v, 0), true
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return time.Time{}, false
+		}
+		return time.Unix(i, 0), true
+	}
+	return time.Time{}, false
 }
 
 func makeSessionID() string {

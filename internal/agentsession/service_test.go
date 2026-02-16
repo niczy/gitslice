@@ -101,6 +101,48 @@ func TestServiceOneActiveSessionPerSlice(t *testing.T) {
 	}
 }
 
+func TestValidateAndConsumeWSToken(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-token",
+		Name:      "Slice token",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	created, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-token",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, created.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	token, err := svc.MintTokenForUser(ctx, "alice", created.SessionID)
+	if err != nil {
+		t.Fatalf("MintTokenForUser failed: %v", err)
+	}
+	userID, err := svc.ValidateAndConsumeWSToken(token.Token, created.SessionID)
+	if err != nil {
+		t.Fatalf("ValidateAndConsumeWSToken failed: %v", err)
+	}
+	if userID != "alice" {
+		t.Fatalf("expected alice, got %s", userID)
+	}
+	if _, err := svc.ValidateAndConsumeWSToken(token.Token, created.SessionID); err != storage.ErrAgentSessionConflict {
+		t.Fatalf("expected ErrAgentSessionConflict on nonce replay, got %v", err)
+	}
+	if _, err := svc.ValidateAndConsumeWSToken(token.Token, "another-session"); err == nil {
+		t.Fatalf("expected session mismatch validation error")
+	}
+}
+
 func waitForSessionState(t *testing.T, svc *Service, sessionID string, want models.AgentSessionState, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

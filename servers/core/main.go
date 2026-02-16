@@ -90,6 +90,7 @@ func main() {
 	})))
 	httpMux.Handle("/v1/agent-sessions", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleCollection)))
 	httpMux.Handle("/v1/agent-sessions/", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleItem)))
+	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.
 	httpMux.Handle("/", gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux)))
