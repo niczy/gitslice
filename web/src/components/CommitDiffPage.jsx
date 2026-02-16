@@ -3,6 +3,7 @@ import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
 import { formatChangeType } from '../utils/format.js';
 import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
+import { decodeBase64 } from '../utils/highlight.js';
 
 // ---------------------------------------------------------------------------
 // Commit Diff Page Component
@@ -14,9 +15,12 @@ export default function CommitDiffPage({ commitHash, onBack }) {
   const [error, setError] = useState('');
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
+  const [fallbackContentByFile, setFallbackContentByFile] = useState({});
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
+
+  const encodePath = useCallback((value) => value.split('/').map(encodeURIComponent).join('/'), []);
 
   useEffect(() => {
     if (!commitHash) return;
@@ -32,7 +36,10 @@ export default function CommitDiffPage({ commitHash, onBack }) {
         });
         if (!response.ok) throw new Error(`Request failed (${response.status})`);
         const payload = await response.json();
-        if (active) setDiffData(normalizeDiffResponse(payload));
+        if (active) {
+          setDiffData(normalizeDiffResponse(payload));
+          setFallbackContentByFile({});
+        }
       } catch (err) {
         if (active && err?.name !== 'AbortError') {
           setError('Unable to load commit changes.');
@@ -45,6 +52,62 @@ export default function CommitDiffPage({ commitHash, onBack }) {
     loadDiff();
     return () => { active = false; controller.abort(); };
   }, [commitHash]);
+
+  useEffect(() => {
+    if (!diffData?.changes?.length) {
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+
+    const loadFallbackContent = async () => {
+      const nextContentByFile = {};
+
+      const loadQueue = diffData.changes
+        .filter((change) => !change.patch && change.path && change.slice_id && normalizeChangeType(change.change_type) !== 'delete')
+        .slice(0, 30);
+
+      await Promise.all(loadQueue.map(async (change) => {
+        const fileKey = change.id || change.path;
+        const encodedPath = encodePath(change.path);
+        const params = new URLSearchParams();
+        params.set('slice_version.slice_hash', commitHash);
+        const url = `${apiBaseUrl}/v1/slices/${encodeURIComponent(change.slice_id)}/files/${encodedPath}?${params.toString()}`;
+
+        try {
+          const response = await fetchWithAuth(url, { signal: controller.signal });
+          if (!response.ok) {
+            return;
+          }
+          const payload = await response.json();
+          const encodedContent = payload?.file?.content || '';
+          const decodedContent = decodeBase64(encodedContent);
+          if (decodedContent) {
+            nextContentByFile[fileKey] = decodedContent;
+          }
+        } catch (err) {
+          if (err?.name !== 'AbortError') {
+            // no-op: this fallback is best-effort
+          }
+        }
+      }));
+
+      if (active && Object.keys(nextContentByFile).length > 0) {
+        setFallbackContentByFile((previous) => ({
+          ...previous,
+          ...nextContentByFile,
+        }));
+      }
+    };
+
+    loadFallbackContent();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [commitHash, diffData, encodePath]);
 
   const handleFileSelect = useCallback((fileKey) => {
     setSelectedFileId(fileKey);
@@ -193,6 +256,11 @@ export default function CommitDiffPage({ commitHash, onBack }) {
                       <div className="diff-split-container" data-testid="diff-file-patch">
                         {renderSplitDiffPatch(change.patch)}
                       </div>
+                    )}
+                    {!change.patch && fallbackContentByFile[fileKey] && viewMode === 'unified' && (
+                      <pre className="diff-patch" data-testid="diff-file-fallback-content">
+                        {renderDiffPatch(`--- /dev/null\n+++ b/${change.path}\n@@\n${fallbackContentByFile[fileKey].split('\n').map((line) => `+${line}`).join('\n')}`)}
+                      </pre>
                     )}
                   </li>
                 );
