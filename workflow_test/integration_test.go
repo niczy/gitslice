@@ -276,24 +276,6 @@ func runCLIOrFail(t *testing.T, workdir string, args ...string) string {
 	return output
 }
 
-func waitForSlicePresent(t *testing.T, sliceID string, timeout time.Duration) {
-	t.Helper()
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		_, err := testStorage.GetSlice(context.Background(), sliceID)
-		if err == nil {
-			return
-		}
-		if errors.Is(err, storage.ErrSliceNotFound) {
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-		t.Fatalf("unexpected error waiting for slice %s: %v", sliceID, err)
-	}
-	t.Fatalf("timed out waiting for slice %s to be present", sliceID)
-}
-
 func extractChangesetID(output string) string {
 	re := regexp.MustCompile(`Created changeset ([^ ]+) `)
 	matches := re.FindStringSubmatch(output)
@@ -468,7 +450,6 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 		t.Fatalf("expected created slice id in output, got: %s", output)
 	}
 	newSliceID = createdForkSliceID
-	waitForSlicePresent(t, newSliceID, 2*time.Second)
 
 	newSliceWorkdir := t.TempDir()
 	newSliceArg := sliceIDArg(newSliceID)
@@ -584,7 +565,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected created slice id in output, got: %s", output)
 	}
 	sliceID = createdAppsSliceID
-	waitForSlicePresent(t, sliceID, 2*time.Second)
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
