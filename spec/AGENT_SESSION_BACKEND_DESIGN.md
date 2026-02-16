@@ -2,12 +2,12 @@
 
 ## Executive Summary
 
-This spec defines a production backend for coding-agent sessions.
+This spec defines a production backend for coding-agent sessions using E2B sandboxes as the runtime provider.
 
-- Starting a session for a slice launches an isolated container (or Kubernetes pod).
-- The agent runtime inside that container exposes an internal WebSocket endpoint.
-- The browser never connects to containers directly.
-- The browser connects to a public proxy endpoint, and the proxy bridges traffic to the container endpoint.
+- Starting a session for a slice launches an isolated E2B sandbox from a prebuilt template snapshot.
+- The agent runtime inside that sandbox exposes an internal WebSocket endpoint.
+- The browser never connects to E2B directly.
+- The browser connects to a public proxy endpoint, and the proxy bridges traffic to the sandbox endpoint.
 
 The design separates control-plane actions (session lifecycle) from data-plane actions (interactive WebSocket traffic), supports reconnect/resume, and is built for multi-tenant security.
 
@@ -36,12 +36,12 @@ The design separates control-plane actions (session lifecycle) from data-plane a
 - Writes session metadata to Postgres
 - Publishes lifecycle events
 
-2. Session Controller
+2. Session Orchestrator
 - Consumes session start/stop jobs
-- Starts/stops containers via Docker or Kubernetes API
+- Starts/stops E2B sandboxes via E2B API
 - Tracks state transitions and readiness heartbeats
 
-3. Agent Runtime (inside session container)
+3. Agent Runtime (inside E2B sandbox)
 - Runs agent daemon and PTY multiplexer
 - Exposes internal WS endpoint: `ws://0.0.0.0:9000/ws`
 - Streams terminal output, tool events, and status updates
@@ -50,7 +50,7 @@ The design separates control-plane actions (session lifecycle) from data-plane a
 4. WS Proxy Service (data plane)
 - Public endpoint: `wss://<host>/ws/sessions/{session_id}`
 - Validates short-lived session token
-- Resolves session route and dials runtime WS over private network
+- Resolves session route and dials runtime WS through the backend's E2B connection path
 - Forwards frames bidirectionally with backpressure handling
 
 5. Postgres
@@ -66,8 +66,8 @@ The design separates control-plane actions (session lifecycle) from data-plane a
 ### Trust Boundaries
 
 1. Browser to proxy: public internet (TLS required).
-2. Proxy to runtime: private network only (VPC overlay, no public ingress).
-3. API/Controller to infrastructure APIs: private control network.
+2. Proxy to runtime: backend-to-E2B TLS channel only; browser has no direct runtime path.
+3. API/Orchestrator to infrastructure APIs: private control network.
 
 ## Deployment Topology
 
@@ -75,15 +75,16 @@ The design separates control-plane actions (session lifecycle) from data-plane a
 
 1. API Deployment (N replicas, stateless)
 2. WS Proxy Deployment (N replicas, stateless)
-3. Session Controller Deployment (M replicas, leader-elected workers)
-4. Session Runtime Pods/Containers (1 per active session)
+3. Session Orchestrator Deployment (M replicas, leader-elected workers)
+4. E2B Sandboxes (1 per active slice session)
 5. Managed Postgres + Redis
+6. E2B account with template snapshots for the agent runtime image
 
 ### Runtime networking
 
-1. Runtime pods are not exposed through public LoadBalancer/Ingress.
-2. Proxy reaches runtime via internal DNS/service discovery.
-3. NetworkPolicy allows runtime ingress only from proxy namespace.
+1. Sandboxes are never directly exposed to end users.
+2. API/Orchestrator and WS Proxy are the only components allowed to communicate with E2B.
+3. Browser traffic always terminates at the app proxy; no client-side E2B credentials are issued.
 
 ## Session Lifecycle
 
@@ -97,13 +98,13 @@ Failure states:
 
 ### Transition rules
 
-1. `creating -> starting`: controller accepted job and requested container creation.
+1. `creating -> starting`: orchestrator accepted job and requested E2B sandbox creation.
 2. `starting -> running`: runtime heartbeat and WS readiness received.
 3. `running -> idle`: no input/output for configured idle window.
 4. `idle -> running`: user activity resumes.
 5. `running|idle -> stopping`: user stop request or TTL expiry.
 6. `stopping -> stopped`: runtime terminated and cleanup complete.
-7. Any active state -> `failed`: startup timeout, container crash loop, infra error.
+7. Any active state -> `failed`: startup timeout, sandbox crash, E2B API error, or infra error.
 
 ## API Specification
 
@@ -119,9 +120,9 @@ Request:
 {
   "sliceId": "payments_slice",
   "workspaceRef": "repo:github.com/niczy/gitslice",
-  "image": "ghcr.io/org/agent-runtime:2026-02-16",
-  "cpu": "2",
-  "memoryMb": 4096,
+  "provider": "e2b",
+  "e2bTemplateId": "tmpl_agent_runtime_v3",
+  "e2bRegion": "us-west-2",
   "idleTimeoutSec": 1800,
   "ttlSec": 14400,
   "env": {
@@ -136,6 +137,8 @@ Response `201`:
 {
   "sessionId": "sess_01JQ...",
   "sliceId": "payments_slice",
+  "provider": "e2b",
+  "e2bTemplateId": "tmpl_agent_runtime_v3",
   "state": "creating",
   "ws": {
     "url": "wss://app.example.com/ws/sessions/sess_01JQ...",
@@ -148,9 +151,10 @@ Response `201`:
 
 Notes:
 
-1. API returns before container is fully ready.
+1. API returns before sandbox runtime is fully ready.
 2. Client listens for `status` events over WS and/or polls session status endpoint.
 3. The system enforces one active session per slice (`creating|starting|running|idle|stopping`).
+4. `provider` is currently fixed to `e2b` in v1.
 
 ### 2) Get session
 
@@ -162,10 +166,11 @@ Response `200`:
 {
   "sessionId": "sess_01JQ...",
   "sliceId": "payments_slice",
+  "provider": "e2b",
+  "e2bSandboxId": "sbx_7d2f5b0d",
   "state": "running",
   "runtime": {
-    "node": "worker-a-3",
-    "endpoint": "ws://10.42.7.19:9000/ws"
+    "endpoint": "wss://sandbox.e2b.dev/ws/agent/sbx_7d2f5b0d"
   },
   "lastActivityAt": "2026-02-16T11:03:01Z",
   "idleTimeoutSec": 1800,
@@ -346,13 +351,13 @@ CREATE TABLE agent_sessions (
   user_id              TEXT NOT NULL,
   workspace_ref        TEXT NOT NULL,
   state                TEXT NOT NULL,
-  image_ref            TEXT NOT NULL,
-  cpu_millicores       INT NOT NULL,
-  memory_mb            INT NOT NULL,
+  provider             TEXT NOT NULL DEFAULT 'e2b',
+  e2b_template_id      TEXT NOT NULL,
+  e2b_sandbox_id       TEXT,
+  e2b_region           TEXT,
   idle_timeout_sec     INT NOT NULL,
   ttl_sec              INT NOT NULL,
   runtime_endpoint     TEXT,
-  runtime_node         TEXT,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at           TIMESTAMPTZ,
@@ -371,7 +376,11 @@ CREATE INDEX idx_agent_sessions_slice_created
 CREATE INDEX idx_agent_sessions_state_updated
   ON agent_sessions (state, updated_at DESC);
 
--- Enforce one active containerized agent session per slice.
+CREATE UNIQUE INDEX idx_agent_sessions_e2b_sandbox
+  ON agent_sessions (e2b_sandbox_id)
+  WHERE e2b_sandbox_id IS NOT NULL;
+
+-- Enforce one active sandbox-backed agent session per slice.
 CREATE UNIQUE INDEX idx_agent_sessions_active_per_slice
   ON agent_sessions (slice_id)
   WHERE state IN ('creating', 'starting', 'running', 'idle', 'stopping');
@@ -412,60 +421,72 @@ CREATE INDEX idx_agent_session_audit_session_created
 
 ## Redis Keys
 
-1. `agent:route:{session_id}` -> runtime endpoint (TTL 5m, refreshed by heartbeat).
+1. `agent:route:{session_id}` -> E2B sandbox WS endpoint (TTL 5m, refreshed by heartbeat).
 2. `agent:ws_nonce:{jti}` -> `1` (TTL token expiry + skew, set-if-not-exists).
 3. `agent:lock:start:{slice_id}` -> distributed lock for per-slice start idempotency.
 4. `agent:presence:{session_id}` -> active connection count.
 
-## Controller and Runtime Contracts
+## Orchestrator and Runtime Contracts
 
-### Controller -> Runtime bootstrap environment
+### Orchestrator -> E2B sandbox lifecycle
+
+1. `create` sandbox from `e2bTemplateId` with session metadata (`session_id`, `slice_id`, `user_id`).
+2. `resume` sandbox on reconnect if it was paused by idle policy.
+3. `pause` sandbox when session enters `idle` for configured threshold.
+4. `kill` sandbox on stop, TTL expiry, or terminal failure.
+
+### Sandbox bootstrap environment
 
 1. `SESSION_ID`
-2. `SESSION_TOKEN_SIGNING_PUBLIC_KEY` (or JWKS URL)
-3. `RUNTIME_PORT=9000`
-4. `WORKSPACE_MOUNT_PATH=/workspace`
-5. `MAX_REPLAY_FRAMES=10000`
+2. `SLICE_ID`
+3. `WORKSPACE_REF`
+4. `SESSION_TOKEN_SIGNING_PUBLIC_KEY` (or JWKS URL)
+5. `RUNTIME_PORT=9000`
+6. `WORKSPACE_MOUNT_PATH=/workspace`
+7. `MAX_REPLAY_FRAMES=10000`
 
 ### Runtime heartbeats
 
-Runtime emits heartbeat every 5 seconds to controller/API:
+Runtime emits heartbeat every 5 seconds to orchestrator/API:
 
 ```json
 {
   "sessionId": "sess_01JQ...",
+  "sliceId": "payments_slice",
   "state": "running",
-  "endpoint": "ws://10.42.7.19:9000/ws",
+  "provider": "e2b",
+  "e2bSandboxId": "sbx_7d2f5b0d",
+  "endpoint": "wss://sandbox.e2b.dev/ws/agent/sbx_7d2f5b0d",
   "lastActivityAt": "2026-02-16T11:04:00Z",
   "bufferHeadSeq": 2048,
   "bufferTailSeq": 1890
 }
 ```
 
-If heartbeat missing for > 20 seconds, controller marks session `failed` and begins cleanup.
+If heartbeat is missing for > 20 seconds, orchestrator verifies sandbox status via E2B API and marks the session `failed` if unavailable.
 
 ## Failure Handling
 
-1. Start timeout (default 90s): transition to `failed`, store failure details.
-2. Runtime crash while active: transition to `failed`, emit audit/event.
+1. Start timeout (default 90s): transition to `failed`, store failure details from E2B create response.
+2. Runtime crash while active: transition to `failed`, emit audit/event, and kill sandbox.
 3. Proxy cannot route session: return WS close `1011` + `SESSION_UNAVAILABLE`.
-4. Postgres transient errors: retry with exponential backoff and idempotency keys.
+4. E2B API transient errors or rate limits: retry with exponential backoff and idempotency keys.
 5. Stop request on already stopped session: return `200` idempotent success.
 
 ## Security Hardening
 
-1. Runtime container runs as non-root with dropped Linux capabilities.
-2. Read-only root filesystem; writable workspace mount only.
-3. CPU/memory/pid limits enforced per session.
+1. Runtime sandbox template runs as non-root with least-privilege defaults.
+2. Writable workspace only; immutable template base.
+3. Resource limits are enforced by E2B template/runtime configuration.
 4. Egress policy defaults deny; allowlist required endpoints.
-5. Secret injection via workload identity or scoped secret mounts.
+5. Secrets are injected via short-lived backend-issued session env, not browser-visible tokens.
 6. Full audit of session creation, token minting, stop, and force-terminate actions.
 
 ## Scalability Targets (v1)
 
 1. 2,000 concurrent sessions in one region.
 2. p95 session create accepted latency < 250 ms (API only, async start).
-3. p95 startup time to running < 20 s for warm nodes.
+3. p95 startup time to running < 3 s using warm E2B template snapshots.
 4. p95 WS frame proxy latency < 50 ms intra-region.
 
 ## Observability
@@ -487,7 +508,7 @@ All logs must include:
 1. `session_id`
 2. `user_id` (if known)
 3. `request_id`
-4. `component` (`api|controller|proxy|runtime`)
+4. `component` (`api|orchestrator|proxy|runtime`)
 
 ### Tracing
 
@@ -495,8 +516,8 @@ Propagate trace headers from browser -> API -> proxy -> runtime for end-to-end d
 
 ## Rollout Plan
 
-1. Phase 1: Internal beta with Docker single-host controller.
-2. Phase 2: Kubernetes controller + runtime pods + NetworkPolicy.
+1. Phase 1: Internal beta with one E2B template and fixed region.
+2. Phase 2: Add multi-template support (language/runtime variants) and idle pause/resume.
 3. Phase 3: Enable reconnect replay and event persistence by default.
 4. Phase 4: Autoscaling policy tuning and load test sign-off.
 
@@ -514,8 +535,9 @@ Propagate trace headers from browser -> API -> proxy -> runtime for end-to-end d
 
 3. Failure tests
 - Runtime crash mid-session
-- Controller restart during session start
+- Orchestrator restart during session start
 - Redis/Postgres transient outage handling
+- E2B API transient failures and rate-limit behavior
 
 4. Security tests
 - Unauthorized WS connection attempts
@@ -524,6 +546,7 @@ Propagate trace headers from browser -> API -> proxy -> runtime for end-to-end d
 
 ## Open Questions
 
-1. Should runtime event replay survive container restarts (requires durable queue)?
+1. Should runtime event replay survive sandbox replacement (requires durable queue)?
 2. Should we support shared pair-programming sessions in v1 or defer?
 3. Should session artifacts be retained per org policy (for example 7/30/90 days)?
+4. Do we need a fallback provider path when E2B quota or regional outage blocks sandbox creation?
