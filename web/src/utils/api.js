@@ -2,14 +2,12 @@
 // API and authentication helpers
 // ---------------------------------------------------------------------------
 
+import { getSignedInUsername } from '../auth.js';
+
 export const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
 
 export function currentUsername() {
-  try {
-    return window.localStorage.getItem('gs_username') || '';
-  } catch {
-    return '';
-  }
+  return getSignedInUsername();
 }
 
 export function fetchWithAuth(url, options = {}) {
