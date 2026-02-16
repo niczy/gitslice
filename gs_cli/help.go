@@ -23,6 +23,7 @@ func printSliceHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID")
 	fmt.Println("  clone     Alias for checkout")
+	fmt.Println("  rename    Rename a slice (update display name)")
 }
 
 func printChangesetHelp() {

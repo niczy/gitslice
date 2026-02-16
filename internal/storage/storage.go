@@ -34,6 +34,8 @@ type Storage interface {
 	GetSliceMetadata(ctx context.Context, sliceID string) (*models.SliceMetadata, error)
 	UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error
 	SetSliceFiles(ctx context.Context, sliceID string, files []string) error
+	UpdateSliceName(ctx context.Context, sliceID, newName string) error
+	GetSliceByName(ctx context.Context, name string) (*models.Slice, error)
 	GetRootSlice(ctx context.Context) (*models.Slice, error)
 	InitializeRootSlice(ctx context.Context) error
 	AddSliceCommit(ctx context.Context, sliceID string, commit *models.Commit) error

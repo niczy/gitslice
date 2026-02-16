@@ -535,6 +535,36 @@ func (s *InMemoryStorage) SetSliceFiles(ctx context.Context, sliceID string, fil
 	return nil
 }
 
+// UpdateSliceName updates the display name of a slice.
+func (s *InMemoryStorage) UpdateSliceName(ctx context.Context, sliceID, newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slice, exists := s.slices[sliceID]
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	slice.Name = newName
+	slice.UpdatedAt = time.Now()
+	return nil
+}
+
+// GetSliceByName retrieves the first non-root slice matching the given display name.
+func (s *InMemoryStorage) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, slice := range s.slices {
+		if slice.Name == name && !slice.IsRoot {
+			copy := *slice
+			return &copy, nil
+		}
+	}
+
+	return nil, ErrSliceNotFound
+}
+
 // ListConflicts returns files that are associated with more than one slice.
 func (s *InMemoryStorage) ListConflicts(ctx context.Context) ([]*models.FileConflict, error) {
 	s.mu.RLock()

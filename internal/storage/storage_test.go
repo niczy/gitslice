@@ -196,6 +196,34 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("expected ErrSliceFilesImmutable, got %v", err)
 	}
 
+	// UpdateSliceName
+	if err := st.UpdateSliceName(ctx, slice.ID, "Renamed"); err != nil {
+		t.Fatalf("UpdateSliceName failed: %v", err)
+	}
+	renamedSlice, err := st.GetSlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice after rename failed: %v", err)
+	}
+	if renamedSlice.Name != "Renamed" {
+		t.Fatalf("expected name %q, got %q", "Renamed", renamedSlice.Name)
+	}
+	if err := st.UpdateSliceName(ctx, "nonexistent-slice-"+suffix, "X"); err != ErrSliceNotFound {
+		t.Fatalf("expected ErrSliceNotFound, got %v", err)
+	}
+
+	// GetSliceByName
+	found, err := st.GetSliceByName(ctx, "Renamed")
+	if err != nil {
+		t.Fatalf("GetSliceByName failed: %v", err)
+	}
+	if found.ID != slice.ID {
+		t.Fatalf("GetSliceByName returned wrong slice: %s", found.ID)
+	}
+	_, err = st.GetSliceByName(ctx, "nonexistent-name-"+suffix)
+	if err != ErrSliceNotFound {
+		t.Fatalf("expected ErrSliceNotFound for unknown name, got %v", err)
+	}
+
 	// Entries
 	entry := &models.DirectoryEntry{ID: entry1ID, Path: fmt.Sprintf("app/%s/main.go", suffix), Type: "file", ParentID: slice.ID, Content: []byte("code"), Size: 4}
 	if err := st.AddEntry(ctx, entry); err != nil {
