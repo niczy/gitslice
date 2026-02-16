@@ -2,14 +2,14 @@
 
 ## Implementation Status
 
-- Current status: `ongoing`
+- Current status: `finished`
 - Last updated: `2026-02-16`
 
 PR checklist:
 
 - [x] PR1 - Control plane + persistence baseline (`agent_sessions` schema, storage APIs, lifecycle HTTP endpoints, initial tests)
 - [x] PR2 - WebSocket data plane (`/ws/sessions/{session_id}`, token validation + nonce replay, protocol replay/backpressure)
-- [ ] PR3 - Lifecycle automation + hardening (idle/ttl transitions, failure handling, observability, integration/security coverage)
+- [x] PR3 - Lifecycle automation + hardening (idle/ttl transitions, failure handling, observability, integration/security coverage)
 
 ## Executive Summary
 

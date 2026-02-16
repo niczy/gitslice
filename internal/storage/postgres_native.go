@@ -326,6 +326,10 @@ func (s *postgresNativeTxView) GetActiveAgentSessionBySlice(ctx context.Context,
 	return s.PostgresNativeStorage.GetActiveAgentSessionBySlice(ctx, sliceID)
 }
 
+func (s *postgresNativeTxView) ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error) {
+	return s.PostgresNativeStorage.ListAgentSessionsByState(ctx, states, limit)
+}
+
 func (s *postgresNativeTxView) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
 	return s.PostgresNativeStorage.UpdateAgentSession(ctx, session)
 }
@@ -2574,6 +2578,52 @@ func (s *PostgresNativeStorage) GetActiveAgentSessionBySlice(ctx context.Context
 		return nil, err
 	}
 	return s.GetAgentSession(ctx, sessionID)
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error) {
+	ctx = ensureCtx(ctx)
+	if len(states) == 0 {
+		return []*models.AgentSession{}, nil
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	stateVals := make([]string, 0, len(states))
+	for _, state := range states {
+		if strings.TrimSpace(string(state)) == "" {
+			continue
+		}
+		stateVals = append(stateVals, string(state))
+	}
+	if len(stateVals) == 0 {
+		return []*models.AgentSession{}, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id
+		FROM agent_sessions
+		WHERE state = ANY($1)
+		ORDER BY updated_at DESC
+		LIMIT $2
+	`, stateVals, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*models.AgentSession, 0, limit)
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return nil, err
+		}
+		session, err := s.GetAgentSession(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, session)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,8 @@ const (
 	defaultTTLSec         = 14400
 	wsTokenAudience       = "agent-ws"
 	wsTokenTTL            = 60 * time.Second
+	defaultLifecycleTick  = 1 * time.Second
+	defaultStartupTimeout = 90 * time.Second
 )
 
 type CreateRequest struct {
@@ -54,6 +57,9 @@ type Service struct {
 
 	bootstrapDelay time.Duration
 	stopDelay      time.Duration
+	lifecycleTick  time.Duration
+	startupTimeout time.Duration
+	runLoopOnce    sync.Once
 }
 
 func NewService(st storage.Storage, wsTokenSecret string) *Service {
@@ -69,6 +75,8 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		maxReplayFrame: 10000,
 		bootstrapDelay: 50 * time.Millisecond,
 		stopDelay:      50 * time.Millisecond,
+		lifecycleTick:  defaultLifecycleTick,
+		startupTimeout: defaultStartupTimeout,
 	}
 }
 
@@ -306,6 +314,113 @@ func (s *Service) AddAudit(ctx context.Context, sessionID, actorUserID, action s
 		Metadata:    data,
 		CreatedAt:   time.Now().UTC(),
 	})
+}
+
+func (s *Service) StartLifecycleLoop(ctx context.Context) {
+	s.runLoopOnce.Do(func() {
+		go s.lifecycleLoop(ctx)
+	})
+}
+
+func (s *Service) lifecycleLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.lifecycleTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.reconcileLifecycle(ctx)
+		}
+	}
+}
+
+func (s *Service) reconcileLifecycle(ctx context.Context) {
+	sessions, err := s.st.ListAgentSessionsByState(ctx, []models.AgentSessionState{
+		models.AgentSessionStateCreating,
+		models.AgentSessionStateStarting,
+		models.AgentSessionStateRunning,
+		models.AgentSessionStateIdle,
+		models.AgentSessionStateStopping,
+	}, 5000)
+	if err != nil {
+		log.Printf("component=agent_session phase=reconcile error=%v", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, session := range sessions {
+		s.reconcileSession(ctx, now, session)
+	}
+}
+
+func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *models.AgentSession) {
+	if session == nil {
+		return
+	}
+	ttlSec := session.TTLSec
+	if ttlSec <= 0 {
+		ttlSec = defaultTTLSec
+	}
+	if session.State.IsActive() && now.Sub(session.CreatedAt) > time.Duration(ttlSec)*time.Second {
+		if session.State != models.AgentSessionStateStopping {
+			session.State = models.AgentSessionStateStopping
+			session.UpdatedAt = now
+			if err := s.st.UpdateAgentSession(ctx, session); err == nil {
+				_ = s.AddAudit(ctx, session.SessionID, "system", "session_ttl_expired", map[string]any{
+					"ttlSec": ttlSec,
+				})
+				_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateStopping)
+			}
+		}
+		go s.finalizeStop(session.SessionID, "system")
+		return
+	}
+
+	if (session.State == models.AgentSessionStateCreating || session.State == models.AgentSessionStateStarting) &&
+		now.Sub(session.CreatedAt) > s.startupTimeout {
+		session.State = models.AgentSessionStateFailed
+		session.FailureCode = "START_TIMEOUT"
+		session.FailureMessage = "session startup timed out"
+		session.UpdatedAt = now
+		if err := s.st.UpdateAgentSession(ctx, session); err == nil {
+			_ = s.AddAudit(ctx, session.SessionID, "system", "session_failed", map[string]any{
+				"failureCode": session.FailureCode,
+			})
+			_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
+		}
+		return
+	}
+
+	if session.State == models.AgentSessionStateStopping {
+		go s.finalizeStop(session.SessionID, "system")
+		return
+	}
+
+	if session.State != models.AgentSessionStateRunning {
+		return
+	}
+	idleSec := session.IdleTimeoutSec
+	if idleSec <= 0 {
+		idleSec = defaultIdleTimeoutSec
+	}
+	last := session.CreatedAt
+	if session.LastActivityAt != nil {
+		last = *session.LastActivityAt
+	} else if session.StartedAt != nil {
+		last = *session.StartedAt
+	}
+	if now.Sub(last) <= time.Duration(idleSec)*time.Second {
+		return
+	}
+	session.State = models.AgentSessionStateIdle
+	session.UpdatedAt = now
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return
+	}
+	_ = s.AddAudit(ctx, session.SessionID, "system", "session_idle", map[string]any{
+		"idleTimeoutSec": idleSec,
+	})
+	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateIdle)
 }
 
 func (s *Service) bootstrapSession(sessionID string) {
