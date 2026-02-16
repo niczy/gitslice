@@ -98,26 +98,27 @@ export default function RepoBrowser({
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
 
-  const breadcrumbs = useMemo(() => {
-    if (!selectedFile) {
-      return [{ name: 'root', path: '' }];
-    }
-    const parts = selectedFile.split('/');
-    return [
-      { name: 'root', path: '' },
-      ...parts.map((part, index) => ({
-        name: part,
-        path: parts.slice(0, index + 1).join('/'),
-      })),
-    ];
-  }, [selectedFile]);
-
   const sliceId = currentSliceId;
 
   const currentSliceLabel = useMemo(() => {
     const selectedSlice = slices.find((slice) => slice.slice_id === sliceId);
     return selectedSlice?.name || sliceId;
   }, [slices, sliceId]);
+
+  const breadcrumbs = useMemo(() => {
+    const slicePrefix = currentSliceLabel || 'slice';
+    if (!selectedFile) {
+      return [{ name: slicePrefix, path: '' }];
+    }
+    const parts = selectedFile.split('/');
+    return [
+      { name: slicePrefix, path: '' },
+      ...parts.map((part, index) => ({
+        name: part,
+        path: parts.slice(0, index + 1).join('/'),
+      })),
+    ];
+  }, [currentSliceLabel, selectedFile]);
 
   // Update slice from URL if present
   useEffect(() => {
@@ -585,11 +586,27 @@ export default function RepoBrowser({
     if (path && !treeEntries[path]) {
       await fetchEntries(path);
     }
+
     if (path) {
       setExpandedPaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
+      if (path !== selectedFile) {
+        setSelectedFile(null);
+        setFileContent('');
+        setEncodedFileContent('');
+        setDraftContent('');
+        setFileError('');
+        setShowHistory(false);
+      }
       return;
     }
+
     setExpandedPaths(['']);
+    setSelectedFile(null);
+    setFileContent('');
+    setEncodedFileContent('');
+    setDraftContent('');
+    setFileError('');
+    setShowHistory(false);
   };
 
   const renderTree = (path, depth = 0) => {
@@ -703,21 +720,23 @@ export default function RepoBrowser({
                     ☰
                   </button>
                 )}
-                <div>
-                  <h3>{selectedFile ? selectedFile : 'Select a file'}</h3>
-                  <div className="breadcrumbs">
-                    {breadcrumbs.map((crumb, index) => (
+                <div className="breadcrumbs">
+                  {breadcrumbs.map((crumb, index) => {
+                    const isSlicePrefix = index === 0;
+                    const hasPathAfterPrefix = breadcrumbs.length > 1;
+                    const separator = isSlicePrefix ? (hasPathAfterPrefix ? '://' : '') : (index < breadcrumbs.length - 1 ? '/' : '');
+                    return (
                       <button
-                        key={crumb.path || 'root'}
+                        key={crumb.path || 'slice-root'}
                         type="button"
                         className="breadcrumb"
                         onClick={() => handleBreadcrumbClick(crumb.path)}
                       >
                         {crumb.name}
-                        {index < breadcrumbs.length - 1 && <span className="separator">/</span>}
+                        {separator && <span className="separator">{separator}</span>}
                       </button>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               </div>
               <div className="code-header-actions">
