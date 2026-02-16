@@ -49,7 +49,6 @@ func main() {
 	sliceservice.RegisterGRPCServer(grpcServer, st)
 	fileservice.RegisterGRPCServer(grpcServer, st, fileservice.FileServiceConfig{
 		PathCacheSize:       cfg.FilePathCacheSize,
-		PathCacheTTL:        cfg.FilePathCacheTTL,
 		PatchWorkers:        cfg.FilePatchWorkers,
 		MaxPatchableChanges: cfg.FileMaxPatchable,
 	})

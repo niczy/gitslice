@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"time"
 )
 
 // Config holds all configuration values for gitslice services.
@@ -38,10 +37,9 @@ type Config struct {
 	GCSDisableAuth     bool
 
 	// File service tuning (for horizontal scaling)
-	FilePathCacheSize int           // FILE_PATH_CACHE_SIZE (default 64)
-	FilePathCacheTTL  time.Duration // FILE_PATH_CACHE_TTL (default "5m")
-	FilePatchWorkers  int           // FILE_PATCH_WORKERS (default 8)
-	FileMaxPatchable  int           // FILE_MAX_PATCHABLE_CHANGES (default 100)
+	FilePathCacheSize int // FILE_PATH_CACHE_SIZE (default 64)
+	FilePatchWorkers  int // FILE_PATCH_WORKERS (default 8)
+	FileMaxPatchable  int // FILE_MAX_PATCHABLE_CHANGES (default 100)
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -70,7 +68,6 @@ func LoadConfig() *Config {
 		GCSDisableAuth:     getEnvBool("GCS_DISABLE_AUTH", false),
 
 		FilePathCacheSize: getEnvInt("FILE_PATH_CACHE_SIZE", 64),
-		FilePathCacheTTL:  getEnvDuration("FILE_PATH_CACHE_TTL", 5*time.Minute),
 		FilePatchWorkers:  getEnvInt("FILE_PATCH_WORKERS", 8),
 		FileMaxPatchable:  getEnvInt("FILE_MAX_PATCHABLE_CHANGES", 100),
 	}
@@ -110,18 +107,6 @@ func getEnvInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return defaultValue
-	}
-	return parsed
-}
-
-func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	parsed, err := time.ParseDuration(value)
 	if err != nil {
 		return defaultValue
 	}

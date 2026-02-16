@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
@@ -30,16 +29,10 @@ import (
 type FileServiceConfig struct {
 	// PathCacheSize is the maximum number of cached slice path maps.
 	// Each replica maintains its own cache, so this controls per-instance memory.
+	// The cache is keyed on (sliceID, commitHash, mounts) so entries are
+	// immutable — no TTL is needed for consistency across replicas.
 	// Default: 64.
 	PathCacheSize int
-
-	// PathCacheTTL is how long a cached path map is considered fresh.
-	// After this duration the entry is evicted on the next access, forcing
-	// a re-read from storage. This prevents stale data when multiple replicas
-	// serve traffic and mutations happen on other instances.
-	// Default: 5 minutes. Set to 0 to disable TTL (not recommended for
-	// horizontally-scaled deployments).
-	PathCacheTTL time.Duration
 
 	// PatchWorkers is the concurrency limit for parallel patch generation
 	// in GetCommitChanges. Tune per-instance based on available CPU/memory.
@@ -55,9 +48,6 @@ type FileServiceConfig struct {
 func (c FileServiceConfig) withDefaults() FileServiceConfig {
 	if c.PathCacheSize <= 0 {
 		c.PathCacheSize = 64
-	}
-	if c.PathCacheTTL == 0 {
-		c.PathCacheTTL = 5 * time.Minute
 	}
 	if c.PatchWorkers <= 0 {
 		c.PatchWorkers = 8
@@ -75,6 +65,11 @@ type fileServiceServer struct {
 	// Cache of computed displayPath->storedPath maps and their sorted keys. This avoids
 	// rebuilding and sorting the full slice path set on every ListEntries/GetFile call,
 	// which is very expensive for imported repos.
+	//
+	// The cache is keyed on (sliceID, commitHash, folderMounts, snapPref) so each
+	// entry represents an immutable snapshot of paths — no TTL or invalidation needed.
+	// This makes the cache safe for horizontal scaling: each replica can independently
+	// cache without consistency concerns.
 	pathCache *slicePathCache
 
 	cfg FileServiceConfig
@@ -88,7 +83,7 @@ func newFileServiceServer(st storage.Storage, cfgs ...FileServiceConfig) *fileSe
 	cfg = cfg.withDefaults()
 	return &fileServiceServer{
 		storage:   st,
-		pathCache: newSlicePathCache(cfg.PathCacheSize, cfg.PathCacheTTL),
+		pathCache: newSlicePathCache(cfg.PathCacheSize),
 		cfg:       cfg,
 	}
 }
@@ -103,7 +98,6 @@ type slicePathCache struct {
 	items    map[string]*cachedPaths
 	order    []string
 	maxItems int
-	ttl      time.Duration
 
 	// Counters for observability across horizontal replicas.
 	hits   atomic.Int64
@@ -113,10 +107,9 @@ type slicePathCache struct {
 type cachedPaths struct {
 	pathMap      map[string]string // displayPath -> storedPath
 	displayPaths []string          // sorted keys of pathMap
-	createdAt    time.Time
 }
 
-func newSlicePathCache(maxItems int, ttl time.Duration) *slicePathCache {
+func newSlicePathCache(maxItems int) *slicePathCache {
 	if maxItems <= 0 {
 		maxItems = 64
 	}
@@ -124,7 +117,6 @@ func newSlicePathCache(maxItems int, ttl time.Duration) *slicePathCache {
 		items:    make(map[string]*cachedPaths, maxItems),
 		order:    make([]string, 0, maxItems),
 		maxItems: maxItems,
-		ttl:      ttl,
 	}
 }
 
@@ -139,23 +131,6 @@ func (c *slicePathCache) get(key string) (*cachedPaths, bool) {
 		c.misses.Add(1)
 		return nil, false
 	}
-	// TTL check: if the entry has expired, evict it under a write lock.
-	if c.ttl > 0 && !v.createdAt.IsZero() && time.Since(v.createdAt) > c.ttl {
-		c.mu.Lock()
-		// Re-check under write lock in case another goroutine already evicted/replaced.
-		if current, stillThere := c.items[key]; stillThere && current == v {
-			delete(c.items, key)
-			for i, k := range c.order {
-				if k == key {
-					c.order = append(c.order[:i], c.order[i+1:]...)
-					break
-				}
-			}
-		}
-		c.mu.Unlock()
-		c.misses.Add(1)
-		return nil, false
-	}
 	c.hits.Add(1)
 	return v, true
 }
@@ -164,7 +139,6 @@ func (c *slicePathCache) put(key string, v *cachedPaths) {
 	if c == nil || key == "" || v == nil {
 		return
 	}
-	v.createdAt = time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.items[key]; exists {
