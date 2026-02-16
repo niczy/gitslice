@@ -987,6 +987,23 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 			}
 		}
 
+		snapshots := make(map[string]*models.CommitSnapshot)
+		for _, change := range changes {
+			if change == nil {
+				continue
+			}
+			if _, ok := snapshots[change.CommitHash]; !ok {
+				snapshots[change.CommitHash] = s.loadSnapshot(ctx, change.CommitHash)
+			}
+			parentHash := parentHashes[change.SliceID+"\x00"+change.CommitHash]
+			if parentHash == "" {
+				continue
+			}
+			if _, ok := snapshots[parentHash]; !ok {
+				snapshots[parentHash] = s.loadSnapshot(ctx, parentHash)
+			}
+		}
+
 		// Generate patches in parallel with bounded concurrency.
 		sem := make(chan struct{}, patchWorkers)
 		var wg sync.WaitGroup
@@ -1001,7 +1018,7 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 			go func(idx int, ch *models.FileChangeRecord, ph string) {
 				defer wg.Done()
 				defer func() { <-sem }() // release slot
-				protoChanges[idx].Patch = s.buildChangePatch(ctx, ch, ph)
+				protoChanges[idx].Patch = s.buildChangePatch(ctx, ch, ph, snapshots[ph], snapshots[ch.CommitHash])
 			}(i, change, parentHash)
 		}
 		wg.Wait()
@@ -1064,7 +1081,7 @@ func modelToProtoChange(change *models.FileChangeRecord, patch string) *filev1.F
 	}
 }
 
-func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models.FileChangeRecord, parentHash string) string {
+func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models.FileChangeRecord, parentHash string, parentSnapshot, currentSnapshot *models.CommitSnapshot) string {
 	if change == nil {
 		return ""
 	}
@@ -1081,13 +1098,15 @@ func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models
 	shouldLoadBefore := change.OldHash != "" || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeDelete || change.ChangeType == models.ChangeTypeRename
 	beforeUndiffable := false
 	if shouldLoadBefore {
-		if parentHash != "" {
-			if prev, ferr := s.storage.GetFileAtCommit(ctx, parentHash, oldPath); ferr == nil && prev != nil {
-				if lines, ok := splitLinesForDiff(prev.Content); ok {
-					beforeLines = lines
-				} else {
-					beforeUndiffable = true
-				}
+		oldHash := strings.TrimSpace(change.OldHash)
+		if oldHash == "" && parentSnapshot != nil {
+			oldHash = parentSnapshot.Files[oldPath]
+		}
+		if prev := s.getFileContent(ctx, oldHash, parentHash, oldPath); prev != nil {
+			if lines, ok := splitLinesForDiff(prev.Content); ok {
+				beforeLines = lines
+			} else {
+				beforeUndiffable = true
 			}
 		}
 	}
@@ -1095,7 +1114,11 @@ func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models
 	shouldLoadAfter := change.NewHash != "" || change.ChangeType == models.ChangeTypeAdd || change.ChangeType == models.ChangeTypeModify || change.ChangeType == models.ChangeTypeRename
 	afterUndiffable := false
 	if shouldLoadAfter {
-		if curr, err := s.storage.GetFileAtCommit(ctx, change.CommitHash, newPath); err == nil && curr != nil {
+		newHash := strings.TrimSpace(change.NewHash)
+		if newHash == "" && currentSnapshot != nil {
+			newHash = currentSnapshot.Files[newPath]
+		}
+		if curr := s.getFileContent(ctx, newHash, change.CommitHash, newPath); curr != nil {
 			if lines, ok := splitLinesForDiff(curr.Content); ok {
 				afterLines = lines
 			} else {
@@ -1122,6 +1145,33 @@ func (s *fileServiceServer) buildChangePatch(ctx context.Context, change *models
 		return ""
 	}
 	return unified
+}
+
+func (s *fileServiceServer) loadSnapshot(ctx context.Context, commitHash string) *models.CommitSnapshot {
+	if strings.TrimSpace(commitHash) == "" {
+		return nil
+	}
+	snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash)
+	if err != nil {
+		return nil
+	}
+	return snapshot
+}
+
+func (s *fileServiceServer) getFileContent(ctx context.Context, contentHash, commitHash, filePath string) *models.FileContent {
+	if strings.TrimSpace(contentHash) != "" {
+		if content, err := s.storage.GetFileContentByHash(ctx, contentHash); err == nil && content != nil {
+			return content
+		}
+	}
+	if strings.TrimSpace(commitHash) == "" || strings.TrimSpace(filePath) == "" {
+		return nil
+	}
+	content, err := s.storage.GetFileAtCommit(ctx, commitHash, filePath)
+	if err != nil {
+		return nil
+	}
+	return content
 }
 
 func (s *fileServiceServer) findParentCommitHash(ctx context.Context, sliceID, commitHash string) (string, error) {

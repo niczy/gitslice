@@ -1941,6 +1941,31 @@ func (s *PostgresNativeStorage) SaveCommitSnapshot(ctx context.Context, snapshot
 	return err
 }
 
+func (s *PostgresNativeStorage) GetFileContentByHash(ctx context.Context, contentHash string) (*models.FileContent, error) {
+	ctx = ensureCtx(ctx)
+
+	// Try object store.
+	raw, err := s.objectStore.GetObject(ctx, s.objKey("versioned_content", contentHash))
+	if err == nil {
+		var content models.FileContent
+		if err := json.Unmarshal(raw, &content); err == nil {
+			return &content, nil
+		}
+	}
+
+	// Try versioned_content table metadata.
+	var fc models.FileContent
+	err = s.pool.QueryRow(ctx, `
+		SELECT file_id, path, size FROM versioned_content WHERE content_hash = $1
+	`, contentHash).Scan(&fc.FileID, &fc.Path, &fc.Size)
+	if err == nil {
+		fc.Hash = contentHash
+		return &fc, nil
+	}
+
+	return nil, ErrEntryNotFound
+}
+
 func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
 	ctx = ensureCtx(ctx)
 
@@ -1954,30 +1979,13 @@ func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash,
 		return nil, ErrEntryNotFound
 	}
 
-	// Try object store.
-	raw, err := s.objectStore.GetObject(ctx, s.objKey("versioned_content", contentHash))
-	if err == nil {
-		var content models.FileContent
-		if err := json.Unmarshal(raw, &content); err == nil {
-			content.Path = path
-			content.FileID = path
-			return &content, nil
-		}
+	content, err := s.GetFileContentByHash(ctx, contentHash)
+	if err != nil {
+		return nil, err
 	}
-
-	// Try versioned_content table metadata.
-	var fc models.FileContent
-	err = s.pool.QueryRow(ctx, `
-		SELECT file_id, path, size FROM versioned_content WHERE content_hash = $1
-	`, contentHash).Scan(&fc.FileID, &fc.Path, &fc.Size)
-	if err == nil {
-		fc.Hash = contentHash
-		fc.Path = path
-		fc.FileID = path
-		return &fc, nil
-	}
-
-	return nil, ErrEntryNotFound
+	content.Path = path
+	content.FileID = path
+	return content, nil
 }
 
 func (s *PostgresNativeStorage) ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error) {
