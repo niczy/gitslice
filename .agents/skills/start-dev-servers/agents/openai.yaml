@@ -1,0 +1,4 @@
+interface:
+  display_name: "Start Dev Servers"
+  short_description: "Start and verify local gitslice development servers."
+  default_prompt: "Start local dev servers and verify core, gateway, and web are healthy."
