@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	cloud.google.com/go/storage v1.43.0
+	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/niczy/gitslice/services/admin v0.0.0

@@ -8,15 +8,17 @@ import (
 )
 
 var (
-	ErrSliceNotFound       = errors.New("slice not found")
-	ErrSliceAlreadyExists  = errors.New("slice already exists")
-	ErrInvalidInput        = errors.New("invalid input")
-	ErrChangesetNotFound   = errors.New("changeset not found")
-	ErrEntryNotFound       = errors.New("entry not found")
-	ErrEntryExists         = errors.New("entry already exists")
-	ErrLockHeld            = errors.New("resource locked")
-	ErrCommitNotFound      = errors.New("commit not found")
-	ErrSliceFilesImmutable = errors.New("slice files are immutable")
+	ErrSliceNotFound        = errors.New("slice not found")
+	ErrSliceAlreadyExists   = errors.New("slice already exists")
+	ErrInvalidInput         = errors.New("invalid input")
+	ErrChangesetNotFound    = errors.New("changeset not found")
+	ErrEntryNotFound        = errors.New("entry not found")
+	ErrEntryExists          = errors.New("entry already exists")
+	ErrLockHeld             = errors.New("resource locked")
+	ErrCommitNotFound       = errors.New("commit not found")
+	ErrSliceFilesImmutable  = errors.New("slice files are immutable")
+	ErrAgentSessionNotFound = errors.New("agent session not found")
+	ErrAgentSessionConflict = errors.New("agent session conflict")
 )
 
 // Storage defines the interface for data storage operations.
@@ -113,4 +115,13 @@ type Storage interface {
 	GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error)
 	AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error
 	ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error)
+
+	// Agent sessions
+	CreateAgentSession(ctx context.Context, session *models.AgentSession) error
+	GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error)
+	GetActiveAgentSessionBySlice(ctx context.Context, sliceID string) (*models.AgentSession, error)
+	UpdateAgentSession(ctx context.Context, session *models.AgentSession) error
+	AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error
+	ListAgentSessionEvents(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error)
+	AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error
 }
