@@ -1276,6 +1276,20 @@ func (s *InMemoryStorage) SaveCommitSnapshot(ctx context.Context, snapshot *mode
 	return nil
 }
 
+// GetFileContentByHash retrieves versioned file content by content hash.
+func (s *InMemoryStorage) GetFileContentByHash(ctx context.Context, contentHash string) (*models.FileContent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	content, exists := s.versionedContent[contentHash]
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	copyContent := *content
+	return &copyContent, nil
+}
+
 // GetFileAtCommit retrieves a file's content at a specific commit.
 func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
 	s.mu.RLock()
