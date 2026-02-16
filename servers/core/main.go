@@ -85,9 +85,9 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
-	// Compatibility shim: allow slice IDs with '/' in the URL path for file browsing.
-	httpMux.Handle("/v1/slices/", gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux)))
-	httpMux.Handle("/", gateway.WithCORS(gatewayMux))
+	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
+	// /v1/slices/ both work without ServeMux issuing slash redirects.
+	httpMux.Handle("/", gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux)))
 
 	server := &http.Server{
 		Addr:    cfg.GetGatewayAddr(),

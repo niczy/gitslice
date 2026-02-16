@@ -32,6 +32,9 @@ func SlicePathCompatHandler(fallback http.Handler) http.Handler {
 
 		rest := strings.TrimPrefix(r.URL.Path, prefix)
 		if rest == "" {
+			// Normalize "/v1/slices/" to "/v1/slices" so list-slices works even with
+			// a trailing slash.
+			r.URL.Path = "/v1/slices"
 			fallback.ServeHTTP(w, r)
 			return
 		}
