@@ -119,7 +119,6 @@ Request:
 ```json
 {
   "sliceId": "payments_slice",
-  "workspaceRef": "repo:github.com/niczy/gitslice",
   "provider": "e2b",
   "e2bTemplateId": "tmpl_agent_runtime_v3",
   "e2bRegion": "us-west-2",
@@ -349,7 +348,6 @@ CREATE TABLE agent_sessions (
   session_id           TEXT PRIMARY KEY,
   slice_id             TEXT NOT NULL,
   user_id              TEXT NOT NULL,
-  workspace_ref        TEXT NOT NULL,
   state                TEXT NOT NULL,
   provider             TEXT NOT NULL DEFAULT 'e2b',
   e2b_template_id      TEXT NOT NULL,
@@ -439,11 +437,10 @@ CREATE INDEX idx_agent_session_audit_session_created
 
 1. `SESSION_ID`
 2. `SLICE_ID`
-3. `WORKSPACE_REF`
-4. `SESSION_TOKEN_SIGNING_PUBLIC_KEY` (or JWKS URL)
-5. `RUNTIME_PORT=9000`
-6. `WORKSPACE_MOUNT_PATH=/workspace`
-7. `MAX_REPLAY_FRAMES=10000`
+3. `SESSION_TOKEN_SIGNING_PUBLIC_KEY` (or JWKS URL)
+4. `RUNTIME_PORT=9000`
+5. `WORKSPACE_MOUNT_PATH=/workspace`
+6. `MAX_REPLAY_FRAMES=10000`
 
 ### Runtime heartbeats
 
