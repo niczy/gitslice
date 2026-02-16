@@ -788,6 +788,124 @@ func sliceHasPath(pathMap map[string]string, path string) bool {
 	return false
 }
 
+type historyLookupTarget struct {
+	sliceID string
+	path    string
+}
+
+func appendHistoryLookupTarget(targets *[]historyLookupTarget, seen map[string]struct{}, sliceID, rawPath string) {
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return
+	}
+
+	pathValue := cleanPath(rawPath)
+	if strings.TrimSpace(rawPath) == "" {
+		pathValue = ""
+	}
+
+	key := sliceID + "\x00" + pathValue
+	if _, exists := seen[key]; exists {
+		return
+	}
+	seen[key] = struct{}{}
+	*targets = append(*targets, historyLookupTarget{
+		sliceID: sliceID,
+		path:    pathValue,
+	})
+}
+
+func pathWithinMount(pathValue, mountPath string) bool {
+	mountPath = cleanPath(mountPath)
+	if mountPath == "" {
+		return false
+	}
+	return pathValue == mountPath || strings.HasPrefix(pathValue, mountPath+"/")
+}
+
+func canFallbackToParentHistory(slice *models.Slice, normalizedPath string) bool {
+	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" {
+		return false
+	}
+	if len(slice.FolderMounts) == 0 {
+		return true
+	}
+	if normalizedPath == "" {
+		// Mounted slice roots can represent multiple folders; querying parent root
+		// would leak unrelated history outside the mount set.
+		return false
+	}
+
+	for _, mount := range slice.FolderMounts {
+		if pathWithinMount(normalizedPath, mount.Alias) || pathWithinMount(normalizedPath, mount.SourcePath) {
+			return true
+		}
+	}
+	return false
+}
+
+func historyLookupTargets(slice *models.Slice, sliceID, normalizedPath string) []historyLookupTarget {
+	targets := make([]historyLookupTarget, 0, 4)
+	seen := make(map[string]struct{}, 4)
+
+	appendHistoryLookupTarget(&targets, seen, sliceID, normalizedPath)
+
+	storedPath := common.SliceStoredPath(slice, normalizedPath)
+	if storedPath != "" {
+		appendHistoryLookupTarget(&targets, seen, sliceID, storedPath)
+	}
+
+	if !canFallbackToParentHistory(slice, normalizedPath) {
+		return targets
+	}
+
+	parentSliceID := strings.TrimSpace(slice.ParentSlice)
+	if storedPath != "" {
+		appendHistoryLookupTarget(&targets, seen, parentSliceID, storedPath)
+	}
+	appendHistoryLookupTarget(&targets, seen, parentSliceID, normalizedPath)
+
+	return targets
+}
+
+func remapChangePathForSlice(slice *models.Slice, change *filev1.FileChangeRecord) {
+	if change == nil {
+		return
+	}
+	if mapped := common.SliceDisplayPath(slice, change.Path); mapped != "" {
+		change.Path = mapped
+	}
+	if change.OldPath != "" {
+		if mapped := common.SliceDisplayPath(slice, change.OldPath); mapped != "" {
+			change.OldPath = mapped
+		}
+	}
+}
+
+func remapPathForSummary(slice *models.Slice, rawPath string) string {
+	cleaned := cleanPath(rawPath)
+	if cleaned == "" {
+		return ""
+	}
+
+	mapped := common.SliceDisplayPath(slice, cleaned)
+	if mapped == "" {
+		mapped = cleaned
+	}
+	if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(mapped, "/") {
+		return mapped + "/"
+	}
+	return mapped
+}
+
+func remapDirectorySummaryForSlice(slice *models.Slice, summary *filev1.DirectoryChangeSummary) {
+	if summary == nil {
+		return
+	}
+	summary.Path = remapPathForSummary(slice, summary.Path)
+	remapChangePathForSlice(slice, summary.LastChange)
+}
+
 // GetFileHistory retrieves the change history for a specific file.
 func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetFileHistoryRequest) (*filev1.GetFileHistoryResponse, error) {
 	if req.Path == "" {
@@ -821,18 +939,18 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 		limit = 50
 	}
 
-	changes, err := s.storage.GetFileHistory(ctx, sliceID, normalizedPath, limit+1, req.FromCommit)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get file history: %v", err))
-	}
-	if len(changes) == 0 {
-		storedPath := common.SliceStoredPath(slice, normalizedPath)
-		if storedPath != "" && storedPath != normalizedPath {
-			changes, err = s.storage.GetFileHistory(ctx, sliceID, storedPath, limit+1, req.FromCommit)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get file history: %v", err))
-			}
+	targets := historyLookupTargets(slice, sliceID, normalizedPath)
+	var changes []*models.FileChangeRecord
+	for _, target := range targets {
+		candidate, err := s.storage.GetFileHistory(ctx, target.sliceID, target.path, limit+1, req.FromCommit)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get file history: %v", err))
 		}
+		if len(candidate) == 0 {
+			continue
+		}
+		changes = candidate
+		break
 	}
 
 	hasMore := len(changes) > limit
@@ -847,7 +965,9 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 
 	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
 	for _, change := range changes {
-		protoChanges = append(protoChanges, modelToProtoChange(change, ""))
+		protoChange := modelToProtoChange(change, "")
+		remapChangePathForSlice(slice, protoChange)
+		protoChanges = append(protoChanges, protoChange)
 	}
 
 	return &filev1.GetFileHistoryResponse{
@@ -886,18 +1006,24 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 		limit = 100
 	}
 
-	changes, err := s.storage.GetDirectoryHistory(ctx, sliceID, normalizedPath, limit+1, req.FromCommit)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory history: %v", err))
+	targets := historyLookupTargets(slice, sliceID, normalizedPath)
+	summaryTarget := historyLookupTarget{sliceID: sliceID, path: normalizedPath}
+	if len(targets) > 0 {
+		summaryTarget = targets[0]
 	}
-	if len(changes) == 0 {
-		storedPath := common.SliceStoredPath(slice, normalizedPath)
-		if storedPath != normalizedPath {
-			changes, err = s.storage.GetDirectoryHistory(ctx, sliceID, storedPath, limit+1, req.FromCommit)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory history: %v", err))
-			}
+
+	var changes []*models.FileChangeRecord
+	for _, target := range targets {
+		candidate, err := s.storage.GetDirectoryHistory(ctx, target.sliceID, target.path, limit+1, req.FromCommit)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory history: %v", err))
 		}
+		if len(candidate) == 0 {
+			continue
+		}
+		changes = candidate
+		summaryTarget = target
+		break
 	}
 
 	hasMore := len(changes) > limit
@@ -912,20 +1038,24 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 
 	protoChanges := make([]*filev1.FileChangeRecord, 0, len(changes))
 	for _, change := range changes {
-		protoChanges = append(protoChanges, modelToProtoChange(change, ""))
+		protoChange := modelToProtoChange(change, "")
+		remapChangePathForSlice(slice, protoChange)
+		protoChanges = append(protoChanges, protoChange)
 	}
 
 	// Get summary
-	summary, err := s.storage.GetDirectorySummary(ctx, sliceID, normalizedPath)
+	summary, err := s.storage.GetDirectorySummary(ctx, summaryTarget.sliceID, summaryTarget.path)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get directory summary: %v", err))
 	}
+	protoSummary := modelToProtoSummary(summary)
+	remapDirectorySummaryForSlice(slice, protoSummary)
 
 	return &filev1.GetDirectoryHistoryResponse{
 		Changes:    protoChanges,
 		HasMore:    hasMore,
 		NextCommit: nextCommit,
-		Summary:    modelToProtoSummary(summary),
+		Summary:    protoSummary,
 	}, nil
 }
 
