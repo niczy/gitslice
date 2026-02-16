@@ -4,7 +4,7 @@
 
 This spec defines a production backend for coding-agent sessions.
 
-- Starting a session launches an isolated container (or Kubernetes pod).
+- Starting a session for a slice launches an isolated container (or Kubernetes pod).
 - The agent runtime inside that container exposes an internal WebSocket endpoint.
 - The browser never connects to containers directly.
 - The browser connects to a public proxy endpoint, and the proxy bridges traffic to the container endpoint.
@@ -13,7 +13,7 @@ The design separates control-plane actions (session lifecycle) from data-plane a
 
 ## Goals
 
-1. Launch one isolated execution environment per user session.
+1. Launch one isolated execution environment per slice session.
 2. Provide low-latency interactive terminal/tool streaming over WebSocket.
 3. Keep runtime endpoints private; only proxy is internet-facing.
 4. Support reconnect/resume after network loss.
@@ -117,6 +117,7 @@ Request:
 
 ```json
 {
+  "sliceId": "payments_slice",
   "workspaceRef": "repo:github.com/niczy/gitslice",
   "image": "ghcr.io/org/agent-runtime:2026-02-16",
   "cpu": "2",
@@ -134,6 +135,7 @@ Response `201`:
 ```json
 {
   "sessionId": "sess_01JQ...",
+  "sliceId": "payments_slice",
   "state": "creating",
   "ws": {
     "url": "wss://app.example.com/ws/sessions/sess_01JQ...",
@@ -148,6 +150,7 @@ Notes:
 
 1. API returns before container is fully ready.
 2. Client listens for `status` events over WS and/or polls session status endpoint.
+3. The system enforces one active session per slice (`creating|starting|running|idle|stopping`).
 
 ### 2) Get session
 
@@ -158,6 +161,7 @@ Response `200`:
 ```json
 {
   "sessionId": "sess_01JQ...",
+  "sliceId": "payments_slice",
   "state": "running",
   "runtime": {
     "node": "worker-a-3",
@@ -338,6 +342,7 @@ Validation rules:
 ```sql
 CREATE TABLE agent_sessions (
   session_id           TEXT PRIMARY KEY,
+  slice_id             TEXT NOT NULL,
   user_id              TEXT NOT NULL,
   workspace_ref        TEXT NOT NULL,
   state                TEXT NOT NULL,
@@ -360,8 +365,16 @@ CREATE TABLE agent_sessions (
 CREATE INDEX idx_agent_sessions_user_created
   ON agent_sessions (user_id, created_at DESC);
 
+CREATE INDEX idx_agent_sessions_slice_created
+  ON agent_sessions (slice_id, created_at DESC);
+
 CREATE INDEX idx_agent_sessions_state_updated
   ON agent_sessions (state, updated_at DESC);
+
+-- Enforce one active containerized agent session per slice.
+CREATE UNIQUE INDEX idx_agent_sessions_active_per_slice
+  ON agent_sessions (slice_id)
+  WHERE state IN ('creating', 'starting', 'running', 'idle', 'stopping');
 ```
 
 ### Table: `agent_session_events`
@@ -401,7 +414,7 @@ CREATE INDEX idx_agent_session_audit_session_created
 
 1. `agent:route:{session_id}` -> runtime endpoint (TTL 5m, refreshed by heartbeat).
 2. `agent:ws_nonce:{jti}` -> `1` (TTL token expiry + skew, set-if-not-exists).
-3. `agent:lock:start:{session_id}` -> distributed lock for start idempotency.
+3. `agent:lock:start:{slice_id}` -> distributed lock for per-slice start idempotency.
 4. `agent:presence:{session_id}` -> active connection count.
 
 ## Controller and Runtime Contracts
