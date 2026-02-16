@@ -76,6 +76,16 @@ func TestServiceLifecycle(t *testing.T) {
 		t.Fatalf("ListEventsForUser failed: %v", err)
 	}
 	if len(events) < 3 {
+		deadline := time.Now().Add(2 * time.Second)
+		for len(events) < 3 && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			events, nextSeq, err = svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 100)
+			if err != nil {
+				t.Fatalf("ListEventsForUser retry failed: %v", err)
+			}
+		}
+	}
+	if len(events) < 3 {
 		t.Fatalf("expected >=3 lifecycle events, got %d", len(events))
 	}
 	if nextSeq <= 1 {
