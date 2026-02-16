@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
@@ -23,6 +25,49 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// FileServiceConfig holds tunable parameters for the file service.
+// All fields have sensible defaults when left at zero value.
+type FileServiceConfig struct {
+	// PathCacheSize is the maximum number of cached slice path maps.
+	// Each replica maintains its own cache, so this controls per-instance memory.
+	// Default: 64.
+	PathCacheSize int
+
+	// PathCacheTTL is how long a cached path map is considered fresh.
+	// After this duration the entry is evicted on the next access, forcing
+	// a re-read from storage. This prevents stale data when multiple replicas
+	// serve traffic and mutations happen on other instances.
+	// Default: 5 minutes. Set to 0 to disable TTL (not recommended for
+	// horizontally-scaled deployments).
+	PathCacheTTL time.Duration
+
+	// PatchWorkers is the concurrency limit for parallel patch generation
+	// in GetCommitChanges. Tune per-instance based on available CPU/memory.
+	// Default: 8.
+	PatchWorkers int
+
+	// MaxPatchableChanges is the threshold above which patch generation is
+	// skipped even when requested, to avoid excessive storage reads.
+	// Default: 100.
+	MaxPatchableChanges int
+}
+
+func (c FileServiceConfig) withDefaults() FileServiceConfig {
+	if c.PathCacheSize <= 0 {
+		c.PathCacheSize = 64
+	}
+	if c.PathCacheTTL == 0 {
+		c.PathCacheTTL = 5 * time.Minute
+	}
+	if c.PatchWorkers <= 0 {
+		c.PatchWorkers = 8
+	}
+	if c.MaxPatchableChanges <= 0 {
+		c.MaxPatchableChanges = 100
+	}
+	return c
+}
+
 type fileServiceServer struct {
 	filev1.UnimplementedFileServiceServer
 	storage storage.Storage
@@ -31,18 +76,26 @@ type fileServiceServer struct {
 	// rebuilding and sorting the full slice path set on every ListEntries/GetFile call,
 	// which is very expensive for imported repos.
 	pathCache *slicePathCache
+
+	cfg FileServiceConfig
 }
 
-func newFileServiceServer(st storage.Storage) *fileServiceServer {
+func newFileServiceServer(st storage.Storage, cfgs ...FileServiceConfig) *fileServiceServer {
+	var cfg FileServiceConfig
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
+	cfg = cfg.withDefaults()
 	return &fileServiceServer{
 		storage:   st,
-		pathCache: newSlicePathCache(64),
+		pathCache: newSlicePathCache(cfg.PathCacheSize, cfg.PathCacheTTL),
+		cfg:       cfg,
 	}
 }
 
 // RegisterGRPCServer registers the file service handlers on an existing gRPC server.
-func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
-	filev1.RegisterFileServiceServer(srv, newFileServiceServer(st))
+func RegisterGRPCServer(srv *grpc.Server, st storage.Storage, cfgs ...FileServiceConfig) {
+	filev1.RegisterFileServiceServer(srv, newFileServiceServer(st, cfgs...))
 }
 
 type slicePathCache struct {
@@ -50,14 +103,20 @@ type slicePathCache struct {
 	items    map[string]*cachedPaths
 	order    []string
 	maxItems int
+	ttl      time.Duration
+
+	// Counters for observability across horizontal replicas.
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 type cachedPaths struct {
 	pathMap      map[string]string // displayPath -> storedPath
 	displayPaths []string          // sorted keys of pathMap
+	createdAt    time.Time
 }
 
-func newSlicePathCache(maxItems int) *slicePathCache {
+func newSlicePathCache(maxItems int, ttl time.Duration) *slicePathCache {
 	if maxItems <= 0 {
 		maxItems = 64
 	}
@@ -65,6 +124,7 @@ func newSlicePathCache(maxItems int) *slicePathCache {
 		items:    make(map[string]*cachedPaths, maxItems),
 		order:    make([]string, 0, maxItems),
 		maxItems: maxItems,
+		ttl:      ttl,
 	}
 }
 
@@ -73,15 +133,38 @@ func (c *slicePathCache) get(key string) (*cachedPaths, bool) {
 		return nil, false
 	}
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	v, ok := c.items[key]
-	return v, ok
+	c.mu.RUnlock()
+	if !ok {
+		c.misses.Add(1)
+		return nil, false
+	}
+	// TTL check: if the entry has expired, evict it under a write lock.
+	if c.ttl > 0 && !v.createdAt.IsZero() && time.Since(v.createdAt) > c.ttl {
+		c.mu.Lock()
+		// Re-check under write lock in case another goroutine already evicted/replaced.
+		if current, stillThere := c.items[key]; stillThere && current == v {
+			delete(c.items, key)
+			for i, k := range c.order {
+				if k == key {
+					c.order = append(c.order[:i], c.order[i+1:]...)
+					break
+				}
+			}
+		}
+		c.mu.Unlock()
+		c.misses.Add(1)
+		return nil, false
+	}
+	c.hits.Add(1)
+	return v, true
 }
 
 func (c *slicePathCache) put(key string, v *cachedPaths) {
 	if c == nil || key == "" || v == nil {
 		return
 	}
+	v.createdAt = time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.items[key]; exists {
@@ -98,9 +181,17 @@ func (c *slicePathCache) put(key string, v *cachedPaths) {
 	delete(c.items, evict)
 }
 
+// Stats returns cache hit/miss counters for observability.
+func (c *slicePathCache) Stats() (hits, misses int64) {
+	if c == nil {
+		return 0, 0
+	}
+	return c.hits.Load(), c.misses.Load()
+}
+
 // NewService constructs the file service implementation for use without gRPC.
-func NewService(st storage.Storage) filev1.FileServiceServer {
-	return newFileServiceServer(st)
+func NewService(st storage.Storage, cfgs ...FileServiceConfig) filev1.FileServiceServer {
+	return newFileServiceServer(st, cfgs...)
 }
 
 // resolveVersion extracts the effective slice and commit from oneof version specifiers.
@@ -1059,12 +1150,14 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 	}, nil
 }
 
-// maxPatchableChanges is the threshold above which patch generation is skipped
+// defaultMaxPatchableChanges is the threshold above which patch generation is skipped
 // even when requested, to avoid excessive storage reads on large commits.
-const maxPatchableChanges = 100
+// Overridable via FileServiceConfig.MaxPatchableChanges.
+const defaultMaxPatchableChanges = 100
 
-// patchWorkers is the concurrency limit for parallel patch generation.
-const patchWorkers = 8
+// defaultPatchWorkers is the concurrency limit for parallel patch generation.
+// Overridable via FileServiceConfig.PatchWorkers.
+const defaultPatchWorkers = 8
 
 // GetCommitChanges retrieves all file changes made in a specific commit.
 func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.GetCommitChangesRequest) (*filev1.GetCommitChangesResponse, error) {
@@ -1098,7 +1191,7 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 	}
 
 	// Only compute patches when explicitly requested and the commit is not too large.
-	if req.IncludePatches && len(changes) <= maxPatchableChanges {
+	if req.IncludePatches && len(changes) <= s.cfg.MaxPatchableChanges {
 		// Resolve parent hashes (sequential -- typically one unique key per commit).
 		parentHashes := make(map[string]string)
 		for _, change := range changes {
@@ -1135,7 +1228,7 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 		}
 
 		// Generate patches in parallel with bounded concurrency.
-		sem := make(chan struct{}, patchWorkers)
+		sem := make(chan struct{}, s.cfg.PatchWorkers)
 		var wg sync.WaitGroup
 		for i, change := range changes {
 			if change == nil {

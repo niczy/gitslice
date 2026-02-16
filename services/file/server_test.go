@@ -703,6 +703,118 @@ func TestGetCommitChangesOmitsPatchesByDefault(t *testing.T) {
 	}
 }
 
+func TestSlicePathCacheTTLExpiration(t *testing.T) {
+	// Use a very short TTL so we can test expiration without sleeping.
+	cache := newSlicePathCache(10, 1*time.Millisecond)
+
+	entry := &cachedPaths{
+		pathMap:      map[string]string{"a": "b"},
+		displayPaths: []string{"a"},
+	}
+	cache.put("key1", entry)
+
+	// Immediately should be a hit.
+	v, ok := cache.get("key1")
+	if !ok || v == nil {
+		t.Fatal("expected cache hit immediately after put")
+	}
+
+	// Wait for TTL to expire.
+	time.Sleep(5 * time.Millisecond)
+
+	// Should be a miss now.
+	v, ok = cache.get("key1")
+	if ok || v != nil {
+		t.Fatal("expected cache miss after TTL expiration")
+	}
+
+	// Verify counters.
+	hits, misses := cache.Stats()
+	if hits != 1 {
+		t.Fatalf("expected 1 hit, got %d", hits)
+	}
+	if misses != 1 {
+		t.Fatalf("expected 1 miss, got %d", misses)
+	}
+}
+
+func TestSlicePathCacheNoTTL(t *testing.T) {
+	// TTL of 0 means entries never expire based on time.
+	cache := newSlicePathCache(10, 0)
+
+	entry := &cachedPaths{
+		pathMap:      map[string]string{"a": "b"},
+		displayPaths: []string{"a"},
+	}
+	cache.put("key1", entry)
+
+	// Should always be a hit.
+	v, ok := cache.get("key1")
+	if !ok || v == nil {
+		t.Fatal("expected cache hit with TTL=0")
+	}
+}
+
+func TestSlicePathCacheLRUEviction(t *testing.T) {
+	cache := newSlicePathCache(2, time.Hour)
+
+	for i := 0; i < 3; i++ {
+		cache.put(fmt.Sprintf("key%d", i), &cachedPaths{
+			pathMap:      map[string]string{fmt.Sprintf("p%d", i): fmt.Sprintf("s%d", i)},
+			displayPaths: []string{fmt.Sprintf("p%d", i)},
+		})
+	}
+
+	// key0 should have been evicted (LRU).
+	if _, ok := cache.get("key0"); ok {
+		t.Fatal("expected key0 to be evicted")
+	}
+	// key1 and key2 should still be present.
+	if _, ok := cache.get("key1"); !ok {
+		t.Fatal("expected key1 to be present")
+	}
+	if _, ok := cache.get("key2"); !ok {
+		t.Fatal("expected key2 to be present")
+	}
+}
+
+func TestFileServiceConfigDefaults(t *testing.T) {
+	cfg := FileServiceConfig{}.withDefaults()
+	if cfg.PathCacheSize != 64 {
+		t.Fatalf("expected PathCacheSize=64, got %d", cfg.PathCacheSize)
+	}
+	if cfg.PathCacheTTL != 5*time.Minute {
+		t.Fatalf("expected PathCacheTTL=5m, got %v", cfg.PathCacheTTL)
+	}
+	if cfg.PatchWorkers != 8 {
+		t.Fatalf("expected PatchWorkers=8, got %d", cfg.PatchWorkers)
+	}
+	if cfg.MaxPatchableChanges != 100 {
+		t.Fatalf("expected MaxPatchableChanges=100, got %d", cfg.MaxPatchableChanges)
+	}
+}
+
+func TestFileServiceConfigCustomValues(t *testing.T) {
+	cfg := FileServiceConfig{
+		PathCacheSize:       128,
+		PathCacheTTL:        10 * time.Minute,
+		PatchWorkers:        16,
+		MaxPatchableChanges: 200,
+	}.withDefaults()
+	if cfg.PathCacheSize != 128 {
+		t.Fatalf("expected PathCacheSize=128, got %d", cfg.PathCacheSize)
+	}
+	if cfg.PathCacheTTL != 10*time.Minute {
+		t.Fatalf("expected PathCacheTTL=10m, got %v", cfg.PathCacheTTL)
+	}
+	if cfg.PatchWorkers != 16 {
+		t.Fatalf("expected PatchWorkers=16, got %d", cfg.PatchWorkers)
+	}
+	if cfg.MaxPatchableChanges != 200 {
+		t.Fatalf("expected MaxPatchableChanges=200, got %d", cfg.MaxPatchableChanges)
+	}
+}
+
 func TestGetCommitChangesSkipsPatchesOverThreshold(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
@@ -720,8 +832,8 @@ func TestGetCommitChangesSkipsPatchesOverThreshold(t *testing.T) {
 		t.Fatalf("AddSliceCommit failed: %v", err)
 	}
 
-	// Create maxPatchableChanges+1 file changes to exceed the threshold.
-	count := maxPatchableChanges + 1
+	// Create defaultMaxPatchableChanges+1 file changes to exceed the threshold.
+	count := defaultMaxPatchableChanges + 1
 	parentFiles := make(map[string]string, count)
 	headFiles := make(map[string]string, count)
 	for i := 0; i < count; i++ {
