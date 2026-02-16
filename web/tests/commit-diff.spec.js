@@ -181,4 +181,55 @@ test.describe('Commit Diff Page (real server)', () => {
       .toBeLessThan(80);
   });
 
+  test('loads file content fallback when patch data is unavailable', async ({ page }) => {
+    const commitHash = 'commit-test-fallback-content';
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 1,
+          files_modified: 0,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes: [
+            {
+              id: 'change-fallback',
+              slice_id: 'root_slice',
+              path: 'README.md',
+              change_type: 'CHANGE_TYPE_ADD',
+              lines_added: 2,
+              lines_deleted: 0,
+              patch: '',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/README.md?slice_version.slice_hash=*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'README.md',
+            content: 'SGVsbG8gd29ybGQKc2Vjb25kIGxpbmU=',
+            size: 23,
+            hash: 'hash-1',
+          },
+        }),
+      });
+    });
+
+    await page.goto(`/#/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+
+    const fallback = page.getByTestId('diff-file-fallback-content').first();
+    await expect(fallback).toBeVisible();
+    await expect(fallback).toContainText('Hello world');
+    await expect(fallback.locator('.diff-line-added').first()).toBeVisible();
+  });
+
 });
