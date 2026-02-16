@@ -16,20 +16,20 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type listSliceCommitsCounter struct {
+type commitByHashCounter struct {
 	storage.Storage
 	mu    sync.Mutex
 	calls int
 }
 
-func (c *listSliceCommitsCounter) ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error) {
+func (c *commitByHashCounter) GetCommitByHash(ctx context.Context, sliceID, commitHash string) (*models.Commit, error) {
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()
-	return c.Storage.ListSliceCommits(ctx, sliceID, limit, fromCommitHash)
+	return c.Storage.GetCommitByHash(ctx, sliceID, commitHash)
 }
 
-func (c *listSliceCommitsCounter) CallCount() int {
+func (c *commitByHashCounter) CallCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
@@ -388,7 +388,7 @@ func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	}
 }
 
-func TestGetCommitChangesLooksUpParentCommitOncePerCommit(t *testing.T) {
+func TestGetCommitChangesLooksUpParentCommitByHashOncePerCommit(t *testing.T) {
 	ctx := authCtx()
 	baseStorage := storage.NewInMemoryStorage()
 
@@ -435,7 +435,7 @@ func TestGetCommitChangesLooksUpParentCommitOncePerCommit(t *testing.T) {
 		t.Fatalf("SaveCommitSnapshot head failed: %v", err)
 	}
 
-	countedStorage := &listSliceCommitsCounter{Storage: baseStorage}
+	countedStorage := &commitByHashCounter{Storage: baseStorage}
 	svc := newFileServiceServer(countedStorage)
 
 	resp, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash, IncludePatches: true})
@@ -447,6 +447,59 @@ func TestGetCommitChangesLooksUpParentCommitOncePerCommit(t *testing.T) {
 	}
 	if got := countedStorage.CallCount(); got != 1 {
 		t.Fatalf("expected one parent lookup, got %d", got)
+	}
+}
+
+func TestGetCommitChangesRequiresAuthForPrivateSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "private"
+		commitHash = "c1"
+	)
+
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: sliceID, Owners: []string{"owner"}, CreatedBy: "owner"}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{ID: "fc1", SliceID: sliceID, CommitHash: commitHash, Path: "README.md", ChangeType: models.ChangeTypeModify, Timestamp: time.Now().UTC()}); err != nil {
+		t.Fatalf("AddFileChange failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	_, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	if err == nil {
+		t.Fatalf("expected auth error")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected permission denied, got %v", status.Code(err))
+	}
+}
+
+func TestGetCommitChangesRequiresLoginForPrivateSlice(t *testing.T) {
+	ctx := context.Background()
+	seedCtx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const (
+		sliceID    = "private"
+		commitHash = "c1"
+	)
+
+	if err := st.CreateSlice(seedCtx, &models.Slice{ID: sliceID, Name: sliceID, Owners: []string{"owner"}, CreatedBy: "owner"}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddFileChange(seedCtx, &models.FileChangeRecord{ID: "fc1", SliceID: sliceID, CommitHash: commitHash, Path: "README.md", ChangeType: models.ChangeTypeModify, Timestamp: time.Now().UTC()}); err != nil {
+		t.Fatalf("AddFileChange failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	_, err := svc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{CommitHash: commitHash})
+	if err == nil {
+		t.Fatalf("expected auth error")
+	}
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected unauthenticated, got %v", status.Code(err))
 	}
 }
 

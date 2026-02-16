@@ -41,7 +41,8 @@ type InMemoryStorage struct {
 	sliceChangesets map[string][]string          // sliceID -> []changesetID
 
 	// Commit history
-	sliceCommits map[string][]*models.Commit // sliceID -> commits (newest first)
+	sliceCommits       map[string][]*models.Commit // sliceID -> commits (newest first)
+	commitsBySliceHash map[string]map[string]*models.Commit
 
 	// Global state
 	globalState *models.GlobalState
@@ -77,6 +78,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		changesets:          make(map[string]*models.Changeset),
 		sliceChangesets:     make(map[string][]string),
 		sliceCommits:        make(map[string][]*models.Commit),
+		commitsBySliceHash:  make(map[string]map[string]*models.Commit),
 		lockedSlices:        make(map[string]bool),
 		fileLocks:           make(map[string]string),
 		commitSnapshots:     make(map[string]*models.CommitSnapshot),
@@ -120,6 +122,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.changesets = fresh.changesets
 	s.sliceChangesets = fresh.sliceChangesets
 	s.sliceCommits = fresh.sliceCommits
+	s.commitsBySliceHash = fresh.commitsBySliceHash
 	s.globalState = fresh.globalState
 	s.commitSnapshots = fresh.commitSnapshots
 	s.versionedContent = fresh.versionedContent
@@ -360,6 +363,10 @@ func (s *InMemoryStorage) AddSliceCommit(ctx context.Context, sliceID string, co
 
 	commitCopy := *commit
 	s.sliceCommits[sliceID] = append([]*models.Commit{&commitCopy}, s.sliceCommits[sliceID]...)
+	if s.commitsBySliceHash[sliceID] == nil {
+		s.commitsBySliceHash[sliceID] = make(map[string]*models.Commit)
+	}
+	s.commitsBySliceHash[sliceID][commit.CommitHash] = &commitCopy
 	return nil
 }
 
@@ -399,6 +406,27 @@ func (s *InMemoryStorage) ListSliceCommits(ctx context.Context, sliceID string, 
 	}
 
 	return copy, nil
+}
+
+func (s *InMemoryStorage) GetCommitByHash(ctx context.Context, sliceID, commitHash string) (*models.Commit, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return nil, ErrSliceNotFound
+	}
+
+	commitsForSlice := s.commitsBySliceHash[sliceID]
+	if commitsForSlice == nil {
+		return nil, ErrCommitNotFound
+	}
+	commit, exists := commitsForSlice[commitHash]
+	if !exists {
+		return nil, ErrCommitNotFound
+	}
+
+	commitCopy := *commit
+	return &commitCopy, nil
 }
 
 // AddFileToSlice adds a file to the index for a slice

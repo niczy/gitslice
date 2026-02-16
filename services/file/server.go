@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"path"
 	"sort"
 	"strings"
@@ -218,7 +219,10 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	// Prefer commit snapshot paths when available. This avoids listing stale
 	// file IDs that may remain in legacy metadata after deletes.
 	if preferSnapshots && commitHash != "" {
-		if snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash); err == nil && snapshot != nil {
+		snapshot, err := s.storage.GetCommitSnapshot(ctx, commitHash)
+		if err != nil {
+			log.Printf("WARN: snapshot lookup failed for commit %s: %v, falling back to file list", commitHash, err)
+		} else if snapshot != nil {
 			paths := make([]string, 0, len(snapshot.Files))
 			for raw := range snapshot.Files {
 				p := common.CleanRelativePath(raw)
@@ -943,6 +947,10 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get commit changes: %v", err))
 	}
 
+	if err := s.authorizeCommitChanges(ctx, changes); err != nil {
+		return nil, err
+	}
+
 	protoChanges := make([]*filev1.FileChangeRecord, len(changes))
 	var added, modified, deleted, renamed int32
 	for i, change := range changes {
@@ -1007,6 +1015,33 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 		FilesDeleted:  deleted,
 		FilesRenamed:  renamed,
 	}, nil
+}
+
+func (s *fileServiceServer) authorizeCommitChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
+	username := auth.UsernameFromGRPCContext(ctx)
+	checked := make(map[string]struct{})
+	for _, change := range changes {
+		if change == nil || strings.TrimSpace(change.SliceID) == "" {
+			continue
+		}
+		sliceID := strings.TrimSpace(change.SliceID)
+		if _, ok := checked[sliceID]; ok {
+			continue
+		}
+		checked[sliceID] = struct{}{}
+
+		slice, err := s.storage.GetSlice(ctx, sliceID)
+		if err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to load slice %s for authorization: %v", sliceID, err))
+		}
+		if !authz.HasSliceViewAccess(slice, username) {
+			if username == "" {
+				return status.Error(codes.Unauthenticated, "login required")
+			}
+			return status.Error(codes.PermissionDenied, "not authorized for slice")
+		}
+	}
+	return nil
 }
 
 // modelToProtoChange converts a model FileChangeRecord to protobuf.
@@ -1094,16 +1129,17 @@ func (s *fileServiceServer) findParentCommitHash(ctx context.Context, sliceID, c
 		return "", nil
 	}
 
-	commits, err := s.storage.ListSliceCommits(ctx, sliceID, 0, "")
+	commit, err := s.storage.GetCommitByHash(ctx, sliceID, commitHash)
 	if err != nil {
+		if errors.Is(err, storage.ErrCommitNotFound) {
+			return "", nil
+		}
 		return "", err
 	}
-	for _, c := range commits {
-		if c.CommitHash == commitHash {
-			return c.ParentHash, nil
-		}
+	if commit == nil {
+		return "", nil
 	}
-	return "", nil
+	return commit.ParentHash, nil
 }
 
 func splitLinesForDiff(content []byte) ([]string, bool) {

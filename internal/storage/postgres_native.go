@@ -1105,6 +1105,25 @@ func (s *PostgresNativeStorage) ListSliceCommits(ctx context.Context, sliceID st
 	return commits, rows.Err()
 }
 
+func (s *PostgresNativeStorage) GetCommitByHash(ctx context.Context, sliceID, commitHash string) (*models.Commit, error) {
+	ctx = ensureCtx(ctx)
+
+	var c models.Commit
+	err := s.pool.QueryRow(ctx, `
+		SELECT commit_hash, parent_hash, message, committed_at
+		FROM slice_commits
+		WHERE slice_id = $1 AND commit_hash = $2
+		LIMIT 1
+	`, sliceID, commitHash).Scan(&c.CommitHash, &c.ParentHash, &c.Message, &c.Timestamp)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrCommitNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
 // ============ File Indexing ============
 
 func (s *PostgresNativeStorage) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
