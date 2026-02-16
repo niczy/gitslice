@@ -103,7 +103,7 @@ test.describe('Commit Diff Page (real server)', () => {
 
   test('renders unified patch content for changed files', async ({ page }) => {
     const commitHash = 'commit-test-patch';
-    await page.route(`**/v1/commits/${commitHash}/changes`, async (route) => {
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -150,7 +150,7 @@ test.describe('Commit Diff Page (real server)', () => {
       patch: `@@ -1 +1 @@\n-old ${index}\n+new ${index}\n`,
     }));
 
-    await page.route(`**/v1/commits/${commitHash}/changes`, async (route) => {
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
