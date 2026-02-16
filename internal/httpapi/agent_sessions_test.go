@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -32,6 +35,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
 	mux.HandleFunc("/v1/agent-sessions/", api.HandleItem)
+	mux.HandleFunc("/ws/sessions/", api.HandleWS)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -127,6 +131,7 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
 	mux.HandleFunc("/v1/agent-sessions/", api.HandleItem)
+	mux.HandleFunc("/ws/sessions/", api.HandleWS)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -155,6 +160,126 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for cross-user access, got %d", resp.StatusCode)
+	}
+}
+
+func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-http-ws",
+		Name:      "Slice HTTP WS",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := agentsession.NewService(st, "test-secret")
+	api := NewAgentSessionsAPI(st, svc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
+	mux.HandleFunc("/v1/agent-sessions/", api.HandleItem)
+	mux.HandleFunc("/ws/sessions/", api.HandleWS)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	createRaw := []byte(`{"sliceId":"slice-http-ws","provider":"e2b","e2bTemplateId":"tmpl-v1"}`)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	var createResp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
+		t.Fatalf("decode create response failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if createResp.SessionID == "" {
+		t.Fatalf("missing session id")
+	}
+	waitForHTTPState(t, server.URL, createResp.SessionID, "alice", "running", 2*time.Second)
+
+	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions/"+createResp.SessionID+"/token", nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("token request failed: %v", err)
+	}
+	var tokenResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		t.Fatalf("decode token response failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if tokenResp.Token == "" {
+		t.Fatalf("missing token")
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/sessions/" + createResp.SessionID + "?token=" + url.QueryEscape(tokenResp.Token) + "&lastSeq=0"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	if err := conn.WriteJSON(map[string]any{
+		"stream": "control",
+		"type":   "ping",
+		"payload": map[string]string{
+			"nonce": "abc123",
+		},
+	}); err != nil {
+		t.Fatalf("write ping failed: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"stream": "pty",
+		"type":   "stdin",
+		"payload": map[string]string{
+			"data": "echo hello\n",
+		},
+	}); err != nil {
+		t.Fatalf("write stdin failed: %v", err)
+	}
+
+	gotPong := false
+	gotStdout := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && (!gotPong || !gotStdout) {
+		var frame struct {
+			Stream  string                 `json:"stream"`
+			Type    string                 `json:"type"`
+			Payload map[string]interface{} `json:"payload"`
+		}
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("read ws frame failed: %v", err)
+		}
+		if frame.Stream == "control" && frame.Type == "pong" {
+			if nonce, ok := frame.Payload["nonce"].(string); ok && nonce == "abc123" {
+				gotPong = true
+			}
+		}
+		if frame.Stream == "pty" && frame.Type == "stdout" {
+			if data, ok := frame.Payload["data"].(string); ok && strings.Contains(data, "echo hello") {
+				gotStdout = true
+			}
+		}
+	}
+	if !gotPong {
+		t.Fatalf("did not receive pong frame")
+	}
+	if !gotStdout {
+		t.Fatalf("did not receive pty stdout frame")
+	}
+	_ = conn.Close()
+
+	if _, _, err := websocket.DefaultDialer.Dial(wsURL, nil); err == nil {
+		t.Fatalf("expected reused token websocket dial to fail")
 	}
 }
 
