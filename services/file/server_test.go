@@ -280,6 +280,82 @@ func TestFileHistoryUsesDisplayPathForMountedSlice(t *testing.T) {
 	}
 }
 
+func TestFileHistoryFallsBackToParentMountedSlice(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	parent := &models.Slice{
+		ID:        "parent",
+		Name:      "parent",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+	}
+	if err := st.CreateSlice(ctx, parent); err != nil {
+		t.Fatalf("CreateSlice(parent) failed: %v", err)
+	}
+
+	fork := &models.Slice{
+		ID:          "fork",
+		Name:        "fork",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: "parent",
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "o/github.com/ByteByteGoHq/system-design-101", Alias: "system-design-101"},
+		},
+	}
+	if err := st.CreateSlice(ctx, fork); err != nil {
+		t.Fatalf("CreateSlice(fork) failed: %v", err)
+	}
+
+	change := &models.FileChangeRecord{
+		ID:         "change-parent-1",
+		SliceID:    "parent",
+		CommitHash: "commit-parent-1",
+		Path:       "o/github.com/ByteByteGoHq/system-design-101/CONTRIBUTING.md",
+		ChangeType: models.ChangeTypeModify,
+		Author:     "tester",
+		Message:    "update contributing",
+		Timestamp:  time.Now().UTC(),
+	}
+	if err := st.AddFileChange(ctx, change); err != nil {
+		t.Fatalf("AddFileChange failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+
+	fileResp, err := svc.GetFileHistory(ctx, &filev1.GetFileHistoryRequest{
+		SliceId: "fork",
+		Path:    "system-design-101/CONTRIBUTING.md",
+	})
+	if err != nil {
+		t.Fatalf("GetFileHistory failed: %v", err)
+	}
+	if got := len(fileResp.GetChanges()); got != 1 {
+		t.Fatalf("expected 1 history item, got %d", got)
+	}
+	if got := fileResp.GetChanges()[0].GetPath(); got != "system-design-101/CONTRIBUTING.md" {
+		t.Fatalf("expected remapped display path, got %q", got)
+	}
+
+	dirResp, err := svc.GetDirectoryHistory(ctx, &filev1.GetDirectoryHistoryRequest{
+		SliceId: "fork",
+		Path:    "system-design-101",
+	})
+	if err != nil {
+		t.Fatalf("GetDirectoryHistory failed: %v", err)
+	}
+	if got := len(dirResp.GetChanges()); got != 1 {
+		t.Fatalf("expected 1 directory history item, got %d", got)
+	}
+	if got := dirResp.GetChanges()[0].GetPath(); got != "system-design-101/CONTRIBUTING.md" {
+		t.Fatalf("expected remapped directory history path, got %q", got)
+	}
+	if got := dirResp.GetSummary().GetPath(); got != "system-design-101/" {
+		t.Fatalf("expected remapped summary path, got %q", got)
+	}
+}
+
 func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
