@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/niczy/gitslice/internal/storage"
 )
 
@@ -69,6 +70,11 @@ func SortDirsByDepth(dirs map[string]bool) []string {
 // GenerateEntryID creates a unique ID for a directory entry
 func GenerateEntryID(sliceID, path string) string {
 	return fmt.Sprintf("%s:%s", sliceID, path)
+}
+
+// GenerateSliceID creates a new unique slice ID with a "sl-" prefix followed by a UUID.
+func GenerateSliceID() string {
+	return "sl-" + uuid.New().String()
 }
 
 // NormalizeSlicePath prefixes a repo-relative file path with the genesis mount path.

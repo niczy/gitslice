@@ -22,6 +22,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	switch args[0] {
 	case "checkout", "clone":
 		handleSliceCheckout(ctx, cli, args[1:])
+	case "rename":
+		handleRenameSlice(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown slice command: %s", args[0])
 		printSliceHelp()

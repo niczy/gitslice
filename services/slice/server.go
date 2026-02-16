@@ -548,13 +548,27 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		return nil, status.Error(codes.Unauthenticated, "login required")
 	}
 
-	// Validate IDs and paths
+	// Validate parent slice ID
 	if err := common.ValidateSliceID(req.ParentSliceId); err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid parent slice ID: %v", err))
 	}
-	if err := common.ValidateSliceID(req.NewSliceId); err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid new slice ID: %v", err))
+
+	// Auto-generate slice ID if not provided; validate if provided.
+	sliceID := req.NewSliceId
+	if sliceID == "" {
+		sliceID = common.GenerateSliceID()
+	} else {
+		if err := common.ValidateSliceID(sliceID); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid new slice ID: %v", err))
+		}
 	}
+
+	// Use provided name, fall back to slice ID if blank.
+	sliceName := req.Name
+	if sliceName == "" {
+		sliceName = sliceID
+	}
+
 	folderPaths, err := collectRequestedFolderPaths(req)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -587,8 +601,8 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	}
 
 	newSlice := &models.Slice{
-		ID:           req.NewSliceId,
-		Name:         req.Name,
+		ID:           sliceID,
+		Name:         sliceName,
 		Description:  req.Description,
 		Files:        selectedFiles,
 		FolderMounts: buildSliceFolderMounts(folderPaths),
@@ -600,7 +614,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 
 	if err := s.storage.CreateSlice(ctx, newSlice); err != nil {
 		if errors.Is(err, storage.ErrSliceAlreadyExists) {
-			return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("slice already exists: %s", req.NewSliceId))
+			return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("slice already exists: %s", sliceID))
 		}
 		if errors.Is(err, storage.ErrInvalidInput) {
 			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice: %v", err))
@@ -609,9 +623,75 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	}
 
 	return &slicev1.CreateSliceFromFolderResponse{
-		SliceId: req.NewSliceId,
+		SliceId: sliceID,
 		Status:  "created",
 		Files:   selectedFiles,
+		Name:    sliceName,
+	}, nil
+}
+
+func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.RenameSliceRequest) (*slicev1.RenameSliceResponse, error) {
+	log.Printf("RenameSlice called: slice_id=%s, new_name=%s", req.SliceId, req.NewName)
+
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
+	if strings.TrimSpace(req.NewName) == "" {
+		return nil, status.Error(codes.InvalidArgument, "new name cannot be empty")
+	}
+
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
+	if err := s.storage.UpdateSliceName(ctx, req.SliceId, req.NewName); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to rename slice: %v", err))
+	}
+
+	return &slicev1.RenameSliceResponse{
+		SliceId: req.SliceId,
+		Name:    req.NewName,
+	}, nil
+}
+
+func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.GetSliceByNameRequest) (*slicev1.GetSliceByNameResponse, error) {
+	log.Printf("GetSliceByName called: name=%s", req.Name)
+
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, status.Error(codes.InvalidArgument, "name cannot be empty")
+	}
+
+	slice, err := s.storage.GetSliceByName(ctx, req.Name)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found with name: %s", req.Name))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to look up slice: %v", err))
+	}
+
+	username := auth.UsernameFromGRPCContext(ctx)
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
+	return &slicev1.GetSliceByNameResponse{
+		SliceId:       slice.ID,
+		Name:          slice.Name,
+		Description:   slice.Description,
+		ParentSliceId: slice.ParentSlice,
+		Files:         slice.Files,
 	}, nil
 }
 

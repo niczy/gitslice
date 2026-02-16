@@ -86,6 +86,100 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 	})
 }
 
+func TestCreateSliceAutoGeneratesID(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	if err := st.AddFileToSlice(ctx, "o/genesis/projects/repo/main.go", "root_slice"); err != nil {
+		t.Fatalf("failed to add root file: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: "root_slice",
+		FolderPath:    "o/genesis/projects/repo",
+		Name:          "my-slice",
+		Description:   "auto id test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSliceFromFolder failed: %v", err)
+	}
+
+	if !strings.HasPrefix(resp.SliceId, "sl-") {
+		t.Fatalf("expected auto-generated ID with sl- prefix, got %q", resp.SliceId)
+	}
+	if resp.Name != "my-slice" {
+		t.Fatalf("expected name %q, got %q", "my-slice", resp.Name)
+	}
+
+	// Verify we can retrieve it
+	slice, err := st.GetSlice(ctx, resp.SliceId)
+	if err != nil {
+		t.Fatalf("failed to get slice by generated ID: %v", err)
+	}
+	if slice.Name != "my-slice" {
+		t.Fatalf("stored name mismatch: %q", slice.Name)
+	}
+}
+
+func TestRenameSlice(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "sl-test-rename", Name: "old-name", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.RenameSlice(ctx, &slicev1.RenameSliceRequest{
+		SliceId: "sl-test-rename",
+		NewName: "new-name",
+	})
+	if err != nil {
+		t.Fatalf("RenameSlice failed: %v", err)
+	}
+
+	if resp.Name != "new-name" {
+		t.Fatalf("expected name %q, got %q", "new-name", resp.Name)
+	}
+
+	// Verify persistence
+	updated, err := st.GetSlice(ctx, "sl-test-rename")
+	if err != nil {
+		t.Fatalf("failed to get slice: %v", err)
+	}
+	if updated.Name != "new-name" {
+		t.Fatalf("stored name not updated: %q", updated.Name)
+	}
+}
+
+func TestGetSliceByName(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "sl-lookup-test", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.GetSliceByName(ctx, &slicev1.GetSliceByNameRequest{Name: "my-project"})
+	if err != nil {
+		t.Fatalf("GetSliceByName failed: %v", err)
+	}
+
+	if resp.SliceId != "sl-lookup-test" {
+		t.Fatalf("expected ID %q, got %q", "sl-lookup-test", resp.SliceId)
+	}
+	if resp.Name != "my-project" {
+		t.Fatalf("expected name %q, got %q", "my-project", resp.Name)
+	}
+}
+
 func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

@@ -980,6 +980,26 @@ func (s *PostgresNativeStorage) SetSliceFiles(ctx context.Context, sliceID strin
 	return tx.Commit(ctx)
 }
 
+// UpdateSliceName updates the display name of a slice.
+func (s *PostgresNativeStorage) UpdateSliceName(ctx context.Context, sliceID, newName string) error {
+	ctx = ensureCtx(ctx)
+
+	tag, err := s.pool.Exec(ctx, `UPDATE slices SET name = $1, updated_at = NOW() WHERE id = $2`, newName, sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
+// GetSliceByName retrieves the first non-root slice matching the given display name.
+func (s *PostgresNativeStorage) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
+}
+
 // ============ Metadata Operations ============
 
 func (s *PostgresNativeStorage) GetSliceMetadata(ctx context.Context, sliceID string) (*models.SliceMetadata, error) {

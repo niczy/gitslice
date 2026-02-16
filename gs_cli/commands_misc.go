@@ -131,16 +131,15 @@ func handleRootSlice(ctx context.Context, cli *CLI) {
 
 func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 2 {
-		log.Println("Usage: gs fork <new-slice-id> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
+		log.Println("Usage: gs fork <name> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
 		return
 	}
 
-	newSliceID := args[0]
+	sliceName := args[0]
 	folderPaths := parseForkFolderPaths(args[1])
 
 	fs := flag.NewFlagSet("fork", flag.ExitOnError)
 	parentID := fs.String("parent", "", "Parent slice ID")
-	name := fs.String("name", newSliceID, "Name of the new slice")
 	description := fs.String("description", "Forked slice", "Description of the new slice")
 	moreFolders := fs.String("folders", "", "Additional comma-separated folder paths to include in this slice")
 	fs.Parse(args[2:])
@@ -166,8 +165,7 @@ func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 		ParentSliceId: parentSliceID,
 		FolderPath:    folderPaths[0],
 		FolderPaths:   folderPaths[1:],
-		NewSliceId:    newSliceID,
-		Name:          *name,
+		Name:          sliceName,
 		Description:   *description,
 	}
 
@@ -176,8 +174,35 @@ func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to fork slice: %v", err)
 	}
 
-	fmt.Printf("Created slice: %s\n", resp.SliceId)
+	fmt.Printf("Created slice: %s (id: %s)\n", resp.Name, resp.SliceId)
 	fmt.Printf("Status: %s\n", resp.Status)
+}
+
+func handleRenameSlice(ctx context.Context, cli *CLI, args []string) {
+	if len(args) < 2 {
+		log.Println("Usage: gs slice rename <slice-id> <new-name>")
+		return
+	}
+
+	sliceID, err := normalizeSliceID(args[0])
+	if err != nil {
+		log.Fatalf("Invalid slice ID: %v", err)
+	}
+
+	newName := strings.TrimSpace(args[1])
+	if newName == "" {
+		log.Fatal("New name cannot be empty")
+	}
+
+	resp, err := cli.sliceClient.RenameSlice(ctx, &slicev1.RenameSliceRequest{
+		SliceId: sliceID,
+		NewName: newName,
+	})
+	if err != nil {
+		log.Fatalf("Failed to rename slice: %v", err)
+	}
+
+	fmt.Printf("Renamed slice %s to %q\n", resp.SliceId, resp.Name)
 }
 
 func parseForkFolderPaths(raw string) []string {

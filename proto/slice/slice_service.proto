@@ -35,6 +35,12 @@ service SliceService {
   // Create a new slice from an existing folder
   rpc CreateSliceFromFolder(CreateSliceFromFolderRequest) returns (CreateSliceFromFolderResponse);
 
+  // Rename a slice (update display name)
+  rpc RenameSlice(RenameSliceRequest) returns (RenameSliceResponse);
+
+  // Get slice info by display name
+  rpc GetSliceByName(GetSliceByNameRequest) returns (GetSliceByNameResponse);
+
   // Stream checkout for large slices (server streaming)
   rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
@@ -266,4 +272,31 @@ message CreateSliceFromFolderResponse {
   string slice_id = 1;
   string status = 2;
   repeated string files = 3;
+  string name = 4;
+}
+
+// Request to rename a slice
+message RenameSliceRequest {
+  string slice_id = 1;
+  string new_name = 2;
+}
+
+// Response for slice rename
+message RenameSliceResponse {
+  string slice_id = 1;
+  string name = 2;
+}
+
+// Request to get a slice by display name
+message GetSliceByNameRequest {
+  string name = 1;
+}
+
+// Response with slice info looked up by name
+message GetSliceByNameResponse {
+  string slice_id = 1;
+  string name = 2;
+  string description = 3;
+  string parent_slice_id = 4;
+  repeated string files = 5;
 }
