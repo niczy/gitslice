@@ -38,6 +38,15 @@ type Config struct {
 
 	// Agent session WebSocket token signing.
 	AgentWSTokenSecret string
+
+	// E2B runtime provider settings for agent sessions.
+	E2BAPIURL            string
+	E2BDomain            string
+	E2BAPIKey            string
+	E2BAccessToken       string
+	E2BRuntimeWSPort     int
+	E2BRuntimeWSPath     string
+	E2BRequestTimeoutSec int
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -53,18 +62,25 @@ func LoadConfig() *Config {
 		}
 	}
 	return &Config{
-		CoreServicePort:    corePort,
-		GatewayPort:        getEnv("GATEWAY_PORT", "8080"),
-		StorageType:        getEnv("STORAGE_TYPE", "memory"),
-		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
-		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
-		ObjectStoreDir:     getEnv("OBJECT_STORE_DIR", ""),
-		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),
-		GCSEndpoint:        getEnv("GCS_ENDPOINT", ""),
-		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),
-		GCSCredentialsJSON: getEnv("GCS_CREDENTIALS_JSON", ""),
-		GCSDisableAuth:     getEnvBool("GCS_DISABLE_AUTH", false),
-		AgentWSTokenSecret: getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
+		CoreServicePort:      corePort,
+		GatewayPort:          getEnv("GATEWAY_PORT", "8080"),
+		StorageType:          getEnv("STORAGE_TYPE", "memory"),
+		PostgresDSN:          getEnv("POSTGRES_DSN", ""),
+		ObjectStoreType:      getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:       getEnv("OBJECT_STORE_DIR", ""),
+		GCSBucket:            getEnv("GCS_BUCKET", "gitslice-objects"),
+		GCSEndpoint:          getEnv("GCS_ENDPOINT", ""),
+		GCSCredentialsFile:   getEnv("GCS_CREDENTIALS_FILE", ""),
+		GCSCredentialsJSON:   getEnv("GCS_CREDENTIALS_JSON", ""),
+		GCSDisableAuth:       getEnvBool("GCS_DISABLE_AUTH", false),
+		AgentWSTokenSecret:   getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
+		E2BAPIURL:            getEnv("E2B_API_URL", ""),
+		E2BDomain:            getEnv("E2B_DOMAIN", "e2b.app"),
+		E2BAPIKey:            getEnv("E2B_API_KEY", ""),
+		E2BAccessToken:       getEnv("E2B_ACCESS_TOKEN", ""),
+		E2BRuntimeWSPort:     getEnvInt("E2B_RUNTIME_WS_PORT", 9000),
+		E2BRuntimeWSPath:     getEnv("E2B_RUNTIME_WS_PATH", "/ws"),
+		E2BRequestTimeoutSec: getEnvInt("E2B_REQUEST_TIMEOUT_SEC", 30),
 	}
 }
 
@@ -102,6 +118,18 @@ func getEnvBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return defaultValue
 	}

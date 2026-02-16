@@ -33,6 +33,7 @@ function buildUsernameFromProfile(profile) {
 
 function authHandler() {
   const authSecret = process.env.AUTH_SECRET;
+  const githubScope = (process.env.AUTH_GITHUB_SCOPE || 'read:user user:email').trim();
 
   if (!authSecret) {
     return async (req, res) => {
@@ -56,6 +57,11 @@ function authHandler() {
       GitHub({
         clientId: process.env.AUTH_GITHUB_ID,
         clientSecret: process.env.AUTH_GITHUB_SECRET,
+        authorization: {
+          params: {
+            scope: githubScope,
+          },
+        },
       }),
     );
   }

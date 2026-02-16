@@ -118,6 +118,26 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 ./gs_cli --help
 ```
 
+### Agent Session Runtime (E2B)
+
+Agent session startup uses the E2B sandbox API. Configure at least one E2B credential before creating sessions:
+
+```bash
+export E2B_API_KEY=e2b_...
+# or
+export E2B_ACCESS_TOKEN=e2b_at_...
+```
+
+Optional runtime settings:
+
+```bash
+export E2B_DOMAIN=e2b.app                 # default: e2b.app
+export E2B_API_URL=https://api.e2b.app    # default: https://api.${E2B_DOMAIN}
+export E2B_RUNTIME_WS_PORT=9000           # default: 9000
+export E2B_RUNTIME_WS_PATH=/ws            # default: /ws
+export E2B_REQUEST_TIMEOUT_SEC=30         # default: 30
+```
+
 ## Accounts / Organizations
 
 This repo uses lightweight account sign-in: web supports OAuth via Auth.js (Google/GitHub) and CLI supports username login. Requests include the signed-in username in metadata.
@@ -134,6 +154,7 @@ AUTH_GOOGLE_ID=your-google-oauth-client-id
 AUTH_GOOGLE_SECRET=your-google-oauth-client-secret
 AUTH_GITHUB_ID=your-github-oauth-client-id
 AUTH_GITHUB_SECRET=your-github-oauth-client-secret
+AUTH_GITHUB_SCOPE=read:user user:email  # optional
 ```
 
 For local setup, copy the template and fill in values:

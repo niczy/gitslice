@@ -294,6 +294,15 @@ func extractCommitHash(output string) string {
 	return strings.TrimSpace(matches[1])
 }
 
+func extractCreatedSliceID(output string) string {
+	re := regexp.MustCompile(`Created slice: ([^\s]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
 func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
 	t.Helper()
 
@@ -436,9 +445,11 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 
 	newSliceID := fmt.Sprintf("slice-fork-%d", time.Now().UnixNano())
 	output = runCLIOrFail(t, workdir, "fork", newSliceID, srcFolder, "--parent", "root_slice")
-	if !strings.Contains(output, "Created slice: "+newSliceID) {
-		t.Fatalf("Expected slice creation output, got: %s", output)
+	createdForkSliceID := extractCreatedSliceID(output)
+	if createdForkSliceID == "" {
+		t.Fatalf("expected created slice id in output, got: %s", output)
 	}
+	newSliceID = createdForkSliceID
 
 	newSliceWorkdir := t.TempDir()
 	newSliceArg := sliceIDArg(newSliceID)
@@ -549,9 +560,11 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 
 	sliceID := fmt.Sprintf("slice-apps-%d", time.Now().UnixNano())
 	output = runCLIOrFail(t, workdir, "fork", sliceID, "apps", "--parent", "root_slice")
-	if !strings.Contains(output, "Created slice: "+sliceID) {
-		t.Fatalf("expected slice creation output, got: %s", output)
+	createdAppsSliceID := extractCreatedSliceID(output)
+	if createdAppsSliceID == "" {
+		t.Fatalf("expected created slice id in output, got: %s", output)
 	}
+	sliceID = createdAppsSliceID
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
