@@ -62,6 +62,13 @@ type InMemoryStorage struct {
 	orgs       map[string]*models.Organization                  // orgSlug -> org
 	orgMembers map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
 	userOrgs   map[string]map[string]bool                       // username -> orgSlug -> true
+
+	// Agent sessions
+	agentSessions      map[string]*models.AgentSession        // sessionID -> session
+	activeAgentBySlice map[string]string                      // sliceID -> active sessionID
+	agentSessionEvents map[string][]*models.AgentSessionEvent // sessionID -> events ordered by seq asc
+	agentSessionAudit  map[string][]*models.AgentSessionAudit // sessionID -> audit ordered by created asc
+	nextAuditID        int64
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
@@ -91,6 +98,11 @@ func NewInMemoryStorage() *InMemoryStorage {
 		orgs:                make(map[string]*models.Organization),
 		orgMembers:          make(map[string]map[string]*models.OrganizationMember),
 		userOrgs:            make(map[string]map[string]bool),
+		agentSessions:       make(map[string]*models.AgentSession),
+		activeAgentBySlice:  make(map[string]string),
+		agentSessionEvents:  make(map[string][]*models.AgentSessionEvent),
+		agentSessionAudit:   make(map[string][]*models.AgentSessionAudit),
+		nextAuditID:         1,
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -134,6 +146,11 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.orgs = fresh.orgs
 	s.orgMembers = fresh.orgMembers
 	s.userOrgs = fresh.userOrgs
+	s.agentSessions = fresh.agentSessions
+	s.activeAgentBySlice = fresh.activeAgentBySlice
+	s.agentSessionEvents = fresh.agentSessionEvents
+	s.agentSessionAudit = fresh.agentSessionAudit
+	s.nextAuditID = fresh.nextAuditID
 	return nil
 }
 
@@ -1653,4 +1670,204 @@ func (s *InMemoryStorage) getChangesFromIDs(changeIDs []string, limit int, fromC
 	}
 
 	return result, nil
+}
+
+// ============ Agent Session Operations ============
+
+func (s *InMemoryStorage) CreateAgentSession(ctx context.Context, session *models.AgentSession) error {
+	_ = ctx
+	if session == nil || session.SessionID == "" || session.SliceID == "" || session.UserID == "" || session.Provider == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.agentSessions[session.SessionID]; exists {
+		return ErrAgentSessionConflict
+	}
+	if activeID, ok := s.activeAgentBySlice[session.SliceID]; ok && activeID != "" {
+		if current, ok := s.agentSessions[activeID]; ok && current.State.IsActive() {
+			return ErrAgentSessionConflict
+		}
+	}
+
+	copySession := cloneAgentSession(session)
+	s.agentSessions[session.SessionID] = copySession
+	if copySession.State.IsActive() {
+		s.activeAgentBySlice[copySession.SliceID] = copySession.SessionID
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	session, ok := s.agentSessions[sessionID]
+	if !ok {
+		return nil, ErrAgentSessionNotFound
+	}
+	return cloneAgentSession(session), nil
+}
+
+func (s *InMemoryStorage) GetActiveAgentSessionBySlice(ctx context.Context, sliceID string) (*models.AgentSession, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	activeID, ok := s.activeAgentBySlice[sliceID]
+	if !ok || activeID == "" {
+		return nil, ErrAgentSessionNotFound
+	}
+	session, ok := s.agentSessions[activeID]
+	if !ok || !session.State.IsActive() {
+		return nil, ErrAgentSessionNotFound
+	}
+	return cloneAgentSession(session), nil
+}
+
+func (s *InMemoryStorage) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
+	_ = ctx
+	if session == nil || session.SessionID == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current, ok := s.agentSessions[session.SessionID]
+	if !ok {
+		return ErrAgentSessionNotFound
+	}
+
+	if current.State.IsActive() && !session.State.IsActive() {
+		if activeID, ok := s.activeAgentBySlice[current.SliceID]; ok && activeID == current.SessionID {
+			delete(s.activeAgentBySlice, current.SliceID)
+		}
+	}
+	if session.State.IsActive() {
+		if activeID, ok := s.activeAgentBySlice[session.SliceID]; ok && activeID != "" && activeID != session.SessionID {
+			if existing, ok := s.agentSessions[activeID]; ok && existing.State.IsActive() {
+				return ErrAgentSessionConflict
+			}
+		}
+		s.activeAgentBySlice[session.SliceID] = session.SessionID
+	}
+
+	s.agentSessions[session.SessionID] = cloneAgentSession(session)
+	return nil
+}
+
+func (s *InMemoryStorage) AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error {
+	_ = ctx
+	if event == nil || event.SessionID == "" || event.Stream == "" || event.Type == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.agentSessions[event.SessionID]; !ok {
+		return ErrAgentSessionNotFound
+	}
+	events := s.agentSessionEvents[event.SessionID]
+	if len(events) > 0 && event.Seq <= events[len(events)-1].Seq {
+		return ErrAgentSessionConflict
+	}
+	s.agentSessionEvents[event.SessionID] = append(events, cloneAgentSessionEvent(event))
+	return nil
+}
+
+func (s *InMemoryStorage) ListAgentSessionEvents(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.agentSessions[sessionID]; !ok {
+		return nil, ErrAgentSessionNotFound
+	}
+	events := s.agentSessionEvents[sessionID]
+	if limit <= 0 {
+		limit = 200
+	}
+
+	out := make([]*models.AgentSessionEvent, 0, limit)
+	for _, event := range events {
+		if event.Seq <= sinceSeq {
+			continue
+		}
+		out = append(out, cloneAgentSessionEvent(event))
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *InMemoryStorage) AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error {
+	_ = ctx
+	if audit == nil || audit.SessionID == "" || audit.Action == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.agentSessions[audit.SessionID]; !ok {
+		return ErrAgentSessionNotFound
+	}
+	copyAudit := cloneAgentSessionAudit(audit)
+	if copyAudit.ID == 0 {
+		copyAudit.ID = s.nextAuditID
+		s.nextAuditID++
+	}
+	if copyAudit.CreatedAt.IsZero() {
+		copyAudit.CreatedAt = time.Now()
+	}
+	s.agentSessionAudit[audit.SessionID] = append(s.agentSessionAudit[audit.SessionID], copyAudit)
+	return nil
+}
+
+func cloneAgentSession(in *models.AgentSession) *models.AgentSession {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.StartedAt != nil {
+		ts := *in.StartedAt
+		out.StartedAt = &ts
+	}
+	if in.LastActivityAt != nil {
+		ts := *in.LastActivityAt
+		out.LastActivityAt = &ts
+	}
+	if in.StoppedAt != nil {
+		ts := *in.StoppedAt
+		out.StoppedAt = &ts
+	}
+	return &out
+}
+
+func cloneAgentSessionEvent(in *models.AgentSessionEvent) *models.AgentSessionEvent {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Payload != nil {
+		out.Payload = append([]byte(nil), in.Payload...)
+	}
+	return &out
+}
+
+func cloneAgentSessionAudit(in *models.AgentSessionAudit) *models.AgentSessionAudit {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Metadata != nil {
+		out.Metadata = append([]byte(nil), in.Metadata...)
+	}
+	return &out
 }

@@ -321,6 +321,104 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		}
 	}
 
+	// Agent session lifecycle + event persistence
+	sessionID := fmt.Sprintf("sess-%s", suffix)
+	session := &models.AgentSession{
+		SessionID:      sessionID,
+		SliceID:        slice.ID,
+		UserID:         "alice",
+		State:          models.AgentSessionStateCreating,
+		Provider:       "e2b",
+		E2BTemplateID:  "tmpl-test",
+		E2BRegion:      "us-west-2",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := st.CreateAgentSession(ctx, session); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+	if err := st.CreateAgentSession(ctx, session); err != ErrAgentSessionConflict {
+		t.Fatalf("expected ErrAgentSessionConflict on duplicate session, got %v", err)
+	}
+	active, err := st.GetActiveAgentSessionBySlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetActiveAgentSessionBySlice failed: %v", err)
+	}
+	if active.SessionID != session.SessionID {
+		t.Fatalf("active session mismatch: got %s want %s", active.SessionID, session.SessionID)
+	}
+
+	session.State = models.AgentSessionStateRunning
+	session.RuntimeEndpoint = "wss://runtime.example/ws"
+	nowRunning := time.Now()
+	session.StartedAt = &nowRunning
+	session.LastActivityAt = &nowRunning
+	session.UpdatedAt = nowRunning
+	if err := st.UpdateAgentSession(ctx, session); err != nil {
+		t.Fatalf("UpdateAgentSession running failed: %v", err)
+	}
+
+	payload1 := []byte(`{"state":"running"}`)
+	if err := st.AppendAgentSessionEvent(ctx, &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Seq:       1,
+		TS:        time.Now(),
+		Stream:    "status",
+		Type:      "state",
+		Payload:   payload1,
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent seq1 failed: %v", err)
+	}
+	if err := st.AppendAgentSessionEvent(ctx, &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Seq:       2,
+		TS:        time.Now(),
+		Stream:    "pty",
+		Type:      "stdout",
+		Payload:   []byte(`{"data":"ok\n"}`),
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent seq2 failed: %v", err)
+	}
+	if err := st.AppendAgentSessionEvent(ctx, &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Seq:       2,
+		TS:        time.Now(),
+		Stream:    "pty",
+		Type:      "stdout",
+		Payload:   []byte(`{"data":"dup\n"}`),
+	}); err != ErrAgentSessionConflict {
+		t.Fatalf("expected ErrAgentSessionConflict on duplicate seq, got %v", err)
+	}
+	events, err := st.ListAgentSessionEvents(ctx, session.SessionID, 1, 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionEvents failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Seq != 2 {
+		t.Fatalf("ListAgentSessionEvents mismatch: %#v", events)
+	}
+	if err := st.AddAgentSessionAudit(ctx, &models.AgentSessionAudit{
+		SessionID:   session.SessionID,
+		ActorUserID: session.UserID,
+		Action:      "session_created",
+		Metadata:    []byte(`{"source":"test"}`),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("AddAgentSessionAudit failed: %v", err)
+	}
+
+	nowStopped := time.Now()
+	session.State = models.AgentSessionStateStopped
+	session.StoppedAt = &nowStopped
+	session.UpdatedAt = nowStopped
+	if err := st.UpdateAgentSession(ctx, session); err != nil {
+		t.Fatalf("UpdateAgentSession stopped failed: %v", err)
+	}
+	if _, err := st.GetActiveAgentSessionBySlice(ctx, session.SliceID); err != ErrAgentSessionNotFound {
+		t.Fatalf("expected ErrAgentSessionNotFound for inactive slice session, got %v", err)
+	}
+
 	// Basic health
 	if err := st.Ping(ctx); err != nil {
 		t.Fatalf("Ping failed: %v", err)

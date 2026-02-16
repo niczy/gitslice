@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	gcsstorage "cloud.google.com/go/storage"
+	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/gateway"
@@ -71,6 +72,8 @@ func main() {
 	}))
 
 	accountsAPI := httpapi.NewAccountsAPI(st)
+	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
+	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
 	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))
 	httpMux.Handle("/v1/orgs", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +88,8 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
+	httpMux.Handle("/v1/agent-sessions", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleCollection)))
+	httpMux.Handle("/v1/agent-sessions/", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleItem)))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.
 	httpMux.Handle("/", gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux)))

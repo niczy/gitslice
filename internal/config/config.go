@@ -35,6 +35,9 @@ type Config struct {
 	GCSCredentialsFile string
 	GCSCredentialsJSON string
 	GCSDisableAuth     bool
+
+	// Agent session WebSocket token signing.
+	AgentWSTokenSecret string
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -61,6 +64,7 @@ func LoadConfig() *Config {
 		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),
 		GCSCredentialsJSON: getEnv("GCS_CREDENTIALS_JSON", ""),
 		GCSDisableAuth:     getEnvBool("GCS_DISABLE_AUTH", false),
+		AgentWSTokenSecret: getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
 	}
 }
 

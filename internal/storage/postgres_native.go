@@ -276,6 +276,9 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 	// Keep schema_migrations so we don't need to re-run DDL after a reset.
 	_, err := s.pool.Exec(ctx, `
 		TRUNCATE TABLE
+			agent_session_audit,
+			agent_session_events,
+			agent_sessions,
 			organization_members,
 			organizations,
 			users,
@@ -310,6 +313,34 @@ type postgresNativeTxView struct {
 }
 
 // ---- Transactional overrides used by BulkWrite (git import) ----
+
+func (s *postgresNativeTxView) CreateAgentSession(ctx context.Context, session *models.AgentSession) error {
+	return s.PostgresNativeStorage.CreateAgentSession(ctx, session)
+}
+
+func (s *postgresNativeTxView) GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error) {
+	return s.PostgresNativeStorage.GetAgentSession(ctx, sessionID)
+}
+
+func (s *postgresNativeTxView) GetActiveAgentSessionBySlice(ctx context.Context, sliceID string) (*models.AgentSession, error) {
+	return s.PostgresNativeStorage.GetActiveAgentSessionBySlice(ctx, sliceID)
+}
+
+func (s *postgresNativeTxView) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
+	return s.PostgresNativeStorage.UpdateAgentSession(ctx, session)
+}
+
+func (s *postgresNativeTxView) AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error {
+	return s.PostgresNativeStorage.AppendAgentSessionEvent(ctx, event)
+}
+
+func (s *postgresNativeTxView) ListAgentSessionEvents(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error) {
+	return s.PostgresNativeStorage.ListAgentSessionEvents(ctx, sessionID, sinceSeq, limit)
+}
+
+func (s *postgresNativeTxView) AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error {
+	return s.PostgresNativeStorage.AddAgentSessionAudit(ctx, audit)
+}
 
 func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Slice) error {
 	ctx = ensureCtx(ctx)
@@ -2444,6 +2475,243 @@ func (s *PostgresNativeStorage) ListOrganizationsForUser(ctx context.Context, us
 		orgs = []*models.Organization{}
 	}
 	return orgs, rows.Err()
+}
+
+// ============ Agent Session Operations ============
+
+func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session *models.AgentSession) error {
+	ctx = ensureCtx(ctx)
+	if session == nil ||
+		session.SessionID == "" ||
+		session.SliceID == "" ||
+		session.UserID == "" ||
+		session.Provider == "" ||
+		session.E2BTemplateID == "" ||
+		session.State == "" {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	if session.UpdatedAt.IsZero() {
+		session.UpdatedAt = session.CreatedAt
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_sessions (
+			session_id, slice_id, user_id, state, provider, e2b_template_id, e2b_sandbox_id, e2b_region,
+			idle_timeout_sec, ttl_sec, runtime_endpoint, created_at, updated_at, started_at, last_activity_at,
+			stopped_at, failure_code, failure_message
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''),
+			$9, $10, NULLIF($11, ''), $12, $13, $14, $15, $16, NULLIF($17, ''), NULLIF($18, '')
+		)
+	`,
+		session.SessionID, session.SliceID, session.UserID, string(session.State), session.Provider,
+		session.E2BTemplateID, session.E2BSandboxID, session.E2BRegion,
+		session.IdleTimeoutSec, session.TTLSec, session.RuntimeEndpoint,
+		session.CreatedAt, session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
+		session.FailureCode, session.FailureMessage,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "idx_agent_sessions_active_per_slice") ||
+			strings.Contains(err.Error(), "duplicate key") ||
+			strings.Contains(err.Error(), "unique constraint") {
+			return ErrAgentSessionConflict
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error) {
+	ctx = ensureCtx(ctx)
+
+	var session models.AgentSession
+	var startedAt, lastActivityAt, stoppedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT session_id, slice_id, user_id, state, provider, e2b_template_id, COALESCE(e2b_sandbox_id, ''),
+		       COALESCE(e2b_region, ''), idle_timeout_sec, ttl_sec, COALESCE(runtime_endpoint, ''),
+		       created_at, updated_at, started_at, last_activity_at, stopped_at,
+		       COALESCE(failure_code, ''), COALESCE(failure_message, '')
+		FROM agent_sessions
+		WHERE session_id = $1
+	`, sessionID).Scan(
+		&session.SessionID, &session.SliceID, &session.UserID, &session.State, &session.Provider,
+		&session.E2BTemplateID, &session.E2BSandboxID, &session.E2BRegion, &session.IdleTimeoutSec, &session.TTLSec,
+		&session.RuntimeEndpoint, &session.CreatedAt, &session.UpdatedAt, &startedAt, &lastActivityAt,
+		&stoppedAt, &session.FailureCode, &session.FailureMessage,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrAgentSessionNotFound
+		}
+		return nil, err
+	}
+	session.StartedAt = startedAt
+	session.LastActivityAt = lastActivityAt
+	session.StoppedAt = stoppedAt
+	return &session, nil
+}
+
+func (s *PostgresNativeStorage) GetActiveAgentSessionBySlice(ctx context.Context, sliceID string) (*models.AgentSession, error) {
+	ctx = ensureCtx(ctx)
+
+	var sessionID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT session_id
+		FROM agent_sessions
+		WHERE slice_id = $1 AND state IN ('creating', 'starting', 'running', 'idle', 'stopping')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, sliceID).Scan(&sessionID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrAgentSessionNotFound
+		}
+		return nil, err
+	}
+	return s.GetAgentSession(ctx, sessionID)
+}
+
+func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
+	ctx = ensureCtx(ctx)
+	if session == nil || session.SessionID == "" || session.SliceID == "" || session.UserID == "" {
+		return ErrInvalidInput
+	}
+	if session.UpdatedAt.IsZero() {
+		session.UpdatedAt = time.Now()
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agent_sessions
+		SET slice_id = $1,
+		    user_id = $2,
+		    state = $3,
+		    provider = $4,
+		    e2b_template_id = $5,
+		    e2b_sandbox_id = NULLIF($6, ''),
+		    e2b_region = NULLIF($7, ''),
+		    idle_timeout_sec = $8,
+		    ttl_sec = $9,
+		    runtime_endpoint = NULLIF($10, ''),
+		    updated_at = $11,
+		    started_at = $12,
+		    last_activity_at = $13,
+		    stopped_at = $14,
+		    failure_code = NULLIF($15, ''),
+		    failure_message = NULLIF($16, '')
+		WHERE session_id = $17
+	`,
+		session.SliceID, session.UserID, string(session.State), session.Provider, session.E2BTemplateID,
+		session.E2BSandboxID, session.E2BRegion, session.IdleTimeoutSec, session.TTLSec, session.RuntimeEndpoint,
+		session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
+		session.FailureCode, session.FailureMessage, session.SessionID,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "idx_agent_sessions_active_per_slice") ||
+			strings.Contains(err.Error(), "duplicate key") ||
+			strings.Contains(err.Error(), "unique constraint") {
+			return ErrAgentSessionConflict
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAgentSessionNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error {
+	ctx = ensureCtx(ctx)
+	if event == nil || event.SessionID == "" || event.Stream == "" || event.Type == "" {
+		return ErrInvalidInput
+	}
+	if event.Seq > uint64(^uint64(0)>>1) {
+		return ErrInvalidInput
+	}
+	if event.TS.IsZero() {
+		event.TS = time.Now()
+	}
+	payload := []byte("{}")
+	if len(event.Payload) > 0 {
+		payload = event.Payload
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_session_events (session_id, seq, ts, stream, type, payload_json)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, payload)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrAgentSessionConflict
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error) {
+	ctx = ensureCtx(ctx)
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, seq, ts, stream, type, payload_json
+		FROM agent_session_events
+		WHERE session_id = $1 AND seq > $2
+		ORDER BY seq ASC
+		LIMIT $3
+	`, sessionID, int64(sinceSeq), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]*models.AgentSessionEvent, 0, limit)
+	for rows.Next() {
+		var event models.AgentSessionEvent
+		var seq int64
+		var payload []byte
+		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &payload); err != nil {
+			return nil, err
+		}
+		if seq < 0 {
+			return nil, ErrInvalidInput
+		}
+		event.Seq = uint64(seq)
+		if payload == nil {
+			payload = []byte("{}")
+		}
+		event.Payload = payload
+		events = append(events, &event)
+	}
+	return events, rows.Err()
+}
+
+func (s *PostgresNativeStorage) AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error {
+	ctx = ensureCtx(ctx)
+	if audit == nil || audit.SessionID == "" || audit.Action == "" {
+		return ErrInvalidInput
+	}
+	if audit.CreatedAt.IsZero() {
+		audit.CreatedAt = time.Now()
+	}
+	metadata := []byte("{}")
+	if len(audit.Metadata) > 0 {
+		metadata = audit.Metadata
+	}
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO agent_session_audit (session_id, actor_user_id, action, metadata_json, created_at)
+		VALUES ($1, NULLIF($2, ''), $3, $4, $5)
+		RETURNING id
+	`, audit.SessionID, audit.ActorUserID, audit.Action, metadata, audit.CreatedAt).Scan(&audit.ID)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // ============ Internal Helpers ============
