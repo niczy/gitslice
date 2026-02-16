@@ -143,6 +143,46 @@ func TestValidateAndConsumeWSToken(t *testing.T) {
 	}
 }
 
+func TestServiceLifecycleIdleAndTTL(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-lifecycle",
+		Name:      "Slice lifecycle",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	svc.bootstrapDelay = 10 * time.Millisecond
+	svc.stopDelay = 10 * time.Millisecond
+	svc.lifecycleTick = 20 * time.Millisecond
+	svc.StartLifecycleLoop(ctx)
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:        "slice-lifecycle",
+		Provider:       "e2b",
+		E2BTemplateID:  "tmpl-v1",
+		IdleTimeoutSec: 1,
+		TTLSec:         2,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateIdle, 3*time.Second)
+
+	if err := svc.RecordActivity(ctx, session.SessionID); err != nil {
+		t.Fatalf("RecordActivity failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateStopped, 4*time.Second)
+}
+
 func waitForSessionState(t *testing.T, svc *Service, sessionID string, want models.AgentSessionState, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

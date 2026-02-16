@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,8 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gateway"
+	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -81,7 +85,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	gatewayServiceURL, gatewayServer, gatewayListener, gatewayClose, err = startGatewayServer(grpcServiceAddr)
+	gatewayServiceURL, gatewayServer, gatewayListener, gatewayClose, err = startGatewayServer(grpcServiceAddr, st)
 	if err != nil {
 		fmt.Printf("Failed to start gateway: %v\n", err)
 		stopServers()
@@ -120,7 +124,7 @@ func startGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
 	return lis.Addr().String(), srv, nil
 }
 
-func startGatewayServer(grpcAddr string) (string, *http.Server, net.Listener, func(), error) {
+func startGatewayServer(grpcAddr string, st storage.Storage) (string, *http.Server, net.Listener, func(), error) {
 	ctx := context.Background()
 	gatewayMux, closeConns, err := gateway.NewMux(ctx, grpcAddr)
 	if err != nil {
@@ -132,6 +136,27 @@ func startGatewayServer(grpcAddr string) (string, *http.Server, net.Listener, fu
 	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("test-gateway", func(ctx context.Context) bool {
 		return gateway.GRPCReady(ctx, grpcAddr)
 	}))
+	accountsAPI := httpapi.NewAccountsAPI(st)
+	agentSessionService := agentsession.NewService(st, "test-agent-ws-secret")
+	agentSessionService.StartLifecycleLoop(context.Background())
+	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
+	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
+	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))
+	httpMux.Handle("/v1/orgs", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			accountsAPI.ListOrgs(w, r)
+		case http.MethodPost:
+			accountsAPI.CreateOrg(w, r)
+		case http.MethodOptions:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})))
+	httpMux.Handle("/v1/agent-sessions", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleCollection)))
+	httpMux.Handle("/v1/agent-sessions/", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleItem)))
+	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	httpMux.Handle("/", gateway.WithCORS(gatewayMux))
 
 	server := &http.Server{Handler: httpMux}
@@ -1348,4 +1373,260 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 			t.Fatalf("expected slice %s head %s, got %s", sliceID, expectedCommit, state.LatestCommitHash)
 		}
 	}
+}
+
+func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	sliceID := fmt.Sprintf("agent-ws-%d", time.Now().UnixNano())
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "Agent WS",
+		Files:     []string{},
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	sessionID := createAgentSessionViaHTTP(t, sliceID)
+	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
+
+	token := mintAgentTokenViaHTTP(t, sessionID)
+	wsURL := buildAgentWSURL(sessionID, token, 0)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to connect websocket: %v", err)
+	}
+	maxSeq := uint64(0)
+	_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+	if err := conn.WriteJSON(map[string]any{
+		"stream": "control",
+		"type":   "ping",
+		"payload": map[string]string{
+			"nonce": "it-nonce",
+		},
+	}); err != nil {
+		t.Fatalf("write ping failed: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"stream": "pty",
+		"type":   "stdin",
+		"payload": map[string]string{
+			"data": "echo replay-test\n",
+		},
+	}); err != nil {
+		t.Fatalf("write stdin failed: %v", err)
+	}
+
+	gotPong := false
+	gotStdout := false
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && (!gotPong || !gotStdout) {
+		var frame struct {
+			Seq     uint64                 `json:"seq"`
+			Stream  string                 `json:"stream"`
+			Type    string                 `json:"type"`
+			Payload map[string]interface{} `json:"payload"`
+		}
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("read websocket frame failed: %v", err)
+		}
+		if frame.Seq > maxSeq {
+			maxSeq = frame.Seq
+		}
+		if frame.Stream == "control" && frame.Type == "pong" {
+			if nonce, ok := frame.Payload["nonce"].(string); ok && nonce == "it-nonce" {
+				gotPong = true
+			}
+		}
+		if frame.Stream == "pty" && frame.Type == "stdout" {
+			if data, ok := frame.Payload["data"].(string); ok && strings.Contains(data, "replay-test") {
+				gotStdout = true
+			}
+		}
+	}
+	if !gotPong || !gotStdout {
+		t.Fatalf("expected pong and stdout frames, got pong=%v stdout=%v", gotPong, gotStdout)
+	}
+	_ = conn.Close()
+
+	if maxSeq < 2 {
+		t.Fatalf("expected replayable seq values, got %d", maxSeq)
+	}
+
+	token2 := mintAgentTokenViaHTTP(t, sessionID)
+	replayURL := buildAgentWSURL(sessionID, token2, maxSeq-1)
+	replayConn, _, err := websocket.DefaultDialer.Dial(replayURL, nil)
+	if err != nil {
+		t.Fatalf("failed to reconnect websocket: %v", err)
+	}
+	defer replayConn.Close()
+	_ = replayConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	var replayFrame struct {
+		Seq    uint64 `json:"seq"`
+		Stream string `json:"stream"`
+		Type   string `json:"type"`
+	}
+	if err := replayConn.ReadJSON(&replayFrame); err != nil {
+		t.Fatalf("failed to read replay frame: %v", err)
+	}
+	if replayFrame.Seq <= maxSeq-1 {
+		t.Fatalf("expected replay seq > %d, got %d", maxSeq-1, replayFrame.Seq)
+	}
+
+	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
+	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
+}
+
+func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	sliceID := fmt.Sprintf("agent-token-%d", time.Now().UnixNano())
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "Agent Token",
+		Files:     []string{},
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	sessionID := createAgentSessionViaHTTP(t, sliceID)
+	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
+
+	token := mintAgentTokenViaHTTP(t, sessionID)
+	wsURL := buildAgentWSURL(sessionID, token, 0)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("first websocket dial failed: %v", err)
+	}
+	_ = conn.Close()
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatalf("expected second websocket dial with same token to fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on token reuse, got resp=%v err=%v", resp, err)
+	}
+
+	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
+	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
+}
+
+func createAgentSessionViaHTTP(t *testing.T, sliceID string) string {
+	t.Helper()
+	body := map[string]any{
+		"sliceId":       sliceID,
+		"provider":      "e2b",
+		"e2bTemplateId": "tmpl-integration",
+		"e2bRegion":     "us-west-2",
+	}
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected create status 201, got %d body=%s", resp.StatusCode, string(data))
+	}
+	var out struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode create response failed: %v", err)
+	}
+	if out.SessionID == "" {
+		t.Fatalf("missing sessionId")
+	}
+	return out.SessionID
+}
+
+func mintAgentTokenViaHTTP(t *testing.T, sessionID string) string {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions/"+sessionID+"/token", nil)
+	req.Header.Set("Authorization", "User "+testUsername)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("token request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected token status 200, got %d body=%s", resp.StatusCode, string(data))
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode token response failed: %v", err)
+	}
+	if out.Token == "" {
+		t.Fatalf("missing token")
+	}
+	return out.Token
+}
+
+func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) {
+	t.Helper()
+	raw, _ := json.Marshal(map[string]string{"reason": reason})
+	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions/"+sessionID+"/stop", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stop request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected stop status 202/200, got %d body=%s", resp.StatusCode, string(data))
+	}
+}
+
+func waitForAgentSessionState(t *testing.T, sessionID string, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, gatewayServiceURL+"/v1/agent-sessions/"+sessionID, nil)
+		req.Header.Set("Authorization", "User "+testUsername)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var out struct {
+				State string `json:"state"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			_ = resp.Body.Close()
+			if out.State == want {
+				return
+			}
+		} else if resp != nil {
+			_ = resp.Body.Close()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for session %s state %s", sessionID, want)
+}
+
+func buildAgentWSURL(sessionID string, token string, lastSeq uint64) string {
+	base, _ := url.Parse(gatewayServiceURL)
+	base.Scheme = "ws"
+	base.Path = "/ws/sessions/" + sessionID
+	q := base.Query()
+	q.Set("token", token)
+	q.Set("lastSeq", fmt.Sprintf("%d", lastSeq))
+	base.RawQuery = q.Encode()
+	return base.String()
 }

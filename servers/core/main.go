@@ -73,6 +73,7 @@ func main() {
 
 	accountsAPI := httpapi.NewAccountsAPI(st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
+	agentSessionService.StartLifecycleLoop(context.Background())
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
 	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))

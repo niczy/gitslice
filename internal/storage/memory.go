@@ -1728,6 +1728,32 @@ func (s *InMemoryStorage) GetActiveAgentSessionBySlice(ctx context.Context, slic
 	return cloneAgentSession(session), nil
 }
 
+func (s *InMemoryStorage) ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error) {
+	_ = ctx
+	if len(states) == 0 {
+		return []*models.AgentSession{}, nil
+	}
+	stateSet := make(map[models.AgentSessionState]struct{}, len(states))
+	for _, state := range states {
+		stateSet[state] = struct{}{}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]*models.AgentSession, 0)
+	for _, session := range s.agentSessions {
+		if _, ok := stateSet[session.State]; !ok {
+			continue
+		}
+		out = append(out, cloneAgentSession(session))
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (s *InMemoryStorage) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
 	_ = ctx
 	if session == nil || session.SessionID == "" {
