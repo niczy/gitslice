@@ -6,6 +6,7 @@ import { parseHash, buildHash } from './utils/routing.js';
 
 // API helpers
 import { apiBaseUrl, currentUsername, fetchWithAuth } from './utils/api.js';
+import { fetchOAuthSession, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 
 // Normalization
 import { normalizeSliceInfo } from './utils/normalize.js';
@@ -148,6 +149,29 @@ function App() {
     window.history.back();
   }, []);
 
+  useEffect(() => {
+    const syncOAuthSession = async () => {
+      if (username) {
+        return;
+      }
+      try {
+        const session = await fetchOAuthSession();
+        const oauthUsername = session?.user?.username || '';
+        if (!oauthUsername) {
+          return;
+        }
+        const signedInUsername = await signInWithAccount(apiBaseUrl, oauthUsername);
+        setUsername(signedInUsername);
+        if (activePage === 'login') {
+          navigate('browser');
+        }
+      } catch {
+        // ignore oauth session sync failures
+      }
+    };
+    syncOAuthSession();
+  }, [activePage, apiBaseUrl, navigate, username]);
+
   const refreshSlices = useCallback(async () => {
     setSlicesLoading(true);
     setSlicesError('');
@@ -167,32 +191,20 @@ function App() {
   }, []);
 
   const doLogout = useCallback(() => {
-    try {
-      window.localStorage.removeItem('gs_username');
-    } catch {
-      // ignore
-    }
+    signOutAccount();
     setUsername('');
     setActivePage('landing');
     window.history.pushState(null, '', buildHash('landing', ''));
+    startOAuthSignOut();
   }, []);
 
   const doLogin = useCallback(async (nextUsername) => {
-    const trimmed = (nextUsername || '').trim();
-    const response = await fetch(`${apiBaseUrl}/v1/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: trimmed }),
-    });
-    if (!response.ok) {
-      throw new Error('Invalid username');
-    }
-    try {
-      window.localStorage.setItem('gs_username', trimmed);
-    } catch {
-      // ignore
-    }
-    setUsername(trimmed);
+    const signedInUsername = await signInWithAccount(apiBaseUrl, nextUsername);
+    setUsername(signedInUsername);
+  }, [apiBaseUrl]);
+
+  const doOAuthLogin = useCallback((providerId) => {
+    startOAuthSignIn(providerId);
   }, []);
 
   // Agent session handlers
@@ -480,7 +492,7 @@ function App() {
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
         {activePage === 'login' && (
-          <LoginPage onLogin={doLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
+          <LoginPage onLogin={doLogin} onOAuthLogin={doOAuthLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
         )}
         {activePage === 'profile' && (
           <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />

@@ -2645,6 +2645,86 @@ body {
   justify-content: flex-start;
 }
 
+.auth-layout {
+  max-width: 920px;
+  margin: 18px auto 0;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.auth-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-card-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.auth-card-subtitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.auth-provider-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.auth-provider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 160ms ease;
+}
+
+.auth-provider:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
+}
+
+.auth-provider-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: #fff;
+}
+
+.auth-provider--google .auth-provider-logo {
+  color: #ea4335;
+}
+
+.auth-provider--github .auth-provider-logo {
+  color: #171515;
+}
+
+@media (max-width: 900px) {
+  .auth-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .profile-grid {
   max-width: 920px;
   margin: 18px auto 0;

@@ -118,13 +118,30 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 ./gs_cli --help
 ```
 
-## Fake Accounts / Organizations
+## Accounts / Organizations
 
-This repo uses a fake account system: you choose a username and the services trust it via request metadata.
+This repo uses lightweight account sign-in: web supports OAuth via Auth.js (Google/GitHub) and CLI supports username login. Requests include the signed-in username in metadata.
 
 - The root slice (`root_slice`) is publicly viewable.
 - Non-root slices are only visible/accessible to their owners.
 - Organizations are user-created groups shown on the profile page (no invites yet).
+
+Web OAuth environment variables (see `web/.env.example`):
+
+```bash
+AUTH_SECRET=replace-with-long-random-string
+AUTH_GOOGLE_ID=your-google-oauth-client-id
+AUTH_GOOGLE_SECRET=your-google-oauth-client-secret
+AUTH_GITHUB_ID=your-github-oauth-client-id
+AUTH_GITHUB_SECRET=your-github-oauth-client-secret
+```
+
+For local setup, copy the template and fill in values:
+
+```bash
+cp web/.env.example web/.env
+```
+
 
 CLI usage:
 
