@@ -10,6 +10,7 @@ PR checklist:
 - [x] PR1 - Control plane + persistence baseline (`agent_sessions` schema, storage APIs, lifecycle HTTP endpoints, initial tests)
 - [x] PR2 - WebSocket data plane (`/ws/sessions/{session_id}`, token validation + nonce replay, protocol replay/backpressure)
 - [x] PR3 - Lifecycle automation + hardening (idle/ttl transitions, failure handling, observability, integration/security coverage)
+- [x] PR4 - E2B runtime provider integration (sandbox create/kill wiring, config, failure propagation, provider tests)
 
 ## Executive Summary
 

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
 	"github.com/niczy/gitslice/internal/agentsession"
@@ -72,7 +73,19 @@ func main() {
 	}))
 
 	accountsAPI := httpapi.NewAccountsAPI(st)
-	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
+	runtimeProvider := agentsession.NewE2BProvider(agentsession.E2BProviderConfig{
+		APIURL:         cfg.E2BAPIURL,
+		Domain:         cfg.E2BDomain,
+		APIKey:         cfg.E2BAPIKey,
+		AccessToken:    cfg.E2BAccessToken,
+		RuntimeWSPort:  cfg.E2BRuntimeWSPort,
+		RuntimeWSPath:  cfg.E2BRuntimeWSPath,
+		RequestTimeout: time.Duration(cfg.E2BRequestTimeoutSec) * time.Second,
+	})
+	if strings.TrimSpace(cfg.E2BAPIKey) == "" && strings.TrimSpace(cfg.E2BAccessToken) == "" {
+		log.Printf("Warning: E2B credentials are not set; agent sessions will fail to start until E2B_API_KEY or E2B_ACCESS_TOKEN is configured")
+	}
+	agentSessionService := agentsession.NewServiceWithRuntimeProvider(st, cfg.AgentWSTokenSecret, runtimeProvider)
 	agentSessionService.StartLifecycleLoop(context.Background())
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))

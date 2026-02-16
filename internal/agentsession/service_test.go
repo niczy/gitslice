@@ -2,12 +2,43 @@ package agentsession
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 )
+
+type mockRuntimeProvider struct {
+	mu       sync.Mutex
+	createFn func(ctx context.Context, req RuntimeProvisionRequest) (*RuntimeProvisionResult, error)
+	killFn   func(ctx context.Context, sandboxID string) error
+}
+
+func (m *mockRuntimeProvider) CreateSandbox(ctx context.Context, req RuntimeProvisionRequest) (*RuntimeProvisionResult, error) {
+	m.mu.Lock()
+	fn := m.createFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return &RuntimeProvisionResult{
+		SandboxID:       "sbx_mock",
+		RuntimeEndpoint: "runtime://mock",
+	}, nil
+}
+
+func (m *mockRuntimeProvider) KillSandbox(ctx context.Context, sandboxID string) error {
+	m.mu.Lock()
+	fn := m.killFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, sandboxID)
+	}
+	return nil
+}
 
 func TestServiceLifecycle(t *testing.T) {
 	ctx := context.Background()
@@ -181,6 +212,103 @@ func TestServiceLifecycleIdleAndTTL(t *testing.T) {
 	}
 	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
 	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateStopped, 4*time.Second)
+}
+
+func TestServiceCreateFailureMarksSessionFailed(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-fail",
+		Name:      "Slice fail",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	provider := &mockRuntimeProvider{
+		createFn: func(ctx context.Context, req RuntimeProvisionRequest) (*RuntimeProvisionResult, error) {
+			return nil, errors.New("provider unavailable")
+		},
+	}
+	svc := NewServiceWithRuntimeProvider(st, "test-secret", provider)
+	svc.bootstrapDelay = 10 * time.Millisecond
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-fail",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.FailureCode != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("unexpected failure code %q", got.FailureCode)
+	}
+	if got.FailureMessage == "" {
+		t.Fatalf("expected failure message")
+	}
+}
+
+func TestServiceStopTriggersSandboxCleanup(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-stop-cleanup",
+		Name:      "Slice stop cleanup",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	killCalls := make(chan string, 2)
+	provider := &mockRuntimeProvider{
+		createFn: func(ctx context.Context, req RuntimeProvisionRequest) (*RuntimeProvisionResult, error) {
+			return &RuntimeProvisionResult{
+				SandboxID:       "sbx_cleanup_1",
+				RuntimeEndpoint: "runtime://cleanup",
+			}, nil
+		},
+		killFn: func(ctx context.Context, sandboxID string) error {
+			killCalls <- sandboxID
+			return nil
+		},
+	}
+
+	svc := NewServiceWithRuntimeProvider(st, "test-secret", provider)
+	svc.bootstrapDelay = 10 * time.Millisecond
+	svc.stopDelay = 10 * time.Millisecond
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-stop-cleanup",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if _, err := svc.StopSessionForUser(ctx, "alice", session.SessionID, "test"); err != nil {
+		t.Fatalf("StopSessionForUser failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateStopped, 2*time.Second)
+
+	select {
+	case sandboxID := <-killCalls:
+		if sandboxID != "sbx_cleanup_1" {
+			t.Fatalf("unexpected kill sandbox id %q", sandboxID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected sandbox cleanup call")
+	}
 }
 
 func waitForSessionState(t *testing.T, svc *Service, sessionID string, want models.AgentSessionState, timeout time.Duration) {

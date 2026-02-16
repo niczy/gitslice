@@ -24,6 +24,7 @@ const (
 	wsTokenTTL            = 60 * time.Second
 	defaultLifecycleTick  = 1 * time.Second
 	defaultStartupTimeout = 90 * time.Second
+	sandboxCleanupTimeout = 15 * time.Second
 )
 
 type CreateRequest struct {
@@ -44,12 +45,16 @@ type WSToken struct {
 type Service struct {
 	st            storage.Storage
 	wsTokenSecret []byte
+	runtime       RuntimeProvider
 
 	mu      sync.Mutex
 	seqHead map[string]uint64
 
 	nonceMu    sync.Mutex
 	usedNonces map[string]time.Time
+
+	envMu      sync.Mutex
+	pendingEnv map[string]map[string]string
 
 	replayMu       sync.Mutex
 	replaySeqs     map[string][]uint64
@@ -63,14 +68,23 @@ type Service struct {
 }
 
 func NewService(st storage.Storage, wsTokenSecret string) *Service {
+	return NewServiceWithRuntimeProvider(st, wsTokenSecret, nil)
+}
+
+func NewServiceWithRuntimeProvider(st storage.Storage, wsTokenSecret string, runtimeProvider RuntimeProvider) *Service {
 	if strings.TrimSpace(wsTokenSecret) == "" {
 		wsTokenSecret = "dev-insecure-agent-secret"
+	}
+	if runtimeProvider == nil {
+		runtimeProvider = newStubRuntimeProvider()
 	}
 	return &Service{
 		st:             st,
 		wsTokenSecret:  []byte(wsTokenSecret),
+		runtime:        runtimeProvider,
 		seqHead:        make(map[string]uint64),
 		usedNonces:     make(map[string]time.Time),
+		pendingEnv:     make(map[string]map[string]string),
 		replaySeqs:     make(map[string][]uint64),
 		maxReplayFrame: 10000,
 		bootstrapDelay: 50 * time.Millisecond,
@@ -133,6 +147,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		"e2bRegion":     session.E2BRegion,
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, session.State)
+	s.rememberPendingEnv(session.SessionID, req.Env)
 
 	go s.bootstrapSession(session.SessionID)
 
@@ -388,6 +403,7 @@ func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *
 			})
 			_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
 		}
+		s.cleanupSandbox(context.Background(), session, "session_start_timeout")
 		return
 	}
 
@@ -431,7 +447,8 @@ func (s *Service) bootstrapSession(sessionID string) {
 	if err != nil {
 		return
 	}
-	if !session.State.IsActive() {
+	if session.State != models.AgentSessionStateCreating {
+		_ = s.takePendingEnv(sessionID)
 		return
 	}
 
@@ -444,25 +461,57 @@ func (s *Service) bootstrapSession(sessionID string) {
 	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_starting", map[string]any{})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStarting)
 
+	provisionCtx, cancel := context.WithTimeout(context.Background(), s.startupTimeout)
+	provision, err := s.runtime.CreateSandbox(provisionCtx, RuntimeProvisionRequest{
+		SessionID:       session.SessionID,
+		SliceID:         session.SliceID,
+		UserID:          session.UserID,
+		TemplateID:      session.E2BTemplateID,
+		Region:          session.E2BRegion,
+		IdleTimeoutSec:  session.IdleTimeoutSec,
+		TTLSec:          session.TTLSec,
+		EnvironmentVars: s.takePendingEnv(session.SessionID),
+	})
+	cancel()
+	if err != nil {
+		s.markSessionFailed(ctx, sessionID, session.UserID, "RUNTIME_CREATE_FAILED", err.Error())
+		return
+	}
+	if provision == nil {
+		s.markSessionFailed(ctx, sessionID, session.UserID, "RUNTIME_CREATE_FAILED", "runtime create returned no result")
+		return
+	}
+
 	time.Sleep(s.bootstrapDelay)
 	session, err = s.st.GetAgentSession(ctx, sessionID)
 	if err != nil {
 		return
 	}
 	if !session.State.IsActive() || session.State == models.AgentSessionStateStopping {
+		s.cleanupSandbox(context.Background(), &models.AgentSession{
+			SessionID:    sessionID,
+			E2BSandboxID: provision.SandboxID,
+		}, "session_stopping_during_start")
 		return
 	}
 
 	now = time.Now().UTC()
 	session.State = models.AgentSessionStateRunning
-	session.RuntimeEndpoint = fmt.Sprintf("runtime://%s", sessionID)
+	session.E2BSandboxID = strings.TrimSpace(provision.SandboxID)
+	session.RuntimeEndpoint = strings.TrimSpace(provision.RuntimeEndpoint)
+	if session.RuntimeEndpoint == "" {
+		session.RuntimeEndpoint = fmt.Sprintf("runtime://%s", sessionID)
+	}
 	session.StartedAt = &now
 	session.LastActivityAt = &now
 	session.UpdatedAt = now
 	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		s.cleanupSandbox(context.Background(), session, "session_update_failed_after_create")
 		return
 	}
-	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{})
+	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{
+		"e2bSandboxId": session.E2BSandboxID,
+	})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateRunning)
 }
 
@@ -477,6 +526,7 @@ func (s *Service) finalizeStop(sessionID, userID string) {
 	if session.State == models.AgentSessionStateStopped {
 		return
 	}
+	s.cleanupSandbox(context.Background(), session, "session_stop")
 
 	now := time.Now().UTC()
 	session.State = models.AgentSessionStateStopped
@@ -487,6 +537,72 @@ func (s *Service) finalizeStop(sessionID, userID string) {
 	}
 	_ = s.AddAudit(ctx, sessionID, userID, "session_stopped", map[string]any{})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopped)
+}
+
+func (s *Service) markSessionFailed(ctx context.Context, sessionID, userID, code, message string) {
+	session, err := s.st.GetAgentSession(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
+		return
+	}
+
+	now := time.Now().UTC()
+	session.State = models.AgentSessionStateFailed
+	session.FailureCode = strings.TrimSpace(code)
+	session.FailureMessage = trimFailureMessage(message)
+	session.UpdatedAt = now
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return
+	}
+	actor := strings.TrimSpace(userID)
+	if actor == "" {
+		actor = "system"
+	}
+	_ = s.AddAudit(ctx, session.SessionID, actor, "session_failed", map[string]any{
+		"failureCode":    session.FailureCode,
+		"failureMessage": session.FailureMessage,
+	})
+	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
+	s.cleanupSandbox(context.Background(), session, "session_failed")
+}
+
+func (s *Service) cleanupSandbox(ctx context.Context, session *models.AgentSession, reason string) {
+	if session == nil {
+		return
+	}
+	sandboxID := strings.TrimSpace(session.E2BSandboxID)
+	if sandboxID == "" {
+		return
+	}
+
+	baseCtx := ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	killCtx, cancel := context.WithTimeout(baseCtx, sandboxCleanupTimeout)
+	defer cancel()
+	if err := s.runtime.KillSandbox(killCtx, sandboxID); err != nil {
+		_ = s.AddAudit(context.Background(), session.SessionID, "system", "sandbox_kill_failed", map[string]any{
+			"e2bSandboxId": sandboxID,
+			"reason":       strings.TrimSpace(reason),
+			"error":        err.Error(),
+		})
+		return
+	}
+	_ = s.AddAudit(context.Background(), session.SessionID, "system", "sandbox_killed", map[string]any{
+		"e2bSandboxId": sandboxID,
+		"reason":       strings.TrimSpace(reason),
+	})
+}
+
+func trimFailureMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if len(message) <= 500 {
+		return message
+	}
+	return message[:500]
 }
 
 func (s *Service) RecordActivity(ctx context.Context, sessionID string) error {
@@ -575,6 +691,41 @@ func (s *Service) rememberSeq(sessionID string, seq uint64) {
 		seqs = seqs[len(seqs)-s.maxReplayFrame:]
 	}
 	s.replaySeqs[sessionID] = seqs
+}
+
+func (s *Service) rememberPendingEnv(sessionID string, values map[string]string) {
+	if len(values) == 0 {
+		return
+	}
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
+	s.pendingEnv[sessionID] = cloneStringMap(values)
+}
+
+func (s *Service) takePendingEnv(sessionID string) map[string]string {
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
+	values, ok := s.pendingEnv[sessionID]
+	if !ok {
+		return map[string]string{}
+	}
+	delete(s.pendingEnv, sessionID)
+	return cloneStringMap(values)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func claimString(claims jwt.MapClaims, key string) string {
