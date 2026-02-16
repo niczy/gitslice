@@ -154,6 +154,7 @@ AUTH_GOOGLE_ID=your-google-oauth-client-id
 AUTH_GOOGLE_SECRET=your-google-oauth-client-secret
 AUTH_GITHUB_ID=your-github-oauth-client-id
 AUTH_GITHUB_SECRET=your-github-oauth-client-secret
+AUTH_GITHUB_SCOPE=read:user user:email  # optional
 ```
 
 For local setup, copy the template and fill in values:
