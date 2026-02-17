@@ -91,6 +91,16 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
+	slicesAPI := httpapi.NewSlicesAPI(st)
+	slicePathHandler := gateway.SlicePathCompatHandler(gatewayMux)
+	httpMux.Handle("/v1/slices/", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/e2b-template") {
+			slicesAPI.HandleE2BTemplate(w, r)
+			return
+		}
+		// Fall through to the gateway for other /v1/slices/ routes.
+		slicePathHandler.ServeHTTP(w, r)
+	})))
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.

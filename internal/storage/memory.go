@@ -550,6 +550,21 @@ func (s *InMemoryStorage) UpdateSliceName(ctx context.Context, sliceID, newName 
 	return nil
 }
 
+// UpdateSliceE2BTemplateID sets the default E2B template for a slice.
+func (s *InMemoryStorage) UpdateSliceE2BTemplateID(ctx context.Context, sliceID, templateID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slice, exists := s.slices[sliceID]
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	slice.E2BTemplateID = templateID
+	slice.UpdatedAt = time.Now()
+	return nil
+}
+
 // GetSliceByName retrieves the first non-root slice matching the given display name.
 func (s *InMemoryStorage) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
 	s.mu.RLock()
