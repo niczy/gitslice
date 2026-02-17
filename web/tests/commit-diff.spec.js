@@ -333,4 +333,65 @@ test.describe('Commit Diff Page (real server)', () => {
     await expect(page.getByTestId('diff-file-binary-preview').locator('img')).toBeVisible();
   });
 
+
+  test('defers patch fetch for long diffs until user scrolls', async ({ page }) => {
+    const commitHash = 'commit-test-lazy-scroll';
+    const changes = Array.from({ length: 120 }, (_, index) => ({
+      id: `lazy-${index}`,
+      slice_id: 'root_slice',
+      path: `src/file-${index}.txt`,
+      change_type: 'CHANGE_TYPE_MODIFY',
+      lines_added: 2,
+      lines_deleted: 1,
+      patch: '',
+    }));
+
+    let withPatchesRequested = false;
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
+      if (route.request().url().includes('include_patches=true')) {
+        withPatchesRequested = true;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            commit_hash: commitHash,
+            files_added: 0,
+            files_modified: changes.length,
+            files_deleted: 0,
+            files_renamed: 0,
+            changes: changes.map((change) => ({
+              ...change,
+              patch: `--- a/${change.path}\n+++ b/${change.path}\n@@ -1 +1 @@\n-old\n+new\n`,
+            })),
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 0,
+          files_modified: changes.length,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes,
+        }),
+      });
+    });
+
+    await page.goto(`/#/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+    await expect(page.getByTestId('diff-patch-lazy-state')).toBeVisible();
+    expect(withPatchesRequested).toBe(false);
+
+    const diffContent = page.locator('.diff-content');
+    await diffContent.evaluate((el) => { el.scrollTop = 80; el.dispatchEvent(new Event('scroll')); });
+
+    await expect.poll(() => withPatchesRequested).toBe(true);
+    await expect(page.getByTestId('diff-file-patch').first()).toBeVisible();
+  });
+
 });
