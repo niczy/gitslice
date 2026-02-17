@@ -2492,6 +2492,33 @@ body {
   color: #24292f;
 }
 
+
+.diff-binary-block {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.diff-binary-block p {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+}
+
+.diff-binary-preview {
+  margin-top: 8px;
+}
+
+.diff-binary-image {
+  max-width: min(100%, 800px);
+  max-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
 /* Side-by-side / split diff */
 .diff-split-container {
   width: 100%;

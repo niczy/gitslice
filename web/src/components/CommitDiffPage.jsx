@@ -5,6 +5,50 @@ import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.j
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 import { decodeBase64 } from '../utils/highlight.js';
 
+function isBinaryPatchText(patch = '') {
+  return /GIT binary patch|Binary files .* differ/i.test(patch);
+}
+
+function mimeTypeFromPath(path = '') {
+  const extension = path.split('.').pop()?.toLowerCase();
+  if (!extension || extension === path.toLowerCase()) {
+    return 'application/octet-stream';
+  }
+  const map = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+  };
+  return map[extension] || 'application/octet-stream';
+}
+
+function detectBinaryFromBase64(encoded = '') {
+  if (!encoded) {
+    return false;
+  }
+  try {
+    const raw = window.atob(encoded);
+    const sampleSize = Math.min(raw.length, 2048);
+    let controlChars = 0;
+    for (let index = 0; index < sampleSize; index += 1) {
+      const code = raw.charCodeAt(index);
+      if (code === 0) {
+        return true;
+      }
+      if ((code < 9) || (code > 13 && code < 32)) {
+        controlChars += 1;
+      }
+    }
+    return (controlChars / sampleSize) > 0.12;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Commit Diff Page Component
 // ---------------------------------------------------------------------------
@@ -16,6 +60,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
   const [fallbackContentByFile, setFallbackContentByFile] = useState({});
+  const [binaryVisibleByFile, setBinaryVisibleByFile] = useState({});
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
@@ -39,6 +84,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
         if (active) {
           setDiffData(normalizeDiffResponse(payload));
           setFallbackContentByFile({});
+          setBinaryVisibleByFile({});
         }
       } catch (err) {
         if (active && err?.name !== 'AbortError') {
@@ -65,7 +111,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
       const nextContentByFile = {};
 
       const loadQueue = diffData.changes
-        .filter((change) => !change.patch && change.path && change.slice_id && normalizeChangeType(change.change_type) !== 'delete')
+        .filter((change) => (!change.patch || isBinaryPatchText(change.patch)) && change.path && change.slice_id && normalizeChangeType(change.change_type) !== 'delete')
         .slice(0, 30);
 
       await Promise.all(loadQueue.map(async (change) => {
@@ -82,9 +128,20 @@ export default function CommitDiffPage({ commitHash, onBack }) {
           }
           const payload = await response.json();
           const encodedContent = payload?.file?.content || '';
+          if (detectBinaryFromBase64(encodedContent)) {
+            nextContentByFile[fileKey] = {
+              kind: 'binary',
+              base64: encodedContent,
+              mimeType: mimeTypeFromPath(change.path),
+            };
+            return;
+          }
           const decodedContent = decodeBase64(encodedContent);
           if (decodedContent) {
-            nextContentByFile[fileKey] = decodedContent;
+            nextContentByFile[fileKey] = {
+              kind: 'text',
+              content: decodedContent,
+            };
           }
         } catch (err) {
           if (err?.name !== 'AbortError') {
@@ -223,6 +280,10 @@ export default function CommitDiffPage({ commitHash, onBack }) {
             <ul className="diff-file-list" data-testid="diff-file-list">
               {changes.map((change) => {
                 const fileKey = change.id || change.path;
+                const fallbackContent = fallbackContentByFile[fileKey];
+                const isBinaryPatch = isBinaryPatchText(change.patch || '');
+                const hasBinaryFallback = fallbackContent?.kind === 'binary';
+                const showBinary = binaryVisibleByFile[fileKey];
                 return (
                   <li
                     key={fileKey}
@@ -248,19 +309,79 @@ export default function CommitDiffPage({ commitHash, onBack }) {
                       )}
                     </div>
                     {change.patch && viewMode === 'unified' && (
-                      <pre className="diff-patch" data-testid="diff-file-patch">
-                        {renderDiffPatch(change.patch)}
-                      </pre>
+                      isBinaryPatch && !showBinary ? (
+                        <div className="diff-binary-block" data-testid="diff-file-binary-block">
+                          <p>This file contains binary content. Click to view.</p>
+                          <button
+                            type="button"
+                            className="ghost"
+                            data-testid="diff-file-view-binary-btn"
+                            onClick={() => setBinaryVisibleByFile((previous) => ({ ...previous, [fileKey]: true }))}
+                          >
+                            View binary
+                          </button>
+                        </div>
+                      ) : (
+                        <pre className="diff-patch" data-testid="diff-file-patch">
+                          {renderDiffPatch(change.patch)}
+                        </pre>
+                      )
                     )}
                     {change.patch && viewMode === 'split' && (
-                      <div className="diff-split-container" data-testid="diff-file-patch">
-                        {renderSplitDiffPatch(change.patch)}
-                      </div>
+                      isBinaryPatch && !showBinary ? (
+                        <div className="diff-binary-block" data-testid="diff-file-binary-block">
+                          <p>This file contains binary content. Click to view.</p>
+                          <button
+                            type="button"
+                            className="ghost"
+                            data-testid="diff-file-view-binary-btn"
+                            onClick={() => setBinaryVisibleByFile((previous) => ({ ...previous, [fileKey]: true }))}
+                          >
+                            View binary
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="diff-split-container" data-testid="diff-file-patch">
+                          {renderSplitDiffPatch(change.patch)}
+                        </div>
+                      )
                     )}
-                    {!change.patch && fallbackContentByFile[fileKey] && viewMode === 'unified' && (
+                    {!change.patch && fallbackContent?.kind === 'text' && viewMode === 'unified' && (
                       <pre className="diff-patch" data-testid="diff-file-fallback-content">
-                        {renderDiffPatch(`--- /dev/null\n+++ b/${change.path}\n@@\n${fallbackContentByFile[fileKey].split('\n').map((line) => `+${line}`).join('\n')}`)}
+                        {renderDiffPatch(`--- /dev/null\n+++ b/${change.path}\n@@\n${fallbackContent.content.split('\n').map((line) => `+${line}`).join('\n')}`)}
                       </pre>
+                    )}
+                    {!change.patch && hasBinaryFallback && (
+                      <div className="diff-binary-block" data-testid="diff-file-binary-block">
+                        {!showBinary && (
+                          <>
+                            <p>Binary file hidden by default.</p>
+                            <button
+                              type="button"
+                              className="ghost"
+                              data-testid="diff-file-view-binary-btn"
+                              onClick={() => setBinaryVisibleByFile((previous) => ({ ...previous, [fileKey]: true }))}
+                            >
+                              View binary
+                            </button>
+                          </>
+                        )}
+                        {showBinary && (
+                          <div className="diff-binary-preview" data-testid="diff-file-binary-preview">
+                            {fallbackContent.mimeType.startsWith('image/') ? (
+                              <img
+                                src={`data:${fallbackContent.mimeType};base64,${fallbackContent.base64}`}
+                                alt={change.path}
+                                className="diff-binary-image"
+                              />
+                            ) : (
+                              <a href={`data:${fallbackContent.mimeType};base64,${fallbackContent.base64}`} download={change.path}>
+                                Download binary file
+                              </a>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </li>
                 );
