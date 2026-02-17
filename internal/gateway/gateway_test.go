@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	agentsession "github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	adminservice "github.com/niczy/gitslice/services/admin"
+	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
@@ -127,6 +129,7 @@ func startGRPCServer(t *testing.T, st storage.Storage) string {
 	sliceservice.RegisterGRPCServer(srv, st)
 	fileservice.RegisterGRPCServer(srv, st)
 	adminservice.RegisterGRPCServer(srv, st)
+	agentservice.RegisterGRPCServer(srv, st, agentsession.NewService(st, "test-secret"))
 
 	go func() {
 		if err := srv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {

@@ -22,12 +22,18 @@
 │   │   ├── file_service.pb.go
 │   │   ├── file_service_grpc.pb.go
 │   │   └── file_service.pb.gw.go
-│   └── admin/             # Admin service proto files
-│       ├── admin_service.proto
-│       ├── admin_service.pb.go
-│       └── admin_service_grpc.pb.go
+│   ├── admin/             # Admin service proto files
+│   │   ├── admin_service.proto
+│   │   ├── admin_service.pb.go
+│   │   └── admin_service_grpc.pb.go
+│   └── agent/             # Agent session proto files
+│       ├── agent_service.proto
+│       ├── agent_service.pb.go
+│       ├── agent_service_grpc.pb.go
+│       └── agent_service.pb.gw.go
 ├── services/              # RPC service implementations
 │   ├── admin/
+│   ├── agent/
 │   ├── file/
 │   └── slice/
 ├── servers/               # Binary servers
@@ -82,6 +88,9 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 cd ../admin
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
   --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto
+cd ../agent
+protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative agent_service.proto
 ```
 
 ### Build
