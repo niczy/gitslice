@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package agent.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/agent;agentv1";
+
+import "google/api/annotations.proto";
+
+service AgentService {
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions"
+      body: "*"
+    };
+  }
+
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-sessions/{session_id}"
+    };
+  }
+
+  rpc StopSession(StopSessionRequest) returns (StopSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions/{session_id}/stop"
+      body: "*"
+    };
+  }
+
+  rpc MintToken(MintTokenRequest) returns (MintTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions/{session_id}/token"
+    };
+  }
+
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-sessions/{session_id}/events"
+    };
+  }
+}
+
+message CreateSessionRequest {
+  string slice_id = 1;
+  string provider = 2;
+  string e2b_template_id = 3;
+  string e2b_region = 4;
+  int32 idle_timeout_sec = 5;
+  int32 ttl_sec = 6;
+  map<string, string> env = 7;
+}
+
+message WSConnectInfo {
+  string url = 1;
+  string token = 2;
+  string expires_at = 3;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  string slice_id = 2;
+  string provider = 3;
+  string e2b_template_id = 4;
+  string state = 5;
+  WSConnectInfo ws = 6;
+  string created_at = 7;
+  int32 idle_timeout_sec = 8;
+  int32 ttl_sec = 9;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message RuntimeInfo {
+  string endpoint = 1;
+}
+
+message GetSessionResponse {
+  string session_id = 1;
+  string slice_id = 2;
+  string provider = 3;
+  string e2b_sandbox_id = 4;
+  string state = 5;
+  string last_activity_at = 6;
+  int32 idle_timeout_sec = 7;
+  int32 ttl_sec = 8;
+  string created_at = 9;
+  RuntimeInfo runtime = 10;
+}
+
+message StopSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+message StopSessionResponse {
+  string session_id = 1;
+  string state = 2;
+}
+
+message MintTokenRequest {
+  string session_id = 1;
+}
+
+message MintTokenResponse {
+  string url = 1;
+  string token = 2;
+  string expires_at = 3;
+}
+
+message EventEnvelope {
+  uint64 seq = 1;
+  string ts = 2;
+  string stream = 3;
+  string type = 4;
+  bytes payload = 5;
+}
+
+message ListEventsRequest {
+  string session_id = 1;
+  uint64 since_seq = 2;
+  int32 limit = 3;
+}
+
+message ListEventsResponse {
+  repeated EventEnvelope events = 1;
+  uint64 next_seq = 2;
+}
