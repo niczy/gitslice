@@ -4,6 +4,7 @@ import { formatBytes } from '../utils/format.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
 import { decodeBase64, highlightCode } from '../utils/highlight.js';
+import { renderMarkdownHtml } from '../utils/markdown.js';
 import SliceDropdown from './SliceDropdown.jsx';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
@@ -41,6 +42,10 @@ const getPreviewMeta = (filePath, encodedContent) => {
       mode: 'image',
       src: `data:${IMAGE_MIME_TYPES[extension] || 'image/*'};base64,${encodedContent}`,
     };
+  }
+
+  if (extension === 'md' || extension === 'markdown') {
+    return { mode: 'markdown', src: '' };
   }
 
   return { mode: 'text', src: '' };
@@ -96,6 +101,7 @@ export default function RepoBrowser({
   const pendingFileRef = useRef(initialBrowserState?.file || null);
   const hasAppliedInitialSliceRef = useRef(false);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
+  const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
 
   const sliceId = currentSliceId;
@@ -803,6 +809,11 @@ export default function RepoBrowser({
                       className="media-preview-pdf"
                       src={previewMeta.src}
                       title={`${selectedFile} PDF preview`}
+                    />
+                  ) : previewMeta.mode === 'markdown' ? (
+                    <article
+                      className="file-preview file-preview-markdown"
+                      dangerouslySetInnerHTML={{ __html: markdownContent || '<p>File is empty.</p>' }}
                     />
                   ) : (
                     <pre className="file-preview">
