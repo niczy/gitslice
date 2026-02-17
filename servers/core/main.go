@@ -17,6 +17,7 @@ import (
 	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/storage"
 	adminservice "github.com/niczy/gitslice/services/admin"
+	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/api/option"
@@ -50,6 +51,9 @@ func main() {
 	sliceservice.RegisterGRPCServer(grpcServer, st)
 	fileservice.RegisterGRPCServer(grpcServer, st)
 	adminservice.RegisterGRPCServer(grpcServer, st)
+	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
+	agentSessionService.StartLifecycleLoop(context.Background())
+	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
 	go func() {
 		log.Printf("Core gRPC server listening on %s", grpcAddr)
@@ -72,8 +76,6 @@ func main() {
 	}))
 
 	accountsAPI := httpapi.NewAccountsAPI(st)
-	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
-	agentSessionService.StartLifecycleLoop(context.Background())
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
 	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))
@@ -89,8 +91,6 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
-	httpMux.Handle("/v1/agent-sessions", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleCollection)))
-	httpMux.Handle("/v1/agent-sessions/", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleItem)))
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.

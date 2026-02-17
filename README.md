@@ -12,7 +12,7 @@
 │   ├── gateway/
 │   └── storage/
 ├── ops/                   # Ops assets (NGINX config, etc.)
-├── proto/                  # Protocol Buffer definitions and generated code
+├── proto/                  # Protocol Buffer definitions (generated stubs are local, not committed)
 │   ├── slice/             # Slice service proto files
 │   │   ├── slice_service.proto
 │   │   ├── slice_service.pb.go
@@ -22,12 +22,18 @@
 │   │   ├── file_service.pb.go
 │   │   ├── file_service_grpc.pb.go
 │   │   └── file_service.pb.gw.go
-│   └── admin/             # Admin service proto files
-│       ├── admin_service.proto
-│       ├── admin_service.pb.go
-│       └── admin_service_grpc.pb.go
+│   ├── admin/             # Admin service proto files
+│   │   ├── admin_service.proto
+│   │   ├── admin_service.pb.go
+│   │   └── admin_service_grpc.pb.go
+│   └── agent/             # Agent session proto files
+│       ├── agent_service.proto
+│       ├── agent_service.pb.go
+│       ├── agent_service_grpc.pb.go
+│       └── agent_service.pb.gw.go
 ├── services/              # RPC service implementations
 │   ├── admin/
+│   ├── agent/
 │   ├── file/
 │   └── slice/
 ├── servers/               # Binary servers
@@ -82,6 +88,9 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 cd ../admin
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
   --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto
+cd ../agent
+protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative agent_service.proto
 ```
 
 ### Build
@@ -157,10 +166,11 @@ gs --user your_name fork my-slice ./some/folder --parent root_slice
 
 ### Adding New Proto Definitions
 
-1. Add or modify `.proto` files in `proto/slice/` or `proto/admin/`
-2. Regenerate the golang code using protoc
-3. Update the service implementations as needed
-4. Run tests and ensure builds pass
+1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/file/`, or `proto/agent/`
+2. Regenerate the Go code using protoc (`make proto` works)
+3. Do not commit generated `*.pb.go` / `*.pb.gw.go` files
+4. Update the service implementations as needed
+5. Run tests and ensure builds pass
 
 ### Running Tests
 

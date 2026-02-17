@@ -5,8 +5,10 @@ These guidelines apply to the entire repository.
 - Before any development work, read `local_dev.md` and follow its operational notes.
 - Run `gofmt` on any modified Go files before committing.
 - Run `make test` when changing Go code or protos to catch regressions (this installs dependencies).
-- If `.proto` files are updated, regenerate the Go stubs with the commands in `README.md` and include the generated files in the commit.
+- If `.proto` files are updated, regenerate the Go stubs with the commands in `README.md`, but do not commit generated `*.pb.go` / `*.pb.gw.go` files.
 - Keep documentation changes concise and prefer updating existing sections instead of adding new top-level files unless necessary.
+- Agent session APIs must be exposed via gRPC service definitions with grpc-gateway HTTP bindings (no standalone net/http REST handlers for `/v1/agent-sessions`).
+- Do not commit generated protobuf outputs (`*.pb.go`, `*.pb.gw.go`); generate them locally as part of build/test workflows.
 - Keep the integration test (`workflow_test/integration_test.go`) exercising the CLI and services end to end; ensure it stays up to date when altering related behavior and run it with `RUN_INTEGRATION_TESTS=1 make test` during relevant changes.
 - For deployment changes, keep `ops/restart_all.sh`, `ops/start_web_server.sh`, and crontab assumptions consistent:
   - `ops/restart_all.sh` must remain safe for unattended hourly runs.

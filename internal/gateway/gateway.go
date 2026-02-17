@@ -8,6 +8,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	agentv1 "github.com/niczy/gitslice/proto/agent"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -27,12 +28,17 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 
 	fileClient := filev1.NewFileServiceClient(conn)
 	adminClient := adminv1.NewAdminServiceClient(conn)
+	agentClient := agentv1.NewAgentServiceClient(conn)
 
 	if err := filev1.RegisterFileServiceHandlerClient(ctx, mux, fileClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
 	if err := adminv1.RegisterAdminServiceHandlerClient(ctx, mux, adminClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := agentv1.RegisterAgentServiceHandlerClient(ctx, mux, agentClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
