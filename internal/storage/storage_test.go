@@ -417,17 +417,18 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	// Agent session lifecycle + event persistence
 	sessionID := fmt.Sprintf("sess-%s", suffix)
 	session := &models.AgentSession{
-		SessionID:      sessionID,
-		SliceID:        slice.ID,
-		UserID:         "alice",
-		State:          models.AgentSessionStateCreating,
-		Provider:       "e2b",
-		E2BTemplateID:  "tmpl-test",
-		E2BRegion:      "us-west-2",
-		IdleTimeoutSec: 1800,
-		TTLSec:         14400,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		SessionID:       sessionID,
+		SliceID:         slice.ID,
+		EnvironmentName: "node20",
+		UserID:          "alice",
+		State:           models.AgentSessionStateCreating,
+		Provider:        "e2b",
+		E2BTemplateID:   "tmpl-test",
+		E2BRegion:       "us-west-2",
+		IdleTimeoutSec:  1800,
+		TTLSec:          14400,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
 	}
 	if err := st.CreateAgentSession(ctx, session); err != nil {
 		t.Fatalf("CreateAgentSession failed: %v", err)
@@ -441,6 +442,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if active.SessionID != session.SessionID {
 		t.Fatalf("active session mismatch: got %s want %s", active.SessionID, session.SessionID)
+	}
+	if active.EnvironmentName != session.EnvironmentName {
+		t.Fatalf("active session environment mismatch: got %s want %s", active.EnvironmentName, session.EnvironmentName)
 	}
 
 	session.State = models.AgentSessionStateRunning

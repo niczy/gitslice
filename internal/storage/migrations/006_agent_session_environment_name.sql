@@ -1,0 +1,1 @@
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS environment_name TEXT NOT NULL DEFAULT '';

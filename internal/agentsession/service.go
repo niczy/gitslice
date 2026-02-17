@@ -27,13 +27,14 @@ const (
 )
 
 type CreateRequest struct {
-	SliceID        string
-	Provider       string
-	E2BTemplateID  string
-	E2BRegion      string
-	IdleTimeoutSec int
-	TTLSec         int
-	Env            map[string]string
+	SliceID         string
+	EnvironmentName string
+	Provider        string
+	E2BTemplateID   string
+	E2BRegion       string
+	IdleTimeoutSec  int
+	TTLSec          int
+	Env             map[string]string
 }
 
 type WSToken struct {
@@ -89,6 +90,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 	if req.SliceID == "" {
 		return nil, nil, storage.ErrInvalidInput
 	}
+	req.EnvironmentName = strings.TrimSpace(req.EnvironmentName)
 	req.Provider = strings.TrimSpace(req.Provider)
 	if req.Provider == "" {
 		req.Provider = "e2b"
@@ -110,17 +112,18 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 
 	now := time.Now().UTC()
 	session := &models.AgentSession{
-		SessionID:      makeSessionID(),
-		SliceID:        req.SliceID,
-		UserID:         userID,
-		State:          models.AgentSessionStateCreating,
-		Provider:       req.Provider,
-		E2BTemplateID:  req.E2BTemplateID,
-		E2BRegion:      req.E2BRegion,
-		IdleTimeoutSec: req.IdleTimeoutSec,
-		TTLSec:         req.TTLSec,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		SessionID:       makeSessionID(),
+		SliceID:         req.SliceID,
+		EnvironmentName: req.EnvironmentName,
+		UserID:          userID,
+		State:           models.AgentSessionStateCreating,
+		Provider:        req.Provider,
+		E2BTemplateID:   req.E2BTemplateID,
+		E2BRegion:       req.E2BRegion,
+		IdleTimeoutSec:  req.IdleTimeoutSec,
+		TTLSec:          req.TTLSec,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if err := s.st.CreateAgentSession(ctx, session); err != nil {
 		return nil, nil, err
