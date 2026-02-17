@@ -1540,11 +1540,10 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 
 func createAgentSessionViaHTTP(t *testing.T, sliceID string) string {
 	t.Helper()
+	ensureIntegrationEnvironment(t, "integration-env")
 	body := map[string]any{
-		"sliceId":       sliceID,
-		"provider":      "e2b",
-		"e2bTemplateId": "tmpl-integration",
-		"e2bRegion":     "us-west-2",
+		"sliceId":     sliceID,
+		"environment": "integration-env",
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
@@ -1569,6 +1568,22 @@ func createAgentSessionViaHTTP(t *testing.T, sliceID string) string {
 		t.Fatalf("missing sessionId")
 	}
 	return out.SessionID
+}
+
+func ensureIntegrationEnvironment(t *testing.T, name string) {
+	t.Helper()
+	ctx := withTestUser(context.Background())
+	err := testStorage.CreateEnvironment(ctx, &models.Environment{
+		Name:        name,
+		DisplayName: "Integration Environment",
+		Provider:    "e2b",
+		ProviderID:  "tmpl-integration",
+		Region:      "us-west-2",
+		CreatedBy:   testUsername,
+	})
+	if err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("failed to create integration environment: %v", err)
+	}
 }
 
 func mintAgentTokenViaHTTP(t *testing.T, sessionID string) string {

@@ -17,9 +17,25 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 )
 
+func seedEnvironment(t *testing.T, ctx context.Context, st storage.Storage, name, providerID, region string) {
+	t.Helper()
+	err := st.CreateEnvironment(ctx, &models.Environment{
+		Name:        name,
+		DisplayName: name,
+		Provider:    "e2b",
+		ProviderID:  providerID,
+		Region:      region,
+		CreatedBy:   "alice",
+	})
+	if err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateEnvironment failed: %v", err)
+	}
+}
+
 func TestAgentSessionsAPI(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
+	seedEnvironment(t, ctx, st, "node20", "tmpl-v1", "us-west-2")
 	if err := st.CreateSlice(ctx, &models.Slice{
 		ID:        "slice-http",
 		Name:      "Slice HTTP",
@@ -40,10 +56,8 @@ func TestAgentSessionsAPI(t *testing.T) {
 	defer server.Close()
 
 	createBody := map[string]any{
-		"sliceId":       "slice-http",
-		"provider":      "e2b",
-		"e2bTemplateId": "tmpl-v1",
-		"e2bRegion":     "us-west-2",
+		"sliceId":     "slice-http",
+		"environment": "node20",
 	}
 	createRaw, _ := json.Marshal(createBody)
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
@@ -58,7 +72,11 @@ func TestAgentSessionsAPI(t *testing.T) {
 	}
 
 	var createResp struct {
-		SessionID string `json:"sessionId"`
+		SessionID     string  `json:"sessionId"`
+		Environment   string  `json:"environment"`
+		Provider      *string `json:"provider"`
+		E2BTemplateID *string `json:"e2bTemplateId"`
+		E2BSandboxID  *string `json:"e2bSandboxId"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
 		t.Fatalf("decode create response failed: %v", err)
@@ -66,8 +84,40 @@ func TestAgentSessionsAPI(t *testing.T) {
 	if createResp.SessionID == "" {
 		t.Fatalf("missing sessionId in create response")
 	}
+	if createResp.Environment != "node20" {
+		t.Fatalf("expected environment node20, got %q", createResp.Environment)
+	}
+	if createResp.Provider != nil || createResp.E2BTemplateID != nil || createResp.E2BSandboxID != nil {
+		t.Fatalf("create response should not expose provider/e2b fields: %#v", createResp)
+	}
 
 	waitForHTTPState(t, server.URL, createResp.SessionID, "alice", "running", 2*time.Second)
+
+	req, _ = http.NewRequest(http.MethodGet, server.URL+"/v1/agent-sessions/"+createResp.SessionID, nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET session failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get session 200, got %d", resp.StatusCode)
+	}
+	var getResp struct {
+		SessionID    string  `json:"sessionId"`
+		Environment  string  `json:"environment"`
+		Provider     *string `json:"provider"`
+		E2BSandboxID *string `json:"e2bSandboxId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode get response failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if getResp.Environment != "node20" {
+		t.Fatalf("expected get environment node20, got %q", getResp.Environment)
+	}
+	if getResp.Provider != nil || getResp.E2BSandboxID != nil {
+		t.Fatalf("get response should not expose provider/e2bSandboxId: %#v", getResp)
+	}
 
 	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions/"+createResp.SessionID+"/token", nil)
 	req.Header.Set("Authorization", "User alice")
@@ -117,6 +167,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
+	seedEnvironment(t, ctx, st, "node20", "tmpl-v1", "us-west-2")
 	if err := st.CreateSlice(ctx, &models.Slice{
 		ID:        "slice-http-authz",
 		Name:      "Slice HTTP Authz",
@@ -135,7 +186,7 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	createRaw := []byte(`{"sliceId":"slice-http-authz","provider":"e2b","e2bTemplateId":"tmpl-v1"}`)
+	createRaw := []byte(`{"sliceId":"slice-http-authz","environment":"node20"}`)
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
 	req.Header.Set("Authorization", "User alice")
 	resp, err := http.DefaultClient.Do(req)
@@ -166,6 +217,7 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
+	seedEnvironment(t, ctx, st, "node20", "tmpl-v1", "us-west-2")
 	if err := st.CreateSlice(ctx, &models.Slice{
 		ID:        "slice-http-ws",
 		Name:      "Slice HTTP WS",
@@ -184,7 +236,7 @@ func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	createRaw := []byte(`{"sliceId":"slice-http-ws","provider":"e2b","e2bTemplateId":"tmpl-v1"}`)
+	createRaw := []byte(`{"sliceId":"slice-http-ws","environment":"node20"}`)
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
 	req.Header.Set("Authorization", "User alice")
 	resp, err := http.DefaultClient.Do(req)
@@ -280,6 +332,101 @@ func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
 
 	if _, _, err := websocket.DefaultDialer.Dial(wsURL, nil); err == nil {
 		t.Fatalf("expected reused token websocket dial to fail")
+	}
+}
+
+func TestAgentSessionsAPIUnknownEnvironment(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-http-unknown-env",
+		Name:      "Slice Unknown Env",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := agentsession.NewService(st, "test-secret")
+	api := NewAgentSessionsAPI(st, svc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	createRaw := []byte(`{"sliceId":"slice-http-unknown-env","environment":"missing-env"}`)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestAgentSessionsAPIEnvironmentFallback(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	seedEnvironment(t, ctx, st, "node20", "tmpl-v1", "us-west-2")
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:          "slice-http-fallback",
+		Name:        "Slice Fallback",
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		Environment: "node20",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-http-no-default",
+		Name:      "Slice No Default",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := agentsession.NewService(st, "test-secret")
+	api := NewAgentSessionsAPI(st, svc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	fallbackRaw := []byte(`{"sliceId":"slice-http-fallback"}`)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(fallbackRaw))
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("fallback create failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 for fallback create, got %d", resp.StatusCode)
+	}
+	var created struct {
+		Environment string `json:"environment"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode fallback create response failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if created.Environment != "node20" {
+		t.Fatalf("expected fallback environment node20, got %q", created.Environment)
+	}
+
+	missingRaw := []byte(`{"sliceId":"slice-http-no-default"}`)
+	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(missingRaw))
+	req.Header.Set("Authorization", "User alice")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("missing-default create failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 without request/slice environment, got %d", resp.StatusCode)
 	}
 }
 

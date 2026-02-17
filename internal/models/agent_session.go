@@ -35,6 +35,7 @@ func (s AgentSessionState) IsActive() bool {
 type AgentSession struct {
 	SessionID       string            `json:"session_id"`
 	SliceID         string            `json:"slice_id"`
+	EnvironmentName string            `json:"environment_name,omitempty"`
 	UserID          string            `json:"user_id"`
 	State           AgentSessionState `json:"state"`
 	Provider        string            `json:"provider"`

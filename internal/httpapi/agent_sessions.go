@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,9 +38,7 @@ func (a *AgentSessionsAPI) requireUser(w http.ResponseWriter, r *http.Request) (
 
 type createAgentSessionRequest struct {
 	SliceID        string            `json:"sliceId"`
-	Provider       string            `json:"provider"`
-	E2BTemplateID  string            `json:"e2bTemplateId"`
-	E2BRegion      string            `json:"e2bRegion"`
+	Environment    string            `json:"environment"`
 	IdleTimeoutSec int               `json:"idleTimeoutSec"`
 	TTLSec         int               `json:"ttlSec"`
 	Env            map[string]string `json:"env"`
@@ -54,8 +53,7 @@ type wsConnectResponse struct {
 type createAgentSessionResponse struct {
 	SessionID      string            `json:"sessionId"`
 	SliceID        string            `json:"sliceId"`
-	Provider       string            `json:"provider"`
-	E2BTemplateID  string            `json:"e2bTemplateId"`
+	Environment    string            `json:"environment"`
 	State          string            `json:"state"`
 	WS             wsConnectResponse `json:"ws"`
 	CreatedAt      string            `json:"createdAt"`
@@ -66,8 +64,7 @@ type createAgentSessionResponse struct {
 type getAgentSessionResponse struct {
 	SessionID      string `json:"sessionId"`
 	SliceID        string `json:"sliceId"`
-	Provider       string `json:"provider"`
-	E2BSandboxID   string `json:"e2bSandboxId,omitempty"`
+	Environment    string `json:"environment"`
 	State          string `json:"state"`
 	LastActivityAt string `json:"lastActivityAt,omitempty"`
 	IdleTimeoutSec int    `json:"idleTimeoutSec"`
@@ -141,21 +138,34 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Fall back to the slice's configured default when the request
-	// does not specify one explicitly.
-	e2bTemplateID := req.E2BTemplateID
-	if strings.TrimSpace(e2bTemplateID) == "" {
-		e2bTemplateID = slice.Environment
+	envName := strings.TrimSpace(req.Environment)
+	if envName == "" {
+		envName = strings.TrimSpace(slice.Environment)
+	}
+	if envName == "" {
+		writeError(w, http.StatusBadRequest, "no environment configured for this slice")
+		return
+	}
+
+	env, err := a.st.GetEnvironment(r.Context(), envName)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrInvalidInput) {
+			writeError(w, http.StatusBadRequest, "unknown environment: "+envName)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to resolve environment")
+		return
 	}
 
 	session, token, err := a.svc.CreateSession(r.Context(), userID, agentsession.CreateRequest{
-		SliceID:        req.SliceID,
-		Provider:       req.Provider,
-		E2BTemplateID:  e2bTemplateID,
-		E2BRegion:      req.E2BRegion,
-		IdleTimeoutSec: req.IdleTimeoutSec,
-		TTLSec:         req.TTLSec,
-		Env:            req.Env,
+		SliceID:         req.SliceID,
+		EnvironmentName: envName,
+		Provider:        env.Provider,
+		E2BTemplateID:   env.ProviderID,
+		E2BRegion:       env.Region,
+		IdleTimeoutSec:  req.IdleTimeoutSec,
+		TTLSec:          req.TTLSec,
+		Env:             req.Env,
 	})
 	if err != nil {
 		switch err {
@@ -170,11 +180,10 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusCreated, createAgentSessionResponse{
-		SessionID:     session.SessionID,
-		SliceID:       session.SliceID,
-		Provider:      session.Provider,
-		E2BTemplateID: session.E2BTemplateID,
-		State:         string(session.State),
+		SessionID:   session.SessionID,
+		SliceID:     session.SliceID,
+		Environment: session.EnvironmentName,
+		State:       string(session.State),
 		WS: wsConnectResponse{
 			URL:       buildWSURL(r, session.SessionID),
 			Token:     token.Token,
@@ -256,8 +265,7 @@ func (a *AgentSessionsAPI) getSession(w http.ResponseWriter, r *http.Request, se
 	resp := getAgentSessionResponse{
 		SessionID:      session.SessionID,
 		SliceID:        session.SliceID,
-		Provider:       session.Provider,
-		E2BSandboxID:   session.E2BSandboxID,
+		Environment:    session.EnvironmentName,
 		State:          string(session.State),
 		IdleTimeoutSec: session.IdleTimeoutSec,
 		TTLSec:         session.TTLSec,

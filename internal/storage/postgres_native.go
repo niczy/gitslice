@@ -2539,15 +2539,15 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO agent_sessions (
-			session_id, slice_id, user_id, state, provider, e2b_template_id, e2b_sandbox_id, e2b_region,
+			session_id, slice_id, environment_name, user_id, state, provider, e2b_template_id, e2b_sandbox_id, e2b_region,
 			idle_timeout_sec, ttl_sec, runtime_endpoint, created_at, updated_at, started_at, last_activity_at,
 			stopped_at, failure_code, failure_message
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''),
-			$9, $10, NULLIF($11, ''), $12, $13, $14, $15, $16, NULLIF($17, ''), NULLIF($18, '')
+			$1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''),
+			$10, $11, NULLIF($12, ''), $13, $14, $15, $16, $17, NULLIF($18, ''), NULLIF($19, '')
 		)
 	`,
-		session.SessionID, session.SliceID, session.UserID, string(session.State), session.Provider,
+		session.SessionID, session.SliceID, session.EnvironmentName, session.UserID, string(session.State), session.Provider,
 		session.E2BTemplateID, session.E2BSandboxID, session.E2BRegion,
 		session.IdleTimeoutSec, session.TTLSec, session.RuntimeEndpoint,
 		session.CreatedAt, session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
@@ -2570,14 +2570,14 @@ func (s *PostgresNativeStorage) GetAgentSession(ctx context.Context, sessionID s
 	var session models.AgentSession
 	var startedAt, lastActivityAt, stoppedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT session_id, slice_id, user_id, state, provider, e2b_template_id, COALESCE(e2b_sandbox_id, ''),
+		SELECT session_id, slice_id, COALESCE(environment_name, ''), user_id, state, provider, e2b_template_id, COALESCE(e2b_sandbox_id, ''),
 		       COALESCE(e2b_region, ''), idle_timeout_sec, ttl_sec, COALESCE(runtime_endpoint, ''),
 		       created_at, updated_at, started_at, last_activity_at, stopped_at,
 		       COALESCE(failure_code, ''), COALESCE(failure_message, '')
 		FROM agent_sessions
 		WHERE session_id = $1
 	`, sessionID).Scan(
-		&session.SessionID, &session.SliceID, &session.UserID, &session.State, &session.Provider,
+		&session.SessionID, &session.SliceID, &session.EnvironmentName, &session.UserID, &session.State, &session.Provider,
 		&session.E2BTemplateID, &session.E2BSandboxID, &session.E2BRegion, &session.IdleTimeoutSec, &session.TTLSec,
 		&session.RuntimeEndpoint, &session.CreatedAt, &session.UpdatedAt, &startedAt, &lastActivityAt,
 		&stoppedAt, &session.FailureCode, &session.FailureMessage,
@@ -2672,24 +2672,25 @@ func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE agent_sessions
 		SET slice_id = $1,
-		    user_id = $2,
-		    state = $3,
-		    provider = $4,
-		    e2b_template_id = $5,
-		    e2b_sandbox_id = NULLIF($6, ''),
-		    e2b_region = NULLIF($7, ''),
-		    idle_timeout_sec = $8,
-		    ttl_sec = $9,
-		    runtime_endpoint = NULLIF($10, ''),
-		    updated_at = $11,
-		    started_at = $12,
-		    last_activity_at = $13,
-		    stopped_at = $14,
-		    failure_code = NULLIF($15, ''),
-		    failure_message = NULLIF($16, '')
-		WHERE session_id = $17
+		    environment_name = $2,
+		    user_id = $3,
+		    state = $4,
+		    provider = $5,
+		    e2b_template_id = $6,
+		    e2b_sandbox_id = NULLIF($7, ''),
+		    e2b_region = NULLIF($8, ''),
+		    idle_timeout_sec = $9,
+		    ttl_sec = $10,
+		    runtime_endpoint = NULLIF($11, ''),
+		    updated_at = $12,
+		    started_at = $13,
+		    last_activity_at = $14,
+		    stopped_at = $15,
+		    failure_code = NULLIF($16, ''),
+		    failure_message = NULLIF($17, '')
+		WHERE session_id = $18
 	`,
-		session.SliceID, session.UserID, string(session.State), session.Provider, session.E2BTemplateID,
+		session.SliceID, session.EnvironmentName, session.UserID, string(session.State), session.Provider, session.E2BTemplateID,
 		session.E2BSandboxID, session.E2BRegion, session.IdleTimeoutSec, session.TTLSec, session.RuntimeEndpoint,
 		session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
 		session.FailureCode, session.FailureMessage, session.SessionID,
