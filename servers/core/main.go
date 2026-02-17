@@ -76,6 +76,7 @@ func main() {
 	}))
 
 	accountsAPI := httpapi.NewAccountsAPI(st)
+	environmentsAPI := httpapi.NewEnvironmentsAPI(st)
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
 	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))
@@ -91,6 +92,8 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
+	httpMux.Handle("/v1/environments", gateway.WithCORS(http.HandlerFunc(environmentsAPI.HandleCollection)))
+	httpMux.Handle("/v1/environments/", gateway.WithCORS(http.HandlerFunc(environmentsAPI.HandleItem)))
 	slicesAPI := httpapi.NewSlicesAPI(st)
 	slicePathHandler := gateway.SlicePathCompatHandler(gatewayMux)
 	httpMux.Handle("/v1/slices/", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

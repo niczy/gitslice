@@ -63,8 +63,8 @@ test.describe('Root Repository Browsing (real server)', () => {
     // Click README.md to preview it
     await page.getByRole('button', { name: /README\.md/i }).click();
 
-    // The file heading should show the path
-    await expect(page.getByRole('heading', { name: /README\.md/i })).toBeVisible();
+    // The code header breadcrumbs should include the selected file.
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
 
     // The real README.md should contain some content (it's a gitslice project)
     // Check for common markdown content that should be in the file
@@ -114,12 +114,12 @@ test.describe('Root Repository Browsing (real server)', () => {
     await page.getByRole('button', { name: /📁.*gitslice/i }).click();
 
     await page.getByRole('button', { name: /README\.md/i }).click();
-    await expect(page.getByRole('heading', { name: /README\.md/i })).toBeVisible();
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
 
     await page.reload();
 
     await page.getByTestId('topbar-repo-browser').click();
-    await expect(page.getByRole('heading', { name: /README\.md/i })).toBeVisible();
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
   });
   test('shows file sizes in the entry list', async ({ page }) => {
     await page.goto('/');
