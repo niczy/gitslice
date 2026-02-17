@@ -14,6 +14,7 @@ import (
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
@@ -336,6 +337,11 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 			log.Printf("failed to promote slice %s to global state: %v", cs.SliceID, err)
 		}
 	}
+	if changesetTouchesConfig(cs.ModifiedFiles) {
+		if err := sliceconfig.ApplyFromFileTree(ctx, s.storage); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to sync %s: %v", sliceconfig.ConfigFilePath, err))
+		}
+	}
 
 	return &slicev1.MergeChangesetResponse{
 		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
@@ -343,6 +349,16 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
 	}, nil
+}
+
+func changesetTouchesConfig(modifiedFiles []string) bool {
+	for _, filePath := range modifiedFiles {
+		trimmed := strings.Trim(strings.TrimSpace(filePath), "/")
+		if trimmed == sliceconfig.ConfigFilePath || strings.HasSuffix(trimmed, "/"+sliceconfig.ConfigFilePath) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {

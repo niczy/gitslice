@@ -11,6 +11,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	"google.golang.org/grpc"
@@ -308,6 +309,9 @@ func (s *adminServiceServer) ImportGitRepo(ctx context.Context, req *adminv1.Imp
 	res, err := importGitRepo(ctx, s.storage, repoPath, repoURL, ref, sliceID, mountPath, req.GetResetStorage(), req.GetFirstParent(), maxCommits)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("git import failed: %v", err))
+	}
+	if err := sliceconfig.ApplyFromFileTree(ctx, s.storage); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to sync %s: %v", sliceconfig.ConfigFilePath, err))
 	}
 
 	return &adminv1.ImportGitRepoResponse{
