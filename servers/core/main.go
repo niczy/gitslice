@@ -97,8 +97,8 @@ func main() {
 	slicesAPI := httpapi.NewSlicesAPI(st)
 	slicePathHandler := gateway.SlicePathCompatHandler(gatewayMux)
 	httpMux.Handle("/v1/slices/", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/e2b-template") {
-			slicesAPI.HandleE2BTemplate(w, r)
+		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/environment") {
+			slicesAPI.HandleEnvironment(w, r)
 			return
 		}
 		// Fall through to the gateway for other /v1/slices/ routes.

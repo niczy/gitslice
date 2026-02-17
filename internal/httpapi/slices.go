@@ -11,7 +11,7 @@ import (
 )
 
 // SlicesAPI handles HTTP endpoints for slice configuration that sit
-// outside the gRPC-Gateway surface (e.g. updating E2B template).
+// outside the gRPC-Gateway surface (e.g. updating the environment).
 type SlicesAPI struct {
 	st storage.Storage
 }
@@ -20,25 +20,25 @@ func NewSlicesAPI(st storage.Storage) *SlicesAPI {
 	return &SlicesAPI{st: st}
 }
 
-type updateSliceE2BTemplateRequest struct {
-	E2BTemplateID string `json:"e2bTemplateId"`
+type updateSliceEnvironmentRequest struct {
+	Environment string `json:"environment"`
 }
 
-type updateSliceE2BTemplateResponse struct {
-	SliceID       string `json:"sliceId"`
-	E2BTemplateID string `json:"e2bTemplateId"`
+type updateSliceEnvironmentResponse struct {
+	SliceID     string `json:"sliceId"`
+	Environment string `json:"environment"`
 }
 
-// HandleE2BTemplate handles GET/PUT on /v1/slices/{sliceID}/e2b-template.
-func (a *SlicesAPI) HandleE2BTemplate(w http.ResponseWriter, r *http.Request) {
+// HandleEnvironment handles GET/PUT on /v1/slices/{sliceID}/environment.
+func (a *SlicesAPI) HandleEnvironment(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	// Extract sliceID from path: /v1/slices/{sliceID}/e2b-template
+	// Extract sliceID from path: /v1/slices/{sliceID}/environment
 	path := strings.TrimPrefix(r.URL.Path, "/v1/slices/")
-	path = strings.TrimSuffix(path, "/e2b-template")
+	path = strings.TrimSuffix(path, "/environment")
 	sliceID := strings.Trim(path, "/")
 	if sliceID == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -63,27 +63,27 @@ func (a *SlicesAPI) HandleE2BTemplate(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, updateSliceE2BTemplateResponse{
-			SliceID:       slice.ID,
-			E2BTemplateID: slice.E2BTemplateID,
+		writeJSON(w, http.StatusOK, updateSliceEnvironmentResponse{
+			SliceID:     slice.ID,
+			Environment: slice.Environment,
 		})
 
 	case http.MethodPut:
-		var req updateSliceE2BTemplateRequest
+		var req updateSliceEnvironmentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		templateID := strings.TrimSpace(req.E2BTemplateID)
+		environment := strings.TrimSpace(req.Environment)
 
-		if err := a.st.UpdateSliceE2BTemplateID(r.Context(), sliceID, templateID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update e2b template")
+		if err := a.st.UpdateSliceEnvironment(r.Context(), sliceID, environment); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update environment")
 			return
 		}
 
-		writeJSON(w, http.StatusOK, updateSliceE2BTemplateResponse{
-			SliceID:       sliceID,
-			E2BTemplateID: templateID,
+		writeJSON(w, http.StatusOK, updateSliceEnvironmentResponse{
+			SliceID:     sliceID,
+			Environment: environment,
 		})
 
 	default:
