@@ -1781,6 +1781,16 @@ body {
   animation: errorShake 500ms ease-in-out;
 }
 
+.panel-success {
+  background: #dafbe1;
+  border: 1px solid rgba(31, 136, 61, 0.3);
+  color: #1a7f37;
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}
+
 @keyframes errorShake {
   0%, 100% { transform: translateX(0); }
   10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
@@ -1802,6 +1812,42 @@ body {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.code-view-tabs {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.code-view-tab {
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.code-view-tab:last-child {
+  border-right: none;
+}
+
+.code-view-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.code-view-tab.active {
+  background: rgba(9, 105, 218, 0.1);
+  color: var(--accent);
 }
 
 .code-header-left {
@@ -2040,6 +2086,64 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 0;
+}
+
+.slice-settings {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--surface-elevated);
+}
+
+.slice-settings-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.slice-settings-header p {
+  margin: 8px 0 16px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.slice-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.slice-settings-form label {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.slice-settings-form select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  background: #fff;
+  color: var(--text-primary);
+}
+
+.slice-settings-form select:focus {
+  outline: 2px solid rgba(9, 105, 218, 0.2);
+  border-color: var(--accent);
+}
+
+.slice-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.slice-settings-note {
+  font-size: 0.82rem;
+  color: var(--text-muted);
 }
 
 .history-loading {

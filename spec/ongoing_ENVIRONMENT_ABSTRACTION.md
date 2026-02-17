@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-- Current status: `ongoing`
+- Current status: `finished`
 - Last updated: `2026-02-17`
 
 PR checklist:
@@ -11,7 +11,7 @@ PR checklist:
 - [x] PR2 - Slice environment field: rename `e2b_template_id` → `environment` on slices, update all references
 - [x] PR3 - Session resolution: agent session creation resolves environment name → provider config, clean user-facing API
 - [x] PR4 - Config file reader: parse `.gitslice/config.yaml`, apply on import/merge
-- [ ] PR5 - UI settings panel: environment dropdown per slice in web app
+- [x] PR5 - UI settings panel: environment dropdown per slice in web app
 
 ## Executive Summary
 
