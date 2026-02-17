@@ -11,6 +11,7 @@ require (
 	github.com/niczy/gitslice/services/admin v0.0.0
 	github.com/niczy/gitslice/services/file v0.0.0
 	github.com/niczy/gitslice/services/slice v0.0.0
+	gopkg.in/yaml.v3 v3.0.1
 	google.golang.org/api v0.224.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20240513163218-0867130af1f8
 	google.golang.org/grpc v1.64.0
