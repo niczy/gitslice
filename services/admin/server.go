@@ -368,14 +368,15 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 
 	for _, slice := range slices {
 		response.Slices = append(response.Slices, &adminv1.SliceInfo{
-			SliceId:     slice.ID,
-			Name:        slice.Name,
-			Description: slice.Description,
-			Owners:      slice.Owners,
-			CreatedAt:   slice.CreatedAt.Unix(),
-			UpdatedAt:   slice.UpdatedAt.Unix(),
-			FileCount:   int32(len(slice.Files)),
-			IsRoot:      slice.IsRoot,
+			SliceId:       slice.ID,
+			Name:          slice.Name,
+			Description:   slice.Description,
+			Owners:        slice.Owners,
+			CreatedAt:     slice.CreatedAt.Unix(),
+			UpdatedAt:     slice.UpdatedAt.Unix(),
+			FileCount:     int32(len(slice.Files)),
+			IsRoot:        slice.IsRoot,
+			E2BTemplateId: slice.E2BTemplateID,
 		})
 	}
 
