@@ -7,7 +7,7 @@
 
 PR checklist:
 
-- [ ] PR1 - Environment registry: `environments` table, CRUD HTTP endpoints, `Environment` model
+- [x] PR1 - Environment registry: `environments` table, CRUD HTTP endpoints, `Environment` model
 - [ ] PR2 - Slice environment field: rename `e2b_template_id` → `environment` on slices, update all references
 - [ ] PR3 - Session resolution: agent session creation resolves environment name → provider config, clean user-facing API
 - [ ] PR4 - Config file reader: parse `.gitslice/config.yaml`, apply on import/merge

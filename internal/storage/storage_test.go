@@ -349,6 +349,71 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		}
 	}
 
+	// Environment registry CRUD
+	envName := "node20-" + suffix
+	createdAt := time.Now().Add(-time.Minute)
+	env := &models.Environment{
+		Name:        envName,
+		DisplayName: "Node.js 20",
+		Provider:    "e2b",
+		ProviderID:  "tmpl-node20-" + suffix,
+		Region:      "us-west-2",
+		CreatedBy:   "alice",
+		CreatedAt:   createdAt,
+	}
+	if err := st.CreateEnvironment(ctx, env); err != nil {
+		t.Fatalf("CreateEnvironment failed: %v", err)
+	}
+	if err := st.CreateEnvironment(ctx, env); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate environment, got %v", err)
+	}
+	fetchedEnv, err := st.GetEnvironment(ctx, envName)
+	if err != nil {
+		t.Fatalf("GetEnvironment failed: %v", err)
+	}
+	if fetchedEnv.Name != envName || fetchedEnv.ProviderID != env.ProviderID {
+		t.Fatalf("GetEnvironment mismatch: %#v", fetchedEnv)
+	}
+	envs, err := st.ListEnvironments(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListEnvironments failed: %v", err)
+	}
+	foundEnv := false
+	for _, item := range envs {
+		if item != nil && item.Name == envName {
+			foundEnv = true
+			break
+		}
+	}
+	if !foundEnv {
+		t.Fatalf("expected environment %q in list", envName)
+	}
+	fetchedEnv.DisplayName = "Node.js 20 LTS"
+	fetchedEnv.ProviderID = "tmpl-node20-updated-" + suffix
+	fetchedEnv.Region = "us-east-1"
+	if err := st.UpdateEnvironment(ctx, fetchedEnv); err != nil {
+		t.Fatalf("UpdateEnvironment failed: %v", err)
+	}
+	updatedEnv, err := st.GetEnvironment(ctx, envName)
+	if err != nil {
+		t.Fatalf("GetEnvironment after update failed: %v", err)
+	}
+	if updatedEnv.DisplayName != "Node.js 20 LTS" || updatedEnv.ProviderID != fetchedEnv.ProviderID || updatedEnv.Region != "us-east-1" {
+		t.Fatalf("updated environment mismatch: %#v", updatedEnv)
+	}
+	if updatedEnv.CreatedAt.IsZero() || updatedEnv.UpdatedAt.IsZero() {
+		t.Fatalf("environment timestamps should be populated: %#v", updatedEnv)
+	}
+	if _, err := st.GetEnvironment(ctx, "does-not-exist-"+suffix); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for missing env, got %v", err)
+	}
+	if err := st.DeleteEnvironment(ctx, envName); err != nil {
+		t.Fatalf("DeleteEnvironment failed: %v", err)
+	}
+	if err := st.DeleteEnvironment(ctx, envName); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound on deleting missing env, got %v", err)
+	}
+
 	// Agent session lifecycle + event persistence
 	sessionID := fmt.Sprintf("sess-%s", suffix)
 	session := &models.AgentSession{

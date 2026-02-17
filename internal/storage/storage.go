@@ -119,6 +119,13 @@ type Storage interface {
 	AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error
 	ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error)
 
+	// Environment registry
+	CreateEnvironment(ctx context.Context, env *models.Environment) error
+	GetEnvironment(ctx context.Context, name string) (*models.Environment, error)
+	ListEnvironments(ctx context.Context, limit, offset int) ([]*models.Environment, error)
+	UpdateEnvironment(ctx context.Context, env *models.Environment) error
+	DeleteEnvironment(ctx context.Context, name string) error
+
 	// Agent sessions
 	CreateAgentSession(ctx context.Context, session *models.AgentSession) error
 	GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error)
