@@ -232,4 +232,105 @@ test.describe('Commit Diff Page (real server)', () => {
     await expect(fallback.locator('.diff-line-added').first()).toBeVisible();
   });
 
+  test('hides binary patch content behind an explicit action', async ({ page }) => {
+    const commitHash = 'commit-test-binary-patch';
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 0,
+          files_modified: 1,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes: [
+            {
+              id: 'binary-change-1',
+              slice_id: 'root_slice',
+              path: 'assets/logo.png',
+              change_type: 'CHANGE_TYPE_MODIFY',
+              lines_added: 0,
+              lines_deleted: 0,
+              patch: 'diff --git a/assets/logo.png b/assets/logo.png\nBinary files a/assets/logo.png and b/assets/logo.png differ',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/assets/logo.png?slice_version.slice_hash=*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'assets/logo.png',
+            content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGNgZGJmAAACbgD5Y0iH5QAAAABJRU5ErkJggg==',
+          },
+        }),
+      });
+    });
+
+    await page.goto(`/#/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+
+    const binaryBlock = page.getByTestId('diff-file-binary-block').first();
+    await expect(binaryBlock).toContainText('binary content');
+    await expect(page.getByTestId('diff-file-patch')).toHaveCount(0);
+
+    await page.getByTestId('diff-file-view-binary-btn').first().click();
+    await expect(page.getByTestId('diff-file-patch').first()).toContainText('Binary files');
+  });
+
+  test('renders binary fallback as an image after user opt-in', async ({ page }) => {
+    const commitHash = 'commit-test-binary-fallback';
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 1,
+          files_modified: 0,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes: [
+            {
+              id: 'binary-add-1',
+              slice_id: 'root_slice',
+              path: 'assets/new-logo.png',
+              change_type: 'CHANGE_TYPE_ADD',
+              lines_added: 0,
+              lines_deleted: 0,
+              patch: '',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/assets/new-logo.png?slice_version.slice_hash=*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'assets/new-logo.png',
+            content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGNgZGJmAAACbgD5Y0iH5QAAAABJRU5ErkJggg==',
+          },
+        }),
+      });
+    });
+
+    await page.goto(`/#/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+
+    await expect(page.getByTestId('diff-file-binary-block').first()).toContainText('hidden by default');
+    await expect(page.getByTestId('diff-file-binary-preview')).toHaveCount(0);
+
+    await page.getByTestId('diff-file-view-binary-btn').first().click();
+    await expect(page.getByTestId('diff-file-binary-preview').locator('img')).toBeVisible();
+  });
+
 });
