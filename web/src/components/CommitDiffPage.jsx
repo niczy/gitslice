@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
 import { formatChangeType } from '../utils/format.js';
 import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.js';
@@ -49,6 +49,11 @@ function detectBinaryFromBase64(encoded = '') {
   }
 }
 
+
+const LAZY_PATCH_FILE_COUNT_THRESHOLD = 80;
+const LAZY_PATCH_LINE_THRESHOLD = 1200;
+const LAZY_PATCH_SCROLL_TRIGGER = 24;
+
 // ---------------------------------------------------------------------------
 // Commit Diff Page Component
 // ---------------------------------------------------------------------------
@@ -61,6 +66,10 @@ export default function CommitDiffPage({ commitHash, onBack }) {
   const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
   const [fallbackContentByFile, setFallbackContentByFile] = useState({});
   const [binaryVisibleByFile, setBinaryVisibleByFile] = useState({});
+  const [patchByFile, setPatchByFile] = useState({});
+  const [hasLoadedPatches, setHasLoadedPatches] = useState(false);
+  const [isPatchLoading, setIsPatchLoading] = useState(false);
+  const [patchLoadError, setPatchLoadError] = useState('');
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
@@ -76,7 +85,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
       setIsLoading(true);
       setError('');
       try {
-        const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes?include_patches=true`, {
+        const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`Request failed (${response.status})`);
@@ -85,6 +94,9 @@ export default function CommitDiffPage({ commitHash, onBack }) {
           setDiffData(normalizeDiffResponse(payload));
           setFallbackContentByFile({});
           setBinaryVisibleByFile({});
+          setPatchByFile({});
+          setHasLoadedPatches(false);
+          setPatchLoadError('');
         }
       } catch (err) {
         if (active && err?.name !== 'AbortError') {
@@ -99,8 +111,85 @@ export default function CommitDiffPage({ commitHash, onBack }) {
     return () => { active = false; controller.abort(); };
   }, [commitHash]);
 
+  const loadPatches = useCallback(async () => {
+    if (!commitHash || isPatchLoading || hasLoadedPatches) {
+      return;
+    }
+    setIsPatchLoading(true);
+    setPatchLoadError('');
+    try {
+      const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes?include_patches=true`);
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      const payload = normalizeDiffResponse(await response.json());
+      const nextPatchByFile = {};
+      payload?.changes?.forEach((change) => {
+        const fileKey = change.id || change.path;
+        nextPatchByFile[fileKey] = change.patch || '';
+      });
+      setPatchByFile(nextPatchByFile);
+      setHasLoadedPatches(true);
+    } catch {
+      setPatchLoadError('Unable to load patch content.');
+    } finally {
+      setIsPatchLoading(false);
+    }
+  }, [commitHash, hasLoadedPatches, isPatchLoading]);
+
+  const changes = useMemo(() => {
+    const base = diffData?.changes || [];
+    return base.map((change) => {
+      const fileKey = change.id || change.path;
+      if (!hasLoadedPatches) {
+        return { ...change, patch: '' };
+      }
+      return { ...change, patch: patchByFile[fileKey] || '' };
+    });
+  }, [diffData, hasLoadedPatches, patchByFile]);
+
+
+  const shouldLazyLoadPatches = useMemo(() => {
+    const baseChanges = diffData?.changes || [];
+    if (baseChanges.length === 0) {
+      return false;
+    }
+    if (baseChanges.length > LAZY_PATCH_FILE_COUNT_THRESHOLD) {
+      return true;
+    }
+    return baseChanges.some((change) => ((change.lines_added || 0) + (change.lines_deleted || 0)) > LAZY_PATCH_LINE_THRESHOLD);
+  }, [diffData]);
+
+
   useEffect(() => {
-    if (!diffData?.changes?.length) {
+    if (!diffData || hasLoadedPatches || isPatchLoading) {
+      return;
+    }
+
+    if (!shouldLazyLoadPatches) {
+      loadPatches();
+      return;
+    }
+
+    const diffContentEl = diffContentRef.current;
+    if (!diffContentEl) {
+      return;
+    }
+
+    const handleDiffScroll = () => {
+      if (diffContentEl.scrollTop >= LAZY_PATCH_SCROLL_TRIGGER) {
+        loadPatches();
+      }
+    };
+
+    diffContentEl.addEventListener('scroll', handleDiffScroll, { passive: true });
+    return () => {
+      diffContentEl.removeEventListener('scroll', handleDiffScroll);
+    };
+  }, [diffData, hasLoadedPatches, isPatchLoading, loadPatches, shouldLazyLoadPatches]);
+
+  useEffect(() => {
+    if (!hasLoadedPatches || changes.length === 0) {
       return;
     }
 
@@ -110,7 +199,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
     const loadFallbackContent = async () => {
       const nextContentByFile = {};
 
-      const loadQueue = diffData.changes
+      const loadQueue = changes
         .filter((change) => (!change.patch || isBinaryPatchText(change.patch)) && change.path && change.slice_id && normalizeChangeType(change.change_type) !== 'delete')
         .slice(0, 30);
 
@@ -164,10 +253,11 @@ export default function CommitDiffPage({ commitHash, onBack }) {
       active = false;
       controller.abort();
     };
-  }, [commitHash, diffData, encodePath]);
+  }, [changes, commitHash, encodePath, hasLoadedPatches]);
 
   const handleFileSelect = useCallback((fileKey) => {
     setSelectedFileId(fileKey);
+    loadPatches();
 
     const panelItemEl = panelItemRefs.current[fileKey];
     if (panelItemEl) {
@@ -185,9 +275,7 @@ export default function CommitDiffPage({ commitHash, onBack }) {
         behavior: 'smooth',
       });
     }
-  }, []);
-
-  const changes = diffData?.changes || [];
+  }, [loadPatches]);
 
   return (
     <section className="commit-diff-page" data-testid="commit-diff-page">
@@ -276,6 +364,19 @@ export default function CommitDiffPage({ commitHash, onBack }) {
         <div className="diff-content" ref={diffContentRef}>
           {isLoading && <div className="diff-loading">Loading commit changes...</div>}
           {error && <div className="panel-error">{error}</div>}
+          {!isLoading && !error && shouldLazyLoadPatches && !hasLoadedPatches && (
+            <div className="diff-loading diff-patch-lazy-state" data-testid="diff-patch-lazy-state">
+              <p>{isPatchLoading ? 'Loading patch content…' : 'Patch content will load as you scroll.'}</p>
+              {patchLoadError && (
+                <>
+                  <p className="panel-error">{patchLoadError}</p>
+                  <button type="button" className="ghost" onClick={loadPatches} data-testid="diff-retry-load-patches-btn" disabled={isPatchLoading}>
+                    Retry patch load
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {!isLoading && !error && diffData && (
             <ul className="diff-file-list" data-testid="diff-file-list">
               {changes.map((change) => {
