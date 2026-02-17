@@ -6,6 +6,7 @@ import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../uti
 import { decodeBase64, highlightCode } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import SliceDropdown from './SliceDropdown.jsx';
+import SliceSettings from './SliceSettings.jsx';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
@@ -96,6 +97,7 @@ export default function RepoBrowser({
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [activeView, setActiveView] = useState('files');
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
@@ -105,11 +107,37 @@ export default function RepoBrowser({
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
 
   const sliceId = currentSliceId;
+  const canLoad = sliceId !== '';
+
+  const currentSlice = useMemo(() => {
+    return slices.find((slice) => slice.slice_id === sliceId) || null;
+  }, [slices, sliceId]);
 
   const currentSliceLabel = useMemo(() => {
-    const selectedSlice = slices.find((slice) => slice.slice_id === sliceId);
-    return selectedSlice?.name || sliceId;
-  }, [slices, sliceId]);
+    return currentSlice?.name || sliceId;
+  }, [currentSlice, sliceId]);
+
+  const canShowSettings = canLoad && !currentSlice?.is_root;
+  const viewingSettings = activeView === 'settings' && canShowSettings;
+
+  const openFilesView = useCallback(() => {
+    setActiveView('files');
+  }, []);
+
+  const openSettingsView = useCallback(() => {
+    setActiveView('settings');
+    setShowHistory(false);
+  }, []);
+
+  useEffect(() => {
+    if (!canShowSettings && activeView === 'settings') {
+      setActiveView('files');
+    }
+  }, [canShowSettings, activeView]);
+
+  useEffect(() => {
+    setActiveView('files');
+  }, [sliceId, sliceHash]);
 
   const breadcrumbs = useMemo(() => {
     const slicePrefix = currentSliceLabel || 'slice';
@@ -248,8 +276,6 @@ export default function RepoBrowser({
       fetchFileHistory(selectedFile);
     }
   };
-
-  const canLoad = sliceId !== '';
 
   useEffect(() => {
     if (!canLoad) {
@@ -424,6 +450,7 @@ export default function RepoBrowser({
       setSidebarOpen(false);
     }
 
+    setActiveView('files');
     setSelectedFile(entry.path);
     setFileContent('');
     setEncodedFileContent('');
@@ -746,8 +773,28 @@ export default function RepoBrowser({
                 </div>
               </div>
               <div className="code-header-actions">
-                {selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
-                {selectedFile && !showHistory && (
+                <div className="code-view-tabs">
+                  <button
+                    type="button"
+                    className={`code-view-tab ${!viewingSettings ? 'active' : ''}`}
+                    onClick={openFilesView}
+                    data-testid="repo-view-files"
+                  >
+                    Files
+                  </button>
+                  {canShowSettings && (
+                    <button
+                      type="button"
+                      className={`code-view-tab ${viewingSettings ? 'active' : ''}`}
+                      onClick={openSettingsView}
+                      data-testid="repo-view-settings"
+                    >
+                      Settings
+                    </button>
+                  )}
+                </div>
+                {!viewingSettings && selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
+                {!viewingSettings && selectedFile && !showHistory && (
                   <>
                     <button
                       type="button"
@@ -775,7 +822,7 @@ export default function RepoBrowser({
                     )}
                   </>
                 )}
-                {selectedFile && (
+                {!viewingSettings && selectedFile && (
                   <button
                     type="button"
                     className={`history-toggle ${showHistory ? 'active' : ''}`}
@@ -789,9 +836,10 @@ export default function RepoBrowser({
               </div>
             </div>
             <div className="code-content">
-              {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-              {selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
-              {selectedFile && !showHistory && (
+              {viewingSettings && <SliceSettings sliceId={sliceId} sliceName={currentSliceLabel} />}
+              {!viewingSettings && !selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+              {!viewingSettings && selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
+              {!viewingSettings && selectedFile && !showHistory && (
                 !fileError && (
                   isEditingFile ? (
                     <textarea
@@ -822,7 +870,7 @@ export default function RepoBrowser({
                   )
                 )
               )}
-              {selectedFile && showHistory && (
+              {!viewingSettings && selectedFile && showHistory && (
                 <div className="history-panel" data-testid="history-panel">
                   {historyLoading && <div className="history-loading">Loading history...</div>}
                   {historyError && <div className="panel-error">{historyError}</div>}
