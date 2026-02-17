@@ -12,7 +12,7 @@
 │   ├── gateway/
 │   └── storage/
 ├── ops/                   # Ops assets (NGINX config, etc.)
-├── proto/                  # Protocol Buffer definitions and generated code
+├── proto/                  # Protocol Buffer definitions (generated stubs are local, not committed)
 │   ├── slice/             # Slice service proto files
 │   │   ├── slice_service.proto
 │   │   ├── slice_service.pb.go
@@ -166,10 +166,11 @@ gs --user your_name fork my-slice ./some/folder --parent root_slice
 
 ### Adding New Proto Definitions
 
-1. Add or modify `.proto` files in `proto/slice/` or `proto/admin/`
-2. Regenerate the golang code using protoc
-3. Update the service implementations as needed
-4. Run tests and ensure builds pass
+1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/file/`, or `proto/agent/`
+2. Regenerate the Go code using protoc (`make proto` works)
+3. Do not commit generated `*.pb.go` / `*.pb.gw.go` files
+4. Update the service implementations as needed
+5. Run tests and ensure builds pass
 
 ### Running Tests
 
