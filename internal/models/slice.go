@@ -4,18 +4,18 @@ import "time"
 
 // Slice represents a slice in the system
 type Slice struct {
-	ID            string             `json:"id"`
-	Name          string             `json:"name"`
-	Description   string             `json:"description"`
-	Files         []string           `json:"files"`
-	FolderMounts  []SliceFolderMount `json:"folder_mounts,omitempty"`
-	Owners        []string           `json:"owners"`
-	CreatedBy     string             `json:"created_by"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
-	ParentSlice   string             `json:"parent_slice,omitempty"`
-	IsRoot        bool               `json:"is_root,omitempty"`
-	E2BTemplateID string             `json:"e2b_template_id,omitempty"`
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description"`
+	Files        []string           `json:"files"`
+	FolderMounts []SliceFolderMount `json:"folder_mounts,omitempty"`
+	Owners       []string           `json:"owners"`
+	CreatedBy    string             `json:"created_by"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	ParentSlice  string             `json:"parent_slice,omitempty"`
+	IsRoot       bool               `json:"is_root,omitempty"`
+	Environment  string             `json:"environment,omitempty"`
 }
 
 // SliceFolderMount maps a source folder path in the parent slice to a folder alias

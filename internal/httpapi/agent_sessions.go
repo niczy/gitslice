@@ -141,11 +141,11 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Fall back to the slice's configured E2B template when the request
+	// Fall back to the slice's configured default when the request
 	// does not specify one explicitly.
 	e2bTemplateID := req.E2BTemplateID
 	if strings.TrimSpace(e2bTemplateID) == "" {
-		e2bTemplateID = slice.E2BTemplateID
+		e2bTemplateID = slice.Environment
 	}
 
 	session, token, err := a.svc.CreateSession(r.Context(), userID, agentsession.CreateRequest{

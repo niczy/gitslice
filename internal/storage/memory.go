@@ -553,8 +553,8 @@ func (s *InMemoryStorage) UpdateSliceName(ctx context.Context, sliceID, newName 
 	return nil
 }
 
-// UpdateSliceE2BTemplateID sets the default E2B template for a slice.
-func (s *InMemoryStorage) UpdateSliceE2BTemplateID(ctx context.Context, sliceID, templateID string) error {
+// UpdateSliceEnvironment sets the default environment for a slice.
+func (s *InMemoryStorage) UpdateSliceEnvironment(ctx context.Context, sliceID, environment string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -563,7 +563,7 @@ func (s *InMemoryStorage) UpdateSliceE2BTemplateID(ctx context.Context, sliceID,
 		return ErrSliceNotFound
 	}
 
-	slice.E2BTemplateID = templateID
+	slice.Environment = environment
 	slice.UpdatedAt = time.Now()
 	return nil
 }

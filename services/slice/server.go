@@ -692,7 +692,7 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 		Description:   slice.Description,
 		ParentSliceId: slice.ParentSlice,
 		Files:         slice.Files,
-		E2BTemplateId: slice.E2BTemplateID,
+		Environment:   slice.Environment,
 	}, nil
 }
 

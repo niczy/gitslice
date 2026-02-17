@@ -299,5 +299,5 @@ message GetSliceByNameResponse {
   string description = 3;
   string parent_slice_id = 4;
   repeated string files = 5;
-  string e2b_template_id = 6;
+  string environment = 6;
 }

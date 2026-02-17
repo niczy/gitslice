@@ -51,11 +51,11 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		return nil, status.Error(codes.PermissionDenied, "forbidden")
 	}
 
-	// Fall back to the slice's configured E2B template when the request
+	// Fall back to the slice's configured default when the request
 	// does not specify one explicitly.
 	e2bTemplateID := req.GetE2BTemplateId()
 	if strings.TrimSpace(e2bTemplateID) == "" {
-		e2bTemplateID = slice.E2BTemplateID
+		e2bTemplateID = slice.Environment
 	}
 
 	session, token, err := s.svc.CreateSession(ctx, userID, agentsession.CreateRequest{

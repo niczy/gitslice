@@ -160,7 +160,7 @@ message SliceInfo {
   int64 updated_at = 6;
   int32 file_count = 7;
   bool is_root = 8;
-  string e2b_template_id = 9;
+  string environment = 9;
 }
 
 message WatchConflictsRequest {
