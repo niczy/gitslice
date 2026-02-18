@@ -6,4 +6,6 @@ use (
 	./services/file
 	./services/slice
 	./servers/core
+	./stubs/cloudstore
+	./stubs/googleapi
 )
