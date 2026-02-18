@@ -1267,6 +1267,16 @@ body {
   padding: 24px;
 }
 
+.hero-card--api {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hero-card--api .code-block {
+  margin-top: 8px;
+}
+
 
 .lede {
   margin: 0;
@@ -1398,12 +1408,67 @@ body {
   line-height: 1.5;
 }
 
+.benefit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.benefit-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.benefit-card h3 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+}
+
+.benefit-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  font-size: 0.92rem;
+}
+
 /* Quick start */
 .quickstart-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px;
   margin-top: 24px;
+}
+
+.workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.workflow-card {
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workflow-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.workflow-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .quickstart-step {
