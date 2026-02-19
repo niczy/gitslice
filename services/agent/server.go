@@ -51,21 +51,46 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		return nil, status.Error(codes.PermissionDenied, "forbidden")
 	}
 
-	// Fall back to the slice's configured default when the request
-	// does not specify one explicitly.
-	e2bTemplateID := req.GetE2BTemplateId()
-	if strings.TrimSpace(e2bTemplateID) == "" {
-		e2bTemplateID = slice.Environment
+	provider := strings.TrimSpace(req.GetProvider())
+	e2bTemplateID := strings.TrimSpace(req.GetE2BTemplateId())
+	e2bRegion := strings.TrimSpace(req.GetE2BRegion())
+	environmentName := strings.TrimSpace(req.GetEnvironment())
+
+	// Environment name in request takes precedence.
+	if environmentName != "" {
+		env, lookupErr := s.st.GetEnvironment(ctx, environmentName)
+		if lookupErr != nil {
+			return nil, status.Error(codes.InvalidArgument, "unknown environment")
+		}
+		provider = env.Provider
+		e2bTemplateID = env.ProviderID
+		if e2bRegion == "" {
+			e2bRegion = env.Region
+		}
+	} else if sliceEnv := strings.TrimSpace(slice.Environment); sliceEnv != "" && (provider == "" || e2bTemplateID == "") {
+		// Try resolving slice default environment first; if missing, preserve
+		// backward compatibility by treating slice.Environment as template id.
+		if env, lookupErr := s.st.GetEnvironment(ctx, sliceEnv); lookupErr == nil {
+			environmentName = env.Name
+			provider = env.Provider
+			e2bTemplateID = env.ProviderID
+			if e2bRegion == "" {
+				e2bRegion = env.Region
+			}
+		} else if e2bTemplateID == "" {
+			e2bTemplateID = sliceEnv
+		}
 	}
 
 	session, token, err := s.svc.CreateSession(ctx, userID, agentsession.CreateRequest{
-		SliceID:        req.GetSliceId(),
-		Provider:       req.GetProvider(),
-		E2BTemplateID:  e2bTemplateID,
-		E2BRegion:      req.GetE2BRegion(),
-		IdleTimeoutSec: int(req.GetIdleTimeoutSec()),
-		TTLSec:         int(req.GetTtlSec()),
-		Env:            req.GetEnv(),
+		SliceID:         req.GetSliceId(),
+		EnvironmentName: environmentName,
+		Provider:        provider,
+		E2BTemplateID:   e2bTemplateID,
+		E2BRegion:       e2bRegion,
+		IdleTimeoutSec:  int(req.GetIdleTimeoutSec()),
+		TTLSec:          int(req.GetTtlSec()),
+		Env:             req.GetEnv(),
 	})
 	if err != nil {
 		switch err {

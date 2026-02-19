@@ -29,6 +29,7 @@ import (
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	adminservice "github.com/niczy/gitslice/services/admin"
+	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
@@ -45,6 +46,7 @@ var (
 	gatewayListener net.Listener
 	gatewayClose    func()
 	testStorage     storage.Storage
+	testAgentSvc    *agentsession.Service
 )
 
 // TestMain sets up and tears down services for all tests
@@ -118,6 +120,9 @@ func startGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
 	sliceservice.RegisterGRPCServer(srv, st)
 	fileservice.RegisterGRPCServer(srv, st)
 	adminservice.RegisterGRPCServer(srv, st)
+	testAgentSvc = agentsession.NewService(st, "test-agent-ws-secret")
+	testAgentSvc.StartLifecycleLoop(context.Background())
+	agentservice.RegisterGRPCServer(srv, st, testAgentSvc)
 
 	go srv.Serve(lis)
 
@@ -136,26 +141,7 @@ func startGatewayServer(grpcAddr string, st storage.Storage) (string, *http.Serv
 	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("test-gateway", func(ctx context.Context) bool {
 		return gateway.GRPCReady(ctx, grpcAddr)
 	}))
-	accountsAPI := httpapi.NewAccountsAPI(st)
-	agentSessionService := agentsession.NewService(st, "test-agent-ws-secret")
-	agentSessionService.StartLifecycleLoop(context.Background())
-	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
-	httpMux.Handle("/v1/auth/login", gateway.WithCORS(http.HandlerFunc(accountsAPI.Login)))
-	httpMux.Handle("/v1/me", gateway.WithCORS(http.HandlerFunc(accountsAPI.Me)))
-	httpMux.Handle("/v1/orgs", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			accountsAPI.ListOrgs(w, r)
-		case http.MethodPost:
-			accountsAPI.CreateOrg(w, r)
-		case http.MethodOptions:
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	})))
-	httpMux.Handle("/v1/agent-sessions", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleCollection)))
-	httpMux.Handle("/v1/agent-sessions/", gateway.WithCORS(http.HandlerFunc(agentSessionsAPI.HandleItem)))
+	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, testAgentSvc)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	httpMux.Handle("/", gateway.WithCORS(gatewayMux))
 
@@ -1622,9 +1608,9 @@ func createAgentSessionViaHTTP(t *testing.T, sliceID string) string {
 		t.Fatalf("create session request failed: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected create status 201, got %d body=%s", resp.StatusCode, string(data))
+		t.Fatalf("expected create status 201/200, got %d body=%s", resp.StatusCode, string(data))
 	}
 	var out struct {
 		SessionID string `json:"sessionId"`
