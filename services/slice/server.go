@@ -25,8 +25,10 @@ import (
 
 type sliceServiceServer struct {
 	slicev1.UnimplementedSliceServiceServer
-	storage   storage.Storage
-	promoteMu sync.Mutex
+	storage     storage.Storage
+	promoteMu   sync.Mutex
+	rootSliceMu sync.RWMutex
+	rootSliceID string
 }
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
@@ -776,23 +778,18 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 	s.promoteMu.Lock()
 	defer s.promoteMu.Unlock()
 
-	// Ensure root slice is initialized
-	if err := common.EnsureRootSliceInitialized(ctx, s.storage); err != nil {
-		return fmt.Errorf("failed to ensure root slice: %w", err)
-	}
-
-	rootSlice, err := s.storage.GetRootSlice(ctx)
+	rootSliceID, err := s.getRootSliceID(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load root slice: %w", err)
+		return err
 	}
 
-	rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
+	rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSliceID)
 	if err != nil {
 		return fmt.Errorf("failed to load root metadata: %w", err)
 	}
 
 	for _, fileID := range files {
-		if err := s.storage.AddFileToSlice(ctx, fileID, rootSlice.ID); err != nil {
+		if err := s.storage.AddFileToSlice(ctx, fileID, rootSliceID); err != nil {
 			return fmt.Errorf("failed to add file to root slice: %w", err)
 		}
 	}
@@ -818,11 +815,45 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 	rootMetadata.ModifiedFiles = files
 	rootMetadata.ModifiedFilesCount = len(files)
 	rootMetadata.LastModified = state.Timestamp
-	if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
+	if err := s.storage.UpdateSliceMetadata(ctx, rootSliceID, rootMetadata); err != nil {
 		return fmt.Errorf("failed to update root metadata: %w", err)
 	}
 
 	return nil
+}
+
+func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error) {
+	s.rootSliceMu.RLock()
+	if s.rootSliceID != "" {
+		id := s.rootSliceID
+		s.rootSliceMu.RUnlock()
+		return id, nil
+	}
+	s.rootSliceMu.RUnlock()
+
+	s.rootSliceMu.Lock()
+	defer s.rootSliceMu.Unlock()
+	if s.rootSliceID != "" {
+		return s.rootSliceID, nil
+	}
+
+	rootSlice, err := s.storage.GetRootSlice(ctx)
+	if err != nil {
+		if !errors.Is(err, storage.ErrSliceNotFound) {
+			return "", fmt.Errorf("failed to load root slice: %w", err)
+		}
+		if err := s.storage.InitializeRootSlice(ctx); err != nil {
+			return "", fmt.Errorf("failed to initialize root slice: %w", err)
+		}
+		rootSlice, err = s.storage.GetRootSlice(ctx)
+		if err != nil {
+			return "", fmt.Errorf("failed to load root slice after initialization: %w", err)
+		}
+		log.Println("Root slice initialized successfully")
+	}
+
+	s.rootSliceID = rootSlice.ID
+	return s.rootSliceID, nil
 }
 
 // createCommitSnapshot creates a snapshot of the current file state for a commit.
