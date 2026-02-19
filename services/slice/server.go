@@ -156,8 +156,10 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
 	}
 
+	modifiedFiles := normalizeModifiedFiles(req.ModifiedFiles)
+
 	// Validate modified files
-	for _, fileID := range req.ModifiedFiles {
+	for _, fileID := range modifiedFiles {
 		if err := common.ValidateFileID(fileID); err != nil {
 			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file ID %s: %v", fileID, err))
 		}
@@ -179,7 +181,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		Hash:           hash,
 		SliceID:        req.SliceId,
 		BaseCommitHash: req.BaseCommitHash,
-		ModifiedFiles:  req.ModifiedFiles,
+		ModifiedFiles:  modifiedFiles,
 		Status:         models.ChangesetStatusPending,
 		Author:         username,
 		Message:        req.Message,

@@ -363,3 +363,39 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 		t.Fatalf("expected deduplicated modified files, got %#v", updatedCS.ModifiedFiles)
 	}
 }
+
+func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-create-dup", Name: "slice-create-dup", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"dup.txt", "dup.txt", "dup.txt"},
+		Message:       "dedupe",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	cs, err := st.GetChangeset(ctx, createResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("failed to load changeset: %v", err)
+	}
+	if len(cs.ModifiedFiles) != 1 || cs.ModifiedFiles[0] != "dup.txt" {
+		t.Fatalf("expected deduplicated modified files, got %#v", cs.ModifiedFiles)
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if reviewResp.GetDiff().GetFilesAdded() != 1 {
+		t.Fatalf("expected diff files_added=1, got %d", reviewResp.GetDiff().GetFilesAdded())
+	}
+}
