@@ -300,3 +300,66 @@ func TestPromoteSliceCachesRootSliceLookup(t *testing.T) {
 		t.Fatalf("expected one GetRootSlice lookup across promotions, got %d", countingStorage.lookups)
 	}
 }
+
+type addFileToSliceCounter struct {
+	storage.Storage
+	counts map[string]int
+}
+
+func (c *addFileToSliceCounter) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
+	if c.counts == nil {
+		c.counts = make(map[string]int)
+	}
+	c.counts[sliceID+":"+fileID]++
+	return c.Storage.AddFileToSlice(ctx, fileID, sliceID)
+}
+
+func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	slice := &models.Slice{ID: "slice-dup", Name: "slice-dup", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "cs-dup",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{"dup.txt", "dup.txt", "dup.txt"},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	countingStorage := &addFileToSliceCounter{Storage: base, counts: map[string]int{}}
+	srv := newSliceServiceServer(countingStorage)
+
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+
+	if got := countingStorage.counts["slice-dup:dup.txt"]; got != 1 {
+		t.Fatalf("expected one ownership write for slice file, got %d", got)
+	}
+	if got := countingStorage.counts["root_slice:dup.txt"]; got != 1 {
+		t.Fatalf("expected one ownership write for root file, got %d", got)
+	}
+
+	updatedCS, err := base.GetChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("failed to load merged changeset: %v", err)
+	}
+	if len(updatedCS.ModifiedFiles) != 1 || updatedCS.ModifiedFiles[0] != "dup.txt" {
+		t.Fatalf("expected deduplicated modified files, got %#v", updatedCS.ModifiedFiles)
+	}
+}

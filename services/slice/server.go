@@ -253,16 +253,19 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, cs.ModifiedFiles); err != nil {
+	modifiedFiles := normalizeModifiedFiles(cs.ModifiedFiles)
+	cs.ModifiedFiles = modifiedFiles
+
+	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, modifiedFiles); err != nil {
 		if errors.Is(err, storage.ErrLockHeld) {
 			return nil, status.Error(codes.Aborted, "slice or files are locked by another operation")
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to acquire locks: %v", err))
 	}
-	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, cs.ModifiedFiles)
+	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, modifiedFiles)
 
 	var conflicts []*slicev1.Conflict
-	for _, fileID := range cs.ModifiedFiles {
+	for _, fileID := range modifiedFiles {
 		slices, err := s.storage.GetActiveSlicesForFile(ctx, fileID)
 		if err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
@@ -289,7 +292,7 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		}, nil
 	}
 
-	for _, fileID := range cs.ModifiedFiles {
+	for _, fileID := range modifiedFiles {
 		// Conflicts were already checked under lock above. At this point either
 		// no owner exists or this slice is already the sole owner.
 		if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
@@ -310,8 +313,8 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 	if err == nil {
 		parentHash := metadata.HeadCommitHash
 		metadata.HeadCommitHash = newCommit
-		metadata.ModifiedFiles = cs.ModifiedFiles
-		metadata.ModifiedFilesCount = len(cs.ModifiedFiles)
+		metadata.ModifiedFiles = modifiedFiles
+		metadata.ModifiedFilesCount = len(modifiedFiles)
 
 		if err := s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata); err != nil {
 			log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
@@ -336,11 +339,11 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
 		}
 
-		if err := s.promoteSlice(ctx, cs.SliceID, newCommit, cs.ModifiedFiles, now); err != nil {
+		if err := s.promoteSlice(ctx, cs.SliceID, newCommit, modifiedFiles, now); err != nil {
 			log.Printf("failed to promote slice %s to global state: %v", cs.SliceID, err)
 		}
 	}
-	if changesetTouchesConfig(cs.ModifiedFiles) {
+	if changesetTouchesConfig(modifiedFiles) {
 		if err := sliceconfig.ApplyFromFileTree(ctx, s.storage); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to sync %s: %v", sliceconfig.ConfigFilePath, err))
 		}
@@ -362,6 +365,26 @@ func changesetTouchesConfig(modifiedFiles []string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeModifiedFiles(files []string) []string {
+	if len(files) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(files))
+	seen := make(map[string]struct{}, len(files))
+	for _, fileID := range files {
+		cleaned := strings.TrimSpace(fileID)
+		if cleaned == "" {
+			continue
+		}
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		normalized = append(normalized, cleaned)
+	}
+	return normalized
 }
 
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {
