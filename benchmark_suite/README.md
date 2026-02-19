@@ -70,6 +70,29 @@ Integrity OK: all 1000 sampled users passed
 go test -v -timeout 600s ./benchmark_suite/
 ```
 
+### Recent benchmark run (2026-02-19)
+
+Command:
+
+```bash
+BENCHMARK_USERS=30000 \
+go test -v -timeout 600s ./benchmark_suite/ \
+  -run 'TestSimulate100kUsers|TestFileServiceReadLoad|TestConflictDetectionUnderLoad'
+```
+
+Observed results:
+
+- `TestConflictDetectionUnderLoad`: `success=1`, `conflict=19`, `error=0`
+- `TestFileServiceReadLoad`: `16169 RPC/s` (`0` read errors)
+- `TestSimulate100kUsers` (`BENCHMARK_USERS=30000`):
+  - Elapsed: `175.91s`
+  - Throughput: `170.5 users/sec`
+  - Successful merges: `30000`
+  - Conflicts: `0`
+  - Errors: `0`
+  - End-to-end latency: `P50 14.95ms`, `P95 80.00ms`, `P99 108.11ms`, `Max 190.49ms`
+  - Merge latency: `P50 8.20ms`, `P95 52.79ms`, `P99 81.58ms`
+
 ---
 
 ## Configuration
