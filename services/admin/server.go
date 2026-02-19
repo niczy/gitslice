@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
@@ -45,6 +47,360 @@ func NewGRPCServer(st storage.Storage) *grpc.Server {
 // NewService constructs the admin service implementation for use without gRPC.
 func NewService(st storage.Storage) adminv1.AdminServiceServer {
 	return newAdminServiceServer(st)
+}
+
+var orgSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,39}$`)
+
+func slugifyOrg(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 40 {
+		out = strings.TrimRight(out[:40], "-")
+	}
+	return out
+}
+
+func userToProto(user *models.User) *adminv1.UserInfo {
+	if user == nil {
+		return nil
+	}
+	return &adminv1.UserInfo{
+		Username:  user.Username,
+		CreatedAt: user.CreatedAt.Unix(),
+	}
+}
+
+func orgToProto(org *models.Organization) *adminv1.OrganizationInfo {
+	if org == nil {
+		return nil
+	}
+	return &adminv1.OrganizationInfo{
+		Slug:      org.Slug,
+		Name:      org.Name,
+		CreatedBy: org.CreatedBy,
+		CreatedAt: org.CreatedAt.Unix(),
+	}
+}
+
+func environmentToProto(env *models.Environment) *adminv1.EnvironmentInfo {
+	if env == nil {
+		return nil
+	}
+	return &adminv1.EnvironmentInfo{
+		Name:        env.Name,
+		DisplayName: env.DisplayName,
+		Provider:    env.Provider,
+		ProviderId:  env.ProviderID,
+		Region:      env.Region,
+		CreatedBy:   env.CreatedBy,
+		CreatedAt:   env.CreatedAt.Unix(),
+		UpdatedAt:   env.UpdatedAt.Unix(),
+	}
+}
+
+func (s *adminServiceServer) requireUser(ctx context.Context) (string, *models.User, error) {
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return "", nil, status.Error(codes.Unauthenticated, "login required")
+	}
+	user, err := s.storage.EnsureUser(ctx, username)
+	if err != nil {
+		return "", nil, status.Error(codes.InvalidArgument, "invalid user")
+	}
+	return username, user, nil
+}
+
+func (s *adminServiceServer) Login(ctx context.Context, req *adminv1.LoginRequest) (*adminv1.MeResponse, error) {
+	username := strings.TrimSpace(req.GetUsername())
+	if !auth.ValidateUsername(username) {
+		return nil, status.Error(codes.InvalidArgument, "invalid username")
+	}
+
+	user, err := s.storage.EnsureUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid username")
+	}
+	orgs, err := s.storage.ListOrganizationsForUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list organizations")
+	}
+
+	outOrgs := make([]*adminv1.OrganizationInfo, 0, len(orgs))
+	for _, org := range orgs {
+		outOrgs = append(outOrgs, orgToProto(org))
+	}
+	return &adminv1.MeResponse{
+		User:          userToProto(user),
+		Organizations: outOrgs,
+		Now:           time.Now().Unix(),
+	}, nil
+}
+
+func (s *adminServiceServer) Me(ctx context.Context, req *adminv1.MeRequest) (*adminv1.MeResponse, error) {
+	username, user, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgs, err := s.storage.ListOrganizationsForUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list organizations")
+	}
+	outOrgs := make([]*adminv1.OrganizationInfo, 0, len(orgs))
+	for _, org := range orgs {
+		outOrgs = append(outOrgs, orgToProto(org))
+	}
+	return &adminv1.MeResponse{
+		User:          userToProto(user),
+		Organizations: outOrgs,
+		Now:           time.Now().Unix(),
+	}, nil
+}
+
+func (s *adminServiceServer) ListOrganizations(ctx context.Context, req *adminv1.ListOrganizationsRequest) (*adminv1.ListOrganizationsResponse, error) {
+	username, _, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgs, err := s.storage.ListOrganizationsForUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list organizations")
+	}
+	outOrgs := make([]*adminv1.OrganizationInfo, 0, len(orgs))
+	for _, org := range orgs {
+		outOrgs = append(outOrgs, orgToProto(org))
+	}
+	return &adminv1.ListOrganizationsResponse{Organizations: outOrgs}, nil
+}
+
+func (s *adminServiceServer) CreateOrganization(ctx context.Context, req *adminv1.CreateOrganizationRequest) (*adminv1.CreateOrganizationResponse, error) {
+	username, _, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(req.GetName())
+	if name == "" || len(name) > 80 {
+		return nil, status.Error(codes.InvalidArgument, "invalid org name")
+	}
+	slug := strings.TrimSpace(req.GetSlug())
+	if slug == "" {
+		slug = slugifyOrg(name)
+	}
+	if !orgSlugRE.MatchString(slug) {
+		return nil, status.Error(codes.InvalidArgument, "invalid org slug")
+	}
+
+	base := slug
+	for i := 0; i < 100; i++ {
+		if _, lookupErr := s.storage.GetOrganization(ctx, slug); lookupErr != nil {
+			break
+		}
+		slug = fmt.Sprintf("%s-%d", base, i+2)
+	}
+
+	org := &models.Organization{
+		Slug:      slug,
+		Name:      name,
+		CreatedBy: username,
+	}
+	if err := s.storage.CreateOrganization(ctx, org); err != nil {
+		return nil, status.Error(codes.AlreadyExists, "organization already exists")
+	}
+	_ = s.storage.AddOrganizationMember(ctx, &models.OrganizationMember{
+		OrgSlug:   slug,
+		Username:  username,
+		Role:      models.OrganizationRoleOwner,
+		CreatedAt: time.Now(),
+	})
+	created, err := s.storage.GetOrganization(ctx, slug)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	return &adminv1.CreateOrganizationResponse{Organization: orgToProto(created)}, nil
+}
+
+func (s *adminServiceServer) ListEnvironments(ctx context.Context, req *adminv1.ListEnvironmentsRequest) (*adminv1.ListEnvironmentsResponse, error) {
+	if _, _, err := s.requireUser(ctx); err != nil {
+		return nil, err
+	}
+
+	limit := int(req.GetLimit())
+	offset := int(req.GetOffset())
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		return nil, status.Error(codes.InvalidArgument, "invalid offset")
+	}
+
+	envs, err := s.storage.ListEnvironments(ctx, limit, offset)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list environments")
+	}
+	out := make([]*adminv1.EnvironmentInfo, 0, len(envs))
+	for _, env := range envs {
+		out = append(out, environmentToProto(env))
+	}
+	return &adminv1.ListEnvironmentsResponse{Environments: out}, nil
+}
+
+func (s *adminServiceServer) CreateEnvironment(ctx context.Context, req *adminv1.CreateEnvironmentRequest) (*adminv1.EnvironmentInfo, error) {
+	username, _, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetName())
+	env := &models.Environment{
+		Name:        name,
+		DisplayName: req.GetDisplayName(),
+		Provider:    req.GetProvider(),
+		ProviderID:  req.GetProviderId(),
+		Region:      req.GetRegion(),
+		CreatedBy:   username,
+	}
+	if err := s.storage.CreateEnvironment(ctx, env); err != nil {
+		switch err {
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid environment")
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "environment already exists")
+		default:
+			return nil, status.Error(codes.Internal, "failed to create environment")
+		}
+	}
+	created, err := s.storage.GetEnvironment(ctx, name)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load environment")
+	}
+	return environmentToProto(created), nil
+}
+
+func (s *adminServiceServer) GetEnvironment(ctx context.Context, req *adminv1.GetEnvironmentRequest) (*adminv1.EnvironmentInfo, error) {
+	if _, _, err := s.requireUser(ctx); err != nil {
+		return nil, err
+	}
+	env, err := s.storage.GetEnvironment(ctx, strings.TrimSpace(req.GetName()))
+	if err != nil {
+		switch err {
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid environment name")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "environment not found")
+		default:
+			return nil, status.Error(codes.Internal, "failed to load environment")
+		}
+	}
+	return environmentToProto(env), nil
+}
+
+func (s *adminServiceServer) UpdateEnvironment(ctx context.Context, req *adminv1.UpdateEnvironmentRequest) (*adminv1.EnvironmentInfo, error) {
+	if _, _, err := s.requireUser(ctx); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetName())
+	current, err := s.storage.GetEnvironment(ctx, name)
+	if err != nil {
+		switch err {
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid environment name")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "environment not found")
+		default:
+			return nil, status.Error(codes.Internal, "failed to load environment")
+		}
+	}
+	current.DisplayName = req.GetDisplayName()
+	current.Provider = req.GetProvider()
+	current.ProviderID = req.GetProviderId()
+	current.Region = req.GetRegion()
+	if err := s.storage.UpdateEnvironment(ctx, current); err != nil {
+		switch err {
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid environment")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "environment not found")
+		default:
+			return nil, status.Error(codes.Internal, "failed to update environment")
+		}
+	}
+	updated, err := s.storage.GetEnvironment(ctx, name)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load environment")
+	}
+	return environmentToProto(updated), nil
+}
+
+func (s *adminServiceServer) DeleteEnvironment(ctx context.Context, req *adminv1.DeleteEnvironmentRequest) (*adminv1.DeleteEnvironmentResponse, error) {
+	if _, _, err := s.requireUser(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.storage.DeleteEnvironment(ctx, strings.TrimSpace(req.GetName())); err != nil {
+		switch err {
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid environment name")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "environment not found")
+		default:
+			return nil, status.Error(codes.Internal, "failed to delete environment")
+		}
+	}
+	return &adminv1.DeleteEnvironmentResponse{}, nil
+}
+
+func (s *adminServiceServer) GetSliceEnvironment(ctx context.Context, req *adminv1.GetSliceEnvironmentRequest) (*adminv1.SliceEnvironmentResponse, error) {
+	username, _, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sliceID := strings.TrimSpace(req.GetSliceId())
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "slice not found")
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	return &adminv1.SliceEnvironmentResponse{
+		SliceId:     slice.ID,
+		Environment: slice.Environment,
+	}, nil
+}
+
+func (s *adminServiceServer) UpdateSliceEnvironment(ctx context.Context, req *adminv1.UpdateSliceEnvironmentRequest) (*adminv1.SliceEnvironmentResponse, error) {
+	username, _, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sliceID := strings.TrimSpace(req.GetSliceId())
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "slice not found")
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	environment := strings.TrimSpace(req.GetEnvironment())
+	if err := s.storage.UpdateSliceEnvironment(ctx, sliceID, environment); err != nil {
+		return nil, status.Error(codes.Internal, "failed to update environment")
+	}
+	return &adminv1.SliceEnvironmentResponse{
+		SliceId:     sliceID,
+		Environment: environment,
+	}, nil
 }
 
 func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchMergeRequest) (*adminv1.BatchMergeResponse, error) {

@@ -48,6 +48,8 @@ message CreateSessionRequest {
   int32 idle_timeout_sec = 5;
   int32 ttl_sec = 6;
   map<string, string> env = 7;
+  // Optional environment name for resolving provider/template defaults.
+  string environment = 8;
 }
 
 message WSConnectInfo {

@@ -5,6 +5,17 @@ import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
 // Profile Page Component
 // ---------------------------------------------------------------------------
 
+function formatTimestamp(value) {
+  if (!value) {
+    return 'unknown';
+  }
+  if (typeof value === 'number') {
+    const millis = value < 1_000_000_000_000 ? value * 1000 : value;
+    return new Date(millis).toLocaleString();
+  }
+  return new Date(value).toLocaleString();
+}
+
 export default function ProfilePage({ username, onLogout, onRequireLogin }) {
   const [me, setMe] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -57,7 +68,7 @@ export default function ProfilePage({ username, onLogout, onRequireLogin }) {
               <div className="kv-row">
                 <span className="kv-key">Created</span>
                 <span className="kv-val">
-                  {me.user.created_at ? new Date(me.user.created_at).toLocaleString() : 'unknown'}
+                  {formatTimestamp(me.user.createdAt || me.user.created_at)}
                 </span>
               </div>
             </div>
@@ -85,7 +96,7 @@ export default function ProfilePage({ username, onLogout, onRequireLogin }) {
                     <span className="org-name">{o.name}</span>
                     <span className="org-slug">{o.slug}</span>
                   </div>
-                  <div className="org-item-meta">Created by {o.created_by || 'unknown'}</div>
+                  <div className="org-item-meta">Created by {o.createdBy || o.created_by || 'unknown'}</div>
                 </li>
               ))}
             </ul>
