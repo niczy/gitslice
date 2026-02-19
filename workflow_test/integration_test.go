@@ -624,9 +624,9 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected apps folder in slice checkout, got: %s", output)
 	}
 
-	rootCheckoutDir := t.TempDir()
 	rootCheckoutArg := sliceIDArg("root_slice")
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
+		rootCheckoutDir := t.TempDir()
 		var err error
 		output, err = runCLIWithDir(rootCheckoutDir, "slice", "checkout", rootCheckoutArg)
 		if err != nil {
