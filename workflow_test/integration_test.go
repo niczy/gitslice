@@ -232,6 +232,25 @@ func waitForHTTP(url string, timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for %s", url)
 }
 
+func waitForCondition(timeout, interval time.Duration, condition func() (bool, error)) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ok, err := condition()
+		if err != nil {
+			lastErr = err
+		}
+		if ok {
+			return nil
+		}
+		time.Sleep(interval)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("condition not met before timeout: %w", lastErr)
+	}
+	return errors.New("condition not met before timeout")
+}
+
 // runCLI executes a CLI command in the current working directory.
 func runCLI(args ...string) (string, error) {
 	return runCLIWithDir("", args...)
@@ -607,7 +626,16 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 
 	rootCheckoutDir := t.TempDir()
 	rootCheckoutArg := sliceIDArg("root_slice")
-	output = runCLIOrFail(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg)
+	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
+		var err error
+		output, err = runCLIWithDir(rootCheckoutDir, "slice", "checkout", rootCheckoutArg)
+		if err != nil {
+			return false, nil
+		}
+		return strings.Contains(output, "Commit: "+sliceCommit), nil
+	}); err != nil {
+		t.Fatalf("expected root slice to promote latest commit (%s): %v\nOutput:\n%s", sliceCommit, err, output)
+	}
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected root slice to promote latest commit, got: %s", output)
 	}
@@ -1183,7 +1211,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 }
 
 func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withTestUser(ctx)
 
@@ -1227,33 +1255,43 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("expected new commit hash from merge")
 	}
 
-	stateResp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
-	if err != nil {
-		t.Fatalf("failed to read global state: %v", err)
-	}
-	if stateResp.GlobalCommitHash != mergeResp.NewCommitHash {
-		t.Fatalf("expected global head %s to reflect slice promotion, got %s", mergeResp.NewCommitHash, stateResp.GlobalCommitHash)
-	}
-
-	promoted := false
-	if len(stateResp.History) > 0 {
-		for _, id := range stateResp.History[0].MergedSliceIds {
-			if id == sliceA {
-				promoted = true
-				break
+	var stateResp *adminv1.GlobalStateResponse
+	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
+		resp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+		if err != nil {
+			return false, err
+		}
+		stateResp = resp
+		if resp.GlobalCommitHash != mergeResp.NewCommitHash {
+			return false, nil
+		}
+		for _, entry := range resp.History {
+			if entry.CommitHash != mergeResp.NewCommitHash {
+				continue
+			}
+			for _, id := range entry.MergedSliceIds {
+				if id == sliceA {
+					return true, nil
+				}
 			}
 		}
-	}
-	if !promoted {
-		t.Fatalf("expected promoted slice %s to appear in global history", sliceA)
+		return false, nil
+	}); err != nil {
+		gotHead := ""
+		if stateResp != nil {
+			gotHead = stateResp.GlobalCommitHash
+		}
+		t.Fatalf("expected promoted commit %s and slice %s in global state, got head=%s: %v", mergeResp.NewCommitHash, sliceA, gotHead, err)
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
-	if err != nil {
-		t.Fatalf("failed to fetch root slice state: %v", err)
-	}
-	if rootState.LatestCommitHash != mergeResp.NewCommitHash {
-		t.Fatalf("expected root slice head %s, got %s", mergeResp.NewCommitHash, rootState.LatestCommitHash)
+	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
+		rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+		if err != nil {
+			return false, err
+		}
+		return rootState.LatestCommitHash == mergeResp.NewCommitHash, nil
+	}); err != nil {
+		t.Fatalf("expected root slice head %s after promotion: %v", mergeResp.NewCommitHash, err)
 	}
 
 	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "should conflict"})
@@ -1342,13 +1380,43 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		}
 	}
 
-	globalState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
-	if err != nil {
-		t.Fatalf("failed to read global state after merges: %v", err)
-	}
-
-	if len(globalState.History) < len(initialState.History)+mergeCount {
-		t.Fatalf("expected at least %d history entries after concurrent merges, got %d", len(initialState.History)+mergeCount, len(globalState.History))
+	var globalState *adminv1.GlobalStateResponse
+	if err := waitForCondition(3*time.Second, 25*time.Millisecond, func() (bool, error) {
+		resp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+		if err != nil {
+			return false, err
+		}
+		globalState = resp
+		if len(resp.History) < len(initialState.History)+mergeCount {
+			return false, nil
+		}
+		historyCommits := make(map[string][]string, len(resp.History))
+		for _, entry := range resp.History {
+			historyCommits[entry.CommitHash] = entry.MergedSliceIds
+		}
+		for sliceID, commitHash := range commits {
+			mergedSlices, ok := historyCommits[commitHash]
+			if !ok {
+				return false, nil
+			}
+			found := false
+			for _, id := range mergedSlices {
+				if id == sliceID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false, nil
+			}
+		}
+		return true, nil
+	}); err != nil {
+		gotLen := 0
+		if globalState != nil {
+			gotLen = len(globalState.History)
+		}
+		t.Fatalf("expected %d new promoted history entries after concurrent merges, got %d: %v", mergeCount, gotLen-len(initialState.History), err)
 	}
 
 	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
@@ -1359,7 +1427,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("expected root slice head %s to match global %s", rootState.LatestCommitHash, globalState.GlobalCommitHash)
 	}
 
-	historyCommits := make(map[string][]string)
+	historyCommits := make(map[string][]string, len(globalState.History))
 	for _, entry := range globalState.History {
 		historyCommits[entry.CommitHash] = entry.MergedSliceIds
 	}
