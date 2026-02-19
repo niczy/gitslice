@@ -268,3 +268,35 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 		}
 	}
 }
+
+type rootSliceLookupCounter struct {
+	storage.Storage
+	lookups int
+}
+
+func (c *rootSliceLookupCounter) GetRootSlice(ctx context.Context) (*models.Slice, error) {
+	c.lookups++
+	return c.Storage.GetRootSlice(ctx)
+}
+
+func TestPromoteSliceCachesRootSliceLookup(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	countingStorage := &rootSliceLookupCounter{Storage: base}
+	srv := newSliceServiceServer(countingStorage)
+
+	if err := srv.promoteSlice(ctx, "slice-a", "commit-a", []string{"a.txt"}, time.Now()); err != nil {
+		t.Fatalf("first promoteSlice failed: %v", err)
+	}
+	if err := srv.promoteSlice(ctx, "slice-b", "commit-b", []string{"b.txt"}, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("second promoteSlice failed: %v", err)
+	}
+
+	if countingStorage.lookups != 1 {
+		t.Fatalf("expected one GetRootSlice lookup across promotions, got %d", countingStorage.lookups)
+	}
+}
