@@ -56,7 +56,12 @@ jobs:
       env:
         RUN_INTEGRATION_TESTS: "1"
       run: |
-        make test
+        # benchmark_suite is intentionally excluded from PR CI due to runtime.
+        go test $(go list ./... | grep -v '/benchmark_suite$')
+        cd services/admin && go test ./...
+        cd services/file && go test ./...
+        cd services/slice && go test ./...
+        cd servers/core && go test ./...
 
     - name: Test coverage for workflow tests
       run: |
