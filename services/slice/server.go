@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/niczy/gitslice/internal/auth"
@@ -24,7 +25,8 @@ import (
 
 type sliceServiceServer struct {
 	slicev1.UnimplementedSliceServiceServer
-	storage storage.Storage
+	storage   storage.Storage
+	promoteMu sync.Mutex
 }
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
@@ -771,6 +773,9 @@ func buildSliceFolderMounts(folderPaths []string) []models.SliceFolderMount {
 }
 
 func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
+	s.promoteMu.Lock()
+	defer s.promoteMu.Unlock()
+
 	// Ensure root slice is initialized
 	if err := common.EnsureRootSliceInitialized(ctx, s.storage); err != nil {
 		return fmt.Errorf("failed to ensure root slice: %w", err)
