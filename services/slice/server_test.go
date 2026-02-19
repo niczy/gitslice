@@ -3,6 +3,7 @@ package sliceservice
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -347,6 +348,11 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		t.Fatalf("expected merge success, got %v", resp.GetStatus())
 	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	}
 
 	if got := countingStorage.counts["slice-dup:dup.txt"]; got != 1 {
 		t.Fatalf("expected one ownership write for slice file, got %d", got)
@@ -397,5 +403,104 @@ func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 	if reviewResp.GetDiff().GetFilesAdded() != 1 {
 		t.Fatalf("expected diff files_added=1, got %d", reviewResp.GetDiff().GetFilesAdded())
+	}
+}
+
+type promotionWriteCounter struct {
+	storage.Storage
+
+	mu                      sync.Mutex
+	rootAddCalls            map[string]int
+	updateGlobalStateCalls  int
+	updateRootMetadataCalls int
+}
+
+func (c *promotionWriteCounter) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
+	if sliceID == "root_slice" {
+		c.mu.Lock()
+		if c.rootAddCalls == nil {
+			c.rootAddCalls = make(map[string]int)
+		}
+		c.rootAddCalls[fileID]++
+		c.mu.Unlock()
+	}
+	return c.Storage.AddFileToSlice(ctx, fileID, sliceID)
+}
+
+func (c *promotionWriteCounter) UpdateGlobalState(ctx context.Context, state *models.GlobalState) error {
+	c.mu.Lock()
+	c.updateGlobalStateCalls++
+	c.mu.Unlock()
+	return c.Storage.UpdateGlobalState(ctx, state)
+}
+
+func (c *promotionWriteCounter) UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error {
+	if sliceID == "root_slice" {
+		c.mu.Lock()
+		c.updateRootMetadataCalls++
+		c.mu.Unlock()
+	}
+	return c.Storage.UpdateSliceMetadata(ctx, sliceID, metadata)
+}
+
+func TestRootPromotionQueueBatchesSameSlice(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	countingStorage := &promotionWriteCounter{
+		Storage:      base,
+		rootAddCalls: make(map[string]int),
+	}
+	srv := newSliceServiceServer(countingStorage)
+	srv.promotionBatchWindow = 50 * time.Millisecond
+
+	now := time.Now()
+	jobs := []struct {
+		commitHash string
+		files      []string
+	}{
+		{commitHash: "commit-1", files: []string{"a.txt", "a.txt"}},
+		{commitHash: "commit-2", files: []string{"a.txt", "b.txt"}},
+		{commitHash: "commit-3", files: []string{"b.txt", "c.txt"}},
+	}
+	for i, job := range jobs {
+		if err := srv.enqueueRootPromotion(ctx, "slice-batch", job.commitHash, job.files, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("enqueueRootPromotion(%s) failed: %v", job.commitHash, err)
+		}
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for promotion queue: %v", err)
+	}
+
+	if got := countingStorage.updateGlobalStateCalls; got != 1 {
+		t.Fatalf("expected one global state write for batched promotion, got %d", got)
+	}
+	if got := countingStorage.updateRootMetadataCalls; got != 1 {
+		t.Fatalf("expected one root metadata write for batched promotion, got %d", got)
+	}
+	for _, fileID := range []string{"a.txt", "b.txt", "c.txt"} {
+		if got := countingStorage.rootAddCalls[fileID]; got != 1 {
+			t.Fatalf("expected one root ownership write for %s, got %d", fileID, got)
+		}
+	}
+
+	state, err := base.GetGlobalState(ctx)
+	if err != nil {
+		t.Fatalf("failed to load global state: %v", err)
+	}
+	if got, want := state.GlobalCommitHash, "commit-3"; got != want {
+		t.Fatalf("expected head commit %q, got %q", want, got)
+	}
+	if got, want := len(state.History), len(jobs); got != want {
+		t.Fatalf("expected %d history entries, got %d", want, got)
+	}
+	if got, want := state.History[0].CommitHash, "commit-3"; got != want {
+		t.Fatalf("expected newest history commit %q, got %q", want, got)
 	}
 }
