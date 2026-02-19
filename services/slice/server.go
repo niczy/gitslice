@@ -286,9 +286,8 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 	}
 
 	for _, fileID := range cs.ModifiedFiles {
-		if _, err := s.storage.ResolveConflict(ctx, fileID, cs.SliceID); err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve conflicts for %s: %v", fileID, err))
-		}
+		// Conflicts were already checked under lock above. At this point either
+		// no owner exists or this slice is already the sole owner.
 		if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
 		}
@@ -787,15 +786,6 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 		return fmt.Errorf("failed to load root metadata: %w", err)
 	}
 
-	rootMetadata.HeadCommitHash = commitHash
-	rootMetadata.ModifiedFiles = files
-	rootMetadata.ModifiedFilesCount = len(files)
-	rootMetadata.LastModified = commitTime
-
-	if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
-		return fmt.Errorf("failed to update root metadata: %w", err)
-	}
-
 	for _, fileID := range files {
 		if err := s.storage.AddFileToSlice(ctx, fileID, rootSlice.ID); err != nil {
 			return fmt.Errorf("failed to add file to root slice: %w", err)
@@ -819,12 +809,12 @@ func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHa
 		return fmt.Errorf("failed to update global state: %w", err)
 	}
 
-	if updatedState, err := s.storage.GetGlobalState(ctx); err == nil {
-		rootMetadata.HeadCommitHash = updatedState.GlobalCommitHash
-		rootMetadata.LastModified = updatedState.Timestamp
-		if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
-			log.Printf("Warning: failed to update root slice metadata: %v", err)
-		}
+	rootMetadata.HeadCommitHash = state.GlobalCommitHash
+	rootMetadata.ModifiedFiles = files
+	rootMetadata.ModifiedFilesCount = len(files)
+	rootMetadata.LastModified = state.Timestamp
+	if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
+		return fmt.Errorf("failed to update root metadata: %w", err)
 	}
 
 	return nil
