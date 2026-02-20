@@ -326,11 +326,17 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		}, nil
 	}
 
-	for _, fileID := range modifiedFiles {
-		// Conflicts were already checked under lock above. At this point either
-		// no owner exists or this slice is already the sole owner.
-		if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
+	appliedRevertChanges, err := s.applyRevertChangesetContent(ctx, cs)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply revert changeset content: %v", err))
+	}
+	if len(appliedRevertChanges) == 0 {
+		for _, fileID := range modifiedFiles {
+			// Conflicts were already checked under lock above. At this point either
+			// no owner exists or this slice is already the sole owner.
+			if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
+			}
 		}
 	}
 
@@ -679,38 +685,12 @@ func parseRevertChangesetHash(hash string) (commitHash, changeID string, ok bool
 }
 
 func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.Changeset) ([]*filev1.FileChangeRecord, []string) {
-	commitHash, changeID, ok := parseRevertChangesetHash(cs.Hash)
-	if !ok {
-		return nil, nil
-	}
-
-	changes, err := s.storage.GetCommitChanges(ctx, commitHash)
+	targetChanges, err := s.resolveRevertSourceChanges(ctx, cs)
 	if err != nil {
-		return nil, []string{fmt.Sprintf("revert source commit %s could not be loaded", shortHash(commitHash))}
+		return nil, []string{err.Error()}
 	}
-	targetChanges := make([]*models.FileChangeRecord, 0, len(changes))
-	if changeID == "" {
-		for _, change := range changes {
-			if change == nil {
-				continue
-			}
-			if strings.TrimSpace(change.SliceID) == strings.TrimSpace(cs.SliceID) {
-				targetChanges = append(targetChanges, change)
-			}
-		}
-		if len(targetChanges) == 0 {
-			return nil, []string{"revert source commit has no changes for this slice"}
-		}
-	} else {
-		for _, change := range changes {
-			if change != nil && change.ID == changeID {
-				targetChanges = append(targetChanges, change)
-				break
-			}
-		}
-		if len(targetChanges) == 0 {
-			return nil, []string{"revert source change was not found"}
-		}
+	if len(targetChanges) == 0 {
+		return nil, nil
 	}
 
 	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(targetChanges))
@@ -729,6 +709,165 @@ func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.
 	}
 
 	return reviewChanges, warnings
+}
+
+func (s *sliceServiceServer) resolveRevertSourceChanges(ctx context.Context, cs *models.Changeset) ([]*models.FileChangeRecord, error) {
+	if cs == nil {
+		return nil, nil
+	}
+
+	commitHash, changeID, ok := parseRevertChangesetHash(cs.Hash)
+	if !ok {
+		return nil, nil
+	}
+
+	changes, err := s.storage.GetCommitChanges(ctx, commitHash)
+	if err != nil {
+		return nil, fmt.Errorf("revert source commit %s could not be loaded", shortHash(commitHash))
+	}
+
+	targetChanges := make([]*models.FileChangeRecord, 0, len(changes))
+	if changeID == "" {
+		for _, change := range changes {
+			if change == nil {
+				continue
+			}
+			if strings.TrimSpace(change.SliceID) == strings.TrimSpace(cs.SliceID) {
+				targetChanges = append(targetChanges, change)
+			}
+		}
+		if len(targetChanges) == 0 {
+			return nil, fmt.Errorf("revert source commit has no changes for this slice")
+		}
+		return targetChanges, nil
+	}
+
+	for _, change := range changes {
+		if change != nil && change.ID == changeID {
+			targetChanges = append(targetChanges, change)
+			break
+		}
+	}
+	if len(targetChanges) == 0 {
+		return nil, fmt.Errorf("revert source change was not found")
+	}
+	return targetChanges, nil
+}
+
+func (s *sliceServiceServer) applyRevertChangesetContent(ctx context.Context, cs *models.Changeset) ([]*models.FileChangeRecord, error) {
+	targetChanges, err := s.resolveRevertSourceChanges(ctx, cs)
+	if err != nil {
+		return nil, err
+	}
+	if len(targetChanges) == 0 {
+		return nil, nil
+	}
+
+	applied := make([]*models.FileChangeRecord, 0, len(targetChanges))
+	for _, targetChange := range targetChanges {
+		revertChange := buildRevertReviewChange(targetChange, cs)
+		if revertChange == nil {
+			continue
+		}
+		if err := s.applyRevertChangeToSlice(ctx, cs.SliceID, revertChange); err != nil {
+			return nil, fmt.Errorf("failed to apply revert for %s: %w", targetChange.Path, err)
+		}
+		applied = append(applied, revertChange)
+	}
+	return applied, nil
+}
+
+func (s *sliceServiceServer) applyRevertChangeToSlice(ctx context.Context, sliceID string, change *models.FileChangeRecord) error {
+	if change == nil {
+		return nil
+	}
+	pathAfter := cleanDiffPath(change.Path)
+	if pathAfter == "" {
+		return fmt.Errorf("revert path is empty")
+	}
+
+	if change.ChangeType == models.ChangeTypeDelete {
+		return s.removeSliceFilePath(ctx, sliceID, pathAfter)
+	}
+
+	pathBefore := cleanDiffPath(change.OldPath)
+	if pathBefore != "" && pathBefore != pathAfter {
+		if err := s.removeSliceFilePath(ctx, sliceID, pathBefore); err != nil {
+			return err
+		}
+	}
+
+	content, err := s.loadRevertContentByHash(ctx, change.NewHash)
+	if err != nil {
+		return err
+	}
+	return s.upsertSliceFilePath(ctx, sliceID, pathAfter, strings.TrimSpace(change.NewHash), content)
+}
+
+func (s *sliceServiceServer) loadRevertContentByHash(ctx context.Context, contentHash string) ([]byte, error) {
+	hash := strings.TrimSpace(contentHash)
+	if hash == "" {
+		return []byte{}, nil
+	}
+	content, err := s.storage.GetFileContentByHash(ctx, hash)
+	if err != nil || content == nil {
+		return nil, fmt.Errorf("content hash %s not found", shortHash(hash))
+	}
+	return append([]byte(nil), content.Content...), nil
+}
+
+func (s *sliceServiceServer) upsertSliceFilePath(ctx context.Context, sliceID, filePath, contentHash string, data []byte) error {
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath == "" {
+		return fmt.Errorf("file path is empty")
+	}
+
+	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceID, cleanedPath),
+		Path:     cleanedPath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len(data)),
+	}); err != nil {
+		return fmt.Errorf("failed to upsert file entry: %w", err)
+	}
+
+	if err := s.storage.AddFileContent(ctx, &models.FileContent{
+		FileID:  cleanedPath,
+		Path:    cleanedPath,
+		Content: append([]byte(nil), data...),
+		Size:    int64(len(data)),
+		Hash:    strings.TrimSpace(contentHash),
+	}); err != nil {
+		return fmt.Errorf("failed to upsert file content: %w", err)
+	}
+
+	if err := s.storage.AddFileToSlice(ctx, cleanedPath, sliceID); err != nil {
+		return fmt.Errorf("failed to mark file ownership: %w", err)
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) removeSliceFilePath(ctx context.Context, sliceID, filePath string) error {
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath == "" {
+		return nil
+	}
+
+	entry, err := s.storage.GetEntryByPath(ctx, sliceID, cleanedPath)
+	if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return fmt.Errorf("failed to lookup existing entry: %w", err)
+	}
+	if err == nil && entry != nil {
+		if delErr := s.storage.DeleteEntry(ctx, entry.ID); delErr != nil && !errors.Is(delErr, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to delete entry: %w", delErr)
+		}
+	}
+
+	if err := s.storage.RemoveFileFromSlice(ctx, cleanedPath, sliceID); err != nil {
+		return fmt.Errorf("failed to clear file ownership: %w", err)
+	}
+	return nil
 }
 
 func buildRevertReviewChange(target *models.FileChangeRecord, cs *models.Changeset) *models.FileChangeRecord {
