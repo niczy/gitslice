@@ -17,6 +17,7 @@ import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
 import CommitDiffPage from './components/CommitDiffPage.jsx';
+import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import AgentSession from './components/AgentSession.jsx';
 
 // ---------------------------------------------------------------------------
@@ -56,13 +57,15 @@ const MOCK_TERMINAL_LINES = [
 // ---------------------------------------------------------------------------
 
 function App() {
-  const [activePage, setActivePage] = useState(() => parseHash().page);
-  const [diffCommitHash, setDiffCommitHash] = useState(() => parseHash().commitHash);
+  const initialRoute = parseHash();
+  const [activePage, setActivePage] = useState(() => initialRoute.page);
+  const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
+  const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
   const githubUrl = 'https://github.com/niczy/gitslice';
   const [username, setUsername] = useState(() => currentUsername());
 
   // Track whether the browser page has been visited so we can keep it mounted
-  const [browserMounted, setBrowserMounted] = useState(() => parseHash().page === 'browser');
+  const [browserMounted, setBrowserMounted] = useState(() => initialRoute.page === 'browser');
 
   // Slice data (shared across pages)
   const [slices, setSlices] = useState([]);
@@ -87,25 +90,33 @@ function App() {
 
   // Mount the browser page once visited so it persists across navigation
   useEffect(() => {
-    if (activePage === 'browser' || activePage === 'diff') {
+    if (activePage === 'browser' || activePage === 'diff' || activePage === 'changeset') {
       setBrowserMounted(true);
     }
   }, [activePage]);
 
-  const navigate = useCallback((page, commitHash = '') => {
+  const navigate = useCallback((page, commitHash = '', changesetId = '') => {
     setActivePage(page);
     if (page === 'diff') {
       setDiffCommitHash(commitHash);
+      setDiffChangesetId('');
+    } else if (page === 'changeset') {
+      setDiffCommitHash('');
+      setDiffChangesetId(changesetId);
+    } else {
+      setDiffCommitHash('');
+      setDiffChangesetId('');
     }
-    window.history.pushState(null, '', buildHash(page, commitHash));
+    window.history.pushState(null, '', buildHash(page, commitHash, changesetId));
   }, []);
 
   // Handle browser back/forward buttons
   useEffect(() => {
     const onPopState = () => {
-      const { page, commitHash } = parseHash();
+      const { page, commitHash, changesetId } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
+      setDiffChangesetId(changesetId);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -142,6 +153,10 @@ function App() {
   const navigateToDiff = (commitHash) => {
     navigate('diff', commitHash);
   };
+
+  const navigateToChangesetDiff = useCallback((changesetId) => {
+    navigate('changeset', '', changesetId);
+  }, [navigate]);
 
   const navigateBackFromDiff = useCallback(() => {
     // Use history.back() to restore the previous browser URL with query params.
@@ -435,7 +450,7 @@ function App() {
   const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
 
   // Keep browser and diff pages on the same full-width layout to avoid visual width jumps.
-  const isBrowserLayout = activePage === 'browser' || activePage === 'diff';
+  const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
 
   return (
     <div className={`app-shell${isBrowserLayout ? ' app-shell--browser' : ''}`}>
@@ -515,7 +530,18 @@ function App() {
         )}
 
         {activePage === 'diff' && (
-          <CommitDiffPage commitHash={diffCommitHash} onBack={navigateBackFromDiff} />
+          <CommitDiffPage
+            commitHash={diffCommitHash}
+            onBack={navigateBackFromDiff}
+            onOpenChangesetDiff={navigateToChangesetDiff}
+          />
+        )}
+
+        {activePage === 'changeset' && (
+          <ChangesetDiffPage
+            changesetId={diffChangesetId}
+            onBack={navigateBackFromDiff}
+          />
         )}
       </main>
 
