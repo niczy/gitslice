@@ -2,7 +2,9 @@ package sliceservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -370,7 +372,7 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		}
 
 		// Create commit snapshot for versioned file access
-		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, now); err != nil {
+		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
 			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
 		}
 
@@ -739,7 +741,11 @@ func (s *sliceServiceServer) resolveRevertSourceChanges(ctx context.Context, cs 
 		if len(targetChanges) == 0 {
 			return nil, fmt.Errorf("revert source commit has no changes for this slice")
 		}
-		return targetChanges, nil
+		resolved := make([]*models.FileChangeRecord, 0, len(targetChanges))
+		for _, change := range targetChanges {
+			resolved = append(resolved, s.fillMissingChangeHashes(ctx, change))
+		}
+		return resolved, nil
 	}
 
 	for _, change := range changes {
@@ -751,7 +757,11 @@ func (s *sliceServiceServer) resolveRevertSourceChanges(ctx context.Context, cs 
 	if len(targetChanges) == 0 {
 		return nil, fmt.Errorf("revert source change was not found")
 	}
-	return targetChanges, nil
+	resolved := make([]*models.FileChangeRecord, 0, len(targetChanges))
+	for _, change := range targetChanges {
+		resolved = append(resolved, s.fillMissingChangeHashes(ctx, change))
+	}
+	return resolved, nil
 }
 
 func (s *sliceServiceServer) applyRevertChangesetContent(ctx context.Context, cs *models.Changeset) ([]*models.FileChangeRecord, error) {
@@ -796,12 +806,106 @@ func (s *sliceServiceServer) applyRevertChangeToSlice(ctx context.Context, slice
 			return err
 		}
 	}
+	if strings.TrimSpace(change.NewHash) == "" {
+		return fmt.Errorf("revert source missing previous content hash for %s", pathAfter)
+	}
 
 	content, err := s.loadRevertContentByHash(ctx, change.NewHash)
 	if err != nil {
 		return err
 	}
 	return s.upsertSliceFilePath(ctx, sliceID, pathAfter, strings.TrimSpace(change.NewHash), content)
+}
+
+func (s *sliceServiceServer) fillMissingChangeHashes(ctx context.Context, source *models.FileChangeRecord) *models.FileChangeRecord {
+	if source == nil {
+		return nil
+	}
+
+	change := *source
+	oldHash := strings.TrimSpace(change.OldHash)
+	newHash := strings.TrimSpace(change.NewHash)
+
+	if newHash == "" && change.ChangeType != models.ChangeTypeDelete {
+		if snapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(change.CommitHash)); err == nil && snapshot != nil {
+			newHash = snapshotHashForPath(snapshot, change.Path)
+		}
+	}
+
+	if oldHash == "" && change.ChangeType != models.ChangeTypeAdd {
+		if commit, err := s.storage.GetCommitByHash(ctx, strings.TrimSpace(change.SliceID), strings.TrimSpace(change.CommitHash)); err == nil && commit != nil {
+			parentHash := strings.TrimSpace(commit.ParentHash)
+			if parentHash != "" {
+				if parentSnapshot, snapErr := s.storage.GetCommitSnapshot(ctx, parentHash); snapErr == nil && parentSnapshot != nil {
+					lookupPath := change.Path
+					if change.ChangeType == models.ChangeTypeRename {
+						lookupPath = change.OldPath
+					}
+					oldHash = snapshotHashForPath(parentSnapshot, lookupPath)
+				}
+			}
+		}
+	}
+
+	if oldHash == "" && change.ChangeType != models.ChangeTypeAdd {
+		historyPath := change.Path
+		if change.ChangeType == models.ChangeTypeRename {
+			historyPath = change.OldPath
+		}
+		oldHash = s.findPreviousKnownFileHash(ctx, change.SliceID, historyPath, change.CommitHash)
+	}
+
+	change.OldHash = oldHash
+	change.NewHash = newHash
+	return &change
+}
+
+func snapshotHashForPath(snapshot *models.CommitSnapshot, filePath string) string {
+	if snapshot == nil {
+		return ""
+	}
+	pathKey := cleanDiffPath(filePath)
+	if pathKey == "" {
+		return ""
+	}
+	candidate := strings.TrimSpace(snapshot.Files[pathKey])
+	if !isUsableContentHash(pathKey, candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func isUsableContentHash(filePath, hash string) bool {
+	cleanedHash := strings.TrimSpace(hash)
+	if cleanedHash == "" {
+		return false
+	}
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath != "" && cleanedHash == cleanedPath {
+		return false
+	}
+	return !strings.Contains(cleanedHash, "/")
+}
+
+func (s *sliceServiceServer) findPreviousKnownFileHash(ctx context.Context, sliceID, filePath, fromCommit string) string {
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath == "" {
+		return ""
+	}
+	history, err := s.storage.GetFileHistory(ctx, strings.TrimSpace(sliceID), cleanedPath, 64, strings.TrimSpace(fromCommit))
+	if err != nil {
+		return ""
+	}
+	for _, item := range history {
+		if item == nil {
+			continue
+		}
+		candidate := strings.TrimSpace(item.NewHash)
+		if isUsableContentHash(cleanedPath, candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func (s *sliceServiceServer) loadRevertContentByHash(ctx context.Context, contentHash string) ([]byte, error) {
@@ -1681,19 +1785,65 @@ func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error)
 }
 
 // createCommitSnapshot creates a snapshot of the current file state for a commit.
-func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, commitHash string, timestamp time.Time) error {
-	// Get slice files
-	slice, err := s.storage.GetSlice(ctx, sliceID)
-	if err != nil {
-		return fmt.Errorf("failed to get slice: %w", err)
+func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, commitHash, parentHash string, modifiedFiles []string, timestamp time.Time) error {
+	files := make(map[string]string)
+
+	if strings.TrimSpace(parentHash) != "" {
+		parentSnapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
+		if err == nil && parentSnapshot != nil {
+			for filePath, contentHash := range parentSnapshot.Files {
+				cleanedPath := cleanDiffPath(filePath)
+				cleanedHash := strings.TrimSpace(contentHash)
+				if cleanedPath == "" || !isUsableContentHash(cleanedPath, cleanedHash) {
+					continue
+				}
+				files[cleanedPath] = cleanedHash
+			}
+		}
+	}
+	if len(files) == 0 {
+		slice, err := s.storage.GetSlice(ctx, sliceID)
+		if err != nil {
+			return fmt.Errorf("failed to load slice for snapshot: %w", err)
+		}
+		for _, rawPath := range normalizeModifiedFiles(slice.Files) {
+			filePath := cleanDiffPath(rawPath)
+			if filePath == "" {
+				continue
+			}
+			fileContent, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath)
+			if err != nil {
+				continue
+			}
+			hash := effectiveContentHash(filePath, fileContent)
+			if hash == "" {
+				continue
+			}
+			files[filePath] = hash
+		}
 	}
 
-	// Build file hash map
-	files := make(map[string]string)
-	for _, fileID := range slice.Files {
-		// Use the file path as the content hash for now
-		// In a real implementation, this would be the actual content hash
-		files[fileID] = fileID
+	for _, rawPath := range normalizeModifiedFiles(modifiedFiles) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+
+		fileContent, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				delete(files, filePath)
+				continue
+			}
+			return fmt.Errorf("failed to load file %s for snapshot: %w", filePath, err)
+		}
+
+		hash := effectiveContentHash(filePath, fileContent)
+		if hash == "" {
+			delete(files, filePath)
+			continue
+		}
+		files[filePath] = hash
 	}
 
 	snapshot := &models.CommitSnapshot{
@@ -1708,47 +1858,72 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 
 // recordFileChanges creates FileChangeRecord entries for each file in the changeset.
 func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.Changeset, commitHash string, parentHash string, timestamp time.Time) error {
-	// Build set of files that existed in the previous commit
-	previousFiles := make(map[string]bool)
-	if parentHash != "" {
-		snapshot, err := s.storage.GetCommitSnapshot(ctx, parentHash)
+	previousHashes := make(map[string]string)
+	if strings.TrimSpace(parentHash) != "" {
+		snapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
 		if err == nil && snapshot != nil {
-			for path := range snapshot.Files {
-				previousFiles[path] = true
+			for filePath, contentHash := range snapshot.Files {
+				cleanedPath := cleanDiffPath(filePath)
+				cleanedHash := strings.TrimSpace(contentHash)
+				if cleanedPath == "" || !isUsableContentHash(cleanedPath, cleanedHash) {
+					continue
+				}
+				previousHashes[cleanedPath] = cleanedHash
 			}
 		}
 	}
 
 	var changes []*models.FileChangeRecord
-	for _, filePath := range cs.ModifiedFiles {
-		changeType := models.ChangeTypeModify
-		if !previousFiles[filePath] {
-			changeType = models.ChangeTypeAdd
+	for _, rawPath := range normalizeModifiedFiles(cs.ModifiedFiles) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
 		}
 
-		var newHash string
+		oldHash := strings.TrimSpace(previousHashes[filePath])
+		newHash := ""
 		linesAdded := 0
-		content, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
-		if err == nil && content != nil {
-			newHash = content.Hash
-			// Only report line counts for new files where the entire content is the delta.
-			// For modifications we lack a proper diff against the parent, so leave at 0.
-			if changeType == models.ChangeTypeAdd {
-				linesAdded = strings.Count(string(content.Content), "\n") + 1
+		linesDeleted := 0
+		if oldHash == "" {
+			oldHash = s.findPreviousKnownFileHash(ctx, cs.SliceID, filePath, "")
+		}
+
+		fileContent, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
+		if err == nil && fileContent != nil {
+			newHash = effectiveContentHash(filePath, fileContent)
+		} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to load file %s for change history: %w", filePath, err)
+		}
+
+		changeType := models.ChangeTypeModify
+		switch {
+		case oldHash == "" && newHash != "":
+			changeType = models.ChangeTypeAdd
+			if fileContent != nil && len(fileContent.Content) > 0 {
+				linesAdded = countTextLines(fileContent.Content)
 			}
+		case oldHash != "" && newHash == "":
+			changeType = models.ChangeTypeDelete
+			if previousContent, hashErr := s.storage.GetFileContentByHash(ctx, oldHash); hashErr == nil && previousContent != nil {
+				linesDeleted = countTextLines(previousContent.Content)
+			}
+		case oldHash != "" && newHash != "" && oldHash != newHash:
+			changeType = models.ChangeTypeModify
 		}
 
 		changes = append(changes, &models.FileChangeRecord{
-			ID:         fmt.Sprintf("%s-%s", commitHash, filePath),
-			SliceID:    cs.SliceID,
-			CommitHash: commitHash,
-			Path:       filePath,
-			ChangeType: changeType,
-			LinesAdded: linesAdded,
-			NewHash:    newHash,
-			Author:     cs.Author,
-			Message:    cs.Message,
-			Timestamp:  timestamp,
+			ID:           fmt.Sprintf("%s-%s", commitHash, filePath),
+			SliceID:      cs.SliceID,
+			CommitHash:   commitHash,
+			Path:         filePath,
+			ChangeType:   changeType,
+			OldHash:      oldHash,
+			NewHash:      newHash,
+			LinesAdded:   linesAdded,
+			LinesDeleted: linesDeleted,
+			Author:       cs.Author,
+			Message:      cs.Message,
+			Timestamp:    timestamp,
 		})
 	}
 
@@ -1756,4 +1931,38 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 		return nil
 	}
 	return s.storage.AddFileChanges(ctx, changes)
+}
+
+func effectiveContentHash(filePath string, content *models.FileContent) string {
+	if content == nil {
+		return ""
+	}
+
+	hash := strings.TrimSpace(content.Hash)
+	if isUsableContentHash(filePath, hash) {
+		return hash
+	}
+
+	if content.Content == nil && content.Size > 0 {
+		return ""
+	}
+
+	return hashBytes(content.Content)
+}
+
+func hashBytes(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func countTextLines(content []byte) int {
+	if len(content) == 0 {
+		return 0
+	}
+	text := string(content)
+	lines := strings.Count(text, "\n")
+	if !strings.HasSuffix(text, "\n") {
+		lines++
+	}
+	return lines
 }

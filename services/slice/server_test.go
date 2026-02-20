@@ -801,4 +801,141 @@ func TestMergeRevertChangesetAppliesRevertedContent(t *testing.T) {
 	if fileAfterMerge.Hash != oldHash {
 		t.Fatalf("expected reverted hash %q, got %q", oldHash, fileAfterMerge.Hash)
 	}
+
+	commitChanges, err := st.GetCommitChanges(ctx, mergeResp.GetNewCommitHash())
+	if err != nil {
+		t.Fatalf("failed to load commit changes for merged revert: %v", err)
+	}
+	if len(commitChanges) != 1 {
+		t.Fatalf("expected 1 recorded commit change, got %d", len(commitChanges))
+	}
+	recorded := commitChanges[0]
+	if recorded.OldHash != newHash {
+		t.Fatalf("expected recorded old hash %q, got %q", newHash, recorded.OldHash)
+	}
+	if recorded.NewHash != oldHash {
+		t.Fatalf("expected recorded new hash %q, got %q", oldHash, recorded.NewHash)
+	}
+
+	snapshot, err := st.GetCommitSnapshot(ctx, mergeResp.GetNewCommitHash())
+	if err != nil {
+		t.Fatalf("failed to load commit snapshot: %v", err)
+	}
+	if got := snapshot.Files[filePath]; got != oldHash {
+		t.Fatalf("expected commit snapshot hash %q, got %q", oldHash, got)
+	}
+}
+
+func TestMergeRevertChangesetBackfillsMissingOldHash(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-revert-backfill", Name: "slice-revert-backfill", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	const filePath = "README.md"
+	const oldHash = "hash-old-backfill"
+	const newHash = "hash-new-backfill"
+	oldContent := []byte("line1\n")
+	newContent := []byte("line1\nline2\n")
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(newContent)),
+	}); err != nil {
+		t.Fatalf("failed to add file entry: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		t.Fatalf("failed to add file to slice index: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  filePath,
+		Path:    filePath,
+		Content: newContent,
+		Size:    int64(len(newContent)),
+		Hash:    newHash,
+	}); err != nil {
+		t.Fatalf("failed to add current slice content: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  oldHash,
+		Path:    filePath,
+		Content: oldContent,
+		Size:    int64(len(oldContent)),
+		Hash:    oldHash,
+	}); err != nil {
+		t.Fatalf("failed to add old versioned content: %v", err)
+	}
+
+	previousCommit := "commit-backfill-previous"
+	sourceCommit := "commit-backfill-source"
+	now := time.Now().UTC()
+
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:         "chg-backfill-previous",
+		SliceID:    slice.ID,
+		CommitHash: previousCommit,
+		Path:       filePath,
+		ChangeType: models.ChangeTypeModify,
+		OldHash:    "hash-base-backfill",
+		NewHash:    oldHash,
+		Author:     "tester",
+		Message:    "prepare history",
+		Timestamp:  now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("failed to add previous change: %v", err)
+	}
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:         "chg-backfill-source",
+		SliceID:    slice.ID,
+		CommitHash: sourceCommit,
+		Path:       filePath,
+		ChangeType: models.ChangeTypeModify,
+		OldHash:    "",
+		NewHash:    newHash,
+		Author:     "tester",
+		Message:    "source with missing old hash",
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("failed to add source change: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	createResp, err := srv.RevertCommitChange(ctx, &slicev1.RevertCommitChangeRequest{
+		CommitHash: sourceCommit,
+		SliceId:    slice.ID,
+	})
+	if err != nil {
+		t.Fatalf("RevertCommitChange failed: %v", err)
+	}
+
+	mergeResp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", mergeResp.GetStatus())
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	}
+
+	fileAfterMerge, err := st.GetSliceFileByPath(ctx, slice.ID, filePath)
+	if err != nil {
+		t.Fatalf("failed to load file after merge: %v", err)
+	}
+	if string(fileAfterMerge.Content) != string(oldContent) {
+		t.Fatalf("expected reverted content %q, got %q", string(oldContent), string(fileAfterMerge.Content))
+	}
+	if fileAfterMerge.Hash != oldHash {
+		t.Fatalf("expected reverted hash %q, got %q", oldHash, fileAfterMerge.Hash)
+	}
 }

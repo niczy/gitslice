@@ -286,6 +286,9 @@ export default function RepoBrowser({
   }, [fetchFileHistory, isActive, refreshHistoryToken, selectedFile, showHistory]);
 
   useEffect(() => {
+    if (!isActive) {
+      return;
+    }
     if (!canLoad) {
       return;
     }
@@ -388,7 +391,49 @@ export default function RepoBrowser({
       active = false;
       controller.abort();
     };
-  }, [sliceId, sliceHash]);
+  }, [canLoad, isActive, sliceId, sliceHash, refreshHistoryToken]);
+
+  useEffect(() => {
+    if (!isActive || !canLoad || !selectedFile || isEditingFile) {
+      return;
+    }
+
+    let active = true;
+    const controller = new AbortController();
+
+    const refreshSelectedFile = async () => {
+      try {
+        const response = await fetchWithAuth(buildFileUrl(selectedFile), {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(await readErrorMessage(response, 'Unable to load file content'));
+        }
+        const payload = await response.json();
+        if (!active) {
+          return;
+        }
+        const content = payload?.file?.content || '';
+        const decodedContent = decodeBase64(content);
+        setFileError('');
+        setEncodedFileContent(content);
+        setFileContent(decodedContent);
+        setDraftContent(decodedContent);
+      } catch (err) {
+        if (!active || err?.name === 'AbortError') {
+          return;
+        }
+        setFileError(err?.message || 'Unable to load file content.');
+      }
+    };
+
+    refreshSelectedFile();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [canLoad, isActive, isEditingFile, refreshHistoryToken, selectedFile, sliceId, sliceHash]);
 
   const fetchEntries = async (path) => {
     if (!canLoad) {
