@@ -394,4 +394,205 @@ test.describe('Commit Diff Page (real server)', () => {
     await expect(page.getByTestId('diff-file-patch').first()).toBeVisible();
   });
 
+  test('revert flow creates a changeset, merges it, and refreshes browser content', async ({ page }) => {
+    const commitHash = 'commit-revert-e2e';
+    const changesetId = 'cs-revert-e2e';
+    const beforeText = 'line one\\n';
+    const changedText = 'line one\\nline two\\n';
+    const toB64 = (value) => Buffer.from(value, 'utf8').toString('base64');
+    let currentReadmeContent = changedText;
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: 'root_slice',
+              name: 'root_slice',
+              description: 'root',
+              files: ['README.md'],
+              owners: ['system'],
+              created_by: 'system',
+              is_root: true,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/entries*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            {
+              id: 'root_slice:README.md',
+              name: 'README.md',
+              path: 'README.md',
+              type: 'file',
+              size: currentReadmeContent.length,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/history/README.md', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changes: [
+            {
+              id: 'history-change-1',
+              slice_id: 'root_slice',
+              commit_hash: commitHash,
+              path: 'README.md',
+              change_type: 'CHANGE_TYPE_MODIFY',
+              old_hash: 'hash-before',
+              new_hash: 'hash-after',
+              lines_added: 1,
+              lines_deleted: 0,
+              author: 'tester',
+              message: 'add second line',
+              timestamp: `${Math.floor(Date.now() / 1000)}`,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/README.md*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'README.md',
+            content: toB64(currentReadmeContent),
+            size: currentReadmeContent.length,
+            hash: currentReadmeContent === beforeText ? 'hash-before' : 'hash-after',
+          },
+        }),
+      });
+    });
+
+    await page.route(`**/v1/commits/${commitHash}/changes*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 0,
+          files_modified: 1,
+          files_deleted: 0,
+          files_renamed: 0,
+          changes: [
+            {
+              id: 'change-revert-target',
+              slice_id: 'root_slice',
+              commit_hash: commitHash,
+              path: 'README.md',
+              change_type: 'CHANGE_TYPE_MODIFY',
+              old_hash: 'hash-before',
+              new_hash: 'hash-after',
+              lines_added: 1,
+              lines_deleted: 0,
+              author: 'tester',
+              message: 'add second line',
+              patch: '--- a/README.md\\n+++ b/README.md\\n@@ -1 +1,2 @@\\n line one\\n+line two\\n',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/commits/${commitHash}/changes/revert`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changeset_id: changesetId,
+          changeset_hash: 'revert~commit-revert-e2e~*~123',
+          status: 'PENDING',
+        }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/diff`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changeset: {
+            changeset_id: changesetId,
+            slice_id: 'root_slice',
+            status: 'PENDING',
+            author: 'tester',
+            created_at: `${Math.floor(Date.now() / 1000)}`,
+            message: `Revert commit ${commitHash}`,
+          },
+          diff: {
+            files_added: 0,
+            files_modified: 1,
+            files_deleted: 0,
+            lines_added: 0,
+            lines_removed: 1,
+          },
+          changes: [
+            {
+              id: 'revert-entry-1',
+              slice_id: 'root_slice',
+              path: 'README.md',
+              change_type: 'CHANGE_TYPE_MODIFY',
+              old_hash: 'hash-after',
+              new_hash: 'hash-before',
+              lines_added: 0,
+              lines_deleted: 1,
+              patch: '--- a/README.md\\n+++ b/README.md\\n@@ -1,2 +1 @@\\n line one\\n-line two\\n',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/merge`, async (route) => {
+      currentReadmeContent = beforeText;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'MERGE_STATUS_SUCCESS',
+          new_commit_hash: 'commit-after-revert',
+          changeset_id: changesetId,
+          conflicts: [],
+        }),
+      });
+    });
+
+    await page.goto('/#/browser');
+    await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
+    await page.getByRole('button', { name: /README\.md/i }).click();
+    await expect(page.locator('.file-preview')).toContainText('line two');
+
+    await page.getByTestId('history-toggle').click();
+    await expect(page.getByTestId('history-panel')).toBeVisible();
+    await page.getByTestId('commit-diff-link').first().click();
+
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+    await page.getByTestId('diff-revert-btn').click();
+
+    await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
+    await expect(page.getByTestId('changeset-file-item').first().locator('.diff-patch')).toContainText('-line two');
+    await page.getByTestId('changeset-merge-btn').click();
+
+    await expect(page.getByTestId('commit-diff-page')).toHaveCount(0);
+    await expect(page.getByTestId('changeset-diff-page')).toHaveCount(0);
+    await expect(page.locator('.file-preview')).toContainText(/^line one$/);
+    await expect(page.locator('.file-preview')).not.toContainText('line two');
+  });
+
 });
