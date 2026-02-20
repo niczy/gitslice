@@ -10,6 +10,7 @@ import (
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,6 +30,7 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 	fileClient := filev1.NewFileServiceClient(conn)
 	adminClient := adminv1.NewAdminServiceClient(conn)
 	agentClient := agentv1.NewAgentServiceClient(conn)
+	sliceClient := slicev1.NewSliceServiceClient(conn)
 
 	if err := filev1.RegisterFileServiceHandlerClient(ctx, mux, fileClient); err != nil {
 		_ = conn.Close()
@@ -39,6 +41,10 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 		return nil, func() {}, err
 	}
 	if err := agentv1.RegisterAgentServiceHandlerClient(ctx, mux, agentClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := slicev1.RegisterSliceServiceHandlerClient(ctx, mux, sliceClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}

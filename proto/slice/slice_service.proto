@@ -4,6 +4,9 @@ package slice.v1;
 
 option go_package = "github.com/niczy/gitslice/proto;slicev1";
 
+import "google/api/annotations.proto";
+import "file/file_service.proto";
+
 service SliceService {
   // Checkout slice for editing
   rpc CheckoutSlice(CheckoutRequest) returns (CheckoutResponse);
@@ -12,10 +15,35 @@ service SliceService {
   rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
 
   // Review a change list (check against slice head)
-  rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse);
+  rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/diff"
+    };
+  }
 
   // Merge change list into slice (with conflict detection)
-  rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse);
+  rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets/{changeset_id}/merge"
+      body: "*"
+    };
+  }
+
+  // Close a pending/approved changeset without merging.
+  rpc CloseChangeset(CloseChangesetRequest) returns (CloseChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets/{changeset_id}/close"
+      body: "*"
+    };
+  }
+
+  // Create a revert changeset. When change_id is empty, reverts the full commit diff.
+  rpc RevertCommitChange(RevertCommitChangeRequest) returns (CreateChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/commits/{commit_hash}/changes/revert"
+      body: "*"
+    };
+  }
 
   // Rebase change list on new slice head
   rpc RebaseChangeset(RebaseChangesetRequest) returns (RebaseChangesetResponse);
@@ -135,6 +163,7 @@ message ReviewChangesetResponse {
   DiffSummary diff = 2;
   ReviewStatus review_status = 3;
   repeated string warnings = 4;
+  repeated file.v1.FileChangeRecord changes = 5;
 }
 
 message DiffSummary {
@@ -176,6 +205,22 @@ message RebaseChangesetResponse {
   string new_base_commit_hash = 2;
   repeated string slice_commits_to_apply = 3;
   repeated Conflict conflicts = 4;
+}
+
+message CloseChangesetRequest {
+  string changeset_id = 1;
+}
+
+message CloseChangesetResponse {
+  string changeset_id = 1;
+  ChangesetStatus status = 2;
+}
+
+message RevertCommitChangeRequest {
+  string commit_hash = 1;
+  string change_id = 2;  // Optional: revert only one change when provided.
+  string slice_id = 3;
+  string message = 4;
 }
 
 enum RebaseStatus {

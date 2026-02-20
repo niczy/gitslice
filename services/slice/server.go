@@ -2,6 +2,9 @@ package sliceservice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/authz"
@@ -17,7 +21,9 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,6 +53,8 @@ const (
 	defaultPromotionQueueSize    = 8192
 	defaultPromotionBatchWindow  = 100 * time.Millisecond
 	defaultPromotionBatchMaxSize = 256
+	revertChangesetHashPrefix    = "revert~"
+	revertAllChangesToken        = "*"
 )
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
@@ -247,12 +255,17 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		LinesAdded:    int64(len(cs.ModifiedFiles)),
 		LinesRemoved:  0,
 	}
+	reviewChanges, warnings := s.buildReviewChanges(ctx, cs)
+	if len(reviewChanges) > 0 {
+		diff = summarizeReviewChanges(reviewChanges)
+	}
 
 	return &slicev1.ReviewChangesetResponse{
 		Changeset:    convertChangesetToProto(cs),
 		Diff:         diff,
 		ReviewStatus: slicev1.ReviewStatus_READY_FOR_MERGE,
-		Warnings:     []string{},
+		Warnings:     warnings,
+		Changes:      reviewChanges,
 	}, nil
 }
 
@@ -315,11 +328,17 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		}, nil
 	}
 
-	for _, fileID := range modifiedFiles {
-		// Conflicts were already checked under lock above. At this point either
-		// no owner exists or this slice is already the sole owner.
-		if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
+	appliedRevertChanges, err := s.applyRevertChangesetContent(ctx, cs)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply revert changeset content: %v", err))
+	}
+	if len(appliedRevertChanges) == 0 {
+		for _, fileID := range modifiedFiles {
+			// Conflicts were already checked under lock above. At this point either
+			// no owner exists or this slice is already the sole owner.
+			if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
+			}
 		}
 	}
 
@@ -353,7 +372,7 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		}
 
 		// Create commit snapshot for versioned file access
-		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, now); err != nil {
+		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
 			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
 		}
 
@@ -377,6 +396,178 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		NewCommitHash: newCommit,
 		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
+	}, nil
+}
+
+func (s *sliceServiceServer) CloseChangeset(ctx context.Context, req *slicev1.CloseChangesetRequest) (*slicev1.CloseChangesetResponse, error) {
+	log.Printf("CloseChangeset called: changeset_id=%s", req.ChangesetId)
+
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
+	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	if cs.Status == models.ChangesetStatusMerged {
+		return nil, status.Error(codes.FailedPrecondition, "merged changeset cannot be closed")
+	}
+
+	if cs.Status != models.ChangesetStatusRejected {
+		cs.Status = models.ChangesetStatusRejected
+		if err := s.storage.UpdateChangeset(ctx, cs); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to close changeset: %v", err))
+		}
+	}
+
+	return &slicev1.CloseChangesetResponse{
+		ChangesetId: cs.ID,
+		Status:      slicev1.ChangesetStatus_REJECTED,
+	}, nil
+}
+
+func (s *sliceServiceServer) RevertCommitChange(ctx context.Context, req *slicev1.RevertCommitChangeRequest) (*slicev1.CreateChangesetResponse, error) {
+	log.Printf("RevertCommitChange called: commit_hash=%s, change_id=%s", req.GetCommitHash(), req.GetChangeId())
+
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+	if _, err := s.storage.EnsureUser(ctx, username); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid user")
+	}
+
+	commitHash := strings.TrimSpace(req.GetCommitHash())
+	changeID := strings.TrimSpace(req.GetChangeId())
+	if commitHash == "" {
+		return nil, status.Error(codes.InvalidArgument, "commit_hash is required")
+	}
+
+	changes, err := s.storage.GetCommitChanges(ctx, commitHash)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load commit changes: %v", err))
+	}
+
+	sliceID := strings.TrimSpace(req.GetSliceId())
+	targetChanges := make([]*models.FileChangeRecord, 0, len(changes))
+	if changeID != "" {
+		var targetChange *models.FileChangeRecord
+		for _, change := range changes {
+			if change != nil && change.ID == changeID {
+				targetChange = change
+				break
+			}
+		}
+		if targetChange == nil {
+			return nil, status.Error(codes.NotFound, "change not found")
+		}
+		if sliceID == "" {
+			sliceID = strings.TrimSpace(targetChange.SliceID)
+		}
+		if sliceID != "" && strings.TrimSpace(targetChange.SliceID) != "" && strings.TrimSpace(targetChange.SliceID) != sliceID {
+			return nil, status.Error(codes.InvalidArgument, "change does not belong to slice_id")
+		}
+		targetChanges = append(targetChanges, targetChange)
+	} else {
+		if sliceID == "" {
+			sliceIDs := make(map[string]struct{}, 2)
+			for _, change := range changes {
+				if change == nil {
+					continue
+				}
+				candidate := strings.TrimSpace(change.SliceID)
+				if candidate == "" {
+					continue
+				}
+				sliceIDs[candidate] = struct{}{}
+			}
+			if len(sliceIDs) == 1 {
+				for candidate := range sliceIDs {
+					sliceID = candidate
+				}
+			}
+		}
+		if sliceID == "" {
+			return nil, status.Error(codes.InvalidArgument, "slice_id is required to revert this commit")
+		}
+		for _, change := range changes {
+			if change == nil {
+				continue
+			}
+			if strings.TrimSpace(change.SliceID) == sliceID {
+				targetChanges = append(targetChanges, change)
+			}
+		}
+		if len(targetChanges) == 0 {
+			return nil, status.Error(codes.NotFound, "no changes found for commit in slice")
+		}
+	}
+	if sliceID == "" {
+		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
+	}
+
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
+	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice metadata: %v", err))
+	}
+
+	modifiedFiles := normalizeModifiedFiles(revertModifiedFilesForChanges(targetChanges))
+	if len(modifiedFiles) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "commit has no revertable file path")
+	}
+	for _, fileID := range modifiedFiles {
+		if err := common.ValidateFileID(fileID); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file ID %s: %v", fileID, err))
+		}
+	}
+
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		if changeID != "" {
+			message = fmt.Sprintf("Revert change %s from %s", changeID, shortHash(commitHash))
+		} else {
+			message = fmt.Sprintf("Revert commit %s", shortHash(commitHash))
+		}
+	}
+
+	id := fmt.Sprintf("cs-%d", time.Now().UnixNano())
+	hash := buildRevertChangesetHash(commitHash, changeID)
+	cs := &models.Changeset{
+		ID:             id,
+		Hash:           hash,
+		SliceID:        sliceID,
+		BaseCommitHash: metadata.HeadCommitHash,
+		ModifiedFiles:  modifiedFiles,
+		Status:         models.ChangesetStatusPending,
+		Author:         username,
+		Message:        message,
+		CreatedAt:      time.Now(),
+	}
+	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create revert changeset: %v", err))
+	}
+
+	return &slicev1.CreateChangesetResponse{
+		ChangesetId:   cs.ID,
+		ChangesetHash: cs.Hash,
+		Status:        slicev1.ChangesetStatus_PENDING,
 	}, nil
 }
 
@@ -408,6 +599,560 @@ func normalizeModifiedFiles(files []string) []string {
 		normalized = append(normalized, cleaned)
 	}
 	return normalized
+}
+
+func revertModifiedFiles(change *models.FileChangeRecord) []string {
+	if change == nil {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	appendFile := func(path string) {
+		cleaned := strings.TrimSpace(path)
+		if cleaned == "" {
+			return
+		}
+		if _, exists := seen[cleaned]; exists {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+
+	appendFile(change.Path)
+	if change.ChangeType == models.ChangeTypeRename {
+		appendFile(change.OldPath)
+	}
+	if len(out) == 0 {
+		appendFile(change.OldPath)
+	}
+	return out
+}
+
+func revertModifiedFilesForChanges(changes []*models.FileChangeRecord) []string {
+	if len(changes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(changes))
+	for _, change := range changes {
+		out = append(out, revertModifiedFiles(change)...)
+	}
+	return out
+}
+
+func shortHash(hash string) string {
+	cleaned := strings.TrimSpace(hash)
+	if len(cleaned) > 12 {
+		return cleaned[:12]
+	}
+	return cleaned
+}
+
+func buildRevertChangesetHash(commitHash, changeID string) string {
+	encodedCommit := base64.RawURLEncoding.EncodeToString([]byte(strings.TrimSpace(commitHash)))
+	selectedChange := strings.TrimSpace(changeID)
+	if selectedChange == "" {
+		selectedChange = revertAllChangesToken
+	}
+	encodedChange := base64.RawURLEncoding.EncodeToString([]byte(selectedChange))
+	return fmt.Sprintf("%s%s~%s~%d", revertChangesetHashPrefix, encodedCommit, encodedChange, time.Now().UnixNano())
+}
+
+func parseRevertChangesetHash(hash string) (commitHash, changeID string, ok bool) {
+	cleaned := strings.TrimSpace(hash)
+	if !strings.HasPrefix(cleaned, revertChangesetHashPrefix) {
+		return "", "", false
+	}
+	parts := strings.Split(cleaned, "~")
+	if len(parts) < 4 {
+		return "", "", false
+	}
+	commitBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", false
+	}
+	changeBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", "", false
+	}
+	commit := strings.TrimSpace(string(commitBytes))
+	change := strings.TrimSpace(string(changeBytes))
+	if change == revertAllChangesToken {
+		change = ""
+	}
+	if commit == "" {
+		return "", "", false
+	}
+	return commit, change, true
+}
+
+func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.Changeset) ([]*filev1.FileChangeRecord, []string) {
+	targetChanges, err := s.resolveRevertSourceChanges(ctx, cs)
+	if err != nil {
+		return nil, []string{err.Error()}
+	}
+	if len(targetChanges) == 0 {
+		return nil, nil
+	}
+
+	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(targetChanges))
+	missingPatchCount := 0
+	for _, targetChange := range targetChanges {
+		revertChange := buildRevertReviewChange(targetChange, cs)
+		patch := s.buildChangePatchFromHashes(ctx, revertChange)
+		if patch == "" {
+			missingPatchCount++
+		}
+		reviewChanges = append(reviewChanges, modelToProtoReviewChange(revertChange, patch))
+	}
+	warnings := []string{}
+	if missingPatchCount > 0 {
+		warnings = append(warnings, fmt.Sprintf("inline patch unavailable for %d revert entries", missingPatchCount))
+	}
+
+	return reviewChanges, warnings
+}
+
+func (s *sliceServiceServer) resolveRevertSourceChanges(ctx context.Context, cs *models.Changeset) ([]*models.FileChangeRecord, error) {
+	if cs == nil {
+		return nil, nil
+	}
+
+	commitHash, changeID, ok := parseRevertChangesetHash(cs.Hash)
+	if !ok {
+		return nil, nil
+	}
+
+	changes, err := s.storage.GetCommitChanges(ctx, commitHash)
+	if err != nil {
+		return nil, fmt.Errorf("revert source commit %s could not be loaded", shortHash(commitHash))
+	}
+
+	targetChanges := make([]*models.FileChangeRecord, 0, len(changes))
+	if changeID == "" {
+		for _, change := range changes {
+			if change == nil {
+				continue
+			}
+			if strings.TrimSpace(change.SliceID) == strings.TrimSpace(cs.SliceID) {
+				targetChanges = append(targetChanges, change)
+			}
+		}
+		if len(targetChanges) == 0 {
+			return nil, fmt.Errorf("revert source commit has no changes for this slice")
+		}
+		resolved := make([]*models.FileChangeRecord, 0, len(targetChanges))
+		for _, change := range targetChanges {
+			resolved = append(resolved, s.fillMissingChangeHashes(ctx, change))
+		}
+		return resolved, nil
+	}
+
+	for _, change := range changes {
+		if change != nil && change.ID == changeID {
+			targetChanges = append(targetChanges, change)
+			break
+		}
+	}
+	if len(targetChanges) == 0 {
+		return nil, fmt.Errorf("revert source change was not found")
+	}
+	resolved := make([]*models.FileChangeRecord, 0, len(targetChanges))
+	for _, change := range targetChanges {
+		resolved = append(resolved, s.fillMissingChangeHashes(ctx, change))
+	}
+	return resolved, nil
+}
+
+func (s *sliceServiceServer) applyRevertChangesetContent(ctx context.Context, cs *models.Changeset) ([]*models.FileChangeRecord, error) {
+	targetChanges, err := s.resolveRevertSourceChanges(ctx, cs)
+	if err != nil {
+		return nil, err
+	}
+	if len(targetChanges) == 0 {
+		return nil, nil
+	}
+
+	applied := make([]*models.FileChangeRecord, 0, len(targetChanges))
+	for _, targetChange := range targetChanges {
+		revertChange := buildRevertReviewChange(targetChange, cs)
+		if revertChange == nil {
+			continue
+		}
+		if err := s.applyRevertChangeToSlice(ctx, cs.SliceID, revertChange); err != nil {
+			return nil, fmt.Errorf("failed to apply revert for %s: %w", targetChange.Path, err)
+		}
+		applied = append(applied, revertChange)
+	}
+	return applied, nil
+}
+
+func (s *sliceServiceServer) applyRevertChangeToSlice(ctx context.Context, sliceID string, change *models.FileChangeRecord) error {
+	if change == nil {
+		return nil
+	}
+	pathAfter := cleanDiffPath(change.Path)
+	if pathAfter == "" {
+		return fmt.Errorf("revert path is empty")
+	}
+
+	if change.ChangeType == models.ChangeTypeDelete {
+		return s.removeSliceFilePath(ctx, sliceID, pathAfter)
+	}
+
+	pathBefore := cleanDiffPath(change.OldPath)
+	if pathBefore != "" && pathBefore != pathAfter {
+		if err := s.removeSliceFilePath(ctx, sliceID, pathBefore); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(change.NewHash) == "" {
+		return fmt.Errorf("revert source missing previous content hash for %s", pathAfter)
+	}
+
+	content, err := s.loadRevertContentByHash(ctx, change.NewHash)
+	if err != nil {
+		return err
+	}
+	return s.upsertSliceFilePath(ctx, sliceID, pathAfter, strings.TrimSpace(change.NewHash), content)
+}
+
+func (s *sliceServiceServer) fillMissingChangeHashes(ctx context.Context, source *models.FileChangeRecord) *models.FileChangeRecord {
+	if source == nil {
+		return nil
+	}
+
+	change := *source
+	oldHash := strings.TrimSpace(change.OldHash)
+	newHash := strings.TrimSpace(change.NewHash)
+
+	if newHash == "" && change.ChangeType != models.ChangeTypeDelete {
+		if snapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(change.CommitHash)); err == nil && snapshot != nil {
+			newHash = snapshotHashForPath(snapshot, change.Path)
+		}
+	}
+
+	if oldHash == "" && change.ChangeType != models.ChangeTypeAdd {
+		if commit, err := s.storage.GetCommitByHash(ctx, strings.TrimSpace(change.SliceID), strings.TrimSpace(change.CommitHash)); err == nil && commit != nil {
+			parentHash := strings.TrimSpace(commit.ParentHash)
+			if parentHash != "" {
+				if parentSnapshot, snapErr := s.storage.GetCommitSnapshot(ctx, parentHash); snapErr == nil && parentSnapshot != nil {
+					lookupPath := change.Path
+					if change.ChangeType == models.ChangeTypeRename {
+						lookupPath = change.OldPath
+					}
+					oldHash = snapshotHashForPath(parentSnapshot, lookupPath)
+				}
+			}
+		}
+	}
+
+	if oldHash == "" && change.ChangeType != models.ChangeTypeAdd {
+		historyPath := change.Path
+		if change.ChangeType == models.ChangeTypeRename {
+			historyPath = change.OldPath
+		}
+		oldHash = s.findPreviousKnownFileHash(ctx, change.SliceID, historyPath, change.CommitHash)
+	}
+
+	change.OldHash = oldHash
+	change.NewHash = newHash
+	return &change
+}
+
+func snapshotHashForPath(snapshot *models.CommitSnapshot, filePath string) string {
+	if snapshot == nil {
+		return ""
+	}
+	pathKey := cleanDiffPath(filePath)
+	if pathKey == "" {
+		return ""
+	}
+	candidate := strings.TrimSpace(snapshot.Files[pathKey])
+	if !isUsableContentHash(pathKey, candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func isUsableContentHash(filePath, hash string) bool {
+	cleanedHash := strings.TrimSpace(hash)
+	if cleanedHash == "" {
+		return false
+	}
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath != "" && cleanedHash == cleanedPath {
+		return false
+	}
+	return !strings.Contains(cleanedHash, "/")
+}
+
+func (s *sliceServiceServer) findPreviousKnownFileHash(ctx context.Context, sliceID, filePath, fromCommit string) string {
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath == "" {
+		return ""
+	}
+	history, err := s.storage.GetFileHistory(ctx, strings.TrimSpace(sliceID), cleanedPath, 64, strings.TrimSpace(fromCommit))
+	if err != nil {
+		return ""
+	}
+	for _, item := range history {
+		if item == nil {
+			continue
+		}
+		candidate := strings.TrimSpace(item.NewHash)
+		if isUsableContentHash(cleanedPath, candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func (s *sliceServiceServer) loadRevertContentByHash(ctx context.Context, contentHash string) ([]byte, error) {
+	hash := strings.TrimSpace(contentHash)
+	if hash == "" {
+		return []byte{}, nil
+	}
+	content, err := s.storage.GetFileContentByHash(ctx, hash)
+	if err != nil || content == nil {
+		return nil, fmt.Errorf("content hash %s not found", shortHash(hash))
+	}
+	return append([]byte(nil), content.Content...), nil
+}
+
+func (s *sliceServiceServer) upsertSliceFilePath(ctx context.Context, sliceID, filePath, contentHash string, data []byte) error {
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath == "" {
+		return fmt.Errorf("file path is empty")
+	}
+
+	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceID, cleanedPath),
+		Path:     cleanedPath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len(data)),
+	}); err != nil {
+		return fmt.Errorf("failed to upsert file entry: %w", err)
+	}
+
+	if err := s.storage.AddFileContent(ctx, &models.FileContent{
+		FileID:  cleanedPath,
+		Path:    cleanedPath,
+		Content: append([]byte(nil), data...),
+		Size:    int64(len(data)),
+		Hash:    strings.TrimSpace(contentHash),
+	}); err != nil {
+		return fmt.Errorf("failed to upsert file content: %w", err)
+	}
+
+	if err := s.storage.AddFileToSlice(ctx, cleanedPath, sliceID); err != nil {
+		return fmt.Errorf("failed to mark file ownership: %w", err)
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) removeSliceFilePath(ctx context.Context, sliceID, filePath string) error {
+	cleanedPath := cleanDiffPath(filePath)
+	if cleanedPath == "" {
+		return nil
+	}
+
+	entry, err := s.storage.GetEntryByPath(ctx, sliceID, cleanedPath)
+	if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return fmt.Errorf("failed to lookup existing entry: %w", err)
+	}
+	if err == nil && entry != nil {
+		if delErr := s.storage.DeleteEntry(ctx, entry.ID); delErr != nil && !errors.Is(delErr, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to delete entry: %w", delErr)
+		}
+	}
+
+	if err := s.storage.RemoveFileFromSlice(ctx, cleanedPath, sliceID); err != nil {
+		return fmt.Errorf("failed to clear file ownership: %w", err)
+	}
+	return nil
+}
+
+func buildRevertReviewChange(target *models.FileChangeRecord, cs *models.Changeset) *models.FileChangeRecord {
+	if target == nil {
+		return nil
+	}
+
+	revertPath := target.Path
+	revertOldPath := ""
+	if target.ChangeType == models.ChangeTypeRename {
+		revertPath = strings.TrimSpace(target.OldPath)
+		if revertPath == "" {
+			revertPath = target.Path
+		}
+		revertOldPath = target.Path
+	}
+
+	return &models.FileChangeRecord{
+		ID:           fmt.Sprintf("%s-revert-%s", cs.ID, target.ID),
+		SliceID:      cs.SliceID,
+		CommitHash:   cs.Hash,
+		Path:         revertPath,
+		OldPath:      revertOldPath,
+		ChangeType:   invertChangeType(target.ChangeType),
+		OldHash:      target.NewHash,
+		NewHash:      target.OldHash,
+		LinesAdded:   target.LinesDeleted,
+		LinesDeleted: target.LinesAdded,
+		Author:       cs.Author,
+		Message:      cs.Message,
+		Timestamp:    cs.CreatedAt,
+	}
+}
+
+func invertChangeType(changeType models.ChangeType) models.ChangeType {
+	switch changeType {
+	case models.ChangeTypeAdd:
+		return models.ChangeTypeDelete
+	case models.ChangeTypeDelete:
+		return models.ChangeTypeAdd
+	default:
+		return changeType
+	}
+}
+
+func (s *sliceServiceServer) buildChangePatchFromHashes(ctx context.Context, change *models.FileChangeRecord) string {
+	if change == nil {
+		return ""
+	}
+
+	beforeLines, beforeOK := s.loadDiffLinesFromHash(ctx, change.OldHash)
+	if !beforeOK {
+		return ""
+	}
+	afterLines, afterOK := s.loadDiffLinesFromHash(ctx, change.NewHash)
+	if !afterOK {
+		return ""
+	}
+	if len(beforeLines) == 0 && len(afterLines) == 0 {
+		return ""
+	}
+
+	newPath := cleanDiffPath(change.Path)
+	oldPath := cleanDiffPath(change.OldPath)
+	if oldPath == "" {
+		oldPath = newPath
+	}
+	if newPath == "" {
+		newPath = oldPath
+	}
+	if oldPath == "" {
+		oldPath = "unknown"
+	}
+	if newPath == "" {
+		newPath = "unknown"
+	}
+
+	patch, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        beforeLines,
+		B:        afterLines,
+		FromFile: "a/" + oldPath,
+		ToFile:   "b/" + newPath,
+		Context:  3,
+	})
+	if err != nil {
+		return ""
+	}
+	return patch
+}
+
+func (s *sliceServiceServer) loadDiffLinesFromHash(ctx context.Context, hash string) ([]string, bool) {
+	cleaned := strings.TrimSpace(hash)
+	if cleaned == "" {
+		return []string{}, true
+	}
+	content, err := s.storage.GetFileContentByHash(ctx, cleaned)
+	if err != nil || content == nil {
+		return []string{}, true
+	}
+	if !utf8.Valid(content.Content) || bytesContainsNUL(content.Content) {
+		return nil, false
+	}
+	lines := strings.SplitAfter(string(content.Content), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, true
+}
+
+func cleanDiffPath(raw string) string {
+	cleaned := strings.Trim(strings.TrimSpace(raw), "/")
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func bytesContainsNUL(content []byte) bool {
+	for _, b := range content {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func modelToProtoReviewChange(change *models.FileChangeRecord, patch string) *filev1.FileChangeRecord {
+	if change == nil {
+		return nil
+	}
+	return &filev1.FileChangeRecord{
+		Id:           change.ID,
+		SliceId:      change.SliceID,
+		CommitHash:   change.CommitHash,
+		Path:         change.Path,
+		OldPath:      change.OldPath,
+		ChangeType:   modelChangeTypeToProto(change.ChangeType),
+		OldHash:      change.OldHash,
+		NewHash:      change.NewHash,
+		LinesAdded:   int32(change.LinesAdded),
+		LinesDeleted: int32(change.LinesDeleted),
+		Author:       change.Author,
+		Message:      change.Message,
+		Timestamp:    change.Timestamp.Unix(),
+		Patch:        patch,
+	}
+}
+
+func modelChangeTypeToProto(changeType models.ChangeType) filev1.ChangeType {
+	switch changeType {
+	case models.ChangeTypeAdd:
+		return filev1.ChangeType_CHANGE_TYPE_ADD
+	case models.ChangeTypeModify:
+		return filev1.ChangeType_CHANGE_TYPE_MODIFY
+	case models.ChangeTypeDelete:
+		return filev1.ChangeType_CHANGE_TYPE_DELETE
+	case models.ChangeTypeRename:
+		return filev1.ChangeType_CHANGE_TYPE_RENAME
+	default:
+		return filev1.ChangeType_CHANGE_TYPE_UNSPECIFIED
+	}
+}
+
+func summarizeReviewChanges(changes []*filev1.FileChangeRecord) *slicev1.DiffSummary {
+	summary := &slicev1.DiffSummary{}
+	for _, change := range changes {
+		if change == nil {
+			continue
+		}
+		switch change.ChangeType {
+		case filev1.ChangeType_CHANGE_TYPE_ADD:
+			summary.FilesAdded++
+		case filev1.ChangeType_CHANGE_TYPE_DELETE:
+			summary.FilesDeleted++
+		default:
+			summary.FilesModified++
+		}
+		summary.LinesAdded += int64(change.GetLinesAdded())
+		summary.LinesRemoved += int64(change.GetLinesDeleted())
+	}
+	return summary
 }
 
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {
@@ -1040,19 +1785,65 @@ func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error)
 }
 
 // createCommitSnapshot creates a snapshot of the current file state for a commit.
-func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, commitHash string, timestamp time.Time) error {
-	// Get slice files
-	slice, err := s.storage.GetSlice(ctx, sliceID)
-	if err != nil {
-		return fmt.Errorf("failed to get slice: %w", err)
+func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, commitHash, parentHash string, modifiedFiles []string, timestamp time.Time) error {
+	files := make(map[string]string)
+
+	if strings.TrimSpace(parentHash) != "" {
+		parentSnapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
+		if err == nil && parentSnapshot != nil {
+			for filePath, contentHash := range parentSnapshot.Files {
+				cleanedPath := cleanDiffPath(filePath)
+				cleanedHash := strings.TrimSpace(contentHash)
+				if cleanedPath == "" || !isUsableContentHash(cleanedPath, cleanedHash) {
+					continue
+				}
+				files[cleanedPath] = cleanedHash
+			}
+		}
+	}
+	if len(files) == 0 {
+		slice, err := s.storage.GetSlice(ctx, sliceID)
+		if err != nil {
+			return fmt.Errorf("failed to load slice for snapshot: %w", err)
+		}
+		for _, rawPath := range normalizeModifiedFiles(slice.Files) {
+			filePath := cleanDiffPath(rawPath)
+			if filePath == "" {
+				continue
+			}
+			fileContent, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath)
+			if err != nil {
+				continue
+			}
+			hash := effectiveContentHash(filePath, fileContent)
+			if hash == "" {
+				continue
+			}
+			files[filePath] = hash
+		}
 	}
 
-	// Build file hash map
-	files := make(map[string]string)
-	for _, fileID := range slice.Files {
-		// Use the file path as the content hash for now
-		// In a real implementation, this would be the actual content hash
-		files[fileID] = fileID
+	for _, rawPath := range normalizeModifiedFiles(modifiedFiles) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+
+		fileContent, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				delete(files, filePath)
+				continue
+			}
+			return fmt.Errorf("failed to load file %s for snapshot: %w", filePath, err)
+		}
+
+		hash := effectiveContentHash(filePath, fileContent)
+		if hash == "" {
+			delete(files, filePath)
+			continue
+		}
+		files[filePath] = hash
 	}
 
 	snapshot := &models.CommitSnapshot{
@@ -1067,47 +1858,72 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 
 // recordFileChanges creates FileChangeRecord entries for each file in the changeset.
 func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.Changeset, commitHash string, parentHash string, timestamp time.Time) error {
-	// Build set of files that existed in the previous commit
-	previousFiles := make(map[string]bool)
-	if parentHash != "" {
-		snapshot, err := s.storage.GetCommitSnapshot(ctx, parentHash)
+	previousHashes := make(map[string]string)
+	if strings.TrimSpace(parentHash) != "" {
+		snapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
 		if err == nil && snapshot != nil {
-			for path := range snapshot.Files {
-				previousFiles[path] = true
+			for filePath, contentHash := range snapshot.Files {
+				cleanedPath := cleanDiffPath(filePath)
+				cleanedHash := strings.TrimSpace(contentHash)
+				if cleanedPath == "" || !isUsableContentHash(cleanedPath, cleanedHash) {
+					continue
+				}
+				previousHashes[cleanedPath] = cleanedHash
 			}
 		}
 	}
 
 	var changes []*models.FileChangeRecord
-	for _, filePath := range cs.ModifiedFiles {
-		changeType := models.ChangeTypeModify
-		if !previousFiles[filePath] {
-			changeType = models.ChangeTypeAdd
+	for _, rawPath := range normalizeModifiedFiles(cs.ModifiedFiles) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
 		}
 
-		var newHash string
+		oldHash := strings.TrimSpace(previousHashes[filePath])
+		newHash := ""
 		linesAdded := 0
-		content, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
-		if err == nil && content != nil {
-			newHash = content.Hash
-			// Only report line counts for new files where the entire content is the delta.
-			// For modifications we lack a proper diff against the parent, so leave at 0.
-			if changeType == models.ChangeTypeAdd {
-				linesAdded = strings.Count(string(content.Content), "\n") + 1
+		linesDeleted := 0
+		if oldHash == "" {
+			oldHash = s.findPreviousKnownFileHash(ctx, cs.SliceID, filePath, "")
+		}
+
+		fileContent, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
+		if err == nil && fileContent != nil {
+			newHash = effectiveContentHash(filePath, fileContent)
+		} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to load file %s for change history: %w", filePath, err)
+		}
+
+		changeType := models.ChangeTypeModify
+		switch {
+		case oldHash == "" && newHash != "":
+			changeType = models.ChangeTypeAdd
+			if fileContent != nil && len(fileContent.Content) > 0 {
+				linesAdded = countTextLines(fileContent.Content)
 			}
+		case oldHash != "" && newHash == "":
+			changeType = models.ChangeTypeDelete
+			if previousContent, hashErr := s.storage.GetFileContentByHash(ctx, oldHash); hashErr == nil && previousContent != nil {
+				linesDeleted = countTextLines(previousContent.Content)
+			}
+		case oldHash != "" && newHash != "" && oldHash != newHash:
+			changeType = models.ChangeTypeModify
 		}
 
 		changes = append(changes, &models.FileChangeRecord{
-			ID:         fmt.Sprintf("%s-%s", commitHash, filePath),
-			SliceID:    cs.SliceID,
-			CommitHash: commitHash,
-			Path:       filePath,
-			ChangeType: changeType,
-			LinesAdded: linesAdded,
-			NewHash:    newHash,
-			Author:     cs.Author,
-			Message:    cs.Message,
-			Timestamp:  timestamp,
+			ID:           fmt.Sprintf("%s-%s", commitHash, filePath),
+			SliceID:      cs.SliceID,
+			CommitHash:   commitHash,
+			Path:         filePath,
+			ChangeType:   changeType,
+			OldHash:      oldHash,
+			NewHash:      newHash,
+			LinesAdded:   linesAdded,
+			LinesDeleted: linesDeleted,
+			Author:       cs.Author,
+			Message:      cs.Message,
+			Timestamp:    timestamp,
 		})
 	}
 
@@ -1115,4 +1931,38 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 		return nil
 	}
 	return s.storage.AddFileChanges(ctx, changes)
+}
+
+func effectiveContentHash(filePath string, content *models.FileContent) string {
+	if content == nil {
+		return ""
+	}
+
+	hash := strings.TrimSpace(content.Hash)
+	if isUsableContentHash(filePath, hash) {
+		return hash
+	}
+
+	if content.Content == nil && content.Size > 0 {
+		return ""
+	}
+
+	return hashBytes(content.Content)
+}
+
+func hashBytes(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func countTextLines(content []byte) int {
+	if len(content) == 0 {
+		return 0
+	}
+	text := string(content)
+	lines := strings.Count(text, "\n")
+	if !strings.HasSuffix(text, "\n") {
+		lines++
+	}
+	return lines
 }

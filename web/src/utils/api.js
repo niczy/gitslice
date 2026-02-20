@@ -65,3 +65,45 @@ export async function updateSliceEnvironment(sliceId, environment) {
   }
   return response.json();
 }
+
+export async function createRevertChangeset(commitHash, sliceId = '') {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes/revert`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sliceId: sliceId || undefined,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to create revert changeset'));
+  }
+  return response.json();
+}
+
+export async function getChangesetDiff(changesetId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/diff`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load changeset diff'));
+  }
+  return response.json();
+}
+
+export async function mergeChangeset(changesetId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/merge`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to merge changeset'));
+  }
+  return response.json();
+}
+
+export async function closeChangeset(changesetId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/close`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to close changeset'));
+  }
+  return response.json();
+}

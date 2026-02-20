@@ -2671,6 +2671,14 @@ body {
 .diff-file-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.diff-file-header-main {
+  display: flex;
+  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   min-width: 0;
@@ -2691,6 +2699,87 @@ body {
 
 .diff-file-stats {
   flex-shrink: 0;
+}
+
+.diff-file-actions {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.diff-file-actions summary {
+  list-style: none;
+}
+
+.diff-file-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.diff-file-actions-trigger {
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+}
+
+.diff-file-actions-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 190px;
+  z-index: 6;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  padding: 6px;
+}
+
+.diff-file-action-btn {
+  width: 100%;
+  text-align: left;
+  font-size: 0.78rem;
+  padding: 8px 10px;
+}
+
+.diff-action-error {
+  margin: 8px 20px 0;
+}
+
+.changeset-title-meta {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.changeset-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.changeset-action-merge,
+.changeset-action-close {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+}
+
+.changeset-message {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.changeset-no-patch {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  background: var(--surface);
 }
 
 /* Unified diff patch */
