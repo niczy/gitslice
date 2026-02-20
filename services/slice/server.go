@@ -795,7 +795,10 @@ func buildSliceFolderMounts(folderPaths []string) []models.SliceFolderMount {
 	mounts := make([]models.SliceFolderMount, 0, len(folderPaths))
 	usedAliases := make(map[string]struct{}, len(folderPaths))
 	for _, sourcePath := range folderPaths {
-		alias := path.Base(sourcePath)
+		alias := sourcePath
+		if alias == "" {
+			alias = path.Base(sourcePath)
+		}
 		if alias == "." || alias == "/" || alias == "" {
 			alias = strings.ReplaceAll(sourcePath, "/", "_")
 		}

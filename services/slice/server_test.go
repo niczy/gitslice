@@ -235,10 +235,10 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 	for _, mount := range slice.FolderMounts {
 		mounts[mount.SourcePath] = mount.Alias
 	}
-	if mounts["o/genesis/projects/repo-a"] != "repo-a" {
+	if mounts["o/genesis/projects/repo-a"] != "o/genesis/projects/repo-a" {
 		t.Fatalf("unexpected alias for repo-a: %q", mounts["o/genesis/projects/repo-a"])
 	}
-	if mounts["o/genesis/projects/repo-b"] != "repo-b" {
+	if mounts["o/genesis/projects/repo-b"] != "o/genesis/projects/repo-b" {
 		t.Fatalf("unexpected alias for repo-b: %q", mounts["o/genesis/projects/repo-b"])
 	}
 
@@ -253,15 +253,12 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 	manifestPaths := map[string]bool{}
 	for _, fm := range checkoutResp.GetManifest().GetFileMetadata() {
 		manifestPaths[fm.GetPath()] = true
-		if strings.HasPrefix(fm.GetPath(), "o/genesis/projects/") {
-			t.Fatalf("checkout path should be slice-root relative, got %q", fm.GetPath())
-		}
 	}
 
 	expectedPaths := []string{
-		"repo-a/README.md",
-		"repo-a/pkg/util.go",
-		"repo-b/main.go",
+		"o/genesis/projects/repo-a/README.md",
+		"o/genesis/projects/repo-a/pkg/util.go",
+		"o/genesis/projects/repo-b/main.go",
 	}
 	for _, path := range expectedPaths {
 		if !manifestPaths[path] {
