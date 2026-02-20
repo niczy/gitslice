@@ -80,10 +80,28 @@ export async function createRevertChangeset(commitHash, sliceId = '') {
   return response.json();
 }
 
-export async function getChangesetDiff(changesetId) {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/diff`);
+export async function getChangesetDiff(changesetId, snapshotVersion) {
+  const query = new URLSearchParams();
+  if (typeof snapshotVersion === 'number' && snapshotVersion > 0) {
+    query.set('snapshot_version', String(snapshotVersion));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/diff${suffix}`);
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to load changeset diff'));
+  }
+  return response.json();
+}
+
+export async function listChangesetSnapshots(changesetId, limit = 100) {
+  const query = new URLSearchParams();
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/snapshots${suffix}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load changeset snapshots'));
   }
   return response.json();
 }

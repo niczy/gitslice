@@ -2756,6 +2756,25 @@ body {
   gap: 8px;
 }
 
+.changeset-snapshot-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.changeset-snapshot-picker select {
+  min-width: 190px;
+  max-width: 240px;
+  font-size: 0.76rem;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-primary);
+}
+
 .changeset-action-merge,
 .changeset-action-close {
   font-size: 0.78rem;

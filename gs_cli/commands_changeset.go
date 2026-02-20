@@ -50,6 +50,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	base := fs.String("base", "", "Base commit hash")
 	files := fs.String("files", "", "Comma-separated file list")
 	author := fs.String("author", "user", "Author of the changeset")
+	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
 	fs.Parse(args)
 
 	modifiedFiles := []string{}
@@ -64,6 +65,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		ModifiedFiles:  modifiedFiles,
 		Author:         *author,
 		Message:        *message,
+		ChangesetId:    strings.TrimSpace(*changesetID),
 	}
 
 	resp, err := cli.sliceClient.CreateChangeset(ctx, req)
@@ -71,7 +73,11 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to create changeset: %v", err)
 	}
 
-	fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
+	if strings.TrimSpace(*changesetID) != "" {
+		fmt.Printf("Updated changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
+	} else {
+		fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
+	}
 	fmt.Printf("Status: %s\n", resp.Status.String())
 }
 

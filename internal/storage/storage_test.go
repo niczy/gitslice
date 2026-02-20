@@ -177,6 +177,65 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err := st.UpdateChangeset(ctx, cs); err != nil {
 		t.Fatalf("UpdateChangeset failed: %v", err)
 	}
+	snap1 := &models.ChangesetSnapshot{
+		ID:             fmt.Sprintf("%s-snapshot-1", cs.ID),
+		ChangesetID:    cs.ID,
+		Version:        1,
+		Hash:           "h1",
+		BaseCommitHash: "base-1",
+		ModifiedFiles:  []string{file1ID},
+		Author:         "alice",
+		Message:        "v1",
+		CreatedAt:      time.Now().Add(-time.Minute),
+	}
+	if err := st.CreateChangesetSnapshot(ctx, snap1); err != nil {
+		t.Fatalf("CreateChangesetSnapshot v1 failed: %v", err)
+	}
+	snap2 := &models.ChangesetSnapshot{
+		ID:             fmt.Sprintf("%s-snapshot-2", cs.ID),
+		ChangesetID:    cs.ID,
+		Version:        2,
+		Hash:           "h2",
+		BaseCommitHash: "base-2",
+		ModifiedFiles:  []string{file2ID},
+		Author:         "alice",
+		Message:        "v2",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangesetSnapshot(ctx, snap2); err != nil {
+		t.Fatalf("CreateChangesetSnapshot v2 failed: %v", err)
+	}
+	latestSnap, err := st.GetChangesetSnapshot(ctx, cs.ID, 0)
+	if err != nil {
+		t.Fatalf("GetChangesetSnapshot latest failed: %v", err)
+	}
+	if latestSnap.Version != 2 || latestSnap.Hash != "h2" {
+		t.Fatalf("unexpected latest snapshot: %#v", latestSnap)
+	}
+	version1Snap, err := st.GetChangesetSnapshot(ctx, cs.ID, 1)
+	if err != nil {
+		t.Fatalf("GetChangesetSnapshot v1 failed: %v", err)
+	}
+	if version1Snap.Version != 1 || version1Snap.Hash != "h1" {
+		t.Fatalf("unexpected version 1 snapshot: %#v", version1Snap)
+	}
+	limitedSnaps, err := st.ListChangesetSnapshots(ctx, cs.ID, 1)
+	if err != nil {
+		t.Fatalf("ListChangesetSnapshots limit=1 failed: %v", err)
+	}
+	if len(limitedSnaps) != 1 || limitedSnaps[0].Version != 2 {
+		t.Fatalf("expected latest snapshot in limited list, got %#v", limitedSnaps)
+	}
+	allSnaps, err := st.ListChangesetSnapshots(ctx, cs.ID, 10)
+	if err != nil {
+		t.Fatalf("ListChangesetSnapshots failed: %v", err)
+	}
+	if len(allSnaps) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(allSnaps))
+	}
+	if _, err := st.GetChangesetSnapshot(ctx, cs.ID, 99); err != ErrChangesetNotFound {
+		t.Fatalf("expected ErrChangesetNotFound for missing snapshot version, got %v", err)
+	}
 
 	emptySlice := &models.Slice{ID: emptySliceID, Name: "Empty", Description: "Empty", Files: []string{}, Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, emptySlice); err != nil {

@@ -60,6 +60,9 @@ type Storage interface {
 	GetChangeset(ctx context.Context, changesetID string) (*models.Changeset, error)
 	ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error)
 	UpdateChangeset(ctx context.Context, changeset *models.Changeset) error
+	CreateChangesetSnapshot(ctx context.Context, snapshot *models.ChangesetSnapshot) error
+	GetChangesetSnapshot(ctx context.Context, changesetID string, version int32) (*models.ChangesetSnapshot, error)
+	ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error)
 
 	// File content for checkout
 	GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)

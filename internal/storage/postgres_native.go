@@ -289,6 +289,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			file_contents,
 			directory_entries,
 			slice_commits,
+			changeset_snapshots,
 			changesets,
 			file_locks,
 			slice_locks,
@@ -1573,6 +1574,125 @@ func (s *PostgresNativeStorage) UpdateChangeset(ctx context.Context, changeset *
 		return ErrChangesetNotFound
 	}
 	return nil
+}
+
+func (s *PostgresNativeStorage) CreateChangesetSnapshot(ctx context.Context, snapshot *models.ChangesetSnapshot) error {
+	ctx = ensureCtx(ctx)
+	if snapshot == nil || snapshot.ID == "" || snapshot.ChangesetID == "" || snapshot.Version <= 0 {
+		return ErrInvalidInput
+	}
+
+	modifiedJSON, _ := json.Marshal(snapshot.ModifiedFiles)
+	if snapshot.ModifiedFiles == nil {
+		modifiedJSON = []byte("[]")
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO changeset_snapshots (id, changeset_id, version, hash, base_commit_hash, modified_files, author, message, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, snapshot.ID, snapshot.ChangesetID, snapshot.Version, snapshot.Hash, snapshot.BaseCommitHash,
+		modifiedJSON, snapshot.Author, snapshot.Message, snapshot.CreatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "changeset_snapshots_changeset_id_fkey") {
+			return ErrChangesetNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, changesetID string, version int32) (*models.ChangesetSnapshot, error) {
+	ctx = ensureCtx(ctx)
+
+	var row pgx.Row
+	if version <= 0 {
+		row = s.pool.QueryRow(ctx, `
+			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files, author, message, created_at
+			FROM changeset_snapshots
+			WHERE changeset_id = $1
+			ORDER BY version DESC
+			LIMIT 1
+		`, changesetID)
+	} else {
+		row = s.pool.QueryRow(ctx, `
+			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files, author, message, created_at
+			FROM changeset_snapshots
+			WHERE changeset_id = $1 AND version = $2
+			LIMIT 1
+		`, changesetID, version)
+	}
+
+	var snapshot models.ChangesetSnapshot
+	var modifiedJSON []byte
+	err := row.Scan(
+		&snapshot.ID,
+		&snapshot.ChangesetID,
+		&snapshot.Version,
+		&snapshot.Hash,
+		&snapshot.BaseCommitHash,
+		&modifiedJSON,
+		&snapshot.Author,
+		&snapshot.Message,
+		&snapshot.CreatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrChangesetNotFound
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(modifiedJSON, &snapshot.ModifiedFiles); err != nil {
+		snapshot.ModifiedFiles = []string{}
+	}
+	return &snapshot, nil
+}
+
+func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error) {
+	ctx = ensureCtx(ctx)
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, changeset_id, version, hash, base_commit_hash, modified_files, author, message, created_at
+		FROM changeset_snapshots
+		WHERE changeset_id = $1
+		ORDER BY version DESC
+		LIMIT $2
+	`, changesetID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]*models.ChangesetSnapshot, 0)
+	for rows.Next() {
+		var snapshot models.ChangesetSnapshot
+		var modifiedJSON []byte
+		if err := rows.Scan(
+			&snapshot.ID,
+			&snapshot.ChangesetID,
+			&snapshot.Version,
+			&snapshot.Hash,
+			&snapshot.BaseCommitHash,
+			&modifiedJSON,
+			&snapshot.Author,
+			&snapshot.Message,
+			&snapshot.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(modifiedJSON, &snapshot.ModifiedFiles); err != nil {
+			snapshot.ModifiedFiles = []string{}
+		}
+		snapshotCopy := snapshot
+		result = append(result, &snapshotCopy)
+	}
+	if result == nil {
+		result = []*models.ChangesetSnapshot{}
+	}
+	return result, rows.Err()
 }
 
 // ============ File Content ============

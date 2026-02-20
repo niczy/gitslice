@@ -180,11 +180,6 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		return nil, status.Error(codes.Unauthenticated, "login required")
 	}
 
-	// Validate slice ID
-	if err := common.ValidateSliceID(req.SliceId); err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
-	}
-
 	modifiedFiles := normalizeModifiedFiles(req.ModifiedFiles)
 
 	// Validate modified files
@@ -192,6 +187,62 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if err := common.ValidateFileID(fileID); err != nil {
 			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file ID %s: %v", fileID, err))
 		}
+	}
+
+	targetChangesetID := strings.TrimSpace(req.GetChangesetId())
+	if targetChangesetID != "" {
+		if strings.TrimSpace(req.SliceId) != "" {
+			if err := common.ValidateSliceID(req.SliceId); err != nil {
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+			}
+		}
+
+		existing, err := s.storage.GetChangeset(ctx, targetChangesetID)
+		if err != nil {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", targetChangesetID))
+		}
+		if existing.Status == models.ChangesetStatusMerged || existing.Status == models.ChangesetStatusRejected {
+			return nil, status.Error(codes.FailedPrecondition, "closed changeset cannot accept new snapshots")
+		}
+
+		if strings.TrimSpace(req.SliceId) != "" && strings.TrimSpace(req.SliceId) != strings.TrimSpace(existing.SliceID) {
+			return nil, status.Error(codes.InvalidArgument, "slice_id must match the existing changeset")
+		}
+
+		slice, err := s.storage.GetSlice(ctx, existing.SliceID)
+		if err != nil {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", existing.SliceID))
+		}
+		if !authz.HasSliceViewAccess(slice, username) {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+		}
+
+		existing.Hash = fmt.Sprintf("hash-%d", time.Now().UnixNano())
+		existing.BaseCommitHash = req.BaseCommitHash
+		existing.ModifiedFiles = modifiedFiles
+		existing.Author = username
+		existing.Message = req.Message
+		if existing.Status == models.ChangesetStatusApproved {
+			existing.Status = models.ChangesetStatusPending
+		}
+
+		if err := s.storage.UpdateChangeset(ctx, existing); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
+		}
+		if err := s.createChangesetSnapshot(ctx, existing); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
+		}
+
+		return &slicev1.CreateChangesetResponse{
+			ChangesetId:   existing.ID,
+			ChangesetHash: existing.Hash,
+			Status:        convertChangesetStatusToProto(existing.Status),
+		}, nil
+	}
+
+	// Validate slice ID for new changesets.
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
 	}
 
 	slice, err := s.storage.GetSlice(ctx, req.SliceId)
@@ -220,11 +271,14 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create changeset: %v", err))
 	}
+	if err := s.createChangesetSnapshot(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
+	}
 
 	return &slicev1.CreateChangesetResponse{
 		ChangesetId:   cs.ID,
 		ChangesetHash: cs.Hash,
-		Status:        slicev1.ChangesetStatus_PENDING,
+		Status:        convertChangesetStatusToProto(cs.Status),
 	}, nil
 }
 
@@ -248,25 +302,73 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
+	snapshot, err := s.resolveChangesetSnapshotForReview(ctx, cs, req.GetSnapshotVersion())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	reviewCS := applySnapshotToChangeset(cs, snapshot)
+
 	diff := &slicev1.DiffSummary{
-		FilesAdded:    int32(len(cs.ModifiedFiles)),
+		FilesAdded:    int32(len(reviewCS.ModifiedFiles)),
 		FilesModified: 0,
 		FilesDeleted:  0,
-		LinesAdded:    int64(len(cs.ModifiedFiles)),
+		LinesAdded:    int64(len(reviewCS.ModifiedFiles)),
 		LinesRemoved:  0,
 	}
-	reviewChanges, warnings := s.buildReviewChanges(ctx, cs)
+	reviewChanges, warnings := s.buildReviewChanges(ctx, reviewCS)
 	if len(reviewChanges) > 0 {
 		diff = summarizeReviewChanges(reviewChanges)
 	}
 
 	return &slicev1.ReviewChangesetResponse{
-		Changeset:    convertChangesetToProto(cs),
+		Changeset:    convertChangesetToProto(reviewCS),
 		Diff:         diff,
 		ReviewStatus: slicev1.ReviewStatus_READY_FOR_MERGE,
 		Warnings:     warnings,
 		Changes:      reviewChanges,
+		Snapshot:     changesetSnapshotToProto(snapshot),
 	}, nil
+}
+
+func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *slicev1.ListChangesetSnapshotsRequest) (*slicev1.ListChangesetSnapshotsResponse, error) {
+	log.Printf("ListChangesetSnapshots called: changeset_id=%s", req.GetChangesetId())
+
+	username := auth.UsernameFromGRPCContext(ctx)
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
+	}
+
+	cs, err := s.storage.GetChangeset(ctx, req.GetChangesetId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.GetChangesetId()))
+	}
+
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = 100
+	}
+
+	snapshots, err := s.storage.ListChangesetSnapshots(ctx, cs.ID, limit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list changeset snapshots: %v", err))
+	}
+	if len(snapshots) == 0 {
+		snapshots = []*models.ChangesetSnapshot{buildSyntheticChangesetSnapshot(cs)}
+	}
+
+	resp := &slicev1.ListChangesetSnapshotsResponse{}
+	for _, snapshot := range snapshots {
+		resp.Snapshots = append(resp.Snapshots, changesetSnapshotToProto(snapshot))
+	}
+	return resp, nil
 }
 
 func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.MergeChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
@@ -563,11 +665,14 @@ func (s *sliceServiceServer) RevertCommitChange(ctx context.Context, req *slicev
 	if err := s.storage.CreateChangeset(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create revert changeset: %v", err))
 	}
+	if err := s.createChangesetSnapshot(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
+	}
 
 	return &slicev1.CreateChangesetResponse{
 		ChangesetId:   cs.ID,
 		ChangesetHash: cs.Hash,
-		Status:        slicev1.ChangesetStatus_PENDING,
+		Status:        convertChangesetStatusToProto(cs.Status),
 	}, nil
 }
 
@@ -1155,6 +1260,105 @@ func summarizeReviewChanges(changes []*filev1.FileChangeRecord) *slicev1.DiffSum
 	return summary
 }
 
+func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *models.Changeset) error {
+	if cs == nil {
+		return nil
+	}
+
+	snapshots, err := s.storage.ListChangesetSnapshots(ctx, cs.ID, 1)
+	if err != nil {
+		return err
+	}
+
+	nextVersion := int32(1)
+	if len(snapshots) > 0 && snapshots[0] != nil && snapshots[0].Version > 0 {
+		nextVersion = snapshots[0].Version + 1
+	}
+
+	snapshot := &models.ChangesetSnapshot{
+		ID:             fmt.Sprintf("%s-snapshot-%d", cs.ID, nextVersion),
+		ChangesetID:    cs.ID,
+		Version:        nextVersion,
+		Hash:           cs.Hash,
+		BaseCommitHash: cs.BaseCommitHash,
+		ModifiedFiles:  normalizeModifiedFiles(cs.ModifiedFiles),
+		Author:         cs.Author,
+		Message:        cs.Message,
+		CreatedAt:      time.Now(),
+	}
+	return s.storage.CreateChangesetSnapshot(ctx, snapshot)
+}
+
+func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnapshot {
+	if cs == nil {
+		return nil
+	}
+	createdAt := cs.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	return &models.ChangesetSnapshot{
+		ID:             fmt.Sprintf("%s-snapshot-1", cs.ID),
+		ChangesetID:    cs.ID,
+		Version:        1,
+		Hash:           cs.Hash,
+		BaseCommitHash: cs.BaseCommitHash,
+		ModifiedFiles:  normalizeModifiedFiles(cs.ModifiedFiles),
+		Author:         cs.Author,
+		Message:        cs.Message,
+		CreatedAt:      createdAt,
+	}
+}
+
+func (s *sliceServiceServer) resolveChangesetSnapshotForReview(ctx context.Context, cs *models.Changeset, requestedVersion int32) (*models.ChangesetSnapshot, error) {
+	if cs == nil {
+		return nil, fmt.Errorf("changeset is required")
+	}
+
+	snapshot, err := s.storage.GetChangesetSnapshot(ctx, cs.ID, requestedVersion)
+	if err == nil && snapshot != nil {
+		return snapshot, nil
+	}
+	if requestedVersion > 0 {
+		return nil, fmt.Errorf("changeset snapshot version %d not found", requestedVersion)
+	}
+	return buildSyntheticChangesetSnapshot(cs), nil
+}
+
+func applySnapshotToChangeset(cs *models.Changeset, snapshot *models.ChangesetSnapshot) *models.Changeset {
+	if cs == nil {
+		return nil
+	}
+	copyCS := *cs
+	if snapshot == nil {
+		copyCS.ModifiedFiles = normalizeModifiedFiles(copyCS.ModifiedFiles)
+		return &copyCS
+	}
+	copyCS.Hash = strings.TrimSpace(snapshot.Hash)
+	copyCS.BaseCommitHash = strings.TrimSpace(snapshot.BaseCommitHash)
+	copyCS.ModifiedFiles = normalizeModifiedFiles(snapshot.ModifiedFiles)
+	copyCS.Author = snapshot.Author
+	copyCS.Message = snapshot.Message
+	return &copyCS
+}
+
+func changesetSnapshotToProto(snapshot *models.ChangesetSnapshot) *slicev1.ChangesetSnapshotInfo {
+	if snapshot == nil {
+		return nil
+	}
+	return &slicev1.ChangesetSnapshotInfo{
+		SnapshotId:     snapshot.ID,
+		ChangesetId:    snapshot.ChangesetID,
+		Version:        snapshot.Version,
+		Hash:           snapshot.Hash,
+		BaseCommitHash: snapshot.BaseCommitHash,
+		ModifiedFiles:  normalizeModifiedFiles(snapshot.ModifiedFiles),
+		Author:         snapshot.Author,
+		Message:        snapshot.Message,
+		CreatedAt:      snapshot.CreatedAt.Unix(),
+	}
+}
+
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {
 	log.Printf("RebaseChangeset called: changeset_id=%s", req.ChangesetId)
 
@@ -1291,15 +1495,7 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 }
 
 func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
-	status := slicev1.ChangesetStatus_PENDING
-	switch cs.Status {
-	case models.ChangesetStatusApproved:
-		status = slicev1.ChangesetStatus_APPROVED
-	case models.ChangesetStatusRejected:
-		status = slicev1.ChangesetStatus_REJECTED
-	case models.ChangesetStatusMerged:
-		status = slicev1.ChangesetStatus_MERGED
-	}
+	status := convertChangesetStatusToProto(cs.Status)
 
 	var mergedAt int64
 	if cs.MergedAt != nil {
@@ -1317,6 +1513,19 @@ func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
 		Message:        cs.Message,
 		CreatedAt:      cs.CreatedAt.Unix(),
 		MergedAt:       mergedAt,
+	}
+}
+
+func convertChangesetStatusToProto(status models.ChangesetStatus) slicev1.ChangesetStatus {
+	switch status {
+	case models.ChangesetStatusApproved:
+		return slicev1.ChangesetStatus_APPROVED
+	case models.ChangesetStatusRejected:
+		return slicev1.ChangesetStatus_REJECTED
+	case models.ChangesetStatusMerged:
+		return slicev1.ChangesetStatus_MERGED
+	default:
+		return slicev1.ChangesetStatus_PENDING
 	}
 }
 
