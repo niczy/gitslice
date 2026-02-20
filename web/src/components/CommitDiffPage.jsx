@@ -70,7 +70,7 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
   const [hasLoadedPatches, setHasLoadedPatches] = useState(false);
   const [isPatchLoading, setIsPatchLoading] = useState(false);
   const [patchLoadError, setPatchLoadError] = useState('');
-  const [revertingChangeId, setRevertingChangeId] = useState('');
+  const [isRevertingDiff, setIsRevertingDiff] = useState(false);
   const [actionError, setActionError] = useState('');
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
@@ -279,17 +279,24 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
     }
   }, [loadPatches]);
 
-  const handleRevertDiff = useCallback(async (change) => {
-    const changeID = change?.id || '';
-    if (!changeID) {
-      setActionError('This diff cannot be reverted because it has no change id.');
+  const revertSliceId = useMemo(() => {
+    const sliceIDs = new Set((diffData?.changes || [])
+      .map((change) => change?.slice_id)
+      .filter((value) => typeof value === 'string' && value.trim() !== ''));
+    if (sliceIDs.size === 1) {
+      return [...sliceIDs][0];
+    }
+    return '';
+  }, [diffData]);
+
+  const handleRevertDiff = useCallback(async () => {
+    if (!commitHash || isRevertingDiff) {
       return;
     }
-
     setActionError('');
-    setRevertingChangeId(changeID);
+    setIsRevertingDiff(true);
     try {
-      const response = await createRevertChangeset(commitHash, changeID, change?.slice_id || '');
+      const response = await createRevertChangeset(commitHash, revertSliceId);
       const changesetID = response?.changesetId || response?.changeset_id;
       if (!changesetID) {
         throw new Error('missing changeset id');
@@ -298,9 +305,9 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
     } catch (err) {
       setActionError(err?.message || 'Unable to create revert changeset.');
     } finally {
-      setRevertingChangeId('');
+      setIsRevertingDiff(false);
     }
-  }, [commitHash, onOpenChangesetDiff]);
+  }, [commitHash, isRevertingDiff, onOpenChangesetDiff, revertSliceId]);
 
   return (
     <section className="commit-diff-page" data-testid="commit-diff-page">
@@ -340,6 +347,17 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
             data-testid="diff-view-split-btn"
           >
             Side-by-side
+          </button>
+        </div>
+        <div className="changeset-actions" data-testid="diff-actions">
+          <button
+            type="button"
+            className="primary changeset-action-merge"
+            onClick={handleRevertDiff}
+            disabled={isLoading || isRevertingDiff || !commitHash}
+            data-testid="diff-revert-btn"
+          >
+            {isRevertingDiff ? 'Reverting…' : 'Revert diff in new changeset'}
           </button>
         </div>
       </div>
@@ -428,23 +446,6 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
                           <span className="diff-file-old-path">(was: {change.old_path})</span>
                         )}
                       </div>
-                      <details className="diff-file-actions" data-testid="diff-file-actions-menu">
-                        <summary className="ghost diff-file-actions-trigger">Actions ▾</summary>
-                        <div className="diff-file-actions-menu">
-                          <button
-                            type="button"
-                            className="ghost diff-file-action-btn"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              handleRevertDiff(change);
-                            }}
-                            disabled={revertingChangeId === fileKey}
-                            data-testid="diff-file-revert-btn"
-                          >
-                            {revertingChangeId === fileKey ? 'Reverting…' : 'Revert in new changeset'}
-                          </button>
-                        </div>
-                      </details>
                     </div>
                     <div className="diff-file-stats">
                       {(change.lines_added > 0 || change.lines_deleted > 0) && (

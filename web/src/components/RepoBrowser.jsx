@@ -61,6 +61,7 @@ export default function RepoBrowser({
   currentSliceId,
   onSliceChange,
   onNavigateToDiff,
+  refreshHistoryToken,
   isActive,
   slicesLoading,
   slicesError,
@@ -245,7 +246,7 @@ export default function RepoBrowser({
   };
 
   // Fetch file history from the API
-  const fetchFileHistory = async (filePath) => {
+  const fetchFileHistory = useCallback(async (filePath) => {
     if (!filePath) {
       return;
     }
@@ -266,7 +267,7 @@ export default function RepoBrowser({
     } finally {
       setHistoryLoading(false);
     }
-  };
+  }, [sliceId]);
 
   // Toggle history panel
   const toggleHistory = () => {
@@ -276,6 +277,13 @@ export default function RepoBrowser({
       fetchFileHistory(selectedFile);
     }
   };
+
+  useEffect(() => {
+    if (!isActive || !showHistory || !selectedFile || !refreshHistoryToken) {
+      return;
+    }
+    fetchFileHistory(selectedFile);
+  }, [fetchFileHistory, isActive, refreshHistoryToken, selectedFile, showHistory]);
 
   useEffect(() => {
     if (!canLoad) {

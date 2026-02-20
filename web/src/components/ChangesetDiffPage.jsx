@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getChangesetDiff } from '../utils/api.js';
+import { closeChangeset, getChangesetDiff, mergeChangeset } from '../utils/api.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChangeType, normalizeChangesetDiffResponse } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
@@ -8,11 +8,13 @@ import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 // Changeset Diff Page Component
 // ---------------------------------------------------------------------------
 
-export default function ChangesetDiffPage({ changesetId, onBack }) {
+export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClosed }) {
   const [payload, setPayload] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [viewMode, setViewMode] = useState('unified');
+  const [actionLoading, setActionLoading] = useState('');
+  const [actionError, setActionError] = useState('');
 
   useEffect(() => {
     if (!changesetId) return;
@@ -42,6 +44,34 @@ export default function ChangesetDiffPage({ changesetId, onBack }) {
   const changeset = payload?.changeset || null;
   const diff = payload?.diff || null;
   const changes = useMemo(() => payload?.changes || [], [payload]);
+
+  const handleMerge = async () => {
+    if (!changesetId || actionLoading) return;
+    setActionError('');
+    setActionLoading('merge');
+    try {
+      const result = await mergeChangeset(changesetId);
+      onMerged?.(result);
+    } catch (err) {
+      setActionError(err?.message || 'Unable to merge changeset.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleClose = async () => {
+    if (!changesetId || actionLoading) return;
+    setActionError('');
+    setActionLoading('close');
+    try {
+      const result = await closeChangeset(changesetId);
+      onClosed?.(result);
+    } catch (err) {
+      setActionError(err?.message || 'Unable to close changeset.');
+    } finally {
+      setActionLoading('');
+    }
+  };
 
   return (
     <section className="commit-diff-page" data-testid="changeset-diff-page">
@@ -83,7 +113,28 @@ export default function ChangesetDiffPage({ changesetId, onBack }) {
             Side-by-side
           </button>
         </div>
+        <div className="changeset-actions" data-testid="changeset-actions">
+          <button
+            type="button"
+            className="primary changeset-action-merge"
+            onClick={handleMerge}
+            disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged'}
+            data-testid="changeset-merge-btn"
+          >
+            {actionLoading === 'merge' ? 'Merging…' : 'Merge'}
+          </button>
+          <button
+            type="button"
+            className="ghost changeset-action-close"
+            onClick={handleClose}
+            disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged' || changeset?.status === 'rejected'}
+            data-testid="changeset-close-btn"
+          >
+            {actionLoading === 'close' ? 'Closing…' : 'Close'}
+          </button>
+        </div>
       </div>
+      {actionError && <div className="panel-error diff-action-error">{actionError}</div>}
 
       <div className="diff-content">
         {isLoading && <div className="diff-loading">Loading changeset diff...</div>}

@@ -141,15 +141,6 @@ func startGatewayServer(grpcAddr string, st storage.Storage) (string, *http.Serv
 	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("test-gateway", func(ctx context.Context) bool {
 		return gateway.GRPCReady(ctx, grpcAddr)
 	}))
-	changesetsAPI := httpapi.NewChangesetsAPI(st)
-	httpMux.Handle("/v1/commits/", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/changes/revert") {
-			changesetsAPI.HandleCommitChangeRevert(w, r)
-			return
-		}
-		gatewayMux.ServeHTTP(w, r)
-	})))
-	httpMux.Handle("/v1/changesets/", gateway.WithCORS(http.HandlerFunc(changesetsAPI.HandleChangesetDiff)))
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, testAgentSvc)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	httpMux.Handle("/", gateway.WithCORS(gatewayMux))

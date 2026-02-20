@@ -30,18 +30,32 @@ export function normalizeDiffResponse(data) {
 export function normalizeChangesetDiffResponse(data) {
   const changeset = data?.changeset || {};
   const diff = data?.diff || {};
+  const normalizedChangeset = {
+    ...changeset,
+    changeset_id: changeset.changeset_id ?? changeset.changesetId,
+    changeset_hash: changeset.changeset_hash ?? changeset.changesetHash,
+    slice_id: changeset.slice_id ?? changeset.sliceId,
+    base_commit_hash: changeset.base_commit_hash ?? changeset.baseCommitHash,
+    modified_files: changeset.modified_files ?? changeset.modifiedFiles ?? [],
+    created_at: changeset.created_at ?? changeset.createdAt,
+    merged_at: changeset.merged_at ?? changeset.mergedAt,
+    status: normalizeChangesetStatus(changeset.status),
+  };
+  const normalizedChanges = (data?.changes || [])
+    .map(normalizeChange);
+  const synthesizedChanges = (normalizedChangeset.modified_files || []).map((path, index) => ({
+    id: `${normalizedChangeset.changeset_id || 'changeset'}-${index}`,
+    slice_id: normalizedChangeset.slice_id || '',
+    path,
+    old_path: '',
+    change_type: 'modify',
+    lines_added: 0,
+    lines_deleted: 0,
+    patch: '',
+  }));
   return {
     ...data,
-    changeset: {
-      ...changeset,
-      changeset_id: changeset.changeset_id ?? changeset.changesetId,
-      changeset_hash: changeset.changeset_hash ?? changeset.changesetHash,
-      slice_id: changeset.slice_id ?? changeset.sliceId,
-      base_commit_hash: changeset.base_commit_hash ?? changeset.baseCommitHash,
-      modified_files: changeset.modified_files ?? changeset.modifiedFiles ?? [],
-      created_at: changeset.created_at ?? changeset.createdAt,
-      merged_at: changeset.merged_at ?? changeset.mergedAt,
-    },
+    changeset: normalizedChangeset,
     diff: {
       ...diff,
       files_added: diff.files_added ?? diff.filesAdded ?? 0,
@@ -50,8 +64,16 @@ export function normalizeChangesetDiffResponse(data) {
       lines_added: diff.lines_added ?? diff.linesAdded ?? 0,
       lines_removed: diff.lines_removed ?? diff.linesRemoved ?? 0,
     },
-    changes: (data?.changes || []).map(normalizeChange),
+    changes: normalizedChanges.length > 0 ? normalizedChanges : synthesizedChanges,
   };
+}
+
+export function normalizeChangesetStatus(value) {
+  if (value === 0 || value === 'PENDING' || value === 'pending') return 'pending';
+  if (value === 1 || value === 'APPROVED' || value === 'approved') return 'approved';
+  if (value === 2 || value === 'REJECTED' || value === 'rejected') return 'rejected';
+  if (value === 3 || value === 'MERGED' || value === 'merged') return 'merged';
+  return 'pending';
 }
 
 export function normalizeSliceInfo(slice) {

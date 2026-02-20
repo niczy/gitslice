@@ -2750,6 +2750,18 @@ body {
   color: var(--text-muted);
 }
 
+.changeset-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.changeset-action-merge,
+.changeset-action-close {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+}
+
 .changeset-message {
   margin: 0 0 12px;
   padding: 10px 12px;

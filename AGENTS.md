@@ -7,6 +7,7 @@ These guidelines apply to the entire repository.
 - Run `make test` when changing Go code or protos to catch regressions (this installs dependencies).
 - If `.proto` files are updated, regenerate the Go stubs with the commands in `README.md`, but do not commit generated `*.pb.go` / `*.pb.gw.go` files.
 - Keep documentation changes concise and prefer updating existing sections instead of adding new top-level files unless necessary.
+- APIs should be implemented gRPC-first: define/extend `.proto` services and expose HTTP via grpc-gateway bindings. Avoid adding standalone net/http REST endpoints for `/v1/*` when the route can be served through gateway.
 - Agent session APIs must be exposed via gRPC service definitions with grpc-gateway HTTP bindings (no standalone net/http REST handlers for `/v1/agent-sessions`).
 - Do not commit generated protobuf outputs (`*.pb.go`, `*.pb.gw.go`); generate them locally as part of build/test workflows.
 - Keep the integration test (`workflow_test/integration_test.go`) exercising the CLI and services end to end; ensure it stays up to date when altering related behavior and run it with `RUN_INTEGRATION_TESTS=1 make test` during relevant changes.

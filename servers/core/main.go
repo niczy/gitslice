@@ -75,16 +75,6 @@ func main() {
 		return gateway.GRPCReady(ctx, grpcDialAddr)
 	}))
 
-	changesetsAPI := httpapi.NewChangesetsAPI(st)
-	httpMux.Handle("/v1/commits/", gateway.WithCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/changes/revert") {
-			changesetsAPI.HandleCommitChangeRevert(w, r)
-			return
-		}
-		gatewayMux.ServeHTTP(w, r)
-	})))
-	httpMux.Handle("/v1/changesets/", gateway.WithCORS(http.HandlerFunc(changesetsAPI.HandleChangesetDiff)))
-
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and

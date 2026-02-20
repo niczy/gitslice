@@ -72,6 +72,7 @@ function App() {
   const [currentSliceId, setCurrentSliceId] = useState('');
   const [slicesLoading, setSlicesLoading] = useState(false);
   const [slicesError, setSlicesError] = useState('');
+  const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
 
   // Agent sessions state
   const [agentSessions, setAgentSessions] = useState([]);
@@ -163,6 +164,15 @@ function App() {
     // The RepoBrowser component stays mounted, so all state is preserved.
     window.history.back();
   }, []);
+
+  const handleChangesetMerged = useCallback(() => {
+    setHistoryRefreshToken((value) => value + 1);
+    navigate('browser');
+  }, [navigate]);
+
+  const handleChangesetClosed = useCallback(() => {
+    navigate('browser');
+  }, [navigate]);
 
   useEffect(() => {
     const syncOAuthSession = async () => {
@@ -521,6 +531,7 @@ function App() {
               currentSliceId={currentSliceId}
               onSliceChange={setCurrentSliceId}
               onNavigateToDiff={navigateToDiff}
+              refreshHistoryToken={historyRefreshToken}
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
               slicesError={slicesError}
@@ -541,6 +552,8 @@ function App() {
           <ChangesetDiffPage
             changesetId={diffChangesetId}
             onBack={navigateBackFromDiff}
+            onMerged={handleChangesetMerged}
+            onClosed={handleChangesetClosed}
           />
         )}
       </main>

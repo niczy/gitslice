@@ -9,6 +9,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc/metadata"
 )
@@ -499,5 +500,205 @@ func TestRootPromotionQueueBatchesSameSlice(t *testing.T) {
 	}
 	if got, want := state.History[0].CommitHash, "commit-3"; got != want {
 		t.Fatalf("expected newest history commit %q, got %q", want, got)
+	}
+}
+
+func TestRevertChangesetHashRoundTrip(t *testing.T) {
+	commitHash := "commit-abcdef123456"
+	changeID := "chg-001"
+
+	hash := buildRevertChangesetHash(commitHash, changeID)
+	gotCommit, gotChange, ok := parseRevertChangesetHash(hash)
+	if !ok {
+		t.Fatalf("expected parseRevertChangesetHash to parse %q", hash)
+	}
+	if gotCommit != commitHash {
+		t.Fatalf("expected commit hash %q, got %q", commitHash, gotCommit)
+	}
+	if gotChange != changeID {
+		t.Fatalf("expected change id %q, got %q", changeID, gotChange)
+	}
+}
+
+func TestReviewChangesetIncludesRevertPatch(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-revert", Name: "slice-revert", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  "content-old",
+		Path:    "README.md",
+		Content: []byte("line1\n"),
+		Size:    int64(len("line1\n")),
+		Hash:    "content-old",
+	}); err != nil {
+		t.Fatalf("failed to add old content: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  "content-new",
+		Path:    "README.md",
+		Content: []byte("line1\nline2\n"),
+		Size:    int64(len("line1\nline2\n")),
+		Hash:    "content-new",
+	}); err != nil {
+		t.Fatalf("failed to add new content: %v", err)
+	}
+
+	const sourceCommit = "commit-source"
+	const sourceChangeID = "chg-source"
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:           sourceChangeID,
+		SliceID:      slice.ID,
+		CommitHash:   sourceCommit,
+		Path:         "README.md",
+		ChangeType:   models.ChangeTypeModify,
+		OldHash:      "content-old",
+		NewHash:      "content-new",
+		LinesAdded:   1,
+		LinesDeleted: 0,
+		Author:       "tester",
+		Message:      "add line2",
+		Timestamp:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("failed to add source change: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.RevertCommitChange(ctx, &slicev1.RevertCommitChangeRequest{
+		CommitHash: sourceCommit,
+		ChangeId:   sourceChangeID,
+		SliceId:    slice.ID,
+	})
+	if err != nil {
+		t.Fatalf("RevertCommitChange failed: %v", err)
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if len(reviewResp.GetChanges()) != 1 {
+		t.Fatalf("expected 1 review change, got %d", len(reviewResp.GetChanges()))
+	}
+
+	change := reviewResp.GetChanges()[0]
+	if got, want := change.GetChangeType(), filev1.ChangeType_CHANGE_TYPE_MODIFY; got != want {
+		t.Fatalf("expected revert change type %v, got %v", want, got)
+	}
+	if !strings.Contains(change.GetPatch(), "-line2") {
+		t.Fatalf("expected revert patch to remove line2, got %q", change.GetPatch())
+	}
+	if reviewResp.GetDiff().GetFilesModified() != 1 {
+		t.Fatalf("expected diff files_modified=1, got %d", reviewResp.GetDiff().GetFilesModified())
+	}
+}
+
+func TestReviewChangesetIncludesAllCommitDiffChangesForRevert(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-revert-all", Name: "slice-revert-all", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	contents := []*models.FileContent{
+		{FileID: "readme-old", Path: "README.md", Content: []byte("line1\n"), Size: int64(len("line1\n")), Hash: "readme-old"},
+		{FileID: "readme-new", Path: "README.md", Content: []byte("line1\nline2\n"), Size: int64(len("line1\nline2\n")), Hash: "readme-new"},
+		{FileID: "newfile", Path: "NEW.md", Content: []byte("new file\n"), Size: int64(len("new file\n")), Hash: "newfile"},
+	}
+	for _, content := range contents {
+		if err := st.AddFileContent(ctx, content); err != nil {
+			t.Fatalf("failed to add content %s: %v", content.Hash, err)
+		}
+	}
+
+	const sourceCommit = "commit-source-all"
+	seedChanges := []*models.FileChangeRecord{
+		{
+			ID:           "chg-modify",
+			SliceID:      slice.ID,
+			CommitHash:   sourceCommit,
+			Path:         "README.md",
+			ChangeType:   models.ChangeTypeModify,
+			OldHash:      "readme-old",
+			NewHash:      "readme-new",
+			LinesAdded:   1,
+			LinesDeleted: 0,
+			Author:       "tester",
+			Message:      "modify readme",
+			Timestamp:    time.Now().UTC(),
+		},
+		{
+			ID:           "chg-add",
+			SliceID:      slice.ID,
+			CommitHash:   sourceCommit,
+			Path:         "NEW.md",
+			ChangeType:   models.ChangeTypeAdd,
+			OldHash:      "",
+			NewHash:      "newfile",
+			LinesAdded:   1,
+			LinesDeleted: 0,
+			Author:       "tester",
+			Message:      "add new file",
+			Timestamp:    time.Now().UTC().Add(time.Second),
+		},
+	}
+	if err := st.AddFileChanges(ctx, seedChanges); err != nil {
+		t.Fatalf("failed to add source changes: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.RevertCommitChange(ctx, &slicev1.RevertCommitChangeRequest{
+		CommitHash: sourceCommit,
+		SliceId:    slice.ID,
+	})
+	if err != nil {
+		t.Fatalf("RevertCommitChange failed: %v", err)
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if len(reviewResp.GetChanges()) != 2 {
+		t.Fatalf("expected 2 review changes, got %d", len(reviewResp.GetChanges()))
+	}
+
+	changesByPath := make(map[string]*filev1.FileChangeRecord, len(reviewResp.GetChanges()))
+	for _, change := range reviewResp.GetChanges() {
+		changesByPath[change.GetPath()] = change
+	}
+	readmeChange := changesByPath["README.md"]
+	if readmeChange == nil {
+		t.Fatalf("expected README.md revert change in response")
+	}
+	if got, want := readmeChange.GetChangeType(), filev1.ChangeType_CHANGE_TYPE_MODIFY; got != want {
+		t.Fatalf("expected README.md revert change type %v, got %v", want, got)
+	}
+	if !strings.Contains(readmeChange.GetPatch(), "-line2") {
+		t.Fatalf("expected README.md revert patch to remove line2, got %q", readmeChange.GetPatch())
+	}
+
+	newFileChange := changesByPath["NEW.md"]
+	if newFileChange == nil {
+		t.Fatalf("expected NEW.md revert change in response")
+	}
+	if got, want := newFileChange.GetChangeType(), filev1.ChangeType_CHANGE_TYPE_DELETE; got != want {
+		t.Fatalf("expected NEW.md revert change type %v, got %v", want, got)
+	}
+	if newFileChange.GetPatch() == "" {
+		t.Fatalf("expected NEW.md revert patch to be present")
+	}
+
+	if reviewResp.GetDiff().GetFilesModified() != 1 {
+		t.Fatalf("expected diff files_modified=1, got %d", reviewResp.GetDiff().GetFilesModified())
+	}
+	if reviewResp.GetDiff().GetFilesDeleted() != 1 {
+		t.Fatalf("expected diff files_deleted=1, got %d", reviewResp.GetDiff().GetFilesDeleted())
 	}
 }
