@@ -224,6 +224,47 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 	}
 }
 
+func TestSliceMountRootEntriesUseFullAliasName(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "mounted-full-alias",
+		Name:      "mounted-full-alias",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files: []string{
+			"o/genesis/projects/repo-a/README.md",
+		},
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "o/genesis/projects/repo-a", Alias: "o/genesis/projects/repo-a"},
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: "mounted-full-alias"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(resp.GetEntries()); got != 1 {
+		t.Fatalf("expected 1 root entry, got %d", got)
+	}
+	entry := resp.GetEntries()[0]
+	if entry.GetPath() != "o/genesis/projects/repo-a" {
+		t.Fatalf("unexpected path %q", entry.GetPath())
+	}
+	if entry.GetName() != "o/genesis/projects/repo-a" {
+		t.Fatalf("expected full alias name, got %q", entry.GetName())
+	}
+}
+
 func TestFileHistoryUsesDisplayPathForMountedSlice(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

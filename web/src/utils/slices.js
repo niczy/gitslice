@@ -4,6 +4,7 @@ export function getSliceDisplayName(sliceNameOrId) {
     return '';
   }
 
-  const segments = value.split('/').filter(Boolean);
-  return segments.length > 0 ? segments[segments.length - 1] : value;
+  return value
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/+$/, '');
 }

@@ -127,6 +127,40 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	}
 }
 
+func TestCreateSliceUsesFolderPathAsDefaultName(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	if err := st.AddFileToSlice(ctx, "org/project/service/main.go", "root_slice"); err != nil {
+		t.Fatalf("failed to add root file: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: "root_slice",
+		FolderPath:    "org/project/service",
+		Description:   "derive default name from folder",
+	})
+	if err != nil {
+		t.Fatalf("CreateSliceFromFolder failed: %v", err)
+	}
+
+	if resp.Name != "org/project/service" {
+		t.Fatalf("expected derived name %q, got %q", "org/project/service", resp.Name)
+	}
+
+	slice, err := st.GetSlice(ctx, resp.SliceId)
+	if err != nil {
+		t.Fatalf("failed to get created slice: %v", err)
+	}
+	if slice.Name != "org/project/service" {
+		t.Fatalf("stored name mismatch: got %q", slice.Name)
+	}
+}
+
 func TestRenameSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
