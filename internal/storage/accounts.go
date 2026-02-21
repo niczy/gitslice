@@ -196,6 +196,46 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	return nil
 }
 
+func (s *InMemoryStorage) DeleteUser(ctx context.Context, username string) error {
+	_ = ctx
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[username]
+	if !ok || user == nil {
+		return ErrEntryNotFound
+	}
+	if email := normalizeEmail(user.PrimaryEmail); email != "" {
+		delete(s.userByEmail, email)
+	}
+	delete(s.users, username)
+
+	if sessionIDs := s.authSessionsByUser[username]; len(sessionIDs) > 0 {
+		for sessionID := range sessionIDs {
+			if session, ok := s.authSessions[sessionID]; ok && session != nil {
+				delete(s.authSessionByToken, session.Token)
+			}
+			delete(s.authSessions, sessionID)
+		}
+	}
+	delete(s.authSessionsByUser, username)
+
+	if orgs := s.userOrgs[username]; len(orgs) > 0 {
+		for slug := range orgs {
+			if members, ok := s.orgMembers[slug]; ok && members != nil {
+				delete(members, username)
+			}
+		}
+	}
+	delete(s.userOrgs, username)
+	return nil
+}
+
 func (s *InMemoryStorage) CreateAuthSession(ctx context.Context, session *models.AuthSession) error {
 	_ = ctx
 	if session == nil {
