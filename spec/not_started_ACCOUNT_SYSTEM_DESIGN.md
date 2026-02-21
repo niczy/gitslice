@@ -147,3 +147,87 @@ GET /activity?path=/{owner}/{path}
 - **AclEntry:** id, node_id, principal_type (user/team/org), principal_id, permission (read/write), inherited (bool).
 - **Share:** id, node_id, target_principal, permission.
 - **Session:** id, user_id, last_seen_at, device_info.
+
+## Execution Plan (PR by PR)
+
+### Delivery Rules
+- APIs are gRPC-first: define/extend `.proto` services and expose HTTP via grpc-gateway bindings.
+- Do not add standalone `net/http` handlers for `/v1/*` account system routes.
+- Complete one PR at a time: implement scope, run tests, push, wait for CI pass, merge, switch to `main`, `git pull --ff-only`, then start next PR.
+- Keep each PR independently mergeable and production-safe.
+
+### PR Sequence
+
+1. **PR1 - Account service scaffolding**
+   - Add `proto/account/account_service.proto` with route coverage for auth, users, orgs, memberships, teams, nodes, ACL, sharing, activity.
+   - Add grpc-gateway HTTP annotations for all target endpoints.
+   - Register account service in core server and gateway mux.
+   - Add server skeleton/stub implementation (unimplemented where needed).
+   - Exit criteria: route surface exists via gateway, build passes.
+
+2. **PR2 - Auth core + sessions**
+   - Implement signup/login/logout and password reset flow.
+   - Implement session listing + session revocation.
+   - Add persistent account/session storage fields and migrations (memory + postgres parity).
+   - Keep `Authorization: User <username>` only as explicit dev fallback path.
+   - Exit criteria: auth/session APIs functional end-to-end.
+
+3. **PR3 - Users API**
+   - Implement `GET/PATCH/DELETE /users/me` and `GET /users/{user_id}`.
+   - Add validation, profile updates, and safe account deletion semantics.
+   - Exit criteria: user APIs covered by unit/integration tests.
+
+4. **PR4 - Organizations + namespace ownership**
+   - Implement org create/list/get/update/delete.
+   - Enforce root slug uniqueness across users and orgs.
+   - Materialize ownership roots (`/{username}`, `/{org_slug}`) and role defaults.
+   - Exit criteria: uniqueness and ownership rules enforced in storage/service layers.
+
+5. **PR5 - Memberships + invites**
+   - Implement invite create/accept/decline.
+   - Implement member list/update/remove with admin safeguards (e.g. last-admin protection).
+   - Exit criteria: invite lifecycle and membership transitions validated.
+
+6. **PR6 - Teams**
+   - Implement team CRUD and team membership add/remove.
+   - Enforce org-scoped authorization for team management.
+   - Exit criteria: teams usable as ACL principals.
+
+7. **PR7 - Nodes model and APIs**
+   - Implement file/folder node APIs (`GET/POST/PATCH/DELETE`, move/copy, children list).
+   - Add path normalization and ownership boundary checks.
+   - Exit criteria: namespace operations behave correctly for user/org roots.
+
+8. **PR8 - ACL engine**
+   - Implement ACL CRUD and effective access endpoint.
+   - Enforce precedence: explicit node ACL > inherited ACL > org default > none.
+   - Enforce admin/owner override and write-implies-read.
+   - Exit criteria: central access evaluator integrated into node operations.
+
+9. **PR9 - Sharing + shared view + activity**
+   - Implement share create/delete and shared listing.
+   - Implement activity query by path.
+   - Add audit/event records for permission-relevant operations.
+   - Exit criteria: shared and activity experiences are test-covered and consistent with ACLs.
+
+10. **PR10 - OAuth/SSO linking + web migration**
+   - Implement auth method linking/unlinking and OAuth/SAML callback integration in account service.
+   - Migrate web app account calls to account gRPC-gateway endpoints.
+   - Remove legacy standalone account HTTP API paths from runtime wiring.
+   - Exit criteria: web login/profile/org workflows operate through gRPC+gateway only.
+
+11. **PR11 - E2E hardening + spec completion**
+   - Extend integration and web e2e coverage for auth/org/team/ACL/share paths.
+   - Update docs (`README`, operational notes) for new account behavior.
+   - Rename status to done and move this spec to finished state.
+   - Exit criteria: CI green, tests stable, spec marked finished.
+
+### Per-PR Verification Gate
+1. Run local checks:
+   - `export PATH=$HOME/.local/go/bin:$HOME/.local/protoc/bin:$PATH && make test`
+   - `RUN_INTEGRATION_TESTS=1 make test` (for auth/account semantics changes)
+   - `cd web && npm run test:e2e` (for web/auth UX changes)
+2. Push branch and open PR.
+3. Wait for GitHub Actions checks to pass.
+4. Merge PR.
+5. Switch to `main` and pull latest before next PR.
