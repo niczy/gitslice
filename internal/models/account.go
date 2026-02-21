@@ -28,6 +28,7 @@ type OrganizationRole string
 
 const (
 	OrganizationRoleOwner  OrganizationRole = "owner"
+	OrganizationRoleAdmin  OrganizationRole = "admin"
 	OrganizationRoleMember OrganizationRole = "member"
 )
 
@@ -37,6 +38,25 @@ type OrganizationMember struct {
 	Role      OrganizationRole `json:"role"`
 	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+type OrganizationInviteStatus string
+
+const (
+	OrganizationInvitePending  OrganizationInviteStatus = "pending"
+	OrganizationInviteAccepted OrganizationInviteStatus = "accepted"
+	OrganizationInviteDeclined OrganizationInviteStatus = "declined"
+)
+
+type OrganizationInvite struct {
+	InviteID    string                   `json:"invite_id"`
+	OrgSlug     string                   `json:"org_slug"`
+	TargetEmail string                   `json:"target_email"`
+	Role        OrganizationRole         `json:"role"`
+	Status      OrganizationInviteStatus `json:"status"`
+	CreatedBy   string                   `json:"created_by"`
+	CreatedAt   time.Time                `json:"created_at"`
+	UpdatedAt   time.Time                `json:"updated_at"`
 }
 
 type AuthSession struct {

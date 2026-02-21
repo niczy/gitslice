@@ -279,6 +279,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			agent_session_audit,
 			agent_session_events,
 			agent_sessions,
+			organization_invites,
 			organization_members,
 			organizations,
 			auth_sessions,
@@ -2952,6 +2953,9 @@ func (s *PostgresNativeStorage) DeleteOrganization(ctx context.Context, orgSlug 
 	if _, err := tx.Exec(ctx, `DELETE FROM organization_members WHERE org_slug = $1`, orgSlug); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_invites WHERE org_slug = $1`, orgSlug); err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, `DELETE FROM organizations WHERE slug = $1`, orgSlug)
 	if err != nil {
 		return err
@@ -2964,16 +2968,26 @@ func (s *PostgresNativeStorage) DeleteOrganization(ctx context.Context, orgSlug 
 
 func (s *PostgresNativeStorage) AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error {
 	ctx = ensureCtx(ctx)
-	if member == nil || member.OrgSlug == "" || member.Username == "" || member.Role == "" {
+	if member == nil {
 		return ErrInvalidInput
 	}
-	if !auth.ValidateUsername(member.Username) {
+	orgSlug := strings.TrimSpace(member.OrgSlug)
+	username := strings.TrimSpace(member.Username)
+	role := normalizeOrganizationRole(member.Role)
+	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) || !validOrganizationRole(role) {
 		return ErrInvalidInput
 	}
 
 	// Verify org exists.
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = $1)`, member.OrgSlug).Scan(&exists)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = $1)`, orgSlug).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrEntryNotFound
+	}
+	err = s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, username).Scan(&exists)
 	if err != nil {
 		return err
 	}
@@ -2986,6 +3000,9 @@ func (s *PostgresNativeStorage) AddOrganizationMember(ctx context.Context, membe
 		member.CreatedAt = now
 	}
 	member.UpdatedAt = now
+	member.OrgSlug = orgSlug
+	member.Username = username
+	member.Role = role
 
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO organization_members (org_slug, username, role, created_at, updated_at)
@@ -2997,6 +3014,241 @@ func (s *PostgresNativeStorage) AddOrganizationMember(ctx context.Context, membe
 		}
 		return err
 	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetOrganizationMember(ctx context.Context, orgSlug, username string) (*models.OrganizationMember, error) {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	var member models.OrganizationMember
+	err := s.pool.QueryRow(ctx, `
+		SELECT org_slug, username, role, created_at, updated_at
+		FROM organization_members
+		WHERE org_slug = $1 AND username = $2
+	`, orgSlug, username).Scan(&member.OrgSlug, &member.Username, &member.Role, &member.CreatedAt, &member.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &member, nil
+}
+
+func (s *PostgresNativeStorage) ListOrganizationMembers(ctx context.Context, orgSlug string) ([]*models.OrganizationMember, error) {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	if !auth.ValidateUsername(orgSlug) {
+		return nil, ErrInvalidInput
+	}
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = $1)`, orgSlug).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT org_slug, username, role, created_at, updated_at
+		FROM organization_members
+		WHERE org_slug = $1
+		ORDER BY username
+	`, orgSlug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	members := make([]*models.OrganizationMember, 0)
+	for rows.Next() {
+		var member models.OrganizationMember
+		if err := rows.Scan(&member.OrgSlug, &member.Username, &member.Role, &member.CreatedAt, &member.UpdatedAt); err != nil {
+			return nil, err
+		}
+		members = append(members, &member)
+	}
+	if members == nil {
+		members = []*models.OrganizationMember{}
+	}
+	return members, rows.Err()
+}
+
+func (s *PostgresNativeStorage) UpdateOrganizationMember(ctx context.Context, member *models.OrganizationMember) error {
+	ctx = ensureCtx(ctx)
+	if member == nil {
+		return ErrInvalidInput
+	}
+	orgSlug := strings.TrimSpace(member.OrgSlug)
+	username := strings.TrimSpace(member.Username)
+	role := normalizeOrganizationRole(member.Role)
+	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) || !validOrganizationRole(role) {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE organization_members
+		SET role = $1, updated_at = NOW()
+		WHERE org_slug = $2 AND username = $3
+	`, string(role), orgSlug, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	member.OrgSlug = orgSlug
+	member.Username = username
+	member.Role = role
+	return nil
+}
+
+func (s *PostgresNativeStorage) RemoveOrganizationMember(ctx context.Context, orgSlug, username string) error {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `DELETE FROM organization_members WHERE org_slug = $1 AND username = $2`, orgSlug, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) CreateOrganizationInvite(ctx context.Context, invite *models.OrganizationInvite) error {
+	ctx = ensureCtx(ctx)
+	if invite == nil {
+		return ErrInvalidInput
+	}
+	orgSlug := strings.TrimSpace(invite.OrgSlug)
+	inviteID := strings.TrimSpace(invite.InviteID)
+	targetEmail := normalizeEmail(invite.TargetEmail)
+	role := normalizeOrganizationRole(invite.Role)
+	status := normalizeOrganizationInviteStatus(invite.Status)
+	createdBy := strings.TrimSpace(invite.CreatedBy)
+
+	if !auth.ValidateUsername(orgSlug) || inviteID == "" || !validateEmail(targetEmail) || !auth.ValidateUsername(createdBy) || !validOrganizationRole(role) {
+		return ErrInvalidInput
+	}
+	if status == "" {
+		status = models.OrganizationInvitePending
+	}
+	if !validOrganizationInviteStatus(status) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if invite.CreatedAt.IsZero() {
+		invite.CreatedAt = now
+	}
+	invite.UpdatedAt = now
+	invite.OrgSlug = orgSlug
+	invite.InviteID = inviteID
+	invite.TargetEmail = targetEmail
+	invite.Role = role
+	invite.Status = status
+	invite.CreatedBy = createdBy
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO organization_invites (invite_id, org_slug, target_email, role, status, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, invite.InviteID, invite.OrgSlug, invite.TargetEmail, string(invite.Role), string(invite.Status), invite.CreatedBy, invite.CreatedAt, invite.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetOrganizationInvite(ctx context.Context, orgSlug, inviteID string) (*models.OrganizationInvite, error) {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	inviteID = strings.TrimSpace(inviteID)
+	if !auth.ValidateUsername(orgSlug) || inviteID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var invite models.OrganizationInvite
+	err := s.pool.QueryRow(ctx, `
+		SELECT invite_id, org_slug, target_email, role, status, created_by, created_at, updated_at
+		FROM organization_invites
+		WHERE org_slug = $1 AND invite_id = $2
+	`, orgSlug, inviteID).Scan(
+		&invite.InviteID,
+		&invite.OrgSlug,
+		&invite.TargetEmail,
+		&invite.Role,
+		&invite.Status,
+		&invite.CreatedBy,
+		&invite.CreatedAt,
+		&invite.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	invite.TargetEmail = normalizeEmail(invite.TargetEmail)
+	return &invite, nil
+}
+
+func (s *PostgresNativeStorage) UpdateOrganizationInvite(ctx context.Context, invite *models.OrganizationInvite) error {
+	ctx = ensureCtx(ctx)
+	if invite == nil {
+		return ErrInvalidInput
+	}
+	orgSlug := strings.TrimSpace(invite.OrgSlug)
+	inviteID := strings.TrimSpace(invite.InviteID)
+	targetEmail := normalizeEmail(invite.TargetEmail)
+	role := normalizeOrganizationRole(invite.Role)
+	status := normalizeOrganizationInviteStatus(invite.Status)
+	createdBy := strings.TrimSpace(invite.CreatedBy)
+	if !auth.ValidateUsername(orgSlug) || inviteID == "" || !validateEmail(targetEmail) || !auth.ValidateUsername(createdBy) || !validOrganizationRole(role) || !validOrganizationInviteStatus(status) {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE organization_invites
+		SET target_email = $1, role = $2, status = $3, created_by = $4, updated_at = NOW()
+		WHERE invite_id = $5 AND org_slug = $6
+	`, targetEmail, string(role), string(status), createdBy, inviteID, orgSlug)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	invite.OrgSlug = orgSlug
+	invite.InviteID = inviteID
+	invite.TargetEmail = targetEmail
+	invite.Role = role
+	invite.Status = status
+	invite.CreatedBy = createdBy
+	invite.UpdatedAt = time.Now()
 	return nil
 }
 

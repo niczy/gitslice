@@ -155,6 +155,73 @@ func orgToProto(org *models.Organization) *accountv1.Organization {
 	}
 }
 
+func normalizeOrganizationRole(role models.OrganizationRole) models.OrganizationRole {
+	return models.OrganizationRole(strings.ToLower(strings.TrimSpace(string(role))))
+}
+
+func isOrganizationAdminRole(role models.OrganizationRole) bool {
+	switch normalizeOrganizationRole(role) {
+	case models.OrganizationRoleOwner, models.OrganizationRoleAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+func membershipRoleToProto(role models.OrganizationRole) accountv1.Role {
+	if isOrganizationAdminRole(role) {
+		return accountv1.Role_ROLE_ADMIN
+	}
+	return accountv1.Role_ROLE_USER
+}
+
+func membershipRoleFromProto(role accountv1.Role) (models.OrganizationRole, error) {
+	switch role {
+	case accountv1.Role_ROLE_USER:
+		return models.OrganizationRoleMember, nil
+	case accountv1.Role_ROLE_ADMIN:
+		return models.OrganizationRoleAdmin, nil
+	default:
+		return "", status.Error(codes.InvalidArgument, "invalid role")
+	}
+}
+
+func membershipToProto(member *models.OrganizationMember) *accountv1.Membership {
+	if member == nil {
+		return nil
+	}
+	return &accountv1.Membership{
+		OrgId:  member.OrgSlug,
+		UserId: member.Username,
+		Role:   membershipRoleToProto(member.Role),
+	}
+}
+
+func inviteStatusToProto(status models.OrganizationInviteStatus) accountv1.InviteStatus {
+	switch status {
+	case models.OrganizationInviteAccepted:
+		return accountv1.InviteStatus_INVITE_STATUS_ACCEPTED
+	case models.OrganizationInviteDeclined:
+		return accountv1.InviteStatus_INVITE_STATUS_DECLINED
+	default:
+		return accountv1.InviteStatus_INVITE_STATUS_PENDING
+	}
+}
+
+func inviteToProto(invite *models.OrganizationInvite) *accountv1.Invite {
+	if invite == nil {
+		return nil
+	}
+	return &accountv1.Invite{
+		Id:          invite.InviteID,
+		OrgId:       invite.OrgSlug,
+		TargetEmail: invite.TargetEmail,
+		Role:        membershipRoleToProto(invite.Role),
+		Status:      inviteStatusToProto(invite.Status),
+		CreatedAt:   invite.CreatedAt.Format(timeRFC3339),
+	}
+}
+
 func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdentity, error) {
 	if token := auth.TokenFromGRPCContext(ctx); token != "" {
 		session, err := s.st.GetAuthSessionByToken(ctx, token)
@@ -724,6 +791,370 @@ func (s *accountServiceServer) DeleteOrganization(ctx context.Context, req *acco
 			return nil, status.Error(codes.NotFound, "organization not found")
 		}
 		return nil, status.Error(codes.Internal, "failed to delete organization")
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) CreateInvite(ctx context.Context, req *accountv1.CreateInviteRequest) (*accountv1.Invite, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	targetEmail := normalizeEmail(req.GetTargetEmail())
+	if !auth.ValidateUsername(orgSlug) || !validateEmail(targetEmail) {
+		return nil, status.Error(codes.InvalidArgument, "invalid invite request")
+	}
+	role, roleErr := membershipRoleFromProto(req.GetRole())
+	if roleErr != nil {
+		return nil, roleErr
+	}
+
+	org, err := s.st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize invite creation")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	inviteID, err := randomToken("inv_", 16)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to generate invite id")
+	}
+	invite := &models.OrganizationInvite{
+		InviteID:    inviteID,
+		OrgSlug:     org.Slug,
+		TargetEmail: targetEmail,
+		Role:        role,
+		Status:      models.OrganizationInvitePending,
+		CreatedBy:   identity.username,
+	}
+	if err := s.st.CreateOrganizationInvite(ctx, invite); err != nil {
+		switch err {
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "an active invite already exists for this email")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "organization not found")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid invite request")
+		default:
+			return nil, status.Error(codes.Internal, "failed to create invite")
+		}
+	}
+	created, err := s.st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load invite")
+	}
+	return inviteToProto(created), nil
+}
+
+func (s *accountServiceServer) AcceptInvite(ctx context.Context, req *accountv1.AcceptInviteRequest) (*accountv1.Invite, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	inviteID := strings.TrimSpace(req.GetInviteId())
+	if !auth.ValidateUsername(orgSlug) || inviteID == "" {
+		return nil, status.Error(codes.InvalidArgument, "invalid invite request")
+	}
+
+	invite, err := s.st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "invite not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load invite")
+	}
+	if invite.Status != models.OrganizationInvitePending {
+		return nil, status.Error(codes.FailedPrecondition, "invite is no longer pending")
+	}
+
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load account")
+	}
+	userEmail := normalizeEmail(user.PrimaryEmail)
+	if !validateEmail(userEmail) {
+		return nil, status.Error(codes.FailedPrecondition, "account must have a valid primary email to accept invites")
+	}
+	if userEmail != normalizeEmail(invite.TargetEmail) {
+		return nil, status.Error(codes.PermissionDenied, "invite does not match current account email")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+
+	grantedRole := normalizeOrganizationRole(invite.Role)
+	if grantedRole != models.OrganizationRoleAdmin {
+		grantedRole = models.OrganizationRoleMember
+	}
+	member, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	switch err {
+	case nil:
+		if !isOrganizationAdminRole(member.Role) && grantedRole == models.OrganizationRoleAdmin {
+			member.Role = models.OrganizationRoleAdmin
+			if err := s.st.UpdateOrganizationMember(ctx, member); err != nil {
+				return nil, status.Error(codes.Internal, "failed to apply invite role")
+			}
+		}
+	case storage.ErrEntryNotFound:
+		if err := s.st.AddOrganizationMember(ctx, &models.OrganizationMember{
+			OrgSlug:  orgSlug,
+			Username: identity.username,
+			Role:     grantedRole,
+		}); err != nil {
+			return nil, status.Error(codes.Internal, "failed to add organization member")
+		}
+	default:
+		return nil, status.Error(codes.Internal, "failed to apply invite")
+	}
+
+	invite.Status = models.OrganizationInviteAccepted
+	if err := s.st.UpdateOrganizationInvite(ctx, invite); err != nil {
+		return nil, status.Error(codes.Internal, "failed to update invite status")
+	}
+	updated, err := s.st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load updated invite")
+	}
+	return inviteToProto(updated), nil
+}
+
+func (s *accountServiceServer) DeclineInvite(ctx context.Context, req *accountv1.DeclineInviteRequest) (*accountv1.Invite, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	inviteID := strings.TrimSpace(req.GetInviteId())
+	if !auth.ValidateUsername(orgSlug) || inviteID == "" {
+		return nil, status.Error(codes.InvalidArgument, "invalid invite request")
+	}
+
+	invite, err := s.st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "invite not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load invite")
+	}
+	if invite.Status != models.OrganizationInvitePending {
+		return nil, status.Error(codes.FailedPrecondition, "invite is no longer pending")
+	}
+
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load account")
+	}
+	userEmail := normalizeEmail(user.PrimaryEmail)
+	if !validateEmail(userEmail) {
+		return nil, status.Error(codes.FailedPrecondition, "account must have a valid primary email to decline invites")
+	}
+	if userEmail != normalizeEmail(invite.TargetEmail) {
+		return nil, status.Error(codes.PermissionDenied, "invite does not match current account email")
+	}
+
+	invite.Status = models.OrganizationInviteDeclined
+	if err := s.st.UpdateOrganizationInvite(ctx, invite); err != nil {
+		return nil, status.Error(codes.Internal, "failed to update invite status")
+	}
+	updated, err := s.st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load updated invite")
+	}
+	return inviteToProto(updated), nil
+}
+
+func (s *accountServiceServer) ListMembers(ctx context.Context, req *accountv1.ListMembersRequest) (*accountv1.ListMembersResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	if !auth.ValidateUsername(orgSlug) {
+		return nil, status.Error(codes.InvalidArgument, "org_id is required")
+	}
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize membership access")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	members, err := s.st.ListOrganizationMembers(ctx, orgSlug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to list members")
+	}
+	out := make([]*accountv1.Membership, 0, len(members))
+	for _, member := range members {
+		out = append(out, membershipToProto(member))
+	}
+	return &accountv1.ListMembersResponse{Members: out}, nil
+}
+
+func (s *accountServiceServer) UpdateMember(ctx context.Context, req *accountv1.UpdateMemberRequest) (*accountv1.Membership, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	memberID := strings.TrimSpace(req.GetMemberId())
+	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(memberID) {
+		return nil, status.Error(codes.InvalidArgument, "invalid membership update")
+	}
+	desiredRole, roleErr := membershipRoleFromProto(req.GetRole())
+	if roleErr != nil {
+		return nil, roleErr
+	}
+
+	org, err := s.st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize membership update")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	member, err := s.st.GetOrganizationMember(ctx, orgSlug, memberID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "member not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load member")
+	}
+
+	if member.Username == org.CreatedBy {
+		return nil, status.Error(codes.FailedPrecondition, "cannot change organization owner role")
+	}
+
+	members, err := s.st.ListOrganizationMembers(ctx, orgSlug)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to validate admin constraints")
+	}
+	adminCount := 0
+	for _, item := range members {
+		if item != nil && isOrganizationAdminRole(item.Role) {
+			adminCount++
+		}
+	}
+	if isOrganizationAdminRole(member.Role) && !isOrganizationAdminRole(desiredRole) && adminCount <= 1 {
+		return nil, status.Error(codes.FailedPrecondition, "cannot demote the last organization admin")
+	}
+
+	member.Role = desiredRole
+	if err := s.st.UpdateOrganizationMember(ctx, member); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "member not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to update member")
+	}
+	return membershipToProto(member), nil
+}
+
+func (s *accountServiceServer) DeleteMember(ctx context.Context, req *accountv1.DeleteMemberRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	memberID := strings.TrimSpace(req.GetMemberId())
+	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(memberID) {
+		return nil, status.Error(codes.InvalidArgument, "invalid member delete request")
+	}
+
+	org, err := s.st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize member delete")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	member, err := s.st.GetOrganizationMember(ctx, orgSlug, memberID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "member not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load member")
+	}
+	if member.Username == org.CreatedBy {
+		return nil, status.Error(codes.FailedPrecondition, "cannot remove organization owner")
+	}
+
+	members, err := s.st.ListOrganizationMembers(ctx, orgSlug)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to validate admin constraints")
+	}
+	adminCount := 0
+	for _, item := range members {
+		if item != nil && isOrganizationAdminRole(item.Role) {
+			adminCount++
+		}
+	}
+	if isOrganizationAdminRole(member.Role) && adminCount <= 1 {
+		return nil, status.Error(codes.FailedPrecondition, "cannot remove the last organization admin")
+	}
+
+	if err := s.st.RemoveOrganizationMember(ctx, orgSlug, memberID); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "member not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to remove member")
 	}
 	return &emptypb.Empty{}, nil
 }

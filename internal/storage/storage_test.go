@@ -531,6 +531,17 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("unexpected user root path after update: %q", updatedUser.RootPath)
 	}
 
+	memberUsername := "member" + suffix[len(suffix)-6:]
+	memberEmail := "member+" + suffix + "@example.com"
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     memberUsername,
+		Name:         "Org Member",
+		PrimaryEmail: memberEmail,
+		PasswordHash: "member-hash",
+	}); err != nil {
+		t.Fatalf("CreateUser org member failed: %v", err)
+	}
+
 	orgSlug := "org" + suffix[len(suffix)-6:]
 	org := &models.Organization{
 		Slug:      orgSlug,
@@ -570,6 +581,96 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if userOrgs[0].RootPath != "/"+orgSlug {
 		t.Fatalf("unexpected org root path from user listing: %q", userOrgs[0].RootPath)
 	}
+	if err := st.AddOrganizationMember(ctx, &models.OrganizationMember{
+		OrgSlug:  orgSlug,
+		Username: memberUsername,
+		Role:     models.OrganizationRoleMember,
+	}); err != nil {
+		t.Fatalf("AddOrganizationMember second member failed: %v", err)
+	}
+	if _, err := st.GetOrganizationMember(ctx, orgSlug, memberUsername); err != nil {
+		t.Fatalf("GetOrganizationMember failed: %v", err)
+	}
+	members, err := st.ListOrganizationMembers(ctx, orgSlug)
+	if err != nil {
+		t.Fatalf("ListOrganizationMembers failed: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("expected 2 org members, got %d", len(members))
+	}
+	memberRecord, err := st.GetOrganizationMember(ctx, orgSlug, memberUsername)
+	if err != nil {
+		t.Fatalf("GetOrganizationMember second fetch failed: %v", err)
+	}
+	memberRecord.Role = models.OrganizationRoleAdmin
+	if err := st.UpdateOrganizationMember(ctx, memberRecord); err != nil {
+		t.Fatalf("UpdateOrganizationMember failed: %v", err)
+	}
+	memberRecord, err = st.GetOrganizationMember(ctx, orgSlug, memberUsername)
+	if err != nil {
+		t.Fatalf("GetOrganizationMember after update failed: %v", err)
+	}
+	if memberRecord.Role != models.OrganizationRoleAdmin {
+		t.Fatalf("expected updated member role admin, got %q", memberRecord.Role)
+	}
+
+	inviteEmail := "invite+" + suffix + "@example.com"
+	inviteID := "invite-" + suffix
+	if err := st.CreateOrganizationInvite(ctx, &models.OrganizationInvite{
+		InviteID:    inviteID,
+		OrgSlug:     orgSlug,
+		TargetEmail: inviteEmail,
+		Role:        models.OrganizationRoleAdmin,
+		Status:      models.OrganizationInvitePending,
+		CreatedBy:   accountUsername,
+	}); err != nil {
+		t.Fatalf("CreateOrganizationInvite failed: %v", err)
+	}
+	if err := st.CreateOrganizationInvite(ctx, &models.OrganizationInvite{
+		InviteID:    "invite-dup-" + suffix,
+		OrgSlug:     orgSlug,
+		TargetEmail: inviteEmail,
+		Role:        models.OrganizationRoleMember,
+		Status:      models.OrganizationInvitePending,
+		CreatedBy:   accountUsername,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists for duplicate pending invite, got %v", err)
+	}
+	invite, err := st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		t.Fatalf("GetOrganizationInvite failed: %v", err)
+	}
+	if invite.Status != models.OrganizationInvitePending {
+		t.Fatalf("expected pending invite, got %q", invite.Status)
+	}
+	invite.Status = models.OrganizationInviteAccepted
+	if err := st.UpdateOrganizationInvite(ctx, invite); err != nil {
+		t.Fatalf("UpdateOrganizationInvite failed: %v", err)
+	}
+	invite, err = st.GetOrganizationInvite(ctx, orgSlug, inviteID)
+	if err != nil {
+		t.Fatalf("GetOrganizationInvite after update failed: %v", err)
+	}
+	if invite.Status != models.OrganizationInviteAccepted {
+		t.Fatalf("expected accepted invite, got %q", invite.Status)
+	}
+	if err := st.CreateOrganizationInvite(ctx, &models.OrganizationInvite{
+		InviteID:    "invite-new-" + suffix,
+		OrgSlug:     orgSlug,
+		TargetEmail: inviteEmail,
+		Role:        models.OrganizationRoleMember,
+		Status:      models.OrganizationInvitePending,
+		CreatedBy:   accountUsername,
+	}); err != nil {
+		t.Fatalf("expected pending invite recreation after accept, got %v", err)
+	}
+	if err := st.RemoveOrganizationMember(ctx, orgSlug, memberUsername); err != nil {
+		t.Fatalf("RemoveOrganizationMember failed: %v", err)
+	}
+	if _, err := st.GetOrganizationMember(ctx, orgSlug, memberUsername); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for removed member, got %v", err)
+	}
+
 	createdOrg.Name = "Org Updated " + suffix
 	if err := st.UpdateOrganization(ctx, createdOrg); err != nil {
 		t.Fatalf("UpdateOrganization failed: %v", err)
@@ -608,6 +709,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if _, err := st.GetOrganization(ctx, orgSlug); err != ErrEntryNotFound {
 		t.Fatalf("expected ErrEntryNotFound for deleted org, got %v", err)
+	}
+	if _, err := st.GetOrganizationInvite(ctx, orgSlug, inviteID); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for deleted org invite, got %v", err)
 	}
 	userOrgsAfterDelete, err := st.ListOrganizationsForUser(ctx, accountUsername)
 	if err != nil {

@@ -301,3 +301,140 @@ func TestOrganizationsCRUDAndPermissions(t *testing.T) {
 		t.Fatalf("expected NotFound after org delete, got %v", err)
 	}
 }
+
+func TestInvitesAndMembershipManagement(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	ownerSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "ownerx",
+		Email:    "ownerx@example.com",
+		Password: "ownerpass1",
+		Name:     "Owner X",
+	})
+	if err != nil {
+		t.Fatalf("owner signup failed: %v", err)
+	}
+	adminSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "adminx",
+		Email:    "adminx@example.com",
+		Password: "adminpass1",
+		Name:     "Admin X",
+	})
+	if err != nil {
+		t.Fatalf("admin signup failed: %v", err)
+	}
+	userSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "userx",
+		Email:    "userx@example.com",
+		Password: "userpass11",
+		Name:     "User X",
+	})
+	if err != nil {
+		t.Fatalf("user signup failed: %v", err)
+	}
+
+	ownerCtx := bearerCtx(ctx, ownerSignup.GetAccessToken())
+	adminCtx := bearerCtx(ctx, adminSignup.GetAccessToken())
+	userCtx := bearerCtx(ctx, userSignup.GetAccessToken())
+
+	if _, err := srv.CreateOrganization(ownerCtx, &accountv1.CreateOrganizationRequest{
+		Slug: "teamx",
+		Name: "Team X",
+	}); err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+
+	adminInvite, err := srv.CreateInvite(ownerCtx, &accountv1.CreateInviteRequest{
+		OrgId:       "teamx",
+		TargetEmail: "adminx@example.com",
+		Role:        accountv1.Role_ROLE_ADMIN,
+	})
+	if err != nil {
+		t.Fatalf("CreateInvite admin failed: %v", err)
+	}
+	if adminInvite.GetStatus() != accountv1.InviteStatus_INVITE_STATUS_PENDING {
+		t.Fatalf("expected pending invite, got %#v", adminInvite)
+	}
+	if _, err := srv.AcceptInvite(adminCtx, &accountv1.AcceptInviteRequest{
+		OrgId:    "teamx",
+		InviteId: adminInvite.GetId(),
+	}); err != nil {
+		t.Fatalf("AcceptInvite admin failed: %v", err)
+	}
+
+	if _, err := srv.ListMembers(adminCtx, &accountv1.ListMembersRequest{OrgId: "teamx"}); err != nil {
+		t.Fatalf("admin ListMembers failed: %v", err)
+	}
+
+	userInvite, err := srv.CreateInvite(adminCtx, &accountv1.CreateInviteRequest{
+		OrgId:       "teamx",
+		TargetEmail: "userx@example.com",
+		Role:        accountv1.Role_ROLE_USER,
+	})
+	if err != nil {
+		t.Fatalf("CreateInvite user failed: %v", err)
+	}
+	if _, err := srv.CreateInvite(ownerCtx, &accountv1.CreateInviteRequest{
+		OrgId:       "teamx",
+		TargetEmail: "userx@example.com",
+		Role:        accountv1.Role_ROLE_USER,
+	}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for duplicate pending invite, got %v", err)
+	}
+	if _, err := srv.AcceptInvite(ownerCtx, &accountv1.AcceptInviteRequest{
+		OrgId:    "teamx",
+		InviteId: userInvite.GetId(),
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for email-mismatched invite accept, got %v", err)
+	}
+	if _, err := srv.AcceptInvite(userCtx, &accountv1.AcceptInviteRequest{
+		OrgId:    "teamx",
+		InviteId: userInvite.GetId(),
+	}); err != nil {
+		t.Fatalf("AcceptInvite user failed: %v", err)
+	}
+
+	membersResp, err := srv.ListMembers(ownerCtx, &accountv1.ListMembersRequest{OrgId: "teamx"})
+	if err != nil {
+		t.Fatalf("owner ListMembers failed: %v", err)
+	}
+	if len(membersResp.GetMembers()) != 3 {
+		t.Fatalf("expected 3 members after invite acceptance, got %#v", membersResp)
+	}
+
+	if _, err := srv.UpdateMember(ownerCtx, &accountv1.UpdateMemberRequest{
+		OrgId:    "teamx",
+		MemberId: "adminx",
+		Role:     accountv1.Role_ROLE_USER,
+	}); err != nil {
+		t.Fatalf("UpdateMember demote admin failed: %v", err)
+	}
+	if _, err := srv.CreateInvite(adminCtx, &accountv1.CreateInviteRequest{
+		OrgId:       "teamx",
+		TargetEmail: "newuser@example.com",
+		Role:        accountv1.Role_ROLE_USER,
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-admin invite creation, got %v", err)
+	}
+
+	if _, err := srv.UpdateMember(ownerCtx, &accountv1.UpdateMemberRequest{
+		OrgId:    "teamx",
+		MemberId: "ownerx",
+		Role:     accountv1.Role_ROLE_USER,
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for owner role change, got %v", err)
+	}
+	if _, err := srv.DeleteMember(ownerCtx, &accountv1.DeleteMemberRequest{
+		OrgId:    "teamx",
+		MemberId: "ownerx",
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for owner removal, got %v", err)
+	}
+	if _, err := srv.DeleteMember(ownerCtx, &accountv1.DeleteMemberRequest{
+		OrgId:    "teamx",
+		MemberId: "userx",
+	}); err != nil {
+		t.Fatalf("DeleteMember user failed: %v", err)
+	}
+}

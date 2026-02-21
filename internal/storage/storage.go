@@ -133,6 +133,13 @@ type Storage interface {
 	UpdateOrganization(ctx context.Context, org *models.Organization) error
 	DeleteOrganization(ctx context.Context, orgSlug string) error
 	AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error
+	GetOrganizationMember(ctx context.Context, orgSlug, username string) (*models.OrganizationMember, error)
+	ListOrganizationMembers(ctx context.Context, orgSlug string) ([]*models.OrganizationMember, error)
+	UpdateOrganizationMember(ctx context.Context, member *models.OrganizationMember) error
+	RemoveOrganizationMember(ctx context.Context, orgSlug, username string) error
+	CreateOrganizationInvite(ctx context.Context, invite *models.OrganizationInvite) error
+	GetOrganizationInvite(ctx context.Context, orgSlug, inviteID string) (*models.OrganizationInvite, error)
+	UpdateOrganizationInvite(ctx context.Context, invite *models.OrganizationInvite) error
 	ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error)
 
 	// Environment registry
