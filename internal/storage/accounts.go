@@ -99,6 +99,22 @@ func copyOrganizationInvite(invite *models.OrganizationInvite) *models.Organizat
 	return &out
 }
 
+func copyTeam(team *models.Team) *models.Team {
+	if team == nil {
+		return nil
+	}
+	out := *team
+	return &out
+}
+
+func copyTeamMember(member *models.TeamMember) *models.TeamMember {
+	if member == nil {
+		return nil
+	}
+	out := *member
+	return &out
+}
+
 func (s *InMemoryStorage) EnsureUser(ctx context.Context, username string) (*models.User, error) {
 	_ = ctx
 	username = strings.TrimSpace(username)
@@ -313,6 +329,16 @@ func (s *InMemoryStorage) DeleteUser(ctx context.Context, username string) error
 		}
 		if len(invites) == 0 {
 			delete(s.orgInvites, orgSlug)
+		}
+	}
+
+	for teamID, members := range s.teamMembers {
+		if len(members) == 0 {
+			continue
+		}
+		delete(members, username)
+		if len(members) == 0 {
+			delete(s.teamMembers, teamID)
 		}
 	}
 	return nil
@@ -602,6 +628,12 @@ func (s *InMemoryStorage) DeleteOrganization(ctx context.Context, orgSlug string
 	}
 	delete(s.orgMembers, orgSlug)
 	delete(s.orgInvites, orgSlug)
+
+	for teamID := range s.teamsByOrg[orgSlug] {
+		delete(s.teams, teamID)
+		delete(s.teamMembers, teamID)
+	}
+	delete(s.teamsByOrg, orgSlug)
 	return nil
 }
 
@@ -764,6 +796,14 @@ func (s *InMemoryStorage) RemoveOrganizationMember(ctx context.Context, orgSlug,
 			delete(s.userOrgs, username)
 		}
 	}
+	for teamID := range s.teamsByOrg[orgSlug] {
+		if members := s.teamMembers[teamID]; members != nil {
+			delete(members, username)
+			if len(members) == 0 {
+				delete(s.teamMembers, teamID)
+			}
+		}
+	}
 	return nil
 }
 
@@ -897,6 +937,233 @@ func (s *InMemoryStorage) UpdateOrganizationInvite(ctx context.Context, invite *
 	}
 	updated.UpdatedAt = now
 	invites[inviteID] = &updated
+	return nil
+}
+
+func (s *InMemoryStorage) CreateTeam(ctx context.Context, team *models.Team) error {
+	_ = ctx
+	if team == nil {
+		return ErrInvalidInput
+	}
+	teamID := strings.TrimSpace(team.TeamID)
+	orgSlug := strings.TrimSpace(team.OrgSlug)
+	name := strings.TrimSpace(team.Name)
+	createdBy := strings.TrimSpace(team.CreatedBy)
+	if teamID == "" || !auth.ValidateUsername(orgSlug) || name == "" || !auth.ValidateUsername(createdBy) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.orgs[orgSlug]; !ok {
+		return ErrEntryNotFound
+	}
+	if _, ok := s.teams[teamID]; ok {
+		return ErrEntryExists
+	}
+	for existingTeamID := range s.teamsByOrg[orgSlug] {
+		existing := s.teams[existingTeamID]
+		if existing != nil && strings.EqualFold(existing.Name, name) {
+			return ErrEntryExists
+		}
+	}
+
+	newTeam := *team
+	newTeam.TeamID = teamID
+	newTeam.OrgSlug = orgSlug
+	newTeam.Name = name
+	newTeam.CreatedBy = createdBy
+	if newTeam.CreatedAt.IsZero() {
+		newTeam.CreatedAt = now
+	}
+	newTeam.UpdatedAt = now
+	s.teams[teamID] = &newTeam
+
+	if s.teamsByOrg[orgSlug] == nil {
+		s.teamsByOrg[orgSlug] = make(map[string]bool)
+	}
+	s.teamsByOrg[orgSlug][teamID] = true
+	return nil
+}
+
+func (s *InMemoryStorage) GetTeam(ctx context.Context, teamID string) (*models.Team, error) {
+	_ = ctx
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	team, ok := s.teams[teamID]
+	if !ok || team == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyTeam(team), nil
+}
+
+func (s *InMemoryStorage) ListTeams(ctx context.Context, orgSlug string) ([]*models.Team, error) {
+	_ = ctx
+	orgSlug = strings.TrimSpace(orgSlug)
+	if !auth.ValidateUsername(orgSlug) {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.orgs[orgSlug]; !ok {
+		return nil, ErrEntryNotFound
+	}
+	teamSet := s.teamsByOrg[orgSlug]
+	if len(teamSet) == 0 {
+		return []*models.Team{}, nil
+	}
+
+	out := make([]*models.Team, 0, len(teamSet))
+	for teamID := range teamSet {
+		if team, ok := s.teams[teamID]; ok && team != nil {
+			out = append(out, copyTeam(team))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TeamID < out[j].TeamID })
+	return out, nil
+}
+
+func (s *InMemoryStorage) UpdateTeam(ctx context.Context, team *models.Team) error {
+	_ = ctx
+	if team == nil {
+		return ErrInvalidInput
+	}
+	teamID := strings.TrimSpace(team.TeamID)
+	name := strings.TrimSpace(team.Name)
+	if teamID == "" || name == "" {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.teams[teamID]
+	if !ok || existing == nil {
+		return ErrEntryNotFound
+	}
+	for existingTeamID := range s.teamsByOrg[existing.OrgSlug] {
+		if existingTeamID == teamID {
+			continue
+		}
+		other := s.teams[existingTeamID]
+		if other != nil && strings.EqualFold(other.Name, name) {
+			return ErrEntryExists
+		}
+	}
+
+	updated := *team
+	updated.TeamID = teamID
+	updated.OrgSlug = existing.OrgSlug
+	updated.CreatedBy = existing.CreatedBy
+	updated.Name = name
+	if updated.CreatedAt.IsZero() {
+		updated.CreatedAt = existing.CreatedAt
+	}
+	updated.UpdatedAt = now
+	s.teams[teamID] = &updated
+	return nil
+}
+
+func (s *InMemoryStorage) DeleteTeam(ctx context.Context, orgSlug, teamID string) error {
+	_ = ctx
+	orgSlug = strings.TrimSpace(orgSlug)
+	teamID = strings.TrimSpace(teamID)
+	if !auth.ValidateUsername(orgSlug) || teamID == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	team, ok := s.teams[teamID]
+	if !ok || team == nil || team.OrgSlug != orgSlug {
+		return ErrEntryNotFound
+	}
+	delete(s.teams, teamID)
+	if teamSet := s.teamsByOrg[orgSlug]; teamSet != nil {
+		delete(teamSet, teamID)
+		if len(teamSet) == 0 {
+			delete(s.teamsByOrg, orgSlug)
+		}
+	}
+	delete(s.teamMembers, teamID)
+	return nil
+}
+
+func (s *InMemoryStorage) AddTeamMember(ctx context.Context, member *models.TeamMember) error {
+	_ = ctx
+	if member == nil {
+		return ErrInvalidInput
+	}
+	teamID := strings.TrimSpace(member.TeamID)
+	username := strings.TrimSpace(member.Username)
+	if teamID == "" || !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	team, ok := s.teams[teamID]
+	if !ok || team == nil {
+		return ErrEntryNotFound
+	}
+	if _, ok := s.orgMembers[team.OrgSlug][username]; !ok {
+		return ErrEntryNotFound
+	}
+	if s.teamMembers[teamID] == nil {
+		s.teamMembers[teamID] = make(map[string]*models.TeamMember)
+	}
+	if _, ok := s.teamMembers[teamID][username]; ok {
+		return ErrEntryExists
+	}
+
+	newMember := *member
+	newMember.TeamID = teamID
+	newMember.Username = username
+	if newMember.AddedAt.IsZero() {
+		newMember.AddedAt = now
+	}
+	s.teamMembers[teamID][username] = &newMember
+	return nil
+}
+
+func (s *InMemoryStorage) DeleteTeamMember(ctx context.Context, orgSlug, teamID, username string) error {
+	_ = ctx
+	orgSlug = strings.TrimSpace(orgSlug)
+	teamID = strings.TrimSpace(teamID)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(orgSlug) || teamID == "" || !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	team, ok := s.teams[teamID]
+	if !ok || team == nil || team.OrgSlug != orgSlug {
+		return ErrEntryNotFound
+	}
+	members := s.teamMembers[teamID]
+	if _, ok := members[username]; !ok {
+		return ErrEntryNotFound
+	}
+	delete(members, username)
+	if len(members) == 0 {
+		delete(s.teamMembers, teamID)
+	}
 	return nil
 }
 

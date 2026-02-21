@@ -59,6 +59,21 @@ type OrganizationInvite struct {
 	UpdatedAt   time.Time                `json:"updated_at"`
 }
 
+type Team struct {
+	TeamID    string    `json:"team_id"`
+	OrgSlug   string    `json:"org_slug"`
+	Name      string    `json:"name"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type TeamMember struct {
+	TeamID   string    `json:"team_id"`
+	Username string    `json:"username"`
+	AddedAt  time.Time `json:"added_at"`
+}
+
 type AuthSession struct {
 	SessionID  string     `json:"session_id"`
 	Username   string     `json:"username"`

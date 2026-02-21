@@ -664,11 +664,78 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}); err != nil {
 		t.Fatalf("expected pending invite recreation after accept, got %v", err)
 	}
+
+	teamID := "team-" + suffix
+	if err := st.CreateTeam(ctx, &models.Team{
+		TeamID:    teamID,
+		OrgSlug:   orgSlug,
+		Name:      "Platform Team",
+		CreatedBy: accountUsername,
+	}); err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+	if err := st.CreateTeam(ctx, &models.Team{
+		TeamID:    "team-dup-" + suffix,
+		OrgSlug:   orgSlug,
+		Name:      "Platform Team",
+		CreatedBy: accountUsername,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists for duplicate team name, got %v", err)
+	}
+	team, err := st.GetTeam(ctx, teamID)
+	if err != nil {
+		t.Fatalf("GetTeam failed: %v", err)
+	}
+	if team.OrgSlug != orgSlug {
+		t.Fatalf("unexpected team org slug: %#v", team)
+	}
+	teams, err := st.ListTeams(ctx, orgSlug)
+	if err != nil {
+		t.Fatalf("ListTeams failed: %v", err)
+	}
+	if len(teams) != 1 || teams[0].TeamID != teamID {
+		t.Fatalf("unexpected teams list: %#v", teams)
+	}
+	team.Name = "Platform Team Updated"
+	if err := st.UpdateTeam(ctx, team); err != nil {
+		t.Fatalf("UpdateTeam failed: %v", err)
+	}
+	if err := st.AddTeamMember(ctx, &models.TeamMember{
+		TeamID:   teamID,
+		Username: memberUsername,
+	}); err != nil {
+		t.Fatalf("AddTeamMember failed: %v", err)
+	}
+	if err := st.AddTeamMember(ctx, &models.TeamMember{
+		TeamID:   teamID,
+		Username: memberUsername,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists for duplicate team member, got %v", err)
+	}
+	if err := st.DeleteTeamMember(ctx, orgSlug, teamID, memberUsername); err != nil {
+		t.Fatalf("DeleteTeamMember failed: %v", err)
+	}
+	if err := st.DeleteTeamMember(ctx, orgSlug, teamID, memberUsername); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for missing team member, got %v", err)
+	}
+
 	if err := st.RemoveOrganizationMember(ctx, orgSlug, memberUsername); err != nil {
 		t.Fatalf("RemoveOrganizationMember failed: %v", err)
 	}
 	if _, err := st.GetOrganizationMember(ctx, orgSlug, memberUsername); err != ErrEntryNotFound {
 		t.Fatalf("expected ErrEntryNotFound for removed member, got %v", err)
+	}
+	if err := st.AddTeamMember(ctx, &models.TeamMember{
+		TeamID:   teamID,
+		Username: memberUsername,
+	}); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound when adding non-org member to team, got %v", err)
+	}
+	if err := st.DeleteTeam(ctx, orgSlug, teamID); err != nil {
+		t.Fatalf("DeleteTeam failed: %v", err)
+	}
+	if _, err := st.GetTeam(ctx, teamID); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for deleted team, got %v", err)
 	}
 
 	createdOrg.Name = "Org Updated " + suffix

@@ -222,6 +222,30 @@ func inviteToProto(invite *models.OrganizationInvite) *accountv1.Invite {
 	}
 }
 
+func teamToProto(team *models.Team) *accountv1.Team {
+	if team == nil {
+		return nil
+	}
+	return &accountv1.Team{
+		Id:        team.TeamID,
+		OrgId:     team.OrgSlug,
+		Name:      team.Name,
+		CreatedAt: team.CreatedAt.Format(timeRFC3339),
+		UpdatedAt: team.UpdatedAt.Format(timeRFC3339),
+	}
+}
+
+func teamMemberToProto(member *models.TeamMember) *accountv1.TeamMember {
+	if member == nil {
+		return nil
+	}
+	return &accountv1.TeamMember{
+		TeamId:  member.TeamID,
+		UserId:  member.Username,
+		AddedAt: member.AddedAt.Format(timeRFC3339),
+	}
+}
+
 func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdentity, error) {
 	if token := auth.TokenFromGRPCContext(ctx); token != "" {
 		session, err := s.st.GetAuthSessionByToken(ctx, token)
@@ -1155,6 +1179,303 @@ func (s *accountServiceServer) DeleteMember(ctx context.Context, req *accountv1.
 			return nil, status.Error(codes.NotFound, "member not found")
 		}
 		return nil, status.Error(codes.Internal, "failed to remove member")
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) CreateTeam(ctx context.Context, req *accountv1.CreateTeamRequest) (*accountv1.Team, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	name := strings.TrimSpace(req.GetName())
+	if !auth.ValidateUsername(orgSlug) || name == "" || len(name) > 80 {
+		return nil, status.Error(codes.InvalidArgument, "invalid team request")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize team creation")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	teamID, err := randomToken("team_", 16)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to generate team id")
+	}
+	team := &models.Team{
+		TeamID:    teamID,
+		OrgSlug:   orgSlug,
+		Name:      name,
+		CreatedBy: identity.username,
+	}
+	if err := s.st.CreateTeam(ctx, team); err != nil {
+		switch err {
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "team already exists")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "organization not found")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid team request")
+		default:
+			return nil, status.Error(codes.Internal, "failed to create team")
+		}
+	}
+	created, err := s.st.GetTeam(ctx, teamID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load created team")
+	}
+	return teamToProto(created), nil
+}
+
+func (s *accountServiceServer) ListTeams(ctx context.Context, req *accountv1.ListTeamsRequest) (*accountv1.ListTeamsResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	if !auth.ValidateUsername(orgSlug) {
+		return nil, status.Error(codes.InvalidArgument, "org_id is required")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize team listing")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	teams, err := s.st.ListTeams(ctx, orgSlug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to list teams")
+	}
+	out := make([]*accountv1.Team, 0, len(teams))
+	for _, team := range teams {
+		out = append(out, teamToProto(team))
+	}
+	return &accountv1.ListTeamsResponse{Teams: out}, nil
+}
+
+func (s *accountServiceServer) UpdateTeam(ctx context.Context, req *accountv1.UpdateTeamRequest) (*accountv1.Team, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	teamID := strings.TrimSpace(req.GetTeamId())
+	name := strings.TrimSpace(req.GetName())
+	if !auth.ValidateUsername(orgSlug) || teamID == "" || name == "" || len(name) > 80 {
+		return nil, status.Error(codes.InvalidArgument, "invalid team update request")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize team update")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	team, err := s.st.GetTeam(ctx, teamID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "team not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load team")
+	}
+	if team.OrgSlug != orgSlug {
+		return nil, status.Error(codes.NotFound, "team not found")
+	}
+	team.Name = name
+	if err := s.st.UpdateTeam(ctx, team); err != nil {
+		switch err {
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "team not found")
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "team already exists")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid team update request")
+		default:
+			return nil, status.Error(codes.Internal, "failed to update team")
+		}
+	}
+	updated, err := s.st.GetTeam(ctx, teamID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load updated team")
+	}
+	return teamToProto(updated), nil
+}
+
+func (s *accountServiceServer) DeleteTeam(ctx context.Context, req *accountv1.DeleteTeamRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	teamID := strings.TrimSpace(req.GetTeamId())
+	if !auth.ValidateUsername(orgSlug) || teamID == "" {
+		return nil, status.Error(codes.InvalidArgument, "invalid team delete request")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize team delete")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	if err := s.st.DeleteTeam(ctx, orgSlug, teamID); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "team not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to delete team")
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) AddTeamMember(ctx context.Context, req *accountv1.AddTeamMemberRequest) (*accountv1.TeamMember, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	teamID := strings.TrimSpace(req.GetTeamId())
+	memberID := strings.TrimSpace(req.GetMemberId())
+	if !auth.ValidateUsername(orgSlug) || teamID == "" || !auth.ValidateUsername(memberID) {
+		return nil, status.Error(codes.InvalidArgument, "invalid team member request")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize team membership update")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	team, err := s.st.GetTeam(ctx, teamID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "team not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load team")
+	}
+	if team.OrgSlug != orgSlug {
+		return nil, status.Error(codes.NotFound, "team not found")
+	}
+
+	member := &models.TeamMember{
+		TeamID:   teamID,
+		Username: memberID,
+	}
+	if err := s.st.AddTeamMember(ctx, member); err != nil {
+		switch err {
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "team member already exists")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "team or organization member not found")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid team member request")
+		default:
+			return nil, status.Error(codes.Internal, "failed to add team member")
+		}
+	}
+	return teamMemberToProto(member), nil
+}
+
+func (s *accountServiceServer) DeleteTeamMember(ctx context.Context, req *accountv1.DeleteTeamMemberRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgSlug := strings.TrimSpace(req.GetOrgId())
+	teamID := strings.TrimSpace(req.GetTeamId())
+	memberID := strings.TrimSpace(req.GetMemberId())
+	if !auth.ValidateUsername(orgSlug) || teamID == "" || !auth.ValidateUsername(memberID) {
+		return nil, status.Error(codes.InvalidArgument, "invalid team member delete request")
+	}
+
+	if _, err := s.st.GetOrganization(ctx, orgSlug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	requesterMember, err := s.st.GetOrganizationMember(ctx, orgSlug, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.PermissionDenied, "organization admin required")
+		}
+		return nil, status.Error(codes.Internal, "failed to authorize team membership delete")
+	}
+	if !isOrganizationAdminRole(requesterMember.Role) {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+
+	if err := s.st.DeleteTeamMember(ctx, orgSlug, teamID, memberID); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "team member not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to delete team member")
 	}
 	return &emptypb.Empty{}, nil
 }

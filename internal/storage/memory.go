@@ -69,6 +69,9 @@ type InMemoryStorage struct {
 	orgMembers         map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
 	userOrgs           map[string]map[string]bool                       // username -> orgSlug -> true
 	orgInvites         map[string]map[string]*models.OrganizationInvite // orgSlug -> inviteID -> invite
+	teams              map[string]*models.Team                          // teamID -> team
+	teamsByOrg         map[string]map[string]bool                       // orgSlug -> teamID -> true
+	teamMembers        map[string]map[string]*models.TeamMember         // teamID -> username -> membership
 	environments       map[string]*models.Environment                   // env name -> environment
 
 	// Agent sessions
@@ -113,6 +116,9 @@ func NewInMemoryStorage() *InMemoryStorage {
 		orgMembers:                make(map[string]map[string]*models.OrganizationMember),
 		userOrgs:                  make(map[string]map[string]bool),
 		orgInvites:                make(map[string]map[string]*models.OrganizationInvite),
+		teams:                     make(map[string]*models.Team),
+		teamsByOrg:                make(map[string]map[string]bool),
+		teamMembers:               make(map[string]map[string]*models.TeamMember),
 		environments:              make(map[string]*models.Environment),
 		agentSessions:             make(map[string]*models.AgentSession),
 		activeAgentBySlice:        make(map[string]string),
@@ -169,6 +175,9 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.orgMembers = fresh.orgMembers
 	s.userOrgs = fresh.userOrgs
 	s.orgInvites = fresh.orgInvites
+	s.teams = fresh.teams
+	s.teamsByOrg = fresh.teamsByOrg
+	s.teamMembers = fresh.teamMembers
 	s.environments = fresh.environments
 	s.agentSessions = fresh.agentSessions
 	s.activeAgentBySlice = fresh.activeAgentBySlice
