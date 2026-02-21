@@ -60,11 +60,15 @@ type InMemoryStorage struct {
 	fileChangesByDir    map[string][]string                 // "sliceID:dirPrefix" -> []changeID (newest first)
 
 	// Accounts / Orgs
-	users        map[string]*models.User                          // username -> user
-	orgs         map[string]*models.Organization                  // orgSlug -> org
-	orgMembers   map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
-	userOrgs     map[string]map[string]bool                       // username -> orgSlug -> true
-	environments map[string]*models.Environment                   // env name -> environment
+	users              map[string]*models.User                          // username -> user
+	userByEmail        map[string]string                                // lower(email) -> username
+	authSessions       map[string]*models.AuthSession                   // sessionID -> auth session
+	authSessionByToken map[string]string                                // token -> sessionID
+	authSessionsByUser map[string]map[string]bool                       // username -> sessionID -> true
+	orgs               map[string]*models.Organization                  // orgSlug -> org
+	orgMembers         map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
+	userOrgs           map[string]map[string]bool                       // username -> orgSlug -> true
+	environments       map[string]*models.Environment                   // env name -> environment
 
 	// Agent sessions
 	agentSessions      map[string]*models.AgentSession        // sessionID -> session
@@ -100,6 +104,10 @@ func NewInMemoryStorage() *InMemoryStorage {
 		fileChangesByCommit:       make(map[string][]string),
 		fileChangesByDir:          make(map[string][]string),
 		users:                     make(map[string]*models.User),
+		userByEmail:               make(map[string]string),
+		authSessions:              make(map[string]*models.AuthSession),
+		authSessionByToken:        make(map[string]string),
+		authSessionsByUser:        make(map[string]map[string]bool),
 		orgs:                      make(map[string]*models.Organization),
 		orgMembers:                make(map[string]map[string]*models.OrganizationMember),
 		userOrgs:                  make(map[string]map[string]bool),
@@ -151,6 +159,10 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.fileChangesByCommit = fresh.fileChangesByCommit
 	s.fileChangesByDir = fresh.fileChangesByDir
 	s.users = fresh.users
+	s.userByEmail = fresh.userByEmail
+	s.authSessions = fresh.authSessions
+	s.authSessionByToken = fresh.authSessionByToken
+	s.authSessionsByUser = fresh.authSessionsByUser
 	s.orgs = fresh.orgs
 	s.orgMembers = fresh.orgMembers
 	s.userOrgs = fresh.userOrgs

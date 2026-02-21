@@ -10,7 +10,7 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
   // Login with username for local/dev auth. Returns the same profile payload as Me.
   rpc Login(LoginRequest) returns (MeResponse) {
     option (google.api.http) = {
-      post: "/v1/auth/login"
+      post: "/v1/admin/auth/login"
       body: "*"
     };
   }

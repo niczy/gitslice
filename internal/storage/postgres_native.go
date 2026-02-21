@@ -281,6 +281,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			agent_sessions,
 			organization_members,
 			organizations,
+			auth_sessions,
 			users,
 			file_changes,
 			global_state,
@@ -2487,8 +2488,8 @@ func (s *PostgresNativeStorage) EnsureUser(ctx context.Context, username string)
 
 	now := time.Now()
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO users (username, created_at, updated_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO users (username, name, primary_email, password_hash, created_at, updated_at)
+		VALUES ($1, '', '', '', $2, $3)
 		ON CONFLICT (username) DO NOTHING
 	`, username, now, now)
 	if err != nil {
@@ -2506,15 +2507,278 @@ func (s *PostgresNativeStorage) GetUser(ctx context.Context, username string) (*
 	}
 
 	var u models.User
-	err := s.pool.QueryRow(ctx, `SELECT username, created_at, updated_at FROM users WHERE username = $1`, username).
-		Scan(&u.Username, &u.CreatedAt, &u.UpdatedAt)
+	err := s.pool.QueryRow(ctx, `
+		SELECT username, COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), created_at, updated_at
+		FROM users WHERE username = $1
+	`, username).
+		Scan(&u.Username, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
 		}
 		return nil, err
 	}
+	u.PrimaryEmail = strings.ToLower(strings.TrimSpace(u.PrimaryEmail))
 	return &u, nil
+}
+
+func (s *PostgresNativeStorage) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	ctx = ensureCtx(ctx)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var u models.User
+	err := s.pool.QueryRow(ctx, `
+		SELECT username, COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), created_at, updated_at
+		FROM users
+		WHERE lower(primary_email) = $1 AND primary_email <> ''
+		LIMIT 1
+	`, email).
+		Scan(&u.Username, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	u.PrimaryEmail = strings.ToLower(strings.TrimSpace(u.PrimaryEmail))
+	return &u, nil
+}
+
+func (s *PostgresNativeStorage) CreateUser(ctx context.Context, user *models.User) error {
+	ctx = ensureCtx(ctx)
+	if user == nil {
+		return ErrInvalidInput
+	}
+	username := strings.TrimSpace(user.Username)
+	if !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+	email := strings.ToLower(strings.TrimSpace(user.PrimaryEmail))
+	now := time.Now()
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = now
+	}
+	user.UpdatedAt = now
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO users (username, name, primary_email, password_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, username, user.Name, email, user.PasswordHash, user.CreatedAt, user.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) UpdateUser(ctx context.Context, user *models.User) error {
+	ctx = ensureCtx(ctx)
+	if user == nil {
+		return ErrInvalidInput
+	}
+	username := strings.TrimSpace(user.Username)
+	if !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+	email := strings.ToLower(strings.TrimSpace(user.PrimaryEmail))
+	now := time.Now()
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET name = $1, primary_email = $2, password_hash = $3, updated_at = $4
+		WHERE username = $5
+	`, user.Name, email, user.PasswordHash, now, username)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) CreateAuthSession(ctx context.Context, session *models.AuthSession) error {
+	ctx = ensureCtx(ctx)
+	if session == nil || session.SessionID == "" || session.Username == "" || session.Token == "" {
+		return ErrInvalidInput
+	}
+	if !auth.ValidateUsername(session.Username) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	if session.LastSeenAt.IsZero() {
+		session.LastSeenAt = session.CreatedAt
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO auth_sessions (
+			session_id, username, token, device_info, created_at, last_seen_at, revoked_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, NULL
+		)
+	`, session.SessionID, session.Username, session.Token, session.DeviceInfo, session.CreatedAt, session.LastSeenAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error) {
+	ctx = ensureCtx(ctx)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var session models.AuthSession
+	var revokedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT session_id, username, token, COALESCE(device_info, ''), created_at, last_seen_at, revoked_at
+		FROM auth_sessions
+		WHERE token = $1 AND revoked_at IS NULL
+		LIMIT 1
+	`, token).Scan(
+		&session.SessionID,
+		&session.Username,
+		&session.Token,
+		&session.DeviceInfo,
+		&session.CreatedAt,
+		&session.LastSeenAt,
+		&revokedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	session.RevokedAt = revokedAt
+	return &session, nil
+}
+
+func (s *PostgresNativeStorage) ListAuthSessionsByUser(ctx context.Context, username string) ([]*models.AuthSession, error) {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, username, token, COALESCE(device_info, ''), created_at, last_seen_at, revoked_at
+		FROM auth_sessions
+		WHERE username = $1 AND revoked_at IS NULL
+		ORDER BY created_at DESC
+	`, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*models.AuthSession, 0)
+	for rows.Next() {
+		var session models.AuthSession
+		var revokedAt *time.Time
+		if err := rows.Scan(
+			&session.SessionID,
+			&session.Username,
+			&session.Token,
+			&session.DeviceInfo,
+			&session.CreatedAt,
+			&session.LastSeenAt,
+			&revokedAt,
+		); err != nil {
+			return nil, err
+		}
+		session.RevokedAt = revokedAt
+		sessionCopy := session
+		out = append(out, &sessionCopy)
+	}
+	if out == nil {
+		out = []*models.AuthSession{}
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresNativeStorage) TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error {
+	ctx = ensureCtx(ctx)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ErrInvalidInput
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE auth_sessions
+		SET last_seen_at = $1
+		WHERE session_id = $2 AND revoked_at IS NULL
+	`, at, sessionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) RevokeAuthSession(ctx context.Context, username, sessionID string) error {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	sessionID = strings.TrimSpace(sessionID)
+	if !auth.ValidateUsername(username) || sessionID == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE auth_sessions
+		SET revoked_at = NOW()
+		WHERE session_id = $1 AND username = $2 AND revoked_at IS NULL
+	`, sessionID, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) RevokeAuthSessionByToken(ctx context.Context, token string) error {
+	ctx = ensureCtx(ctx)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE auth_sessions
+		SET revoked_at = NOW()
+		WHERE token = $1 AND revoked_at IS NULL
+	`, token)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
 }
 
 func (s *PostgresNativeStorage) CreateOrganization(ctx context.Context, org *models.Organization) error {

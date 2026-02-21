@@ -12,6 +12,7 @@ import (
 const (
 	authorizationHeaderKey = "authorization"
 	userAuthScheme         = "User "
+	bearerAuthScheme       = "Bearer "
 )
 
 var usernameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$`)
@@ -43,6 +44,20 @@ func UsernameFromAuthorizationHeader(value string) string {
 	return ""
 }
 
+// TokenFromAuthorizationHeader extracts a bearer token from an Authorization header.
+// Supported forms:
+//   - "Bearer <token>"
+func TokenFromAuthorizationHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, bearerAuthScheme) {
+		return strings.TrimSpace(strings.TrimPrefix(value, bearerAuthScheme))
+	}
+	return ""
+}
+
 // UsernameFromGRPCContext reads the incoming gRPC metadata Authorization header.
 func UsernameFromGRPCContext(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -58,10 +73,33 @@ func UsernameFromGRPCContext(ctx context.Context) string {
 	return ""
 }
 
+// TokenFromGRPCContext reads a bearer token from incoming gRPC metadata.
+func TokenFromGRPCContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	vals := md.Get(authorizationHeaderKey)
+	for _, v := range vals {
+		if tok := TokenFromAuthorizationHeader(v); tok != "" {
+			return tok
+		}
+	}
+	return ""
+}
+
 // UsernameFromHTTPRequest reads the Authorization header from an HTTP request.
 func UsernameFromHTTPRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
 	return UsernameFromAuthorizationHeader(r.Header.Get("Authorization"))
+}
+
+// TokenFromHTTPRequest reads a bearer token from an HTTP request.
+func TokenFromHTTPRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return TokenFromAuthorizationHeader(r.Header.Get("Authorization"))
 }

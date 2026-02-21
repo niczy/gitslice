@@ -472,6 +472,7 @@ message AuthResponse {
   User user = 1;
   repeated Organization organizations = 2;
   Session session = 3;
+  string access_token = 4;
 }
 
 message SignupRequest {
@@ -493,6 +494,8 @@ message LogoutRequest {
 
 message ResetPasswordRequest {
   string email = 1;
+  string username = 2;
+  string new_password = 3;
 }
 
 message OAuthCallbackRequest {
