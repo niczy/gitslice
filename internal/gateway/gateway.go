@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -29,6 +30,7 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 
 	fileClient := filev1.NewFileServiceClient(conn)
 	adminClient := adminv1.NewAdminServiceClient(conn)
+	accountClient := accountv1.NewAccountServiceClient(conn)
 	agentClient := agentv1.NewAgentServiceClient(conn)
 	sliceClient := slicev1.NewSliceServiceClient(conn)
 
@@ -37,6 +39,10 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 		return nil, func() {}, err
 	}
 	if err := adminv1.RegisterAdminServiceHandlerClient(ctx, mux, adminClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := accountv1.RegisterAccountServiceHandlerClient(ctx, mux, accountClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
