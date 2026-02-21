@@ -16,6 +16,7 @@ import (
 	"github.com/niczy/gitslice/internal/gateway"
 	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/storage"
+	accountservice "github.com/niczy/gitslice/services/account"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
@@ -51,6 +52,7 @@ func main() {
 	sliceservice.RegisterGRPCServer(grpcServer, st)
 	fileservice.RegisterGRPCServer(grpcServer, st)
 	adminservice.RegisterGRPCServer(grpcServer, st)
+	accountservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
 	agentSessionService.StartLifecycleLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)

@@ -26,12 +26,17 @@
 │   │   ├── admin_service.proto
 │   │   ├── admin_service.pb.go
 │   │   └── admin_service_grpc.pb.go
+│   ├── account/           # Account system proto files
+│   │   ├── account_service.proto
+│   │   ├── account_service.pb.go
+│   │   └── account_service_grpc.pb.go
 │   └── agent/             # Agent session proto files
 │       ├── agent_service.proto
 │       ├── agent_service.pb.go
 │       ├── agent_service_grpc.pb.go
 │       └── agent_service.pb.gw.go
 ├── services/              # RPC service implementations
+│   ├── account/
 │   ├── admin/
 │   ├── agent/
 │   ├── file/
@@ -88,6 +93,11 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 cd ../admin
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
   --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative admin_service.proto
+
+cd ../account
+protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative account_service.proto
+
 cd ../agent
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
   --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative agent_service.proto
@@ -166,7 +176,7 @@ gs --user your_name fork my-slice ./some/folder --parent root_slice
 
 ### Adding New Proto Definitions
 
-1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/file/`, or `proto/agent/`
+1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/account/`, `proto/file/`, or `proto/agent/`
 2. Regenerate the Go code using protoc (`make proto` works)
 3. Do not commit generated `*.pb.go` / `*.pb.gw.go` files
 4. Update the service implementations as needed

@@ -1,0 +1,734 @@
+syntax = "proto3";
+
+package account.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/account;accountv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+service AccountService {
+  // Auth
+  rpc Signup(SignupRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/signup"
+      body: "*"
+    };
+  }
+
+  rpc Login(LoginRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/login"
+      body: "*"
+    };
+  }
+
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/auth/logout"
+      body: "*"
+    };
+  }
+
+  rpc ResetPassword(ResetPasswordRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/auth/password/reset"
+      body: "*"
+    };
+  }
+
+  rpc OAuthCallback(OAuthCallbackRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/oauth/{provider}/callback"
+      body: "*"
+    };
+  }
+
+  rpc SamlCallback(SamlCallbackRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/sso/saml/callback"
+      body: "*"
+    };
+  }
+
+  rpc ListAuthMethods(ListAuthMethodsRequest) returns (ListAuthMethodsResponse) {
+    option (google.api.http) = {
+      get: "/v1/auth/methods"
+    };
+  }
+
+  rpc LinkAuthMethod(LinkAuthMethodRequest) returns (AuthMethod) {
+    option (google.api.http) = {
+      post: "/v1/auth/methods/link"
+      body: "*"
+    };
+  }
+
+  rpc DeleteAuthMethod(DeleteAuthMethodRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/auth/methods/{method_id}"
+    };
+  }
+
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/auth/sessions"
+    };
+  }
+
+  rpc DeleteSession(DeleteSessionRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/auth/sessions/{session_id}"
+    };
+  }
+
+  // Users
+  rpc GetMe(GetMeRequest) returns (User) {
+    option (google.api.http) = {
+      get: "/v1/users/me"
+    };
+  }
+
+  rpc UpdateMe(UpdateMeRequest) returns (User) {
+    option (google.api.http) = {
+      patch: "/v1/users/me"
+      body: "*"
+    };
+  }
+
+  rpc DeleteMe(DeleteMeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/users/me"
+    };
+  }
+
+  rpc GetUser(GetUserRequest) returns (User) {
+    option (google.api.http) = {
+      get: "/v1/users/{user_id}"
+    };
+  }
+
+  // Organizations
+  rpc CreateOrganization(CreateOrganizationRequest) returns (Organization) {
+    option (google.api.http) = {
+      post: "/v1/orgs"
+      body: "*"
+    };
+  }
+
+  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse) {
+    option (google.api.http) = {
+      get: "/v1/orgs"
+    };
+  }
+
+  rpc GetOrganization(GetOrganizationRequest) returns (Organization) {
+    option (google.api.http) = {
+      get: "/v1/orgs/{org_id}"
+    };
+  }
+
+  rpc UpdateOrganization(UpdateOrganizationRequest) returns (Organization) {
+    option (google.api.http) = {
+      patch: "/v1/orgs/{org_id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteOrganization(DeleteOrganizationRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/orgs/{org_id}"
+    };
+  }
+
+  // Memberships and teams
+  rpc CreateInvite(CreateInviteRequest) returns (Invite) {
+    option (google.api.http) = {
+      post: "/v1/orgs/{org_id}/invites"
+      body: "*"
+    };
+  }
+
+  rpc AcceptInvite(AcceptInviteRequest) returns (Invite) {
+    option (google.api.http) = {
+      post: "/v1/orgs/{org_id}/invites/{invite_id}/accept"
+      body: "*"
+    };
+  }
+
+  rpc DeclineInvite(DeclineInviteRequest) returns (Invite) {
+    option (google.api.http) = {
+      post: "/v1/orgs/{org_id}/invites/{invite_id}/decline"
+      body: "*"
+    };
+  }
+
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {
+    option (google.api.http) = {
+      get: "/v1/orgs/{org_id}/members"
+    };
+  }
+
+  rpc UpdateMember(UpdateMemberRequest) returns (Membership) {
+    option (google.api.http) = {
+      patch: "/v1/orgs/{org_id}/members/{member_id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteMember(DeleteMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/orgs/{org_id}/members/{member_id}"
+    };
+  }
+
+  rpc CreateTeam(CreateTeamRequest) returns (Team) {
+    option (google.api.http) = {
+      post: "/v1/orgs/{org_id}/teams"
+      body: "*"
+    };
+  }
+
+  rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse) {
+    option (google.api.http) = {
+      get: "/v1/orgs/{org_id}/teams"
+    };
+  }
+
+  rpc UpdateTeam(UpdateTeamRequest) returns (Team) {
+    option (google.api.http) = {
+      patch: "/v1/orgs/{org_id}/teams/{team_id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteTeam(DeleteTeamRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/orgs/{org_id}/teams/{team_id}"
+    };
+  }
+
+  rpc AddTeamMember(AddTeamMemberRequest) returns (TeamMember) {
+    option (google.api.http) = {
+      post: "/v1/orgs/{org_id}/teams/{team_id}/members"
+      body: "*"
+    };
+  }
+
+  rpc DeleteTeamMember(DeleteTeamMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/orgs/{org_id}/teams/{team_id}/members/{member_id}"
+    };
+  }
+
+  // Nodes
+  rpc GetNodeByPath(GetNodeByPathRequest) returns (Node) {
+    option (google.api.http) = {
+      get: "/v1/nodes"
+    };
+  }
+
+  rpc CreateNode(CreateNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/nodes"
+      body: "*"
+    };
+  }
+
+  rpc UpdateNode(UpdateNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      patch: "/v1/nodes/{node_id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteNode(DeleteNodeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/nodes/{node_id}"
+    };
+  }
+
+  rpc CopyNode(CopyNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/copy"
+      body: "*"
+    };
+  }
+
+  rpc MoveNode(MoveNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/move"
+      body: "*"
+    };
+  }
+
+  rpc ListNodeChildren(ListNodeChildrenRequest) returns (ListNodeChildrenResponse) {
+    option (google.api.http) = {
+      get: "/v1/nodes/{node_id}/children"
+    };
+  }
+
+  // ACLs
+  rpc GetNodeACL(GetNodeACLRequest) returns (GetNodeACLResponse) {
+    option (google.api.http) = {
+      get: "/v1/nodes/{node_id}/acl"
+    };
+  }
+
+  rpc UpsertNodeACL(UpsertNodeACLRequest) returns (AclEntry) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/acl"
+      body: "*"
+    };
+  }
+
+  rpc DeleteNodeACL(DeleteNodeACLRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/nodes/{node_id}/acl/{entry_id}"
+    };
+  }
+
+  rpc GetNodeAccess(GetNodeAccessRequest) returns (NodeAccess) {
+    option (google.api.http) = {
+      get: "/v1/nodes/{node_id}/access"
+    };
+  }
+
+  // Sharing
+  rpc CreateShare(CreateShareRequest) returns (Share) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/share"
+      body: "*"
+    };
+  }
+
+  rpc ListShared(ListSharedRequest) returns (ListSharedResponse) {
+    option (google.api.http) = {
+      get: "/v1/shared"
+    };
+  }
+
+  rpc DeleteShare(DeleteShareRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/shares/{share_id}"
+    };
+  }
+
+  // Activity
+  rpc ListActivity(ListActivityRequest) returns (ListActivityResponse) {
+    option (google.api.http) = {
+      get: "/v1/activity"
+    };
+  }
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_USER = 1;
+  ROLE_ADMIN = 2;
+}
+
+enum Permission {
+  PERMISSION_UNSPECIFIED = 0;
+  PERMISSION_READ = 1;
+  PERMISSION_WRITE = 2;
+}
+
+enum PrincipalType {
+  PRINCIPAL_TYPE_UNSPECIFIED = 0;
+  PRINCIPAL_TYPE_USER = 1;
+  PRINCIPAL_TYPE_TEAM = 2;
+  PRINCIPAL_TYPE_ORG = 3;
+}
+
+enum OwnerType {
+  OWNER_TYPE_UNSPECIFIED = 0;
+  OWNER_TYPE_USER = 1;
+  OWNER_TYPE_ORG = 2;
+}
+
+enum NodeType {
+  NODE_TYPE_UNSPECIFIED = 0;
+  NODE_TYPE_FILE = 1;
+  NODE_TYPE_FOLDER = 2;
+}
+
+enum InviteStatus {
+  INVITE_STATUS_UNSPECIFIED = 0;
+  INVITE_STATUS_PENDING = 1;
+  INVITE_STATUS_ACCEPTED = 2;
+  INVITE_STATUS_DECLINED = 3;
+}
+
+enum AuthMethodType {
+  AUTH_METHOD_TYPE_UNSPECIFIED = 0;
+  AUTH_METHOD_TYPE_PASSWORD = 1;
+  AUTH_METHOD_TYPE_OAUTH = 2;
+  AUTH_METHOD_TYPE_SAML = 3;
+}
+
+message User {
+  string id = 1;
+  string username = 2;
+  string name = 3;
+  string primary_email = 4;
+  string created_at = 5;
+}
+
+message Organization {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string owner_user_id = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message Membership {
+  string org_id = 1;
+  string user_id = 2;
+  Role role = 3;
+}
+
+message Team {
+  string id = 1;
+  string org_id = 2;
+  string name = 3;
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+message TeamMember {
+  string team_id = 1;
+  string user_id = 2;
+  string added_at = 3;
+}
+
+message Node {
+  string id = 1;
+  OwnerType owner_type = 2;
+  string owner_id = 3;
+  string path = 4;
+  string name = 5;
+  NodeType type = 6;
+  string parent_id = 7;
+  string created_at = 8;
+  string updated_at = 9;
+}
+
+message AclEntry {
+  string id = 1;
+  string node_id = 2;
+  PrincipalType principal_type = 3;
+  string principal_id = 4;
+  Permission permission = 5;
+  bool inherited = 6;
+}
+
+message Share {
+  string id = 1;
+  string node_id = 2;
+  PrincipalType target_principal_type = 3;
+  string target_principal_id = 4;
+  Permission permission = 5;
+  string created_at = 6;
+}
+
+message Session {
+  string id = 1;
+  string user_id = 2;
+  string last_seen_at = 3;
+  string device_info = 4;
+  bool current = 5;
+}
+
+message AuthMethod {
+  string id = 1;
+  AuthMethodType type = 2;
+  string provider = 3;
+  string email = 4;
+  string linked_at = 5;
+}
+
+message Invite {
+  string id = 1;
+  string org_id = 2;
+  string target_email = 3;
+  Role role = 4;
+  InviteStatus status = 5;
+  string created_at = 6;
+}
+
+message ActivityEvent {
+  string id = 1;
+  string path = 2;
+  string actor_user_id = 3;
+  string action = 4;
+  string timestamp = 5;
+  map<string, string> metadata = 6;
+}
+
+message AuthResponse {
+  User user = 1;
+  repeated Organization organizations = 2;
+  Session session = 3;
+}
+
+message SignupRequest {
+  string username = 1;
+  string email = 2;
+  string password = 3;
+  string name = 4;
+}
+
+message LoginRequest {
+  string username = 1;
+  string email = 2;
+  string password = 3;
+}
+
+message LogoutRequest {
+  string session_id = 1;
+}
+
+message ResetPasswordRequest {
+  string email = 1;
+}
+
+message OAuthCallbackRequest {
+  string provider = 1;
+  string code = 2;
+  string state = 3;
+}
+
+message SamlCallbackRequest {
+  string assertion = 1;
+  string relay_state = 2;
+}
+
+message ListAuthMethodsRequest {}
+
+message ListAuthMethodsResponse {
+  repeated AuthMethod methods = 1;
+}
+
+message LinkAuthMethodRequest {
+  AuthMethodType type = 1;
+  string provider = 2;
+  string token = 3;
+}
+
+message DeleteAuthMethodRequest {
+  string method_id = 1;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message DeleteSessionRequest {
+  string session_id = 1;
+}
+
+message GetMeRequest {}
+
+message UpdateMeRequest {
+  string name = 1;
+  string primary_email = 2;
+}
+
+message DeleteMeRequest {}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message CreateOrganizationRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message ListOrganizationsRequest {}
+
+message ListOrganizationsResponse {
+  repeated Organization organizations = 1;
+}
+
+message GetOrganizationRequest {
+  string org_id = 1;
+}
+
+message UpdateOrganizationRequest {
+  string org_id = 1;
+  string name = 2;
+}
+
+message DeleteOrganizationRequest {
+  string org_id = 1;
+}
+
+message CreateInviteRequest {
+  string org_id = 1;
+  string target_email = 2;
+  Role role = 3;
+}
+
+message AcceptInviteRequest {
+  string org_id = 1;
+  string invite_id = 2;
+}
+
+message DeclineInviteRequest {
+  string org_id = 1;
+  string invite_id = 2;
+}
+
+message ListMembersRequest {
+  string org_id = 1;
+}
+
+message ListMembersResponse {
+  repeated Membership members = 1;
+}
+
+message UpdateMemberRequest {
+  string org_id = 1;
+  string member_id = 2;
+  Role role = 3;
+}
+
+message DeleteMemberRequest {
+  string org_id = 1;
+  string member_id = 2;
+}
+
+message CreateTeamRequest {
+  string org_id = 1;
+  string name = 2;
+}
+
+message ListTeamsRequest {
+  string org_id = 1;
+}
+
+message ListTeamsResponse {
+  repeated Team teams = 1;
+}
+
+message UpdateTeamRequest {
+  string org_id = 1;
+  string team_id = 2;
+  string name = 3;
+}
+
+message DeleteTeamRequest {
+  string org_id = 1;
+  string team_id = 2;
+}
+
+message AddTeamMemberRequest {
+  string org_id = 1;
+  string team_id = 2;
+  string member_id = 3;
+}
+
+message DeleteTeamMemberRequest {
+  string org_id = 1;
+  string team_id = 2;
+  string member_id = 3;
+}
+
+message GetNodeByPathRequest {
+  string path = 1;
+}
+
+message CreateNodeRequest {
+  string path = 1;
+  NodeType type = 2;
+}
+
+message UpdateNodeRequest {
+  string node_id = 1;
+  string name = 2;
+  string parent_id = 3;
+}
+
+message DeleteNodeRequest {
+  string node_id = 1;
+}
+
+message CopyNodeRequest {
+  string node_id = 1;
+  string destination_parent_id = 2;
+  string name = 3;
+}
+
+message MoveNodeRequest {
+  string node_id = 1;
+  string destination_parent_id = 2;
+  string name = 3;
+}
+
+message ListNodeChildrenRequest {
+  string node_id = 1;
+}
+
+message ListNodeChildrenResponse {
+  repeated Node children = 1;
+}
+
+message GetNodeACLRequest {
+  string node_id = 1;
+}
+
+message GetNodeACLResponse {
+  repeated AclEntry entries = 1;
+}
+
+message UpsertNodeACLRequest {
+  string node_id = 1;
+  PrincipalType principal_type = 2;
+  string principal_id = 3;
+  Permission permission = 4;
+}
+
+message DeleteNodeACLRequest {
+  string node_id = 1;
+  string entry_id = 2;
+}
+
+message GetNodeAccessRequest {
+  string node_id = 1;
+}
+
+message NodeAccess {
+  bool read = 1;
+  bool write = 2;
+}
+
+message CreateShareRequest {
+  string node_id = 1;
+  PrincipalType target_principal_type = 2;
+  string target_principal_id = 3;
+  Permission permission = 4;
+}
+
+message ListSharedRequest {}
+
+message ListSharedResponse {
+  repeated Share shares = 1;
+}
+
+message DeleteShareRequest {
+  string share_id = 1;
+}
+
+message ListActivityRequest {
+  string path = 1;
+}
+
+message ListActivityResponse {
+  repeated ActivityEvent events = 1;
+}
