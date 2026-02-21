@@ -1582,15 +1582,14 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		}
 	}
 
-	// Use provided name, fall back to slice ID if blank.
-	sliceName := req.Name
-	if sliceName == "" {
-		sliceName = sliceID
-	}
-
 	folderPaths, err := collectRequestedFolderPaths(req)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	sliceName := strings.TrimSpace(req.Name)
+	if sliceName == "" {
+		sliceName = defaultSliceNameFromFolders(folderPaths, sliceID)
 	}
 
 	parentSlice, err := s.storage.GetSlice(ctx, req.ParentSliceId)
@@ -1713,6 +1712,16 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 		Files:         slice.Files,
 		Environment:   slice.Environment,
 	}, nil
+}
+
+func defaultSliceNameFromFolders(folderPaths []string, fallback string) string {
+	if len(folderPaths) == 0 {
+		return fallback
+	}
+	if len(folderPaths) == 1 {
+		return folderPaths[0]
+	}
+	return strings.Join(folderPaths, ", ")
 }
 
 func collectRequestedFolderPaths(req *slicev1.CreateSliceFromFolderRequest) ([]string, error) {

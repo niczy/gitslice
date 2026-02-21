@@ -297,7 +297,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 				}
 				seen[alias] = struct{}{}
 				entries = append(entries, &filev1.DirectoryEntry{
-					Name:        path.Base(alias),
+					Name:        alias,
 					Path:        alias,
 					Type:        filev1.EntryType_ENTRY_TYPE_DIRECTORY,
 					HasChildren: true,
