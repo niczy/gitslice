@@ -2605,6 +2605,35 @@ func (s *PostgresNativeStorage) UpdateUser(ctx context.Context, user *models.Use
 	return nil
 }
 
+func (s *PostgresNativeStorage) DeleteUser(ctx context.Context, username string) error {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM auth_sessions WHERE username = $1`, username); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_members WHERE username = $1`, username); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM users WHERE username = $1`, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *PostgresNativeStorage) CreateAuthSession(ctx context.Context, session *models.AuthSession) error {
 	ctx = ensureCtx(ctx)
 	if session == nil || session.SessionID == "" || session.Username == "" || session.Token == "" {

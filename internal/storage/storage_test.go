@@ -569,6 +569,15 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	} else if len(activeSessions) != 0 {
 		t.Fatalf("expected zero active sessions after revocation, got %d", len(activeSessions))
 	}
+	if err := st.DeleteUser(ctx, accountUsername); err != nil {
+		t.Fatalf("DeleteUser failed: %v", err)
+	}
+	if _, err := st.GetUser(ctx, accountUsername); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for deleted user, got %v", err)
+	}
+	if _, err := st.GetUserByEmail(ctx, accountEmail); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for deleted user email, got %v", err)
+	}
 
 	// Agent session lifecycle + event persistence
 	sessionID := fmt.Sprintf("sess-%s", suffix)

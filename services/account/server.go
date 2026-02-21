@@ -417,3 +417,121 @@ func (s *accountServiceServer) DeleteSession(ctx context.Context, req *accountv1
 	}
 	return &emptypb.Empty{}, nil
 }
+
+func (s *accountServiceServer) GetMe(ctx context.Context, req *accountv1.GetMeRequest) (*accountv1.User, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	return userToProto(user), nil
+}
+
+func (s *accountServiceServer) UpdateMe(ctx context.Context, req *accountv1.UpdateMeRequest) (*accountv1.User, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+
+	updated := false
+	if name := strings.TrimSpace(req.GetName()); name != "" && name != user.Name {
+		user.Name = name
+		updated = true
+	}
+	if email := normalizeEmail(req.GetPrimaryEmail()); email != "" {
+		if !validateEmail(email) {
+			return nil, status.Error(codes.InvalidArgument, "invalid email")
+		}
+		if email != user.PrimaryEmail {
+			user.PrimaryEmail = email
+			updated = true
+		}
+	}
+	if !updated {
+		return userToProto(user), nil
+	}
+
+	if err := s.st.UpdateUser(ctx, user); err != nil {
+		switch err {
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "user not found")
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "email already in use")
+		default:
+			return nil, status.Error(codes.Internal, "failed to update user")
+		}
+	}
+	updatedUser, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load updated user")
+	}
+	return userToProto(updatedUser), nil
+}
+
+func (s *accountServiceServer) DeleteMe(ctx context.Context, req *accountv1.DeleteMeRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	orgs, err := s.st.ListOrganizationsForUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to validate user organizations")
+	}
+	for _, org := range orgs {
+		if org != nil && org.CreatedBy == identity.username {
+			return nil, status.Error(codes.FailedPrecondition, "cannot delete account while owning organizations")
+		}
+	}
+
+	sessions, err := s.st.ListAuthSessionsByUser(ctx, identity.username)
+	if err == nil {
+		for _, session := range sessions {
+			_ = s.st.RevokeAuthSession(ctx, identity.username, session.SessionID)
+		}
+	}
+
+	if err := s.st.DeleteUser(ctx, identity.username); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to delete user")
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) GetUser(ctx context.Context, req *accountv1.GetUserRequest) (*accountv1.User, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	userID := strings.TrimSpace(req.GetUserId())
+	if !auth.ValidateUsername(userID) {
+		return nil, status.Error(codes.InvalidArgument, "invalid user id")
+	}
+
+	user, err := s.st.GetUser(ctx, userID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	if identity.username != userID {
+		user.PrimaryEmail = ""
+	}
+	return userToProto(user), nil
+}

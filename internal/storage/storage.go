@@ -120,6 +120,7 @@ type Storage interface {
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
 	CreateUser(ctx context.Context, user *models.User) error
 	UpdateUser(ctx context.Context, user *models.User) error
+	DeleteUser(ctx context.Context, username string) error
 	CreateAuthSession(ctx context.Context, session *models.AuthSession) error
 	GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error)
 	ListAuthSessionsByUser(ctx context.Context, username string) ([]*models.AuthSession, error)
