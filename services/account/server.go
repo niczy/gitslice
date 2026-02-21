@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ const (
 	timeRFC3339    = time.RFC3339
 )
 
+var orgSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,39}$`)
+
 type accountServiceServer struct {
 	accountv1.UnimplementedAccountServiceServer
 	st storage.Storage
@@ -41,6 +44,29 @@ func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func slugifyOrg(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 40 {
+		out = strings.TrimRight(out[:40], "-")
+	}
+	return out
 }
 
 func validateEmail(email string) bool {
@@ -534,4 +560,170 @@ func (s *accountServiceServer) GetUser(ctx context.Context, req *accountv1.GetUs
 		user.PrimaryEmail = ""
 	}
 	return userToProto(user), nil
+}
+
+func (s *accountServiceServer) CreateOrganization(ctx context.Context, req *accountv1.CreateOrganizationRequest) (*accountv1.Organization, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(req.GetName())
+	if name == "" || len(name) > 80 {
+		return nil, status.Error(codes.InvalidArgument, "invalid org name")
+	}
+	slug := strings.TrimSpace(req.GetSlug())
+	if slug == "" {
+		slug = slugifyOrg(name)
+	}
+	if !orgSlugRE.MatchString(slug) {
+		return nil, status.Error(codes.InvalidArgument, "invalid org slug")
+	}
+
+	org := &models.Organization{
+		Slug:      slug,
+		Name:      name,
+		CreatedBy: identity.username,
+	}
+	if err := s.st.CreateOrganization(ctx, org); err != nil {
+		switch err {
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "organization slug is unavailable")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid organization")
+		default:
+			return nil, status.Error(codes.Internal, "failed to create organization")
+		}
+	}
+
+	if err := s.st.AddOrganizationMember(ctx, &models.OrganizationMember{
+		OrgSlug:  slug,
+		Username: identity.username,
+		Role:     models.OrganizationRoleOwner,
+	}); err != nil {
+		_ = s.st.DeleteOrganization(ctx, slug)
+		return nil, status.Error(codes.Internal, "failed to initialize organization owner membership")
+	}
+
+	created, err := s.st.GetOrganization(ctx, slug)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	return orgToProto(created), nil
+}
+
+func (s *accountServiceServer) ListOrganizations(ctx context.Context, req *accountv1.ListOrganizationsRequest) (*accountv1.ListOrganizationsResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgs, err := s.st.ListOrganizationsForUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list organizations")
+	}
+	out := make([]*accountv1.Organization, 0, len(orgs))
+	for _, org := range orgs {
+		out = append(out, orgToProto(org))
+	}
+	return &accountv1.ListOrganizationsResponse{Organizations: out}, nil
+}
+
+func (s *accountServiceServer) GetOrganization(ctx context.Context, req *accountv1.GetOrganizationRequest) (*accountv1.Organization, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	slug := strings.TrimSpace(req.GetOrgId())
+	if slug == "" {
+		return nil, status.Error(codes.InvalidArgument, "org_id is required")
+	}
+
+	org, err := s.st.GetOrganization(ctx, slug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+
+	orgs, err := s.st.ListOrganizationsForUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to authorize organization access")
+	}
+	allowed := false
+	for _, item := range orgs {
+		if item != nil && item.Slug == slug {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	return orgToProto(org), nil
+}
+
+func (s *accountServiceServer) UpdateOrganization(ctx context.Context, req *accountv1.UpdateOrganizationRequest) (*accountv1.Organization, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	slug := strings.TrimSpace(req.GetOrgId())
+	name := strings.TrimSpace(req.GetName())
+	if slug == "" || name == "" || len(name) > 80 {
+		return nil, status.Error(codes.InvalidArgument, "invalid organization update")
+	}
+
+	org, err := s.st.GetOrganization(ctx, slug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	if org.CreatedBy != identity.username {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+	org.Name = name
+
+	if err := s.st.UpdateOrganization(ctx, org); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to update organization")
+	}
+	updated, err := s.st.GetOrganization(ctx, slug)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load updated organization")
+	}
+	return orgToProto(updated), nil
+}
+
+func (s *accountServiceServer) DeleteOrganization(ctx context.Context, req *accountv1.DeleteOrganizationRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	slug := strings.TrimSpace(req.GetOrgId())
+	if slug == "" {
+		return nil, status.Error(codes.InvalidArgument, "org_id is required")
+	}
+
+	org, err := s.st.GetOrganization(ctx, slug)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load organization")
+	}
+	if org.CreatedBy != identity.username {
+		return nil, status.Error(codes.PermissionDenied, "organization admin required")
+	}
+	if err := s.st.DeleteOrganization(ctx, slug); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "organization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to delete organization")
+	}
+	return &emptypb.Empty{}, nil
 }

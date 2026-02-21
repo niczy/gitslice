@@ -26,6 +26,17 @@ func validateEmail(email string) bool {
 	return true
 }
 
+func rootPathForSlug(slug string) string {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return ""
+	}
+	if strings.HasPrefix(slug, "/") {
+		return slug
+	}
+	return "/" + slug
+}
+
 func copyUser(user *models.User) *models.User {
 	if user == nil {
 		return nil
@@ -58,11 +69,18 @@ func (s *InMemoryStorage) EnsureUser(ctx context.Context, username string) (*mod
 	defer s.mu.Unlock()
 
 	if existing, ok := s.users[username]; ok && existing != nil {
+		if existing.RootPath == "" {
+			existing.RootPath = rootPathForSlug(existing.Username)
+		}
 		return copyUser(existing), nil
+	}
+	if _, exists := s.orgs[username]; exists {
+		return nil, ErrEntryExists
 	}
 
 	u := &models.User{
 		Username:  username,
+		RootPath:  rootPathForSlug(username),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -83,6 +101,9 @@ func (s *InMemoryStorage) GetUser(ctx context.Context, username string) (*models
 	u, ok := s.users[username]
 	if !ok || u == nil {
 		return nil, ErrEntryNotFound
+	}
+	if u.RootPath == "" {
+		u.RootPath = rootPathForSlug(u.Username)
 	}
 	return copyUser(u), nil
 }
@@ -129,6 +150,9 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	if _, ok := s.users[username]; ok {
 		return ErrEntryExists
 	}
+	if _, ok := s.orgs[username]; ok {
+		return ErrEntryExists
+	}
 	if email != "" {
 		if _, ok := s.userByEmail[email]; ok {
 			return ErrEntryExists
@@ -138,6 +162,7 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	newUser := *user
 	newUser.Username = username
 	newUser.PrimaryEmail = email
+	newUser.RootPath = rootPathForSlug(username)
 	if newUser.CreatedAt.IsZero() {
 		newUser.CreatedAt = now
 	}
@@ -185,6 +210,7 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	updated := *user
 	updated.Username = username
 	updated.PrimaryEmail = email
+	updated.RootPath = rootPathForSlug(username)
 	if updated.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt
 	}
@@ -407,10 +433,13 @@ func (s *InMemoryStorage) CreateOrganization(ctx context.Context, org *models.Or
 	if org == nil {
 		return ErrInvalidInput
 	}
-	if org.Slug == "" || org.Name == "" || org.CreatedBy == "" {
+	slug := strings.TrimSpace(org.Slug)
+	name := strings.TrimSpace(org.Name)
+	createdBy := strings.TrimSpace(org.CreatedBy)
+	if slug == "" || name == "" || createdBy == "" {
 		return ErrInvalidInput
 	}
-	if !auth.ValidateUsername(org.CreatedBy) {
+	if !auth.ValidateUsername(slug) || !auth.ValidateUsername(createdBy) {
 		return ErrInvalidInput
 	}
 
@@ -418,11 +447,18 @@ func (s *InMemoryStorage) CreateOrganization(ctx context.Context, org *models.Or
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.orgs[org.Slug]; ok {
+	if _, ok := s.orgs[slug]; ok {
+		return ErrEntryExists
+	}
+	if _, ok := s.users[slug]; ok {
 		return ErrEntryExists
 	}
 
 	newOrg := *org
+	newOrg.Slug = slug
+	newOrg.Name = name
+	newOrg.CreatedBy = createdBy
+	newOrg.RootPath = rootPathForSlug(newOrg.Slug)
 	if newOrg.CreatedAt.IsZero() {
 		newOrg.CreatedAt = now
 	}
@@ -446,8 +482,70 @@ func (s *InMemoryStorage) GetOrganization(ctx context.Context, orgSlug string) (
 	if !ok || org == nil {
 		return nil, ErrEntryNotFound
 	}
+	if org.RootPath == "" {
+		org.RootPath = rootPathForSlug(org.Slug)
+	}
 	copy := *org
 	return &copy, nil
+}
+
+func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Organization) error {
+	_ = ctx
+	if org == nil {
+		return ErrInvalidInput
+	}
+	slug := strings.TrimSpace(org.Slug)
+	if slug == "" || strings.TrimSpace(org.Name) == "" {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.orgs[slug]
+	if !ok || existing == nil {
+		return ErrEntryNotFound
+	}
+
+	updated := *org
+	updated.Slug = slug
+	updated.RootPath = rootPathForSlug(slug)
+	updated.CreatedBy = existing.CreatedBy
+	if updated.CreatedAt.IsZero() {
+		updated.CreatedAt = existing.CreatedAt
+	}
+	updated.UpdatedAt = now
+	s.orgs[slug] = &updated
+	return nil
+}
+
+func (s *InMemoryStorage) DeleteOrganization(ctx context.Context, orgSlug string) error {
+	_ = ctx
+	orgSlug = strings.TrimSpace(orgSlug)
+	if orgSlug == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.orgs[orgSlug]; !ok {
+		return ErrEntryNotFound
+	}
+	delete(s.orgs, orgSlug)
+
+	members := s.orgMembers[orgSlug]
+	for username := range members {
+		if orgs := s.userOrgs[username]; orgs != nil {
+			delete(orgs, orgSlug)
+			if len(orgs) == 0 {
+				delete(s.userOrgs, username)
+			}
+		}
+	}
+	delete(s.orgMembers, orgSlug)
+	return nil
 }
 
 func (s *InMemoryStorage) AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error {
@@ -509,6 +607,9 @@ func (s *InMemoryStorage) ListOrganizationsForUser(ctx context.Context, username
 	out := make([]*models.Organization, 0, len(orgSet))
 	for slug := range orgSet {
 		if org, ok := s.orgs[slug]; ok && org != nil {
+			if org.RootPath == "" {
+				org.RootPath = rootPathForSlug(org.Slug)
+			}
 			copy := *org
 			out = append(out, &copy)
 		}

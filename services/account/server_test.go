@@ -207,3 +207,97 @@ func TestDeleteMeFailsForOrgOwner(t *testing.T) {
 		t.Fatalf("expected FailedPrecondition for org owner delete, got %v", err)
 	}
 }
+
+func TestOrganizationsCRUDAndPermissions(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	ownerSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "orgowner",
+		Email:    "owner@example.com",
+		Password: "ownerpass1",
+		Name:     "Org Owner",
+	})
+	if err != nil {
+		t.Fatalf("owner signup failed: %v", err)
+	}
+	memberSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "orgmember",
+		Email:    "member@example.com",
+		Password: "memberpass1",
+		Name:     "Org Member",
+	})
+	if err != nil {
+		t.Fatalf("member signup failed: %v", err)
+	}
+
+	ownerCtx := bearerCtx(ctx, ownerSignup.GetAccessToken())
+	memberCtx := bearerCtx(ctx, memberSignup.GetAccessToken())
+
+	created, err := srv.CreateOrganization(ownerCtx, &accountv1.CreateOrganizationRequest{
+		Slug: "acme-labs",
+		Name: "Acme Labs",
+	})
+	if err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+	if created.GetSlug() != "acme-labs" || created.GetOwnerUserId() != "orgowner" {
+		t.Fatalf("unexpected created organization: %#v", created)
+	}
+
+	ownerOrgs, err := srv.ListOrganizations(ownerCtx, &accountv1.ListOrganizationsRequest{})
+	if err != nil {
+		t.Fatalf("owner ListOrganizations failed: %v", err)
+	}
+	if len(ownerOrgs.GetOrganizations()) != 1 || ownerOrgs.GetOrganizations()[0].GetSlug() != "acme-labs" {
+		t.Fatalf("unexpected owner org listing: %#v", ownerOrgs)
+	}
+	memberOrgs, err := srv.ListOrganizations(memberCtx, &accountv1.ListOrganizationsRequest{})
+	if err != nil {
+		t.Fatalf("member ListOrganizations failed: %v", err)
+	}
+	if len(memberOrgs.GetOrganizations()) != 0 {
+		t.Fatalf("member should not see owner orgs: %#v", memberOrgs)
+	}
+
+	if _, err := srv.GetOrganization(ownerCtx, &accountv1.GetOrganizationRequest{OrgId: "acme-labs"}); err != nil {
+		t.Fatalf("owner GetOrganization failed: %v", err)
+	}
+	if _, err := srv.GetOrganization(memberCtx, &accountv1.GetOrganizationRequest{OrgId: "acme-labs"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-member get, got %v", err)
+	}
+
+	if _, err := srv.UpdateOrganization(memberCtx, &accountv1.UpdateOrganizationRequest{
+		OrgId: "acme-labs",
+		Name:  "Acme Labs Updated",
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-owner update, got %v", err)
+	}
+	updated, err := srv.UpdateOrganization(ownerCtx, &accountv1.UpdateOrganizationRequest{
+		OrgId: "acme-labs",
+		Name:  "Acme Labs Updated",
+	})
+	if err != nil {
+		t.Fatalf("owner UpdateOrganization failed: %v", err)
+	}
+	if updated.GetName() != "Acme Labs Updated" {
+		t.Fatalf("unexpected updated org: %#v", updated)
+	}
+
+	if _, err := srv.CreateOrganization(ownerCtx, &accountv1.CreateOrganizationRequest{
+		Slug: "orgmember",
+		Name: "Collision Org",
+	}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for user/org slug collision, got %v", err)
+	}
+
+	if _, err := srv.DeleteOrganization(memberCtx, &accountv1.DeleteOrganizationRequest{OrgId: "acme-labs"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-owner delete, got %v", err)
+	}
+	if _, err := srv.DeleteOrganization(ownerCtx, &accountv1.DeleteOrganizationRequest{OrgId: "acme-labs"}); err != nil {
+		t.Fatalf("owner DeleteOrganization failed: %v", err)
+	}
+	if _, err := srv.GetOrganization(ownerCtx, &accountv1.GetOrganizationRequest{OrgId: "acme-labs"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound after org delete, got %v", err)
+	}
+}
