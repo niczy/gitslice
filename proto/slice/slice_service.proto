@@ -21,6 +21,13 @@ service SliceService {
     };
   }
 
+  // List version snapshots for a changeset.
+  rpc ListChangesetSnapshots(ListChangesetSnapshotsRequest) returns (ListChangesetSnapshotsResponse) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/snapshots"
+    };
+  }
+
   // Merge change list into slice (with conflict detection)
   rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse) {
     option (google.api.http) = {
@@ -118,6 +125,7 @@ message CreateChangesetRequest {
   repeated string modified_files = 4;
   string author = 5;
   string message = 6;
+  string changeset_id = 7; // Optional: append a new snapshot to this changeset.
 }
 
 message CreateChangesetResponse {
@@ -156,6 +164,7 @@ enum ObjectType {
 
 message ReviewChangesetRequest {
   string changeset_id = 1;
+  int32 snapshot_version = 2; // Optional: review a specific snapshot version.
 }
 
 message ReviewChangesetResponse {
@@ -164,6 +173,28 @@ message ReviewChangesetResponse {
   ReviewStatus review_status = 3;
   repeated string warnings = 4;
   repeated file.v1.FileChangeRecord changes = 5;
+  ChangesetSnapshotInfo snapshot = 6;
+}
+
+message ListChangesetSnapshotsRequest {
+  string changeset_id = 1;
+  int32 limit = 2;
+}
+
+message ListChangesetSnapshotsResponse {
+  repeated ChangesetSnapshotInfo snapshots = 1;
+}
+
+message ChangesetSnapshotInfo {
+  string snapshot_id = 1;
+  string changeset_id = 2;
+  int32 version = 3;
+  string hash = 4;
+  string base_commit_hash = 5;
+  repeated string modified_files = 6;
+  string author = 7;
+  string message = 8;
+  int64 created_at = 9;
 }
 
 message DiffSummary {

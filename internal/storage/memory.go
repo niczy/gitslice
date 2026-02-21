@@ -37,8 +37,10 @@ type InMemoryStorage struct {
 	entriesByParent map[string][]string               // parentID -> []entryID (direct children)
 
 	// Changesets
-	changesets      map[string]*models.Changeset // changesetID -> changeset
-	sliceChangesets map[string][]string          // sliceID -> []changesetID
+	changesets                map[string]*models.Changeset         // changesetID -> changeset
+	sliceChangesets           map[string][]string                  // sliceID -> []changesetID
+	changesetSnapshots        map[string]*models.ChangesetSnapshot // snapshotID -> snapshot
+	changesetSnapshotVersions map[string][]string                  // changesetID -> []snapshotID (newest first)
 
 	// Commit history
 	sliceCommits       map[string][]*models.Commit // sliceID -> commits (newest first)
@@ -75,36 +77,38 @@ type InMemoryStorage struct {
 // NewInMemoryStorage creates a new in-memory storage instance
 func NewInMemoryStorage() *InMemoryStorage {
 	return &InMemoryStorage{
-		slices:              make(map[string]*models.Slice),
-		sliceMetadata:       make(map[string]*models.SliceMetadata),
-		fileIndex:           make(map[string]map[string]bool),
-		fileContents:        make(map[string]*models.FileContent),
-		entries:             make(map[string]*models.DirectoryEntry),
-		entriesByPath:       make(map[string]string),
-		entriesBySlice:      make(map[string][]string),
-		entriesByParent:     make(map[string][]string),
-		changesets:          make(map[string]*models.Changeset),
-		sliceChangesets:     make(map[string][]string),
-		sliceCommits:        make(map[string][]*models.Commit),
-		commitsBySliceHash:  make(map[string]map[string]*models.Commit),
-		lockedSlices:        make(map[string]bool),
-		fileLocks:           make(map[string]string),
-		commitSnapshots:     make(map[string]*models.CommitSnapshot),
-		versionedContent:    make(map[string]*models.FileContent),
-		fileChanges:         make(map[string]*models.FileChangeRecord),
-		fileChangesByPath:   make(map[string][]string),
-		fileChangesByCommit: make(map[string][]string),
-		fileChangesByDir:    make(map[string][]string),
-		users:               make(map[string]*models.User),
-		orgs:                make(map[string]*models.Organization),
-		orgMembers:          make(map[string]map[string]*models.OrganizationMember),
-		userOrgs:            make(map[string]map[string]bool),
-		environments:        make(map[string]*models.Environment),
-		agentSessions:       make(map[string]*models.AgentSession),
-		activeAgentBySlice:  make(map[string]string),
-		agentSessionEvents:  make(map[string][]*models.AgentSessionEvent),
-		agentSessionAudit:   make(map[string][]*models.AgentSessionAudit),
-		nextAuditID:         1,
+		slices:                    make(map[string]*models.Slice),
+		sliceMetadata:             make(map[string]*models.SliceMetadata),
+		fileIndex:                 make(map[string]map[string]bool),
+		fileContents:              make(map[string]*models.FileContent),
+		entries:                   make(map[string]*models.DirectoryEntry),
+		entriesByPath:             make(map[string]string),
+		entriesBySlice:            make(map[string][]string),
+		entriesByParent:           make(map[string][]string),
+		changesets:                make(map[string]*models.Changeset),
+		sliceChangesets:           make(map[string][]string),
+		changesetSnapshots:        make(map[string]*models.ChangesetSnapshot),
+		changesetSnapshotVersions: make(map[string][]string),
+		sliceCommits:              make(map[string][]*models.Commit),
+		commitsBySliceHash:        make(map[string]map[string]*models.Commit),
+		lockedSlices:              make(map[string]bool),
+		fileLocks:                 make(map[string]string),
+		commitSnapshots:           make(map[string]*models.CommitSnapshot),
+		versionedContent:          make(map[string]*models.FileContent),
+		fileChanges:               make(map[string]*models.FileChangeRecord),
+		fileChangesByPath:         make(map[string][]string),
+		fileChangesByCommit:       make(map[string][]string),
+		fileChangesByDir:          make(map[string][]string),
+		users:                     make(map[string]*models.User),
+		orgs:                      make(map[string]*models.Organization),
+		orgMembers:                make(map[string]map[string]*models.OrganizationMember),
+		userOrgs:                  make(map[string]map[string]bool),
+		environments:              make(map[string]*models.Environment),
+		agentSessions:             make(map[string]*models.AgentSession),
+		activeAgentBySlice:        make(map[string]string),
+		agentSessionEvents:        make(map[string][]*models.AgentSessionEvent),
+		agentSessionAudit:         make(map[string][]*models.AgentSessionAudit),
+		nextAuditID:               1,
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -135,6 +139,8 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.entriesByParent = fresh.entriesByParent
 	s.changesets = fresh.changesets
 	s.sliceChangesets = fresh.sliceChangesets
+	s.changesetSnapshots = fresh.changesetSnapshots
+	s.changesetSnapshotVersions = fresh.changesetSnapshotVersions
 	s.sliceCommits = fresh.sliceCommits
 	s.commitsBySliceHash = fresh.commitsBySliceHash
 	s.globalState = fresh.globalState
@@ -715,6 +721,96 @@ func (s *InMemoryStorage) UpdateChangeset(ctx context.Context, changeset *models
 
 	s.changesets[changeset.ID] = changeset
 	return nil
+}
+
+func (s *InMemoryStorage) CreateChangesetSnapshot(ctx context.Context, snapshot *models.ChangesetSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if snapshot == nil || snapshot.ID == "" || snapshot.ChangesetID == "" || snapshot.Version <= 0 {
+		return ErrInvalidInput
+	}
+	if _, exists := s.changesets[snapshot.ChangesetID]; !exists {
+		return ErrChangesetNotFound
+	}
+	if _, exists := s.changesetSnapshots[snapshot.ID]; exists {
+		return ErrInvalidInput
+	}
+	for _, existingID := range s.changesetSnapshotVersions[snapshot.ChangesetID] {
+		if existing, ok := s.changesetSnapshots[existingID]; ok && existing.Version == snapshot.Version {
+			return ErrInvalidInput
+		}
+	}
+
+	copySnapshot := *snapshot
+	copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+	s.changesetSnapshots[snapshot.ID] = &copySnapshot
+	s.changesetSnapshotVersions[snapshot.ChangesetID] = append(
+		[]string{snapshot.ID},
+		s.changesetSnapshotVersions[snapshot.ChangesetID]...,
+	)
+	return nil
+}
+
+func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID string, version int32) (*models.ChangesetSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := s.changesetSnapshotVersions[changesetID]
+	if len(ids) == 0 {
+		return nil, ErrChangesetNotFound
+	}
+
+	if version <= 0 {
+		latest := s.changesetSnapshots[ids[0]]
+		if latest == nil {
+			return nil, ErrChangesetNotFound
+		}
+		copySnapshot := *latest
+		copySnapshot.ModifiedFiles = append([]string(nil), latest.ModifiedFiles...)
+		return &copySnapshot, nil
+	}
+
+	for _, id := range ids {
+		snapshot, ok := s.changesetSnapshots[id]
+		if !ok {
+			continue
+		}
+		if snapshot.Version != version {
+			continue
+		}
+		copySnapshot := *snapshot
+		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+		return &copySnapshot, nil
+	}
+
+	return nil, ErrChangesetNotFound
+}
+
+func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := s.changesetSnapshotVersions[changesetID]
+	if len(ids) == 0 {
+		return []*models.ChangesetSnapshot{}, nil
+	}
+
+	if limit <= 0 || limit > len(ids) {
+		limit = len(ids)
+	}
+
+	result := make([]*models.ChangesetSnapshot, 0, limit)
+	for _, id := range ids[:limit] {
+		snapshot, ok := s.changesetSnapshots[id]
+		if !ok {
+			continue
+		}
+		copySnapshot := *snapshot
+		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+		result = append(result, &copySnapshot)
+	}
+	return result, nil
 }
 
 // Ping checks if storage is accessible

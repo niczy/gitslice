@@ -404,6 +404,138 @@ func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestCreateChangesetAppendCreatesSnapshotVersions(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-snapshots", Name: "slice-snapshots", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        slice.ID,
+		BaseCommitHash: "base-v1",
+		ModifiedFiles:  []string{"a.txt", "b.txt"},
+		Message:        "snapshot v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset v1 failed: %v", err)
+	}
+
+	appendResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		ChangesetId:    createResp.GetChangesetId(),
+		BaseCommitHash: "base-v2",
+		ModifiedFiles:  []string{"c.txt"},
+		Message:        "snapshot v2",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset append failed: %v", err)
+	}
+	if appendResp.GetChangesetId() != createResp.GetChangesetId() {
+		t.Fatalf("expected append to keep changeset ID %q, got %q", createResp.GetChangesetId(), appendResp.GetChangesetId())
+	}
+
+	cs, err := st.GetChangeset(ctx, createResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("failed to reload changeset: %v", err)
+	}
+	if len(cs.ModifiedFiles) != 1 || cs.ModifiedFiles[0] != "c.txt" {
+		t.Fatalf("expected latest changeset files to be [c.txt], got %#v", cs.ModifiedFiles)
+	}
+
+	snapshotsResp, err := srv.ListChangesetSnapshots(ctx, &slicev1.ListChangesetSnapshotsRequest{
+		ChangesetId: createResp.GetChangesetId(),
+	})
+	if err != nil {
+		t.Fatalf("ListChangesetSnapshots failed: %v", err)
+	}
+	if len(snapshotsResp.GetSnapshots()) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(snapshotsResp.GetSnapshots()))
+	}
+	if snapshotsResp.GetSnapshots()[0].GetVersion() != 2 || snapshotsResp.GetSnapshots()[1].GetVersion() != 1 {
+		t.Fatalf("unexpected snapshot versions: got [%d, %d]", snapshotsResp.GetSnapshots()[0].GetVersion(), snapshotsResp.GetSnapshots()[1].GetVersion())
+	}
+
+	reviewLatest, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+		ChangesetId: createResp.GetChangesetId(),
+	})
+	if err != nil {
+		t.Fatalf("ReviewChangeset latest failed: %v", err)
+	}
+	if reviewLatest.GetSnapshot() == nil || reviewLatest.GetSnapshot().GetVersion() != 2 {
+		t.Fatalf("expected latest snapshot version 2, got %#v", reviewLatest.GetSnapshot())
+	}
+	if reviewLatest.GetDiff().GetFilesAdded() != 1 {
+		t.Fatalf("expected latest diff files_added=1, got %d", reviewLatest.GetDiff().GetFilesAdded())
+	}
+
+	reviewV1, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+		ChangesetId:     createResp.GetChangesetId(),
+		SnapshotVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("ReviewChangeset snapshot v1 failed: %v", err)
+	}
+	if reviewV1.GetSnapshot() == nil || reviewV1.GetSnapshot().GetVersion() != 1 {
+		t.Fatalf("expected snapshot version 1, got %#v", reviewV1.GetSnapshot())
+	}
+	if reviewV1.GetDiff().GetFilesAdded() != 2 {
+		t.Fatalf("expected snapshot v1 diff files_added=2, got %d", reviewV1.GetDiff().GetFilesAdded())
+	}
+
+	if _, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+		ChangesetId:     createResp.GetChangesetId(),
+		SnapshotVersion: 99,
+	}); err == nil {
+		t.Fatalf("expected error for missing snapshot version")
+	}
+}
+
+func TestListChangesetSnapshotsReturnsSyntheticWhenNoStoredSnapshots(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-synthetic-snapshot", Name: "slice-synthetic-snapshot", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "cs-synthetic-snapshot",
+		Hash:           "hash-synthetic",
+		SliceID:        slice.ID,
+		BaseCommitHash: "base-synthetic",
+		ModifiedFiles:  []string{"README.md"},
+		Status:         models.ChangesetStatusPending,
+		Author:         "tester",
+		Message:        "synthetic",
+		CreatedAt:      time.Now().Add(-time.Minute),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to seed changeset: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.ListChangesetSnapshots(ctx, &slicev1.ListChangesetSnapshotsRequest{
+		ChangesetId: cs.ID,
+	})
+	if err != nil {
+		t.Fatalf("ListChangesetSnapshots failed: %v", err)
+	}
+	if len(resp.GetSnapshots()) != 1 {
+		t.Fatalf("expected one synthetic snapshot, got %d", len(resp.GetSnapshots()))
+	}
+	snapshot := resp.GetSnapshots()[0]
+	if snapshot.GetVersion() != 1 {
+		t.Fatalf("expected synthetic snapshot version 1, got %d", snapshot.GetVersion())
+	}
+	if snapshot.GetHash() != cs.Hash {
+		t.Fatalf("expected synthetic snapshot hash %q, got %q", cs.Hash, snapshot.GetHash())
+	}
+}
+
 type promotionWriteCounter struct {
 	storage.Storage
 

@@ -88,6 +88,7 @@ type backfillStats struct {
 	FileChanges    int
 	SliceCommits   int
 	Changesets     int
+	ChangesetSnaps int
 	FileIndexRows  int
 	Users          int
 	Organizations  int
@@ -120,8 +121,8 @@ func cmdBackfillNative(args []string) {
 	if err != nil {
 		log.Fatalf("backfill: %v", err)
 	}
-	log.Printf("Backfill complete: slices=%d entries=%d commit_snapshots=%d file_contents=%d versioned=%d file_changes=%d slice_commits=%d changesets=%d file_index=%d users=%d orgs=%d memberships=%d",
-		stats.Slices, stats.Entries, stats.CommitSnaps, stats.FileContents, stats.Versioned, stats.FileChanges, stats.SliceCommits, stats.Changesets, stats.FileIndexRows, stats.Users, stats.Organizations, stats.OrgMemberships)
+	log.Printf("Backfill complete: slices=%d entries=%d commit_snapshots=%d file_contents=%d versioned=%d file_changes=%d slice_commits=%d changesets=%d changeset_snapshots=%d file_index=%d users=%d orgs=%d memberships=%d",
+		stats.Slices, stats.Entries, stats.CommitSnaps, stats.FileContents, stats.Versioned, stats.FileChanges, stats.SliceCommits, stats.Changesets, stats.ChangesetSnaps, stats.FileIndexRows, stats.Users, stats.Organizations, stats.OrgMemberships)
 
 	if *drop {
 		if err := dropSnapshot(ctx, pool, *namespace); err != nil {
@@ -416,6 +417,31 @@ func backfillNative(ctx context.Context, pool *pgxpool.Pool, snap *storage.Legac
 		stats.Changesets++
 	}
 
+	// Changeset snapshots
+	for id, snapshot := range snap.ChangesetSnapshots {
+		if snapshot == nil || id == "" {
+			continue
+		}
+		modifiedJSON, _ := json.Marshal(snapshot.ModifiedFiles)
+		_, err := tx.Exec(ctx, `
+			INSERT INTO changeset_snapshots (id, changeset_id, version, hash, base_commit_hash, modified_files, author, message, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			ON CONFLICT (id) DO UPDATE SET
+				changeset_id = EXCLUDED.changeset_id,
+				version = EXCLUDED.version,
+				hash = EXCLUDED.hash,
+				base_commit_hash = EXCLUDED.base_commit_hash,
+				modified_files = EXCLUDED.modified_files,
+				author = EXCLUDED.author,
+				message = EXCLUDED.message,
+				created_at = EXCLUDED.created_at
+		`, snapshot.ID, snapshot.ChangesetID, snapshot.Version, snapshot.Hash, snapshot.BaseCommitHash, modifiedJSON, snapshot.Author, snapshot.Message, snapshot.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		stats.ChangesetSnaps++
+	}
+
 	// Slice commits
 	for sliceID, commits := range snap.SliceCommits {
 		if sliceID == "" || len(commits) == 0 {
@@ -652,6 +678,14 @@ func verifyNative(ctx context.Context, pool *pgxpool.Pool, snap *storage.LegacyP
 	}
 	if commitSnapCount < len(snap.CommitSnapshots) {
 		return fmt.Errorf("native commit_snapshots=%d < snapshot commit_snapshots=%d", commitSnapCount, len(snap.CommitSnapshots))
+	}
+
+	var changesetSnapshotCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM changeset_snapshots`).Scan(&changesetSnapshotCount); err != nil {
+		return err
+	}
+	if changesetSnapshotCount < len(snap.ChangesetSnapshots) {
+		return fmt.Errorf("native changeset_snapshots=%d < snapshot changeset_snapshots=%d", changesetSnapshotCount, len(snap.ChangesetSnapshots))
 	}
 
 	// Spot check that a few paths from commit snapshots exist as entries.

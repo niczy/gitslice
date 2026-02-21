@@ -397,6 +397,96 @@ test.describe('Commit Diff Page (real server)', () => {
     await expect(page.getByTestId('diff-file-patch').first()).toBeVisible();
   });
 
+  test('changeset page can switch between snapshot versions', async ({ page }) => {
+    const changesetId = 'cs-snapshot-switch';
+
+    await page.route(`**/v1/changesets/${changesetId}/snapshots*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          snapshots: [
+            {
+              snapshot_id: `${changesetId}-snapshot-2`,
+              changeset_id: changesetId,
+              version: 2,
+              author: 'tester',
+              message: 'snapshot message v2',
+              created_at: `${Math.floor(Date.now() / 1000)}`,
+            },
+            {
+              snapshot_id: `${changesetId}-snapshot-1`,
+              changeset_id: changesetId,
+              version: 1,
+              author: 'tester',
+              message: 'snapshot message v1',
+              created_at: `${Math.floor(Date.now() / 1000) - 60}`,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/diff*`, async (route) => {
+      const url = new URL(route.request().url());
+      const version = url.searchParams.get('snapshot_version') || '2';
+      const patch = version === '1'
+        ? '--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+v1\n'
+        : '--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+v2\n';
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changeset: {
+            changeset_id: changesetId,
+            slice_id: 'root_slice',
+            status: 'PENDING',
+            author: 'tester',
+            created_at: `${Math.floor(Date.now() / 1000)}`,
+            message: `changeset message ${version}`,
+          },
+          snapshot: {
+            snapshot_id: `${changesetId}-snapshot-${version}`,
+            changeset_id: changesetId,
+            version: Number(version),
+            author: 'tester',
+            message: `snapshot message v${version}`,
+            created_at: `${Math.floor(Date.now() / 1000)}`,
+          },
+          diff: {
+            files_added: 0,
+            files_modified: 1,
+            files_deleted: 0,
+            lines_added: 1,
+            lines_removed: 1,
+          },
+          changes: [
+            {
+              id: `change-${version}`,
+              slice_id: 'root_slice',
+              path: 'README.md',
+              change_type: 'CHANGE_TYPE_MODIFY',
+              lines_added: 1,
+              lines_deleted: 1,
+              patch,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto(`/#/changesets/${changesetId}`);
+    await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
+
+    const snapshotPicker = page.getByTestId('changeset-snapshot-select');
+    await expect(snapshotPicker).toBeVisible();
+    await expect(page.getByTestId('changeset-message')).toContainText('snapshot message v2');
+
+    await snapshotPicker.selectOption('1');
+    await expect(page.getByTestId('changeset-message')).toContainText('snapshot message v1');
+    await expect(page.getByTestId('changeset-snapshot-meta')).toContainText('snapshot v1');
+  });
+
   test('revert flow creates a changeset, merges it, and refreshes browser content', async ({ page }) => {
     const commitHash = 'commit-revert-e2e';
     const changesetId = 'cs-revert-e2e';
@@ -525,7 +615,26 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.route(`**/v1/changesets/${changesetId}/diff`, async (route) => {
+    await page.route(`**/v1/changesets/${changesetId}/snapshots*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          snapshots: [
+            {
+              snapshot_id: `${changesetId}-snapshot-1`,
+              changeset_id: changesetId,
+              version: 1,
+              author: 'tester',
+              message: `Revert commit ${commitHash}`,
+              created_at: `${Math.floor(Date.now() / 1000)}`,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/diff*`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -537,6 +646,14 @@ test.describe('Commit Diff Page (real server)', () => {
             author: 'tester',
             created_at: `${Math.floor(Date.now() / 1000)}`,
             message: `Revert commit ${commitHash}`,
+          },
+          snapshot: {
+            snapshot_id: `${changesetId}-snapshot-1`,
+            changeset_id: changesetId,
+            version: 1,
+            author: 'tester',
+            message: `Revert commit ${commitHash}`,
+            created_at: `${Math.floor(Date.now() / 1000)}`,
           },
           diff: {
             files_added: 0,

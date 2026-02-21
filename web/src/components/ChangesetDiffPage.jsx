@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { closeChangeset, getChangesetDiff, mergeChangeset } from '../utils/api.js';
+import { closeChangeset, getChangesetDiff, listChangesetSnapshots, mergeChangeset } from '../utils/api.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
-import { normalizeChangeType, normalizeChangesetDiffResponse } from '../utils/normalize.js';
+import {
+  normalizeChangeType,
+  normalizeChangesetDiffResponse,
+  normalizeChangesetSnapshotListResponse,
+} from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 
 // ---------------------------------------------------------------------------
@@ -15,15 +19,57 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
   const [viewMode, setViewMode] = useState('unified');
   const [actionLoading, setActionLoading] = useState('');
   const [actionError, setActionError] = useState('');
+  const [snapshots, setSnapshots] = useState([]);
+  const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
+  const [snapshotsError, setSnapshotsError] = useState('');
+  const [selectedSnapshotVersion, setSelectedSnapshotVersion] = useState(0);
 
   useEffect(() => {
-    if (!changesetId) return;
+    if (!changesetId) {
+      setSnapshots([]);
+      setSnapshotsLoaded(false);
+      setSnapshotsError('');
+      setSelectedSnapshotVersion(0);
+      return;
+    }
+
+    let active = true;
+    const loadSnapshots = async () => {
+      setSnapshotsLoaded(false);
+      setSnapshotsError('');
+      try {
+        const response = await listChangesetSnapshots(changesetId);
+        if (!active) {
+          return;
+        }
+        const normalized = normalizeChangesetSnapshotListResponse(response);
+        setSnapshots(normalized);
+        setSelectedSnapshotVersion(normalized[0]?.version || 0);
+      } catch (err) {
+        if (!active) {
+          return;
+        }
+        setSnapshots([]);
+        setSelectedSnapshotVersion(0);
+        setSnapshotsError(err?.message || 'Unable to load snapshot versions.');
+      } finally {
+        if (active) {
+          setSnapshotsLoaded(true);
+        }
+      }
+    };
+    loadSnapshots();
+    return () => { active = false; };
+  }, [changesetId]);
+
+  useEffect(() => {
+    if (!changesetId || !snapshotsLoaded) return;
     let active = true;
     const load = async () => {
       setIsLoading(true);
       setError('');
       try {
-        const response = await getChangesetDiff(changesetId);
+        const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined);
         if (active) {
           setPayload(normalizeChangesetDiffResponse(response));
         }
@@ -39,10 +85,12 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
     };
     load();
     return () => { active = false; };
-  }, [changesetId]);
+  }, [changesetId, selectedSnapshotVersion, snapshotsLoaded]);
 
   const changeset = payload?.changeset || null;
+  const selectedSnapshot = payload?.snapshot || null;
   const diff = payload?.diff || null;
+  const activeMessage = selectedSnapshot?.message || changeset?.message || '';
   const changes = useMemo(() => payload?.changes || [], [payload]);
 
   const handleMerge = async () => {
@@ -89,12 +137,35 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
               {changeset.status || 'pending'} on {changeset.slice_id || changeset.sliceId} by {changeset.author || 'unknown'} · {formatTimestamp(changeset.created_at || changeset.createdAt)}
             </p>
           )}
+          {selectedSnapshot?.version > 0 && (
+            <p className="changeset-title-meta" data-testid="changeset-snapshot-meta">
+              snapshot v{selectedSnapshot.version} by {selectedSnapshot.author || changeset?.author || 'unknown'} · {formatTimestamp(selectedSnapshot.created_at || selectedSnapshot.createdAt)}
+            </p>
+          )}
         </div>
         {diff && (
           <div className="diff-summary" data-testid="changeset-summary">
             <span className="diff-stat diff-stat-added">+{diff.files_added || diff.filesAdded || 0} added</span>
             <span className="diff-stat diff-stat-modified">{diff.files_modified || diff.filesModified || 0} modified</span>
             <span className="diff-stat diff-stat-deleted">-{diff.files_deleted || diff.filesDeleted || 0} deleted</span>
+          </div>
+        )}
+        {snapshots.length > 0 && (
+          <div className="changeset-snapshot-picker" data-testid="changeset-snapshot-picker">
+            <label htmlFor="changeset-snapshot-select">Snapshot</label>
+            <select
+              id="changeset-snapshot-select"
+              data-testid="changeset-snapshot-select"
+              value={selectedSnapshotVersion || snapshots[0].version}
+              onChange={(event) => setSelectedSnapshotVersion(Number(event.target.value) || 0)}
+              disabled={isLoading || actionLoading !== ''}
+            >
+              {snapshots.map((snapshot) => (
+                <option key={snapshot.snapshot_id || `${snapshot.changeset_id}-${snapshot.version}`} value={snapshot.version}>
+                  v{snapshot.version} - {formatTimestamp(snapshot.created_at || snapshot.createdAt)}
+                </option>
+              ))}
+            </select>
           </div>
         )}
         <div className="diff-view-toggle" data-testid="changeset-view-toggle">
@@ -135,14 +206,15 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
         </div>
       </div>
       {actionError && <div className="panel-error diff-action-error">{actionError}</div>}
+      {snapshotsError && <div className="panel-error diff-action-error">{snapshotsError}</div>}
 
       <div className="diff-content">
         {isLoading && <div className="diff-loading">Loading changeset diff...</div>}
         {!isLoading && error && <div className="panel-error">{error}</div>}
 
-        {!isLoading && !error && changeset?.message && (
+        {!isLoading && !error && activeMessage && (
           <div className="changeset-message" data-testid="changeset-message">
-            {changeset.message}
+            {activeMessage}
           </div>
         )}
 

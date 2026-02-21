@@ -30,6 +30,7 @@ export function normalizeDiffResponse(data) {
 export function normalizeChangesetDiffResponse(data) {
   const changeset = data?.changeset || {};
   const diff = data?.diff || {};
+  const snapshot = data?.snapshot || {};
   const normalizedChangeset = {
     ...changeset,
     changeset_id: changeset.changeset_id ?? changeset.changesetId,
@@ -56,6 +57,7 @@ export function normalizeChangesetDiffResponse(data) {
   return {
     ...data,
     changeset: normalizedChangeset,
+    snapshot: normalizeChangesetSnapshot(snapshot),
     diff: {
       ...diff,
       files_added: diff.files_added ?? diff.filesAdded ?? 0,
@@ -66,6 +68,26 @@ export function normalizeChangesetDiffResponse(data) {
     },
     changes: normalizedChanges.length > 0 ? normalizedChanges : synthesizedChanges,
   };
+}
+
+export function normalizeChangesetSnapshot(snapshot) {
+  return {
+    ...snapshot,
+    snapshot_id: snapshot?.snapshot_id ?? snapshot?.snapshotId ?? '',
+    changeset_id: snapshot?.changeset_id ?? snapshot?.changesetId ?? '',
+    version: Number(snapshot?.version ?? 0),
+    hash: snapshot?.hash ?? '',
+    base_commit_hash: snapshot?.base_commit_hash ?? snapshot?.baseCommitHash ?? '',
+    modified_files: snapshot?.modified_files ?? snapshot?.modifiedFiles ?? [],
+    author: snapshot?.author ?? '',
+    message: snapshot?.message ?? '',
+    created_at: snapshot?.created_at ?? snapshot?.createdAt ?? 0,
+  };
+}
+
+export function normalizeChangesetSnapshotListResponse(data) {
+  const snapshots = data?.snapshots || [];
+  return snapshots.map((snapshot) => normalizeChangesetSnapshot(snapshot));
 }
 
 export function normalizeChangesetStatus(value) {
