@@ -279,6 +279,8 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			agent_session_audit,
 			agent_session_events,
 			agent_sessions,
+			team_members,
+			teams,
 			organization_invites,
 			organization_members,
 			organizations,
@@ -3117,14 +3119,27 @@ func (s *PostgresNativeStorage) RemoveOrganizationMember(ctx context.Context, or
 		return ErrInvalidInput
 	}
 
-	tag, err := s.pool.Exec(ctx, `DELETE FROM organization_members WHERE org_slug = $1 AND username = $2`, orgSlug, username)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `DELETE FROM organization_members WHERE org_slug = $1 AND username = $2`, orgSlug, username)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
 	}
-	return nil
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM team_members tm
+		USING teams t
+		WHERE tm.team_id = t.team_id AND t.org_slug = $1 AND tm.username = $2
+	`, orgSlug, username); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresNativeStorage) CreateOrganizationInvite(ctx context.Context, invite *models.OrganizationInvite) error {
@@ -3249,6 +3264,224 @@ func (s *PostgresNativeStorage) UpdateOrganizationInvite(ctx context.Context, in
 	invite.Status = status
 	invite.CreatedBy = createdBy
 	invite.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *PostgresNativeStorage) CreateTeam(ctx context.Context, team *models.Team) error {
+	ctx = ensureCtx(ctx)
+	if team == nil {
+		return ErrInvalidInput
+	}
+	teamID := strings.TrimSpace(team.TeamID)
+	orgSlug := strings.TrimSpace(team.OrgSlug)
+	name := strings.TrimSpace(team.Name)
+	createdBy := strings.TrimSpace(team.CreatedBy)
+	if teamID == "" || !auth.ValidateUsername(orgSlug) || name == "" || !auth.ValidateUsername(createdBy) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if team.CreatedAt.IsZero() {
+		team.CreatedAt = now
+	}
+	team.UpdatedAt = now
+	team.TeamID = teamID
+	team.OrgSlug = orgSlug
+	team.Name = name
+	team.CreatedBy = createdBy
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO teams (team_id, org_slug, name, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, team.TeamID, team.OrgSlug, team.Name, team.CreatedBy, team.CreatedAt, team.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetTeam(ctx context.Context, teamID string) (*models.Team, error) {
+	ctx = ensureCtx(ctx)
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var team models.Team
+	err := s.pool.QueryRow(ctx, `
+		SELECT team_id, org_slug, name, created_by, created_at, updated_at
+		FROM teams
+		WHERE team_id = $1
+	`, teamID).Scan(&team.TeamID, &team.OrgSlug, &team.Name, &team.CreatedBy, &team.CreatedAt, &team.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &team, nil
+}
+
+func (s *PostgresNativeStorage) ListTeams(ctx context.Context, orgSlug string) ([]*models.Team, error) {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	if !auth.ValidateUsername(orgSlug) {
+		return nil, ErrInvalidInput
+	}
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = $1)`, orgSlug).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrEntryNotFound
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT team_id, org_slug, name, created_by, created_at, updated_at
+		FROM teams
+		WHERE org_slug = $1
+		ORDER BY team_id
+	`, orgSlug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	teams := make([]*models.Team, 0)
+	for rows.Next() {
+		var team models.Team
+		if err := rows.Scan(&team.TeamID, &team.OrgSlug, &team.Name, &team.CreatedBy, &team.CreatedAt, &team.UpdatedAt); err != nil {
+			return nil, err
+		}
+		teams = append(teams, &team)
+	}
+	if teams == nil {
+		teams = []*models.Team{}
+	}
+	return teams, rows.Err()
+}
+
+func (s *PostgresNativeStorage) UpdateTeam(ctx context.Context, team *models.Team) error {
+	ctx = ensureCtx(ctx)
+	if team == nil {
+		return ErrInvalidInput
+	}
+	teamID := strings.TrimSpace(team.TeamID)
+	name := strings.TrimSpace(team.Name)
+	if teamID == "" || name == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE teams
+		SET name = $1, updated_at = NOW()
+		WHERE team_id = $2
+	`, name, teamID)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	team.Name = name
+	team.TeamID = teamID
+	team.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *PostgresNativeStorage) DeleteTeam(ctx context.Context, orgSlug, teamID string) error {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	teamID = strings.TrimSpace(teamID)
+	if !auth.ValidateUsername(orgSlug) || teamID == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `DELETE FROM teams WHERE team_id = $1 AND org_slug = $2`, teamID, orgSlug)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) AddTeamMember(ctx context.Context, member *models.TeamMember) error {
+	ctx = ensureCtx(ctx)
+	if member == nil {
+		return ErrInvalidInput
+	}
+	teamID := strings.TrimSpace(member.TeamID)
+	username := strings.TrimSpace(member.Username)
+	if teamID == "" || !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if member.AddedAt.IsZero() {
+		member.AddedAt = now
+	}
+	member.TeamID = teamID
+	member.Username = username
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO team_members (team_id, username, added_at)
+		SELECT t.team_id, $2, $3
+		FROM teams t
+		INNER JOIN organization_members om ON om.org_slug = t.org_slug AND om.username = $2
+		WHERE t.team_id = $1
+	`, teamID, username, member.AddedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND username = $2)`, teamID, username).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) DeleteTeamMember(ctx context.Context, orgSlug, teamID, username string) error {
+	ctx = ensureCtx(ctx)
+	orgSlug = strings.TrimSpace(orgSlug)
+	teamID = strings.TrimSpace(teamID)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(orgSlug) || teamID == "" || !auth.ValidateUsername(username) {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM team_members tm
+		USING teams t
+		WHERE tm.team_id = t.team_id
+		  AND t.org_slug = $1
+		  AND tm.team_id = $2
+		  AND tm.username = $3
+	`, orgSlug, teamID, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
 	return nil
 }
 

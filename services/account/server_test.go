@@ -438,3 +438,146 @@ func TestInvitesAndMembershipManagement(t *testing.T) {
 		t.Fatalf("DeleteMember user failed: %v", err)
 	}
 }
+
+func TestTeamsCRUDAndMembershipAuthorization(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	ownerSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "teamowner",
+		Email:    "teamowner@example.com",
+		Password: "ownerpass1",
+		Name:     "Team Owner",
+	})
+	if err != nil {
+		t.Fatalf("owner signup failed: %v", err)
+	}
+	adminSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "teamadmin",
+		Email:    "teamadmin@example.com",
+		Password: "adminpass1",
+		Name:     "Team Admin",
+	})
+	if err != nil {
+		t.Fatalf("admin signup failed: %v", err)
+	}
+	userSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "teamuser",
+		Email:    "teamuser@example.com",
+		Password: "userpass11",
+		Name:     "Team User",
+	})
+	if err != nil {
+		t.Fatalf("user signup failed: %v", err)
+	}
+
+	ownerCtx := bearerCtx(ctx, ownerSignup.GetAccessToken())
+	adminCtx := bearerCtx(ctx, adminSignup.GetAccessToken())
+	userCtx := bearerCtx(ctx, userSignup.GetAccessToken())
+
+	if _, err := srv.CreateOrganization(ownerCtx, &accountv1.CreateOrganizationRequest{
+		Slug: "acme-teams",
+		Name: "Acme Teams",
+	}); err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+
+	adminInvite, err := srv.CreateInvite(ownerCtx, &accountv1.CreateInviteRequest{
+		OrgId:       "acme-teams",
+		TargetEmail: "teamadmin@example.com",
+		Role:        accountv1.Role_ROLE_ADMIN,
+	})
+	if err != nil {
+		t.Fatalf("CreateInvite admin failed: %v", err)
+	}
+	if _, err := srv.AcceptInvite(adminCtx, &accountv1.AcceptInviteRequest{
+		OrgId:    "acme-teams",
+		InviteId: adminInvite.GetId(),
+	}); err != nil {
+		t.Fatalf("AcceptInvite admin failed: %v", err)
+	}
+	userInvite, err := srv.CreateInvite(ownerCtx, &accountv1.CreateInviteRequest{
+		OrgId:       "acme-teams",
+		TargetEmail: "teamuser@example.com",
+		Role:        accountv1.Role_ROLE_USER,
+	})
+	if err != nil {
+		t.Fatalf("CreateInvite user failed: %v", err)
+	}
+	if _, err := srv.AcceptInvite(userCtx, &accountv1.AcceptInviteRequest{
+		OrgId:    "acme-teams",
+		InviteId: userInvite.GetId(),
+	}); err != nil {
+		t.Fatalf("AcceptInvite user failed: %v", err)
+	}
+
+	createdTeam, err := srv.CreateTeam(adminCtx, &accountv1.CreateTeamRequest{
+		OrgId: "acme-teams",
+		Name:  "Platform",
+	})
+	if err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+	if createdTeam.GetId() == "" {
+		t.Fatalf("expected created team id, got %#v", createdTeam)
+	}
+
+	listResp, err := srv.ListTeams(ownerCtx, &accountv1.ListTeamsRequest{OrgId: "acme-teams"})
+	if err != nil {
+		t.Fatalf("ListTeams owner failed: %v", err)
+	}
+	if len(listResp.GetTeams()) != 1 {
+		t.Fatalf("expected one team, got %#v", listResp)
+	}
+	if _, err := srv.ListTeams(userCtx, &accountv1.ListTeamsRequest{OrgId: "acme-teams"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-admin list teams, got %v", err)
+	}
+
+	if _, err := srv.AddTeamMember(adminCtx, &accountv1.AddTeamMemberRequest{
+		OrgId:    "acme-teams",
+		TeamId:   createdTeam.GetId(),
+		MemberId: "teamuser",
+	}); err != nil {
+		t.Fatalf("AddTeamMember failed: %v", err)
+	}
+	if _, err := srv.AddTeamMember(userCtx, &accountv1.AddTeamMemberRequest{
+		OrgId:    "acme-teams",
+		TeamId:   createdTeam.GetId(),
+		MemberId: "teamowner",
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-admin add team member, got %v", err)
+	}
+
+	updatedTeam, err := srv.UpdateTeam(adminCtx, &accountv1.UpdateTeamRequest{
+		OrgId:  "acme-teams",
+		TeamId: createdTeam.GetId(),
+		Name:   "Platform Updated",
+	})
+	if err != nil {
+		t.Fatalf("UpdateTeam failed: %v", err)
+	}
+	if updatedTeam.GetName() != "Platform Updated" {
+		t.Fatalf("unexpected updated team: %#v", updatedTeam)
+	}
+	if _, err := srv.UpdateTeam(userCtx, &accountv1.UpdateTeamRequest{
+		OrgId:  "acme-teams",
+		TeamId: createdTeam.GetId(),
+		Name:   "Nope",
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-admin update team, got %v", err)
+	}
+
+	if _, err := srv.DeleteTeamMember(adminCtx, &accountv1.DeleteTeamMemberRequest{
+		OrgId:    "acme-teams",
+		TeamId:   createdTeam.GetId(),
+		MemberId: "teamuser",
+	}); err != nil {
+		t.Fatalf("DeleteTeamMember failed: %v", err)
+	}
+	if _, err := srv.DeleteTeam(adminCtx, &accountv1.DeleteTeamRequest{
+		OrgId:  "acme-teams",
+		TeamId: createdTeam.GetId(),
+	}); err != nil {
+		t.Fatalf("DeleteTeam failed: %v", err)
+	}
+}

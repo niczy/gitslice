@@ -141,6 +141,13 @@ type Storage interface {
 	GetOrganizationInvite(ctx context.Context, orgSlug, inviteID string) (*models.OrganizationInvite, error)
 	UpdateOrganizationInvite(ctx context.Context, invite *models.OrganizationInvite) error
 	ListOrganizationsForUser(ctx context.Context, username string) ([]*models.Organization, error)
+	CreateTeam(ctx context.Context, team *models.Team) error
+	GetTeam(ctx context.Context, teamID string) (*models.Team, error)
+	ListTeams(ctx context.Context, orgSlug string) ([]*models.Team, error)
+	UpdateTeam(ctx context.Context, team *models.Team) error
+	DeleteTeam(ctx context.Context, orgSlug, teamID string) error
+	AddTeamMember(ctx context.Context, member *models.TeamMember) error
+	DeleteTeamMember(ctx context.Context, orgSlug, teamID, username string) error
 
 	// Environment registry
 	CreateEnvironment(ctx context.Context, env *models.Environment) error
