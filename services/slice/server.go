@@ -402,32 +402,34 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 	}
 	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, modifiedFiles)
 
-	var conflicts []*slicev1.Conflict
-	for _, fileID := range modifiedFiles {
-		slices, err := s.storage.GetActiveSlicesForFile(ctx, fileID)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
-		}
+	if !isRevertChangesetHash(cs.Hash) {
+		var conflicts []*slicev1.Conflict
+		for _, fileID := range modifiedFiles {
+			slices, err := s.storage.GetActiveSlicesForFile(ctx, fileID)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
+			}
 
-		var conflictingSlices []string
-		for _, sliceID := range slices {
-			if sliceID != cs.SliceID {
-				conflictingSlices = append(conflictingSlices, sliceID)
+			var conflictingSlices []string
+			for _, sliceID := range slices {
+				if sliceID != cs.SliceID {
+					conflictingSlices = append(conflictingSlices, sliceID)
+				}
+			}
+
+			if len(conflictingSlices) > 0 {
+				conflicts = append(conflicts, &slicev1.Conflict{FileId: fileID, ConflictingSliceIds: conflictingSlices})
 			}
 		}
 
-		if len(conflictingSlices) > 0 {
-			conflicts = append(conflicts, &slicev1.Conflict{FileId: fileID, ConflictingSliceIds: conflictingSlices})
+		if len(conflicts) > 0 {
+			return &slicev1.MergeChangesetResponse{
+				Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
+				NewCommitHash: "",
+				ChangesetId:   cs.ID,
+				Conflicts:     conflicts,
+			}, nil
 		}
-	}
-
-	if len(conflicts) > 0 {
-		return &slicev1.MergeChangesetResponse{
-			Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
-			NewCommitHash: "",
-			ChangesetId:   cs.ID,
-			Conflicts:     conflicts,
-		}, nil
 	}
 
 	appliedRevertChanges, err := s.applyRevertChangesetContent(ctx, cs)
@@ -789,6 +791,11 @@ func parseRevertChangesetHash(hash string) (commitHash, changeID string, ok bool
 		return "", "", false
 	}
 	return commit, change, true
+}
+
+func isRevertChangesetHash(hash string) bool {
+	_, _, ok := parseRevertChangesetHash(hash)
+	return ok
 }
 
 func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.Changeset) ([]*filev1.FileChangeRecord, []string) {
