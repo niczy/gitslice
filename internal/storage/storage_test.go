@@ -473,6 +473,103 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("expected ErrEntryNotFound on deleting missing env, got %v", err)
 	}
 
+	// Account auth + session lifecycle
+	accountUsername := "acct" + suffix[len(suffix)-6:]
+	accountEmail := "acct+" + suffix + "@example.com"
+	user := &models.User{
+		Username:     accountUsername,
+		Name:         "Account User",
+		PrimaryEmail: accountEmail,
+		PasswordHash: "hash-v1",
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, user); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate user, got %v", err)
+	}
+	fetchedUser, err := st.GetUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if fetchedUser.PrimaryEmail != accountEmail || fetchedUser.Name != user.Name {
+		t.Fatalf("fetched user mismatch: %#v", fetchedUser)
+	}
+	byEmail, err := st.GetUserByEmail(ctx, accountEmail)
+	if err != nil {
+		t.Fatalf("GetUserByEmail failed: %v", err)
+	}
+	if byEmail.Username != accountUsername {
+		t.Fatalf("GetUserByEmail mismatch: %#v", byEmail)
+	}
+	fetchedUser.PasswordHash = "hash-v2"
+	fetchedUser.Name = "Updated Name"
+	if err := st.UpdateUser(ctx, fetchedUser); err != nil {
+		t.Fatalf("UpdateUser failed: %v", err)
+	}
+	updatedUser, err := st.GetUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("GetUser after update failed: %v", err)
+	}
+	if updatedUser.PasswordHash != "hash-v2" || updatedUser.Name != "Updated Name" {
+		t.Fatalf("updated user mismatch: %#v", updatedUser)
+	}
+
+	authSession := &models.AuthSession{
+		SessionID:  "auth-sess-" + suffix,
+		Username:   accountUsername,
+		Token:      "auth-token-" + suffix,
+		DeviceInfo: "tests",
+	}
+	if err := st.CreateAuthSession(ctx, authSession); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+	if err := st.CreateAuthSession(ctx, authSession); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate auth session, got %v", err)
+	}
+	sessionByToken, err := st.GetAuthSessionByToken(ctx, authSession.Token)
+	if err != nil {
+		t.Fatalf("GetAuthSessionByToken failed: %v", err)
+	}
+	if sessionByToken.SessionID != authSession.SessionID {
+		t.Fatalf("GetAuthSessionByToken mismatch: %#v", sessionByToken)
+	}
+	touchedAt := time.Now().Add(2 * time.Minute)
+	if err := st.TouchAuthSession(ctx, authSession.SessionID, touchedAt); err != nil {
+		t.Fatalf("TouchAuthSession failed: %v", err)
+	}
+	sessionsByUser, err := st.ListAuthSessionsByUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("ListAuthSessionsByUser failed: %v", err)
+	}
+	if len(sessionsByUser) != 1 {
+		t.Fatalf("expected one active auth session, got %d", len(sessionsByUser))
+	}
+	if err := st.RevokeAuthSession(ctx, accountUsername, authSession.SessionID); err != nil {
+		t.Fatalf("RevokeAuthSession failed: %v", err)
+	}
+	if _, err := st.GetAuthSessionByToken(ctx, authSession.Token); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for revoked token, got %v", err)
+	}
+
+	authSession2 := &models.AuthSession{
+		SessionID:  "auth-sess2-" + suffix,
+		Username:   accountUsername,
+		Token:      "auth-token2-" + suffix,
+		DeviceInfo: "tests",
+	}
+	if err := st.CreateAuthSession(ctx, authSession2); err != nil {
+		t.Fatalf("CreateAuthSession second failed: %v", err)
+	}
+	if err := st.RevokeAuthSessionByToken(ctx, authSession2.Token); err != nil {
+		t.Fatalf("RevokeAuthSessionByToken failed: %v", err)
+	}
+	if activeSessions, err := st.ListAuthSessionsByUser(ctx, accountUsername); err != nil {
+		t.Fatalf("ListAuthSessionsByUser after revoke failed: %v", err)
+	} else if len(activeSessions) != 0 {
+		t.Fatalf("expected zero active sessions after revocation, got %d", len(activeSessions))
+	}
+
 	// Agent session lifecycle + event persistence
 	sessionID := fmt.Sprintf("sess-%s", suffix)
 	session := &models.AgentSession{

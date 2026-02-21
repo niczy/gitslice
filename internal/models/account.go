@@ -5,9 +5,12 @@ import "time"
 // User is a fake account identified only by a username.
 // There are no passwords or emails; identity is carried via request metadata.
 type User struct {
-	Username  string    `json:"username"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Username     string    `json:"username"`
+	Name         string    `json:"name"`
+	PrimaryEmail string    `json:"primary_email"`
+	PasswordHash string    `json:"password_hash"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Organization groups users together.
@@ -32,4 +35,14 @@ type OrganizationMember struct {
 	Role      OrganizationRole `json:"role"`
 	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+type AuthSession struct {
+	SessionID  string     `json:"session_id"`
+	Username   string     `json:"username"`
+	Token      string     `json:"token"`
+	DeviceInfo string     `json:"device_info"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastSeenAt time.Time  `json:"last_seen_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }

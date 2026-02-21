@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 )
@@ -116,6 +117,15 @@ type Storage interface {
 	// Accounts / Organizations (fake auth: identity is a username).
 	EnsureUser(ctx context.Context, username string) (*models.User, error)
 	GetUser(ctx context.Context, username string) (*models.User, error)
+	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
+	CreateUser(ctx context.Context, user *models.User) error
+	UpdateUser(ctx context.Context, user *models.User) error
+	CreateAuthSession(ctx context.Context, session *models.AuthSession) error
+	GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error)
+	ListAuthSessionsByUser(ctx context.Context, username string) ([]*models.AuthSession, error)
+	TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error
+	RevokeAuthSession(ctx context.Context, username, sessionID string) error
+	RevokeAuthSessionByToken(ctx context.Context, token string) error
 
 	CreateOrganization(ctx context.Context, org *models.Organization) error
 	GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error)
