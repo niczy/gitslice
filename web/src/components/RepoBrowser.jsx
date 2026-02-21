@@ -5,6 +5,7 @@ import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
 import { decodeBase64, highlightCode } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
+import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDropdown from './SliceDropdown.jsx';
 import SliceSettings from './SliceSettings.jsx';
 
@@ -117,6 +118,10 @@ export default function RepoBrowser({
   const currentSliceLabel = useMemo(() => {
     return currentSlice?.name || sliceId;
   }, [currentSlice, sliceId]);
+
+  const currentSliceDisplayName = useMemo(() => {
+    return getSliceDisplayName(currentSliceLabel);
+  }, [currentSliceLabel]);
 
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = activeView === 'settings' && canShowSettings;
@@ -733,7 +738,7 @@ export default function RepoBrowser({
           />
           <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
             <div className="panel-header">
-              <h3>File tree {currentSliceLabel ? `· ${currentSliceLabel}` : ''}</h3>
+              <h3>File tree {currentSliceDisplayName ? `· ${currentSliceDisplayName}` : ''}</h3>
               <div className="panel-header-actions">
                 <span
                   className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { getSliceDisplayName } from '../utils/slices.js';
 
 // ---------------------------------------------------------------------------
 // Slice Dropdown Component
@@ -51,7 +52,7 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
         onClick={() => setIsOpen(!isOpen)}
         data-testid="slice-dropdown-trigger"
       >
-        <span>{currentSlice ? (currentSlice.name || currentSlice.slice_id) : 'Select slice'}</span>
+        <span>{currentSlice ? getSliceDisplayName(currentSlice.name || currentSlice.slice_id) : 'Select slice'}</span>
         <span className="slice-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
       </button>
       {isOpen && (
@@ -93,7 +94,7 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
                   data-testid="slice-dropdown-item"
                 >
                   <div className="slice-dropdown-item-title">
-                    <span className="slice-name">{slice.name || slice.slice_id}</span>
+                    <span className="slice-name">{getSliceDisplayName(slice.name || slice.slice_id)}</span>
                     {slice.is_root && <span className="slice-badge">root</span>}
                   </div>
                   <div className="slice-dropdown-item-meta">
