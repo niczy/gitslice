@@ -9,6 +9,7 @@ type User struct {
 	Name         string    `json:"name"`
 	PrimaryEmail string    `json:"primary_email"`
 	PasswordHash string    `json:"password_hash"`
+	RootPath     string    `json:"root_path"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -18,6 +19,7 @@ type Organization struct {
 	Slug      string    `json:"slug"`
 	Name      string    `json:"name"`
 	CreatedBy string    `json:"created_by"`
+	RootPath  string    `json:"root_path"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

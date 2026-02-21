@@ -495,12 +495,25 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if fetchedUser.PrimaryEmail != accountEmail || fetchedUser.Name != user.Name {
 		t.Fatalf("fetched user mismatch: %#v", fetchedUser)
 	}
+	if fetchedUser.RootPath != "/"+accountUsername {
+		t.Fatalf("unexpected user root path: %q", fetchedUser.RootPath)
+	}
 	byEmail, err := st.GetUserByEmail(ctx, accountEmail)
 	if err != nil {
 		t.Fatalf("GetUserByEmail failed: %v", err)
 	}
 	if byEmail.Username != accountUsername {
 		t.Fatalf("GetUserByEmail mismatch: %#v", byEmail)
+	}
+	if byEmail.RootPath != "/"+accountUsername {
+		t.Fatalf("unexpected user root path from email lookup: %q", byEmail.RootPath)
+	}
+	ensuredUser, err := st.EnsureUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("EnsureUser existing user failed: %v", err)
+	}
+	if ensuredUser.RootPath != "/"+accountUsername {
+		t.Fatalf("unexpected ensured user root path: %q", ensuredUser.RootPath)
 	}
 	fetchedUser.PasswordHash = "hash-v2"
 	fetchedUser.Name = "Updated Name"
@@ -513,6 +526,98 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if updatedUser.PasswordHash != "hash-v2" || updatedUser.Name != "Updated Name" {
 		t.Fatalf("updated user mismatch: %#v", updatedUser)
+	}
+	if updatedUser.RootPath != "/"+accountUsername {
+		t.Fatalf("unexpected user root path after update: %q", updatedUser.RootPath)
+	}
+
+	orgSlug := "org" + suffix[len(suffix)-6:]
+	org := &models.Organization{
+		Slug:      orgSlug,
+		Name:      "Org " + suffix,
+		CreatedBy: accountUsername,
+	}
+	if err := st.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+	if err := st.CreateOrganization(ctx, org); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate org, got %v", err)
+	}
+	createdOrg, err := st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		t.Fatalf("GetOrganization failed: %v", err)
+	}
+	if createdOrg.RootPath != "/"+orgSlug {
+		t.Fatalf("unexpected org root path: %q", createdOrg.RootPath)
+	}
+	if createdOrg.CreatedBy != accountUsername {
+		t.Fatalf("unexpected org owner: %q", createdOrg.CreatedBy)
+	}
+	if err := st.AddOrganizationMember(ctx, &models.OrganizationMember{
+		OrgSlug:  orgSlug,
+		Username: accountUsername,
+		Role:     models.OrganizationRoleOwner,
+	}); err != nil {
+		t.Fatalf("AddOrganizationMember failed: %v", err)
+	}
+	userOrgs, err := st.ListOrganizationsForUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("ListOrganizationsForUser failed: %v", err)
+	}
+	if len(userOrgs) != 1 || userOrgs[0].Slug != orgSlug {
+		t.Fatalf("unexpected organizations for user: %#v", userOrgs)
+	}
+	if userOrgs[0].RootPath != "/"+orgSlug {
+		t.Fatalf("unexpected org root path from user listing: %q", userOrgs[0].RootPath)
+	}
+	createdOrg.Name = "Org Updated " + suffix
+	if err := st.UpdateOrganization(ctx, createdOrg); err != nil {
+		t.Fatalf("UpdateOrganization failed: %v", err)
+	}
+	updatedOrg, err := st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		t.Fatalf("GetOrganization after update failed: %v", err)
+	}
+	if updatedOrg.Name != createdOrg.Name {
+		t.Fatalf("updated org mismatch: %#v", updatedOrg)
+	}
+	if updatedOrg.RootPath != "/"+orgSlug {
+		t.Fatalf("unexpected org root path after update: %q", updatedOrg.RootPath)
+	}
+
+	if _, err := st.EnsureUser(ctx, orgSlug); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists when ensuring user with org slug, got %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     orgSlug,
+		Name:         "Collision User",
+		PrimaryEmail: "collision+" + suffix + "@example.com",
+		PasswordHash: "hash-collision",
+	}); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists when creating user with org slug, got %v", err)
+	}
+	if err := st.CreateOrganization(ctx, &models.Organization{
+		Slug:      accountUsername,
+		Name:      "User Collision Org",
+		CreatedBy: accountUsername,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists when creating org with user slug, got %v", err)
+	}
+	if err := st.DeleteOrganization(ctx, orgSlug); err != nil {
+		t.Fatalf("DeleteOrganization failed: %v", err)
+	}
+	if _, err := st.GetOrganization(ctx, orgSlug); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound for deleted org, got %v", err)
+	}
+	userOrgsAfterDelete, err := st.ListOrganizationsForUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("ListOrganizationsForUser after delete failed: %v", err)
+	}
+	if len(userOrgsAfterDelete) != 0 {
+		t.Fatalf("expected no org memberships after delete, got %#v", userOrgsAfterDelete)
+	}
+	if err := st.DeleteOrganization(ctx, orgSlug); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound on deleting missing org, got %v", err)
 	}
 
 	authSession := &models.AuthSession{
