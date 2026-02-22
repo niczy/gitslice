@@ -137,6 +137,18 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 ./gs_cli --help
 ```
 
+Enable E2B-backed agent session runtime lifecycle in `core_server`:
+
+```bash
+E2B_API_KEY=your-e2b-api-key \
+E2B_DOMAIN=e2b.app \
+E2B_RUNTIME_WS_PORT=9000 \
+E2B_RUNTIME_WS_PATH=/ws \
+CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+```
+
+If `E2B_API_KEY` and `E2B_ACCESS_TOKEN` are both unset, agent sessions use the simulated runtime provider.
+
 ## Accounts / Organizations
 
 This repo uses lightweight account sign-in: web supports OAuth via Auth.js (Google/GitHub) and CLI supports username login. Requests include the signed-in username in metadata.

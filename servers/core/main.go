@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
 	"github.com/niczy/gitslice/internal/agentsession"
@@ -54,6 +55,20 @@ func main() {
 	adminservice.RegisterGRPCServer(grpcServer, st)
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
+	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
+		agentSessionService.SetRuntimeProvider(agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
+			APIURL:         cfg.E2BAPIURL,
+			Domain:         cfg.E2BDomain,
+			APIKey:         cfg.E2BAPIKey,
+			AccessToken:    cfg.E2BAccessToken,
+			RuntimeWSPort:  cfg.E2BRuntimeWSPort,
+			RuntimeWSPath:  cfg.E2BRuntimeWSPath,
+			RequestTimeout: time.Duration(cfg.E2BRequestTimeoutSec) * time.Second,
+		}))
+		log.Printf("Agent runtime provider enabled: e2b")
+	} else {
+		log.Printf("Agent runtime provider enabled: simulated (set E2B_API_KEY or E2B_ACCESS_TOKEN to enable e2b)")
+	}
 	agentSessionService.StartLifecycleLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
