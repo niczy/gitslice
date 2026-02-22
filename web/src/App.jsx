@@ -5,7 +5,14 @@ import './styles.css';
 import { parseHash, buildHash } from './utils/routing.js';
 
 // API helpers
-import { apiBaseUrl, currentUsername, fetchWithAuth } from './utils/api.js';
+import {
+  apiBaseUrl,
+  createAgentSession as createAgentSessionRequest,
+  currentUsername,
+  fetchAgentCapabilities,
+  fetchWithAuth,
+  stopAgentSession as stopAgentSessionRequest,
+} from './utils/api.js';
 import { fetchOAuthSession, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 
 // Normalization
@@ -30,13 +37,60 @@ import { trackRouteEvent } from './utils/analytics.js';
 // ---------------------------------------------------------------------------
 
 const AGENT_STATUS = {
+  CREATING: 'creating',
+  STARTING: 'starting',
   IDLE: 'idle',
   RUNNING: 'running',
+  STOPPING: 'stopping',
+  STOPPED: 'stopped',
+  FAILED: 'failed',
   COMPLETED: 'completed',
   ERROR: 'error',
 };
 
+const REAL_RUNTIME_ENABLED = import.meta.env.VITE_WEB_AGENT_REAL_RUNTIME === '1';
 const AGENT_PROVIDERS = ['Codex', 'Gemini', 'Claude', 'Grok', 'Kimi'];
+
+function normalizeAgentType(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function formatAgentTypeLabel(agentType) {
+  const normalized = normalizeAgentType(agentType);
+  if (!normalized) return 'Agent';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function normalizeRuntimeState(value) {
+  const normalized = normalizeAgentType(value);
+  switch (normalized) {
+    case AGENT_STATUS.CREATING:
+    case AGENT_STATUS.STARTING:
+    case AGENT_STATUS.RUNNING:
+    case AGENT_STATUS.IDLE:
+    case AGENT_STATUS.STOPPING:
+    case AGENT_STATUS.STOPPED:
+    case AGENT_STATUS.FAILED:
+      return normalized;
+    default:
+      return AGENT_STATUS.RUNNING;
+  }
+}
+
+function normalizeCapabilities(payload) {
+  const fallback = ['codex', 'claude'];
+  const supported = Array.from(new Set(
+    (payload?.supportedAgentTypes || [])
+      .map((value) => normalizeAgentType(value))
+      .filter(Boolean),
+  ));
+  const supportedAgentTypes = supported.length > 0 ? supported : fallback;
+  let defaultAgentType = normalizeAgentType(payload?.defaultAgentType);
+  if (!supportedAgentTypes.includes(defaultAgentType)) {
+    defaultAgentType = supportedAgentTypes[0];
+  }
+  return { supportedAgentTypes, defaultAgentType };
+}
 
 // Mock terminal lines for fake sessions
 const MOCK_TERMINAL_LINES = [
@@ -93,7 +147,12 @@ function App() {
   const [isOverlayClosing, setIsOverlayClosing] = useState(false);
   const [selectedOverlayIndex, setSelectedOverlayIndex] = useState(0);
   const [closingSessions, setClosingSessions] = useState(new Set());
-  const [selectedAgentType, setSelectedAgentType] = useState('Codex');
+  const [selectedAgentType, setSelectedAgentType] = useState(() => (REAL_RUNTIME_ENABLED ? 'codex' : 'Codex'));
+  const [agentCapabilities, setAgentCapabilities] = useState({
+    supportedAgentTypes: ['codex', 'claude'],
+    defaultAgentType: 'codex',
+  });
+  const [agentCapabilitiesError, setAgentCapabilitiesError] = useState('');
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef(null);
   const holdModeRef = useRef(false);
@@ -254,9 +313,90 @@ function App() {
     startOAuthSignIn(providerId);
   }, []);
 
+  useEffect(() => {
+    if (!REAL_RUNTIME_ENABLED || !username) {
+      return;
+    }
+    let cancelled = false;
+    setAgentCapabilitiesError('');
+    fetchAgentCapabilities()
+      .then((payload) => {
+        if (cancelled) return;
+        const next = normalizeCapabilities(payload);
+        setAgentCapabilities(next);
+        setSelectedAgentType((prev) => (next.supportedAgentTypes.includes(prev) ? prev : next.defaultAgentType));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setAgentCapabilitiesError(error?.message || 'Unable to load agent capabilities.');
+        const fallback = normalizeCapabilities(null);
+        setAgentCapabilities(fallback);
+        setSelectedAgentType((prev) => (fallback.supportedAgentTypes.includes(prev) ? prev : fallback.defaultAgentType));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [username]);
+
+  const handleSessionStateChange = useCallback((sessionID, nextState) => {
+    const status = normalizeRuntimeState(nextState);
+    setAgentSessions((prev) => prev.map((session) => (
+      session.id === sessionID ? { ...session, status } : session
+    )));
+  }, []);
+
   // Agent session handlers
-  const createAgentSession = useCallback((provider = selectedAgentType) => {
+  const createAgentSession = useCallback(async (provider = selectedAgentType) => {
     const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId);
+    if (REAL_RUNTIME_ENABLED) {
+      const agentType = normalizeAgentType(provider) || agentCapabilities.defaultAgentType;
+      if (!currentSliceId) {
+        return;
+      }
+      try {
+        const created = await createAgentSessionRequest({
+          sliceId: currentSliceId,
+          environment: currentSlice?.environment || '',
+          agentType,
+        });
+        const sessionID = String(created?.sessionId || '').trim();
+        if (!sessionID) {
+          throw new Error('invalid session response');
+        }
+        const state = normalizeRuntimeState(created?.state);
+        const nextSession = {
+          id: sessionID,
+          sessionId: sessionID,
+          name: `${formatAgentTypeLabel(agentType)} Agent ${agentSessions.length + 1}`,
+          provider: formatAgentTypeLabel(agentType),
+          sliceId: String(created?.sliceId || currentSliceId),
+          sliceName: currentSlice?.name || currentSliceId || 'No slice selected',
+          status: state,
+          createdAt: Date.now(),
+          ws: created?.ws || null,
+          terminalLines: [{ type: 'output', text: `Session ${sessionID} created.` }],
+        };
+        setAgentSessions((prev) => [...prev, nextSession]);
+        setActiveSessionId(nextSession.id);
+        return;
+      } catch (error) {
+        const nextSession = {
+          id: `session-error-${Date.now()}`,
+          sessionId: '',
+          name: `${formatAgentTypeLabel(agentType)} Agent`,
+          provider: formatAgentTypeLabel(agentType),
+          sliceId: currentSliceId,
+          sliceName: currentSlice?.name || currentSliceId || 'No slice selected',
+          status: AGENT_STATUS.FAILED,
+          createdAt: Date.now(),
+          terminalLines: [{ type: 'output', text: `[error] ${error?.message || 'Unable to create agent session'}` }],
+        };
+        setAgentSessions((prev) => [...prev, nextSession]);
+        setActiveSessionId(nextSession.id);
+        return;
+      }
+    }
+
     const newSession = {
       id: `session-${Date.now()}`,
       name: `${provider} Agent ${agentSessions.length + 1}`,
@@ -269,10 +409,16 @@ function App() {
     };
     setAgentSessions((prev) => [...prev, newSession]);
     setActiveSessionId(newSession.id);
-  }, [agentSessions.length, selectedAgentType, slices, currentSliceId]);
+  }, [agentCapabilities.defaultAgentType, agentSessions.length, currentSliceId, selectedAgentType, slices]);
 
   const closeAgentSession = useCallback((sessionId, e) => {
     e?.stopPropagation();
+    const closingSession = agentSessions.find((session) => session.id === sessionId);
+    if (REAL_RUNTIME_ENABLED && closingSession?.sessionId) {
+      stopAgentSessionRequest(closingSession.sessionId).catch(() => {
+        // best effort stop; UI close should still proceed
+      });
+    }
     // Add to closing set for animation
     setClosingSessions((prev) => new Set([...prev, sessionId]));
     // Wait for animation to complete before removing
@@ -476,14 +622,18 @@ function App() {
     }
   }, [agentSessions.length, selectedOverlayIndex]);
 
-  const showAgentButton = activePage === 'browser';
+  const isAuthenticated = Boolean(username);
+  const showAgentButton = activePage === 'browser' && (!REAL_RUNTIME_ENABLED || isAuthenticated);
   const hasAgentSessions = agentSessions.length > 0;
   const [isFullScreenClosing, setIsFullScreenClosing] = useState(false);
   const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
+  const agentProviderOptions = REAL_RUNTIME_ENABLED
+    ? (agentCapabilities.supportedAgentTypes.length > 0 ? agentCapabilities.supportedAgentTypes : ['codex', 'claude'])
+    : AGENT_PROVIDERS;
+  const selectedAgentLabel = REAL_RUNTIME_ENABLED ? formatAgentTypeLabel(selectedAgentType) : selectedAgentType;
 
   // Keep browser and diff pages on the same full-width layout to avoid visual width jumps.
   const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
-  const isAuthenticated = Boolean(username);
   const isAdminUser = (username || '').toLowerCase() === 'admin';
   const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
@@ -720,7 +870,7 @@ function App() {
             title="Start new agent session (Cmd+K)"
           >
             <span className="agent-icon">🤖</span>
-            <span className="agent-text">{selectedAgentType}</span>
+            <span className="agent-text">{selectedAgentLabel}</span>
           </button>
           <button
             type="button"
@@ -733,19 +883,33 @@ function App() {
           </button>
           {isAgentMenuOpen && (
             <div className="agent-provider-menu">
-              {AGENT_PROVIDERS.map((provider) => (
+              {agentProviderOptions.map((providerValue) => {
+                const value = REAL_RUNTIME_ENABLED ? normalizeAgentType(providerValue) : providerValue;
+                const label = REAL_RUNTIME_ENABLED ? formatAgentTypeLabel(value) : providerValue;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`agent-provider-item${value === selectedAgentType ? ' active' : ''}`}
+                    onClick={() => {
+                      setSelectedAgentType(value);
+                      setIsAgentMenuOpen(false);
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              {REAL_RUNTIME_ENABLED && agentCapabilitiesError && (
                 <button
-                  key={provider}
                   type="button"
-                  className={`agent-provider-item${provider === selectedAgentType ? ' active' : ''}`}
-                  onClick={() => {
-                    setSelectedAgentType(provider);
-                    setIsAgentMenuOpen(false);
-                  }}
+                  className="agent-provider-item"
+                  disabled
+                  title={agentCapabilitiesError}
                 >
-                  {provider}
+                  Capability fallback active
                 </button>
-              ))}
+              )}
             </div>
           )}
         </div>
@@ -779,7 +943,7 @@ function App() {
                   </div>
                   <div className="agent-carousel-preview">
                     <div className="agent-terminal-mock">
-                      {session.terminalLines.slice(0, 6).map((line, i) => (
+                      {(session.terminalLines || []).slice(0, 6).map((line, i) => (
                         <div key={i} className={`terminal-line terminal-${line.type}`}>
                           {line.text}
                         </div>
@@ -803,6 +967,8 @@ function App() {
             session={agentSessions.find(s => s.id === activeSessionId)}
             onClose={minimizeActiveSession}
             onMinimize={minimizeActiveSession}
+            realRuntimeEnabled={REAL_RUNTIME_ENABLED}
+            onSessionStateChange={handleSessionStateChange}
           />
         </div>
       )}

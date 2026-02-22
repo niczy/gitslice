@@ -13,7 +13,7 @@ PR checklist:
 - [x] PR4 - Sandbox runtime bridge service (E2B-backed) and WS relay integration
 - [x] PR5 - Codex runtime adapter in sandbox
 - [x] PR6 - Claude runtime adapter in sandbox
-- [ ] PR7 - Web UI integration (replace mock AgentSession with backend sessions)
+- [x] PR7 - Web UI integration (replace mock AgentSession with backend sessions)
 - [ ] PR8 - Security hardening + policy controls
 - [ ] PR9 - Observability + reliability controls
 - [ ] PR10 - Integration/E2E hardening + rollout + mark spec finished
