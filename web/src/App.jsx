@@ -481,7 +481,7 @@ function App() {
   const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
   const isAuthenticated = Boolean(username);
   const isAdminUser = (username || '').toLowerCase() === 'admin';
-  const blockedProtectedPages = new Set(['browser', 'diff', 'changeset', 'projects', 'settings', 'profile', 'admin']);
+  const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
   const hasRouteAuthorization = activePage !== 'admin' || isAdminUser;
   const routeAccessState = !isProtectedPage
@@ -587,6 +587,14 @@ function App() {
             </>
           ) : (
             <>
+              <button
+                type="button"
+                className={`primary nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-repo-browser"
+                onClick={() => navigate('browser')}
+              >
+                Repo Browser
+              </button>
               <button
                 type="button"
                 className={`ghost nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
