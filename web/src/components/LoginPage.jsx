@@ -38,7 +38,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, oauthError, onDismiss
           <p className="auth-recommended-pill">Recommended</p>
           <h3 className="auth-card-title">Continue with OAuth</h3>
           <p className="auth-card-subtitle">Fastest path for normal usage across devices.</p>
-          <p className="auth-trust-text">We only use your provider identity (name/email) to verify your account. <a href="/privacy" target="_blank" rel="noreferrer">Privacy policy</a>.</p>
+          <p className="auth-trust-text">We only use your provider identity (name/email) to verify your account. <a href="https://agenttools.dev/privacy" target="_blank" rel="noreferrer">Privacy policy</a>.</p>
           {oauthError && <div className="panel-error">{oauthError}</div>}
           <div className="auth-provider-list">
             <button type="button" className="auth-provider auth-provider--google" onClick={() => { onDismissOAuthError?.(); onOAuthLogin?.('google'); }}>
@@ -53,7 +53,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, oauthError, onDismiss
         </div>
 
         <form
-          className="auth-card auth-card--username"
+          className="auth-card auth-card--username auth-card--secondary"
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               e.preventDefault();
@@ -80,7 +80,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, oauthError, onDismiss
           }}
         >
           <h3 className="auth-card-title">Username sign-in</h3>
-          <p className="auth-card-subtitle">Fallback path for local testing and CLI-aligned flows.</p>
+          <p className="auth-card-subtitle">Fallback for local testing and CLI-aligned workflows.</p>
 
           <label className="field">
             <span className="field-label">Username</span>
@@ -89,7 +89,6 @@ export default function LoginPage({ onLogin, onOAuthLogin, oauthError, onDismiss
               value={value}
               onChange={(e) => {
                 setValue(e.target.value);
-                if (!touched) setTouched(true);
                 if (submitError) setSubmitError('');
               }}
               onBlur={() => setTouched(true)}

@@ -56,6 +56,22 @@ const MOCK_TERMINAL_LINES = [
 // Main App Component
 // ---------------------------------------------------------------------------
 
+
+function readOAuthErrorFromHash() {
+  const hash = window.location.hash || '';
+  const queryIndex = hash.indexOf('?');
+  if (queryIndex === -1) {
+    return '';
+  }
+  const query = hash.slice(queryIndex + 1);
+  const params = new URLSearchParams(query);
+  const error = params.get('error');
+  if (!error) {
+    return '';
+  }
+  return 'OAuth sign-in was cancelled or failed. Please try again or use username sign-in.';
+}
+
 function App() {
   const initialRoute = parseHash();
   const [activePage, setActivePage] = useState(() => initialRoute.page);
@@ -182,12 +198,17 @@ function App() {
         clearPendingOAuthSignIn();
         return;
       }
+      const hashError = readOAuthErrorFromHash();
+      if (hashError) {
+        setOauthError(hashError);
+        clearPendingOAuthSignIn();
+      }
       const hasPendingOAuth = hasPendingOAuthSignIn();
       try {
         const session = await fetchOAuthSession();
         const oauthUsername = session?.user?.username || '';
         if (!oauthUsername) {
-          if (hasPendingOAuth) {
+          if (hasPendingOAuth && !hashError) {
             setOauthError('We could not complete OAuth sign-in. Please try again or use username sign-in.');
             clearPendingOAuthSignIn();
           }
@@ -201,7 +222,7 @@ function App() {
           navigate('browser');
         }
       } catch {
-        if (hasPendingOAuth) {
+        if (hasPendingOAuth && !hashError) {
           setOauthError('OAuth callback failed. Please retry or use username sign-in.');
           clearPendingOAuthSignIn();
         }
