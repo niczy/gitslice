@@ -158,6 +158,8 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 	}); err != nil {
 		return err
 	}
+	ObserveAgentRuntimeRequest(agentType, "accepted")
+	ObserveAgentRuntimeTokenOut(agentType, len(text))
 	_ = s.RecordActivity(ctx, sessionID)
 	_ = s.AddAudit(ctx, sessionID, session.UserID, "agent_input", map[string]any{
 		"agentType":       session.AgentType,

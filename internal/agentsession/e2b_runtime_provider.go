@@ -241,6 +241,23 @@ func (p *e2bRuntimeProvider) Stop(ctx context.Context, session *models.AgentSess
 	return nil
 }
 
+func (p *e2bRuntimeProvider) HealthCheck(ctx context.Context) error {
+	_ = ctx
+	if p.apiKey == "" && p.accessToken == "" {
+		return &RuntimeError{Code: "E2B_AUTH_MISSING", Message: "missing E2B credentials"}
+	}
+	if p.codexAPIKey == "" && p.claudeAPIKey == "" {
+		return &RuntimeError{Code: "AGENT_CREDENTIAL_MISSING", Message: "no runtime model credentials configured"}
+	}
+	if p.egressDenyByDefault && len(p.egressAllowlist) == 0 {
+		return &RuntimeError{
+			Code:    "AGENT_EGRESS_POLICY_INVALID",
+			Message: "egress allowlist required when deny-by-default policy is enabled",
+		}
+	}
+	return nil
+}
+
 func (p *e2bRuntimeProvider) buildRuntimeEndpoint(sandboxID, sandboxDomain string) string {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {

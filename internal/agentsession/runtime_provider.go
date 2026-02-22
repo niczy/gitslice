@@ -22,6 +22,10 @@ type RuntimeProvider interface {
 	Stop(ctx context.Context, session *models.AgentSession, reason string) error
 }
 
+type RuntimeHealthProvider interface {
+	HealthCheck(ctx context.Context) error
+}
+
 type RuntimeError struct {
 	Code    string
 	Message string
@@ -57,6 +61,10 @@ func runtimeErrorCode(err error, fallback string) string {
 	return fallback
 }
 
+func RuntimeErrorCode(err error, fallback string) string {
+	return runtimeErrorCode(err, fallback)
+}
+
 func runtimeErrorMessage(err error, fallback string) string {
 	if err == nil {
 		return fallback
@@ -72,6 +80,10 @@ func runtimeErrorMessage(err error, fallback string) string {
 		return fallback
 	}
 	return message
+}
+
+func RuntimeErrorMessage(err error, fallback string) string {
+	return runtimeErrorMessage(err, fallback)
 }
 
 type simulatedRuntimeProvider struct {
@@ -129,6 +141,11 @@ func (p *simulatedRuntimeProvider) Stop(ctx context.Context, session *models.Age
 			Err:     err,
 		}
 	}
+	return nil
+}
+
+func (p *simulatedRuntimeProvider) HealthCheck(ctx context.Context) error {
+	_ = ctx
 	return nil
 }
 

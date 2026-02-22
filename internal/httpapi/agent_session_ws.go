@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 )
@@ -99,12 +100,14 @@ func (a *AgentSessionsAPI) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	sender := newWSSender(conn)
 	defer sender.Close()
+	agentsession.ObserveAgentWSConnect()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	currentSeq := lastSeq
 	if tail, head, ok := a.svc.ReplayBounds(sessionID); ok && lastSeq+1 < tail {
+		agentsession.ObserveAgentWSReplayGap()
 		_ = sender.Send(wsOutgoingFrame{
 			Stream:  "control",
 			Type:    "error",
@@ -120,6 +123,7 @@ func (a *AgentSessionsAPI) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, event := range events {
 				if err := sender.Send(outgoingFromEvent(event)); err != nil {
+					agentsession.ObserveAgentWSBackpressureClose()
 					closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
 					return
 				}
@@ -164,6 +168,7 @@ func (a *AgentSessionsAPI) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, event := range events {
 				if err := sender.Send(outgoingFromEvent(event)); err != nil {
+					agentsession.ObserveAgentWSBackpressureClose()
 					closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
 					return
 				}
