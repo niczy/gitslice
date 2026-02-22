@@ -182,6 +182,7 @@ This repo uses lightweight account sign-in: web supports OAuth via Auth.js (Goog
 Web OAuth environment variables (see `web/.env.example`):
 
 ```bash
+VITE_WEB_AGENT_REAL_RUNTIME=1
 AUTH_SECRET=replace-with-long-random-string
 AUTH_GOOGLE_ID=your-google-oauth-client-id
 AUTH_GOOGLE_SECRET=your-google-oauth-client-secret
