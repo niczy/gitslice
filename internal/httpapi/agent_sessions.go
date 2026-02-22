@@ -164,11 +164,16 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "failed to resolve environment")
 		return
 	}
+	agentType, err := resolveAgentTypeForEnvironment(req.AgentType, env)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	session, token, err := a.svc.CreateSession(r.Context(), userID, agentsession.CreateRequest{
 		SliceID:         req.SliceID,
 		EnvironmentName: envName,
-		AgentType:       req.AgentType,
+		AgentType:       agentType,
 		Provider:        env.Provider,
 		E2BTemplateID:   env.ProviderID,
 		E2BRegion:       env.Region,
@@ -203,6 +208,36 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		IdleTimeoutSec: session.IdleTimeoutSec,
 		TTLSec:         session.TTLSec,
 	})
+}
+
+func resolveAgentTypeForEnvironment(requested string, env *models.Environment) (string, error) {
+	if env == nil {
+		return strings.ToLower(strings.TrimSpace(requested)), nil
+	}
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "" {
+		requested = strings.ToLower(strings.TrimSpace(env.DefaultAgentType))
+	}
+	if requested == "" {
+		requested = agentsession.DefaultAgentType()
+	}
+
+	allowed := make(map[string]struct{}, len(env.AllowedAgentTypes))
+	for _, candidate := range env.AllowedAgentTypes {
+		normalized := strings.ToLower(strings.TrimSpace(candidate))
+		if normalized == "" {
+			continue
+		}
+		allowed[normalized] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		allowed["codex"] = struct{}{}
+		allowed["claude"] = struct{}{}
+	}
+	if _, ok := allowed[requested]; !ok {
+		return "", errors.New("agent type is not allowed for environment")
+	}
+	return requested, nil
 }
 
 func (a *AgentSessionsAPI) HandleItem(w http.ResponseWriter, r *http.Request) {

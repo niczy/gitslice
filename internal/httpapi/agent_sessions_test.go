@@ -431,6 +431,51 @@ func TestAgentSessionsAPIUnknownEnvironment(t *testing.T) {
 	}
 }
 
+func TestAgentSessionsAPIDisallowedAgentType(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	err := st.CreateEnvironment(ctx, &models.Environment{
+		Name:              "codex-only",
+		DisplayName:       "Codex Only",
+		Provider:          "e2b",
+		ProviderID:        "tmpl-v1",
+		Region:            "us-west-2",
+		DefaultAgentType:  "codex",
+		AllowedAgentTypes: []string{"codex"},
+		CreatedBy:         "alice",
+	})
+	if err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("CreateEnvironment failed: %v", err)
+	}
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-http-disallowed-agent",
+		Name:      "Slice Disallowed Agent",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := agentsession.NewService(st, "test-secret")
+	api := NewAgentSessionsAPI(st, svc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	createRaw := []byte(`{"sliceId":"slice-http-disallowed-agent","environment":"codex-only","agentType":"claude"}`)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestAgentSessionsAPIEnvironmentFallback(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
