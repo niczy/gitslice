@@ -124,17 +124,21 @@ function App() {
     window.history.pushState(null, '', buildHash(page, commitHash, changesetId));
   }, []);
 
-  // Handle browser back/forward buttons
+  // Keep app state in sync for both back/forward navigation and hash-only URL updates.
   useEffect(() => {
-    const onPopState = () => {
+    const syncRouteFromLocation = () => {
       const { page, commitHash, changesetId, unknownPath } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
       setDiffChangesetId(changesetId);
       setUnknownRoute(unknownPath || '');
     };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    window.addEventListener('popstate', syncRouteFromLocation);
+    window.addEventListener('hashchange', syncRouteFromLocation);
+    return () => {
+      window.removeEventListener('popstate', syncRouteFromLocation);
+      window.removeEventListener('hashchange', syncRouteFromLocation);
+    };
   }, []);
 
   // Load slices on mount
@@ -481,7 +485,7 @@ function App() {
   const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
   const isAuthenticated = Boolean(username);
   const isAdminUser = (username || '').toLowerCase() === 'admin';
-  const blockedProtectedPages = new Set(['browser', 'diff', 'changeset', 'projects', 'settings', 'profile', 'admin']);
+  const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
   const hasRouteAuthorization = activePage !== 'admin' || isAdminUser;
   const routeAccessState = !isProtectedPage
@@ -587,6 +591,14 @@ function App() {
             </>
           ) : (
             <>
+              <button
+                type="button"
+                className={`primary nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-repo-browser"
+                onClick={() => navigate('browser')}
+              >
+                Repo Browser
+              </button>
               <button
                 type="button"
                 className={`ghost nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}

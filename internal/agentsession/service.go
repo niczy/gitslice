@@ -63,11 +63,15 @@ type Service struct {
 	replaySeqs     map[string][]uint64
 	maxReplayFrame int
 
-	bootstrapDelay time.Duration
-	stopDelay      time.Duration
-	lifecycleTick  time.Duration
-	startupTimeout time.Duration
-	runLoopOnce    sync.Once
+	runtimeMu            sync.Mutex
+	runtime              RuntimeProvider
+	runtimeStartInFlight map[string]struct{}
+	runtimeStopInFlight  map[string]struct{}
+
+	lifecycleTick      time.Duration
+	startupTimeout     time.Duration
+	runtimeStopTimeout time.Duration
+	runLoopOnce        sync.Once
 }
 
 func NewService(st storage.Storage, wsTokenSecret string) *Service {
@@ -75,17 +79,28 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		wsTokenSecret = "dev-insecure-agent-secret"
 	}
 	return &Service{
-		st:             st,
-		wsTokenSecret:  []byte(wsTokenSecret),
-		seqHead:        make(map[string]uint64),
-		usedNonces:     make(map[string]time.Time),
-		replaySeqs:     make(map[string][]uint64),
-		maxReplayFrame: 10000,
-		bootstrapDelay: 50 * time.Millisecond,
-		stopDelay:      50 * time.Millisecond,
-		lifecycleTick:  defaultLifecycleTick,
-		startupTimeout: defaultStartupTimeout,
+		st:                   st,
+		wsTokenSecret:        []byte(wsTokenSecret),
+		seqHead:              make(map[string]uint64),
+		usedNonces:           make(map[string]time.Time),
+		replaySeqs:           make(map[string][]uint64),
+		maxReplayFrame:       10000,
+		runtime:              newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond),
+		runtimeStartInFlight: make(map[string]struct{}),
+		runtimeStopInFlight:  make(map[string]struct{}),
+		lifecycleTick:        defaultLifecycleTick,
+		startupTimeout:       defaultStartupTimeout,
+		runtimeStopTimeout:   30 * time.Second,
 	}
+}
+
+func (s *Service) SetRuntimeProvider(provider RuntimeProvider) {
+	if provider == nil {
+		provider = newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
+	}
+	s.runtimeMu.Lock()
+	s.runtime = provider
+	s.runtimeMu.Unlock()
 }
 
 func SupportedAgentTypes() []string {
@@ -161,7 +176,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, session.State)
 
-	go s.bootstrapSession(session.SessionID)
+	s.enqueueStart(session.SessionID)
 
 	token, err := s.MintToken(ctx, userID, session.SessionID)
 	if err != nil {
@@ -208,7 +223,7 @@ func (s *Service) StopSessionForUser(ctx context.Context, userID, sessionID, rea
 	})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopping)
 
-	go s.finalizeStop(sessionID, userID)
+	s.enqueueStop(sessionID, userID, strings.TrimSpace(reason))
 	return session, nil
 }
 
@@ -399,27 +414,18 @@ func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *
 				_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateStopping)
 			}
 		}
-		go s.finalizeStop(session.SessionID, "system")
+		s.enqueueStop(session.SessionID, "system", "ttl_expired")
 		return
 	}
 
 	if (session.State == models.AgentSessionStateCreating || session.State == models.AgentSessionStateStarting) &&
 		now.Sub(session.CreatedAt) > s.startupTimeout {
-		session.State = models.AgentSessionStateFailed
-		session.FailureCode = "START_TIMEOUT"
-		session.FailureMessage = "session startup timed out"
-		session.UpdatedAt = now
-		if err := s.st.UpdateAgentSession(ctx, session); err == nil {
-			_ = s.AddAudit(ctx, session.SessionID, "system", "session_failed", map[string]any{
-				"failureCode": session.FailureCode,
-			})
-			_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
-		}
+		s.failSession(ctx, session, "system", "START_TIMEOUT", "session startup timed out")
 		return
 	}
 
 	if session.State == models.AgentSessionStateStopping {
-		go s.finalizeStop(session.SessionID, "system")
+		s.enqueueStop(session.SessionID, "system", "")
 		return
 	}
 
@@ -450,10 +456,36 @@ func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *
 	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateIdle)
 }
 
-func (s *Service) bootstrapSession(sessionID string) {
-	time.Sleep(s.bootstrapDelay)
-	ctx := context.Background()
+func (s *Service) enqueueStart(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	if !s.markRuntimeStartInFlight(sessionID) {
+		return
+	}
+	go func() {
+		defer s.clearRuntimeStartInFlight(sessionID)
+		s.startSessionRuntime(sessionID)
+	}()
+}
 
+func (s *Service) enqueueStop(sessionID, actorUserID, reason string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	if !s.markRuntimeStopInFlight(sessionID) {
+		return
+	}
+	go func() {
+		defer s.clearRuntimeStopInFlight(sessionID)
+		s.stopSessionRuntime(sessionID, actorUserID, reason)
+	}()
+}
+
+func (s *Service) startSessionRuntime(sessionID string) {
+	ctx := context.Background()
 	session, err := s.st.GetAgentSession(ctx, sessionID)
 	if err != nil {
 		return
@@ -462,58 +494,187 @@ func (s *Service) bootstrapSession(sessionID string) {
 		return
 	}
 
-	now := time.Now().UTC()
-	session.State = models.AgentSessionStateStarting
-	session.UpdatedAt = now
-	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+	if session.State == models.AgentSessionStateCreating {
+		now := time.Now().UTC()
+		session.State = models.AgentSessionStateStarting
+		session.RuntimeStatus = "starting"
+		session.UpdatedAt = now
+		if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+			return
+		}
+		_ = s.AddAudit(ctx, sessionID, session.UserID, "session_starting", map[string]any{
+			"runtimeProvider": session.Provider,
+		})
+		_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStarting)
+	} else if session.State != models.AgentSessionStateStarting {
 		return
 	}
-	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_starting", map[string]any{})
-	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStarting)
 
-	time.Sleep(s.bootstrapDelay)
-	session, err = s.st.GetAgentSession(ctx, sessionID)
-	if err != nil {
+	startCtx, cancel := context.WithTimeout(ctx, s.startupTimeout)
+	result, err := s.runtimeProvider().Start(startCtx, session)
+	cancel()
+
+	session, getErr := s.st.GetAgentSession(ctx, sessionID)
+	if getErr != nil {
 		return
 	}
 	if !session.State.IsActive() || session.State == models.AgentSessionStateStopping {
 		return
 	}
+	if err != nil {
+		s.failSession(ctx, session, session.UserID, runtimeErrorCode(err, "START_FAILED"), runtimeErrorMessage(err, "session startup failed"))
+		return
+	}
 
-	now = time.Now().UTC()
+	now := time.Now().UTC()
 	session.State = models.AgentSessionStateRunning
-	session.RuntimeEndpoint = fmt.Sprintf("runtime://%s", sessionID)
 	session.StartedAt = &now
 	session.LastActivityAt = &now
 	session.UpdatedAt = now
+	session.RuntimeStatus = "ready"
+	if result != nil {
+		if provider := strings.TrimSpace(result.Provider); provider != "" {
+			session.RuntimeProvider = provider
+		}
+		if runtimeID := strings.TrimSpace(result.SessionID); runtimeID != "" {
+			session.RuntimeSessionID = runtimeID
+		}
+		if endpoint := strings.TrimSpace(result.Endpoint); endpoint != "" {
+			session.RuntimeEndpoint = endpoint
+		}
+		if status := strings.TrimSpace(result.Status); status != "" {
+			session.RuntimeStatus = status
+		}
+	}
+	if strings.TrimSpace(session.RuntimeProvider) == "" {
+		session.RuntimeProvider = strings.TrimSpace(session.Provider)
+	}
 	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
 		return
 	}
-	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{})
+	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{
+		"runtimeProvider":  session.RuntimeProvider,
+		"runtimeSessionId": session.RuntimeSessionID,
+	})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateRunning)
 }
 
-func (s *Service) finalizeStop(sessionID, userID string) {
-	time.Sleep(s.stopDelay)
+func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 	ctx := context.Background()
-
 	session, err := s.st.GetAgentSession(ctx, sessionID)
 	if err != nil {
 		return
 	}
-	if session.State == models.AgentSessionStateStopped {
+	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
+		return
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, s.runtimeStopTimeout)
+	err = s.runtimeProvider().Stop(stopCtx, session, reason)
+	cancel()
+	if err != nil {
+		session, getErr := s.st.GetAgentSession(ctx, sessionID)
+		if getErr != nil {
+			return
+		}
+		if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
+			return
+		}
+		s.failSession(ctx, session, actorForAudit(actorUserID), runtimeErrorCode(err, "STOP_FAILED"), runtimeErrorMessage(err, "session stop failed"))
+		return
+	}
+
+	session, err = s.st.GetAgentSession(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
 		return
 	}
 
 	now := time.Now().UTC()
 	session.State = models.AgentSessionStateStopped
+	session.RuntimeStatus = "stopped"
 	session.UpdatedAt = now
 	session.StoppedAt = &now
 	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
 		return
 	}
-	_ = s.AddAudit(ctx, sessionID, userID, "session_stopped", map[string]any{})
+	metadata := map[string]any{}
+	if trimmed := strings.TrimSpace(reason); trimmed != "" {
+		metadata["reason"] = trimmed
+	}
+	_ = s.AddAudit(ctx, sessionID, actorForAudit(actorUserID), "session_stopped", metadata)
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopped)
+}
+
+func (s *Service) failSession(ctx context.Context, session *models.AgentSession, actorUserID, failureCode, failureMessage string) {
+	if session == nil {
+		return
+	}
+	now := time.Now().UTC()
+	session.State = models.AgentSessionStateFailed
+	session.FailureCode = strings.TrimSpace(failureCode)
+	session.FailureMessage = strings.TrimSpace(failureMessage)
+	session.RuntimeStatus = "failed"
+	session.RuntimeErrorCode = session.FailureCode
+	session.UpdatedAt = now
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return
+	}
+	_ = s.AddAudit(ctx, session.SessionID, actorForAudit(actorUserID), "session_failed", map[string]any{
+		"failureCode": session.FailureCode,
+	})
+	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
+}
+
+func actorForAudit(actorUserID string) string {
+	actorUserID = strings.TrimSpace(actorUserID)
+	if actorUserID == "" {
+		return "system"
+	}
+	return actorUserID
+}
+
+func (s *Service) runtimeProvider() RuntimeProvider {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.runtime == nil {
+		s.runtime = newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
+	}
+	return s.runtime
+}
+
+func (s *Service) markRuntimeStartInFlight(sessionID string) bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if _, exists := s.runtimeStartInFlight[sessionID]; exists {
+		return false
+	}
+	s.runtimeStartInFlight[sessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) clearRuntimeStartInFlight(sessionID string) {
+	s.runtimeMu.Lock()
+	delete(s.runtimeStartInFlight, sessionID)
+	s.runtimeMu.Unlock()
+}
+
+func (s *Service) markRuntimeStopInFlight(sessionID string) bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if _, exists := s.runtimeStopInFlight[sessionID]; exists {
+		return false
+	}
+	s.runtimeStopInFlight[sessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) clearRuntimeStopInFlight(sessionID string) {
+	s.runtimeMu.Lock()
+	delete(s.runtimeStopInFlight, sessionID)
+	s.runtimeMu.Unlock()
 }
 
 func (s *Service) RecordActivity(ctx context.Context, sessionID string) error {

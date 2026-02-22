@@ -2,6 +2,7 @@ package agentsession
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -158,8 +159,7 @@ func TestServiceLifecycleIdleAndTTL(t *testing.T) {
 	}
 
 	svc := NewService(st, "test-secret")
-	svc.bootstrapDelay = 10 * time.Millisecond
-	svc.stopDelay = 10 * time.Millisecond
+	svc.SetRuntimeProvider(newSimulatedRuntimeProvider(10*time.Millisecond, 10*time.Millisecond))
 	svc.lifecycleTick = 20 * time.Millisecond
 	svc.StartLifecycleLoop(ctx)
 
@@ -181,6 +181,128 @@ func TestServiceLifecycleIdleAndTTL(t *testing.T) {
 	}
 	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
 	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateStopped, 4*time.Second)
+}
+
+func TestServiceRuntimeStartFailure(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-start-fail",
+		Name:      "Slice Start Fail",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProvider(&stubRuntimeProvider{
+		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
+			return nil, &RuntimeError{
+				Code:    "AGENT_BINARY_MISSING",
+				Message: "codex binary is missing",
+				Err:     errors.New("binary not found"),
+			}
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-start-fail",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.FailureCode != "AGENT_BINARY_MISSING" {
+		t.Fatalf("expected AGENT_BINARY_MISSING failure code, got %s", got.FailureCode)
+	}
+}
+
+func TestServiceRuntimeStopFailure(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-stop-fail",
+		Name:      "Slice Stop Fail",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProvider(&stubRuntimeProvider{
+		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
+			return &RuntimeStartResult{
+				Provider:  "e2b",
+				SessionID: "runtime-stop-fail",
+				Endpoint:  "runtime://stop-fail",
+				Status:    "ready",
+			}, nil
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error {
+			return &RuntimeError{
+				Code:    "STOP_BACKEND_UNAVAILABLE",
+				Message: "runtime backend unavailable",
+				Err:     errors.New("backend down"),
+			}
+		},
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-stop-fail",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if _, err := svc.StopSessionForUser(ctx, "alice", session.SessionID, "test"); err != nil {
+		t.Fatalf("StopSessionForUser failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.FailureCode != "STOP_BACKEND_UNAVAILABLE" {
+		t.Fatalf("expected STOP_BACKEND_UNAVAILABLE failure code, got %s", got.FailureCode)
+	}
+}
+
+type stubRuntimeProvider struct {
+	startFn func(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error)
+	stopFn  func(ctx context.Context, session *models.AgentSession, reason string) error
+}
+
+func (p *stubRuntimeProvider) Start(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error) {
+	if p.startFn == nil {
+		return &RuntimeStartResult{
+			Provider:  "e2b",
+			SessionID: "stub-runtime",
+			Endpoint:  "runtime://stub",
+			Status:    "ready",
+		}, nil
+	}
+	return p.startFn(ctx, session)
+}
+
+func (p *stubRuntimeProvider) Stop(ctx context.Context, session *models.AgentSession, reason string) error {
+	if p.stopFn == nil {
+		return nil
+	}
+	return p.stopFn(ctx, session, reason)
 }
 
 func waitForSessionState(t *testing.T, svc *Service, sessionID string, want models.AgentSessionState, timeout time.Duration) {
