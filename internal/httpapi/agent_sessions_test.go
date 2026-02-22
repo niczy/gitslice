@@ -344,11 +344,21 @@ func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write stdin failed: %v", err)
 	}
+	if err := conn.WriteJSON(map[string]any{
+		"stream": "agent",
+		"type":   "input",
+		"payload": map[string]string{
+			"text": "Summarize latest changes",
+		},
+	}); err != nil {
+		t.Fatalf("write agent input failed: %v", err)
+	}
 
 	gotPong := false
 	gotStdout := false
+	gotAgentFinal := false
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && (!gotPong || !gotStdout) {
+	for time.Now().Before(deadline) && (!gotPong || !gotStdout || !gotAgentFinal) {
 		var frame struct {
 			Stream  string                 `json:"stream"`
 			Type    string                 `json:"type"`
@@ -367,12 +377,20 @@ func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
 				gotStdout = true
 			}
 		}
+		if frame.Stream == "agent" && frame.Type == "output_final" {
+			if text, ok := frame.Payload["text"].(string); ok && strings.Contains(text, "Codex completed request") {
+				gotAgentFinal = true
+			}
+		}
 	}
 	if !gotPong {
 		t.Fatalf("did not receive pong frame")
 	}
 	if !gotStdout {
 		t.Fatalf("did not receive pty stdout frame")
+	}
+	if !gotAgentFinal {
+		t.Fatalf("did not receive agent output_final frame")
 	}
 	_ = conn.Close()
 

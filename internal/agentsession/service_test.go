@@ -3,6 +3,7 @@ package agentsession
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -223,6 +224,95 @@ func TestServiceRuntimeStartFailure(t *testing.T) {
 	}
 	if got.FailureCode != "AGENT_BINARY_MISSING" {
 		t.Fatalf("expected AGENT_BINARY_MISSING failure code, got %s", got.FailureCode)
+	}
+}
+
+func TestServiceCodexBinaryValidationFailure(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-codex-missing-bin",
+		Name:      "Slice Codex Missing Binary",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	t.Setenv(envAgentValidateCLIBinary, "1")
+	t.Setenv(envCodexCLIBinary, "/tmp/path/that/does/not/exist/codex")
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-codex-missing-bin",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+		AgentType:     "codex",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.FailureCode != "AGENT_BINARY_MISSING" {
+		t.Fatalf("expected AGENT_BINARY_MISSING failure code, got %s", got.FailureCode)
+	}
+}
+
+func TestServiceHandleAgentInputProducesCodexEvents(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-agent-input",
+		Name:      "Slice Agent Input",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	// Keep binary validation disabled for this flow test.
+	_ = os.Unsetenv(envAgentValidateCLIBinary)
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-agent-input",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+		AgentType:     "codex",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if err := svc.HandleAgentInput(ctx, session.SessionID, "Refactor this function"); err != nil {
+		t.Fatalf("HandleAgentInput failed: %v", err)
+	}
+
+	events, _, err := svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 200)
+	if err != nil {
+		t.Fatalf("ListEventsForUser failed: %v", err)
+	}
+	foundFinal := false
+	foundToolStart := false
+	for _, event := range events {
+		if event.Stream == "agent" && event.Type == "output_final" {
+			foundFinal = true
+		}
+		if event.Stream == "tool" && event.Type == "start" {
+			foundToolStart = true
+		}
+	}
+	if !foundFinal {
+		t.Fatalf("expected agent/output_final event")
+	}
+	if !foundToolStart {
+		t.Fatalf("expected tool/start event")
 	}
 }
 

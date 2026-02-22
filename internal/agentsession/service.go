@@ -510,6 +510,11 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		return
 	}
 
+	if err := validateAgentBinaryForSession(session); err != nil {
+		s.failSession(ctx, session, session.UserID, runtimeErrorCode(err, "AGENT_BINARY_EXEC_FAILED"), runtimeErrorMessage(err, "agent binary validation failed"))
+		return
+	}
+
 	startCtx, cancel := context.WithTimeout(ctx, s.startupTimeout)
 	result, err := s.runtimeProvider().Start(startCtx, session)
 	cancel()
