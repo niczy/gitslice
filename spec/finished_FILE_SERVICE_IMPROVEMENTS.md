@@ -3,6 +3,12 @@
 This document captures concrete improvements to the File Service API and implementation,
 ordered by priority (correctness > performance > maintainability).
 
+## Implementation Status
+
+- Current status: `finished`
+- Last updated: `2026-02-22`
+- Completion PRs: `#177`, `#178`
+
 ---
 
 ## API Issues
@@ -220,19 +226,21 @@ slices with deep history.
 
 ---
 
-## Summary / Priority Order
+## Completion Summary
 
-| # | Issue | Severity | Effort |
-|---|-------|----------|--------|
-| 1 | Auth gap in `GetCommitChanges` | High | Small |
-| 2 | O(n) parent commit lookup | High | Medium |
-| 11 | Add `GetCommitByHash` to storage | High | Medium |
-| 3 | No streaming for large files | Medium | Large |
-| 4 | ETag / conditional requests | Medium | Small |
-| 5 | Hash in `DirectoryEntry` | Medium | Small |
-| 6 | ~~Opt-in patch generation~~ | ~~Medium~~ | ~~Small~~ **DONE** |
-| 7 | Deduplicate `ListEntries` | Medium | Medium |
-| 8 | Unify `GetFile` code paths | Medium | Medium |
-| 9 | Path cache invalidation | Low | Small |
-| 10 | Log snapshot fallback | Low | Trivial |
-| 12 | Default limit for commit listing | Low | Trivial |
+All items in this document are implemented.
+
+| # | Issue | Status |
+|---|-------|--------|
+| 1 | Auth gap in `GetCommitChanges` | DONE |
+| 2 | O(n) parent commit lookup | DONE |
+| 3 | Large unary file payload guardrail | DONE |
+| 4 | ETag / conditional requests | DONE |
+| 5 | Hash in `DirectoryEntry` | DONE |
+| 6 | Opt-in + bounded patch generation | DONE |
+| 7 | Deduplicate `ListEntries` | DONE |
+| 8 | Unify `GetFile` code paths | DONE |
+| 9 | Path cache invalidation (TTL) | DONE |
+| 10 | Snapshot fallback warning log | DONE |
+| 11 | Add `GetCommitByHash` to storage | DONE |
+| 12 | Default/capped commit list limits | DONE |
