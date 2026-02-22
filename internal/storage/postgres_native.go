@@ -1129,6 +1129,7 @@ func (s *PostgresNativeStorage) AddSliceCommit(ctx context.Context, sliceID stri
 
 func (s *PostgresNativeStorage) ListSliceCommits(ctx context.Context, sliceID string, limit int, fromCommitHash string) ([]*models.Commit, error) {
 	ctx = ensureCtx(ctx)
+	limit = normalizeSliceCommitLimit(limit)
 
 	// Verify slice exists.
 	var exists bool
