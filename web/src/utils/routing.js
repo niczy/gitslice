@@ -22,6 +22,9 @@ export function parseHash() {
   if (hash === 'settings') {
     return { page: 'settings', commitHash: '', changesetId: '' };
   }
+  if (hash === 'admin') {
+    return { page: 'admin', commitHash: '', changesetId: '' };
+  }
   if (hash === 'browser' || hash.startsWith('browser?')) {
     return { page: 'browser', commitHash: '', changesetId: '' };
   }
@@ -49,6 +52,9 @@ export function buildHash(page, commitHash, changesetId = '') {
   }
   if (page === 'settings') {
     return '#/settings';
+  }
+  if (page === 'admin') {
+    return '#/admin';
   }
   if (page === 'browser') {
     return '#/browser';
