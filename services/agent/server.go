@@ -55,6 +55,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	e2bTemplateID := strings.TrimSpace(req.GetE2BTemplateId())
 	e2bRegion := strings.TrimSpace(req.GetE2BRegion())
 	environmentName := strings.TrimSpace(req.GetEnvironment())
+	agentType := strings.ToLower(strings.TrimSpace(req.GetAgentType()))
 
 	// Environment name in request takes precedence.
 	if environmentName != "" {
@@ -85,6 +86,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	session, token, err := s.svc.CreateSession(ctx, userID, agentsession.CreateRequest{
 		SliceID:         req.GetSliceId(),
 		EnvironmentName: environmentName,
+		AgentType:       agentType,
 		Provider:        provider,
 		E2BTemplateID:   e2bTemplateID,
 		E2BRegion:       e2bRegion,
@@ -117,6 +119,8 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
 		IdleTimeoutSec: int32(session.IdleTimeoutSec),
 		TtlSec:         int32(session.TTLSec),
+		Environment:    session.EnvironmentName,
+		AgentType:      session.AgentType,
 	}, nil
 }
 
@@ -138,6 +142,8 @@ func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSes
 		IdleTimeoutSec: int32(session.IdleTimeoutSec),
 		TtlSec:         int32(session.TTLSec),
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
+		Environment:    session.EnvironmentName,
+		AgentType:      session.AgentType,
 	}
 	if session.LastActivityAt != nil {
 		resp.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
@@ -203,6 +209,17 @@ func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEv
 		})
 	}
 	return &agentv1.ListEventsResponse{Events: out, NextSeq: nextSeq}, nil
+}
+
+func (s *agentServiceServer) ListCapabilities(ctx context.Context, req *agentv1.ListCapabilitiesRequest) (*agentv1.ListCapabilitiesResponse, error) {
+	if _, err := s.requireUser(ctx); err != nil {
+		return nil, err
+	}
+	_ = req
+	return &agentv1.ListCapabilitiesResponse{
+		SupportedAgentTypes: agentsession.SupportedAgentTypes(),
+		DefaultAgentType:    agentsession.DefaultAgentType(),
+	}, nil
 }
 
 func wsURLFromContext(ctx context.Context, sessionID string) string {
