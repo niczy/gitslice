@@ -125,3 +125,60 @@ export async function closeChangeset(changesetId) {
   }
   return response.json();
 }
+
+export async function fetchAgentCapabilities() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/capabilities`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load agent capabilities'));
+  }
+  return response.json();
+}
+
+export async function createAgentSession(input) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sliceId: input?.sliceId || '',
+      environment: input?.environment || '',
+      agentType: input?.agentType || '',
+      idleTimeoutSec: input?.idleTimeoutSec || 1800,
+      ttlSec: input?.ttlSec || 14400,
+      env: input?.env || {},
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to create agent session'));
+  }
+  return response.json();
+}
+
+export async function getAgentSession(sessionId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load agent session'));
+  }
+  return response.json();
+}
+
+export async function stopAgentSession(sessionId, reason = 'user_stop') {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to stop agent session'));
+  }
+  return response.json();
+}
+
+export async function mintAgentSessionToken(sessionId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/token`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to mint agent session token'));
+  }
+  return response.json();
+}

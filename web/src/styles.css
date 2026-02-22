@@ -544,6 +544,13 @@ body {
   color: #1a7f37;
 }
 
+.agent-carousel-status.status-creating,
+.agent-carousel-status.status-starting,
+.agent-carousel-status.status-stopping {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
 .agent-carousel-status.status-idle {
   background: #f6f8fa;
   color: var(--text-muted);
@@ -554,7 +561,17 @@ body {
   color: #0969da;
 }
 
+.agent-carousel-status.status-stopped {
+  background: #ddf4ff;
+  color: #0969da;
+}
+
 .agent-carousel-status.status-error {
+  background: #ffebe9;
+  color: #cf222e;
+}
+
+.agent-carousel-status.status-failed {
   background: #ffebe9;
   color: #cf222e;
 }
@@ -756,6 +773,13 @@ body {
   color: #1a7f37;
 }
 
+.agent-status-badge.status-creating,
+.agent-status-badge.status-starting,
+.agent-status-badge.status-stopping {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
 .agent-status-badge.status-idle {
   background: #f6f8fa;
   color: var(--text-muted);
@@ -766,7 +790,17 @@ body {
   color: #0969da;
 }
 
+.agent-status-badge.status-stopped {
+  background: #ddf4ff;
+  color: #0969da;
+}
+
 .agent-status-badge.status-error {
+  background: #ffebe9;
+  color: #cf222e;
+}
+
+.agent-status-badge.status-failed {
   background: #ffebe9;
   color: #cf222e;
 }

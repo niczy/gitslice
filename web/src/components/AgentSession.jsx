@@ -1,35 +1,182 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { mintAgentSessionToken } from '../utils/api.js';
 
 // ---------------------------------------------------------------------------
 // Agent Session Component
 // ---------------------------------------------------------------------------
 
-export default function AgentSession({ session, onClose, onMinimize }) {
+function normalizeWSURL(rawURL = '') {
+  if (!rawURL) return '';
+  if (rawURL.startsWith('ws://') || rawURL.startsWith('wss://')) {
+    return rawURL;
+  }
+  if (rawURL.startsWith('/')) {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${scheme}//${window.location.host}${rawURL}`;
+  }
+  return rawURL;
+}
+
+function lineFromFrame(frame) {
+  const payload = frame?.payload || {};
+  if (frame?.stream === 'agent' && frame?.type === 'output_delta') {
+    return { type: 'output', text: payload?.text || '' };
+  }
+  if (frame?.stream === 'agent' && frame?.type === 'output_final') {
+    return { type: 'success', text: payload?.text || '' };
+  }
+  if (frame?.stream === 'tool' && frame?.type === 'start') {
+    return { type: 'output', text: `[tool:start] ${payload?.tool || 'tool'}` };
+  }
+  if (frame?.stream === 'tool' && frame?.type === 'output') {
+    return { type: 'output', text: `[tool] ${payload?.text || ''}` };
+  }
+  if (frame?.stream === 'tool' && frame?.type === 'end') {
+    return { type: 'success', text: `[tool:end] ${payload?.status || 'done'}` };
+  }
+  if (frame?.stream === 'pty' && frame?.type === 'stdout') {
+    return { type: 'output', text: payload?.data || '' };
+  }
+  if (frame?.stream === 'control' && frame?.type === 'error') {
+    return { type: 'output', text: `[error] ${payload?.message || payload?.code || 'runtime error'}` };
+  }
+  return null;
+}
+
+export default function AgentSession({
+  session,
+  onClose,
+  onMinimize,
+  realRuntimeEnabled = false,
+  onSessionStateChange,
+}) {
   const [inputValue, setInputValue] = useState('');
   const [lines, setLines] = useState([]);
   const [displayedLines, setDisplayedLines] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const terminalRef = useRef(null);
+  const wsRef = useRef(null);
+  const lastSeqRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
 
-  // Staggered loading animation for initial lines
+  const appendLine = useCallback((line) => {
+    if (!line) return;
+    setLines((prev) => [...prev, line]);
+  }, []);
+
+  // Mock-mode staggered loading animation
   useEffect(() => {
-    if (session?.terminalLines) {
+    if (!realRuntimeEnabled && session?.terminalLines) {
       setLines(session.terminalLines);
       setDisplayedLines(0);
       let index = 0;
       const interval = setInterval(() => {
-        index++;
+        index += 1;
         setDisplayedLines(index);
         if (index >= session.terminalLines.length) {
           clearInterval(interval);
         }
-      }, 50); // 50ms between each line appearing
+      }, 50);
       return () => clearInterval(interval);
     }
-  }, [session?.id]); // Reset when session changes
+  }, [realRuntimeEnabled, session?.id, session?.terminalLines]);
 
   useEffect(() => {
-    // Scroll to bottom when lines change
+    if (!realRuntimeEnabled || session?.sessionId) {
+      return undefined;
+    }
+    setLines(session?.terminalLines || []);
+    setDisplayedLines(0);
+    return undefined;
+  }, [realRuntimeEnabled, session?.id, session?.sessionId, session?.terminalLines]);
+
+  useEffect(() => {
+    if (!realRuntimeEnabled || !session?.sessionId) {
+      return undefined;
+    }
+
+    let disposed = false;
+    setLines(session?.terminalLines?.length > 0 ? session.terminalLines : [{ type: 'output', text: 'Connecting to runtime...' }]);
+    setDisplayedLines(0);
+    lastSeqRef.current = 0;
+
+    const connect = async (preferSessionWS) => {
+      try {
+        let wsInfo = preferSessionWS ? session.ws || null : null;
+        if (!wsInfo?.url || !wsInfo?.token) {
+          wsInfo = await mintAgentSessionToken(session.sessionId);
+        }
+        if (disposed) return;
+
+        const wsURL = normalizeWSURL(wsInfo.url);
+        const joinURL = `${wsURL}${wsURL.includes('?') ? '&' : '?'}token=${encodeURIComponent(wsInfo.token)}&lastSeq=${lastSeqRef.current}`;
+        const ws = new WebSocket(joinURL);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          appendLine({ type: 'success', text: 'Runtime connected.' });
+          ws.send(JSON.stringify({
+            stream: 'control',
+            type: 'hello',
+            payload: { client: 'web' },
+          }));
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const frame = JSON.parse(event.data);
+            if (typeof frame.seq === 'number' && frame.seq > lastSeqRef.current) {
+              lastSeqRef.current = frame.seq;
+            }
+            if (frame?.stream === 'status' && frame?.type === 'state') {
+              const nextState = frame?.payload?.state || '';
+              if (nextState && onSessionStateChange) {
+                onSessionStateChange(session.sessionId || session.id, nextState);
+              }
+            }
+            appendLine(lineFromFrame(frame));
+          } catch {
+            appendLine({ type: 'output', text: '[error] invalid runtime frame' });
+          }
+        };
+
+        ws.onclose = () => {
+          const sessionIsTerminal = session?.status === 'stopped' || session?.status === 'failed';
+          if (!disposed) {
+            appendLine({ type: 'output', text: 'Runtime disconnected.' });
+            if (!sessionIsTerminal) {
+              reconnectTimerRef.current = setTimeout(() => {
+                connect(false);
+              }, 500);
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          appendLine({ type: 'output', text: '[error] websocket connection failed' });
+        };
+      } catch (error) {
+        if (!disposed) {
+          appendLine({ type: 'output', text: `[error] ${error?.message || 'failed to connect runtime'}` });
+        }
+      }
+    };
+
+    connect(true);
+    return () => {
+      disposed = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [appendLine, onSessionStateChange, realRuntimeEnabled, session?.id, session?.sessionId, session?.status, session?.terminalLines, session?.ws]);
+
+  useEffect(() => {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
@@ -39,17 +186,28 @@ export default function AgentSession({ session, onClose, onMinimize }) {
     e.preventDefault();
     if (!inputValue.trim() || isProcessing) return;
 
-    setIsProcessing(true);
-    const command = inputValue;
+    const command = inputValue.trim();
+    if (!command) return;
 
-    // Remove the prompt line and add the command
-    setLines((prev) => [
-      ...prev.slice(0, -1),
-      { type: 'prompt', text: `$ ${command}` },
-    ]);
     setInputValue('');
+    appendLine({ type: 'prompt', text: `$ ${command}` });
 
-    // Simulate processing delay with intermediate outputs
+    if (realRuntimeEnabled) {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        appendLine({ type: 'output', text: '[error] runtime is not connected' });
+        return;
+      }
+      ws.send(JSON.stringify({
+        stream: 'agent',
+        type: 'input',
+        payload: { text: command },
+      }));
+      return;
+    }
+
+    setIsProcessing(true);
+
     await new Promise((r) => setTimeout(r, 400));
     setLines((prev) => [...prev, { type: 'output', text: 'Processing command...' }]);
 
@@ -58,7 +216,6 @@ export default function AgentSession({ session, onClose, onMinimize }) {
 
     await new Promise((r) => setTimeout(r, 600));
 
-    // Add result based on command
     const results = [
       { type: 'success', text: '✓ Command executed successfully' },
       { type: 'output', text: `Output: ${Math.floor(Math.random() * 1000)} items processed` },
@@ -71,8 +228,9 @@ export default function AgentSession({ session, onClose, onMinimize }) {
 
   if (!session) return null;
 
-  // Only show lines up to the displayed count for initial animation
-  const visibleLines = lines.slice(0, Math.max(displayedLines, lines.length - 1));
+  const visibleLines = realRuntimeEnabled
+    ? lines
+    : lines.slice(0, Math.max(displayedLines, lines.length - 1));
 
   return (
     <div className="agent-session-container">
@@ -138,7 +296,7 @@ export default function AgentSession({ session, onClose, onMinimize }) {
             className="agent-input"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder={isProcessing ? 'Processing...' : 'Type a command...'}
+            placeholder={realRuntimeEnabled ? 'Send prompt to runtime...' : (isProcessing ? 'Processing...' : 'Type a command...')}
             autoFocus
             disabled={isProcessing}
           />
