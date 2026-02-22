@@ -229,6 +229,42 @@ func (a *AgentSessionsAPI) handleIncomingFrame(ctx context.Context, sessionID st
 		})
 	case "pty/resize":
 		return a.svc.RecordActivity(ctx, sessionID)
+	case "agent/input":
+		var payload struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(frame.Payload, &payload)
+		if err := a.svc.HandleAgentInput(ctx, sessionID, payload.Text); err != nil {
+			errorPayload, _ := json.Marshal(map[string]string{
+				"code":    "AGENT_INPUT_REJECTED",
+				"message": err.Error(),
+			})
+			return a.svc.AppendEvent(ctx, &models.AgentSessionEvent{
+				SessionID: sessionID,
+				Stream:    "control",
+				Type:      "error",
+				Payload:   errorPayload,
+			})
+		}
+		return nil
+	case "agent/interrupt":
+		var payload struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(frame.Payload, &payload)
+		if err := a.svc.HandleAgentInterrupt(ctx, sessionID, payload.Reason); err != nil {
+			errorPayload, _ := json.Marshal(map[string]string{
+				"code":    "AGENT_INTERRUPT_REJECTED",
+				"message": err.Error(),
+			})
+			return a.svc.AppendEvent(ctx, &models.AgentSessionEvent{
+				SessionID: sessionID,
+				Stream:    "control",
+				Type:      "error",
+				Payload:   errorPayload,
+			})
+		}
+		return nil
 	default:
 		return a.svc.AppendEvent(ctx, &models.AgentSessionEvent{
 			SessionID: sessionID,
