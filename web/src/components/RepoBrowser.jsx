@@ -100,10 +100,13 @@ export default function RepoBrowser({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [activeView, setActiveView] = useState('files');
+  const [isCompactHeader, setIsCompactHeader] = useState(() => window.innerWidth <= 920);
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
   const hasAppliedInitialSliceRef = useRef(false);
+  const actionMenuRef = useRef(null);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
   const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
@@ -159,6 +162,52 @@ export default function RepoBrowser({
       })),
     ];
   }, [currentSliceLabel, selectedFile]);
+
+  const visibleBreadcrumbs = useMemo(() => {
+    const maxBreadcrumbs = isCompactHeader ? 3 : 5;
+    if (breadcrumbs.length <= maxBreadcrumbs) {
+      return breadcrumbs;
+    }
+
+    const trailingCount = Math.max(maxBreadcrumbs - 2, 1);
+    const ellipsisTarget = breadcrumbs[breadcrumbs.length - trailingCount - 1];
+    return [
+      breadcrumbs[0],
+      { name: '…', path: ellipsisTarget?.path || '' },
+      ...breadcrumbs.slice(-trailingCount),
+    ];
+  }, [breadcrumbs, isCompactHeader]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsCompactHeader(window.innerWidth <= 920);
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isCompactHeader) {
+      setIsActionMenuOpen(false);
+    }
+  }, [isCompactHeader]);
+
+  useEffect(() => {
+    if (!isActionMenuOpen) {
+      return undefined;
+    }
+
+    const handleClickOutside = (event) => {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target)) {
+        setIsActionMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isActionMenuOpen]);
 
   // Update slice from URL if present
   useEffect(() => {
@@ -281,6 +330,61 @@ export default function RepoBrowser({
     if (newShowHistory && selectedFile && fileHistory.length === 0) {
       fetchFileHistory(selectedFile);
     }
+  };
+
+  const renderFileActions = (onActionDone) => {
+    if (viewingSettings || !selectedFile) {
+      return null;
+    }
+
+    return (
+      <>
+        {!showHistory && (
+          <>
+            <button
+              type="button"
+              className={`history-toggle ${isEditingFile ? 'active' : ''}`}
+              onClick={() => {
+                if (isEditingFile) {
+                  setDraftContent(fileContent);
+                  setIsEditingFile(false);
+                } else {
+                  setDraftContent(fileContent);
+                  setIsEditingFile(true);
+                }
+                onActionDone?.();
+              }}
+            >
+              {isEditingFile ? 'Cancel' : '✏️ Edit'}
+            </button>
+            {isEditingFile && (
+              <button
+                type="button"
+                className="history-toggle active"
+                onClick={() => {
+                  confirmFileEdit();
+                  onActionDone?.();
+                }}
+              >
+                ✅ Confirm
+              </button>
+            )}
+          </>
+        )}
+        <button
+          type="button"
+          className={`history-toggle ${showHistory ? 'active' : ''}`}
+          onClick={() => {
+            toggleHistory();
+            onActionDone?.();
+          }}
+          data-testid="history-toggle"
+          title={showHistory ? 'Show file content' : 'Show commit history'}
+        >
+          {showHistory ? '📄 Content' : '📜 History'}
+        </button>
+      </>
+    );
   };
 
   useEffect(() => {
@@ -812,16 +916,17 @@ export default function RepoBrowser({
                   </button>
                 )}
                 <div className="breadcrumbs">
-                  {breadcrumbs.map((crumb, index) => {
+                  {visibleBreadcrumbs.map((crumb, index) => {
                     const isSlicePrefix = index === 0;
-                    const hasPathAfterPrefix = breadcrumbs.length > 1;
-                    const separator = isSlicePrefix ? (hasPathAfterPrefix ? '://' : '') : (index < breadcrumbs.length - 1 ? '/' : '');
+                    const hasPathAfterPrefix = visibleBreadcrumbs.length > 1;
+                    const separator = isSlicePrefix ? (hasPathAfterPrefix ? '://' : '') : (index < visibleBreadcrumbs.length - 1 ? '/' : '');
                     return (
                       <button
-                        key={crumb.path || 'slice-root'}
+                        key={`${crumb.path || 'slice-root'}-${index}`}
                         type="button"
                         className="breadcrumb"
                         onClick={() => handleBreadcrumbClick(crumb.path)}
+                        title={crumb.name === '…' ? 'Jump to parent folder' : crumb.name}
                       >
                         {crumb.name}
                         {separator && <span className="separator">{separator}</span>}
@@ -851,45 +956,27 @@ export default function RepoBrowser({
                     </button>
                   )}
                 </div>
-                {!viewingSettings && selectedFile && <span className="status">{formatBytes(fileContent.length)}</span>}
-                {!viewingSettings && selectedFile && !showHistory && (
-                  <>
+                {!viewingSettings && selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
+                {!isCompactHeader && renderFileActions()}
+                {isCompactHeader && !viewingSettings && selectedFile && (
+                  <div className="header-actions-menu" ref={actionMenuRef}>
                     <button
                       type="button"
-                      className={`history-toggle ${isEditingFile ? 'active' : ''}`}
-                      onClick={() => {
-                        if (isEditingFile) {
-                          setDraftContent(fileContent);
-                          setIsEditingFile(false);
-                        } else {
-                          setDraftContent(fileContent);
-                          setIsEditingFile(true);
-                        }
-                      }}
+                      className="history-toggle header-actions-menu-trigger"
+                      onClick={() => setIsActionMenuOpen((value) => !value)}
+                      aria-haspopup="menu"
+                      aria-expanded={isActionMenuOpen}
+                      title="More actions"
                     >
-                      {isEditingFile ? 'Cancel' : '✏️ Edit'}
+                      ☰
                     </button>
-                    {isEditingFile && (
-                      <button
-                        type="button"
-                        className="history-toggle active"
-                        onClick={confirmFileEdit}
-                      >
-                        ✅ Confirm
-                      </button>
+                    {isActionMenuOpen && (
+                      <div className="header-actions-menu-dropdown" role="menu">
+                        <span className="header-actions-menu-status">{formatBytes(fileContent.length)}</span>
+                        {renderFileActions(() => setIsActionMenuOpen(false))}
+                      </div>
                     )}
-                  </>
-                )}
-                {!viewingSettings && selectedFile && (
-                  <button
-                    type="button"
-                    className={`history-toggle ${showHistory ? 'active' : ''}`}
-                    onClick={toggleHistory}
-                    data-testid="history-toggle"
-                    title={showHistory ? 'Show file content' : 'Show commit history'}
-                  >
-                    {showHistory ? '📄 Content' : '📜 History'}
-                  </button>
+                  </div>
                 )}
               </div>
             </div>

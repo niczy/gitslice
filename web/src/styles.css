@@ -1833,9 +1833,11 @@ body {
 /* Breadcrumbs */
 .breadcrumbs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .breadcrumb {
@@ -1849,6 +1851,8 @@ body {
   gap: 4px;
   transition: all 150ms ease;
   font-size: 0.85rem;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .breadcrumb:hover {
@@ -2147,6 +2151,42 @@ body {
 
 .token-keyword {
   color: #cf222e;
+}
+
+
+.header-actions-menu {
+  position: relative;
+}
+
+.header-actions-menu-trigger {
+  min-width: 38px;
+  padding: 6px 10px;
+}
+
+.header-actions-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 170px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 20;
+}
+
+.header-actions-menu-dropdown .history-toggle {
+  justify-content: center;
+}
+
+.header-actions-menu-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: right;
 }
 
 /* History toggle */
