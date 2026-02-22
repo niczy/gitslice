@@ -124,17 +124,21 @@ function App() {
     window.history.pushState(null, '', buildHash(page, commitHash, changesetId));
   }, []);
 
-  // Handle browser back/forward buttons
+  // Keep app state in sync for both back/forward navigation and hash-only URL updates.
   useEffect(() => {
-    const onPopState = () => {
+    const syncRouteFromLocation = () => {
       const { page, commitHash, changesetId, unknownPath } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
       setDiffChangesetId(changesetId);
       setUnknownRoute(unknownPath || '');
     };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    window.addEventListener('popstate', syncRouteFromLocation);
+    window.addEventListener('hashchange', syncRouteFromLocation);
+    return () => {
+      window.removeEventListener('popstate', syncRouteFromLocation);
+      window.removeEventListener('hashchange', syncRouteFromLocation);
+    };
   }, []);
 
   // Load slices on mount
