@@ -3078,6 +3078,26 @@ body {
   gap: 12px;
 }
 
+.auth-card--oauth {
+  border-color: var(--border-strong);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.09);
+}
+
+.auth-card--username {
+  opacity: 0.92;
+}
+
+.auth-priority-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text-primary);
+}
+
 .auth-card-title {
   margin: 0;
   font-size: 1.05rem;
@@ -3086,6 +3106,23 @@ body {
 .auth-card-subtitle {
   margin: 0;
   font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.auth-trust-text {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.auth-trust-text a {
+  color: var(--accent);
+}
+
+.field-help {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.8rem;
   color: var(--text-muted);
 }
 
