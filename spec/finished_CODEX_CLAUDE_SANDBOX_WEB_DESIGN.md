@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-- Current status: `ongoing`
+- Current status: `finished`
 - Last updated: `2026-02-22`
 
 PR checklist:
@@ -16,7 +16,7 @@ PR checklist:
 - [x] PR7 - Web UI integration (replace mock AgentSession with backend sessions)
 - [x] PR8 - Security hardening + policy controls
 - [x] PR9 - Observability + reliability controls
-- [ ] PR10 - Integration/E2E hardening + rollout + mark spec finished
+- [x] PR10 - Integration/E2E hardening + rollout + mark spec finished
 
 ## Executive Summary
 

@@ -1462,7 +1462,7 @@ func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 
-	sessionID := createAgentSessionViaHTTP(t, sliceID)
+	sessionID := createAgentSessionViaHTTP(t, sliceID, "integration-env", "codex")
 	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
 
 	token := mintAgentTokenViaHTTP(t, sessionID)
@@ -1569,7 +1569,7 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 
-	sessionID := createAgentSessionViaHTTP(t, sliceID)
+	sessionID := createAgentSessionViaHTTP(t, sliceID, "integration-env", "codex")
 	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
 
 	token := mintAgentTokenViaHTTP(t, sessionID)
@@ -1592,13 +1592,167 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
 }
 
-func createAgentSessionViaHTTP(t *testing.T, sliceID string) string {
-	t.Helper()
-	ensureIntegrationEnvironment(t, "integration-env")
+func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	sliceID := fmt.Sprintf("agent-claude-%d", time.Now().UnixNano())
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "Agent Claude",
+		Files:     []string{},
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	sessionID := createAgentSessionViaHTTP(t, sliceID, "integration-env", "claude")
+	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
+
+	token := mintAgentTokenViaHTTP(t, sessionID)
+	wsURL := buildAgentWSURL(sessionID, token, 0)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to connect websocket: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+
+	if err := conn.WriteJSON(map[string]any{
+		"stream": "agent",
+		"type":   "input",
+		"payload": map[string]string{
+			"text": "Explain this diff",
+		},
+	}); err != nil {
+		t.Fatalf("write agent/input failed: %v", err)
+	}
+
+	gotClaudeFinal := false
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && !gotClaudeFinal {
+		var frame struct {
+			Stream  string                 `json:"stream"`
+			Type    string                 `json:"type"`
+			Payload map[string]interface{} `json:"payload"`
+		}
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("read websocket frame failed: %v", err)
+		}
+		if frame.Stream == "agent" && frame.Type == "output_final" {
+			text, _ := frame.Payload["text"].(string)
+			if strings.Contains(text, "Claude completed request") {
+				gotClaudeFinal = true
+			}
+		}
+	}
+	if !gotClaudeFinal {
+		t.Fatalf("expected claude output_final frame")
+	}
+
+	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
+	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
+}
+
+func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	sliceID := fmt.Sprintf("agent-env-missing-%d", time.Now().UnixNano())
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "Agent Missing Env",
+		Files:     []string{},
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
 	body := map[string]any{
 		"sliceId":     sliceID,
-		"environment": "integration-env",
+		"environment": "missing-integration-env",
 		"agentType":   "codex",
+	}
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for unknown environment, got %d body=%s", resp.StatusCode, string(data))
+	}
+}
+
+func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	if err := testStorage.CreateEnvironment(ctx, &models.Environment{
+		Name:              "integration-codex-only",
+		DisplayName:       "Integration Codex Only",
+		Provider:          "e2b",
+		ProviderID:        "tmpl-integration",
+		Region:            "us-west-2",
+		DefaultAgentType:  "codex",
+		AllowedAgentTypes: []string{"codex"},
+		CreatedBy:         testUsername,
+	}); err != nil && err != storage.ErrEntryExists {
+		t.Fatalf("failed to create codex-only environment: %v", err)
+	}
+
+	sliceID := fmt.Sprintf("agent-disallowed-%d", time.Now().UnixNano())
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "Agent Disallowed Type",
+		Files:     []string{},
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	body := map[string]any{
+		"sliceId":     sliceID,
+		"environment": "integration-codex-only",
+		"agentType":   "claude",
+	}
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for disallowed agent type, got %d body=%s", resp.StatusCode, string(data))
+	}
+}
+
+func createAgentSessionViaHTTP(t *testing.T, sliceID, environment, agentType string) string {
+	t.Helper()
+	if strings.TrimSpace(environment) != "" {
+		ensureIntegrationEnvironment(t, environment)
+	}
+	if strings.TrimSpace(agentType) == "" {
+		agentType = "codex"
+	}
+	body := map[string]any{
+		"sliceId":     sliceID,
+		"environment": environment,
+		"agentType":   agentType,
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
