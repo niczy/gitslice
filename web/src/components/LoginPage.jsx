@@ -14,13 +14,13 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
     <section className="section auth-page" data-testid="login-page">
       <div className="section-header">
         <p className="eyebrow">Accounts</p>
-        <h2>Sign in</h2>
+        <h1>Sign in</h1>
         <p>Use your provider account to continue, or use a username for local/dev workflows.</p>
       </div>
 
       <div className="auth-layout">
         <div className="auth-card auth-card--oauth">
-          <h3 className="auth-card-title">Continue with OAuth</h3>
+          <h2 className="auth-card-title">Continue with OAuth</h2>
           <p className="auth-card-subtitle">Best for normal usage across devices.</p>
           <div className="auth-provider-list">
             <button type="button" className="auth-provider auth-provider--google" onClick={() => onOAuthLogin?.('google')}>
@@ -50,7 +50,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
             }
           }}
         >
-          <h3 className="auth-card-title">Username sign-in</h3>
+          <h2 className="auth-card-title">Username sign-in</h2>
           <p className="auth-card-subtitle">Fallback path for local testing and CLI-aligned flows.</p>
 
           <label className="field">

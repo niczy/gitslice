@@ -62,6 +62,9 @@ function App() {
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
   const githubUrl = 'https://github.com/niczy/gitslice';
+  const docsUrl = 'https://github.com/niczy/gitslice/blob/main/README.md';
+  const statusUrl = `${apiBaseUrl}/health`;
+  const supportUrl = 'https://github.com/niczy/gitslice/issues';
   const [username, setUsername] = useState(() => currentUsername());
 
   // Track whether the browser page has been visited so we can keep it mounted
@@ -688,13 +691,14 @@ function App() {
         </div>
       )}
 
-      <footer className="footer">
-        <p>
-          Git Slice • Slice smart. Ship faster. •{' '}
-          <a href={githubUrl} target="_blank" rel="noreferrer">
-            GitHub
-          </a>
-        </p>
+      <footer className="footer" aria-label="Global footer">
+        <p className="footer-copy">Git Slice • Slice smart. Ship faster.</p>
+        <nav className="footer-links" aria-label="Self-service links">
+          <a href={docsUrl} target="_blank" rel="noreferrer">Docs</a>
+          <a href={statusUrl} target="_blank" rel="noreferrer">Status</a>
+          <a href={supportUrl} target="_blank" rel="noreferrer">Support</a>
+          <a href={githubUrl} target="_blank" rel="noreferrer">GitHub</a>
+        </nav>
       </footer>
     </div>
   );
