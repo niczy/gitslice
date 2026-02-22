@@ -12,7 +12,7 @@ PR checklist:
 - [x] PR3 - Session service refactor: real runtime lifecycle interface (replace fake bootstrap)
 - [x] PR4 - Sandbox runtime bridge service (E2B-backed) and WS relay integration
 - [x] PR5 - Codex runtime adapter in sandbox
-- [ ] PR6 - Claude runtime adapter in sandbox
+- [x] PR6 - Claude runtime adapter in sandbox
 - [ ] PR7 - Web UI integration (replace mock AgentSession with backend sessions)
 - [ ] PR8 - Security hardening + policy controls
 - [ ] PR9 - Observability + reliability controls

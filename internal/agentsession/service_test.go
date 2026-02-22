@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -313,6 +314,85 @@ func TestServiceHandleAgentInputProducesCodexEvents(t *testing.T) {
 	}
 	if !foundToolStart {
 		t.Fatalf("expected tool/start event")
+	}
+}
+
+func TestServiceClaudeBinaryValidationFailure(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-claude-missing-bin",
+		Name:      "Slice Claude Missing Binary",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	t.Setenv(envAgentValidateCLIBinary, "1")
+	t.Setenv(envClaudeCLIBinary, "/tmp/path/that/does/not/exist/claude")
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-claude-missing-bin",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+		AgentType:     "claude",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.FailureCode != "AGENT_BINARY_MISSING" {
+		t.Fatalf("expected AGENT_BINARY_MISSING failure code, got %s", got.FailureCode)
+	}
+}
+
+func TestServiceHandleAgentInputProducesClaudeEvents(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-agent-input-claude",
+		Name:      "Slice Agent Input Claude",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-agent-input-claude",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+		AgentType:     "claude",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if err := svc.HandleAgentInput(ctx, session.SessionID, "Explain this diff"); err != nil {
+		t.Fatalf("HandleAgentInput failed: %v", err)
+	}
+
+	events, _, err := svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 200)
+	if err != nil {
+		t.Fatalf("ListEventsForUser failed: %v", err)
+	}
+	foundFinal := false
+	for _, event := range events {
+		if event.Stream == "agent" && event.Type == "output_final" && strings.Contains(string(event.Payload), "Claude completed request") {
+			foundFinal = true
+		}
+	}
+	if !foundFinal {
+		t.Fatalf("expected Claude agent/output_final event")
 	}
 }
 

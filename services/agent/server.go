@@ -2,11 +2,13 @@ package agentservice
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/authz"
+	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	"google.golang.org/grpc"
@@ -56,6 +58,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	e2bRegion := strings.TrimSpace(req.GetE2BRegion())
 	environmentName := strings.TrimSpace(req.GetEnvironment())
 	agentType := strings.ToLower(strings.TrimSpace(req.GetAgentType()))
+	var resolvedEnvironment *models.Environment
 
 	// Environment name in request takes precedence.
 	if environmentName != "" {
@@ -63,6 +66,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		if lookupErr != nil {
 			return nil, status.Error(codes.InvalidArgument, "unknown environment")
 		}
+		resolvedEnvironment = env
 		provider = env.Provider
 		e2bTemplateID = env.ProviderID
 		if e2bRegion == "" {
@@ -73,6 +77,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		// backward compatibility by treating slice.Environment as template id.
 		if env, lookupErr := s.st.GetEnvironment(ctx, sliceEnv); lookupErr == nil {
 			environmentName = env.Name
+			resolvedEnvironment = env
 			provider = env.Provider
 			e2bTemplateID = env.ProviderID
 			if e2bRegion == "" {
@@ -80,6 +85,13 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 			}
 		} else if e2bTemplateID == "" {
 			e2bTemplateID = sliceEnv
+		}
+	}
+	if resolvedEnvironment != nil {
+		var resolveErr error
+		agentType, resolveErr = resolveAgentTypeFromEnvironment(agentType, resolvedEnvironment)
+		if resolveErr != nil {
+			return nil, status.Error(codes.InvalidArgument, resolveErr.Error())
 		}
 	}
 
@@ -122,6 +134,36 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
 	}, nil
+}
+
+func resolveAgentTypeFromEnvironment(requested string, env *models.Environment) (string, error) {
+	if env == nil {
+		return requested, nil
+	}
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "" {
+		requested = strings.ToLower(strings.TrimSpace(env.DefaultAgentType))
+	}
+	if requested == "" {
+		requested = agentsession.DefaultAgentType()
+	}
+
+	allowed := make(map[string]struct{}, len(env.AllowedAgentTypes))
+	for _, candidate := range env.AllowedAgentTypes {
+		normalized := strings.ToLower(strings.TrimSpace(candidate))
+		if normalized == "" {
+			continue
+		}
+		allowed[normalized] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		allowed["codex"] = struct{}{}
+		allowed["claude"] = struct{}{}
+	}
+	if _, ok := allowed[requested]; !ok {
+		return "", fmt.Errorf("agent type is not allowed for environment")
+	}
+	return requested, nil
 }
 
 func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSessionRequest) (*agentv1.GetSessionResponse, error) {

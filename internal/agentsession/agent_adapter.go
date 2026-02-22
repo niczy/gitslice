@@ -14,6 +14,7 @@ import (
 const (
 	envAgentValidateCLIBinary = "AGENT_VALIDATE_CLI_BINARY"
 	envCodexCLIBinary         = "CODEX_CLI_BINARY"
+	envClaudeCLIBinary        = "CLAUDE_CLI_BINARY"
 )
 
 func validateAgentBinaryForSession(session *models.AgentSession) error {
@@ -23,22 +24,26 @@ func validateAgentBinaryForSession(session *models.AgentSession) error {
 			Message: "missing session metadata",
 		}
 	}
-	if strings.TrimSpace(session.AgentType) != "codex" {
+	agentType := strings.TrimSpace(session.AgentType)
+	if agentType != "codex" && agentType != "claude" {
 		return nil
 	}
 	if strings.TrimSpace(os.Getenv(envAgentValidateCLIBinary)) == "" {
 		return nil
 	}
 
-	binary := strings.TrimSpace(os.Getenv(envCodexCLIBinary))
-	if binary == "" {
-		binary = "codex"
+	binary := resolveAgentBinary(agentType)
+	if strings.TrimSpace(binary) == "" {
+		return &RuntimeError{
+			Code:    "AGENT_BINARY_MISSING",
+			Message: agentType + " binary is missing",
+		}
 	}
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		return &RuntimeError{
 			Code:    "AGENT_BINARY_MISSING",
-			Message: "codex binary is missing",
+			Message: agentType + " binary is missing",
 			Err:     err,
 		}
 	}
@@ -54,10 +59,27 @@ func validateAgentBinaryForSession(session *models.AgentSession) error {
 	if info.Mode()&0o111 == 0 {
 		return &RuntimeError{
 			Code:    "AGENT_BINARY_EXEC_FAILED",
-			Message: "codex binary is not executable",
+			Message: agentType + " binary is not executable",
 		}
 	}
 	return nil
+}
+
+func resolveAgentBinary(agentType string) string {
+	switch agentType {
+	case "codex":
+		if binary := strings.TrimSpace(os.Getenv(envCodexCLIBinary)); binary != "" {
+			return binary
+		}
+		return "codex"
+	case "claude":
+		if binary := strings.TrimSpace(os.Getenv(envClaudeCLIBinary)); binary != "" {
+			return binary
+		}
+		return "claude"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) error {
@@ -74,14 +96,16 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
 		return storage.ErrAgentSessionConflict
 	}
-	if strings.TrimSpace(session.AgentType) != "codex" {
+	agentType := strings.TrimSpace(session.AgentType)
+	if agentType != "codex" && agentType != "claude" {
 		return storage.ErrInvalidInput
 	}
 
 	toolID := makeNonceID("tool")
+	displayName := agentDisplayName(agentType)
 	outputDeltas := []string{
-		"Codex: analyzing request",
-		"Codex: planning workspace actions",
+		displayName + ": analyzing request",
+		displayName + ": planning workspace actions",
 	}
 	for _, delta := range outputDeltas {
 		payload, _ := json.Marshal(map[string]string{"text": delta})
@@ -95,7 +119,7 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 		}
 	}
 
-	toolStart, _ := json.Marshal(map[string]string{"tool": "codex.exec", "id": toolID})
+	toolStart, _ := json.Marshal(map[string]string{"tool": agentType + ".exec", "id": toolID})
 	if err := s.AppendEvent(ctx, &models.AgentSessionEvent{
 		SessionID: sessionID,
 		Stream:    "tool",
@@ -124,7 +148,7 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 	}
 
 	finalPayload, _ := json.Marshal(map[string]string{
-		"text": "Codex completed request: " + text,
+		"text": displayName + " completed request: " + text,
 	})
 	if err := s.AppendEvent(ctx, &models.AgentSessionEvent{
 		SessionID: sessionID,
@@ -139,6 +163,17 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 		"agentType": session.AgentType,
 	})
 	return nil
+}
+
+func agentDisplayName(agentType string) string {
+	switch agentType {
+	case "codex":
+		return "Codex"
+	case "claude":
+		return "Claude"
+	default:
+		return "Agent"
+	}
 }
 
 func (s *Service) HandleAgentInterrupt(ctx context.Context, sessionID, reason string) error {
