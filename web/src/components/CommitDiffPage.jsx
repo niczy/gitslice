@@ -263,7 +263,19 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
 
     const panelItemEl = panelItemRefs.current[fileKey];
     if (panelItemEl) {
-      panelItemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      const listEl = panelItemEl.closest('.diff-file-panel-list');
+      if (listEl) {
+        const itemTop = panelItemEl.offsetTop;
+        const itemBottom = itemTop + panelItemEl.offsetHeight;
+        const visibleTop = listEl.scrollTop;
+        const visibleBottom = visibleTop + listEl.clientHeight;
+
+        if (itemTop < visibleTop) {
+          listEl.scrollTo({ top: itemTop, behavior: 'smooth' });
+        } else if (itemBottom > visibleBottom) {
+          listEl.scrollTo({ top: itemBottom - listEl.clientHeight, behavior: 'smooth' });
+        }
+      }
     }
 
     const fileEl = fileRefs.current[fileKey];
