@@ -16,10 +16,19 @@ export function parseHash() {
   if (hash === 'profile') {
     return { page: 'profile', commitHash: '', changesetId: '' };
   }
+  if (hash === 'projects') {
+    return { page: 'projects', commitHash: '', changesetId: '' };
+  }
+  if (hash === 'settings') {
+    return { page: 'settings', commitHash: '', changesetId: '' };
+  }
   if (hash === 'browser' || hash.startsWith('browser?')) {
     return { page: 'browser', commitHash: '', changesetId: '' };
   }
-  return { page: 'landing', commitHash: '', changesetId: '' };
+  if (hash === '' || hash === '/') {
+    return { page: 'landing', commitHash: '', changesetId: '' };
+  }
+  return { page: 'not-found', commitHash: '', changesetId: '', unknownPath: hash };
 }
 
 export function buildHash(page, commitHash, changesetId = '') {
@@ -34,6 +43,12 @@ export function buildHash(page, commitHash, changesetId = '') {
   }
   if (page === 'profile') {
     return '#/profile';
+  }
+  if (page === 'projects') {
+    return '#/projects';
+  }
+  if (page === 'settings') {
+    return '#/settings';
   }
   if (page === 'browser') {
     return '#/browser';
