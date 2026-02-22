@@ -1598,6 +1598,7 @@ func createAgentSessionViaHTTP(t *testing.T, sliceID string) string {
 	body := map[string]any{
 		"sliceId":     sliceID,
 		"environment": "integration-env",
+		"agentType":   "codex",
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))

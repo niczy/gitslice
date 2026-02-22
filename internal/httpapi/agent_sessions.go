@@ -39,6 +39,7 @@ func (a *AgentSessionsAPI) requireUser(w http.ResponseWriter, r *http.Request) (
 type createAgentSessionRequest struct {
 	SliceID        string            `json:"sliceId"`
 	Environment    string            `json:"environment"`
+	AgentType      string            `json:"agentType"`
 	IdleTimeoutSec int               `json:"idleTimeoutSec"`
 	TTLSec         int               `json:"ttlSec"`
 	Env            map[string]string `json:"env"`
@@ -54,6 +55,7 @@ type createAgentSessionResponse struct {
 	SessionID      string            `json:"sessionId"`
 	SliceID        string            `json:"sliceId"`
 	Environment    string            `json:"environment"`
+	AgentType      string            `json:"agentType"`
 	State          string            `json:"state"`
 	WS             wsConnectResponse `json:"ws"`
 	CreatedAt      string            `json:"createdAt"`
@@ -65,6 +67,7 @@ type getAgentSessionResponse struct {
 	SessionID      string `json:"sessionId"`
 	SliceID        string `json:"sliceId"`
 	Environment    string `json:"environment"`
+	AgentType      string `json:"agentType"`
 	State          string `json:"state"`
 	LastActivityAt string `json:"lastActivityAt,omitempty"`
 	IdleTimeoutSec int    `json:"idleTimeoutSec"`
@@ -101,6 +104,11 @@ type eventEnvelopeResponse struct {
 type listEventsResponse struct {
 	Events  []eventEnvelopeResponse `json:"events"`
 	NextSeq uint64                  `json:"nextSeq"`
+}
+
+type listAgentCapabilitiesResponse struct {
+	SupportedAgentTypes []string `json:"supportedAgentTypes"`
+	DefaultAgentType    string   `json:"defaultAgentType"`
 }
 
 func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +168,7 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 	session, token, err := a.svc.CreateSession(r.Context(), userID, agentsession.CreateRequest{
 		SliceID:         req.SliceID,
 		EnvironmentName: envName,
+		AgentType:       req.AgentType,
 		Provider:        env.Provider,
 		E2BTemplateID:   env.ProviderID,
 		E2BRegion:       env.Region,
@@ -183,6 +192,7 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		SessionID:   session.SessionID,
 		SliceID:     session.SliceID,
 		Environment: session.EnvironmentName,
+		AgentType:   session.AgentType,
 		State:       string(session.State),
 		WS: wsConnectResponse{
 			URL:       buildWSURL(r, session.SessionID),
@@ -210,6 +220,14 @@ func (a *AgentSessionsAPI) HandleItem(w http.ResponseWriter, r *http.Request) {
 	sessionID := parts[0]
 	if sessionID == "" {
 		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if sessionID == "capabilities" {
+		if len(parts) == 1 && r.Method == http.MethodGet {
+			a.listCapabilities(w, r)
+			return
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -266,6 +284,7 @@ func (a *AgentSessionsAPI) getSession(w http.ResponseWriter, r *http.Request, se
 		SessionID:      session.SessionID,
 		SliceID:        session.SliceID,
 		Environment:    session.EnvironmentName,
+		AgentType:      session.AgentType,
 		State:          string(session.State),
 		IdleTimeoutSec: session.IdleTimeoutSec,
 		TTLSec:         session.TTLSec,
@@ -372,6 +391,16 @@ func (a *AgentSessionsAPI) listEvents(w http.ResponseWriter, r *http.Request, se
 	writeJSON(w, http.StatusOK, listEventsResponse{
 		Events:  out,
 		NextSeq: nextSeq,
+	})
+}
+
+func (a *AgentSessionsAPI) listCapabilities(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireUser(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, listAgentCapabilitiesResponse{
+		SupportedAgentTypes: agentsession.SupportedAgentTypes(),
+		DefaultAgentType:    agentsession.DefaultAgentType(),
 	})
 }
 

@@ -58,6 +58,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 	createBody := map[string]any{
 		"sliceId":     "slice-http",
 		"environment": "node20",
+		"agentType":   "claude",
 	}
 	createRaw, _ := json.Marshal(createBody)
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
@@ -74,6 +75,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 	var createResp struct {
 		SessionID     string  `json:"sessionId"`
 		Environment   string  `json:"environment"`
+		AgentType     string  `json:"agentType"`
 		Provider      *string `json:"provider"`
 		E2BTemplateID *string `json:"e2bTemplateId"`
 		E2BSandboxID  *string `json:"e2bSandboxId"`
@@ -86,6 +88,9 @@ func TestAgentSessionsAPI(t *testing.T) {
 	}
 	if createResp.Environment != "node20" {
 		t.Fatalf("expected environment node20, got %q", createResp.Environment)
+	}
+	if createResp.AgentType != "claude" {
+		t.Fatalf("expected agentType claude, got %q", createResp.AgentType)
 	}
 	if createResp.Provider != nil || createResp.E2BTemplateID != nil || createResp.E2BSandboxID != nil {
 		t.Fatalf("create response should not expose provider/e2b fields: %#v", createResp)
@@ -105,6 +110,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 	var getResp struct {
 		SessionID    string  `json:"sessionId"`
 		Environment  string  `json:"environment"`
+		AgentType    string  `json:"agentType"`
 		Provider     *string `json:"provider"`
 		E2BSandboxID *string `json:"e2bSandboxId"`
 	}
@@ -114,6 +120,9 @@ func TestAgentSessionsAPI(t *testing.T) {
 	_ = resp.Body.Close()
 	if getResp.Environment != "node20" {
 		t.Fatalf("expected get environment node20, got %q", getResp.Environment)
+	}
+	if getResp.AgentType != "claude" {
+		t.Fatalf("expected get agentType claude, got %q", getResp.AgentType)
 	}
 	if getResp.Provider != nil || getResp.E2BSandboxID != nil {
 		t.Fatalf("get response should not expose provider/e2bSandboxId: %#v", getResp)
@@ -211,6 +220,43 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for cross-user access, got %d", resp.StatusCode)
+	}
+}
+
+func TestAgentSessionsCapabilities(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	svc := agentsession.NewService(st, "test-secret")
+	api := NewAgentSessionsAPI(st, svc)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
+	mux.HandleFunc("/v1/agent-sessions/", api.HandleItem)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/agent-sessions/capabilities", nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("capabilities request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out struct {
+		SupportedAgentTypes []string `json:"supportedAgentTypes"`
+		DefaultAgentType    string   `json:"defaultAgentType"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if out.DefaultAgentType != "codex" {
+		t.Fatalf("expected default codex, got %q", out.DefaultAgentType)
+	}
+	if len(out.SupportedAgentTypes) != 2 || out.SupportedAgentTypes[0] != "codex" || out.SupportedAgentTypes[1] != "claude" {
+		t.Fatalf("unexpected supported agent types: %#v", out.SupportedAgentTypes)
 	}
 }
 

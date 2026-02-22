@@ -24,11 +24,18 @@ const (
 	wsTokenTTL            = 60 * time.Second
 	defaultLifecycleTick  = 1 * time.Second
 	defaultStartupTimeout = 90 * time.Second
+	defaultAgentType      = "codex"
 )
+
+var supportedAgentTypes = map[string]struct{}{
+	"codex":  {},
+	"claude": {},
+}
 
 type CreateRequest struct {
 	SliceID         string
 	EnvironmentName string
+	AgentType       string
 	Provider        string
 	E2BTemplateID   string
 	E2BRegion       string
@@ -81,6 +88,14 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 	}
 }
 
+func SupportedAgentTypes() []string {
+	return []string{"codex", "claude"}
+}
+
+func DefaultAgentType() string {
+	return defaultAgentType
+}
+
 func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRequest) (*models.AgentSession, *WSToken, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
@@ -91,6 +106,13 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.EnvironmentName = strings.TrimSpace(req.EnvironmentName)
+	req.AgentType = strings.ToLower(strings.TrimSpace(req.AgentType))
+	if req.AgentType == "" {
+		req.AgentType = defaultAgentType
+	}
+	if _, ok := supportedAgentTypes[req.AgentType]; !ok {
+		return nil, nil, storage.ErrInvalidInput
+	}
 	req.Provider = strings.TrimSpace(req.Provider)
 	if req.Provider == "" {
 		req.Provider = "e2b"
@@ -115,6 +137,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		SessionID:       makeSessionID(),
 		SliceID:         req.SliceID,
 		EnvironmentName: req.EnvironmentName,
+		AgentType:       req.AgentType,
 		UserID:          userID,
 		State:           models.AgentSessionStateCreating,
 		Provider:        req.Provider,
@@ -131,6 +154,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 
 	_ = s.AddAudit(ctx, session.SessionID, userID, "session_created", map[string]any{
 		"sliceId":       session.SliceID,
+		"agentType":     session.AgentType,
 		"provider":      session.Provider,
 		"e2bTemplateId": session.E2BTemplateID,
 		"e2bRegion":     session.E2BRegion,
