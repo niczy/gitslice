@@ -1237,9 +1237,10 @@ body {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
   gap: 48px;
   padding: 48px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
-  background: var(--surface-elevated);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
 }
 
 .hero h1 {
@@ -1253,6 +1254,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  max-width: 56ch;
 }
 
 .hero-panel {
@@ -1261,10 +1263,11 @@ body {
 }
 
 .hero-card {
-  background: #ffffff;
+  background: #fdfefe;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid #c7d7ea;
   padding: 24px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .hero-card--api {
@@ -1281,9 +1284,9 @@ body {
 .lede {
   margin: 0;
   color: var(--text-secondary);
-  max-width: 60ch;
+  max-width: 52ch;
   font-size: 1.05rem;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 .eyebrow {
@@ -1299,27 +1302,50 @@ body {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  margin-top: 12px;
+  align-items: center;
+}
+
+.hero .primary {
+  padding: 11px 22px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  box-shadow: 0 6px 16px rgba(9, 105, 218, 0.24);
+}
+
+.secondary-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.secondary-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
 }
 
 /* Sections */
 .section {
   margin-top: 48px;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border);
+  background: #f5f9ff;
+  border: 1px solid #d4e2f2;
   border-radius: 12px;
   padding: 32px;
 }
 
 .section-header h2 {
-  margin: 8px 0 8px;
-  font-size: clamp(1.4rem, 2vw + 0.5rem, 1.8rem);
-  font-weight: 600;
+  margin: 10px 0 10px;
+  font-size: clamp(1.55rem, 2.2vw + 0.4rem, 2.05rem);
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .section-header p {
   margin: 0;
   color: var(--text-secondary);
+  max-width: 60ch;
+  line-height: 1.6;
 }
 
 /* Steps */
@@ -1417,7 +1443,7 @@ body {
 
 .benefit-card {
   background: #ffffff;
-  border: 1px solid var(--border);
+  border: 1px solid #cad9eb;
   border-radius: 10px;
   padding: 20px;
 }
@@ -1430,7 +1456,8 @@ body {
 .benefit-card p {
   margin: 0;
   color: var(--text-secondary);
-  line-height: 1.55;
+  line-height: 1.6;
+  max-width: 38ch;
   font-size: 0.92rem;
 }
 
@@ -1452,7 +1479,7 @@ body {
 .workflow-card {
   background: #ffffff;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid #cad9eb;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -1468,7 +1495,8 @@ body {
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.9rem;
-  line-height: 1.5;
+  line-height: 1.58;
+  max-width: 36ch;
 }
 
 .quickstart-step {

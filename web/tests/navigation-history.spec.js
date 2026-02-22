@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Navigation history and URL reloading', () => {
   const waitForLanding = async (page) => {
-    const landingHeading = page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i });
+    const landingHeading = page.getByRole('heading', { level: 1, name: /ship faster with api-first slices for every change/i });
     for (let i = 0; i < 6; i += 1) {
       if (await landingHeading.isVisible()) {
         return;
@@ -41,7 +41,7 @@ test.describe('Navigation history and URL reloading', () => {
 
     // Click brand logo to go back to landing
     await page.getByRole('button', { name: /Git Slice/i }).click();
-    await expect(page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: /ship faster with api-first slices for every change/i })).toBeVisible();
     expect(new URL(page.url()).hash).toBe('#/');
   });
 
@@ -52,7 +52,7 @@ test.describe('Navigation history and URL reloading', () => {
 
   test('loading /#/ directly opens the landing page', async ({ page }) => {
     await page.goto('/#/');
-    await expect(page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: /ship faster with api-first slices for every change/i })).toBeVisible();
   });
 
   test('reloading the repo browser page preserves the view', async ({ page }) => {
@@ -75,7 +75,7 @@ test.describe('Navigation history and URL reloading', () => {
 
     // Use brand button to return to landing
     await page.getByRole('button', { name: /Git Slice/i }).click();
-    await expect(page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: /ship faster with api-first slices for every change/i })).toBeVisible();
   });
 
   test('repo browser button returns to browser from landing', async ({ page }) => {
@@ -87,7 +87,7 @@ test.describe('Navigation history and URL reloading', () => {
 
     // Back to landing via brand button
     await page.getByRole('button', { name: /Git Slice/i }).click();
-    await expect(page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: /ship faster with api-first slices for every change/i })).toBeVisible();
 
     // Forward to browser via repo button
     await page.getByTestId('topbar-repo-browser').click();
