@@ -3097,6 +3097,47 @@ body {
   color: #171515;
 }
 
+
+.auth-card--recommended {
+  border-color: var(--border-strong);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.12);
+}
+
+.auth-recommended-pill {
+  margin: 0;
+  width: fit-content;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.auth-trust-text {
+  margin: 0;
+  font-size: 0.83rem;
+  color: var(--text-muted);
+}
+
+.auth-trust-text a {
+  color: inherit;
+}
+
+.field-help {
+  margin: -4px 0 4px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.auth-keyboard-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 @media (max-width: 900px) {
   .auth-layout {
     grid-template-columns: 1fr;

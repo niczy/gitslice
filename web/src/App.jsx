@@ -6,7 +6,7 @@ import { parseHash, buildHash } from './utils/routing.js';
 
 // API helpers
 import { apiBaseUrl, currentUsername, fetchWithAuth } from './utils/api.js';
-import { fetchOAuthSession, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
+import { clearPendingOAuthSignIn, fetchOAuthSession, hasPendingOAuthSignIn, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 
 // Normalization
 import { normalizeSliceInfo } from './utils/normalize.js';
@@ -63,6 +63,7 @@ function App() {
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
   const githubUrl = 'https://github.com/niczy/gitslice';
   const [username, setUsername] = useState(() => currentUsername());
+  const [oauthError, setOauthError] = useState('');
 
   // Track whether the browser page has been visited so we can keep it mounted
   const [browserMounted, setBrowserMounted] = useState(() => initialRoute.page === 'browser');
@@ -177,21 +178,33 @@ function App() {
   useEffect(() => {
     const syncOAuthSession = async () => {
       if (username) {
+        setOauthError('');
+        clearPendingOAuthSignIn();
         return;
       }
+      const hasPendingOAuth = hasPendingOAuthSignIn();
       try {
         const session = await fetchOAuthSession();
         const oauthUsername = session?.user?.username || '';
         if (!oauthUsername) {
+          if (hasPendingOAuth) {
+            setOauthError('We could not complete OAuth sign-in. Please try again or use username sign-in.');
+            clearPendingOAuthSignIn();
+          }
           return;
         }
         const signedInUsername = await signInWithAccount(apiBaseUrl, oauthUsername);
         setUsername(signedInUsername);
+        setOauthError('');
+        clearPendingOAuthSignIn();
         if (activePage === 'login') {
           navigate('browser');
         }
       } catch {
-        // ignore oauth session sync failures
+        if (hasPendingOAuth) {
+          setOauthError('OAuth callback failed. Please retry or use username sign-in.');
+          clearPendingOAuthSignIn();
+        }
       }
     };
     syncOAuthSession();
@@ -229,6 +242,7 @@ function App() {
   }, [apiBaseUrl]);
 
   const doOAuthLogin = useCallback((providerId) => {
+    setOauthError('');
     startOAuthSignIn(providerId);
   }, []);
 
@@ -517,7 +531,14 @@ function App() {
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
         {activePage === 'login' && (
-          <LoginPage onLogin={doLogin} onOAuthLogin={doOAuthLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
+          <LoginPage
+            onLogin={doLogin}
+            onOAuthLogin={doOAuthLogin}
+            oauthError={oauthError}
+            onDismissOAuthError={() => setOauthError('')}
+            onCancel={() => navigate('landing')}
+            onLoggedIn={() => navigate('browser')}
+          />
         )}
         {activePage === 'profile' && (
           <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
