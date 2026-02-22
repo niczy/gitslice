@@ -3,6 +3,7 @@ import './styles.css';
 
 // Routing helpers
 import { parseHash, buildHash } from './utils/routing.js';
+import { trackRouteEvent } from './utils/analytics.js';
 
 // API helpers
 import { apiBaseUrl, currentUsername, fetchWithAuth } from './utils/api.js';
@@ -19,6 +20,7 @@ import RepoBrowser from './components/RepoBrowser.jsx';
 import CommitDiffPage from './components/CommitDiffPage.jsx';
 import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import AgentSession from './components/AgentSession.jsx';
+import RouteNoticePage from './components/RouteNoticePage.jsx';
 
 // ---------------------------------------------------------------------------
 // Agent Session Types
@@ -61,6 +63,8 @@ function App() {
   const [activePage, setActivePage] = useState(() => initialRoute.page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
+  const [unknownPath, setUnknownPath] = useState(() => initialRoute.unknownPath || '');
+  const [pendingRedirect, setPendingRedirect] = useState(() => initialRoute.redirectTo || '');
   const githubUrl = 'https://github.com/niczy/gitslice';
   const [username, setUsername] = useState(() => currentUsername());
 
@@ -108,16 +112,20 @@ function App() {
       setDiffCommitHash('');
       setDiffChangesetId('');
     }
+    setUnknownPath('');
+    setPendingRedirect('');
     window.history.pushState(null, '', buildHash(page, commitHash, changesetId));
   }, []);
 
   // Handle browser back/forward buttons
   useEffect(() => {
     const onPopState = () => {
-      const { page, commitHash, changesetId } = parseHash();
+      const { page, commitHash, changesetId, unknownPath: nextUnknownPath, redirectTo } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
       setDiffChangesetId(changesetId);
+      setUnknownPath(nextUnknownPath || '');
+      setPendingRedirect(redirectTo || '');
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -174,6 +182,31 @@ function App() {
     navigate('browser');
   }, [navigate]);
 
+  const protectedPages = new Set(['projects', 'repos', 'settings', 'admin', 'browser', 'diff', 'changeset', 'profile']);
+  const requestedHash = window.location.hash || '#/';
+  const requestedRoute = requestedHash.startsWith('#/') ? requestedHash : `#/${requestedHash.replace(/^#/, '')}`;
+  const isProtectedRoute = protectedPages.has(activePage);
+  const routeRequiresAdmin = activePage === 'admin';
+  const isAuthorizedForRoute = !routeRequiresAdmin || username === 'admin';
+  const shouldShowAuthRequired = isProtectedRoute && !username;
+  const shouldShowAccessDenied = isProtectedRoute && Boolean(username) && !isAuthorizedForRoute;
+  const isNotFoundPage = activePage === 'not-found';
+
+  const navigateAfterLogin = useCallback(() => {
+    const destination = pendingRedirect || requestedRoute;
+    if (destination && destination !== '#/login') {
+      window.history.pushState(null, '', destination);
+      const parsed = parseHash();
+      setActivePage(parsed.page);
+      setDiffCommitHash(parsed.commitHash);
+      setDiffChangesetId(parsed.changesetId);
+      setUnknownPath(parsed.unknownPath || '');
+      setPendingRedirect('');
+      return;
+    }
+    navigate('browser');
+  }, [navigate, pendingRedirect, requestedRoute]);
+
   useEffect(() => {
     const syncOAuthSession = async () => {
       if (username) {
@@ -188,14 +221,35 @@ function App() {
         const signedInUsername = await signInWithAccount(apiBaseUrl, oauthUsername);
         setUsername(signedInUsername);
         if (activePage === 'login') {
-          navigate('browser');
+          navigateAfterLogin();
         }
       } catch {
         // ignore oauth session sync failures
       }
     };
     syncOAuthSession();
-  }, [activePage, apiBaseUrl, navigate, username]);
+  }, [activePage, apiBaseUrl, navigateAfterLogin, username]);
+
+  useEffect(() => {
+    if (!shouldShowAuthRequired) {
+      return;
+    }
+    trackRouteEvent('route_auth_blocked', { path: requestedRoute, reason: 'unauthenticated' });
+  }, [requestedRoute, shouldShowAuthRequired]);
+
+  useEffect(() => {
+    if (!shouldShowAccessDenied) {
+      return;
+    }
+    trackRouteEvent('route_auth_blocked', { path: requestedRoute, reason: 'unauthorized' });
+  }, [requestedRoute, shouldShowAccessDenied]);
+
+  useEffect(() => {
+    if (!isNotFoundPage) {
+      return;
+    }
+    trackRouteEvent('route_not_found', { path: `#/${unknownPath}` });
+  }, [isNotFoundPage, unknownPath]);
 
   const refreshSlices = useCallback(async () => {
     setSlicesLoading(true);
@@ -228,8 +282,8 @@ function App() {
     setUsername(signedInUsername);
   }, [apiBaseUrl]);
 
-  const doOAuthLogin = useCallback((providerId) => {
-    startOAuthSignIn(providerId);
+  const doOAuthLogin = useCallback((providerId, redirectTo = '') => {
+    startOAuthSignIn(providerId, redirectTo);
   }, []);
 
   // Agent session handlers
@@ -454,13 +508,15 @@ function App() {
     }
   }, [agentSessions.length, selectedOverlayIndex]);
 
-  const showAgentButton = activePage === 'browser';
+  const browserAliasPages = new Set(['browser', 'projects', 'repos', 'settings']);
+  const effectivePage = browserAliasPages.has(activePage) ? 'browser' : activePage;
+  const showAgentButton = effectivePage === 'browser' && !shouldShowAuthRequired && !shouldShowAccessDenied;
   const hasAgentSessions = agentSessions.length > 0;
   const [isFullScreenClosing, setIsFullScreenClosing] = useState(false);
   const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
 
   // Keep browser and diff pages on the same full-width layout to avoid visual width jumps.
-  const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
+  const isBrowserLayout = effectivePage === 'browser' || effectivePage === 'diff' || effectivePage === 'changeset';
 
   return (
     <div className={`app-shell${isBrowserLayout ? ' app-shell--browser' : ''}`}>
@@ -515,24 +571,62 @@ function App() {
       </header>
 
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
-        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
-        {activePage === 'login' && (
-          <LoginPage onLogin={doLogin} onOAuthLogin={doOAuthLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
+        {effectivePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
+        {effectivePage === 'login' && (
+          <LoginPage
+            onLogin={doLogin}
+            onOAuthLogin={(providerId) => doOAuthLogin(providerId, pendingRedirect || requestedRoute)}
+            onCancel={() => navigate('landing')}
+            onLoggedIn={navigateAfterLogin}
+          />
         )}
-        {activePage === 'profile' && (
+
+        {shouldShowAuthRequired && (
+          <RouteNoticePage
+            eyebrow="Authentication required"
+            title="Please sign in"
+            description="You must be logged in to view this page."
+            ctaLabel="Go to login"
+            onCta={() => {
+              setPendingRedirect(requestedRoute);
+              window.history.pushState(null, '', buildHash('login', '', '', requestedRoute));
+              setActivePage('login');
+            }}
+          />
+        )}
+
+        {shouldShowAccessDenied && (
+          <RouteNoticePage
+            eyebrow="Authorization"
+            title="Access denied"
+            description="Your account does not have permission to access this route."
+          />
+        )}
+
+        {isNotFoundPage && (
+          <RouteNoticePage
+            eyebrow="404"
+            title="Page not found"
+            description={`We couldn't find the route "#/${unknownPath}".`}
+            ctaLabel="Go home"
+            onCta={() => navigate('landing')}
+          />
+        )}
+
+        {!shouldShowAuthRequired && !shouldShowAccessDenied && !isNotFoundPage && effectivePage === 'profile' && (
           <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
         )}
 
         {/* RepoBrowser stays mounted once visited to preserve state across browser<->diff navigation */}
-        {browserMounted && (
-          <div style={activePage !== 'browser' ? { display: 'none' } : undefined}>
+        {!shouldShowAuthRequired && !shouldShowAccessDenied && !isNotFoundPage && browserMounted && (
+          <div style={effectivePage !== 'browser' ? { display: 'none' } : undefined}>
             <RepoBrowser
               slices={slices}
               currentSliceId={currentSliceId}
               onSliceChange={setCurrentSliceId}
               onNavigateToDiff={navigateToDiff}
               refreshHistoryToken={historyRefreshToken}
-              isActive={activePage === 'browser'}
+              isActive={effectivePage === 'browser'}
               slicesLoading={slicesLoading}
               slicesError={slicesError}
               onRefreshSlices={refreshSlices}
@@ -540,7 +634,7 @@ function App() {
           </div>
         )}
 
-        {activePage === 'diff' && (
+        {!shouldShowAuthRequired && !shouldShowAccessDenied && !isNotFoundPage && effectivePage === 'diff' && (
           <CommitDiffPage
             commitHash={diffCommitHash}
             onBack={navigateBackFromDiff}
@@ -548,7 +642,7 @@ function App() {
           />
         )}
 
-        {activePage === 'changeset' && (
+        {!shouldShowAuthRequired && !shouldShowAccessDenied && !isNotFoundPage && effectivePage === 'changeset' && (
           <ChangesetDiffPage
             changesetId={diffChangesetId}
             onBack={navigateBackFromDiff}

@@ -3524,3 +3524,13 @@ body {
     padding: 12px 14px;
   }
 }
+
+.route-notice {
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.route-notice-actions {
+  margin-top: 20px;
+}

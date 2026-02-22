@@ -51,8 +51,9 @@ export async function fetchOAuthSession() {
   return response.json();
 }
 
-export function startOAuthSignIn(providerId) {
-  const callbackUrl = `${window.location.origin}/#/login`;
+export function startOAuthSignIn(providerId, redirectTo = '') {
+  const callbackPath = redirectTo ? `#/login?redirect=${encodeURIComponent(redirectTo)}` : '#/login';
+  const callbackUrl = `${window.location.origin}/${callbackPath}`;
   const url = new URL(`/auth/signin/${providerId}`, window.location.origin);
   url.searchParams.set('callbackUrl', callbackUrl);
   window.location.assign(url.toString());
