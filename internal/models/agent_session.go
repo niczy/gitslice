@@ -33,26 +33,30 @@ func (s AgentSessionState) IsActive() bool {
 }
 
 type AgentSession struct {
-	SessionID       string            `json:"session_id"`
-	SliceID         string            `json:"slice_id"`
-	EnvironmentName string            `json:"environment_name,omitempty"`
-	AgentType       string            `json:"agent_type,omitempty"`
-	UserID          string            `json:"user_id"`
-	State           AgentSessionState `json:"state"`
-	Provider        string            `json:"provider"`
-	E2BTemplateID   string            `json:"e2b_template_id"`
-	E2BSandboxID    string            `json:"e2b_sandbox_id,omitempty"`
-	E2BRegion       string            `json:"e2b_region,omitempty"`
-	IdleTimeoutSec  int               `json:"idle_timeout_sec"`
-	TTLSec          int               `json:"ttl_sec"`
-	RuntimeEndpoint string            `json:"runtime_endpoint,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	StartedAt       *time.Time        `json:"started_at,omitempty"`
-	LastActivityAt  *time.Time        `json:"last_activity_at,omitempty"`
-	StoppedAt       *time.Time        `json:"stopped_at,omitempty"`
-	FailureCode     string            `json:"failure_code,omitempty"`
-	FailureMessage  string            `json:"failure_message,omitempty"`
+	SessionID        string            `json:"session_id"`
+	SliceID          string            `json:"slice_id"`
+	EnvironmentName  string            `json:"environment_name,omitempty"`
+	AgentType        string            `json:"agent_type,omitempty"`
+	UserID           string            `json:"user_id"`
+	State            AgentSessionState `json:"state"`
+	Provider         string            `json:"provider"`
+	E2BTemplateID    string            `json:"e2b_template_id"`
+	E2BSandboxID     string            `json:"e2b_sandbox_id,omitempty"`
+	E2BRegion        string            `json:"e2b_region,omitempty"`
+	IdleTimeoutSec   int               `json:"idle_timeout_sec"`
+	TTLSec           int               `json:"ttl_sec"`
+	RuntimeProvider  string            `json:"runtime_provider,omitempty"`
+	RuntimeSessionID string            `json:"runtime_session_id,omitempty"`
+	RuntimeStatus    string            `json:"runtime_status,omitempty"`
+	RuntimeErrorCode string            `json:"runtime_error_code,omitempty"`
+	RuntimeEndpoint  string            `json:"runtime_endpoint,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+	StartedAt        *time.Time        `json:"started_at,omitempty"`
+	LastActivityAt   *time.Time        `json:"last_activity_at,omitempty"`
+	StoppedAt        *time.Time        `json:"stopped_at,omitempty"`
+	FailureCode      string            `json:"failure_code,omitempty"`
+	FailureMessage   string            `json:"failure_message,omitempty"`
 }
 
 type AgentSessionEvent struct {

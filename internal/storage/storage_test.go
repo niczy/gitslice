@@ -430,13 +430,15 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	envName := "node20-" + suffix
 	createdAt := time.Now().Add(-time.Minute)
 	env := &models.Environment{
-		Name:        envName,
-		DisplayName: "Node.js 20",
-		Provider:    "e2b",
-		ProviderID:  "tmpl-node20-" + suffix,
-		Region:      "us-west-2",
-		CreatedBy:   "alice",
-		CreatedAt:   createdAt,
+		Name:              envName,
+		DisplayName:       "Node.js 20",
+		Provider:          "e2b",
+		ProviderID:        "tmpl-node20-" + suffix,
+		Region:            "us-west-2",
+		DefaultAgentType:  "codex",
+		AllowedAgentTypes: []string{"codex", "claude"},
+		CreatedBy:         "alice",
+		CreatedAt:         createdAt,
 	}
 	if err := st.CreateEnvironment(ctx, env); err != nil {
 		t.Fatalf("CreateEnvironment failed: %v", err)
@@ -450,6 +452,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if fetchedEnv.Name != envName || fetchedEnv.ProviderID != env.ProviderID {
 		t.Fatalf("GetEnvironment mismatch: %#v", fetchedEnv)
+	}
+	if fetchedEnv.DefaultAgentType != "codex" || len(fetchedEnv.AllowedAgentTypes) != 2 {
+		t.Fatalf("GetEnvironment agent policy mismatch: %#v", fetchedEnv)
 	}
 	envs, err := st.ListEnvironments(ctx, 10, 0)
 	if err != nil {
@@ -468,6 +473,8 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	fetchedEnv.DisplayName = "Node.js 20 LTS"
 	fetchedEnv.ProviderID = "tmpl-node20-updated-" + suffix
 	fetchedEnv.Region = "us-east-1"
+	fetchedEnv.DefaultAgentType = "claude"
+	fetchedEnv.AllowedAgentTypes = []string{"claude", "codex"}
 	if err := st.UpdateEnvironment(ctx, fetchedEnv); err != nil {
 		t.Fatalf("UpdateEnvironment failed: %v", err)
 	}
@@ -477,6 +484,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if updatedEnv.DisplayName != "Node.js 20 LTS" || updatedEnv.ProviderID != fetchedEnv.ProviderID || updatedEnv.Region != "us-east-1" {
 		t.Fatalf("updated environment mismatch: %#v", updatedEnv)
+	}
+	if updatedEnv.DefaultAgentType != "claude" || len(updatedEnv.AllowedAgentTypes) != 2 {
+		t.Fatalf("updated environment agent policy mismatch: %#v", updatedEnv)
 	}
 	if updatedEnv.CreatedAt.IsZero() || updatedEnv.UpdatedAt.IsZero() {
 		t.Fatalf("environment timestamps should be populated: %#v", updatedEnv)
@@ -879,6 +889,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		SessionID:       sessionID,
 		SliceID:         slice.ID,
 		EnvironmentName: "node20",
+		AgentType:       "claude",
 		UserID:          "alice",
 		State:           models.AgentSessionStateCreating,
 		Provider:        "e2b",
@@ -905,8 +916,14 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if active.EnvironmentName != session.EnvironmentName {
 		t.Fatalf("active session environment mismatch: got %s want %s", active.EnvironmentName, session.EnvironmentName)
 	}
+	if active.AgentType != session.AgentType {
+		t.Fatalf("active session agentType mismatch: got %s want %s", active.AgentType, session.AgentType)
+	}
 
 	session.State = models.AgentSessionStateRunning
+	session.RuntimeProvider = "e2b"
+	session.RuntimeSessionID = "sbx-" + suffix
+	session.RuntimeStatus = "ready"
 	session.RuntimeEndpoint = "wss://runtime.example/ws"
 	nowRunning := time.Now()
 	session.StartedAt = &nowRunning
@@ -914,6 +931,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	session.UpdatedAt = nowRunning
 	if err := st.UpdateAgentSession(ctx, session); err != nil {
 		t.Fatalf("UpdateAgentSession running failed: %v", err)
+	}
+	updatedSession, err := st.GetAgentSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetAgentSession after update failed: %v", err)
+	}
+	if updatedSession.RuntimeSessionID != session.RuntimeSessionID || updatedSession.RuntimeProvider != session.RuntimeProvider || updatedSession.RuntimeStatus != session.RuntimeStatus {
+		t.Fatalf("runtime metadata mismatch: %#v", updatedSession)
 	}
 
 	payload1 := []byte(`{"state":"running"}`)
