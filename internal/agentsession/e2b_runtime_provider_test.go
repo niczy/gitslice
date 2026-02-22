@@ -36,6 +36,15 @@ func TestE2BRuntimeProviderStartAndStop(t *testing.T) {
 			if got := envVars["GS_SESSION_ID"]; got != "session_123" {
 				t.Fatalf("expected GS_SESSION_ID=session_123, got %v", got)
 			}
+			if got := envVars["OPENAI_API_KEY"]; got != "openai-test-key" {
+				t.Fatalf("expected OPENAI_API_KEY to be injected, got %v", got)
+			}
+			if got := envVars["GS_EGRESS_DEFAULT_DENY"]; got != "1" {
+				t.Fatalf("expected GS_EGRESS_DEFAULT_DENY=1, got %v", got)
+			}
+			if got := envVars["GS_EGRESS_ALLOWLIST"]; got != "api.openai.com,github.com" {
+				t.Fatalf("unexpected GS_EGRESS_ALLOWLIST %v", got)
+			}
 			if got := payload["region"]; got != "us-west-2" {
 				t.Fatalf("expected region us-west-2, got %v", got)
 			}
@@ -52,12 +61,15 @@ func TestE2BRuntimeProviderStartAndStop(t *testing.T) {
 	defer server.Close()
 
 	provider := NewE2BRuntimeProvider(E2BRuntimeProviderConfig{
-		APIURL:         server.URL,
-		Domain:         "sandbox.e2b.dev",
-		APIKey:         "test_api_key",
-		RuntimeWSPort:  9000,
-		RuntimeWSPath:  "/ws",
-		RequestTimeout: 2 * time.Second,
+		APIURL:              server.URL,
+		Domain:              "sandbox.e2b.dev",
+		APIKey:              "test_api_key",
+		CodexAPIKey:         "openai-test-key",
+		EgressAllowlist:     []string{"api.openai.com", "github.com"},
+		EgressDenyByDefault: true,
+		RuntimeWSPort:       9000,
+		RuntimeWSPath:       "/ws",
+		RequestTimeout:      2 * time.Second,
 	})
 
 	session := &models.AgentSession{
@@ -140,5 +152,89 @@ func TestE2BRuntimeProviderStartMapsUnauthorized(t *testing.T) {
 	}
 	if runtimeErr.Code != "E2B_START_UNAUTHORIZED" {
 		t.Fatalf("unexpected code %q", runtimeErr.Code)
+	}
+}
+
+func TestE2BRuntimeProviderStartRequiresAgentCredential(t *testing.T) {
+	t.Parallel()
+
+	provider := NewE2BRuntimeProvider(E2BRuntimeProviderConfig{
+		APIURL: "https://api.e2b.app",
+		APIKey: "test_api_key",
+		Domain: "e2b.app",
+	})
+	_, err := provider.Start(context.Background(), &models.AgentSession{
+		SessionID:     "session_123",
+		E2BTemplateID: "tmpl-node20",
+		AgentType:     "codex",
+	})
+	if err == nil {
+		t.Fatalf("expected missing agent credential error")
+	}
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if runtimeErr.Code != "AGENT_CREDENTIAL_MISSING" {
+		t.Fatalf("unexpected code %q", runtimeErr.Code)
+	}
+}
+
+func TestE2BRuntimeProviderStartRequiresEgressAllowlistWhenDenyByDefault(t *testing.T) {
+	t.Parallel()
+
+	provider := NewE2BRuntimeProvider(E2BRuntimeProviderConfig{
+		APIURL:              "https://api.e2b.app",
+		APIKey:              "test_api_key",
+		CodexAPIKey:         "openai-test-key",
+		EgressDenyByDefault: true,
+	})
+	_, err := provider.Start(context.Background(), &models.AgentSession{
+		SessionID:     "session_123",
+		E2BTemplateID: "tmpl-node20",
+		AgentType:     "codex",
+	})
+	if err == nil {
+		t.Fatalf("expected egress policy error")
+	}
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if runtimeErr.Code != "AGENT_EGRESS_POLICY_INVALID" {
+		t.Fatalf("unexpected code %q", runtimeErr.Code)
+	}
+}
+
+func TestE2BRuntimeProviderRedactsCredentialsInErrors(t *testing.T) {
+	t.Parallel()
+
+	leakedE2BKey := "test_e2b_secret"
+	leakedCodexKey := "openai_super_secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"bad key test_e2b_secret and openai_super_secret"}`))
+	}))
+	defer server.Close()
+
+	provider := NewE2BRuntimeProvider(E2BRuntimeProviderConfig{
+		APIURL:      server.URL,
+		APIKey:      leakedE2BKey,
+		CodexAPIKey: leakedCodexKey,
+	})
+	_, err := provider.Start(context.Background(), &models.AgentSession{
+		SessionID:     "session_123",
+		E2BTemplateID: "tmpl-node20",
+		AgentType:     "codex",
+	})
+	if err == nil {
+		t.Fatalf("expected unauthorized error")
+	}
+	message := err.Error()
+	if strings.Contains(message, leakedE2BKey) || strings.Contains(message, leakedCodexKey) {
+		t.Fatalf("expected credentials to be redacted, got %q", message)
+	}
+	if !strings.Contains(message, "[REDACTED]") {
+		t.Fatalf("expected redaction marker in error, got %q", message)
 	}
 }

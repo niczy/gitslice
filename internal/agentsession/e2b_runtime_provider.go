@@ -24,24 +24,32 @@ const (
 )
 
 type E2BRuntimeProviderConfig struct {
-	APIURL         string
-	Domain         string
-	APIKey         string
-	AccessToken    string
-	RuntimeWSPort  int
-	RuntimeWSPath  string
-	RequestTimeout time.Duration
-	HTTPClient     *http.Client
+	APIURL              string
+	Domain              string
+	APIKey              string
+	AccessToken         string
+	CodexAPIKey         string
+	ClaudeAPIKey        string
+	EgressAllowlist     []string
+	EgressDenyByDefault bool
+	RuntimeWSPort       int
+	RuntimeWSPath       string
+	RequestTimeout      time.Duration
+	HTTPClient          *http.Client
 }
 
 type e2bRuntimeProvider struct {
-	apiURL        string
-	domain        string
-	apiKey        string
-	accessToken   string
-	runtimeWSPort int
-	runtimeWSPath string
-	httpClient    *http.Client
+	apiURL              string
+	domain              string
+	apiKey              string
+	accessToken         string
+	codexAPIKey         string
+	claudeAPIKey        string
+	egressAllowlist     []string
+	egressDenyByDefault bool
+	runtimeWSPort       int
+	runtimeWSPath       string
+	httpClient          *http.Client
 }
 
 func NewE2BRuntimeProvider(cfg E2BRuntimeProviderConfig) RuntimeProvider {
@@ -74,13 +82,17 @@ func NewE2BRuntimeProvider(cfg E2BRuntimeProviderConfig) RuntimeProvider {
 	}
 
 	return &e2bRuntimeProvider{
-		apiURL:        strings.TrimRight(apiURL, "/"),
-		domain:        domain,
-		apiKey:        strings.TrimSpace(cfg.APIKey),
-		accessToken:   strings.TrimSpace(cfg.AccessToken),
-		runtimeWSPort: runtimeWSPort,
-		runtimeWSPath: runtimeWSPath,
-		httpClient:    httpClient,
+		apiURL:              strings.TrimRight(apiURL, "/"),
+		domain:              domain,
+		apiKey:              strings.TrimSpace(cfg.APIKey),
+		accessToken:         strings.TrimSpace(cfg.AccessToken),
+		codexAPIKey:         strings.TrimSpace(cfg.CodexAPIKey),
+		claudeAPIKey:        strings.TrimSpace(cfg.ClaudeAPIKey),
+		egressAllowlist:     normalizeEgressAllowlist(cfg.EgressAllowlist),
+		egressDenyByDefault: cfg.EgressDenyByDefault,
+		runtimeWSPort:       runtimeWSPort,
+		runtimeWSPath:       runtimeWSPath,
+		httpClient:          httpClient,
 	}
 }
 
@@ -97,6 +109,32 @@ func (p *e2bRuntimeProvider) Start(ctx context.Context, session *models.AgentSes
 		return nil, &RuntimeError{Code: "E2B_TEMPLATE_MISSING", Message: "missing E2B template id"}
 	}
 
+	envVars := map[string]string{
+		"GS_SESSION_ID": strings.TrimSpace(session.SessionID),
+		"GS_SLICE_ID":   strings.TrimSpace(session.SliceID),
+		"GS_USER_ID":    strings.TrimSpace(session.UserID),
+		"GS_AGENT_TYPE": strings.TrimSpace(session.AgentType),
+	}
+	credentialName, credentialValue, err := p.agentCredentialForSession(session)
+	if err != nil {
+		return nil, err
+	}
+	if credentialName != "" && credentialValue != "" {
+		envVars[credentialName] = credentialValue
+	}
+	if p.egressDenyByDefault {
+		if len(p.egressAllowlist) == 0 {
+			return nil, &RuntimeError{
+				Code:    "AGENT_EGRESS_POLICY_INVALID",
+				Message: "egress allowlist required when deny-by-default policy is enabled",
+			}
+		}
+		envVars["GS_EGRESS_DEFAULT_DENY"] = "1"
+	}
+	if len(p.egressAllowlist) > 0 {
+		envVars["GS_EGRESS_ALLOWLIST"] = strings.Join(p.egressAllowlist, ",")
+	}
+
 	payload := map[string]any{
 		"templateID":            templateID,
 		"timeout":               normalizeE2BSandboxTimeout(session.TTLSec),
@@ -109,12 +147,7 @@ func (p *e2bRuntimeProvider) Start(ctx context.Context, session *models.AgentSes
 			"user_id":    strings.TrimSpace(session.UserID),
 			"agent_type": strings.TrimSpace(session.AgentType),
 		},
-		"envVars": map[string]string{
-			"GS_SESSION_ID": strings.TrimSpace(session.SessionID),
-			"GS_SLICE_ID":   strings.TrimSpace(session.SliceID),
-			"GS_USER_ID":    strings.TrimSpace(session.UserID),
-			"GS_AGENT_TYPE": strings.TrimSpace(session.AgentType),
-		},
+		"envVars": envVars,
 	}
 	if region := strings.TrimSpace(session.E2BRegion); region != "" {
 		payload["region"] = region
@@ -143,7 +176,7 @@ func (p *e2bRuntimeProvider) Start(ctx context.Context, session *models.AgentSes
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return nil, &RuntimeError{
 			Code:    e2bStartStatusCode(resp.StatusCode),
-			Message: readE2BAPIError(resp),
+			Message: p.readE2BAPIError(resp),
 		}
 	}
 
@@ -202,7 +235,7 @@ func (p *e2bRuntimeProvider) Stop(ctx context.Context, session *models.AgentSess
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return &RuntimeError{
 			Code:    e2bStopStatusCode(resp.StatusCode),
-			Message: readE2BAPIError(resp),
+			Message: p.readE2BAPIError(resp),
 		}
 	}
 	return nil
@@ -268,7 +301,65 @@ func normalizeE2BSandboxTimeout(ttlSec int) int {
 	return ttlSec
 }
 
-func readE2BAPIError(resp *http.Response) string {
+func normalizeEgressAllowlist(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func (p *e2bRuntimeProvider) agentCredentialForSession(session *models.AgentSession) (string, string, error) {
+	if session == nil {
+		return "", "", &RuntimeError{Code: "AGENT_CREDENTIAL_MISSING", Message: "session is required"}
+	}
+	switch strings.TrimSpace(session.AgentType) {
+	case "codex":
+		if p.codexAPIKey == "" {
+			return "", "", &RuntimeError{
+				Code:    "AGENT_CREDENTIAL_MISSING",
+				Message: "missing credential for codex runtime",
+			}
+		}
+		return "OPENAI_API_KEY", p.codexAPIKey, nil
+	case "claude":
+		if p.claudeAPIKey == "" {
+			return "", "", &RuntimeError{
+				Code:    "AGENT_CREDENTIAL_MISSING",
+				Message: "missing credential for claude runtime",
+			}
+		}
+		return "ANTHROPIC_API_KEY", p.claudeAPIKey, nil
+	default:
+		return "", "", nil
+	}
+}
+
+func redactSecrets(message string, secrets ...string) string {
+	redacted := message
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if secret == "" {
+			continue
+		}
+		redacted = strings.ReplaceAll(redacted, secret, "[REDACTED]")
+	}
+	return redacted
+}
+
+func (p *e2bRuntimeProvider) readE2BAPIError(resp *http.Response) string {
 	if resp == nil {
 		return "no response"
 	}
@@ -289,6 +380,7 @@ func readE2BAPIError(resp *http.Response) string {
 			}
 		}
 	}
+	message = redactSecrets(message, p.apiKey, p.accessToken, p.codexAPIKey, p.claudeAPIKey)
 	if len(message) > 512 {
 		message = message[:512]
 	}

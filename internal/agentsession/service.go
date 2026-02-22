@@ -219,7 +219,9 @@ func (s *Service) StopSessionForUser(ctx context.Context, userID, sessionID, rea
 		return nil, err
 	}
 	_ = s.AddAudit(ctx, sessionID, userID, "session_stop_requested", map[string]any{
-		"reason": strings.TrimSpace(reason),
+		"reason":      strings.TrimSpace(reason),
+		"agentType":   session.AgentType,
+		"environment": session.EnvironmentName,
 	})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopping)
 
@@ -409,7 +411,9 @@ func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *
 			session.UpdatedAt = now
 			if err := s.st.UpdateAgentSession(ctx, session); err == nil {
 				_ = s.AddAudit(ctx, session.SessionID, "system", "session_ttl_expired", map[string]any{
-					"ttlSec": ttlSec,
+					"ttlSec":      ttlSec,
+					"agentType":   session.AgentType,
+					"environment": session.EnvironmentName,
 				})
 				_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateStopping)
 			}
@@ -452,6 +456,8 @@ func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *
 	}
 	_ = s.AddAudit(ctx, session.SessionID, "system", "session_idle", map[string]any{
 		"idleTimeoutSec": idleSec,
+		"agentType":      session.AgentType,
+		"environment":    session.EnvironmentName,
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateIdle)
 }
@@ -504,6 +510,8 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		}
 		_ = s.AddAudit(ctx, sessionID, session.UserID, "session_starting", map[string]any{
 			"runtimeProvider": session.Provider,
+			"agentType":       session.AgentType,
+			"environment":     session.EnvironmentName,
 		})
 		_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStarting)
 	} else if session.State != models.AgentSessionStateStarting {
@@ -563,6 +571,8 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{
 		"runtimeProvider":  session.RuntimeProvider,
 		"runtimeSessionId": session.RuntimeSessionID,
+		"agentType":        session.AgentType,
+		"environment":      session.EnvironmentName,
 	})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateRunning)
 }
@@ -612,6 +622,9 @@ func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 	if trimmed := strings.TrimSpace(reason); trimmed != "" {
 		metadata["reason"] = trimmed
 	}
+	metadata["agentType"] = session.AgentType
+	metadata["environment"] = session.EnvironmentName
+	metadata["runtimeProvider"] = session.RuntimeProvider
 	_ = s.AddAudit(ctx, sessionID, actorForAudit(actorUserID), "session_stopped", metadata)
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopped)
 }
@@ -631,7 +644,10 @@ func (s *Service) failSession(ctx context.Context, session *models.AgentSession,
 		return
 	}
 	_ = s.AddAudit(ctx, session.SessionID, actorForAudit(actorUserID), "session_failed", map[string]any{
-		"failureCode": session.FailureCode,
+		"failureCode":     session.FailureCode,
+		"runtimeProvider": session.RuntimeProvider,
+		"agentType":       session.AgentType,
+		"environment":     session.EnvironmentName,
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
 }

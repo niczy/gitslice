@@ -160,7 +160,9 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 	}
 	_ = s.RecordActivity(ctx, sessionID)
 	_ = s.AddAudit(ctx, sessionID, session.UserID, "agent_input", map[string]any{
-		"agentType": session.AgentType,
+		"agentType":       session.AgentType,
+		"environment":     session.EnvironmentName,
+		"runtimeProvider": session.RuntimeProvider,
 	})
 	return nil
 }
@@ -203,7 +205,9 @@ func (s *Service) HandleAgentInterrupt(ctx context.Context, sessionID, reason st
 	}
 	_ = s.RecordActivity(ctx, sessionID)
 	_ = s.AddAudit(ctx, sessionID, session.UserID, "agent_interrupt", map[string]any{
-		"agentType": session.AgentType,
+		"agentType":       session.AgentType,
+		"environment":     session.EnvironmentName,
+		"runtimeProvider": session.RuntimeProvider,
 	})
 	return nil
 }

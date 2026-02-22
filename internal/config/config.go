@@ -40,13 +40,17 @@ type Config struct {
 	AgentWSTokenSecret string
 
 	// E2B runtime provider settings for agent sessions.
-	E2BAPIURL            string
-	E2BDomain            string
-	E2BAPIKey            string
-	E2BAccessToken       string
-	E2BRuntimeWSPort     int
-	E2BRuntimeWSPath     string
-	E2BRequestTimeoutSec int
+	E2BAPIURL                string
+	E2BDomain                string
+	E2BAPIKey                string
+	E2BAccessToken           string
+	CodexAPIKey              string
+	ClaudeAPIKey             string
+	AgentEgressAllowlist     string
+	AgentEgressDenyByDefault bool
+	E2BRuntimeWSPort         int
+	E2BRuntimeWSPath         string
+	E2BRequestTimeoutSec     int
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -78,8 +82,15 @@ func LoadConfig() *Config {
 		E2BDomain:          getEnv("E2B_DOMAIN", "e2b.app"),
 		E2BAPIKey:          getEnv("E2B_API_KEY", ""),
 		E2BAccessToken:     getEnv("E2B_ACCESS_TOKEN", ""),
-		E2BRuntimeWSPort:   getEnvInt("E2B_RUNTIME_WS_PORT", 9000),
-		E2BRuntimeWSPath:   getEnv("E2B_RUNTIME_WS_PATH", "/ws"),
+		CodexAPIKey:        getEnv("OPENAI_API_KEY", ""),
+		ClaudeAPIKey:       getEnv("ANTHROPIC_API_KEY", ""),
+		AgentEgressAllowlist: getEnv(
+			"AGENT_EGRESS_ALLOWLIST",
+			"",
+		),
+		AgentEgressDenyByDefault: getEnvBool("AGENT_EGRESS_DENY_BY_DEFAULT", false),
+		E2BRuntimeWSPort:         getEnvInt("E2B_RUNTIME_WS_PORT", 9000),
+		E2BRuntimeWSPath:         getEnv("E2B_RUNTIME_WS_PATH", "/ws"),
 		E2BRequestTimeoutSec: getEnvInt(
 			"E2B_REQUEST_TIMEOUT_SEC",
 			30,
