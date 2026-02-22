@@ -57,13 +57,17 @@ func main() {
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
 	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
 		agentSessionService.SetRuntimeProvider(agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
-			APIURL:         cfg.E2BAPIURL,
-			Domain:         cfg.E2BDomain,
-			APIKey:         cfg.E2BAPIKey,
-			AccessToken:    cfg.E2BAccessToken,
-			RuntimeWSPort:  cfg.E2BRuntimeWSPort,
-			RuntimeWSPath:  cfg.E2BRuntimeWSPath,
-			RequestTimeout: time.Duration(cfg.E2BRequestTimeoutSec) * time.Second,
+			APIURL:              cfg.E2BAPIURL,
+			Domain:              cfg.E2BDomain,
+			APIKey:              cfg.E2BAPIKey,
+			AccessToken:         cfg.E2BAccessToken,
+			CodexAPIKey:         cfg.CodexAPIKey,
+			ClaudeAPIKey:        cfg.ClaudeAPIKey,
+			EgressAllowlist:     parseCommaSeparated(cfg.AgentEgressAllowlist),
+			EgressDenyByDefault: cfg.AgentEgressDenyByDefault,
+			RuntimeWSPort:       cfg.E2BRuntimeWSPort,
+			RuntimeWSPath:       cfg.E2BRuntimeWSPath,
+			RequestTimeout:      time.Duration(cfg.E2BRequestTimeoutSec) * time.Second,
 		}))
 		log.Printf("Agent runtime provider enabled: e2b")
 	} else {
@@ -175,4 +179,17 @@ func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectSt
 	}
 
 	return storage.NewGCSObjectStore(client, cfg.GCSBucket), func() { _ = client.Close() }, nil
+}
+
+func parseCommaSeparated(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
 }
