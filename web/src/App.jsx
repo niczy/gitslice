@@ -22,6 +22,8 @@ import NotFoundPage from './components/NotFoundPage.jsx';
 import CommitDiffPage from './components/CommitDiffPage.jsx';
 import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import AgentSession from './components/AgentSession.jsx';
+import RouteAccessState from './components/RouteAccessState.jsx';
+import { trackRouteEvent } from './utils/analytics.js';
 
 // ---------------------------------------------------------------------------
 // Agent Session Types
@@ -65,6 +67,9 @@ function App() {
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
   const [unknownRoute, setUnknownRoute] = useState(() => initialRoute.unknownPath || '');
+  const [returnToPage, setReturnToPage] = useState('browser');
+  const [returnToCommitHash, setReturnToCommitHash] = useState('');
+  const [returnToChangesetId, setReturnToChangesetId] = useState('');
   const githubUrl = 'https://github.com/niczy/gitslice';
   const docsUrl = 'https://github.com/niczy/gitslice/blob/main/README.md';
   const statusUrl = `${apiBaseUrl}/health`;
@@ -197,14 +202,17 @@ function App() {
         const signedInUsername = await signInWithAccount(apiBaseUrl, oauthUsername);
         setUsername(signedInUsername);
         if (activePage === 'login') {
-          navigate('browser');
+          const nextPage = returnToPage || 'browser';
+          const nextCommitHash = nextPage === 'diff' ? returnToCommitHash : '';
+          const nextChangesetId = nextPage === 'changeset' ? returnToChangesetId : '';
+          navigate(nextPage, nextCommitHash, nextChangesetId);
         }
       } catch {
         // ignore oauth session sync failures
       }
     };
     syncOAuthSession();
-  }, [activePage, apiBaseUrl, navigate, username]);
+  }, [activePage, apiBaseUrl, navigate, returnToChangesetId, returnToCommitHash, returnToPage, username]);
 
   const refreshSlices = useCallback(async () => {
     setSlicesLoading(true);
@@ -472,6 +480,40 @@ function App() {
   // Keep browser and diff pages on the same full-width layout to avoid visual width jumps.
   const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
   const isAuthenticated = Boolean(username);
+  const isAdminUser = (username || '').toLowerCase() === 'admin';
+  const blockedProtectedPages = new Set(['browser', 'diff', 'changeset', 'projects', 'settings', 'profile', 'admin']);
+  const isProtectedPage = blockedProtectedPages.has(activePage);
+  const hasRouteAuthorization = activePage !== 'admin' || isAdminUser;
+  const routeAccessState = !isProtectedPage
+    ? 'allowed'
+    : !isAuthenticated
+      ? 'unauthenticated'
+      : hasRouteAuthorization
+        ? 'allowed'
+        : 'unauthorized';
+
+  useEffect(() => {
+    if (activePage === 'not-found') {
+      trackRouteEvent('route_not_found', {
+        path: unknownRoute || '/',
+      });
+      return;
+    }
+
+    if (routeAccessState !== 'allowed') {
+      trackRouteEvent('route_auth_blocked', {
+        page: activePage,
+        reason: routeAccessState,
+      });
+    }
+  }, [activePage, routeAccessState, unknownRoute]);
+
+  const handleGoToLogin = useCallback(() => {
+    setReturnToPage(activePage);
+    setReturnToCommitHash(diffCommitHash);
+    setReturnToChangesetId(diffChangesetId);
+    navigate('login');
+  }, [activePage, diffChangesetId, diffCommitHash, navigate]);
   const isNavActive = (item) => {
     if (item === 'repos') {
       return activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
@@ -575,9 +617,19 @@ function App() {
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
         {activePage === 'login' && (
-          <LoginPage onLogin={doLogin} onOAuthLogin={doOAuthLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
+          <LoginPage
+            onLogin={doLogin}
+            onOAuthLogin={doOAuthLogin}
+            onCancel={() => navigate('landing')}
+            onLoggedIn={() => {
+              const nextPage = returnToPage || 'browser';
+              const nextCommitHash = nextPage === 'diff' ? returnToCommitHash : '';
+              const nextChangesetId = nextPage === 'changeset' ? returnToChangesetId : '';
+              navigate(nextPage, nextCommitHash, nextChangesetId);
+            }}
+          />
         )}
-        {activePage === 'projects' && (
+        {activePage === 'projects' && routeAccessState === 'allowed' && (
           <ProjectsPage
             slices={slices}
             slicesLoading={slicesLoading}
@@ -585,13 +637,13 @@ function App() {
             onOpenRepos={() => navigate('browser')}
           />
         )}
-        {activePage === 'profile' && (
+        {activePage === 'profile' && routeAccessState === 'allowed' && (
           <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
         )}
-        {activePage === 'settings' && <SettingsPage username={username} onOpenProfile={() => navigate('profile')} />}
+        {activePage === 'settings' && routeAccessState === 'allowed' && <SettingsPage username={username} onOpenProfile={() => navigate('profile')} />}
 
         {/* RepoBrowser stays mounted once visited to preserve state across browser<->diff navigation */}
-        {browserMounted && (
+        {browserMounted && routeAccessState === 'allowed' && (
           <div style={activePage !== 'browser' ? { display: 'none' } : undefined}>
             <RepoBrowser
               slices={slices}
@@ -607,7 +659,7 @@ function App() {
           </div>
         )}
 
-        {activePage === 'diff' && (
+        {activePage === 'diff' && routeAccessState === 'allowed' && (
           <CommitDiffPage
             commitHash={diffCommitHash}
             onBack={navigateBackFromDiff}
@@ -615,12 +667,29 @@ function App() {
           />
         )}
 
-        {activePage === 'changeset' && (
+        {activePage === 'changeset' && routeAccessState === 'allowed' && (
           <ChangesetDiffPage
             changesetId={diffChangesetId}
             onBack={navigateBackFromDiff}
             onMerged={handleChangesetMerged}
             onClosed={handleChangesetClosed}
+          />
+        )}
+
+        {activePage === 'admin' && routeAccessState === 'allowed' && (
+          <section className="section" data-testid="admin-page">
+            <div className="section-header">
+              <p className="eyebrow">Administration</p>
+              <h2>Admin Console</h2>
+              <p>Administrative operations are available for privileged accounts.</p>
+            </div>
+          </section>
+        )}
+
+        {isProtectedPage && routeAccessState !== 'allowed' && (
+          <RouteAccessState
+            state={routeAccessState}
+            onGoToLogin={handleGoToLogin}
           />
         )}
 
