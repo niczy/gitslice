@@ -1,6 +1,7 @@
 package fileservice
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -37,6 +38,61 @@ func (c *commitByHashCounter) CallCount() int {
 
 func authCtx() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+}
+
+func TestSlicePathCacheTTLExpiresEntries(t *testing.T) {
+	cache := newSlicePathCache(4)
+	cache.ttl = 5 * time.Millisecond
+	cache.put("k", &cachedPaths{
+		pathMap:      map[string]string{"a": "a"},
+		displayPaths: []string{"a"},
+	})
+
+	if _, ok := cache.get("k"); !ok {
+		t.Fatal("expected cache hit before ttl expiry")
+	}
+	time.Sleep(8 * time.Millisecond)
+	if _, ok := cache.get("k"); ok {
+		t.Fatal("expected cache miss after ttl expiry")
+	}
+}
+
+func TestGetFileRejectsLargeUnaryPayloads(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const path = "o/genesis/projects/org/repo/big.bin"
+	slice := &models.Slice{ID: "big", Name: "big", Owners: []string{"tester"}, CreatedBy: "tester", Files: []string{path}}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	content := bytes.Repeat([]byte("a"), int(maxUnaryGetFileBytes)+1)
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  path,
+		Path:    path,
+		Content: content,
+		Size:    int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddFileContent failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID("big", path),
+		Path:     path,
+		Type:     "file",
+		ParentID: "big",
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	_, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path:    path,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: "big"}},
+	})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted, got %v", err)
+	}
 }
 
 func TestListEntriesIncludesMetadataModifiedFiles(t *testing.T) {

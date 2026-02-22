@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
@@ -50,11 +51,13 @@ type slicePathCache struct {
 	items    map[string]*cachedPaths
 	order    []string
 	maxItems int
+	ttl      time.Duration
 }
 
 type cachedPaths struct {
 	pathMap      map[string]string // displayPath -> storedPath
 	displayPaths []string          // sorted keys of pathMap
+	cachedAt     time.Time
 }
 
 func newSlicePathCache(maxItems int) *slicePathCache {
@@ -65,6 +68,7 @@ func newSlicePathCache(maxItems int) *slicePathCache {
 		items:    make(map[string]*cachedPaths, maxItems),
 		order:    make([]string, 0, maxItems),
 		maxItems: maxItems,
+		ttl:      30 * time.Second,
 	}
 }
 
@@ -73,9 +77,22 @@ func (c *slicePathCache) get(key string) (*cachedPaths, bool) {
 		return nil, false
 	}
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	v, ok := c.items[key]
-	return v, ok
+	ttl := c.ttl
+	c.mu.RUnlock()
+	if !ok || v == nil {
+		return nil, false
+	}
+	if ttl > 0 && !v.cachedAt.IsZero() && time.Since(v.cachedAt) > ttl {
+		c.mu.Lock()
+		// Re-check under write lock to avoid deleting a refreshed entry.
+		if current, exists := c.items[key]; exists && current == v {
+			delete(c.items, key)
+		}
+		c.mu.Unlock()
+		return nil, false
+	}
+	return v, true
 }
 
 func (c *slicePathCache) put(key string, v *cachedPaths) {
@@ -85,9 +102,11 @@ func (c *slicePathCache) put(key string, v *cachedPaths) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.items[key]; exists {
+		v.cachedAt = time.Now()
 		c.items[key] = v
 		return
 	}
+	v.cachedAt = time.Now()
 	c.items[key] = v
 	c.order = append(c.order, key)
 	if len(c.order) <= c.maxItems {
@@ -349,42 +368,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 			}
 			children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 			if err == nil {
-				entries := make([]*filev1.DirectoryEntry, 0, len(children))
-				for _, child := range children {
-					if child == nil {
-						continue
-					}
-					displayChildPath := common.SliceDisplayPath(slice, child.Path)
-					if displayChildPath == "" {
-						continue
-					}
-					typ := filev1.EntryType_ENTRY_TYPE_FILE
-					hasChildren := false
-					if child.Type == "directory" {
-						typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
-						hasChildren = true
-					}
-					entries = append(entries, &filev1.DirectoryEntry{
-						Name:        path.Base(displayChildPath),
-						Path:        displayChildPath,
-						Type:        typ,
-						HasChildren: hasChildren,
-						Size:        child.Size,
-					})
-				}
-				sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-
-				truncated := false
-				if req.Limit > 0 && int(req.Limit) < len(entries) {
-					entries = entries[:req.Limit]
-					truncated = true
-				}
-				return &filev1.ListEntriesResponse{
-					SliceId:   sliceID,
-					Path:      normalizedPath,
-					Entries:   entries,
-					Truncated: truncated,
-				}, nil
+				return buildListResponse(sliceID, normalizedPath, children, slice, req.Limit), nil
 			}
 		}
 		// Fall back to legacy path scanning if directory entries are not materialized.
@@ -401,42 +385,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		if normalizedPath == "" {
 			children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
 			if err == nil && len(children) > 0 {
-				entries := make([]*filev1.DirectoryEntry, 0, len(children))
-				for _, child := range children {
-					if child == nil {
-						continue
-					}
-					displayChildPath := common.SliceDisplayPath(slice, child.Path)
-					if displayChildPath == "" {
-						continue
-					}
-					typ := filev1.EntryType_ENTRY_TYPE_FILE
-					hasChildren := false
-					if child.Type == "directory" {
-						typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
-						hasChildren = true
-					}
-					entries = append(entries, &filev1.DirectoryEntry{
-						Name:        path.Base(displayChildPath),
-						Path:        displayChildPath,
-						Type:        typ,
-						HasChildren: hasChildren,
-						Size:        child.Size,
-					})
-				}
-				sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-
-				truncated := false
-				if req.Limit > 0 && int(req.Limit) < len(entries) {
-					entries = entries[:req.Limit]
-					truncated = true
-				}
-				return &filev1.ListEntriesResponse{
-					SliceId:   sliceID,
-					Path:      "",
-					Entries:   entries,
-					Truncated: truncated,
-				}, nil
+				return buildListResponse(sliceID, "", children, slice, req.Limit), nil
 			}
 		} else {
 			storedParentPath := common.SliceStoredPath(slice, normalizedPath)
@@ -447,42 +396,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 					}
 					children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 					if err == nil {
-						entries := make([]*filev1.DirectoryEntry, 0, len(children))
-						for _, child := range children {
-							if child == nil {
-								continue
-							}
-							displayChildPath := common.SliceDisplayPath(slice, child.Path)
-							if displayChildPath == "" {
-								continue
-							}
-							typ := filev1.EntryType_ENTRY_TYPE_FILE
-							hasChildren := false
-							if child.Type == "directory" {
-								typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
-								hasChildren = true
-							}
-							entries = append(entries, &filev1.DirectoryEntry{
-								Name:        path.Base(displayChildPath),
-								Path:        displayChildPath,
-								Type:        typ,
-								HasChildren: hasChildren,
-								Size:        child.Size,
-							})
-						}
-						sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-
-						truncated := false
-						if req.Limit > 0 && int(req.Limit) < len(entries) {
-							entries = entries[:req.Limit]
-							truncated = true
-						}
-						return &filev1.ListEntriesResponse{
-							SliceId:   sliceID,
-							Path:      normalizedPath,
-							Entries:   entries,
-							Truncated: truncated,
-						}, nil
+						return buildListResponse(sliceID, normalizedPath, children, slice, req.Limit), nil
 					}
 				}
 			}
@@ -616,6 +530,51 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	}, nil
 }
 
+const maxUnaryGetFileBytes int64 = 10 * 1024 * 1024
+
+func (s *fileServiceServer) resolveFileContent(
+	ctx context.Context,
+	sliceID string,
+	slice *models.Slice,
+	primarySliceID, storedPath, resolvedCommit string,
+) (*models.FileContent, error) {
+	if strings.TrimSpace(primarySliceID) == "" || strings.TrimSpace(storedPath) == "" {
+		return nil, storage.ErrEntryNotFound
+	}
+
+	effectiveCommit := strings.TrimSpace(resolvedCommit)
+	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+		if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
+			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
+		}
+	}
+	if effectiveCommit != "" {
+		if content, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && content != nil {
+			return content, nil
+		}
+	}
+
+	content, err := s.storage.GetSliceFileByPath(ctx, primarySliceID, storedPath)
+	if err == nil && content != nil {
+		return content, nil
+	}
+	if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return nil, err
+	}
+
+	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != primarySliceID {
+		parentContent, parentErr := s.storage.GetSliceFileByPath(ctx, slice.ParentSlice, storedPath)
+		if parentErr == nil && parentContent != nil {
+			return parentContent, nil
+		}
+		if parentErr != nil && !errors.Is(parentErr, storage.ErrEntryNotFound) {
+			return nil, parentErr
+		}
+	}
+
+	return nil, storage.ErrEntryNotFound
+}
+
 func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequest) (*filev1.GetFileResponse, error) {
 	if req.Path == "" {
 		return nil, status.Error(codes.InvalidArgument, "path is required")
@@ -670,25 +629,15 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 			backingSliceID = slice.ParentSlice
 		}
 
-		effectiveCommit := strings.TrimSpace(resolvedCommit)
-		if slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
-			if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
-				effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
-			}
-		}
-
-		var content *models.FileContent
-		if effectiveCommit != "" {
-			if c, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && c != nil {
-				content = c
-			}
-		}
-		if content == nil {
-			c, err := s.storage.GetSliceFileByPath(ctx, backingSliceID, storedPath)
-			if err != nil {
+		content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
 				return nil, status.Error(codes.NotFound, "file not found")
 			}
-			content = c
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+		}
+		if size := contentSize(content); size > maxUnaryGetFileBytes {
+			return nil, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
 		}
 
 		file := &filev1.File{
@@ -724,32 +673,18 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
 
-	// Prefer loading content via the resolved commit snapshot. Forked slices may
-	// not have fully materialized directory entries, but commit snapshots can
-	// still serve versioned content.
-	var content *models.FileContent
-	if strings.TrimSpace(resolvedCommit) != "" {
-		if c, err := s.storage.GetFileAtCommit(ctx, resolvedCommit, storedPath); err == nil && c != nil {
-			content = c
-		}
-	}
-	if content == nil {
-		c, err := s.storage.GetSliceFileByPath(ctx, sliceID, storedPath)
-		if err != nil && slice.ParentSlice != "" {
-			// Forked slices are views over a parent slice; their directory entries
-			// may not be materialized, but the underlying blob lives in the parent.
-			if parentContent, perr := s.storage.GetSliceFileByPath(ctx, slice.ParentSlice, storedPath); perr == nil && parentContent != nil {
-				c = parentContent
-				err = nil
-			}
-		}
-		if err != nil {
+	content, err := s.resolveFileContent(ctx, sliceID, slice, sliceID, storedPath, resolvedCommit)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
 			if sliceHasPath(pathMap, displayPath) {
 				return nil, status.Error(codes.NotFound, "file content not available")
 			}
 			return nil, status.Error(codes.NotFound, "file not found")
 		}
-		content = c
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+	}
+	if size := contentSize(content); size > maxUnaryGetFileBytes {
+		return nil, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
 	}
 
 	file := &filev1.File{
@@ -764,6 +699,47 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 
 func cleanPath(raw string) string {
 	return common.CleanRelativePath(raw)
+}
+
+func buildListResponse(sliceID, listPath string, children []*models.DirectoryEntry, slice *models.Slice, limit int32) *filev1.ListEntriesResponse {
+	entries := make([]*filev1.DirectoryEntry, 0, len(children))
+	for _, child := range children {
+		if child == nil {
+			continue
+		}
+		displayChildPath := common.SliceDisplayPath(slice, child.Path)
+		if displayChildPath == "" {
+			continue
+		}
+
+		typ := filev1.EntryType_ENTRY_TYPE_FILE
+		hasChildren := false
+		if child.Type == "directory" {
+			typ = filev1.EntryType_ENTRY_TYPE_DIRECTORY
+			hasChildren = true
+		}
+
+		entries = append(entries, &filev1.DirectoryEntry{
+			Name:        path.Base(displayChildPath),
+			Path:        displayChildPath,
+			Type:        typ,
+			HasChildren: hasChildren,
+			Size:        child.Size,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+
+	truncated := false
+	if limit > 0 && int(limit) < len(entries) {
+		entries = entries[:limit]
+		truncated = true
+	}
+	return &filev1.ListEntriesResponse{
+		SliceId:   sliceID,
+		Path:      listPath,
+		Entries:   entries,
+		Truncated: truncated,
+	}
 }
 
 func contentSize(content *models.FileContent) int64 {

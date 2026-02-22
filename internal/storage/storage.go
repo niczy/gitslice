@@ -22,6 +22,21 @@ var (
 	ErrAgentSessionConflict = errors.New("agent session conflict")
 )
 
+const (
+	defaultSliceCommitListLimit = 100
+	maxSliceCommitListLimit     = 10000
+)
+
+func normalizeSliceCommitLimit(limit int) int {
+	if limit <= 0 {
+		return defaultSliceCommitListLimit
+	}
+	if limit > maxSliceCommitListLimit {
+		return maxSliceCommitListLimit
+	}
+	return limit
+}
+
 // Storage defines the interface for data storage operations.
 // This allows us to swap implementations (in-memory, PostgreSQL, etc.).
 type Storage interface {

@@ -101,6 +101,24 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil || len(commits) != 1 || commits[0].CommitHash != commit.CommitHash {
 		t.Fatalf("ListSliceCommits mismatch: %v len=%d", err, len(commits))
 	}
+	limitSliceID := fmt.Sprintf("slice-limit-%s", suffix)
+	limitSlice := &models.Slice{ID: limitSliceID, Name: "Limit", Description: "Limit", Files: []string{}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, limitSlice); err != nil {
+		t.Fatalf("CreateSlice limit failed: %v", err)
+	}
+	for i := 0; i < 120; i++ {
+		h := fmt.Sprintf("limit-commit-%03d-%s", i, suffix)
+		if err := st.AddSliceCommit(ctx, limitSliceID, &models.Commit{CommitHash: h, ParentHash: "", Message: "m", Timestamp: time.Now()}); err != nil {
+			t.Fatalf("AddSliceCommit limit failed at %d: %v", i, err)
+		}
+	}
+	defaultLimited, err := st.ListSliceCommits(ctx, limitSliceID, 0, "")
+	if err != nil {
+		t.Fatalf("ListSliceCommits default limit failed: %v", err)
+	}
+	if len(defaultLimited) != 100 {
+		t.Fatalf("expected default commit limit 100, got %d", len(defaultLimited))
+	}
 
 	// File indexing and conflicts
 	if err := st.AddFileToSlice(ctx, file1ID, slice.ID); err != nil {
@@ -124,8 +142,8 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil {
 		t.Fatalf("CountSlices failed: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("expected 2 slices, got %d", count)
+	if count != 3 {
+		t.Fatalf("expected 3 slices, got %d", count)
 	}
 	if err := st.AddFileToSlice(ctx, file1ID, slice2.ID); err != nil {
 		t.Fatalf("AddFileToSlice second failed: %v", err)

@@ -445,7 +445,8 @@ func (s *InMemoryStorage) ListSliceCommits(ctx context.Context, sliceID string, 
 	}
 
 	result := commits[start:]
-	if limit > 0 && limit < len(result) {
+	limit = normalizeSliceCommitLimit(limit)
+	if limit < len(result) {
 		result = result[:limit]
 	}
 
