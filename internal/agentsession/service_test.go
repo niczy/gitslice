@@ -228,6 +228,96 @@ func TestServiceRuntimeStartFailure(t *testing.T) {
 	}
 }
 
+func TestServiceRuntimeStartRetriesTransientFailures(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-start-retry",
+		Name:      "Slice Start Retry",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	attempts := 0
+	svc := NewService(st, "test-secret")
+	svc.runtimeStartMaxRetries = 2
+	svc.runtimeStartRetryBackoff = 5 * time.Millisecond
+	svc.SetRuntimeProvider(&stubRuntimeProvider{
+		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, &RuntimeError{
+					Code:    "E2B_START_UNAVAILABLE",
+					Message: "temporary backend outage",
+				}
+			}
+			return &RuntimeStartResult{
+				Provider:  "e2b",
+				SessionID: "runtime-retry-1",
+				Endpoint:  "runtime://retry",
+				Status:    "ready",
+			}, nil
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-start-retry",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+	if attempts != 2 {
+		t.Fatalf("expected 2 runtime start attempts, got %d", attempts)
+	}
+}
+
+func TestServiceRuntimeStartDoesNotRetryNonTransientFailures(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-start-no-retry",
+		Name:      "Slice Start No Retry",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	attempts := 0
+	svc := NewService(st, "test-secret")
+	svc.runtimeStartMaxRetries = 3
+	svc.runtimeStartRetryBackoff = 5 * time.Millisecond
+	svc.SetRuntimeProvider(&stubRuntimeProvider{
+		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
+			attempts++
+			return nil, &RuntimeError{
+				Code:    "AGENT_CREDENTIAL_MISSING",
+				Message: "missing credential",
+			}
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-start-no-retry",
+		Provider:      "e2b",
+		E2BTemplateID: "tmpl-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+	if attempts != 1 {
+		t.Fatalf("expected 1 runtime start attempt, got %d", attempts)
+	}
+}
+
 func TestServiceCodexBinaryValidationFailure(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

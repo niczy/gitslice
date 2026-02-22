@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"net"
@@ -92,6 +94,30 @@ func main() {
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/health", common.HealthCheckHandler("core-server"))
+	httpMux.Handle("/debug/vars", expvar.Handler())
+	httpMux.HandleFunc("/health/agent-runtime", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		payload := map[string]any{
+			"service": "agent-runtime",
+			"status":  "healthy",
+		}
+		statusCode := http.StatusOK
+		if err := agentSessionService.RuntimeHealthCheck(ctx); err != nil {
+			statusCode = http.StatusServiceUnavailable
+			payload["status"] = "unhealthy"
+			payload["error"] = err.Error()
+			payload["code"] = agentsession.RuntimeErrorCode(err, "RUNTIME_HEALTH_FAILED")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(payload)
+	})
 	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("core-server", func(ctx context.Context) bool {
 		return gateway.GRPCReady(ctx, grpcDialAddr)
 	}))

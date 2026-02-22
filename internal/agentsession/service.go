@@ -18,13 +18,15 @@ import (
 )
 
 const (
-	defaultIdleTimeoutSec = 1800
-	defaultTTLSec         = 14400
-	wsTokenAudience       = "agent-ws"
-	wsTokenTTL            = 60 * time.Second
-	defaultLifecycleTick  = 1 * time.Second
-	defaultStartupTimeout = 90 * time.Second
-	defaultAgentType      = "codex"
+	defaultIdleTimeoutSec    = 1800
+	defaultTTLSec            = 14400
+	wsTokenAudience          = "agent-ws"
+	wsTokenTTL               = 60 * time.Second
+	defaultLifecycleTick     = 1 * time.Second
+	defaultStartupTimeout    = 90 * time.Second
+	defaultStartMaxRetries   = 2
+	defaultStartRetryBackoff = 1 * time.Second
+	defaultAgentType         = "codex"
 )
 
 var supportedAgentTypes = map[string]struct{}{
@@ -68,10 +70,12 @@ type Service struct {
 	runtimeStartInFlight map[string]struct{}
 	runtimeStopInFlight  map[string]struct{}
 
-	lifecycleTick      time.Duration
-	startupTimeout     time.Duration
-	runtimeStopTimeout time.Duration
-	runLoopOnce        sync.Once
+	lifecycleTick            time.Duration
+	startupTimeout           time.Duration
+	runtimeStopTimeout       time.Duration
+	runtimeStartMaxRetries   int
+	runtimeStartRetryBackoff time.Duration
+	runLoopOnce              sync.Once
 }
 
 func NewService(st storage.Storage, wsTokenSecret string) *Service {
@@ -79,18 +83,20 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		wsTokenSecret = "dev-insecure-agent-secret"
 	}
 	return &Service{
-		st:                   st,
-		wsTokenSecret:        []byte(wsTokenSecret),
-		seqHead:              make(map[string]uint64),
-		usedNonces:           make(map[string]time.Time),
-		replaySeqs:           make(map[string][]uint64),
-		maxReplayFrame:       10000,
-		runtime:              newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond),
-		runtimeStartInFlight: make(map[string]struct{}),
-		runtimeStopInFlight:  make(map[string]struct{}),
-		lifecycleTick:        defaultLifecycleTick,
-		startupTimeout:       defaultStartupTimeout,
-		runtimeStopTimeout:   30 * time.Second,
+		st:                       st,
+		wsTokenSecret:            []byte(wsTokenSecret),
+		seqHead:                  make(map[string]uint64),
+		usedNonces:               make(map[string]time.Time),
+		replaySeqs:               make(map[string][]uint64),
+		maxReplayFrame:           10000,
+		runtime:                  newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond),
+		runtimeStartInFlight:     make(map[string]struct{}),
+		runtimeStopInFlight:      make(map[string]struct{}),
+		lifecycleTick:            defaultLifecycleTick,
+		startupTimeout:           defaultStartupTimeout,
+		runtimeStopTimeout:       30 * time.Second,
+		runtimeStartMaxRetries:   defaultStartMaxRetries,
+		runtimeStartRetryBackoff: defaultStartRetryBackoff,
 	}
 }
 
@@ -175,6 +181,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		"e2bRegion":     session.E2BRegion,
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, session.State)
+	ObserveAgentSessionCreate(session.AgentType, string(session.State))
 
 	s.enqueueStart(session.SessionID)
 
@@ -519,13 +526,51 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	}
 
 	if err := validateAgentBinaryForSession(session); err != nil {
+		log.Printf("component=agent_session phase=start_validate_binary session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s code=%s error=%q",
+			session.SessionID, session.SliceID, session.UserID, session.EnvironmentName, session.AgentType, session.State, runtimeErrorCode(err, "AGENT_BINARY_EXEC_FAILED"), runtimeErrorMessage(err, "agent binary validation failed"))
 		s.failSession(ctx, session, session.UserID, runtimeErrorCode(err, "AGENT_BINARY_EXEC_FAILED"), runtimeErrorMessage(err, "agent binary validation failed"))
 		return
 	}
 
-	startCtx, cancel := context.WithTimeout(ctx, s.startupTimeout)
-	result, err := s.runtimeProvider().Start(startCtx, session)
-	cancel()
+	startedAt := time.Now().UTC()
+	maxAttempts := s.runtimeStartMaxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var (
+		result   *RuntimeStartResult
+		startErr error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		startCtx, cancel := context.WithTimeout(ctx, s.startupTimeout)
+		result, startErr = s.runtimeProvider().Start(startCtx, session)
+		cancel()
+		if startErr == nil {
+			ObserveAgentRuntimeRequest(session.AgentType, "success")
+			break
+		}
+		ObserveAgentRuntimeRequest(session.AgentType, "failure")
+		code := runtimeErrorCode(startErr, "START_FAILED")
+		log.Printf("component=agent_session phase=start_runtime session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s attempt=%d code=%s error=%q",
+			session.SessionID, session.SliceID, session.UserID, session.EnvironmentName, session.AgentType, session.State, attempt, code, runtimeErrorMessage(startErr, "session startup failed"))
+		if attempt >= maxAttempts || !shouldRetryRuntimeStart(startErr) {
+			break
+		}
+		backoff := s.runtimeStartRetryBackoff * time.Duration(1<<(attempt-1))
+		if backoff <= 0 {
+			backoff = defaultStartRetryBackoff
+		}
+		time.Sleep(backoff)
+
+		updated, getErr := s.st.GetAgentSession(ctx, sessionID)
+		if getErr != nil {
+			return
+		}
+		if !updated.State.IsActive() || updated.State == models.AgentSessionStateStopping {
+			return
+		}
+		session = updated
+	}
 
 	session, getErr := s.st.GetAgentSession(ctx, sessionID)
 	if getErr != nil {
@@ -534,8 +579,8 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	if !session.State.IsActive() || session.State == models.AgentSessionStateStopping {
 		return
 	}
-	if err != nil {
-		s.failSession(ctx, session, session.UserID, runtimeErrorCode(err, "START_FAILED"), runtimeErrorMessage(err, "session startup failed"))
+	if startErr != nil {
+		s.failSession(ctx, session, session.UserID, runtimeErrorCode(startErr, "START_FAILED"), runtimeErrorMessage(startErr, "session startup failed"))
 		return
 	}
 
@@ -568,6 +613,7 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
 		return
 	}
+	ObserveAgentSessionStartLatency(session.AgentType, now.Sub(startedAt))
 	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{
 		"runtimeProvider":  session.RuntimeProvider,
 		"runtimeSessionId": session.RuntimeSessionID,
@@ -575,6 +621,8 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		"environment":      session.EnvironmentName,
 	})
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateRunning)
+	log.Printf("component=agent_session phase=session_running session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s runtime_provider=%s runtime_session_id=%s",
+		session.SessionID, session.SliceID, session.UserID, session.EnvironmentName, session.AgentType, session.State, session.RuntimeProvider, session.RuntimeSessionID)
 }
 
 func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
@@ -598,6 +646,8 @@ func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 		if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
 			return
 		}
+		log.Printf("component=agent_session phase=stop_runtime session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s code=%s error=%q",
+			session.SessionID, session.SliceID, actorForAudit(actorUserID), session.EnvironmentName, session.AgentType, session.State, runtimeErrorCode(err, "STOP_FAILED"), runtimeErrorMessage(err, "session stop failed"))
 		s.failSession(ctx, session, actorForAudit(actorUserID), runtimeErrorCode(err, "STOP_FAILED"), runtimeErrorMessage(err, "session stop failed"))
 		return
 	}
@@ -627,6 +677,8 @@ func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 	metadata["runtimeProvider"] = session.RuntimeProvider
 	_ = s.AddAudit(ctx, sessionID, actorForAudit(actorUserID), "session_stopped", metadata)
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopped)
+	log.Printf("component=agent_session phase=session_stopped session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s runtime_provider=%s reason=%q",
+		session.SessionID, session.SliceID, actorForAudit(actorUserID), session.EnvironmentName, session.AgentType, session.State, session.RuntimeProvider, strings.TrimSpace(reason))
 }
 
 func (s *Service) failSession(ctx context.Context, session *models.AgentSession, actorUserID, failureCode, failureMessage string) {
@@ -643,6 +695,7 @@ func (s *Service) failSession(ctx context.Context, session *models.AgentSession,
 	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
 		return
 	}
+	ObserveAgentSessionRuntimeFailure(session.FailureCode)
 	_ = s.AddAudit(ctx, session.SessionID, actorForAudit(actorUserID), "session_failed", map[string]any{
 		"failureCode":     session.FailureCode,
 		"runtimeProvider": session.RuntimeProvider,
@@ -650,6 +703,21 @@ func (s *Service) failSession(ctx context.Context, session *models.AgentSession,
 		"environment":     session.EnvironmentName,
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
+	log.Printf("component=agent_session phase=session_failed session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s runtime_provider=%s code=%s error=%q",
+		session.SessionID, session.SliceID, actorForAudit(actorUserID), session.EnvironmentName, session.AgentType, session.State, session.RuntimeProvider, session.FailureCode, session.FailureMessage)
+}
+
+func shouldRetryRuntimeStart(err error) bool {
+	code := runtimeErrorCode(err, "")
+	if code == "" {
+		return false
+	}
+	for _, marker := range []string{"UNAVAILABLE", "RATE_LIMITED", "REQUEST_FAILED", "TIMEOUT"} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func actorForAudit(actorUserID string) string {
@@ -667,6 +735,15 @@ func (s *Service) runtimeProvider() RuntimeProvider {
 		s.runtime = newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
 	}
 	return s.runtime
+}
+
+func (s *Service) RuntimeHealthCheck(ctx context.Context) error {
+	provider := s.runtimeProvider()
+	healthProvider, ok := provider.(RuntimeHealthProvider)
+	if !ok {
+		return nil
+	}
+	return healthProvider.HealthCheck(ctx)
 }
 
 func (s *Service) markRuntimeStartInFlight(sessionID string) bool {

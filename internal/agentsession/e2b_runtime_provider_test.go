@@ -238,3 +238,29 @@ func TestE2BRuntimeProviderRedactsCredentialsInErrors(t *testing.T) {
 		t.Fatalf("expected redaction marker in error, got %q", message)
 	}
 }
+
+func TestE2BRuntimeProviderHealthCheckPolicyValidation(t *testing.T) {
+	t.Parallel()
+
+	provider := NewE2BRuntimeProvider(E2BRuntimeProviderConfig{
+		APIURL:              "https://api.e2b.app",
+		APIKey:              "test_api_key",
+		CodexAPIKey:         "openai-test-key",
+		EgressDenyByDefault: true,
+	})
+	healthProvider, ok := provider.(RuntimeHealthProvider)
+	if !ok {
+		t.Fatalf("expected RuntimeHealthProvider implementation")
+	}
+	err := healthProvider.HealthCheck(context.Background())
+	if err == nil {
+		t.Fatalf("expected health check error for missing egress allowlist")
+	}
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if runtimeErr.Code != "AGENT_EGRESS_POLICY_INVALID" {
+		t.Fatalf("unexpected code %q", runtimeErr.Code)
+	}
+}

@@ -15,7 +15,7 @@ PR checklist:
 - [x] PR6 - Claude runtime adapter in sandbox
 - [x] PR7 - Web UI integration (replace mock AgentSession with backend sessions)
 - [x] PR8 - Security hardening + policy controls
-- [ ] PR9 - Observability + reliability controls
+- [x] PR9 - Observability + reliability controls
 - [ ] PR10 - Integration/E2E hardening + rollout + mark spec finished
 
 ## Executive Summary

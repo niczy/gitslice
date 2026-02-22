@@ -149,6 +149,28 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
 If `E2B_API_KEY` and `E2B_ACCESS_TOKEN` are both unset, agent sessions use the simulated runtime provider.
 
+For Codex/Claude sandbox sessions, configure model credentials and optional egress policy:
+
+```bash
+OPENAI_API_KEY=your-openai-key
+ANTHROPIC_API_KEY=your-anthropic-key
+
+# Optional: enforce deny-by-default egress from sandbox runtime shim.
+AGENT_EGRESS_DENY_BY_DEFAULT=true
+AGENT_EGRESS_ALLOWLIST=api.openai.com,api.anthropic.com,github.com
+```
+
+Agent runtime observability endpoints:
+
+- `GET /debug/vars` (expvar metrics including agent session lifecycle/runtime/ws counters)
+- `GET /health/agent-runtime` (runtime provider readiness and policy validation)
+
+Suggested baseline alerts:
+
+- `agent_session_runtime_fail_total` increasing rapidly by `failureCode`
+- high `agent_ws_backpressure_close_total` rate
+- unhealthy `GET /health/agent-runtime` for more than 5 minutes
+
 ## Accounts / Organizations
 
 This repo uses lightweight account sign-in: web supports OAuth via Auth.js (Google/GitHub) and CLI supports username login. Requests include the signed-in username in metadata.
