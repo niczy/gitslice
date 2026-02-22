@@ -804,7 +804,7 @@ func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.
 		return nil, []string{err.Error()}
 	}
 	if len(targetChanges) == 0 {
-		return nil, nil
+		return s.buildStandardReviewChanges(ctx, cs)
 	}
 
 	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(targetChanges))
@@ -823,6 +823,173 @@ func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.
 	}
 
 	return reviewChanges, warnings
+}
+
+type reviewFileState struct {
+	exists    bool
+	lines     []string
+	hash      string
+	patchable bool
+}
+
+func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs *models.Changeset) ([]*filev1.FileChangeRecord, []string) {
+	if cs == nil {
+		return nil, nil
+	}
+
+	paths := normalizeModifiedFiles(cs.ModifiedFiles)
+	if len(paths) == 0 {
+		return nil, nil
+	}
+
+	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(paths))
+	warnings := make([]string, 0, 1)
+	missingPatchCount := 0
+
+	for idx, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+
+		before, beforeWarning := s.loadReviewFileAtBase(ctx, cs, filePath)
+		if beforeWarning != "" {
+			warnings = append(warnings, beforeWarning)
+		}
+		after, afterWarning := s.loadReviewFileAtHead(ctx, cs, filePath)
+		if afterWarning != "" {
+			warnings = append(warnings, afterWarning)
+		}
+		if !before.exists && !after.exists {
+			continue
+		}
+
+		changeType := models.ChangeTypeModify
+		switch {
+		case !before.exists && after.exists:
+			changeType = models.ChangeTypeAdd
+		case before.exists && !after.exists:
+			changeType = models.ChangeTypeDelete
+		}
+
+		if changeType == models.ChangeTypeModify && before.hash != "" && after.hash != "" && before.hash == after.hash {
+			continue
+		}
+
+		patch := ""
+		if before.patchable && after.patchable {
+			patch = buildUnifiedPatchFromLines(filePath, filePath, before.lines, after.lines)
+		} else {
+			missingPatchCount++
+		}
+		linesAdded, linesDeleted := summarizePatchLineDelta(patch)
+
+		reviewChanges = append(reviewChanges, modelToProtoReviewChange(&models.FileChangeRecord{
+			ID:           fmt.Sprintf("%s-review-%d", cs.ID, idx+1),
+			SliceID:      cs.SliceID,
+			CommitHash:   cs.Hash,
+			Path:         filePath,
+			OldPath:      "",
+			ChangeType:   changeType,
+			OldHash:      before.hash,
+			NewHash:      after.hash,
+			LinesAdded:   linesAdded,
+			LinesDeleted: linesDeleted,
+			Author:       cs.Author,
+			Message:      cs.Message,
+			Timestamp:    cs.CreatedAt,
+		}, patch))
+	}
+
+	if missingPatchCount > 0 {
+		warnings = append(warnings, fmt.Sprintf("inline patch unavailable for %d changeset entries", missingPatchCount))
+	}
+	return reviewChanges, warnings
+}
+
+func (s *sliceServiceServer) loadReviewFileAtBase(ctx context.Context, cs *models.Changeset, filePath string) (reviewFileState, string) {
+	state := reviewFileState{
+		exists:    false,
+		lines:     []string{},
+		hash:      "",
+		patchable: true,
+	}
+	if cs == nil || strings.TrimSpace(cs.BaseCommitHash) == "" {
+		return state, ""
+	}
+
+	content, err := s.storage.GetFileAtCommit(ctx, strings.TrimSpace(cs.BaseCommitHash), filePath)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrCommitNotFound) {
+			return state, ""
+		}
+		return state, fmt.Sprintf("base lookup failed for %s: %v", filePath, err)
+	}
+
+	state.exists = true
+	state.lines, state.hash, state.patchable = s.extractDiffLinesFromContent(ctx, filePath, content)
+	return state, ""
+}
+
+func (s *sliceServiceServer) loadReviewFileAtHead(ctx context.Context, cs *models.Changeset, filePath string) (reviewFileState, string) {
+	state := reviewFileState{
+		exists:    false,
+		lines:     []string{},
+		hash:      "",
+		patchable: true,
+	}
+	if cs == nil {
+		return state, ""
+	}
+
+	content, err := s.storage.GetSliceFileByPath(ctx, strings.TrimSpace(cs.SliceID), filePath)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return state, ""
+		}
+		return state, fmt.Sprintf("head lookup failed for %s: %v", filePath, err)
+	}
+
+	state.exists = true
+	state.lines, state.hash, state.patchable = s.extractDiffLinesFromContent(ctx, filePath, content)
+	return state, ""
+}
+
+func (s *sliceServiceServer) extractDiffLinesFromContent(ctx context.Context, filePath string, content *models.FileContent) ([]string, string, bool) {
+	if content == nil {
+		return []string{}, "", true
+	}
+
+	fileHash := strings.TrimSpace(content.Hash)
+	fileBytes := content.Content
+	if len(fileBytes) == 0 && content.Size > 0 && fileHash != "" {
+		versioned, err := s.storage.GetFileContentByHash(ctx, fileHash)
+		if err == nil && versioned != nil {
+			fileBytes = versioned.Content
+			if fileHash == "" {
+				fileHash = strings.TrimSpace(versioned.Hash)
+			}
+		}
+	}
+
+	if !isUsableContentHash(filePath, fileHash) {
+		if fileBytes == nil && content.Size > 0 {
+			return nil, "", false
+		}
+		fileHash = hashBytes(fileBytes)
+	}
+
+	if fileBytes == nil {
+		fileBytes = []byte{}
+	}
+	if !utf8.Valid(fileBytes) || bytesContainsNUL(fileBytes) {
+		return nil, fileHash, false
+	}
+	lines := strings.SplitAfter(string(fileBytes), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, fileHash, true
 }
 
 func (s *sliceServiceServer) resolveRevertSourceChanges(ctx context.Context, cs *models.Changeset) ([]*models.FileChangeRecord, error) {
@@ -1142,12 +1309,16 @@ func (s *sliceServiceServer) buildChangePatchFromHashes(ctx context.Context, cha
 	if !afterOK {
 		return ""
 	}
+	return buildUnifiedPatchFromLines(change.OldPath, change.Path, beforeLines, afterLines)
+}
+
+func buildUnifiedPatchFromLines(oldPath, newPath string, beforeLines, afterLines []string) string {
 	if len(beforeLines) == 0 && len(afterLines) == 0 {
 		return ""
 	}
 
-	newPath := cleanDiffPath(change.Path)
-	oldPath := cleanDiffPath(change.OldPath)
+	newPath = cleanDiffPath(newPath)
+	oldPath = cleanDiffPath(oldPath)
 	if oldPath == "" {
 		oldPath = newPath
 	}
@@ -1172,6 +1343,23 @@ func (s *sliceServiceServer) buildChangePatchFromHashes(ctx context.Context, cha
 		return ""
 	}
 	return patch
+}
+
+func summarizePatchLineDelta(patch string) (added int, deleted int) {
+	if strings.TrimSpace(patch) == "" {
+		return 0, 0
+	}
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"), strings.HasPrefix(line, "@@"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			added++
+		case strings.HasPrefix(line, "-"):
+			deleted++
+		}
+	}
+	return added, deleted
 }
 
 func (s *sliceServiceServer) loadDiffLinesFromHash(ctx context.Context, hash string) ([]string, bool) {
