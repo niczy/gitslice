@@ -51,4 +51,5 @@ type DirectoryEntry struct {
 	ParentID string `json:"parent_id"`
 	Content  []byte `json:"content,omitempty"`
 	Size     int64  `json:"size"`
+	Hash     string `json:"hash,omitempty"`
 }

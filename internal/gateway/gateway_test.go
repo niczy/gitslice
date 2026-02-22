@@ -78,6 +78,91 @@ func TestGatewayListEntries(t *testing.T) {
 	}
 }
 
+func TestGatewayGetFileETagAndConditional304(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "gateway",
+		Name:      "gateway",
+		Owners:    []string{"system"},
+		CreatedBy: "system",
+		Files:     []string{"README.md"},
+	}); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+
+	const (
+		filePath = "README.md"
+		fileHash = "gateway-hash"
+	)
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  filePath,
+		Path:    filePath,
+		Content: []byte("root file"),
+		Size:    9,
+		Hash:    fileHash,
+	}); err != nil {
+		t.Fatalf("add file content: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID("gateway", filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: "gateway",
+		Size:     9,
+	}); err != nil {
+		t.Fatalf("add entry: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	firstReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/slices/gateway/files/%s", gatewayURL, filePath), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	firstReq.Header.Set("Authorization", "User system")
+	firstResp, err := client.Do(firstReq)
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	if firstResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(firstResp.Body)
+		firstResp.Body.Close()
+		t.Fatalf("unexpected first status %d: %s", firstResp.StatusCode, string(body))
+	}
+	etag := firstResp.Header.Get("ETag")
+	if etag != `"`+fileHash+`"` {
+		firstResp.Body.Close()
+		t.Fatalf("expected ETag %q, got %q", `"`+fileHash+`"`, etag)
+	}
+	firstResp.Body.Close()
+
+	secondReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/slices/gateway/files/%s", gatewayURL, filePath), nil)
+	if err != nil {
+		t.Fatalf("new conditional request: %v", err)
+	}
+	secondReq.Header.Set("Authorization", "User system")
+	secondReq.Header.Set("If-None-Match", etag)
+	secondResp, err := client.Do(secondReq)
+	if err != nil {
+		t.Fatalf("conditional request failed: %v", err)
+	}
+	defer secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusNotModified {
+		body, _ := io.ReadAll(secondResp.Body)
+		t.Fatalf("expected 304, got %d: %s", secondResp.StatusCode, string(body))
+	}
+	if got := secondResp.Header.Get("ETag"); got != etag {
+		t.Fatalf("expected ETag %q on 304, got %q", etag, got)
+	}
+	body, _ := io.ReadAll(secondResp.Body)
+	if len(body) != 0 {
+		t.Fatalf("expected empty body on 304, got %q", string(body))
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }
