@@ -3570,18 +3570,19 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO agent_sessions (
-			session_id, slice_id, environment_name, user_id, state, provider, e2b_template_id, e2b_sandbox_id, e2b_region,
-			idle_timeout_sec, ttl_sec, runtime_endpoint, created_at, updated_at, started_at, last_activity_at,
-			stopped_at, failure_code, failure_message
+			session_id, slice_id, environment_name, agent_type, user_id, state, provider, e2b_template_id, e2b_sandbox_id, e2b_region,
+			idle_timeout_sec, ttl_sec, runtime_provider, runtime_session_id, runtime_status, runtime_error_code,
+			runtime_endpoint, created_at, updated_at, started_at, last_activity_at, stopped_at, failure_code, failure_message
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''),
-			$10, $11, NULLIF($12, ''), $13, $14, $15, $16, $17, NULLIF($18, ''), NULLIF($19, '')
+			$1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''),
+			$11, $12, NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
+			NULLIF($17, ''), $18, $19, $20, $21, $22, NULLIF($23, ''), NULLIF($24, '')
 		)
 	`,
-		session.SessionID, session.SliceID, session.EnvironmentName, session.UserID, string(session.State), session.Provider,
+		session.SessionID, session.SliceID, session.EnvironmentName, session.AgentType, session.UserID, string(session.State), session.Provider,
 		session.E2BTemplateID, session.E2BSandboxID, session.E2BRegion,
-		session.IdleTimeoutSec, session.TTLSec, session.RuntimeEndpoint,
-		session.CreatedAt, session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
+		session.IdleTimeoutSec, session.TTLSec, session.RuntimeProvider, session.RuntimeSessionID, session.RuntimeStatus, session.RuntimeErrorCode,
+		session.RuntimeEndpoint, session.CreatedAt, session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
 		session.FailureCode, session.FailureMessage,
 	)
 	if err != nil {
@@ -3601,15 +3602,18 @@ func (s *PostgresNativeStorage) GetAgentSession(ctx context.Context, sessionID s
 	var session models.AgentSession
 	var startedAt, lastActivityAt, stoppedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT session_id, slice_id, COALESCE(environment_name, ''), user_id, state, provider, e2b_template_id, COALESCE(e2b_sandbox_id, ''),
-		       COALESCE(e2b_region, ''), idle_timeout_sec, ttl_sec, COALESCE(runtime_endpoint, ''),
+		SELECT session_id, slice_id, COALESCE(environment_name, ''), COALESCE(agent_type, ''), user_id, state, provider, e2b_template_id, COALESCE(e2b_sandbox_id, ''),
+		       COALESCE(e2b_region, ''), idle_timeout_sec, ttl_sec,
+		       COALESCE(runtime_provider, ''), COALESCE(runtime_session_id, ''), COALESCE(runtime_status, ''), COALESCE(runtime_error_code, ''),
+		       COALESCE(runtime_endpoint, ''),
 		       created_at, updated_at, started_at, last_activity_at, stopped_at,
 		       COALESCE(failure_code, ''), COALESCE(failure_message, '')
 		FROM agent_sessions
 		WHERE session_id = $1
 	`, sessionID).Scan(
-		&session.SessionID, &session.SliceID, &session.EnvironmentName, &session.UserID, &session.State, &session.Provider,
+		&session.SessionID, &session.SliceID, &session.EnvironmentName, &session.AgentType, &session.UserID, &session.State, &session.Provider,
 		&session.E2BTemplateID, &session.E2BSandboxID, &session.E2BRegion, &session.IdleTimeoutSec, &session.TTLSec,
+		&session.RuntimeProvider, &session.RuntimeSessionID, &session.RuntimeStatus, &session.RuntimeErrorCode,
 		&session.RuntimeEndpoint, &session.CreatedAt, &session.UpdatedAt, &startedAt, &lastActivityAt,
 		&stoppedAt, &session.FailureCode, &session.FailureMessage,
 	)
@@ -3704,25 +3708,31 @@ func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session 
 		UPDATE agent_sessions
 		SET slice_id = $1,
 		    environment_name = $2,
-		    user_id = $3,
-		    state = $4,
-		    provider = $5,
-		    e2b_template_id = $6,
-		    e2b_sandbox_id = NULLIF($7, ''),
-		    e2b_region = NULLIF($8, ''),
-		    idle_timeout_sec = $9,
-		    ttl_sec = $10,
-		    runtime_endpoint = NULLIF($11, ''),
-		    updated_at = $12,
-		    started_at = $13,
-		    last_activity_at = $14,
-		    stopped_at = $15,
-		    failure_code = NULLIF($16, ''),
-		    failure_message = NULLIF($17, '')
-		WHERE session_id = $18
+		    agent_type = NULLIF($3, ''),
+		    user_id = $4,
+		    state = $5,
+		    provider = $6,
+		    e2b_template_id = $7,
+		    e2b_sandbox_id = NULLIF($8, ''),
+		    e2b_region = NULLIF($9, ''),
+		    idle_timeout_sec = $10,
+		    ttl_sec = $11,
+		    runtime_provider = NULLIF($12, ''),
+		    runtime_session_id = NULLIF($13, ''),
+		    runtime_status = NULLIF($14, ''),
+		    runtime_error_code = NULLIF($15, ''),
+		    runtime_endpoint = NULLIF($16, ''),
+		    updated_at = $17,
+		    started_at = $18,
+		    last_activity_at = $19,
+		    stopped_at = $20,
+		    failure_code = NULLIF($21, ''),
+		    failure_message = NULLIF($22, '')
+		WHERE session_id = $23
 	`,
-		session.SliceID, session.EnvironmentName, session.UserID, string(session.State), session.Provider, session.E2BTemplateID,
-		session.E2BSandboxID, session.E2BRegion, session.IdleTimeoutSec, session.TTLSec, session.RuntimeEndpoint,
+		session.SliceID, session.EnvironmentName, session.AgentType, session.UserID, string(session.State), session.Provider, session.E2BTemplateID,
+		session.E2BSandboxID, session.E2BRegion, session.IdleTimeoutSec, session.TTLSec,
+		session.RuntimeProvider, session.RuntimeSessionID, session.RuntimeStatus, session.RuntimeErrorCode, session.RuntimeEndpoint,
 		session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
 		session.FailureCode, session.FailureMessage, session.SessionID,
 	)
