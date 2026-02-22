@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'gs_auth_username';
+const OAUTH_PENDING_KEY = 'gs_oauth_pending';
 
 function readStoredUsername() {
   try {
@@ -52,6 +53,11 @@ export async function fetchOAuthSession() {
 }
 
 export function startOAuthSignIn(providerId) {
+  try {
+    window.localStorage.setItem(OAUTH_PENDING_KEY, providerId || 'oauth');
+  } catch {
+    // ignore storage errors
+  }
   const callbackUrl = `${window.location.origin}/#/login`;
   const url = new URL(`/auth/signin/${providerId}`, window.location.origin);
   url.searchParams.set('callbackUrl', callbackUrl);
@@ -67,4 +73,20 @@ export function startOAuthSignOut() {
 
 export function signOutAccount() {
   writeStoredUsername('');
+}
+
+export function hasPendingOAuthSignIn() {
+  try {
+    return Boolean(window.localStorage.getItem(OAUTH_PENDING_KEY));
+  } catch {
+    return false;
+  }
+}
+
+export function clearPendingOAuthSignIn() {
+  try {
+    window.localStorage.removeItem(OAUTH_PENDING_KEY);
+  } catch {
+    // ignore storage errors
+  }
 }
