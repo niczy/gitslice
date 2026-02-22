@@ -2,14 +2,14 @@
 
 ## Implementation Status
 
-- Current status: `not_started`
+- Current status: `ongoing`
 - Last updated: `2026-02-22`
 
 PR checklist:
 
-- [ ] PR1 - Proto + contract baseline for model-aware sessions
-- [ ] PR2 - Storage + model schema extensions (`agent_type`, provider run metadata)
-- [ ] PR3 - Session service refactor: real runtime lifecycle interface (replace fake bootstrap)
+- [x] PR1 - Proto + contract baseline for model-aware sessions
+- [x] PR2 - Storage + model schema extensions (`agent_type`, provider run metadata)
+- [x] PR3 - Session service refactor: real runtime lifecycle interface (replace fake bootstrap)
 - [ ] PR4 - Sandbox runtime bridge service (E2B-backed) and WS relay integration
 - [ ] PR5 - Codex runtime adapter in sandbox
 - [ ] PR6 - Claude runtime adapter in sandbox
