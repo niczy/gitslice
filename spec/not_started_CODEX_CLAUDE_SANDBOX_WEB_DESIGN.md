@@ -31,6 +31,14 @@ The design builds on existing agent session foundations already in this repo:
 
 Current behavior is simulated (mock events and echo), not real sandbox runtime execution. This spec replaces simulation with production runtime plumbing while preserving current API style and rollout safety.
 
+### Integration Decision (Locked)
+
+Codex and Claude integration for this design is **CLI-only in v1**:
+
+1. Run vendor CLI binaries inside the sandbox (`codex` and `claude`).
+2. Do not call vendor HTTP APIs directly from core server in v1.
+3. Use a sandbox-local runtime shim to normalize CLI IO/events into gitslice WS event envelopes.
+
 ## Current State (Code Reality)
 
 ### What already exists
@@ -54,8 +62,8 @@ Current behavior is simulated (mock events and echo), not real sandbox runtime e
 1. **No real sandbox orchestration in active runtime path**
 - Session startup currently sets `RuntimeEndpoint = runtime://{session_id}` and transitions state with delays.
 
-2. **No provider runtime adapter**
-- No concrete runtime adapter for Codex/Claude command execution, streaming, tool-call handling, or structured output.
+2. **No CLI runtime adapter**
+- No concrete runtime adapter for Codex/Claude CLI execution, streaming, tool-call handling, or structured output.
 
 3. **WS is loopback simulation**
 - `pty/stdin` currently appends synthetic `pty/stdout` events in-process.
@@ -121,10 +129,10 @@ Current behavior is simulated (mock events and echo), not real sandbox runtime e
 - Connects core server WS plane to runtime process in sandbox.
 - Converts WS frames <-> runtime protocol.
 
-4. **Runtime adapter inside sandbox (new)**
-- Provider-neutral runtime process with adapters:
-  - `codex` adapter
-  - `claude` adapter
+4. **Runtime shim inside sandbox (new)**
+- Runtime process that launches vendor CLIs as subprocesses:
+  - `codex` CLI adapter
+  - `claude` CLI adapter
 - Emits normalized event envelopes for UI.
 
 5. **Environment registry (existing, extended semantics)**
@@ -260,12 +268,34 @@ Failure transition:
 3. Session row inserted as `creating`.
 4. Runtime manager requests sandbox start from environment provider config.
 5. Runtime bridge dials sandbox runtime endpoint.
-6. Runtime bridge sends `runtime.start` with:
+6. Runtime bridge sends `runtime.start` to sandbox shim with:
 - session metadata
 - selected agent type
 - mount path / workspace context
 - scoped env vars (non-secret) and secret references
-7. On runtime ready signal, session becomes `running`.
+7. Sandbox shim launches selected CLI binary (`codex` or `claude`) and emits `runtime.ready`.
+8. On runtime ready signal, session becomes `running`.
+
+### CLI runtime contract
+
+1. For `agent_type=codex`, shim executes configured `codex` binary path from environment config.
+2. For `agent_type=claude`, shim executes configured `claude` binary path from environment config.
+3. Shim is responsible for:
+- stdin/write, interrupt, and graceful shutdown handling
+- stdout/stderr streaming
+- mapping CLI-specific tool output into normalized `tool/*` events
+4. Core server never executes vendor binaries directly; execution stays sandbox-local.
+
+### Sandbox image/runtime requirements
+
+1. Sandbox template must include:
+- `codex` CLI binary
+- `claude` CLI binary
+- `agent-runtime` shim binary/service
+2. Version pinning of CLI binaries must be explicit in environment/template metadata.
+3. Missing binary must fail session startup with deterministic error codes:
+- `AGENT_BINARY_MISSING`
+- `AGENT_BINARY_EXEC_FAILED`
 
 ### Stop flow
 
@@ -331,9 +361,11 @@ All frames continue carrying `seq` and `ts` for replay.
 
 1. Provider credentials never sent to browser.
 2. Credentials sourced from server env/secret manager and injected at runtime start.
+  - Codex CLI credentials via sandbox env (example: `OPENAI_API_KEY`).
+  - Claude CLI credentials via sandbox env (example: `ANTHROPIC_API_KEY`).
 3. WS token remains single-use and short TTL (existing logic retained).
 4. Runtime egress policy:
-- allow: provider APIs, git hosts as needed
+- allow: provider API domains required by Codex/Claude CLIs, git hosts as needed
 - deny by default for all other outbound destinations
 5. Audit every:
 - session create/stop
@@ -355,7 +387,7 @@ All frames continue carrying `seq` and `ts` for replay.
 - `agent_ws_replay_gap_total`
 - `agent_ws_backpressure_close_total`
 
-3. Runtime providers:
+3. Runtime CLI adapters:
 - `agent_runtime_request_total{agent_type,outcome}`
 - `agent_runtime_token_out_total{agent_type}`
 
@@ -464,9 +496,9 @@ Exit criteria:
 
 Scope:
 
-1. Implement runtime adapter for Codex inside sandbox runtime process.
+1. Implement Codex CLI adapter inside sandbox runtime shim.
 2. Normalize Codex stream/tool events to WS envelope.
-3. Add provider-specific config validation.
+3. Add CLI binary/config validation for Codex.
 
 Exit criteria:
 
@@ -476,9 +508,9 @@ Exit criteria:
 
 Scope:
 
-1. Implement runtime adapter for Claude.
+1. Implement Claude CLI adapter inside sandbox runtime shim.
 2. Normalize Claude events to same envelope.
-3. Validate environment policy with `allowed_agent_types`.
+3. Add CLI binary/config validation for Claude and validate environment policy with `allowed_agent_types`.
 
 Exit criteria:
 
@@ -537,7 +569,6 @@ Exit criteria:
 
 ## Open Questions
 
-1. Do we run Codex/Claude via vendor CLI binaries, direct APIs, or both (with adapter fallback)?
-2. Should environment policy be org-admin only, or user-editable in personal spaces?
-3. Do we need per-session model version pinning (`claude-sonnet-*`, `gpt-*`) in v1?
-4. What is the default retention period for session event/audit payloads in postgres?
+1. Should environment policy be org-admin only, or user-editable in personal spaces?
+2. Do we need per-session model version pinning (`claude-sonnet-*`, `gpt-*`) in v1?
+3. What is the default retention period for session event/audit payloads in postgres?
