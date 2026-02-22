@@ -41,16 +41,15 @@ export default function OverviewPage({ onBrowseRepo }) {
       <section className="hero hero--landing-redesign">
         <div className="hero-content">
           <p className="eyebrow">Built for modern agent workflows</p>
-          <h1>API-first slices for fast, low-friction software delivery.</h1>
+          <h1>Ship faster with API-first slices for every change.</h1>
           <p className="lede">
-            Gitslice keeps your code, agent actions, and dev environment in sync so teams can deliver faster without complex
-            branch workflows.
+            Keep code, environment context, and agent actions aligned so teams move from idea to merged PR without branch maze overhead.
           </p>
           <div className="cta-row">
             <button type="button" className="primary" onClick={onBrowseRepo}>
-              Explore the repo browser
+              Explore repo browser
             </button>
-            <a className="ghost" href="https://github.com/agenttools-dev/gitslice" target="_blank" rel="noreferrer">
+            <a className="secondary-link" href="https://github.com/agenttools-dev/gitslice" target="_blank" rel="noreferrer">
               View on GitHub
             </a>
           </div>
