@@ -28,15 +28,14 @@ test.describe('Navigation history and URL reloading', () => {
 
   test('navigating to repo browser updates the URL hash', async ({ page }) => {
     await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/#/browser');
 
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
     await expect(page).toHaveURL(/#\/browser/);
   });
 
   test('navigating back to landing updates the URL hash', async ({ page }) => {
-    await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/#/browser');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Click brand logo to go back to landing
@@ -56,8 +55,7 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('reloading the repo browser page preserves the view', async ({ page }) => {
-    await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/#/browser');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Reload the page
@@ -67,10 +65,7 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('brand button returns to landing from the browser', async ({ page }) => {
-    await page.goto('/');
-
-    // Navigate landing -> browser
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/#/browser');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Use brand button to return to landing
@@ -78,19 +73,16 @@ test.describe('Navigation history and URL reloading', () => {
     await expect(page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i })).toBeVisible();
   });
 
-  test('repo browser button returns to browser from landing', async ({ page }) => {
-    await page.goto('/');
-
-    // Navigate landing -> browser
-    await page.getByTestId('topbar-repo-browser').click();
+  test('browser hash route returns to browser from landing', async ({ page }) => {
+    await page.goto('/#/browser');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Back to landing via brand button
     await page.getByRole('button', { name: /Git Slice/i }).click();
     await expect(page.getByRole('heading', { level: 1, name: /api-first slices for fast, low-friction software delivery/i })).toBeVisible();
 
-    // Forward to browser via repo button
-    await page.getByTestId('topbar-repo-browser').click();
+    // Forward to browser via hash route
+    await page.goto('/#/browser');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
   });
 

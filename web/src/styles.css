@@ -76,6 +76,17 @@ body {
   gap: 8px;
 }
 
+.nav-link--active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: rgba(9, 105, 218, 0.08);
+}
+
+.primary.nav-link--active {
+  color: #fff;
+  background: var(--accent-hover);
+}
+
 /* Agent launcher (floating) */
 .agent-launcher {
   position: fixed;

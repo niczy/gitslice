@@ -16,6 +16,9 @@ import OverviewPage from './components/OverviewPage.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
+import ProjectsPage from './components/ProjectsPage.jsx';
+import SettingsPage from './components/SettingsPage.jsx';
+import NotFoundPage from './components/NotFoundPage.jsx';
 import CommitDiffPage from './components/CommitDiffPage.jsx';
 import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import AgentSession from './components/AgentSession.jsx';
@@ -61,6 +64,7 @@ function App() {
   const [activePage, setActivePage] = useState(() => initialRoute.page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
+  const [unknownRoute, setUnknownRoute] = useState(() => initialRoute.unknownPath || '');
   const githubUrl = 'https://github.com/niczy/gitslice';
   const [username, setUsername] = useState(() => currentUsername());
 
@@ -108,16 +112,18 @@ function App() {
       setDiffCommitHash('');
       setDiffChangesetId('');
     }
+    setUnknownRoute('');
     window.history.pushState(null, '', buildHash(page, commitHash, changesetId));
   }, []);
 
   // Handle browser back/forward buttons
   useEffect(() => {
     const onPopState = () => {
-      const { page, commitHash, changesetId } = parseHash();
+      const { page, commitHash, changesetId, unknownPath } = parseHash();
       setActivePage(page);
       setDiffCommitHash(commitHash);
       setDiffChangesetId(changesetId);
+      setUnknownRoute(unknownPath || '');
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -219,6 +225,7 @@ function App() {
     signOutAccount();
     setUsername('');
     setActivePage('landing');
+    setUnknownRoute('');
     window.history.pushState(null, '', buildHash('landing', ''));
     startOAuthSignOut();
   }, []);
@@ -461,6 +468,25 @@ function App() {
 
   // Keep browser and diff pages on the same full-width layout to avoid visual width jumps.
   const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
+  const isAuthenticated = Boolean(username);
+  const isNavActive = (item) => {
+    if (item === 'repos') {
+      return activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
+    }
+    if (item === 'projects') {
+      return activePage === 'projects';
+    }
+    if (item === 'settings') {
+      return activePage === 'settings' || activePage === 'profile';
+    }
+    if (item === 'login') {
+      return activePage === 'login';
+    }
+    if (item === 'get-started') {
+      return activePage === 'landing';
+    }
+    return false;
+  };
 
   return (
     <div className={`app-shell${isBrowserLayout ? ' app-shell--browser' : ''}`}>
@@ -470,11 +496,35 @@ function App() {
           <span className="brand-text">Git Slice</span>
         </button>
         <div className="top-bar-actions">
-          {username ? (
+          {isAuthenticated ? (
             <>
               <button
                 type="button"
-                className="ghost"
+                className={`ghost nav-link${isNavActive('projects') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-projects"
+                onClick={() => navigate('projects')}
+              >
+                Projects
+              </button>
+              <button
+                type="button"
+                className={`ghost nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-repos"
+                onClick={() => navigate('browser')}
+              >
+                Repos
+              </button>
+              <button
+                type="button"
+                className={`ghost nav-link${isNavActive('settings') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-settings"
+                onClick={() => navigate('settings')}
+              >
+                Settings
+              </button>
+              <button
+                type="button"
+                className="ghost nav-link"
                 data-testid="topbar-profile"
                 onClick={() => navigate('profile')}
                 title="Profile"
@@ -483,7 +533,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="ghost"
+                className="ghost nav-link"
                 data-testid="topbar-logout"
                 onClick={doLogout}
               >
@@ -491,26 +541,31 @@ function App() {
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              className="ghost"
-              data-testid="topbar-login"
-              onClick={() => navigate('login')}
-            >
-              Login
-            </button>
+            <>
+              <button
+                type="button"
+                className={`ghost nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-login"
+                onClick={() => navigate('login')}
+              >
+                Login
+              </button>
+              <a className="ghost nav-link" href="https://github.com/agenttools-dev/gitslice#readme" target="_blank" rel="noreferrer" data-testid="topbar-docs-link">
+                Docs
+              </a>
+              <a className="ghost nav-link" href={githubUrl} target="_blank" rel="noreferrer" data-testid="topbar-github-link">
+                GitHub
+              </a>
+              <button
+                type="button"
+                className={`primary nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`}
+                data-testid="topbar-get-started"
+                onClick={() => navigate('landing')}
+              >
+                Get Started
+              </button>
+            </>
           )}
-          <a className="ghost" href={githubUrl} target="_blank" rel="noreferrer" data-testid="topbar-github-link">
-            GitHub
-          </a>
-          <button
-            type="button"
-            className="primary"
-            data-testid="topbar-repo-browser"
-            onClick={() => navigate('browser')}
-          >
-            Repo Browser
-          </button>
         </div>
       </header>
 
@@ -519,9 +574,18 @@ function App() {
         {activePage === 'login' && (
           <LoginPage onLogin={doLogin} onOAuthLogin={doOAuthLogin} onCancel={() => navigate('landing')} onLoggedIn={() => navigate('browser')} />
         )}
+        {activePage === 'projects' && (
+          <ProjectsPage
+            slices={slices}
+            slicesLoading={slicesLoading}
+            slicesError={slicesError}
+            onOpenRepos={() => navigate('browser')}
+          />
+        )}
         {activePage === 'profile' && (
           <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
         )}
+        {activePage === 'settings' && <SettingsPage username={username} onOpenProfile={() => navigate('profile')} />}
 
         {/* RepoBrowser stays mounted once visited to preserve state across browser<->diff navigation */}
         {browserMounted && (
@@ -556,6 +620,8 @@ function App() {
             onClosed={handleChangesetClosed}
           />
         )}
+
+        {activePage === 'not-found' && <NotFoundPage unknownPath={unknownRoute} onGoHome={() => navigate('landing')} />}
       </main>
 
       {showAgentButton && (
