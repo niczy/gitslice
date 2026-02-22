@@ -1597,8 +1597,7 @@ body {
   display: grid;
   grid-template-columns: 260px 1fr;
   gap: 16px;
-  height: calc(100vh - 240px);
-  min-height: 400px;
+  min-height: calc(100dvh - 240px);
   transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -3393,7 +3392,7 @@ body {
   }
 
   .repo-code {
-    min-height: 400px;
+    min-height: 0;
   }
 
   .slice-dropdown-menu {
@@ -3506,7 +3505,7 @@ body {
 
   .repo-code {
     border-radius: var(--radius-sm);
-    min-height: 350px;
+    min-height: 0;
   }
 
   .code-header {
