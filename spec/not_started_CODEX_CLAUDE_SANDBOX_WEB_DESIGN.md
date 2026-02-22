@@ -10,7 +10,7 @@ PR checklist:
 - [x] PR1 - Proto + contract baseline for model-aware sessions
 - [x] PR2 - Storage + model schema extensions (`agent_type`, provider run metadata)
 - [x] PR3 - Session service refactor: real runtime lifecycle interface (replace fake bootstrap)
-- [ ] PR4 - Sandbox runtime bridge service (E2B-backed) and WS relay integration
+- [x] PR4 - Sandbox runtime bridge service (E2B-backed) and WS relay integration
 - [ ] PR5 - Codex runtime adapter in sandbox
 - [ ] PR6 - Claude runtime adapter in sandbox
 - [ ] PR7 - Web UI integration (replace mock AgentSession with backend sessions)

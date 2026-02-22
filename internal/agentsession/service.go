@@ -538,6 +538,9 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		}
 		if runtimeID := strings.TrimSpace(result.SessionID); runtimeID != "" {
 			session.RuntimeSessionID = runtimeID
+			if strings.TrimSpace(session.E2BSandboxID) == "" {
+				session.E2BSandboxID = runtimeID
+			}
 		}
 		if endpoint := strings.TrimSpace(result.Endpoint); endpoint != "" {
 			session.RuntimeEndpoint = endpoint
