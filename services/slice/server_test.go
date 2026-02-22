@@ -438,6 +438,102 @@ func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-standard-patch", Name: "slice-standard-patch", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	const (
+		baseCommit = "commit-standard-base"
+		filePath   = "README.md"
+	)
+	baseContent := []byte("line1\n")
+	headContent := []byte("line1\nline2\n")
+	baseHash := hashBytes(baseContent)
+	headHash := hashBytes(headContent)
+
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  "base-readme-content",
+		Path:    filePath,
+		Content: baseContent,
+		Size:    int64(len(baseContent)),
+		Hash:    baseHash,
+	}); err != nil {
+		t.Fatalf("failed to add base content: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: baseCommit,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			filePath: baseHash,
+		},
+		Timestamp: time.Now().Add(-time.Minute).UTC(),
+	}); err != nil {
+		t.Fatalf("failed to save base commit snapshot: %v", err)
+	}
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(headContent)),
+	}); err != nil {
+		t.Fatalf("failed to add current file entry: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  filePath,
+		Path:    filePath,
+		Content: headContent,
+		Size:    int64(len(headContent)),
+		Hash:    headHash,
+	}); err != nil {
+		t.Fatalf("failed to add current content: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		t.Fatalf("failed to index current file in slice: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        slice.ID,
+		BaseCommitHash: baseCommit,
+		ModifiedFiles:  []string{filePath},
+		Message:        "standard patch coverage",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+		ChangesetId: createResp.GetChangesetId(),
+	})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if len(reviewResp.GetChanges()) != 1 {
+		t.Fatalf("expected one review change, got %d", len(reviewResp.GetChanges()))
+	}
+
+	change := reviewResp.GetChanges()[0]
+	if got, want := change.GetChangeType(), filev1.ChangeType_CHANGE_TYPE_MODIFY; got != want {
+		t.Fatalf("expected change type %v, got %v", want, got)
+	}
+	if strings.TrimSpace(change.GetPatch()) == "" {
+		t.Fatalf("expected inline patch, got empty patch")
+	}
+	if !strings.Contains(change.GetPatch(), "+line2") {
+		t.Fatalf("expected patch to include added line, got %q", change.GetPatch())
+	}
+	if reviewResp.GetDiff().GetFilesModified() != 1 {
+		t.Fatalf("expected files_modified=1, got %d", reviewResp.GetDiff().GetFilesModified())
+	}
+}
+
 func TestCreateChangesetAppendCreatesSnapshotVersions(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
