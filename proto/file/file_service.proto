@@ -85,6 +85,7 @@ message DirectoryEntry {
   EntryType type = 3;
   int64 size = 4;
   bool has_children = 5;
+  string hash = 6;
 }
 
 enum EntryType {

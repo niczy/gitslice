@@ -1915,8 +1915,17 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 
 	var e models.DirectoryEntry
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, path, type, parent_id, content, size FROM directory_entries WHERE id = $1
-	`, entryID).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size)
+		SELECT id, path, type, parent_id, content, size,
+			COALESCE((
+				SELECT fc.hash
+				FROM file_contents fc
+				WHERE fc.file_id = directory_entries.path OR fc.path = directory_entries.path
+				ORDER BY CASE WHEN fc.file_id = directory_entries.path THEN 0 ELSE 1 END
+				LIMIT 1
+			), '')
+		FROM directory_entries
+		WHERE id = $1
+	`, entryID).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Hash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -1931,9 +1940,17 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 
 	var e models.DirectoryEntry
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, path, type, parent_id, content, size FROM directory_entries
+		SELECT id, path, type, parent_id, content, size,
+			COALESCE((
+				SELECT fc.hash
+				FROM file_contents fc
+				WHERE fc.file_id = directory_entries.path OR fc.path = directory_entries.path
+				ORDER BY CASE WHEN fc.file_id = directory_entries.path THEN 0 ELSE 1 END
+				LIMIT 1
+			), '')
+		FROM directory_entries
 		WHERE slice_id = $1 AND path = $2
-	`, sliceID, path).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size)
+	`, sliceID, path).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Hash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -1947,7 +1964,14 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 	ctx = ensureCtx(ctx)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, path, type, parent_id, content, size
+		SELECT id, path, type, parent_id, content, size,
+			COALESCE((
+				SELECT fc.hash
+				FROM file_contents fc
+				WHERE fc.file_id = directory_entries.path OR fc.path = directory_entries.path
+				ORDER BY CASE WHEN fc.file_id = directory_entries.path THEN 0 ELSE 1 END
+				LIMIT 1
+			), '')
 		FROM directory_entries
 		WHERE slice_id = $1 AND parent_id = $2
 		ORDER BY path
@@ -1960,7 +1984,7 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 	var result []*models.DirectoryEntry
 	for rows.Next() {
 		var e models.DirectoryEntry
-		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size); err != nil {
+		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Hash); err != nil {
 			return nil, err
 		}
 		result = append(result, &e)

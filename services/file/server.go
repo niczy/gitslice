@@ -21,6 +21,7 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -489,6 +490,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 				storedPath := pathMap[filePath]
 				if meta, err := s.storage.GetEntryByPath(ctx, sliceID, storedPath); err == nil && meta != nil {
 					entry.Size = meta.Size
+					entry.Hash = meta.Hash
 				}
 			}
 		} else {
@@ -530,7 +532,121 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	}, nil
 }
 
-const maxUnaryGetFileBytes int64 = 10 * 1024 * 1024
+const (
+	maxUnaryGetFileBytes   int64 = 10 * 1024 * 1024
+	ifNoneMatchMetadataKey       = "if-none-match"
+	notModifiedMetadataKey       = "x-gitslice-not-modified"
+)
+
+func ifNoneMatchMatches(hash string, values []string) bool {
+	hash = strings.TrimSpace(hash)
+	if hash == "" || len(values) == 0 {
+		return false
+	}
+	for _, raw := range values {
+		for _, token := range strings.Split(raw, ",") {
+			t := strings.TrimSpace(token)
+			if t == "" {
+				continue
+			}
+			if t == "*" {
+				return true
+			}
+			if len(t) > 2 && (strings.HasPrefix(t, "W/") || strings.HasPrefix(t, "w/")) {
+				t = strings.TrimSpace(t[2:])
+			}
+			t = strings.Trim(t, `"`)
+			if t == hash {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *fileServiceServer) incomingIfNoneMatchValues(ctx context.Context) []string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok || md == nil {
+		return nil
+	}
+	return md.Get(ifNoneMatchMetadataKey)
+}
+
+func (s *fileServiceServer) maybeSetNotModifiedHeader(ctx context.Context, responsePath, hash string, size int64) (*filev1.GetFileResponse, bool) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, false
+	}
+	if !ifNoneMatchMatches(hash, s.incomingIfNoneMatchValues(ctx)) {
+		return nil, false
+	}
+	_ = grpc.SetHeader(ctx, metadata.Pairs(notModifiedMetadataKey, "true"))
+	return &filev1.GetFileResponse{
+		File: &filev1.File{
+			Path: responsePath,
+			Size: size,
+			Hash: hash,
+		},
+	}, true
+}
+
+func (s *fileServiceServer) resolveEffectiveCommit(ctx context.Context, slice *models.Slice, resolvedCommit string) string {
+	effectiveCommit := strings.TrimSpace(resolvedCommit)
+	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+		if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
+			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
+		}
+	}
+	return effectiveCommit
+}
+
+func (s *fileServiceServer) resolveFileMetadata(
+	ctx context.Context,
+	slice *models.Slice,
+	primarySliceID, storedPath, resolvedCommit string,
+) (hash string, size int64, err error) {
+	if strings.TrimSpace(primarySliceID) == "" || strings.TrimSpace(storedPath) == "" {
+		return "", 0, storage.ErrEntryNotFound
+	}
+
+	effectiveCommit := s.resolveEffectiveCommit(ctx, slice, resolvedCommit)
+	if effectiveCommit != "" {
+		if snapshot, err := s.storage.GetCommitSnapshot(ctx, effectiveCommit); err == nil && snapshot != nil {
+			if h := strings.TrimSpace(snapshot.Files[storedPath]); h != "" {
+				hash = h
+			}
+		}
+	}
+
+	entry, err := s.storage.GetEntryByPath(ctx, primarySliceID, storedPath)
+	if err == nil && entry != nil {
+		if strings.TrimSpace(hash) == "" {
+			hash = strings.TrimSpace(entry.Hash)
+		}
+		size = entry.Size
+		if strings.TrimSpace(hash) != "" {
+			return hash, size, nil
+		}
+	} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return "", 0, err
+	}
+
+	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != primarySliceID {
+		parentEntry, parentErr := s.storage.GetEntryByPath(ctx, slice.ParentSlice, storedPath)
+		if parentErr == nil && parentEntry != nil {
+			if strings.TrimSpace(hash) == "" {
+				hash = strings.TrimSpace(parentEntry.Hash)
+			}
+			if size == 0 {
+				size = parentEntry.Size
+			}
+		} else if parentErr != nil && !errors.Is(parentErr, storage.ErrEntryNotFound) {
+			return "", 0, parentErr
+		}
+	}
+
+	return strings.TrimSpace(hash), size, nil
+}
 
 func (s *fileServiceServer) resolveFileContent(
 	ctx context.Context,
@@ -542,12 +658,7 @@ func (s *fileServiceServer) resolveFileContent(
 		return nil, storage.ErrEntryNotFound
 	}
 
-	effectiveCommit := strings.TrimSpace(resolvedCommit)
-	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
-		if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
-			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
-		}
-	}
+	effectiveCommit := s.resolveEffectiveCommit(ctx, slice, resolvedCommit)
 	if effectiveCommit != "" {
 		if content, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && content != nil {
 			return content, nil
@@ -628,6 +739,18 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		if slice.ParentSlice != "" {
 			backingSliceID = slice.ParentSlice
 		}
+		responsePath := common.SliceDisplayPath(slice, storedPath)
+		if responsePath == "" {
+			responsePath = requestPath
+		}
+
+		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit)
+		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
+		}
+		if notModifiedResp, matched := s.maybeSetNotModifiedHeader(ctx, responsePath, hash, size); matched {
+			return notModifiedResp, nil
+		}
 
 		content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit)
 		if err != nil {
@@ -639,12 +762,18 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		if size := contentSize(content); size > maxUnaryGetFileBytes {
 			return nil, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
 		}
+		if strings.TrimSpace(hash) == "" {
+			hash = strings.TrimSpace(content.Hash)
+		}
+		if size == 0 {
+			size = contentSize(content)
+		}
 
 		file := &filev1.File{
-			Path:    common.SliceDisplayPath(slice, storedPath),
+			Path:    responsePath,
 			Content: content.Content,
-			Size:    contentSize(content),
-			Hash:    content.Hash,
+			Size:    size,
+			Hash:    hash,
 		}
 		return &filev1.GetFileResponse{File: file}, nil
 	}
@@ -672,6 +801,18 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	if !found || storedPath == "" {
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
+	responsePath := common.SliceDisplayPath(slice, storedPath)
+	if responsePath == "" {
+		responsePath = displayPath
+	}
+
+	hash, size, metaErr := s.resolveFileMetadata(ctx, slice, sliceID, storedPath, resolvedCommit)
+	if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
+	}
+	if notModifiedResp, matched := s.maybeSetNotModifiedHeader(ctx, responsePath, hash, size); matched {
+		return notModifiedResp, nil
+	}
 
 	content, err := s.resolveFileContent(ctx, sliceID, slice, sliceID, storedPath, resolvedCommit)
 	if err != nil {
@@ -686,12 +827,18 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	if size := contentSize(content); size > maxUnaryGetFileBytes {
 		return nil, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
 	}
+	if strings.TrimSpace(hash) == "" {
+		hash = strings.TrimSpace(content.Hash)
+	}
+	if size == 0 {
+		size = contentSize(content)
+	}
 
 	file := &filev1.File{
-		Path:    common.SliceDisplayPath(slice, storedPath),
+		Path:    responsePath,
 		Content: content.Content,
-		Size:    contentSize(content),
-		Hash:    content.Hash,
+		Size:    size,
+		Hash:    hash,
 	}
 
 	return &filev1.GetFileResponse{File: file}, nil
@@ -725,6 +872,7 @@ func buildListResponse(sliceID, listPath string, children []*models.DirectoryEnt
 			Type:        typ,
 			HasChildren: hasChildren,
 			Size:        child.Size,
+			Hash:        child.Hash,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })

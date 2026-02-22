@@ -3,6 +3,7 @@ package fileservice
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -34,6 +35,42 @@ func (c *commitByHashCounter) CallCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
+}
+
+type contentReadGuardStorage struct {
+	*storage.InMemoryStorage
+	mu                  sync.Mutex
+	blockContentReads   bool
+	getFileAtCommitCall int
+	getByPathCall       int
+}
+
+func (c *contentReadGuardStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
+	c.mu.Lock()
+	c.getFileAtCommitCall++
+	block := c.blockContentReads
+	c.mu.Unlock()
+	if block {
+		return nil, errors.New("unexpected GetFileAtCommit call")
+	}
+	return c.InMemoryStorage.GetFileAtCommit(ctx, commitHash, path)
+}
+
+func (c *contentReadGuardStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
+	c.mu.Lock()
+	c.getByPathCall++
+	block := c.blockContentReads
+	c.mu.Unlock()
+	if block {
+		return nil, errors.New("unexpected GetSliceFileByPath call")
+	}
+	return c.InMemoryStorage.GetSliceFileByPath(ctx, sliceID, path)
+}
+
+func (c *contentReadGuardStorage) contentReadCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.getByPathCall + c.getFileAtCommitCall
 }
 
 func authCtx() context.Context {
@@ -92,6 +129,120 @@ func TestGetFileRejectsLargeUnaryPayloads(t *testing.T) {
 	})
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("expected ResourceExhausted, got %v", err)
+	}
+}
+
+func TestListEntriesReturnsFileHash(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	const path = "README.md"
+	slice := &models.Slice{
+		ID:        "hashy",
+		Name:      "hashy",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{path},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  path,
+		Path:    path,
+		Content: []byte("hello"),
+		Size:    5,
+		Hash:    "abc123",
+	}); err != nil {
+		t.Fatalf("AddFileContent failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID("hashy", path),
+		Path:     path,
+		Type:     "file",
+		ParentID: "hashy",
+		Size:     5,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: "hashy"}},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if len(resp.GetEntries()) != 1 {
+		t.Fatalf("expected one entry, got %d", len(resp.GetEntries()))
+	}
+	if got := resp.GetEntries()[0].GetHash(); got != "abc123" {
+		t.Fatalf("expected hash abc123, got %q", got)
+	}
+}
+
+func TestGetFileIfNoneMatchReturnsNotModifiedWithoutContentRead(t *testing.T) {
+	base := storage.NewInMemoryStorage()
+	ctx := authCtx()
+
+	const (
+		sliceID = "conditional"
+		path    = "README.md"
+		hash    = "cond-hash"
+	)
+	if err := base.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{path},
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := base.AddFileContent(ctx, &models.FileContent{
+		FileID:  path,
+		Path:    path,
+		Content: []byte("hello"),
+		Size:    5,
+		Hash:    hash,
+	}); err != nil {
+		t.Fatalf("AddFileContent failed: %v", err)
+	}
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(sliceID, path),
+		Path:     path,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     5,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	guard := &contentReadGuardStorage{
+		InMemoryStorage:   base,
+		blockContentReads: true,
+	}
+	svc := newFileServiceServer(guard)
+
+	reqCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		"authorization", "User tester",
+		"if-none-match", `"`+hash+`"`,
+	))
+	resp, err := svc.GetFile(reqCtx, &filev1.GetFileRequest{
+		Path:    path,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: sliceID}},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if resp.GetFile().GetHash() != hash {
+		t.Fatalf("expected hash %q, got %q", hash, resp.GetFile().GetHash())
+	}
+	if len(resp.GetFile().GetContent()) != 0 {
+		t.Fatalf("expected empty content for not-modified response")
+	}
+	if calls := guard.contentReadCalls(); calls != 0 {
+		t.Fatalf("expected no content-read storage calls, got %d", calls)
 	}
 }
 

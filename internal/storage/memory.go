@@ -1207,6 +1207,7 @@ func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryE
 		ParentID: parentIDForPath(sliceID, p),
 		Content:  entry.Content,
 		Size:     entry.Size,
+		Hash:     entry.Hash,
 	})
 
 	return nil
@@ -1223,6 +1224,7 @@ func (s *InMemoryStorage) GetEntry(ctx context.Context, entryID string) (*models
 	}
 
 	copy := *entry
+	copy.Hash = s.entryHashLocked(entry)
 	return &copy, nil
 }
 
@@ -1242,6 +1244,7 @@ func (s *InMemoryStorage) GetEntryByPath(ctx context.Context, sliceID, path stri
 	}
 
 	copy := *entry
+	copy.Hash = s.entryHashLocked(entry)
 	return &copy, nil
 }
 
@@ -1264,10 +1267,24 @@ func (s *InMemoryStorage) ListEntries(ctx context.Context, sliceID, parentID str
 			}
 		}
 		copy := *entry
+		copy.Hash = s.entryHashLocked(entry)
 		result = append(result, &copy)
 	}
 
 	return result, nil
+}
+
+func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
+	if entry == nil || entry.Type != "file" {
+		return ""
+	}
+	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
+		return strings.TrimSpace(fc.Hash)
+	}
+	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
+		return strings.TrimSpace(fc.Hash)
+	}
+	return strings.TrimSpace(entry.Hash)
 }
 
 // UpdateEntry updates a directory entry
