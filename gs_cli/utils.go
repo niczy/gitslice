@@ -10,30 +10,84 @@ import (
 	"time"
 )
 
+const (
+	sliceConfigPath            = ".gs/config"
+	trackedChangesetConfigPath = ".gs/changeset_id"
+)
+
 // readSliceIDFromConfig reads the slice ID from the .gs/config file.
 func readSliceIDFromConfig() (string, error) {
 	// Check if config file exists first
-	if _, err := os.Stat(".gs/config"); err != nil {
+	if _, err := os.Stat(sliceConfigPath); err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf(".gs/config file not found - have you run 'gs init'?")
+			return "", fmt.Errorf("%s file not found - have you run 'gs init'?", sliceConfigPath)
 		}
-		return "", fmt.Errorf("cannot access .gs/config: %w", err)
+		return "", fmt.Errorf("cannot access %s: %w", sliceConfigPath, err)
 	}
 
-	data, err := os.ReadFile(".gs/config")
+	data, err := os.ReadFile(sliceConfigPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read .gs/config: %w", err)
+		return "", fmt.Errorf("failed to read %s: %w", sliceConfigPath, err)
 	}
 	sliceID := strings.TrimSpace(string(data))
 	if sliceID == "" {
-		return "", fmt.Errorf("slice ID in .gs/config is empty")
+		return "", fmt.Errorf("slice ID in %s is empty", sliceConfigPath)
 	}
 	return sliceID, nil
 }
 
 // writeSliceIDConfig writes the slice ID to the .gs/config file.
 func writeSliceIDConfig(sliceID string) error {
-	return os.WriteFile(".gs/config", []byte(sliceID), 0600)
+	return os.WriteFile(sliceConfigPath, []byte(sliceID), 0600)
+}
+
+// readTrackedChangesetIDFromConfig reads the locally tracked changeset ID.
+// Missing tracking file is treated as "no tracked changeset" and does not error.
+func readTrackedChangesetIDFromConfig() (string, error) {
+	data, err := os.ReadFile(trackedChangesetConfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read %s: %w", trackedChangesetConfigPath, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// writeTrackedChangesetIDConfig persists the tracked changeset ID for this workspace.
+// Empty IDs clear the tracking file.
+func writeTrackedChangesetIDConfig(changesetID string) error {
+	changesetID = strings.TrimSpace(changesetID)
+	if changesetID == "" {
+		return clearTrackedChangesetIDConfig()
+	}
+	if err := os.MkdirAll(filepath.Dir(trackedChangesetConfigPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(trackedChangesetConfigPath, []byte(changesetID), 0o600)
+}
+
+func clearTrackedChangesetIDConfig() error {
+	err := os.Remove(trackedChangesetConfigPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func clearTrackedChangesetIDIfMatches(changesetID string) error {
+	changesetID = strings.TrimSpace(changesetID)
+	if changesetID == "" {
+		return nil
+	}
+	tracked, err := readTrackedChangesetIDFromConfig()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(tracked) == changesetID {
+		return clearTrackedChangesetIDConfig()
+	}
+	return nil
 }
 
 // splitAndTrim splits a string by a delimiter and trims whitespace from each part.
