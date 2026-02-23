@@ -10,6 +10,7 @@ func printHelp() {
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
 	fmt.Println("  import      Import external repositories")
+	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  init        Initialize working directory")
 	fmt.Println("  status      Show working directory status")
 	fmt.Println("  log         Show slice commit history")
@@ -48,4 +49,14 @@ func printImportHelp() {
 	fmt.Println("Usage: gs import <command> [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  git        Import a git repository (local path or remote URL) commit-by-commit into the root slice")
+}
+
+func printFileHelp() {
+	fmt.Println("Usage: gs file <command> [options]")
+	fmt.Println("\nCommands:")
+	fmt.Println("  ls             List directory entries")
+	fmt.Println("  cat            Show file contents")
+	fmt.Println("  history        Show file change history")
+	fmt.Println("  dir-history    Show directory change history")
+	fmt.Println("  commit-changes Show all file changes in a commit")
 }

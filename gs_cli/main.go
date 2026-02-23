@@ -9,6 +9,7 @@ import (
 	"time"
 
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -16,9 +17,10 @@ import (
 )
 
 var (
-	coreServerAddr  = flag.String("addr", "", "Core gRPC service address (overrides slice-addr/admin-addr)")
+	coreServerAddr  = flag.String("addr", "", "Core gRPC service address (overrides slice-addr/admin-addr/file-addr)")
 	sliceServerAddr = flag.String("slice-addr", "localhost:50051", "Slice service address")
 	adminServerAddr = flag.String("admin-addr", "localhost:50051", "Admin service address")
+	fileServerAddr  = flag.String("file-addr", "localhost:50051", "File service address")
 	useTLS          = flag.Bool("tls", false, "Use TLS for gRPC connections")
 	userFlag        = flag.String("user", "", "Username for fake login (overrides GS_USERNAME and ~/.gitslice/user)")
 )
@@ -27,8 +29,10 @@ var (
 type CLI struct {
 	sliceConn   *grpc.ClientConn
 	adminConn   *grpc.ClientConn
+	fileConn    *grpc.ClientConn
 	sliceClient slicev1.SliceServiceClient
 	adminClient adminv1.AdminServiceClient
+	fileClient  filev1.FileServiceClient
 }
 
 func main() {
@@ -37,9 +41,10 @@ func main() {
 	if *coreServerAddr != "" {
 		*sliceServerAddr = *coreServerAddr
 		*adminServerAddr = *coreServerAddr
+		*fileServerAddr = *coreServerAddr
 	}
 
-	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr, *useTLS)
+	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr, *fileServerAddr, *useTLS)
 	if err != nil {
 		log.Fatalf("Failed to initialize CLI: %v", err)
 	}
@@ -80,6 +85,8 @@ func main() {
 		handleForkSlice(ctx, cli, args[1:])
 	case "import":
 		handleImportCommand(ctx, cli, args[1:])
+	case "file":
+		handleFileCommand(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown command: %s", args[0])
 		printHelp()
@@ -87,7 +94,7 @@ func main() {
 }
 
 // NewCLI creates a new CLI instance with connections to the gitslice services.
-func NewCLI(sliceAddr, adminAddr string, tlsEnabled bool) (*CLI, error) {
+func NewCLI(sliceAddr, adminAddr, fileAddr string, tlsEnabled bool) (*CLI, error) {
 	transportCreds := insecure.NewCredentials()
 	if tlsEnabled {
 		transportCreds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
@@ -104,11 +111,20 @@ func NewCLI(sliceAddr, adminAddr string, tlsEnabled bool) (*CLI, error) {
 		return nil, fmt.Errorf("failed to connect to admin service: %w", err)
 	}
 
+	fileConn, err := grpc.Dial(fileAddr, grpc.WithTransportCredentials(transportCreds))
+	if err != nil {
+		sliceConn.Close()
+		adminConn.Close()
+		return nil, fmt.Errorf("failed to connect to file service: %w", err)
+	}
+
 	return &CLI{
 		sliceConn:   sliceConn,
 		adminConn:   adminConn,
+		fileConn:    fileConn,
 		sliceClient: slicev1.NewSliceServiceClient(sliceConn),
 		adminClient: adminv1.NewAdminServiceClient(adminConn),
+		fileClient:  filev1.NewFileServiceClient(fileConn),
 	}, nil
 }
 
@@ -119,5 +135,8 @@ func (c *CLI) Close() {
 	}
 	if c.adminConn != nil {
 		c.adminConn.Close()
+	}
+	if c.fileConn != nil {
+		c.fileConn.Close()
 	}
 }
