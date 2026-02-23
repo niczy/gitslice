@@ -718,16 +718,23 @@ func (s *InMemoryStorage) nextChangesetIDLocked() string {
 			s.nextChangesetSeq = maxSeen + 1
 		}
 	}
-	id := fmt.Sprintf("cs-%d", s.nextChangesetSeq)
+	id := fmt.Sprintf("cs-global-%d", s.nextChangesetSeq)
 	s.nextChangesetSeq++
 	return id
 }
 
 func parseGlobalChangesetSeq(id string) (int64, bool) {
-	if !strings.HasPrefix(id, "cs-") {
+	rawID := strings.TrimSpace(id)
+	var raw string
+	switch {
+	case strings.HasPrefix(rawID, "cs-global-"):
+		raw = strings.TrimSpace(strings.TrimPrefix(rawID, "cs-global-"))
+	case strings.HasPrefix(rawID, "cs-"):
+		// Backward compatibility for existing IDs.
+		raw = strings.TrimSpace(strings.TrimPrefix(rawID, "cs-"))
+	default:
 		return 0, false
 	}
-	raw := strings.TrimSpace(strings.TrimPrefix(id, "cs-"))
 	if raw == "" {
 		return 0, false
 	}

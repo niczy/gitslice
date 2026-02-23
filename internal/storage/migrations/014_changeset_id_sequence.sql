@@ -5,9 +5,14 @@ SELECT setval(
     GREATEST(
         COALESCE(
             (
-                SELECT MAX((regexp_match(id, '^cs-([0-9]+)$'))[1]::bigint)
+                SELECT MAX(
+                    COALESCE(
+                        (regexp_match(id, '^cs-global-([0-9]+)$'))[1]::bigint,
+                        (regexp_match(id, '^cs-([0-9]+)$'))[1]::bigint
+                    )
+                )
                 FROM changesets
-                WHERE id ~ '^cs-[0-9]+$'
+                WHERE id ~ '^cs-global-[0-9]+$' OR id ~ '^cs-[0-9]+$'
             ),
             0
         ) + 1,

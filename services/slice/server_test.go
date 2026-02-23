@@ -465,10 +465,10 @@ func TestCreateChangesetUsesIncrementalGlobalIDs(t *testing.T) {
 		t.Fatalf("CreateChangeset(second) failed: %v", err)
 	}
 
-	if got, want := first.GetChangesetId(), "cs-1"; got != want {
+	if got, want := first.GetChangesetId(), "cs-global-1"; got != want {
 		t.Fatalf("expected first changeset id %q, got %q", want, got)
 	}
-	if got, want := second.GetChangesetId(), "cs-2"; got != want {
+	if got, want := second.GetChangesetId(), "cs-global-2"; got != want {
 		t.Fatalf("expected second changeset id %q, got %q", want, got)
 	}
 }

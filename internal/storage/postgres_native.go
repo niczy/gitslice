@@ -1484,7 +1484,7 @@ func (s *PostgresNativeStorage) CreateChangeset(ctx context.Context, changeset *
 		if err := s.pool.QueryRow(ctx, `SELECT nextval('changeset_id_seq')`).Scan(&nextID); err != nil {
 			return err
 		}
-		changeset.ID = fmt.Sprintf("cs-%d", nextID)
+		changeset.ID = fmt.Sprintf("cs-global-%d", nextID)
 	}
 
 	_, err = s.pool.Exec(ctx, `
