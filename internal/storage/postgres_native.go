@@ -1461,6 +1461,9 @@ func (s *PostgresNativeStorage) RebuildIndexes(ctx context.Context) error {
 
 func (s *PostgresNativeStorage) CreateChangeset(ctx context.Context, changeset *models.Changeset) error {
 	ctx = ensureCtx(ctx)
+	if changeset == nil {
+		return ErrInvalidInput
+	}
 
 	// Verify slice exists.
 	var exists bool
@@ -1475,6 +1478,13 @@ func (s *PostgresNativeStorage) CreateChangeset(ctx context.Context, changeset *
 	modifiedJSON, _ := json.Marshal(changeset.ModifiedFiles)
 	if changeset.ModifiedFiles == nil {
 		modifiedJSON = []byte("[]")
+	}
+	if strings.TrimSpace(changeset.ID) == "" {
+		var nextID int64
+		if err := s.pool.QueryRow(ctx, `SELECT nextval('changeset_id_seq')`).Scan(&nextID); err != nil {
+			return err
+		}
+		changeset.ID = fmt.Sprintf("cs-global-%d", nextID)
 	}
 
 	_, err = s.pool.Exec(ctx, `

@@ -253,7 +253,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	id := fmt.Sprintf("cs-%d", time.Now().UnixNano())
+	id := ""
 	hash := fmt.Sprintf("hash-%d", time.Now().UnixNano())
 
 	cs := &models.Changeset{
@@ -651,7 +651,7 @@ func (s *sliceServiceServer) RevertCommitChange(ctx context.Context, req *slicev
 		}
 	}
 
-	id := fmt.Sprintf("cs-%d", time.Now().UnixNano())
+	id := ""
 	hash := buildRevertChangesetHash(commitHash, changeID)
 	cs := &models.Changeset{
 		ID:             id,
