@@ -4343,6 +4343,10 @@ pre,
   grid-template-columns: minmax(0, 1fr);
 }
 
+.repo-layout.sidebar-collapsed .repo-sidebar {
+  display: none;
+}
+
 .repo-sidebar,
 .repo-code {
   border-radius: 22px;
@@ -4873,6 +4877,7 @@ pre,
 }
 
 .sidebar-overlay {
+  display: none;
   position: fixed;
   inset: 0;
   background: rgba(14, 27, 36, 0.32);
@@ -5675,26 +5680,6 @@ pre,
     min-height: 0;
   }
 
-  .repo-sidebar {
-    position: fixed;
-    top: 72px;
-    left: 10px;
-    width: min(340px, calc(100vw - 20px));
-    height: calc(100dvh - 84px);
-    z-index: 16;
-    transform: translateX(-108%);
-    transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .repo-sidebar.open {
-    transform: translateX(0);
-  }
-
-  .repo-sidebar.closed {
-    transform: translateX(-108%);
-    pointer-events: none;
-  }
-
   .repo-code {
     min-height: min(76vh, 760px);
   }
@@ -5715,6 +5700,36 @@ pre,
 
   .agent-fullscreen {
     inset: 64px 10px 94px;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar-overlay {
+    display: block;
+  }
+
+  .repo-layout.sidebar-collapsed .repo-sidebar {
+    display: grid;
+  }
+
+  .repo-sidebar {
+    position: fixed;
+    top: 72px;
+    left: 10px;
+    width: min(340px, calc(100vw - 20px));
+    height: calc(100dvh - 84px);
+    z-index: 16;
+    transform: translateX(-108%);
+    transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .repo-sidebar.open {
+    transform: translateX(0);
+  }
+
+  .repo-sidebar.closed {
+    transform: translateX(-108%);
+    pointer-events: none;
   }
 }
 
