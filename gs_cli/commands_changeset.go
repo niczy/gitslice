@@ -59,26 +59,51 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	}
 	modifiedFiles = append(modifiedFiles, fs.Args()...)
 
+	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
+	if err != nil {
+		log.Printf("Failed to resolve tracked changeset ID: %v", err)
+		return
+	}
+
 	req := &slicev1.CreateChangesetRequest{
 		SliceId:        sliceID,
 		BaseCommitHash: *base,
 		ModifiedFiles:  modifiedFiles,
 		Author:         *author,
 		Message:        *message,
-		ChangesetId:    strings.TrimSpace(*changesetID),
+		ChangesetId:    resolvedChangesetID,
 	}
 
 	resp, err := cli.sliceClient.CreateChangeset(ctx, req)
 	if err != nil {
 		log.Fatalf("Failed to create changeset: %v", err)
 	}
+	if err := writeTrackedChangesetIDConfig(resp.GetChangesetId()); err != nil {
+		log.Printf("Warning: failed to track changeset ID locally: %v", err)
+	}
 
-	if strings.TrimSpace(*changesetID) != "" {
+	if isUpdate {
 		fmt.Printf("Updated changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
 	} else {
 		fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
 	}
 	fmt.Printf("Status: %s\n", resp.Status.String())
+}
+
+func resolveChangesetIDForCreate(explicit string) (string, bool, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		return explicit, true, nil
+	}
+	tracked, err := readTrackedChangesetIDFromConfig()
+	if err != nil {
+		return "", false, err
+	}
+	tracked = strings.TrimSpace(tracked)
+	if tracked != "" {
+		return tracked, true, nil
+	}
+	return "", false, nil
 }
 
 func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
@@ -110,6 +135,11 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	resp, err := cli.sliceClient.MergeChangeset(ctx, req)
 	if err != nil {
 		log.Fatalf("Failed to merge changeset: %v", err)
+	}
+	if resp.GetStatus() == slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		if err := clearTrackedChangesetIDIfMatches(req.ChangesetId); err != nil {
+			log.Printf("Warning: failed to clear tracked changeset ID: %v", err)
+		}
 	}
 
 	fmt.Printf("Merge status: %s\n", resp.Status.String())
