@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,7 @@ type InMemoryStorage struct {
 	agentSessionEvents map[string][]*models.AgentSessionEvent // sessionID -> events ordered by seq asc
 	agentSessionAudit  map[string][]*models.AgentSessionAudit // sessionID -> audit ordered by created asc
 	nextAuditID        int64
+	nextChangesetSeq   int64
 }
 
 // NewInMemoryStorage creates a new in-memory storage instance
@@ -125,6 +127,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		agentSessionEvents:        make(map[string][]*models.AgentSessionEvent),
 		agentSessionAudit:         make(map[string][]*models.AgentSessionAudit),
 		nextAuditID:               1,
+		nextChangesetSeq:          1,
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -184,6 +187,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.agentSessionEvents = fresh.agentSessionEvents
 	s.agentSessionAudit = fresh.agentSessionAudit
 	s.nextAuditID = fresh.nextAuditID
+	s.nextChangesetSeq = fresh.nextChangesetSeq
 	return nil
 }
 
@@ -681,13 +685,57 @@ func (s *InMemoryStorage) CreateChangeset(ctx context.Context, changeset *models
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if changeset == nil {
+		return ErrInvalidInput
+	}
 	if _, exists := s.slices[changeset.SliceID]; !exists {
 		return ErrSliceNotFound
+	}
+	if strings.TrimSpace(changeset.ID) == "" {
+		changeset.ID = s.nextChangesetIDLocked()
+	}
+	if n, ok := parseGlobalChangesetSeq(changeset.ID); ok && n >= s.nextChangesetSeq {
+		s.nextChangesetSeq = n + 1
 	}
 
 	s.changesets[changeset.ID] = changeset
 	s.sliceChangesets[changeset.SliceID] = append([]string{changeset.ID}, s.sliceChangesets[changeset.SliceID]...)
 	return nil
+}
+
+func (s *InMemoryStorage) nextChangesetIDLocked() string {
+	if s.nextChangesetSeq <= 0 {
+		s.nextChangesetSeq = 1
+	}
+	if s.nextChangesetSeq == 1 {
+		var maxSeen int64
+		for id := range s.changesets {
+			if n, ok := parseGlobalChangesetSeq(id); ok && n > maxSeen {
+				maxSeen = n
+			}
+		}
+		if maxSeen >= s.nextChangesetSeq {
+			s.nextChangesetSeq = maxSeen + 1
+		}
+	}
+	id := fmt.Sprintf("cs-%d", s.nextChangesetSeq)
+	s.nextChangesetSeq++
+	return id
+}
+
+func parseGlobalChangesetSeq(id string) (int64, bool) {
+	if !strings.HasPrefix(id, "cs-") {
+		return 0, false
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(id, "cs-"))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // GetChangeset retrieves a changeset by ID

@@ -438,6 +438,41 @@ func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestCreateChangesetUsesIncrementalGlobalIDs(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-create-id-seq", Name: "slice-create-id-seq", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	first, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"first.txt"},
+		Message:       "first changeset",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset(first) failed: %v", err)
+	}
+	second, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"second.txt"},
+		Message:       "second changeset",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset(second) failed: %v", err)
+	}
+
+	if got, want := first.GetChangesetId(), "cs-1"; got != want {
+		t.Fatalf("expected first changeset id %q, got %q", want, got)
+	}
+	if got, want := second.GetChangesetId(), "cs-2"; got != want {
+		t.Fatalf("expected second changeset id %q, got %q", want, got)
+	}
+}
+
 func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
