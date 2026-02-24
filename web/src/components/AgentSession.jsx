@@ -1,9 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mintAgentSessionToken } from '../utils/api.js';
-
-// ---------------------------------------------------------------------------
-// Agent Session Component
-// ---------------------------------------------------------------------------
 
 function normalizeWSURL(rawURL = '') {
   if (!rawURL) return '';
@@ -38,14 +34,37 @@ function lineFromFrame(frame) {
     return { type: 'output', text: payload?.data || '' };
   }
   if (frame?.stream === 'control' && frame?.type === 'error') {
-    return { type: 'output', text: `[error] ${payload?.message || payload?.code || 'runtime error'}` };
+    return { type: 'error', text: payload?.message || payload?.code || 'runtime error' };
   }
   return null;
 }
 
+function toChatMessage(line) {
+  const text = String(line?.text || '').trim();
+  if (!text) return null;
+
+  if (line?.type === 'prompt') {
+    return { role: 'user', text: text.replace(/^\$\s*/, '') };
+  }
+
+  if (text.startsWith('[tool')) {
+    return { role: 'assistant', text, tone: 'meta' };
+  }
+
+  return {
+    role: 'assistant',
+    text,
+    tone: line?.type === 'error' ? 'error' : (line?.type === 'success' ? 'success' : 'default'),
+  };
+}
+
 export default function AgentSession({
   session,
+  sessions = [],
+  activeSessionId,
+  onSelectSession,
   onClose,
+  onCloseSession,
   onMinimize,
   realRuntimeEnabled = false,
   onSessionStateChange,
@@ -54,7 +73,7 @@ export default function AgentSession({
   const [lines, setLines] = useState([]);
   const [displayedLines, setDisplayedLines] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
-  const terminalRef = useRef(null);
+  const chatScrollRef = useRef(null);
   const wsRef = useRef(null);
   const lastSeqRef = useRef(0);
   const reconnectTimerRef = useRef(null);
@@ -64,7 +83,6 @@ export default function AgentSession({
     setLines((prev) => [...prev, line]);
   }, []);
 
-  // Mock-mode staggered loading animation
   useEffect(() => {
     if (!realRuntimeEnabled && session?.terminalLines) {
       setLines(session.terminalLines);
@@ -136,7 +154,7 @@ export default function AgentSession({
             }
             appendLine(lineFromFrame(frame));
           } catch {
-            appendLine({ type: 'output', text: '[error] invalid runtime frame' });
+            appendLine({ type: 'error', text: 'invalid runtime frame' });
           }
         };
 
@@ -153,11 +171,11 @@ export default function AgentSession({
         };
 
         ws.onerror = () => {
-          appendLine({ type: 'output', text: '[error] websocket connection failed' });
+          appendLine({ type: 'error', text: 'websocket connection failed' });
         };
       } catch (error) {
         if (!disposed) {
-          appendLine({ type: 'output', text: `[error] ${error?.message || 'failed to connect runtime'}` });
+          appendLine({ type: 'error', text: error?.message || 'failed to connect runtime' });
         }
       }
     };
@@ -177,25 +195,23 @@ export default function AgentSession({
   }, [appendLine, onSessionStateChange, realRuntimeEnabled, session?.id, session?.sessionId, session?.status, session?.terminalLines, session?.ws]);
 
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [lines, displayedLines]);
+  }, [lines, displayedLines, isProcessing]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!inputValue.trim() || isProcessing) return;
 
     const command = inputValue.trim();
-    if (!command) return;
-
     setInputValue('');
-    appendLine({ type: 'prompt', text: `$ ${command}` });
+    appendLine({ type: 'prompt', text: command });
 
     if (realRuntimeEnabled) {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        appendLine({ type: 'output', text: '[error] runtime is not connected' });
+        appendLine({ type: 'error', text: 'runtime is not connected' });
         return;
       }
       ws.send(JSON.stringify({
@@ -207,30 +223,27 @@ export default function AgentSession({
     }
 
     setIsProcessing(true);
-
     await new Promise((r) => setTimeout(r, 400));
-    setLines((prev) => [...prev, { type: 'output', text: 'Processing command...' }]);
-
+    setLines((prev) => [...prev, { type: 'output', text: 'Processing request...' }]);
     await new Promise((r) => setTimeout(r, 500));
-    setLines((prev) => [...prev, { type: 'output', text: `Executing: ${command}` }]);
-
+    setLines((prev) => [...prev, { type: 'output', text: `Running: ${command}` }]);
     await new Promise((r) => setTimeout(r, 600));
 
-    const results = [
-      { type: 'success', text: '✓ Command executed successfully' },
-      { type: 'output', text: `Output: ${Math.floor(Math.random() * 1000)} items processed` },
-      { type: 'output', text: 'Time: 0.42s' },
-    ];
-
-    setLines((prev) => [...prev, ...results, { type: 'prompt', text: '$ _' }]);
+    setLines((prev) => ([
+      ...prev,
+      { type: 'success', text: 'Done. The request has been completed.' },
+      { type: 'output', text: `Processed ${Math.floor(Math.random() * 1000)} items in 0.42s.` },
+    ]));
     setIsProcessing(false);
   };
-
-  if (!session) return null;
 
   const visibleLines = realRuntimeEnabled
     ? lines
     : lines.slice(0, Math.max(displayedLines, lines.length - 1));
+
+  const chatMessages = useMemo(() => visibleLines.map(toChatMessage).filter(Boolean), [visibleLines]);
+
+  if (!session) return null;
 
   return (
     <div className="agent-session-container">
@@ -239,68 +252,79 @@ export default function AgentSession({
           <span className="agent-session-title-icon">🤖</span>
           <span>{session.name}</span>
           {session.sliceName && <span className="agent-session-slice">{session.sliceName}</span>}
-          <span className={`agent-status-badge status-${session.status}`}>
-            {session.status}
-          </span>
+          <span className={`agent-status-badge status-${session.status}`}>{session.status}</span>
         </div>
         <div className="agent-session-actions">
-          <button
-            type="button"
-            className="agent-session-action-btn"
-            onClick={onMinimize}
-            title="Minimize (Cmd+M)"
-          >
-            −
-          </button>
-          <button
-            type="button"
-            className="agent-session-action-btn"
-            onClick={onClose}
-            title="Close"
-          >
-            ×
-          </button>
+          <button type="button" className="agent-session-action-btn" onClick={onMinimize} title="Minimize">−</button>
+          <button type="button" className="agent-session-action-btn" onClick={onClose} title="Close">×</button>
         </div>
       </div>
+
       <div className="agent-session-body">
-        <div className="agent-terminal" ref={terminalRef}>
-          {visibleLines.map((line, index) => (
-            <div
-              key={index}
-              className={`terminal-line terminal-${line.type}`}
-              style={{ animationDelay: `${index * 30}ms` }}
-            >
-              {line.type === 'prompt' && (
-                <span className="terminal-prompt">$ </span>
-              )}
-              <span className={`terminal-text terminal-text-${line.type}`}>
-                {line.text.replace(/^\$ /, '').replace(/_$/, '')}
-                {line.text.endsWith('_') && <span className="terminal-cursor">_</span>}
-              </span>
-            </div>
-          ))}
-          {isProcessing && (
-            <div className="terminal-line terminal-output">
-              <span className="terminal-processing">
-                <span className="processing-dot">.</span>
-                <span className="processing-dot">.</span>
-                <span className="processing-dot">.</span>
-              </span>
-            </div>
-          )}
+        <div className="agent-chat-panel">
+          <div className="agent-chat-messages" ref={chatScrollRef}>
+            {chatMessages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={`chat-row ${message.role === 'user' ? 'chat-row-user' : 'chat-row-assistant'}`}>
+                <div className={`chat-bubble chat-${message.role}${message.tone ? ` chat-tone-${message.tone}` : ''}`}>
+                  {message.text}
+                </div>
+              </div>
+            ))}
+            {isProcessing && (
+              <div className="chat-row chat-row-assistant">
+                <div className="chat-bubble chat-assistant chat-typing">Agent is thinking…</div>
+              </div>
+            )}
+          </div>
+          <form className="agent-input-form" onSubmit={handleSubmit}>
+            <input
+              type="text"
+              className="agent-input"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder={realRuntimeEnabled ? 'Ask the agent anything…' : (isProcessing ? 'Processing…' : 'Send a message…')}
+              autoFocus
+              disabled={isProcessing}
+            />
+          </form>
         </div>
-        <form className="agent-input-form" onSubmit={handleSubmit}>
-          <span className="agent-input-prompt">$</span>
-          <input
-            type="text"
-            className="agent-input"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder={realRuntimeEnabled ? 'Send prompt to runtime...' : (isProcessing ? 'Processing...' : 'Type a command...')}
-            autoFocus
-            disabled={isProcessing}
-          />
-        </form>
+
+        <aside className="agent-session-nav" aria-label="Session list">
+          <div className="agent-session-nav-header">Session List</div>
+          <div className="agent-session-nav-items">
+            {sessions.length === 0 && <p className="agent-session-nav-empty">No sessions for this slice yet.</p>}
+            {sessions.map((sessionItem) => (
+              <button
+                key={sessionItem.id}
+                type="button"
+                className={`agent-session-nav-item ${sessionItem.id === activeSessionId ? 'active' : ''}`}
+                onClick={() => onSelectSession?.(sessionItem.id)}
+              >
+                <span className="agent-session-nav-name">{sessionItem.name}</span>
+                <span className={`agent-status-badge status-${sessionItem.status}`}>{sessionItem.status}</span>
+                <span className="agent-session-nav-meta">{sessionItem.sliceName || 'Slice'}</span>
+                <span
+                  className="agent-session-nav-close"
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCloseSession?.(sessionItem.id, event);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onCloseSession?.(sessionItem.id, event);
+                    }
+                  }}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+          </div>
+        </aside>
       </div>
     </div>
   );

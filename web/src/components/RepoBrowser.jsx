@@ -841,10 +841,19 @@ export default function RepoBrowser({
             onClick={() => setSidebarOpen(false)}
           />
           <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
-            <div className="panel-header">
-              <h3>File tree {currentSliceDisplayName ? `· ${currentSliceDisplayName}` : ''}</h3>
-              <div className="panel-header-actions">
-                <span
+            <div className="sidebar-content">
+              <div className="sidebar-slice-switcher">
+                <SliceDropdown
+                  slices={slices}
+                  currentSliceId={currentSliceId}
+                  onSelectSlice={onSliceChange}
+                  loading={slicesLoading}
+                  error={slicesError}
+                  onRefresh={onRefreshSlices}
+                  className="slice-dropdown--sidebar"
+                />
+                <div className="panel-header-actions">
+                  <span
                   className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
                   role="status"
                   aria-live="polite"
@@ -877,19 +886,7 @@ export default function RepoBrowser({
                 >
                   ✕
                 </button>
-              </div>
-            </div>
-            <div className="sidebar-content">
-              <div className="sidebar-slice-switcher">
-                <SliceDropdown
-                  slices={slices}
-                  currentSliceId={currentSliceId}
-                  onSelectSlice={onSliceChange}
-                  loading={slicesLoading}
-                  error={slicesError}
-                  onRefresh={onRefreshSlices}
-                  className="slice-dropdown--sidebar"
-                />
+                </div>
               </div>
               {error && <div className="panel-error">{error}</div>}
               {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}

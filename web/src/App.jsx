@@ -146,7 +146,6 @@ function App() {
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
   const [isOverlayClosing, setIsOverlayClosing] = useState(false);
   const [selectedOverlayIndex, setSelectedOverlayIndex] = useState(0);
-  const [closingSessions, setClosingSessions] = useState(new Set());
   const [selectedAgentType, setSelectedAgentType] = useState(() => (REAL_RUNTIME_ENABLED ? 'codex' : 'Codex'));
   const [agentCapabilities, setAgentCapabilities] = useState({
     supportedAgentTypes: ['codex', 'claude'],
@@ -419,16 +418,9 @@ function App() {
         // best effort stop; UI close should still proceed
       });
     }
-    // Add to closing set for animation
-    setClosingSessions((prev) => new Set([...prev, sessionId]));
     // Wait for animation to complete before removing
     setTimeout(() => {
       setAgentSessions((prev) => prev.filter((s) => s.id !== sessionId));
-      setClosingSessions((prev) => {
-        const next = new Set(prev);
-        next.delete(sessionId);
-        return next;
-      });
       if (activeSessionId === sessionId) {
         const remaining = agentSessions.filter((s) => s.id !== sessionId);
         const nextSession = remaining[0] || null;
@@ -625,6 +617,7 @@ function App() {
   const isAuthenticated = Boolean(username);
   const showAgentButton = activePage === 'browser' && (!REAL_RUNTIME_ENABLED || isAuthenticated);
   const hasAgentSessions = agentSessions.length > 0;
+  const sessionsForCurrentSlice = agentSessions.filter((session) => session.sliceId === currentSliceId);
   const [isFullScreenClosing, setIsFullScreenClosing] = useState(false);
   const isFullScreenSession = !isOverlayOpen && activeSessionId !== null;
   const agentProviderOptions = REAL_RUNTIME_ENABLED
@@ -965,42 +958,15 @@ function App() {
         <div className={`agent-fullscreen ${isFullScreenClosing ? 'closing' : ''}`}>
           <AgentSession
             session={agentSessions.find(s => s.id === activeSessionId)}
+            sessions={sessionsForCurrentSlice}
+            activeSessionId={activeSessionId}
+            onSelectSession={selectSession}
             onClose={minimizeActiveSession}
+            onCloseSession={closeAgentSession}
             onMinimize={minimizeActiveSession}
             realRuntimeEnabled={REAL_RUNTIME_ENABLED}
             onSessionStateChange={handleSessionStateChange}
           />
-        </div>
-      )}
-
-      {/* Minimized Agent Sessions Bar */}
-      {hasAgentSessions && !isOverlayOpen && (
-        <div className="agent-sessions-bar">
-          {agentSessions.map((session) => (
-            <div
-              key={session.id}
-              className={`agent-session-pill ${session.id === activeSessionId ? 'active' : ''} ${closingSessions.has(session.id) ? 'removing' : ''}`}
-              onClick={() => {
-                setActiveSessionId(session.id);
-                if (session.sliceId) {
-                  setCurrentSliceId(session.sliceId);
-                }
-              }}
-            >
-              <span className="agent-session-icon">🤖</span>
-              <span className="agent-session-name">
-                {session.name}
-                {session.sliceName && <span className="agent-session-slice-pill">{session.sliceName}</span>}
-              </span>
-              <button
-                type="button"
-                className="agent-session-close"
-                onClick={(e) => closeAgentSession(session.id, e)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
         </div>
       )}
 
