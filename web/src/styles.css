@@ -108,7 +108,6 @@ body {
   right: 28px;
   top: 50%;
   transform: translateY(-50%);
-  display: inline-flex;
   align-items: center;
   gap: 6px;
   z-index: 60;
@@ -865,11 +864,45 @@ body {
 }
 
 .agent-chat-panel {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, #f8fbff 0%, #f3f6fb 100%);
+}
+
+.session-nav-toggle {
+  display: none;
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #a9b7d0;
+  border-radius: 999px;
+  background: #eff4ff;
+  color: #244780;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 7px 10px;
+  box-shadow: 0 4px 14px rgba(36, 71, 128, 0.15);
+  cursor: pointer;
+  z-index: 3;
+}
+
+.session-nav-toggle.open {
+  background: #dbe8ff;
+}
+
+.session-nav-toggle-icon {
+  font-size: 0.85rem;
+}
+
+.session-nav-toggle-label {
+  text-transform: uppercase;
 }
 
 .agent-chat-messages {
@@ -999,6 +1032,18 @@ body {
   background: #fff;
   display: flex;
   flex-direction: column;
+  transition: transform 220ms ease, opacity 220ms ease;
+}
+
+.agent-session-nav.closed {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-session-nav.open {
+  transform: translateX(0);
+  opacity: 1;
 }
 
 .agent-session-nav-header {
@@ -3500,19 +3545,28 @@ body {
   }
 
   .agent-session-body {
-    flex-direction: column;
+    position: relative;
+    flex-direction: row;
+  }
+
+  .session-nav-toggle {
+    display: inline-flex;
   }
 
   .agent-session-nav {
-    width: 100%;
-    border-left: none;
-    border-top: 1px solid var(--border);
-    max-height: 180px;
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: min(82vw, 280px);
+    border-left: 1px solid var(--border);
+    border-top: none;
+    box-shadow: -10px 0 24px rgba(16, 24, 40, 0.14);
+    z-index: 4;
   }
 
   .agent-session-nav-items {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    display: flex;
   }
 
   .agent-carousel {
