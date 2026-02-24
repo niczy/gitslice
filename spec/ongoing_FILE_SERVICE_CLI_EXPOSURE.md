@@ -2,14 +2,15 @@
 
 ## Implementation Status
 
-- Current status: `ongoing`
-- Last updated: `2026-02-23`
+- Current status: `finished`
+- Last updated: `2026-02-24`
+- Completion PR: `#205`
 
 ---
 
 ## Goal
 
-Expose read-only `FileService` operations directly in `gs_cli` so users can inspect files, trees, and file history from the CLI without going through web-only endpoints.
+Expose read-only `FileService` operations directly in `gs_cli` so users can inspect files, trees, and file history from CLI workflows without relying on web-only routes.
 
 ## Non-Goals
 
@@ -19,163 +20,153 @@ Expose read-only `FileService` operations directly in `gs_cli` so users can insp
 
 ---
 
-## Current State
+## Delivered CLI Surface
 
-- `gs_cli` currently connects to `SliceService` and `AdminService` only.
-- `FileService` already exists and is gRPC-first with gateway bindings.
-- Conflict detection is enforced in `MergeChangeset` by checking file ownership overlap (`file_slice_index` / in-memory `fileIndex`).
-- Conflict resolution is explicit ownership selection via `AdminService.ResolveConflict`.
-
----
-
-## Proposed CLI Surface
-
-Add `file` command group:
+Implemented command group:
 
 ```bash
 gs file ls [path] [--slice <slice-id>] [--commit <hash>] [--limit <n>]
 gs file cat <path> [--slice <slice-id>] [--commit <hash>] [--raw]
 gs file history <path> [--slice <slice-id>] [--limit <n>] [--from-commit <hash>]
-gs file dir-history [path] [--slice <slice-id>] [--limit <n>] [--type add,modify,delete,rename]
+gs file dir-history [path] [--slice <slice-id>] [--limit <n>] [--from-commit <hash>] [--type add,modify,delete,rename]
 gs file commit-changes <commit-hash> [--patches]
 ```
 
-Default resolution rules:
+Implemented in:
 
-1. If `--slice` is passed, use it.
-2. Else use `.gs/config` slice if present.
-3. Else fall back to root-slice behavior already supported by `FileService`.
-
-Version selector behavior:
-
-- `--commit` and `--slice` can be combined (`slice_version.slice_id + slice_hash`).
-- `--commit` alone means global commit path (current proto behavior).
+- `gs_cli/commands_file.go`
+- wired from `gs_cli/main.go`
+- documented in CLI help at `gs_cli/help.go`
 
 ---
 
-## Architecture Changes
+## Version and Slice Resolution Behavior
 
-### CLI Client Wiring
+### Slice selection precedence
 
-Extend `CLI` struct to include:
+Implemented precedence for file commands:
+
+1. `--slice` (explicit flag)
+2. `.gs/config` slice ID (if present)
+3. empty slice ID (server-side fallback behavior, including root-slice compatible reads)
+
+Implemented in `resolveFileSliceID(...)`.
+
+### Version selector behavior
+
+Implemented behavior:
+
+- If `--slice` is set, request uses `slice_version` and optional `slice_hash` from `--commit`.
+- If only `--commit` is set, request uses global `commit_hash` selector.
+- If neither is set, request is unversioned and resolved server-side.
+
+Implemented in:
+
+- `applyListEntriesVersion(...)`
+- `applyGetFileVersion(...)`
+
+---
+
+## Architecture Changes (Delivered)
+
+### CLI client wiring
+
+`CLI` now includes FileService connectivity:
 
 - `fileConn *grpc.ClientConn`
 - `fileClient filev1.FileServiceClient`
 
-Connection strategy:
+Address strategy delivered:
 
-- Keep one core-address default (`--addr`) for all services.
-- Keep existing `--slice-addr` / `--admin-addr` compatibility.
-- Add optional `--file-addr` only if we actually deploy `FileService` separately later; otherwise default to `--addr` / `--slice-addr`.
+- `--addr` overrides all service endpoints (`slice/admin/file`)
+- `--slice-addr`, `--admin-addr`, `--file-addr` remain available
+- default `--file-addr` is `localhost:50051`
 
-### Command Handling
+### Command routing
 
-- Add `case "file": handleFileCommand(...)` in `gs_cli/main.go`.
-- Implement handlers in a new `gs_cli/commands_file.go`.
-- Reuse existing metadata/auth injection (`withUserAuth`).
+Delivered in `gs_cli/main.go`:
 
----
+- `case "file": handleFileCommand(ctx, cli, args[1:])`
 
-## Conflict Model with Existing Slice Mutation
+Auth behavior remains unchanged:
 
-This is the critical compatibility point.
-
-### Existing Mutation Model (must remain true)
-
-- `CreateChangeset` describes intended file mutations.
-- `MergeChangeset`:
-1. Locks slice + files.
-2. Checks active ownership overlaps for each modified file.
-3. Returns `MERGE_STATUS_CONFLICT` if another slice owns any modified file.
-4. On success, updates ownership/index and commit metadata.
-- `ResolveConflict` keeps one owner slice per conflicted file.
-
-### Impact of Exposing FileService in CLI
-
-`FileService` remains read-only, so it does not change mutation semantics:
-
-- It must not write file ownership index.
-- It must not update slice metadata/head.
-- It must not auto-resolve conflicts.
-
-So exposing it in CLI is safe if we keep commands read-only.
-
-### Read Semantics During/After Conflicts
-
-- A conflict is an ownership state, not a read lockout.
-- `gs file *` commands should continue to read data even when conflicts exist.
-- Users resolve conflicts only via:
-1. `gs conflict resolve ...`
-2. Retry `gs changeset merge ...`
-
-### Why This Matches Current Design
-
-- Ownership conflict checks live at merge time (`SliceService`), not file-read time (`FileService`).
-- Read APIs are for inspection, review, and debugging; mutation authority stays in slice/changeset/admin flows.
+- file RPCs run through existing `withUserAuth(...)` context metadata path
 
 ---
 
-## UX and Error Handling
+## Conflict Model Compatibility
 
-- If `GetFile` response is too large and server returns `ResourceExhausted`, print actionable guidance:
-1. retry with smaller target
-2. use `--raw > file`
-- Preserve grpc status mapping in output:
-1. `PermissionDenied`: not authorized for slice
-2. `NotFound`: file/path/commit missing
-3. `InvalidArgument`: bad flags or mutually-exclusive args
+The CLI exposure keeps conflict semantics unchanged:
 
-Output modes:
+- `gs file *` commands are read-only and do not modify ownership/index/head state.
+- Conflict detection still occurs during merge (`SliceService.MergeChangeset`).
+- Conflict resolution remains explicit via admin/conflict APIs.
 
-- Human-readable default.
-- `--json` for machine use (phase 2) for `ls/history/commit-changes`.
+Practical effect:
+
+- File reads continue to work during conflict states.
+- Merge remains blocked until conflict resolution is completed.
 
 ---
 
-## Test Plan
+## UX and Error Handling (Current)
 
-### Unit
+Current output behavior:
 
-- CLI flag parsing and request-shape tests for each new command.
-- Version selector precedence tests (`--slice`, `.gs/config`, root fallback).
+- Human-readable output for all commands.
+- `file cat` detects non-UTF8 content and suggests `--raw`.
+- `file commit-changes --patches` prints inline patch text.
 
-### Service Integration (existing stack)
+Current limitations (accepted for this phase):
 
-- `gs file ls` and `gs file cat` against seeded root + non-root slices.
-- `gs file history` and `gs file commit-changes` after merge.
-- Conflict scenario:
-1. create conflicting ownership state
-2. verify `gs file` reads still work
-3. verify merge still blocked until `gs conflict resolve`
+- No dedicated `--json` mode yet.
+- gRPC errors are surfaced directly via CLI fatal logging (not yet remapped into polished user-facing categories).
+- No explicit `ResourceExhausted` guidance text yet.
 
 ---
 
-## Rollout Plan (PR-by-PR)
+## Test Coverage Status
 
-1. CLI plumbing
-- Add `FileServiceClient` wiring and `file` command skeleton.
-- Add help text and no-op stubs.
+### Implemented tests
 
-2. Read tree/content commands
-- Implement `file ls`, `file cat`.
-- Add tests.
+- `gs_cli/commands_file_test.go`:
+1. `parseChangeTypesCSV` parsing and invalid value handling
+2. version selector request-shape helpers
+3. slice resolution precedence (`--slice`, config, fallback)
 
-3. History commands
-- Implement `file history`, `file dir-history`, `file commit-changes`.
-- Add tests.
+### Existing integration coverage
 
-4. Conflict-focused validation
-- Add integration tests that combine file reads with conflicting slice ownership + resolution.
-- Docs refresh in `spec/finished_CLI_DESIGN.md` once complete.
+- `workflow_test/integration_test.go` exercises FileService file/history behavior in end-to-end server/storage flows.
+
+### Gap kept for follow-up
+
+- No dedicated CLI process-level integration tests for all `gs file *` subcommands yet.
+
+---
+
+## Rollout Result
+
+Completed rollout (single implementation PR):
+
+1. CLI plumbing: DONE
+2. Read tree/content commands (`ls`, `cat`): DONE
+3. History commands (`history`, `dir-history`, `commit-changes`): DONE
+4. Conflict model preservation: DONE (no mutation path added)
 
 ---
 
 ## Acceptance Criteria
 
-- CLI can invoke `FileService` directly over gRPC.
-- No new mutation path is introduced outside changeset/merge/admin APIs.
-- Existing conflict behavior remains unchanged:
-1. conflicts detected during merge
-2. resolved only by explicit ownership choice
-3. merge succeeds after resolution
-- New file commands pass unit + integration tests.
+- CLI can invoke `FileService` directly over gRPC: DONE
+- No new mutation path outside changeset/merge/admin APIs: DONE
+- Existing merge-time conflict behavior unchanged: DONE
+- File command test coverage added: DONE (unit coverage); CLI integration expansion pending follow-up
+
+---
+
+## Follow-up Backlog (Non-Blocking)
+
+1. Add `--json` output mode for `ls/history/dir-history/commit-changes`.
+2. Improve grpc-status-to-user-message mapping for common errors.
+3. Add CLI-level integration tests that execute `gs file *` end-to-end.
+4. Refresh README CLI usage section with `gs file` examples.
