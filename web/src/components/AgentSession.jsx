@@ -69,6 +69,7 @@ export default function AgentSession({
   realRuntimeEnabled = false,
   onSessionStateChange,
 }) {
+  const [isSessionNavOpen, setIsSessionNavOpen] = useState(() => window.innerWidth > 900);
   const [inputValue, setInputValue] = useState('');
   const [lines, setLines] = useState([]);
   const [displayedLines, setDisplayedLines] = useState(0);
@@ -200,6 +201,17 @@ export default function AgentSession({
     }
   }, [lines, displayedLines, isProcessing]);
 
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth > 900) {
+        setIsSessionNavOpen(true);
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!inputValue.trim() || isProcessing) return;
@@ -287,9 +299,19 @@ export default function AgentSession({
               disabled={isProcessing}
             />
           </form>
+          <button
+            type="button"
+            className={`session-nav-toggle ${isSessionNavOpen ? 'open' : ''}`}
+            onClick={() => setIsSessionNavOpen((value) => !value)}
+            aria-label={isSessionNavOpen ? 'Hide session list panel' : 'Show session list panel'}
+            title={isSessionNavOpen ? 'Hide sessions' : 'Show sessions'}
+          >
+            <span className="session-nav-toggle-icon" aria-hidden="true">🗂️</span>
+            <span className="session-nav-toggle-label">Sessions</span>
+          </button>
         </div>
 
-        <aside className="agent-session-nav" aria-label="Session list">
+        <aside className={`agent-session-nav ${isSessionNavOpen ? 'open' : 'closed'}`} aria-label="Session list">
           <div className="agent-session-nav-header">Session List</div>
           <div className="agent-session-nav-items">
             {sessions.length === 0 && <p className="agent-session-nav-empty">No sessions for this slice yet.</p>}
