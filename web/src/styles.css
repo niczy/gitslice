@@ -676,7 +676,6 @@ body {
   box-shadow: 
     0 20px 60px rgba(0, 0, 0, 0.2),
     0 0 0 1px rgba(139, 92, 246, 0.1);
-  animation: containerEnter 500ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes containerEnter {
@@ -697,7 +696,6 @@ body {
   padding: 14px 20px;
   background: linear-gradient(135deg, var(--surface-elevated), var(--surface));
   border-bottom: 1px solid var(--border);
-  animation: headerSlide 500ms cubic-bezier(0.16, 1, 0.3, 1) 100ms both;
 }
 
 @keyframes headerSlide {
@@ -721,7 +719,6 @@ body {
 
 .agent-session-title-icon {
   font-size: 1.2rem;
-  animation: iconBounce 600ms cubic-bezier(0.34, 1.56, 0.64, 1) 200ms both;
 }
 
 
@@ -753,7 +750,6 @@ body {
   border-radius: var(--radius-md);
   text-transform: uppercase;
   font-weight: 600;
-  animation: badgePop 400ms cubic-bezier(0.34, 1.56, 0.64, 1) 300ms both;
 }
 
 @keyframes badgePop {
@@ -849,7 +845,6 @@ body {
   display: flex;
   min-height: 0;
   overflow: hidden;
-  animation: bodyFade 500ms cubic-bezier(0.16, 1, 0.3, 1) 150ms both;
 }
 
 @keyframes bodyFade {
@@ -935,7 +930,6 @@ body {
   font-size: 0.9rem;
   line-height: 1.45;
   border: 1px solid transparent;
-  animation: lineEnter 300ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .chat-user {
@@ -990,7 +984,6 @@ body {
   padding: 12px 14px;
   background: #ffffff;
   border-top: 1px solid #d7dee8;
-  animation: inputSlide 400ms cubic-bezier(0.16, 1, 0.3, 1) 200ms both;
 }
 
 @keyframes inputSlide {
@@ -1027,12 +1020,18 @@ body {
 }
 
 .agent-session-nav {
+  position: fixed;
+  right: 0;
+  top: 60px;
+  bottom: 80px;
   width: 250px;
   border-left: 1px solid var(--border);
   background: #fff;
   display: flex;
   flex-direction: column;
   transition: transform 220ms ease, opacity 220ms ease;
+  box-shadow: -10px 0 24px rgba(16, 24, 40, 0.14);
+  z-index: 96;
 }
 
 .agent-session-nav.closed {
@@ -3551,18 +3550,17 @@ body {
 
   .session-nav-toggle {
     display: inline-flex;
+    position: fixed;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 95;
   }
 
   .agent-session-nav {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
+    bottom: 140px;
     width: min(82vw, 280px);
-    border-left: 1px solid var(--border);
     border-top: none;
-    box-shadow: -10px 0 24px rgba(16, 24, 40, 0.14);
-    z-index: 4;
   }
 
   .agent-session-nav-items {
