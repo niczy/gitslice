@@ -302,6 +302,7 @@ message EnvironmentInfo {
   string created_by = 6;
   int64 created_at = 7;
   int64 updated_at = 8;
+  map<string, string> provider_config = 9;
 }
 
 message ListEnvironmentsRequest {
@@ -319,6 +320,7 @@ message CreateEnvironmentRequest {
   string provider = 3;
   string provider_id = 4;
   string region = 5;
+  map<string, string> provider_config = 6;
 }
 
 message GetEnvironmentRequest {
@@ -331,6 +333,7 @@ message UpdateEnvironmentRequest {
   string provider = 3;
   string provider_id = 4;
   string region = 5;
+  map<string, string> provider_config = 6;
 }
 
 message DeleteEnvironmentRequest {

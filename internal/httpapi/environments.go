@@ -167,6 +167,10 @@ func (a *EnvironmentsAPI) createEnvironment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	name := strings.TrimSpace(req.Name)
+	if err := storage.ValidateEnvironmentProviderConfig(req.Provider, req.ProviderConfig); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	env := &models.Environment{
 		Name:           name,
@@ -241,6 +245,10 @@ func (a *EnvironmentsAPI) updateEnvironment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if err := storage.ValidateEnvironmentProviderConfig(req.Provider, req.ProviderConfig); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	current.DisplayName = req.DisplayName
 	current.Provider = req.Provider
 	current.ProviderID = req.ProviderID

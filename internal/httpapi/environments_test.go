@@ -123,7 +123,7 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 	}
 
 	// Update.
-	updateRaw := []byte(`{"displayName":"Node.js 20 LTS","provider":"cloudflare_containers","providerId":"cfc-profile","providerConfig":{"worker_base_url":"https://edge.example.internal"},"region":"us-east-1"}`)
+	updateRaw := []byte(`{"displayName":"Node.js 20 LTS","provider":"cloudflare_containers","providerId":"cfc-profile","providerConfig":{"worker_base_url":"https://edge.example.internal","container_class":"sandbox","instance_type":"basic"},"region":"us-east-1"}`)
 	req, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/environments/node20", bytes.NewReader(updateRaw))
 	req.Header.Set("Authorization", "User alice")
 	req.Header.Set("X-Internal-Caller", "1")
@@ -142,7 +142,7 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 	if updated["displayName"] != "Node.js 20 LTS" || updated["providerId"] != "cfc-profile" || updated["region"] != "us-east-1" || updated["provider"] != "cloudflare_containers" {
 		t.Fatalf("update response mismatch: %#v", updated)
 	}
-	if providerConfig, ok := updated["providerConfig"].(map[string]any); !ok || providerConfig["worker_base_url"] != "https://edge.example.internal" {
+	if providerConfig, ok := updated["providerConfig"].(map[string]any); !ok || providerConfig["worker_base_url"] != "https://edge.example.internal" || providerConfig["container_class"] != "sandbox" {
 		t.Fatalf("update response should include provider config: %#v", updated)
 	}
 
