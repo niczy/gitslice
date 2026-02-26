@@ -854,40 +854,41 @@ export default function RepoBrowser({
                 />
                 <div className="panel-header-actions">
                   <span
-                  className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
-                  role="status"
-                  aria-live="polite"
-                  aria-label={isLoading ? 'Loading folders' : undefined}
-                >
-                  <span className="tree-loading-dot" aria-hidden="true" />
-                </span>
-                <button
-                  type="button"
-                  className="tree-action-btn"
-                  onClick={createFolder}
-                  title="Create folder"
-                >
-                  + Folder
-                </button>
-                <button
-                  type="button"
-                  className="tree-action-btn"
-                  onClick={createFile}
-                  title="Create file"
-                >
-                  + File
-                </button>
-                <button
-                  type="button"
-                  className="sidebar-toggle"
-                  onClick={() => setSidebarOpen(false)}
-                  aria-label="Close sidebar"
-                  title="Close sidebar"
-                >
-                  ✕
-                </button>
+                    className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
+                    role="status"
+                    aria-live="polite"
+                    aria-label={isLoading ? 'Loading folders' : undefined}
+                  >
+                    <span className="tree-loading-dot" aria-hidden="true" />
+                  </span>
+                  <button
+                    type="button"
+                    className="tree-action-btn"
+                    onClick={createFolder}
+                    title="Create folder"
+                  >
+                    + Folder
+                  </button>
+                  <button
+                    type="button"
+                    className="tree-action-btn"
+                    onClick={createFile}
+                    title="Create file"
+                  >
+                    + File
+                  </button>
+                  <button
+                    type="button"
+                    className="sidebar-toggle"
+                    onClick={() => setSidebarOpen(false)}
+                    aria-label="Close sidebar"
+                    title="Close sidebar"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
+              <h2 className="sidebar-panel-title">File tree</h2>
               {error && <div className="panel-error">{error}</div>}
               {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
               {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
