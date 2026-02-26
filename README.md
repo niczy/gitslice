@@ -159,6 +159,8 @@ AGENT_RUNTIME_PROVIDER_DEFAULT=cloudflare_containers \
 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 ```
 
+For rollout safety, keep `AGENT_RUNTIME_PROVIDER_DEFAULT=e2b` initially and opt slices into Cloudflare via environment registry (`provider=cloudflare_containers`).
+
 Cloudflare control-plane worker source is in `servers/cloudflare_control_plane`:
 
 ```bash
@@ -166,6 +168,26 @@ cd servers/cloudflare_control_plane
 npm install
 npm test
 npx wrangler dev
+```
+
+Register a Cloudflare-backed environment profile:
+
+```bash
+curl -X POST "$GATEWAY_BASE_URL/v1/environments" \
+  -H "Authorization: User <admin-username>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"cfc-canary",
+    "displayName":"Cloudflare Canary",
+    "provider":"cloudflare_containers",
+    "providerId":"cfc-profile",
+    "providerConfig":{
+      "worker_base_url":"https://<worker-subdomain>.workers.dev",
+      "container_class":"sandbox",
+      "instance_type":"basic"
+    },
+    "region":"us-east-1"
+  }'
 ```
 
 For Codex/Claude sandbox sessions, configure model credentials and optional egress policy:
@@ -189,6 +211,24 @@ Suggested baseline alerts:
 - `agent_session_runtime_fail_total` increasing rapidly by `failureCode`
 - high `agent_ws_backpressure_close_total` rate
 - unhealthy `GET /health/agent-runtime` for more than 5 minutes
+
+Cloudflare rollout checklist:
+
+1. Deploy `servers/cloudflare_control_plane` and validate `GET /internal/runtime/health` through your service token path.
+2. Configure `CFC_CONTROL_BASE_URL`, `CFC_SERVICE_TOKEN_ID`, and `CFC_SERVICE_TOKEN_SECRET` on core.
+3. Create one canary environment (`provider=cloudflare_containers`) and assign only non-critical slices first.
+4. Watch `/health/agent-runtime` and event flow (`/v1/agent-sessions/{id}/events`) during canary sessions.
+5. Expand environment usage gradually; keep E2B environments available for rollback.
+6. Roll back by switching slice environment back to E2B profile or removing Cloudflare config from core.
+
+Cloudflare runtime troubleshooting:
+
+- `CFC_CONTROL_URL_MISSING`: `CFC_CONTROL_BASE_URL` is empty or invalid.
+- `CFC_AUTH_MISSING`: service token id/secret is missing in core config.
+- `CFC_START_UNAUTHORIZED` or `CFC_STOP_UNAUTHORIZED`: service token rejected by Worker/Access.
+- `CFC_RUNTIME_UNAVAILABLE`: Worker/control plane is unreachable or returned 5xx.
+- `CFC_STREAM_DECODE_FAILED`: stream endpoint returned malformed SSE payload.
+- `RUNTIME_BRIDGE_SYNC_FAILED`: core could not sync stream events; inspect control-plane `/stream` response and core logs.
 
 ## Accounts / Organizations
 
