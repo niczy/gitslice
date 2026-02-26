@@ -9,7 +9,7 @@ PR checklist:
 
 - [x] PR1 - Provider model + config groundwork (no runtime cutover)
 - [x] PR2 - Cloudflare runtime provider implementation (start/stop/health)
-- [ ] PR3 - Edge control plane (Worker + Durable Object session actor)
+- [x] PR3 - Edge control plane (Worker + Durable Object session actor)
 - [ ] PR4 - Runtime bridge protocol wiring (core <-> edge <-> container shim)
 - [ ] PR5 - Environment admin + validation UX
 - [ ] PR6 - Integration tests (stub + optional real CF smoke test)

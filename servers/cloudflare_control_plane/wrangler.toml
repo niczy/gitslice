@@ -1,0 +1,11 @@
+name = "gitslice-cloudflare-control-plane"
+main = "src/index.js"
+compatibility_date = "2026-02-26"
+
+[[durable_objects.bindings]]
+name = "RUNTIME_SESSIONS"
+class_name = "RuntimeSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RuntimeSessionDO"]
