@@ -2,13 +2,13 @@
 
 ## Implementation Status
 
-- Current status: `not_started`
+- Current status: `ongoing`
 - Last updated: `2026-02-26`
 
 PR checklist:
 
-- [ ] PR1 - Provider model + config groundwork (no runtime cutover)
-- [ ] PR2 - Cloudflare runtime provider implementation (start/stop/health)
+- [x] PR1 - Provider model + config groundwork (no runtime cutover)
+- [x] PR2 - Cloudflare runtime provider implementation (start/stop/health)
 - [ ] PR3 - Edge control plane (Worker + Durable Object session actor)
 - [ ] PR4 - Runtime bridge protocol wiring (core <-> edge <-> container shim)
 - [ ] PR5 - Environment admin + validation UX
@@ -385,4 +385,3 @@ In same implementation track:
 3. Should Cloudflare edge control live in this repo (under `servers/`), or in a separate deployable repo?
 4. What are acceptable startup latency thresholds for user experience before forcing fallback?
 5. Should runtime provider be selectable per session request, or strictly environment-driven?
-

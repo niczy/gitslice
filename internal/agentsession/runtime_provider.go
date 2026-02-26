@@ -17,6 +17,16 @@ type RuntimeStartResult struct {
 	Status    string
 }
 
+const (
+	RuntimeProviderE2B                  = "e2b"
+	RuntimeProviderCloudflareContainers = "cloudflare_containers"
+)
+
+var supportedRuntimeProviders = map[string]struct{}{
+	RuntimeProviderE2B:                  {},
+	RuntimeProviderCloudflareContainers: {},
+}
+
 type RuntimeProvider interface {
 	Start(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error)
 	Stop(ctx context.Context, session *models.AgentSession, reason string) error
@@ -86,6 +96,16 @@ func RuntimeErrorMessage(err error, fallback string) string {
 	return runtimeErrorMessage(err, fallback)
 }
 
+func normalizeRuntimeProvider(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func isSupportedRuntimeProvider(value string) bool {
+	value = normalizeRuntimeProvider(value)
+	_, ok := supportedRuntimeProviders[value]
+	return ok
+}
+
 type simulatedRuntimeProvider struct {
 	startDelay time.Duration
 	stopDelay  time.Duration
@@ -113,7 +133,7 @@ func (p *simulatedRuntimeProvider) Start(ctx context.Context, session *models.Ag
 
 	provider := strings.TrimSpace(session.Provider)
 	if provider == "" {
-		provider = "e2b"
+		provider = RuntimeProviderE2B
 	}
 	runtimeSessionID := strings.TrimSpace(session.E2BSandboxID)
 	if runtimeSessionID == "" {
