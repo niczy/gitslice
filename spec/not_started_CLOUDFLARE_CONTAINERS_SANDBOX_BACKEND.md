@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-- Current status: `ongoing`
+- Current status: `completed`
 - Last updated: `2026-02-26`
 
 PR checklist:
@@ -13,7 +13,7 @@ PR checklist:
 - [x] PR4 - Runtime bridge protocol wiring (core <-> edge <-> container shim)
 - [x] PR5 - Environment admin + validation UX
 - [x] PR6 - Integration tests (stub + optional real CF smoke test)
-- [ ] PR7 - Controlled rollout and documentation/runbook updates
+- [x] PR7 - Controlled rollout and documentation/runbook updates
 
 ---
 
