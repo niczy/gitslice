@@ -22,7 +22,7 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	createRaw := []byte(`{"name":"node20","displayName":"Node.js 20","provider":"e2b","providerId":"tmpl-node20","region":"us-west-2"}`)
+	createRaw := []byte(`{"name":"node20","displayName":"Node.js 20","provider":"e2b","providerId":"tmpl-node20","providerConfig":{"runtime_ws_path":"/ws"},"region":"us-west-2"}`)
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/environments", bytes.NewReader(createRaw))
 	req.Header.Set("Authorization", "User alice")
 	resp, err := http.DefaultClient.Do(req)
@@ -40,7 +40,7 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 	if created["name"] != "node20" {
 		t.Fatalf("expected name node20, got %v", created["name"])
 	}
-	if created["provider"] != nil || created["providerId"] != nil {
+	if created["provider"] != nil || created["providerId"] != nil || created["providerConfig"] != nil {
 		t.Fatalf("provider fields must be hidden by default: %#v", created)
 	}
 	if created["createdAt"] == "" || created["updatedAt"] == "" {
@@ -74,7 +74,7 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 		t.Fatalf("decode get response failed: %v", err)
 	}
 	_ = resp.Body.Close()
-	if got["provider"] != nil || got["providerId"] != nil {
+	if got["provider"] != nil || got["providerId"] != nil || got["providerConfig"] != nil {
 		t.Fatalf("provider fields must be hidden by default: %#v", got)
 	}
 
@@ -96,6 +96,9 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 	_ = resp.Body.Close()
 	if gotInternal["provider"] != "e2b" || gotInternal["providerId"] != "tmpl-node20" {
 		t.Fatalf("internal response should include provider internals: %#v", gotInternal)
+	}
+	if providerConfig, ok := gotInternal["providerConfig"].(map[string]any); !ok || providerConfig["runtime_ws_path"] != "/ws" {
+		t.Fatalf("internal response should include provider config: %#v", gotInternal)
 	}
 
 	// List with pagination.
@@ -120,7 +123,7 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 	}
 
 	// Update.
-	updateRaw := []byte(`{"displayName":"Node.js 20 LTS","provider":"e2b","providerId":"tmpl-node20-v2","region":"us-east-1"}`)
+	updateRaw := []byte(`{"displayName":"Node.js 20 LTS","provider":"cloudflare_containers","providerId":"cfc-profile","providerConfig":{"worker_base_url":"https://edge.example.internal"},"region":"us-east-1"}`)
 	req, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/environments/node20", bytes.NewReader(updateRaw))
 	req.Header.Set("Authorization", "User alice")
 	req.Header.Set("X-Internal-Caller", "1")
@@ -136,8 +139,11 @@ func TestEnvironmentsAPI_CRUD(t *testing.T) {
 		t.Fatalf("decode update response failed: %v", err)
 	}
 	_ = resp.Body.Close()
-	if updated["displayName"] != "Node.js 20 LTS" || updated["providerId"] != "tmpl-node20-v2" || updated["region"] != "us-east-1" {
+	if updated["displayName"] != "Node.js 20 LTS" || updated["providerId"] != "cfc-profile" || updated["region"] != "us-east-1" || updated["provider"] != "cloudflare_containers" {
 		t.Fatalf("update response mismatch: %#v", updated)
+	}
+	if providerConfig, ok := updated["providerConfig"].(map[string]any); !ok || providerConfig["worker_base_url"] != "https://edge.example.internal" {
+		t.Fatalf("update response should include provider config: %#v", updated)
 	}
 
 	// Delete.
@@ -195,6 +201,18 @@ func TestEnvironmentsAPI_AuthAndValidation(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid create, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// Unsupported provider should fail validation.
+	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/environments", bytes.NewReader([]byte(`{"name":"invalid-provider","provider":"foo","providerId":"tmpl-x"}`)))
+	req.Header.Set("Authorization", "User alice")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unsupported provider create failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unsupported provider, got %d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 

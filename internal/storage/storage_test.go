@@ -434,6 +434,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		DisplayName:       "Node.js 20",
 		Provider:          "e2b",
 		ProviderID:        "tmpl-node20-" + suffix,
+		ProviderConfig:    map[string]string{"runtime_ws_path": "/ws"},
 		Region:            "us-west-2",
 		DefaultAgentType:  "codex",
 		AllowedAgentTypes: []string{"codex", "claude"},
@@ -452,6 +453,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if fetchedEnv.Name != envName || fetchedEnv.ProviderID != env.ProviderID {
 		t.Fatalf("GetEnvironment mismatch: %#v", fetchedEnv)
+	}
+	if fetchedEnv.ProviderConfig["runtime_ws_path"] != "/ws" {
+		t.Fatalf("GetEnvironment provider config mismatch: %#v", fetchedEnv.ProviderConfig)
 	}
 	if fetchedEnv.DefaultAgentType != "codex" || len(fetchedEnv.AllowedAgentTypes) != 2 {
 		t.Fatalf("GetEnvironment agent policy mismatch: %#v", fetchedEnv)
@@ -472,6 +476,11 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	fetchedEnv.DisplayName = "Node.js 20 LTS"
 	fetchedEnv.ProviderID = "tmpl-node20-updated-" + suffix
+	fetchedEnv.Provider = "cloudflare_containers"
+	fetchedEnv.ProviderConfig = map[string]string{
+		"worker_base_url": "https://edge.example.internal",
+		"instance_type":   "basic",
+	}
 	fetchedEnv.Region = "us-east-1"
 	fetchedEnv.DefaultAgentType = "claude"
 	fetchedEnv.AllowedAgentTypes = []string{"claude", "codex"}
@@ -484,6 +493,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if updatedEnv.DisplayName != "Node.js 20 LTS" || updatedEnv.ProviderID != fetchedEnv.ProviderID || updatedEnv.Region != "us-east-1" {
 		t.Fatalf("updated environment mismatch: %#v", updatedEnv)
+	}
+	if updatedEnv.Provider != "cloudflare_containers" || updatedEnv.ProviderConfig["worker_base_url"] == "" {
+		t.Fatalf("updated environment provider config mismatch: %#v", updatedEnv)
 	}
 	if updatedEnv.DefaultAgentType != "claude" || len(updatedEnv.AllowedAgentTypes) != 2 {
 		t.Fatalf("updated environment agent policy mismatch: %#v", updatedEnv)
@@ -499,6 +511,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if err := st.DeleteEnvironment(ctx, envName); err != ErrEntryNotFound {
 		t.Fatalf("expected ErrEntryNotFound on deleting missing env, got %v", err)
+	}
+	if err := st.CreateEnvironment(ctx, &models.Environment{
+		Name:       "bad-provider-" + suffix,
+		Provider:   "unsupported-provider",
+		ProviderID: "provider-id",
+	}); err != ErrInvalidInput {
+		t.Fatalf("expected ErrInvalidInput for unsupported provider, got %v", err)
 	}
 
 	// Account auth + session lifecycle

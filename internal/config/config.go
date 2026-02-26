@@ -51,6 +51,14 @@ type Config struct {
 	E2BRuntimeWSPort         int
 	E2BRuntimeWSPath         string
 	E2BRequestTimeoutSec     int
+
+	// Cloudflare Containers runtime control-plane settings.
+	AgentRuntimeProviderDefault string
+	CFCControlBaseURL           string
+	CFCControlAudience          string
+	CFCServiceTokenID           string
+	CFCServiceTokenSecret       string
+	CFCRequestTimeoutSec        int
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -95,6 +103,12 @@ func LoadConfig() *Config {
 			"E2B_REQUEST_TIMEOUT_SEC",
 			30,
 		),
+		AgentRuntimeProviderDefault: getEnv("AGENT_RUNTIME_PROVIDER_DEFAULT", ""),
+		CFCControlBaseURL:           getEnv("CFC_CONTROL_BASE_URL", ""),
+		CFCControlAudience:          getEnv("CFC_CONTROL_AUDIENCE", ""),
+		CFCServiceTokenID:           getEnv("CFC_SERVICE_TOKEN_ID", ""),
+		CFCServiceTokenSecret:       getEnv("CFC_SERVICE_TOKEN_SECRET", ""),
+		CFCRequestTimeoutSec:        getEnvInt("CFC_REQUEST_TIMEOUT_SEC", 30),
 	}
 }
 

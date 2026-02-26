@@ -21,6 +21,11 @@ var validEnvironmentAgentTypes = map[string]struct{}{
 	"claude": {},
 }
 
+var validEnvironmentProviders = map[string]struct{}{
+	"e2b":                   {},
+	"cloudflare_containers": {},
+}
+
 func normalizeEnvironmentAgentTypes(values []string) ([]string, error) {
 	if len(values) == 0 {
 		return []string{"codex", "claude"}, nil
@@ -68,9 +73,16 @@ func normalizeEnvironmentForCreate(env *models.Environment) (*models.Environment
 	if provider == "" {
 		provider = "e2b"
 	}
+	if _, ok := validEnvironmentProviders[provider]; !ok {
+		return nil, ErrInvalidInput
+	}
 	providerID := strings.TrimSpace(env.ProviderID)
 	if providerID == "" {
 		return nil, ErrInvalidInput
+	}
+	providerConfig, err := normalizeEnvironmentProviderConfig(env.ProviderConfig)
+	if err != nil {
+		return nil, err
 	}
 	defaultAgentType := strings.ToLower(strings.TrimSpace(env.DefaultAgentType))
 	if defaultAgentType == "" {
@@ -93,6 +105,7 @@ func normalizeEnvironmentForCreate(env *models.Environment) (*models.Environment
 	copy.DisplayName = strings.TrimSpace(env.DisplayName)
 	copy.Provider = provider
 	copy.ProviderID = providerID
+	copy.ProviderConfig = providerConfig
 	copy.Region = strings.TrimSpace(env.Region)
 	copy.DefaultAgentType = defaultAgentType
 	copy.AllowedAgentTypes = append([]string(nil), allowedAgentTypes...)
@@ -116,9 +129,16 @@ func normalizeEnvironmentForUpdate(env *models.Environment) (*models.Environment
 	if provider == "" {
 		provider = "e2b"
 	}
+	if _, ok := validEnvironmentProviders[provider]; !ok {
+		return nil, ErrInvalidInput
+	}
 	providerID := strings.TrimSpace(env.ProviderID)
 	if providerID == "" {
 		return nil, ErrInvalidInput
+	}
+	providerConfig, err := normalizeEnvironmentProviderConfig(env.ProviderConfig)
+	if err != nil {
+		return nil, err
 	}
 	defaultAgentType := strings.ToLower(strings.TrimSpace(env.DefaultAgentType))
 	if defaultAgentType == "" {
@@ -139,6 +159,7 @@ func normalizeEnvironmentForUpdate(env *models.Environment) (*models.Environment
 	copy.DisplayName = strings.TrimSpace(env.DisplayName)
 	copy.Provider = provider
 	copy.ProviderID = providerID
+	copy.ProviderConfig = providerConfig
 	copy.Region = strings.TrimSpace(env.Region)
 	copy.DefaultAgentType = defaultAgentType
 	copy.AllowedAgentTypes = append([]string(nil), allowedAgentTypes...)
@@ -158,7 +179,28 @@ func copyEnvironment(env *models.Environment) *models.Environment {
 	if env.AllowedAgentTypes != nil {
 		copy.AllowedAgentTypes = append([]string(nil), env.AllowedAgentTypes...)
 	}
+	if env.ProviderConfig != nil {
+		copy.ProviderConfig = make(map[string]string, len(env.ProviderConfig))
+		for key, value := range env.ProviderConfig {
+			copy.ProviderConfig[key] = value
+		}
+	}
 	return &copy
+}
+
+func normalizeEnvironmentProviderConfig(values map[string]string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for rawKey, rawValue := range values {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			return nil, ErrInvalidInput
+		}
+		out[key] = strings.TrimSpace(rawValue)
+	}
+	return out, nil
 }
 
 func (s *InMemoryStorage) CreateEnvironment(ctx context.Context, env *models.Environment) error {
@@ -263,11 +305,12 @@ func (s *PostgresNativeStorage) CreateEnvironment(ctx context.Context, env *mode
 
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO environments (
-			name, display_name, provider, provider_id, region, default_agent_type, allowed_agent_types_json,
+			name, display_name, provider, provider_id, provider_config_json, region, default_agent_type, allowed_agent_types_json,
 			created_by, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
-	`, normalized.Name, normalized.DisplayName, normalized.Provider, normalized.ProviderID, normalized.Region,
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11)
+	`, normalized.Name, normalized.DisplayName, normalized.Provider, normalized.ProviderID,
+		mustMarshalProviderConfigJSON(normalized.ProviderConfig), normalized.Region,
 		normalized.DefaultAgentType, mustMarshalAgentTypesJSON(normalized.AllowedAgentTypes),
 		normalized.CreatedBy, normalized.CreatedAt, normalized.UpdatedAt)
 	if err != nil {
@@ -287,14 +330,15 @@ func (s *PostgresNativeStorage) GetEnvironment(ctx context.Context, name string)
 	}
 
 	var env models.Environment
+	var providerConfigJSON []byte
 	var allowedAgentTypesJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT name, display_name, provider, provider_id, region, COALESCE(default_agent_type, 'codex'),
+		SELECT name, display_name, provider, provider_id, COALESCE(provider_config_json, '{}'::jsonb), region, COALESCE(default_agent_type, 'codex'),
 		       COALESCE(allowed_agent_types_json, '["codex","claude"]'::jsonb),
 		       created_by, created_at, updated_at
 		FROM environments WHERE name = $1
 	`, name).Scan(
-		&env.Name, &env.DisplayName, &env.Provider, &env.ProviderID, &env.Region,
+		&env.Name, &env.DisplayName, &env.Provider, &env.ProviderID, &providerConfigJSON, &env.Region,
 		&env.DefaultAgentType, &allowedAgentTypesJSON,
 		&env.CreatedBy, &env.CreatedAt, &env.UpdatedAt,
 	)
@@ -306,6 +350,9 @@ func (s *PostgresNativeStorage) GetEnvironment(ctx context.Context, name string)
 	}
 	if err := json.Unmarshal(allowedAgentTypesJSON, &env.AllowedAgentTypes); err != nil || len(env.AllowedAgentTypes) == 0 {
 		env.AllowedAgentTypes = []string{"codex", "claude"}
+	}
+	if err := json.Unmarshal(providerConfigJSON, &env.ProviderConfig); err != nil {
+		env.ProviderConfig = nil
 	}
 	return &env, nil
 }
@@ -320,7 +367,7 @@ func (s *PostgresNativeStorage) ListEnvironments(ctx context.Context, limit, off
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, display_name, provider, provider_id, region, COALESCE(default_agent_type, 'codex'),
+		SELECT name, display_name, provider, provider_id, COALESCE(provider_config_json, '{}'::jsonb), region, COALESCE(default_agent_type, 'codex'),
 		       COALESCE(allowed_agent_types_json, '["codex","claude"]'::jsonb),
 		       created_by, created_at, updated_at
 		FROM environments
@@ -335,9 +382,10 @@ func (s *PostgresNativeStorage) ListEnvironments(ctx context.Context, limit, off
 	out := []*models.Environment{}
 	for rows.Next() {
 		var env models.Environment
+		var providerConfigJSON []byte
 		var allowedAgentTypesJSON []byte
 		if err := rows.Scan(
-			&env.Name, &env.DisplayName, &env.Provider, &env.ProviderID, &env.Region,
+			&env.Name, &env.DisplayName, &env.Provider, &env.ProviderID, &providerConfigJSON, &env.Region,
 			&env.DefaultAgentType, &allowedAgentTypesJSON,
 			&env.CreatedBy, &env.CreatedAt, &env.UpdatedAt,
 		); err != nil {
@@ -345,6 +393,9 @@ func (s *PostgresNativeStorage) ListEnvironments(ctx context.Context, limit, off
 		}
 		if err := json.Unmarshal(allowedAgentTypesJSON, &env.AllowedAgentTypes); err != nil || len(env.AllowedAgentTypes) == 0 {
 			env.AllowedAgentTypes = []string{"codex", "claude"}
+		}
+		if err := json.Unmarshal(providerConfigJSON, &env.ProviderConfig); err != nil {
+			env.ProviderConfig = nil
 		}
 		out = append(out, &env)
 	}
@@ -360,11 +411,12 @@ func (s *PostgresNativeStorage) UpdateEnvironment(ctx context.Context, env *mode
 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE environments
-		SET display_name = $1, provider = $2, provider_id = $3, region = $4,
-		    default_agent_type = $5, allowed_agent_types_json = $6::jsonb,
-		    created_by = $7, updated_at = $8
-		WHERE name = $9
-	`, normalized.DisplayName, normalized.Provider, normalized.ProviderID, normalized.Region,
+		SET display_name = $1, provider = $2, provider_id = $3, provider_config_json = $4::jsonb, region = $5,
+		    default_agent_type = $6, allowed_agent_types_json = $7::jsonb,
+		    created_by = $8, updated_at = $9
+		WHERE name = $10
+	`, normalized.DisplayName, normalized.Provider, normalized.ProviderID,
+		mustMarshalProviderConfigJSON(normalized.ProviderConfig), normalized.Region,
 		normalized.DefaultAgentType, mustMarshalAgentTypesJSON(normalized.AllowedAgentTypes),
 		normalized.CreatedBy, normalized.UpdatedAt, normalized.Name)
 	if err != nil {
@@ -380,6 +432,17 @@ func mustMarshalAgentTypesJSON(values []string) string {
 	encoded, err := json.Marshal(values)
 	if err != nil {
 		return `["codex","claude"]`
+	}
+	return string(encoded)
+}
+
+func mustMarshalProviderConfigJSON(values map[string]string) string {
+	if len(values) == 0 {
+		return `{}`
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return `{}`
 	}
 	return string(encoded)
 }
