@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -486,6 +487,241 @@ func TestServiceHandleAgentInputProducesClaudeEvents(t *testing.T) {
 	}
 }
 
+func TestServiceHandleAgentInputUsesRuntimeBridgeProvider(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-runtime-bridge-input",
+		Name:      "Slice Runtime Bridge Input",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	inputCalls := 0
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
+			return &RuntimeStartResult{
+				Provider:  RuntimeProviderCloudflareContainers,
+				SessionID: "runtime-bridge-1",
+				Endpoint:  "https://edge.internal/runtime-bridge-1",
+				Status:    "ready",
+			}, nil
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
+		inputFn: func(_ context.Context, _ *models.AgentSession, text string) error {
+			inputCalls++
+			if text != "Bridge this input" {
+				t.Fatalf("unexpected input text %q", text)
+			}
+			return nil
+		},
+		streamFn: func(_ context.Context, _ *models.AgentSession, sinceSeq uint64, limit int) ([]RuntimeBridgeEvent, uint64, error) {
+			if sinceSeq >= 2 {
+				return nil, sinceSeq, nil
+			}
+			_ = limit
+			return []RuntimeBridgeEvent{
+				{
+					RuntimeSeq: 1,
+					Stream:     "agent",
+					Type:       "output_delta",
+					Payload:    []byte(`{"text":"runtime delta"}`),
+				},
+				{
+					RuntimeSeq: 2,
+					Stream:     "agent",
+					Type:       "output_final",
+					Payload:    []byte(`{"text":"runtime final"}`),
+				},
+			}, 2, nil
+		},
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-runtime-bridge-input",
+		Provider:      RuntimeProviderCloudflareContainers,
+		E2BTemplateID: "cfc-profile",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if err := svc.HandleAgentInput(ctx, session.SessionID, "Bridge this input"); err != nil {
+		t.Fatalf("HandleAgentInput failed: %v", err)
+	}
+	if inputCalls != 1 {
+		t.Fatalf("expected input provider call once, got %d", inputCalls)
+	}
+
+	events, _, err := svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 200)
+	if err != nil {
+		t.Fatalf("ListEventsForUser failed: %v", err)
+	}
+	foundRuntimeFinal := false
+	for _, event := range events {
+		if event.Stream == "agent" && event.Type == "output_final" && strings.Contains(string(event.Payload), "runtime final") {
+			foundRuntimeFinal = true
+		}
+	}
+	if !foundRuntimeFinal {
+		t.Fatalf("expected bridged runtime output_final event")
+	}
+}
+
+func TestServiceHandleAgentInterruptUsesRuntimeBridgeProvider(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-runtime-bridge-interrupt",
+		Name:      "Slice Runtime Bridge Interrupt",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	interruptCalls := 0
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
+			return &RuntimeStartResult{
+				Provider:  RuntimeProviderCloudflareContainers,
+				SessionID: "runtime-bridge-2",
+				Endpoint:  "https://edge.internal/runtime-bridge-2",
+				Status:    "ready",
+			}, nil
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
+		interruptFn: func(_ context.Context, _ *models.AgentSession, reason string) error {
+			interruptCalls++
+			if reason != "Stop now" {
+				t.Fatalf("unexpected interrupt reason %q", reason)
+			}
+			return nil
+		},
+		streamFn: func(_ context.Context, _ *models.AgentSession, sinceSeq uint64, limit int) ([]RuntimeBridgeEvent, uint64, error) {
+			if sinceSeq >= 1 {
+				return nil, sinceSeq, nil
+			}
+			_ = limit
+			return []RuntimeBridgeEvent{
+				{
+					RuntimeSeq: 1,
+					Stream:     "control",
+					Type:       "error",
+					Payload:    []byte(`{"code":"USER_INTERRUPT","message":"Stop now"}`),
+				},
+			}, 1, nil
+		},
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-runtime-bridge-interrupt",
+		Provider:      RuntimeProviderCloudflareContainers,
+		E2BTemplateID: "cfc-profile",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if err := svc.HandleAgentInterrupt(ctx, session.SessionID, "Stop now"); err != nil {
+		t.Fatalf("HandleAgentInterrupt failed: %v", err)
+	}
+	if interruptCalls != 1 {
+		t.Fatalf("expected interrupt provider call once, got %d", interruptCalls)
+	}
+
+	events, _, err := svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 200)
+	if err != nil {
+		t.Fatalf("ListEventsForUser failed: %v", err)
+	}
+	foundRuntimeInterrupt := false
+	for _, event := range events {
+		if event.Stream == "control" && event.Type == "error" && strings.Contains(string(event.Payload), "USER_INTERRUPT") {
+			foundRuntimeInterrupt = true
+		}
+	}
+	if !foundRuntimeInterrupt {
+		t.Fatalf("expected bridged runtime interrupt event")
+	}
+}
+
+func TestServiceSyncRuntimeEventsSkipsConcurrentSync(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	session := &models.AgentSession{
+		SessionID:      "session-runtime-sync-race",
+		SliceID:        "slice-runtime-sync-race",
+		UserID:         "alice",
+		State:          models.AgentSessionStateRunning,
+		Provider:       RuntimeProviderCloudflareContainers,
+		E2BTemplateID:  "cfc-profile",
+		IdleTimeoutSec: 60,
+		TTLSec:         600,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := st.CreateAgentSession(ctx, session); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	var streamCalls int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	svc := NewService(st, "test-secret")
+	provider := &stubRuntimeProvider{
+		streamFn: func(_ context.Context, _ *models.AgentSession, sinceSeq uint64, _ int) ([]RuntimeBridgeEvent, uint64, error) {
+			call := atomic.AddInt32(&streamCalls, 1)
+			if call == 1 {
+				close(started)
+				<-release
+			}
+			return []RuntimeBridgeEvent{
+				{
+					RuntimeSeq: 1,
+					Stream:     "agent",
+					Type:       "output_final",
+					Payload:    []byte(`{"text":"runtime final"}`),
+				},
+			}, 1, nil
+		},
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- svc.syncRuntimeEvents(ctx, session, provider)
+	}()
+	<-started
+	go func() {
+		errCh <- svc.syncRuntimeEvents(ctx, session, provider)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("syncRuntimeEvents failed: %v", err)
+		}
+	}
+	if got := atomic.LoadInt32(&streamCalls); got != 1 {
+		t.Fatalf("expected a single stream call during concurrent sync, got %d", got)
+	}
+
+	events, _, err := svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 50)
+	if err != nil {
+		t.Fatalf("ListEventsForUser failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one bridged event, got %d", len(events))
+	}
+}
+
 func TestServiceRuntimeStopFailure(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -655,9 +891,12 @@ func TestServiceRuntimeHealthChecksByProvider(t *testing.T) {
 }
 
 type stubRuntimeProvider struct {
-	startFn  func(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error)
-	stopFn   func(ctx context.Context, session *models.AgentSession, reason string) error
-	healthFn func(ctx context.Context) error
+	startFn     func(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error)
+	stopFn      func(ctx context.Context, session *models.AgentSession, reason string) error
+	healthFn    func(ctx context.Context) error
+	inputFn     func(ctx context.Context, session *models.AgentSession, text string) error
+	interruptFn func(ctx context.Context, session *models.AgentSession, reason string) error
+	streamFn    func(ctx context.Context, session *models.AgentSession, sinceSeq uint64, limit int) ([]RuntimeBridgeEvent, uint64, error)
 }
 
 func (p *stubRuntimeProvider) Start(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error) {
@@ -684,6 +923,27 @@ func (p *stubRuntimeProvider) HealthCheck(ctx context.Context) error {
 		return nil
 	}
 	return p.healthFn(ctx)
+}
+
+func (p *stubRuntimeProvider) SendInput(ctx context.Context, session *models.AgentSession, text string) error {
+	if p.inputFn == nil {
+		return nil
+	}
+	return p.inputFn(ctx, session, text)
+}
+
+func (p *stubRuntimeProvider) SendInterrupt(ctx context.Context, session *models.AgentSession, reason string) error {
+	if p.interruptFn == nil {
+		return nil
+	}
+	return p.interruptFn(ctx, session, reason)
+}
+
+func (p *stubRuntimeProvider) StreamEvents(ctx context.Context, session *models.AgentSession, sinceSeq uint64, limit int) ([]RuntimeBridgeEvent, uint64, error) {
+	if p.streamFn == nil {
+		return nil, sinceSeq, nil
+	}
+	return p.streamFn(ctx, session, sinceSeq, limit)
 }
 
 func waitForSessionState(t *testing.T, svc *Service, sessionID string, want models.AgentSessionState, timeout time.Duration) {

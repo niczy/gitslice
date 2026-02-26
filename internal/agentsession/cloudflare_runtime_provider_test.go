@@ -19,6 +19,9 @@ func TestCloudflareRuntimeProviderStartStopAndHealth(t *testing.T) {
 	startCalled := false
 	stopCalled := false
 	healthCalled := false
+	inputCalled := false
+	interruptCalled := false
+	streamCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == cfcStartPath:
@@ -46,6 +49,21 @@ func TestCloudflareRuntimeProviderStartStopAndHealth(t *testing.T) {
 		case r.Method == http.MethodDelete && r.URL.Path == cfcStartPath+"/runtime_123":
 			stopCalled = true
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == cfcStartPath+"/runtime_123/input":
+			inputCalled = true
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"accepted":true}`))
+		case r.Method == http.MethodPost && r.URL.Path == cfcStartPath+"/runtime_123/interrupt":
+			interruptCalled = true
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"accepted":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == cfcStartPath+"/runtime_123/stream":
+			streamCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("id: 1\nevent: output_delta\ndata: {\"seq\":1,\"stream\":\"agent\",\"type\":\"output_delta\",\"payload\":{\"text\":\"delta\"}}\n\n"))
+			_, _ = w.Write([]byte("id: 2\nevent: output_final\ndata: {\"seq\":2,\"stream\":\"agent\",\"type\":\"output_final\",\"payload\":{\"text\":\"done\"}}\n\n"))
+			_, _ = w.Write([]byte("event: snapshot_end\ndata: {\"latestSeq\":2}\n\n"))
 		case r.Method == http.MethodGet && r.URL.Path == cfcHealthPath:
 			healthCalled = true
 			w.WriteHeader(http.StatusOK)
@@ -92,6 +110,41 @@ func TestCloudflareRuntimeProviderStartStopAndHealth(t *testing.T) {
 	if err := provider.Stop(context.Background(), session, ""); err != nil {
 		t.Fatalf("Stop failed: %v", err)
 	}
+	inputProvider, ok := provider.(RuntimeInputProvider)
+	if !ok {
+		t.Fatalf("expected RuntimeInputProvider implementation")
+	}
+	if err := inputProvider.SendInput(context.Background(), session, "hello"); err != nil {
+		t.Fatalf("SendInput failed: %v", err)
+	}
+	interruptProvider, ok := provider.(RuntimeInterruptProvider)
+	if !ok {
+		t.Fatalf("expected RuntimeInterruptProvider implementation")
+	}
+	if err := interruptProvider.SendInterrupt(context.Background(), session, "user requested"); err != nil {
+		t.Fatalf("SendInterrupt failed: %v", err)
+	}
+	streamProvider, ok := provider.(RuntimeStreamProvider)
+	if !ok {
+		t.Fatalf("expected RuntimeStreamProvider implementation")
+	}
+	events, nextSeq, err := streamProvider.StreamEvents(context.Background(), session, 0, 100)
+	if err != nil {
+		t.Fatalf("StreamEvents failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 stream events, got %d", len(events))
+	}
+	if nextSeq != 2 {
+		t.Fatalf("expected nextSeq=2, got %d", nextSeq)
+	}
+	if got := events[0].Stream; got != "agent" {
+		t.Fatalf("expected stream agent, got %q", got)
+	}
+	if got := events[0].Type; got != "output_delta" {
+		t.Fatalf("expected output_delta, got %q", got)
+	}
+
 	healthProvider, ok := provider.(RuntimeHealthProvider)
 	if !ok {
 		t.Fatalf("expected RuntimeHealthProvider implementation")
@@ -99,8 +152,8 @@ func TestCloudflareRuntimeProviderStartStopAndHealth(t *testing.T) {
 	if err := healthProvider.HealthCheck(context.Background()); err != nil {
 		t.Fatalf("HealthCheck failed: %v", err)
 	}
-	if !startCalled || !stopCalled || !healthCalled {
-		t.Fatalf("expected start, stop, and health calls to be made")
+	if !startCalled || !stopCalled || !healthCalled || !inputCalled || !interruptCalled || !streamCalled {
+		t.Fatalf("expected start/stop/health/input/interrupt/stream calls to be made")
 	}
 }
 
