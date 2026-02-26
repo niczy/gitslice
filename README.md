@@ -149,6 +149,25 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
 If `E2B_API_KEY` and `E2B_ACCESS_TOKEN` are both unset, agent sessions use the simulated runtime provider.
 
+Enable Cloudflare Containers runtime lifecycle in `core_server`:
+
+```bash
+CFC_CONTROL_BASE_URL=https://<worker-subdomain>.workers.dev \
+CFC_SERVICE_TOKEN_ID=<service-token-id> \
+CFC_SERVICE_TOKEN_SECRET=<service-token-secret> \
+AGENT_RUNTIME_PROVIDER_DEFAULT=cloudflare_containers \
+CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+```
+
+Cloudflare control-plane worker source is in `servers/cloudflare_control_plane`:
+
+```bash
+cd servers/cloudflare_control_plane
+npm install
+npm test
+npx wrangler dev
+```
+
 For Codex/Claude sandbox sessions, configure model credentials and optional egress policy:
 
 ```bash

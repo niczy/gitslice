@@ -1,0 +1,17 @@
+{
+  "name": "gitslice-cloudflare-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test ./test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.37.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
