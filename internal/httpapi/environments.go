@@ -20,21 +20,23 @@ func NewEnvironmentsAPI(st storage.Storage) *EnvironmentsAPI {
 }
 
 type environmentRequest struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName"`
-	Provider    string `json:"provider"`
-	ProviderID  string `json:"providerId"`
-	Region      string `json:"region"`
+	Name           string            `json:"name"`
+	DisplayName    string            `json:"displayName"`
+	Provider       string            `json:"provider"`
+	ProviderID     string            `json:"providerId"`
+	ProviderConfig map[string]string `json:"providerConfig"`
+	Region         string            `json:"region"`
 }
 
 type environmentResponse struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName"`
-	Region      string `json:"region"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
-	Provider    string `json:"provider,omitempty"`
-	ProviderID  string `json:"providerId,omitempty"`
+	Name           string            `json:"name"`
+	DisplayName    string            `json:"displayName"`
+	Region         string            `json:"region"`
+	CreatedAt      string            `json:"createdAt"`
+	UpdatedAt      string            `json:"updatedAt"`
+	Provider       string            `json:"provider,omitempty"`
+	ProviderID     string            `json:"providerId,omitempty"`
+	ProviderConfig map[string]string `json:"providerConfig,omitempty"`
 }
 
 type listEnvironmentsResponse struct {
@@ -69,6 +71,7 @@ func mapEnvironmentResponse(env *models.Environment, includeAdmin bool) environm
 	if includeAdmin {
 		resp.Provider = env.Provider
 		resp.ProviderID = env.ProviderID
+		resp.ProviderConfig = env.ProviderConfig
 	}
 	return resp
 }
@@ -166,12 +169,13 @@ func (a *EnvironmentsAPI) createEnvironment(w http.ResponseWriter, r *http.Reque
 	name := strings.TrimSpace(req.Name)
 
 	env := &models.Environment{
-		Name:        name,
-		DisplayName: req.DisplayName,
-		Provider:    req.Provider,
-		ProviderID:  req.ProviderID,
-		Region:      req.Region,
-		CreatedBy:   username,
+		Name:           name,
+		DisplayName:    req.DisplayName,
+		Provider:       req.Provider,
+		ProviderID:     req.ProviderID,
+		ProviderConfig: req.ProviderConfig,
+		Region:         req.Region,
+		CreatedBy:      username,
 	}
 	if err := a.st.CreateEnvironment(r.Context(), env); err != nil {
 		switch err {
@@ -240,6 +244,7 @@ func (a *EnvironmentsAPI) updateEnvironment(w http.ResponseWriter, r *http.Reque
 	current.DisplayName = req.DisplayName
 	current.Provider = req.Provider
 	current.ProviderID = req.ProviderID
+	current.ProviderConfig = req.ProviderConfig
 	current.Region = req.Region
 	if err := a.st.UpdateEnvironment(r.Context(), current); err != nil {
 		switch err {
