@@ -12,7 +12,7 @@ PR checklist:
 - [x] PR3 - Edge control plane (Worker + Durable Object session actor)
 - [x] PR4 - Runtime bridge protocol wiring (core <-> edge <-> container shim)
 - [x] PR5 - Environment admin + validation UX
-- [ ] PR6 - Integration tests (stub + optional real CF smoke test)
+- [x] PR6 - Integration tests (stub + optional real CF smoke test)
 - [ ] PR7 - Controlled rollout and documentation/runbook updates
 
 ---
