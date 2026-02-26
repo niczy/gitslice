@@ -236,10 +236,11 @@ export class RuntimeSessionDO {
     });
   }
 
-  async appendEvent(type, payload) {
+  async appendEvent(stream, type, payload) {
     const event = {
       seq: ++this.seq,
       ts: new Date().toISOString(),
+      stream,
       type,
       payload,
     };
@@ -280,10 +281,7 @@ export class RuntimeSessionDO {
         createdAt: now,
         updatedAt: now,
       };
-      await this.appendEvent("lifecycle.started", {
-        runtimeSessionId: runtimeSessionID,
-        profileId: this.session.profileId,
-      });
+      await this.appendEvent("status", "state", { state: "running" });
       return jsonResponse(201, {
         runtimeSessionId: runtimeSessionID,
         status: this.session.status,
@@ -293,7 +291,7 @@ export class RuntimeSessionDO {
 
     this.session.status = "running";
     this.session.updatedAt = new Date().toISOString();
-    await this.appendEvent("lifecycle.reused", { runtimeSessionId: this.session.runtimeSessionId });
+    await this.appendEvent("status", "state", { state: "running" });
     return jsonResponse(200, {
       runtimeSessionId: this.session.runtimeSessionId,
       status: this.session.status,
@@ -311,8 +309,8 @@ export class RuntimeSessionDO {
     this.session.status = "stopped";
     this.session.updatedAt = new Date().toISOString();
     this.session.stoppedAt = this.session.updatedAt;
-    await this.appendEvent("lifecycle.stopped", {
-      runtimeSessionId: this.session.runtimeSessionId,
+    await this.appendEvent("status", "state", {
+      state: "stopped",
       reason,
     });
     return jsonResponse(200, {
@@ -330,7 +328,26 @@ export class RuntimeSessionDO {
     if (!decoded.ok) {
       return jsonResponse(400, { error: decoded.error, code: "INVALID_PAYLOAD" });
     }
-    await this.appendEvent("control.input", decoded.value || {});
+    const inputText = String(decoded.value?.text || "").trim();
+    const toolID = `tool_${crypto.randomUUID().slice(0, 8)}`;
+    await this.appendEvent("agent", "output_delta", {
+      text: "runtime shim received input",
+    });
+    await this.appendEvent("tool", "start", {
+      id: toolID,
+      tool: this.session.agentType || "runtime.exec",
+    });
+    await this.appendEvent("tool", "output", {
+      id: toolID,
+      text: "runtime executed request",
+    });
+    await this.appendEvent("tool", "end", {
+      id: toolID,
+      status: "ok",
+    });
+    await this.appendEvent("agent", "output_final", {
+      text: `runtime completed request: ${inputText}`,
+    });
     this.session.updatedAt = new Date().toISOString();
     await this.persist();
     return jsonResponse(202, { accepted: true, runtimeSessionId: this.session.runtimeSessionId });
@@ -344,7 +361,10 @@ export class RuntimeSessionDO {
     if (!decoded.ok) {
       return jsonResponse(400, { error: decoded.error, code: "INVALID_PAYLOAD" });
     }
-    await this.appendEvent("control.interrupt", decoded.value || {});
+    await this.appendEvent("control", "error", {
+      code: "USER_INTERRUPT",
+      message: String(decoded.value?.reason || ""),
+    });
     this.session.updatedAt = new Date().toISOString();
     await this.persist();
     return jsonResponse(202, { accepted: true, runtimeSessionId: this.session.runtimeSessionId });

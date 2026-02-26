@@ -2,6 +2,7 @@ package agentsession
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +16,14 @@ type RuntimeStartResult struct {
 	SessionID string
 	Endpoint  string
 	Status    string
+}
+
+type RuntimeBridgeEvent struct {
+	RuntimeSeq uint64
+	Stream     string
+	Type       string
+	Payload    json.RawMessage
+	TS         time.Time
 }
 
 const (
@@ -34,6 +43,18 @@ type RuntimeProvider interface {
 
 type RuntimeHealthProvider interface {
 	HealthCheck(ctx context.Context) error
+}
+
+type RuntimeInputProvider interface {
+	SendInput(ctx context.Context, session *models.AgentSession, text string) error
+}
+
+type RuntimeInterruptProvider interface {
+	SendInterrupt(ctx context.Context, session *models.AgentSession, reason string) error
+}
+
+type RuntimeStreamProvider interface {
+	StreamEvents(ctx context.Context, session *models.AgentSession, sinceSeq uint64, limit int) ([]RuntimeBridgeEvent, uint64, error)
 }
 
 type RuntimeError struct {

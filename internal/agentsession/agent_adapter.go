@@ -100,6 +100,27 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 	if agentType != "codex" && agentType != "claude" {
 		return storage.ErrInvalidInput
 	}
+	runtimeProvider, _, providerErr := s.runtimeProviderForSession(session)
+	if providerErr != nil {
+		return providerErr
+	}
+	if inputProvider, ok := runtimeProvider.(RuntimeInputProvider); ok {
+		if err := inputProvider.SendInput(ctx, session, text); err != nil {
+			return err
+		}
+		if err := s.syncRuntimeEvents(ctx, session, runtimeProvider); err != nil {
+			return err
+		}
+		ObserveAgentRuntimeRequest(agentType, "accepted")
+		ObserveAgentRuntimeTokenOut(agentType, len(text))
+		_ = s.RecordActivity(ctx, sessionID)
+		_ = s.AddAudit(ctx, sessionID, session.UserID, "agent_input", map[string]any{
+			"agentType":       session.AgentType,
+			"environment":     session.EnvironmentName,
+			"runtimeProvider": session.RuntimeProvider,
+		})
+		return nil
+	}
 
 	toolID := makeNonceID("tool")
 	displayName := agentDisplayName(agentType)
@@ -191,6 +212,25 @@ func (s *Service) HandleAgentInterrupt(ctx context.Context, sessionID, reason st
 	}
 	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
 		return storage.ErrAgentSessionConflict
+	}
+	runtimeProvider, _, providerErr := s.runtimeProviderForSession(session)
+	if providerErr != nil {
+		return providerErr
+	}
+	if interruptProvider, ok := runtimeProvider.(RuntimeInterruptProvider); ok {
+		if err := interruptProvider.SendInterrupt(ctx, session, reason); err != nil {
+			return err
+		}
+		if err := s.syncRuntimeEvents(ctx, session, runtimeProvider); err != nil {
+			return err
+		}
+		_ = s.RecordActivity(ctx, sessionID)
+		_ = s.AddAudit(ctx, sessionID, session.UserID, "agent_interrupt", map[string]any{
+			"agentType":       session.AgentType,
+			"environment":     session.EnvironmentName,
+			"runtimeProvider": session.RuntimeProvider,
+		})
+		return nil
 	}
 
 	payload, _ := json.Marshal(map[string]string{

@@ -26,6 +26,7 @@ const (
 	defaultStartupTimeout    = 90 * time.Second
 	defaultStartMaxRetries   = 2
 	defaultStartRetryBackoff = 1 * time.Second
+	defaultBridgePollTick    = 750 * time.Millisecond
 	defaultAgentType         = "codex"
 )
 
@@ -70,12 +71,16 @@ type Service struct {
 	defaultRuntimeProvider string
 	runtimeStartInFlight   map[string]struct{}
 	runtimeStopInFlight    map[string]struct{}
+	runtimeBridgeInFlight  map[string]struct{}
+	runtimeBridgeSyncing   map[string]struct{}
+	runtimeBridgeSeq       map[string]uint64
 
 	lifecycleTick            time.Duration
 	startupTimeout           time.Duration
 	runtimeStopTimeout       time.Duration
 	runtimeStartMaxRetries   int
 	runtimeStartRetryBackoff time.Duration
+	runtimeBridgePollTick    time.Duration
 	runLoopOnce              sync.Once
 }
 
@@ -95,11 +100,15 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		defaultRuntimeProvider:   RuntimeProviderE2B,
 		runtimeStartInFlight:     make(map[string]struct{}),
 		runtimeStopInFlight:      make(map[string]struct{}),
+		runtimeBridgeInFlight:    make(map[string]struct{}),
+		runtimeBridgeSyncing:     make(map[string]struct{}),
+		runtimeBridgeSeq:         make(map[string]uint64),
 		lifecycleTick:            defaultLifecycleTick,
 		startupTimeout:           defaultStartupTimeout,
 		runtimeStopTimeout:       30 * time.Second,
 		runtimeStartMaxRetries:   defaultStartMaxRetries,
 		runtimeStartRetryBackoff: defaultStartRetryBackoff,
+		runtimeBridgePollTick:    defaultBridgePollTick,
 	}
 }
 
@@ -531,6 +540,52 @@ func (s *Service) enqueueStop(sessionID, actorUserID, reason string) {
 	}()
 }
 
+func (s *Service) enqueueRuntimeBridge(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	if !s.markRuntimeBridgeInFlight(sessionID) {
+		return
+	}
+	go func() {
+		defer s.clearRuntimeBridgeInFlight(sessionID)
+		s.runtimeBridgeLoop(sessionID)
+	}()
+}
+
+func (s *Service) runtimeBridgeLoop(sessionID string) {
+	ticker := time.NewTicker(s.runtimeBridgePollTick)
+	defer ticker.Stop()
+	for {
+		ctx := context.Background()
+		session, err := s.st.GetAgentSession(ctx, sessionID)
+		if err != nil {
+			return
+		}
+		if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
+			return
+		}
+
+		runtimeProvider, _, providerErr := s.runtimeProviderForSession(session)
+		if providerErr != nil {
+			return
+		}
+		if _, ok := runtimeProvider.(RuntimeStreamProvider); !ok {
+			return
+		}
+
+		syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = s.syncRuntimeEvents(syncCtx, session, runtimeProvider)
+		cancel()
+		if err != nil {
+			log.Printf("component=agent_session phase=runtime_bridge_poll session_id=%s code=%s error=%q",
+				sessionID, runtimeErrorCode(err, "RUNTIME_BRIDGE_SYNC_FAILED"), runtimeErrorMessage(err, "runtime bridge sync failed"))
+		}
+		<-ticker.C
+	}
+}
+
 func (s *Service) startSessionRuntime(sessionID string) {
 	ctx := context.Background()
 	session, err := s.st.GetAgentSession(ctx, sessionID)
@@ -670,6 +725,8 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateRunning)
 	log.Printf("component=agent_session phase=session_running session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s runtime_provider=%s runtime_session_id=%s",
 		session.SessionID, session.SliceID, session.UserID, session.EnvironmentName, session.AgentType, session.State, session.RuntimeProvider, session.RuntimeSessionID)
+
+	s.enqueueRuntimeBridge(sessionID)
 }
 
 func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
@@ -739,6 +796,7 @@ func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStopped)
 	log.Printf("component=agent_session phase=session_stopped session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s runtime_provider=%s reason=%q",
 		session.SessionID, session.SliceID, actorForAudit(actorUserID), session.EnvironmentName, session.AgentType, session.State, session.RuntimeProvider, strings.TrimSpace(reason))
+	s.clearRuntimeBridgeSeq(sessionID)
 }
 
 func (s *Service) failSession(ctx context.Context, session *models.AgentSession, actorUserID, failureCode, failureMessage string) {
@@ -765,6 +823,7 @@ func (s *Service) failSession(ctx context.Context, session *models.AgentSession,
 	_ = s.AppendStateEvent(ctx, session.SessionID, models.AgentSessionStateFailed)
 	log.Printf("component=agent_session phase=session_failed session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s runtime_provider=%s code=%s error=%q",
 		session.SessionID, session.SliceID, actorForAudit(actorUserID), session.EnvironmentName, session.AgentType, session.State, session.RuntimeProvider, session.FailureCode, session.FailureMessage)
+	s.clearRuntimeBridgeSeq(session.SessionID)
 }
 
 func shouldRetryRuntimeStart(err error) bool {
@@ -872,6 +931,70 @@ func (s *Service) RuntimeHealthCheck(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) syncRuntimeEvents(ctx context.Context, session *models.AgentSession, provider RuntimeProvider) error {
+	if session == nil || provider == nil {
+		return nil
+	}
+	if !s.markRuntimeBridgeSyncing(session.SessionID) {
+		return nil
+	}
+	defer s.clearRuntimeBridgeSyncing(session.SessionID)
+
+	streamProvider, ok := provider.(RuntimeStreamProvider)
+	if !ok {
+		return nil
+	}
+
+	sinceSeq := s.runtimeBridgeSeqValue(session.SessionID)
+	events, nextSeq, err := streamProvider.StreamEvents(ctx, session, sinceSeq, 200)
+	if err != nil {
+		return err
+	}
+
+	maxSeq := sinceSeq
+	appended := 0
+	for _, runtimeEvent := range events {
+		if runtimeEvent.RuntimeSeq <= sinceSeq {
+			continue
+		}
+		payload := runtimeEvent.Payload
+		if len(payload) == 0 {
+			payload = json.RawMessage(`{}`)
+		}
+		stream := strings.TrimSpace(runtimeEvent.Stream)
+		if stream == "" {
+			stream = "runtime"
+		}
+		eventType := strings.TrimSpace(runtimeEvent.Type)
+		if eventType == "" {
+			eventType = "event"
+		}
+
+		if err := s.AppendEvent(ctx, &models.AgentSessionEvent{
+			SessionID: session.SessionID,
+			Stream:    stream,
+			Type:      eventType,
+			Payload:   payload,
+		}); err != nil {
+			return err
+		}
+		appended++
+		if runtimeEvent.RuntimeSeq > maxSeq {
+			maxSeq = runtimeEvent.RuntimeSeq
+		}
+	}
+	if nextSeq > maxSeq {
+		maxSeq = nextSeq
+	}
+	if maxSeq > sinceSeq {
+		s.setRuntimeBridgeSeqValue(session.SessionID, maxSeq)
+	}
+	if appended > 0 {
+		_ = s.RecordActivity(ctx, session.SessionID)
+	}
+	return nil
+}
+
 func (s *Service) markRuntimeStartInFlight(sessionID string) bool {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
@@ -880,6 +1003,75 @@ func (s *Service) markRuntimeStartInFlight(sessionID string) bool {
 	}
 	s.runtimeStartInFlight[sessionID] = struct{}{}
 	return true
+}
+
+func (s *Service) markRuntimeBridgeInFlight(sessionID string) bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if _, exists := s.runtimeBridgeInFlight[sessionID]; exists {
+		return false
+	}
+	s.runtimeBridgeInFlight[sessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) markRuntimeBridgeSyncing(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.runtimeBridgeSyncing == nil {
+		s.runtimeBridgeSyncing = make(map[string]struct{})
+	}
+	if _, exists := s.runtimeBridgeSyncing[sessionID]; exists {
+		return false
+	}
+	s.runtimeBridgeSyncing[sessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) clearRuntimeBridgeSyncing(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	s.runtimeMu.Lock()
+	delete(s.runtimeBridgeSyncing, sessionID)
+	s.runtimeMu.Unlock()
+}
+
+func (s *Service) clearRuntimeBridgeInFlight(sessionID string) {
+	s.runtimeMu.Lock()
+	delete(s.runtimeBridgeInFlight, sessionID)
+	s.runtimeMu.Unlock()
+}
+
+func (s *Service) runtimeBridgeSeqValue(sessionID string) uint64 {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	return s.runtimeBridgeSeq[sessionID]
+}
+
+func (s *Service) setRuntimeBridgeSeqValue(sessionID string, value uint64) {
+	if value == 0 {
+		return
+	}
+	s.runtimeMu.Lock()
+	if s.runtimeBridgeSeq == nil {
+		s.runtimeBridgeSeq = make(map[string]uint64)
+	}
+	if value > s.runtimeBridgeSeq[sessionID] {
+		s.runtimeBridgeSeq[sessionID] = value
+	}
+	s.runtimeMu.Unlock()
+}
+
+func (s *Service) clearRuntimeBridgeSeq(sessionID string) {
+	s.runtimeMu.Lock()
+	delete(s.runtimeBridgeSeq, sessionID)
+	s.runtimeMu.Unlock()
 }
 
 func (s *Service) clearRuntimeStartInFlight(sessionID string) {

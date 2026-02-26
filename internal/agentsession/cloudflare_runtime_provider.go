@@ -1,6 +1,7 @@
 package agentsession
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -189,23 +191,20 @@ func (p *cloudflareRuntimeProvider) Start(ctx context.Context, session *models.A
 }
 
 func (p *cloudflareRuntimeProvider) Stop(ctx context.Context, session *models.AgentSession, reason string) error {
-	_ = reason
 	if session == nil {
 		return nil
 	}
 	if err := p.validateControlConfig(); err != nil {
 		return err
 	}
-
-	runtimeSessionID := strings.TrimSpace(session.RuntimeSessionID)
-	if runtimeSessionID == "" {
-		runtimeSessionID = strings.TrimSpace(session.E2BSandboxID)
-	}
+	runtimeSessionID := p.runtimeSessionIDForSession(session)
 	if runtimeSessionID == "" {
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, p.controlBaseURL+cfcStartPath+"/"+url.PathEscape(runtimeSessionID), nil)
+	reqBody := map[string]string{"reason": strings.TrimSpace(reason)}
+	body, _ := json.Marshal(reqBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, p.controlBaseURL+cfcStartPath+"/"+url.PathEscape(runtimeSessionID), bytes.NewReader(body))
 	if err != nil {
 		return &RuntimeError{
 			Code:    "CFC_STOP_REQUEST_BUILD_FAILED",
@@ -284,6 +283,153 @@ func (p *cloudflareRuntimeProvider) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+func (p *cloudflareRuntimeProvider) SendInput(ctx context.Context, session *models.AgentSession, text string) error {
+	if session == nil {
+		return storageErrInvalidInput("session is required")
+	}
+	if err := p.validateControlConfig(); err != nil {
+		return err
+	}
+	runtimeSessionID := p.runtimeSessionIDForSession(session)
+	if runtimeSessionID == "" {
+		return storageErrInvalidInput("runtime session id is required")
+	}
+
+	payload, _ := json.Marshal(map[string]string{"text": strings.TrimSpace(text)})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.controlBaseURL+cfcStartPath+"/"+url.PathEscape(runtimeSessionID)+"/input", bytes.NewReader(payload))
+	if err != nil {
+		return &RuntimeError{
+			Code:    "CFC_INPUT_REQUEST_BUILD_FAILED",
+			Message: "failed to build input request",
+			Err:     err,
+		}
+	}
+	p.applyControlHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "gitslice-agent-runtime/1.0")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return &RuntimeError{
+			Code:    "CFC_INPUT_REQUEST_FAILED",
+			Message: "cloudflare input request failed",
+			Err:     err,
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return &RuntimeError{
+			Code:    "CFC_INPUT_FAILED",
+			Message: p.readControlAPIError(resp),
+		}
+	}
+	return nil
+}
+
+func (p *cloudflareRuntimeProvider) SendInterrupt(ctx context.Context, session *models.AgentSession, reason string) error {
+	if session == nil {
+		return storageErrInvalidInput("session is required")
+	}
+	if err := p.validateControlConfig(); err != nil {
+		return err
+	}
+	runtimeSessionID := p.runtimeSessionIDForSession(session)
+	if runtimeSessionID == "" {
+		return storageErrInvalidInput("runtime session id is required")
+	}
+
+	payload, _ := json.Marshal(map[string]string{"reason": strings.TrimSpace(reason)})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.controlBaseURL+cfcStartPath+"/"+url.PathEscape(runtimeSessionID)+"/interrupt", bytes.NewReader(payload))
+	if err != nil {
+		return &RuntimeError{
+			Code:    "CFC_INTERRUPT_REQUEST_BUILD_FAILED",
+			Message: "failed to build interrupt request",
+			Err:     err,
+		}
+	}
+	p.applyControlHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "gitslice-agent-runtime/1.0")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return &RuntimeError{
+			Code:    "CFC_INTERRUPT_REQUEST_FAILED",
+			Message: "cloudflare interrupt request failed",
+			Err:     err,
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return &RuntimeError{
+			Code:    "CFC_INTERRUPT_FAILED",
+			Message: p.readControlAPIError(resp),
+		}
+	}
+	return nil
+}
+
+func (p *cloudflareRuntimeProvider) StreamEvents(ctx context.Context, session *models.AgentSession, sinceSeq uint64, limit int) ([]RuntimeBridgeEvent, uint64, error) {
+	if session == nil {
+		return nil, sinceSeq, storageErrInvalidInput("session is required")
+	}
+	if err := p.validateControlConfig(); err != nil {
+		return nil, sinceSeq, err
+	}
+	runtimeSessionID := p.runtimeSessionIDForSession(session)
+	if runtimeSessionID == "" {
+		return nil, sinceSeq, storageErrInvalidInput("runtime session id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+
+	path := fmt.Sprintf("%s/%s/stream?sinceSeq=%d&limit=%d", cfcStartPath, url.PathEscape(runtimeSessionID), sinceSeq, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.controlBaseURL+path, nil)
+	if err != nil {
+		return nil, sinceSeq, &RuntimeError{
+			Code:    "CFC_STREAM_REQUEST_BUILD_FAILED",
+			Message: "failed to build stream request",
+			Err:     err,
+		}
+	}
+	p.applyControlHeaders(req)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", "gitslice-agent-runtime/1.0")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, sinceSeq, &RuntimeError{
+			Code:    "CFC_STREAM_REQUEST_FAILED",
+			Message: "cloudflare stream request failed",
+			Err:     err,
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, sinceSeq, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, sinceSeq, &RuntimeError{
+			Code:    "CFC_STREAM_FAILED",
+			Message: p.readControlAPIError(resp),
+		}
+	}
+
+	events, nextSeq, err := parseRuntimeSSE(resp.Body, sinceSeq)
+	if err != nil {
+		return nil, sinceSeq, &RuntimeError{
+			Code:    "CFC_STREAM_DECODE_FAILED",
+			Message: "failed to decode runtime stream",
+			Err:     err,
+		}
+	}
+	return events, nextSeq, nil
+}
+
 func (p *cloudflareRuntimeProvider) validateControlConfig() error {
 	if p.controlBaseURL == "" {
 		return &RuntimeError{
@@ -298,6 +444,17 @@ func (p *cloudflareRuntimeProvider) validateControlConfig() error {
 		}
 	}
 	return nil
+}
+
+func (p *cloudflareRuntimeProvider) runtimeSessionIDForSession(session *models.AgentSession) string {
+	if session == nil {
+		return ""
+	}
+	runtimeSessionID := strings.TrimSpace(session.RuntimeSessionID)
+	if runtimeSessionID == "" {
+		runtimeSessionID = strings.TrimSpace(session.E2BSandboxID)
+	}
+	return runtimeSessionID
 }
 
 func (p *cloudflareRuntimeProvider) applyControlHeaders(req *http.Request) {
@@ -399,4 +556,101 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+type runtimeSSEEnvelope struct {
+	Seq     uint64          `json:"seq"`
+	TS      string          `json:"ts"`
+	Stream  string          `json:"stream"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func parseRuntimeSSE(reader io.Reader, sinceSeq uint64) ([]RuntimeBridgeEvent, uint64, error) {
+	scanner := bufio.NewScanner(reader)
+	events := make([]RuntimeBridgeEvent, 0, 16)
+	nextSeq := sinceSeq
+	currentEvent := ""
+	dataLines := make([]string, 0, 2)
+
+	flush := func() error {
+		if len(dataLines) == 0 {
+			currentEvent = ""
+			return nil
+		}
+		data := strings.Join(dataLines, "\n")
+		switch currentEvent {
+		case "snapshot_end":
+			var marker struct {
+				LatestSeq uint64 `json:"latestSeq"`
+			}
+			if err := json.Unmarshal([]byte(data), &marker); err == nil && marker.LatestSeq > nextSeq {
+				nextSeq = marker.LatestSeq
+			}
+		default:
+			var envelope runtimeSSEEnvelope
+			if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+				return err
+			}
+			if envelope.Seq > sinceSeq {
+				parsedTS := time.Time{}
+				if ts := strings.TrimSpace(envelope.TS); ts != "" {
+					if value, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+						parsedTS = value
+					}
+				}
+				events = append(events, RuntimeBridgeEvent{
+					RuntimeSeq: envelope.Seq,
+					Stream:     strings.TrimSpace(envelope.Stream),
+					Type:       strings.TrimSpace(envelope.Type),
+					Payload:    envelope.Payload,
+					TS:         parsedTS,
+				})
+				if envelope.Seq > nextSeq {
+					nextSeq = envelope.Seq
+				}
+			}
+		}
+		currentEvent = ""
+		dataLines = dataLines[:0]
+		return nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if err := flush(); err != nil {
+				return nil, sinceSeq, err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			continue
+		}
+		if strings.HasPrefix(line, "id:") {
+			idText := strings.TrimSpace(strings.TrimPrefix(line, "id:"))
+			if value, err := strconv.ParseUint(idText, 10, 64); err == nil && value > nextSeq {
+				nextSeq = value
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, sinceSeq, err
+	}
+	if err := flush(); err != nil {
+		return nil, sinceSeq, err
+	}
+	return events, nextSeq, nil
+}
+
+func storageErrInvalidInput(message string) error {
+	return &RuntimeError{
+		Code:    "RUNTIME_INVALID_INPUT",
+		Message: strings.TrimSpace(message),
+	}
 }
