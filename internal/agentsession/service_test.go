@@ -541,9 +541,123 @@ func TestServiceRuntimeStopFailure(t *testing.T) {
 	}
 }
 
+func TestServiceSupportsCloudflareProviderRouting(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-cfc-provider",
+		Name:      "Slice CFC Provider",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+		startFn: func(_ context.Context, session *models.AgentSession) (*RuntimeStartResult, error) {
+			if got := strings.TrimSpace(session.Provider); got != RuntimeProviderCloudflareContainers {
+				t.Fatalf("expected provider %q, got %q", RuntimeProviderCloudflareContainers, got)
+			}
+			if got := strings.TrimSpace(session.E2BTemplateID); got != "cfc-profile" {
+				t.Fatalf("expected profile id cfc-profile, got %q", got)
+			}
+			return &RuntimeStartResult{
+				Provider:  RuntimeProviderCloudflareContainers,
+				SessionID: "cfc-runtime-1",
+				Endpoint:  "wss://edge.internal/cfc-runtime-1",
+				Status:    "ready",
+			}, nil
+		},
+		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
+	})
+
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-cfc-provider",
+		Provider:      RuntimeProviderCloudflareContainers,
+		E2BTemplateID: "cfc-profile",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.RuntimeProvider != RuntimeProviderCloudflareContainers {
+		t.Fatalf("expected runtime provider %q, got %q", RuntimeProviderCloudflareContainers, got.RuntimeProvider)
+	}
+	if got.RuntimeSessionID != "cfc-runtime-1" {
+		t.Fatalf("expected runtime session id cfc-runtime-1, got %q", got.RuntimeSessionID)
+	}
+}
+
+func TestServiceFailsWhenRuntimeProviderMissing(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-missing-provider",
+		Name:      "Slice Missing Provider",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:       "slice-missing-provider",
+		Provider:      RuntimeProviderCloudflareContainers,
+		E2BTemplateID: "cfc-profile",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.FailureCode != "RUNTIME_PROVIDER_UNAVAILABLE" {
+		t.Fatalf("expected RUNTIME_PROVIDER_UNAVAILABLE, got %q", got.FailureCode)
+	}
+}
+
+func TestServiceRuntimeHealthChecksByProvider(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+		healthFn: func(context.Context) error {
+			return &RuntimeError{
+				Code:    "CFC_RUNTIME_UNAVAILABLE",
+				Message: "control plane unavailable",
+			}
+		},
+	})
+
+	checks := svc.RuntimeHealthChecks(ctx)
+	if checks[RuntimeProviderE2B] != nil {
+		t.Fatalf("expected healthy e2b runtime, got %v", checks[RuntimeProviderE2B])
+	}
+	if checks[RuntimeProviderCloudflareContainers] == nil {
+		t.Fatalf("expected unhealthy cloudflare runtime")
+	}
+	if err := svc.SetDefaultRuntimeProvider(RuntimeProviderCloudflareContainers); err != nil {
+		t.Fatalf("SetDefaultRuntimeProvider failed: %v", err)
+	}
+	if err := svc.RuntimeHealthCheck(ctx); err == nil {
+		t.Fatalf("expected unhealthy default runtime")
+	}
+}
+
 type stubRuntimeProvider struct {
-	startFn func(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error)
-	stopFn  func(ctx context.Context, session *models.AgentSession, reason string) error
+	startFn  func(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error)
+	stopFn   func(ctx context.Context, session *models.AgentSession, reason string) error
+	healthFn func(ctx context.Context) error
 }
 
 func (p *stubRuntimeProvider) Start(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error) {
@@ -563,6 +677,13 @@ func (p *stubRuntimeProvider) Stop(ctx context.Context, session *models.AgentSes
 		return nil
 	}
 	return p.stopFn(ctx, session, reason)
+}
+
+func (p *stubRuntimeProvider) HealthCheck(ctx context.Context) error {
+	if p.healthFn == nil {
+		return nil
+	}
+	return p.healthFn(ctx)
 }
 
 func waitForSessionState(t *testing.T, svc *Service, sessionID string, want models.AgentSessionState, timeout time.Duration) {

@@ -1790,6 +1790,15 @@ body {
   gap: 8px;
 }
 
+.sidebar-panel-title {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
 .repo-code {
   flex: 1;
   min-width: 0;

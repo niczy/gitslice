@@ -65,10 +65,11 @@ type Service struct {
 	replaySeqs     map[string][]uint64
 	maxReplayFrame int
 
-	runtimeMu            sync.Mutex
-	runtime              RuntimeProvider
-	runtimeStartInFlight map[string]struct{}
-	runtimeStopInFlight  map[string]struct{}
+	runtimeMu              sync.Mutex
+	runtimeProviders       map[string]RuntimeProvider
+	defaultRuntimeProvider string
+	runtimeStartInFlight   map[string]struct{}
+	runtimeStopInFlight    map[string]struct{}
 
 	lifecycleTick            time.Duration
 	startupTimeout           time.Duration
@@ -82,6 +83,7 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 	if strings.TrimSpace(wsTokenSecret) == "" {
 		wsTokenSecret = "dev-insecure-agent-secret"
 	}
+	simulated := newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
 	return &Service{
 		st:                       st,
 		wsTokenSecret:            []byte(wsTokenSecret),
@@ -89,7 +91,8 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		usedNonces:               make(map[string]time.Time),
 		replaySeqs:               make(map[string][]uint64),
 		maxReplayFrame:           10000,
-		runtime:                  newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond),
+		runtimeProviders:         map[string]RuntimeProvider{RuntimeProviderE2B: simulated},
+		defaultRuntimeProvider:   RuntimeProviderE2B,
 		runtimeStartInFlight:     make(map[string]struct{}),
 		runtimeStopInFlight:      make(map[string]struct{}),
 		lifecycleTick:            defaultLifecycleTick,
@@ -101,12 +104,43 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 }
 
 func (s *Service) SetRuntimeProvider(provider RuntimeProvider) {
+	s.SetRuntimeProviderFor(RuntimeProviderE2B, provider)
+}
+
+func (s *Service) SetRuntimeProviderFor(providerName string, provider RuntimeProvider) {
+	providerName = normalizeRuntimeProvider(providerName)
+	if providerName == "" {
+		providerName = RuntimeProviderE2B
+	}
 	if provider == nil {
 		provider = newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
 	}
 	s.runtimeMu.Lock()
-	s.runtime = provider
+	if s.runtimeProviders == nil {
+		s.runtimeProviders = make(map[string]RuntimeProvider)
+	}
+	s.runtimeProviders[providerName] = provider
+	if s.defaultRuntimeProvider == "" {
+		s.defaultRuntimeProvider = providerName
+	}
 	s.runtimeMu.Unlock()
+}
+
+func (s *Service) SetDefaultRuntimeProvider(providerName string) error {
+	providerName = normalizeRuntimeProvider(providerName)
+	if providerName == "" {
+		return storage.ErrInvalidInput
+	}
+	if !isSupportedRuntimeProvider(providerName) {
+		return storage.ErrInvalidInput
+	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if _, ok := s.runtimeProviders[providerName]; !ok {
+		return storage.ErrInvalidInput
+	}
+	s.defaultRuntimeProvider = providerName
+	return nil
 }
 
 func SupportedAgentTypes() []string {
@@ -134,11 +168,11 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 	if _, ok := supportedAgentTypes[req.AgentType]; !ok {
 		return nil, nil, storage.ErrInvalidInput
 	}
-	req.Provider = strings.TrimSpace(req.Provider)
+	req.Provider = normalizeRuntimeProvider(req.Provider)
 	if req.Provider == "" {
-		req.Provider = "e2b"
+		req.Provider = RuntimeProviderE2B
 	}
-	if req.Provider != "e2b" {
+	if !isSupportedRuntimeProvider(req.Provider) {
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.E2BTemplateID = strings.TrimSpace(req.E2BTemplateID)
@@ -537,13 +571,21 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
+	runtimeProvider, selectedProvider, providerErr := s.runtimeProviderForSession(session)
+	if providerErr != nil {
+		if selectedProvider != "" {
+			session.RuntimeProvider = selectedProvider
+		}
+		s.failSession(ctx, session, session.UserID, runtimeErrorCode(providerErr, "RUNTIME_PROVIDER_UNAVAILABLE"), runtimeErrorMessage(providerErr, "runtime provider is not configured"))
+		return
+	}
 	var (
 		result   *RuntimeStartResult
 		startErr error
 	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		startCtx, cancel := context.WithTimeout(ctx, s.startupTimeout)
-		result, startErr = s.runtimeProvider().Start(startCtx, session)
+		result, startErr = runtimeProvider.Start(startCtx, session)
 		cancel()
 		if startErr == nil {
 			ObserveAgentRuntimeRequest(session.AgentType, "success")
@@ -570,6 +612,11 @@ func (s *Service) startSessionRuntime(sessionID string) {
 			return
 		}
 		session = updated
+		runtimeProvider, selectedProvider, providerErr = s.runtimeProviderForSession(session)
+		if providerErr != nil {
+			startErr = providerErr
+			break
+		}
 	}
 
 	session, getErr := s.st.GetAgentSession(ctx, sessionID)
@@ -608,7 +655,7 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		}
 	}
 	if strings.TrimSpace(session.RuntimeProvider) == "" {
-		session.RuntimeProvider = strings.TrimSpace(session.Provider)
+		session.RuntimeProvider = selectedProvider
 	}
 	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
 		return
@@ -634,9 +681,22 @@ func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
 		return
 	}
+	runtimeProvider, selectedProvider, providerErr := s.runtimeProviderForSession(session)
+	if providerErr != nil {
+		if selectedProvider != "" {
+			session.RuntimeProvider = selectedProvider
+		}
+		log.Printf("component=agent_session phase=stop_runtime session_id=%s slice_id=%s user_id=%s environment=%s agent_type=%s state=%s code=%s error=%q",
+			session.SessionID, session.SliceID, actorForAudit(actorUserID), session.EnvironmentName, session.AgentType, session.State, runtimeErrorCode(providerErr, "RUNTIME_PROVIDER_UNAVAILABLE"), runtimeErrorMessage(providerErr, "runtime provider is not configured"))
+		s.failSession(ctx, session, actorForAudit(actorUserID), runtimeErrorCode(providerErr, "RUNTIME_PROVIDER_UNAVAILABLE"), runtimeErrorMessage(providerErr, "runtime provider is not configured"))
+		return
+	}
+	if strings.TrimSpace(session.RuntimeProvider) == "" {
+		session.RuntimeProvider = selectedProvider
+	}
 
 	stopCtx, cancel := context.WithTimeout(ctx, s.runtimeStopTimeout)
-	err = s.runtimeProvider().Stop(stopCtx, session, reason)
+	err = runtimeProvider.Stop(stopCtx, session, reason)
 	cancel()
 	if err != nil {
 		session, getErr := s.st.GetAgentSession(ctx, sessionID)
@@ -728,22 +788,88 @@ func actorForAudit(actorUserID string) string {
 	return actorUserID
 }
 
-func (s *Service) runtimeProvider() RuntimeProvider {
+func (s *Service) runtimeProviderForSession(session *models.AgentSession) (RuntimeProvider, string, error) {
+	providerName := RuntimeProviderE2B
+	if session != nil {
+		providerName = normalizeRuntimeProvider(session.RuntimeProvider)
+		if providerName == "" {
+			providerName = normalizeRuntimeProvider(session.Provider)
+		}
+	}
+	return s.runtimeProviderByName(providerName)
+}
+
+func (s *Service) runtimeProviderByName(providerName string) (RuntimeProvider, string, error) {
+	providerName = normalizeRuntimeProvider(providerName)
+	s.runtimeMu.Lock()
+	if providerName == "" {
+		providerName = s.defaultRuntimeProvider
+	}
+	if providerName == "" {
+		providerName = RuntimeProviderE2B
+	}
+	provider := s.runtimeProviders[providerName]
+	s.runtimeMu.Unlock()
+
+	if provider == nil {
+		return nil, providerName, &RuntimeError{
+			Code:    "RUNTIME_PROVIDER_UNAVAILABLE",
+			Message: fmt.Sprintf("runtime provider %q is not configured", providerName),
+		}
+	}
+	return provider, providerName, nil
+}
+
+func (s *Service) runtimeProviderSnapshot() map[string]RuntimeProvider {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
-	if s.runtime == nil {
-		s.runtime = newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
+	if len(s.runtimeProviders) == 0 {
+		return map[string]RuntimeProvider{
+			RuntimeProviderE2B: newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond),
+		}
 	}
-	return s.runtime
+	out := make(map[string]RuntimeProvider, len(s.runtimeProviders))
+	for provider, runtime := range s.runtimeProviders {
+		out[provider] = runtime
+	}
+	return out
+}
+
+func (s *Service) DefaultRuntimeProviderName() string {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.defaultRuntimeProvider == "" {
+		return RuntimeProviderE2B
+	}
+	return s.defaultRuntimeProvider
+}
+
+func (s *Service) RuntimeHealthChecks(ctx context.Context) map[string]error {
+	providers := s.runtimeProviderSnapshot()
+	health := make(map[string]error, len(providers))
+	for providerName, runtime := range providers {
+		healthProvider, ok := runtime.(RuntimeHealthProvider)
+		if !ok {
+			health[providerName] = nil
+			continue
+		}
+		health[providerName] = healthProvider.HealthCheck(ctx)
+	}
+	return health
 }
 
 func (s *Service) RuntimeHealthCheck(ctx context.Context) error {
-	provider := s.runtimeProvider()
-	healthProvider, ok := provider.(RuntimeHealthProvider)
-	if !ok {
-		return nil
+	health := s.RuntimeHealthChecks(ctx)
+	defaultProvider := s.DefaultRuntimeProviderName()
+	if err, ok := health[defaultProvider]; ok {
+		return err
 	}
-	return healthProvider.HealthCheck(ctx)
+	for _, err := range health {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) markRuntimeStartInFlight(sessionID string) bool {

@@ -57,8 +57,9 @@ func main() {
 	adminservice.RegisterGRPCServer(grpcServer, st)
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
+	enabledRuntimeProviders := make([]string, 0, 2)
 	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
-		agentSessionService.SetRuntimeProvider(agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
+		agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderE2B, agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
 			APIURL:              cfg.E2BAPIURL,
 			Domain:              cfg.E2BDomain,
 			APIKey:              cfg.E2BAPIKey,
@@ -71,9 +72,31 @@ func main() {
 			RuntimeWSPath:       cfg.E2BRuntimeWSPath,
 			RequestTimeout:      time.Duration(cfg.E2BRequestTimeoutSec) * time.Second,
 		}))
-		log.Printf("Agent runtime provider enabled: e2b")
+		enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderE2B)
 	} else {
-		log.Printf("Agent runtime provider enabled: simulated (set E2B_API_KEY or E2B_ACCESS_TOKEN to enable e2b)")
+		log.Printf("Agent runtime provider e2b using simulated backend (set E2B_API_KEY or E2B_ACCESS_TOKEN to enable real e2b)")
+	}
+	if strings.TrimSpace(cfg.CFCControlBaseURL) != "" || strings.TrimSpace(cfg.CFCServiceTokenID) != "" || strings.TrimSpace(cfg.CFCServiceTokenSecret) != "" {
+		agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderCloudflareContainers, agentsession.NewCloudflareRuntimeProvider(agentsession.CloudflareRuntimeProviderConfig{
+			ControlBaseURL:     cfg.CFCControlBaseURL,
+			ControlAudience:    cfg.CFCControlAudience,
+			ServiceTokenID:     cfg.CFCServiceTokenID,
+			ServiceTokenSecret: cfg.CFCServiceTokenSecret,
+			CodexAPIKey:        cfg.CodexAPIKey,
+			ClaudeAPIKey:       cfg.ClaudeAPIKey,
+			RequestTimeout:     time.Duration(cfg.CFCRequestTimeoutSec) * time.Second,
+		}))
+		enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderCloudflareContainers)
+	}
+	if defaultProvider := strings.TrimSpace(cfg.AgentRuntimeProviderDefault); defaultProvider != "" {
+		if err := agentSessionService.SetDefaultRuntimeProvider(defaultProvider); err != nil {
+			log.Printf("Ignoring AGENT_RUNTIME_PROVIDER_DEFAULT=%q: %v", defaultProvider, err)
+		}
+	}
+	if len(enabledRuntimeProviders) == 0 {
+		log.Printf("Agent runtime providers enabled: e2b(simulated)")
+	} else {
+		log.Printf("Agent runtime providers enabled: %s (default=%s)", strings.Join(enabledRuntimeProviders, ","), agentSessionService.DefaultRuntimeProviderName())
 	}
 	agentSessionService.StartLifecycleLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
@@ -103,17 +126,24 @@ func main() {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
-		payload := map[string]any{
-			"service": "agent-runtime",
-			"status":  "healthy",
-		}
+		healthByProvider := agentSessionService.RuntimeHealthChecks(ctx)
+		providersPayload := make(map[string]any, len(healthByProvider))
+		payload := map[string]any{"service": "agent-runtime", "status": "healthy", "defaultProvider": agentSessionService.DefaultRuntimeProviderName()}
 		statusCode := http.StatusOK
-		if err := agentSessionService.RuntimeHealthCheck(ctx); err != nil {
+		for providerName, providerErr := range healthByProvider {
+			if providerErr == nil {
+				providersPayload[providerName] = map[string]any{"status": "healthy"}
+				continue
+			}
+			providersPayload[providerName] = map[string]any{
+				"status": "unhealthy",
+				"error":  providerErr.Error(),
+				"code":   agentsession.RuntimeErrorCode(providerErr, "RUNTIME_HEALTH_FAILED"),
+			}
 			statusCode = http.StatusServiceUnavailable
 			payload["status"] = "unhealthy"
-			payload["error"] = err.Error()
-			payload["code"] = agentsession.RuntimeErrorCode(err, "RUNTIME_HEALTH_FAILED")
 		}
+		payload["providers"] = providersPayload
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(payload)

@@ -194,7 +194,7 @@ func (p *e2bRuntimeProvider) Start(ctx context.Context, session *models.AgentSes
 	}
 
 	return &RuntimeStartResult{
-		Provider:  "e2b",
+		Provider:  RuntimeProviderE2B,
 		SessionID: sandboxID,
 		Endpoint:  p.buildRuntimeEndpoint(sandboxID, response.Domain),
 		Status:    "ready",
