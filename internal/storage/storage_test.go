@@ -479,6 +479,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	fetchedEnv.Provider = "cloudflare_containers"
 	fetchedEnv.ProviderConfig = map[string]string{
 		"worker_base_url": "https://edge.example.internal",
+		"container_class": "sandbox",
 		"instance_type":   "basic",
 	}
 	fetchedEnv.Region = "us-east-1"

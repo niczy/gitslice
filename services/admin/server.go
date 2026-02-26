@@ -101,15 +101,27 @@ func environmentToProto(env *models.Environment) *adminv1.EnvironmentInfo {
 		return nil
 	}
 	return &adminv1.EnvironmentInfo{
-		Name:        env.Name,
-		DisplayName: env.DisplayName,
-		Provider:    env.Provider,
-		ProviderId:  env.ProviderID,
-		Region:      env.Region,
-		CreatedBy:   env.CreatedBy,
-		CreatedAt:   env.CreatedAt.Unix(),
-		UpdatedAt:   env.UpdatedAt.Unix(),
+		Name:           env.Name,
+		DisplayName:    env.DisplayName,
+		Provider:       env.Provider,
+		ProviderId:     env.ProviderID,
+		ProviderConfig: copyStringMap(env.ProviderConfig),
+		Region:         env.Region,
+		CreatedBy:      env.CreatedBy,
+		CreatedAt:      env.CreatedAt.Unix(),
+		UpdatedAt:      env.UpdatedAt.Unix(),
 	}
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func (s *adminServiceServer) requireUser(ctx context.Context) (string, *models.User, error) {
@@ -264,13 +276,17 @@ func (s *adminServiceServer) CreateEnvironment(ctx context.Context, req *adminv1
 		return nil, err
 	}
 	name := strings.TrimSpace(req.GetName())
+	if err := storage.ValidateEnvironmentProviderConfig(req.GetProvider(), req.GetProviderConfig()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	env := &models.Environment{
-		Name:        name,
-		DisplayName: req.GetDisplayName(),
-		Provider:    req.GetProvider(),
-		ProviderID:  req.GetProviderId(),
-		Region:      req.GetRegion(),
-		CreatedBy:   username,
+		Name:           name,
+		DisplayName:    req.GetDisplayName(),
+		Provider:       req.GetProvider(),
+		ProviderID:     req.GetProviderId(),
+		ProviderConfig: copyStringMap(req.GetProviderConfig()),
+		Region:         req.GetRegion(),
+		CreatedBy:      username,
 	}
 	if err := s.storage.CreateEnvironment(ctx, env); err != nil {
 		switch err {
@@ -326,6 +342,10 @@ func (s *adminServiceServer) UpdateEnvironment(ctx context.Context, req *adminv1
 	current.DisplayName = req.GetDisplayName()
 	current.Provider = req.GetProvider()
 	current.ProviderID = req.GetProviderId()
+	if err := storage.ValidateEnvironmentProviderConfig(current.Provider, req.GetProviderConfig()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	current.ProviderConfig = copyStringMap(req.GetProviderConfig())
 	current.Region = req.GetRegion()
 	if err := s.storage.UpdateEnvironment(ctx, current); err != nil {
 		switch err {
