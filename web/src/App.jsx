@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import './styles.css';
 
 // Routing helpers
 import { parseHash, buildHash } from './utils/routing.js';
@@ -31,6 +30,10 @@ import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import AgentSession from './components/AgentSession.jsx';
 import RouteAccessState from './components/RouteAccessState.jsx';
 import { trackRouteEvent } from './utils/analytics.js';
+import { Button } from './components/ui/button.jsx';
+import { Badge } from './components/ui/badge.jsx';
+import { Card, CardContent } from './components/ui/card.jsx';
+import { Separator } from './components/ui/separator.jsx';
 
 // ---------------------------------------------------------------------------
 // Agent Session Types
@@ -681,89 +684,101 @@ function App() {
   };
 
   return (
-    <div className={`app-shell${isBrowserLayout ? ' app-shell--browser' : ''}`}>
-      <header className="top-bar">
-        <button type="button" className="brand" onClick={() => navigate('landing')}>
+    <div className={`app-shell min-h-screen bg-background text-foreground${isBrowserLayout ? ' app-shell--browser' : ''}`}>
+      <header className="top-bar border-b border-border/80 bg-card/90 backdrop-blur-sm">
+        <Button type="button" variant="ghost" className="brand" onClick={() => navigate('landing')}>
           <span className="brand-icon">◆</span>
           <span className="brand-text">Git Slice</span>
-        </button>
+        </Button>
         <div className="top-bar-actions">
           {isAuthenticated ? (
             <>
-              <button
+              <Button
                 type="button"
-                className={`ghost nav-link${isNavActive('projects') ? ' nav-link--active' : ''}`}
+                variant={isNavActive('projects') ? 'secondary' : 'ghost'}
+                className={`nav-link${isNavActive('projects') ? ' nav-link--active' : ''}`}
                 data-testid="topbar-projects"
                 onClick={() => navigate('projects')}
               >
                 Projects
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className={`ghost nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
+                variant={isNavActive('repos') ? 'secondary' : 'ghost'}
+                className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
                 data-testid="topbar-repos"
                 onClick={() => navigate('browser')}
               >
                 Repos
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className={`ghost nav-link${isNavActive('settings') ? ' nav-link--active' : ''}`}
+                variant={isNavActive('settings') ? 'secondary' : 'ghost'}
+                className={`nav-link${isNavActive('settings') ? ' nav-link--active' : ''}`}
                 data-testid="topbar-settings"
                 onClick={() => navigate('settings')}
               >
                 Settings
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="ghost nav-link"
+                variant="ghost"
+                className="nav-link"
                 data-testid="topbar-profile"
                 onClick={() => navigate('profile')}
                 title="Profile"
               >
                 {username}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="ghost nav-link"
+                variant="ghost"
+                className="nav-link"
                 data-testid="topbar-logout"
                 onClick={doLogout}
               >
                 Logout
-              </button>
+              </Button>
             </>
           ) : (
             <>
-              <button
+              <Button
                 type="button"
-                className={`primary nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
+                variant={isNavActive('repos') ? 'default' : 'secondary'}
+                className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
                 data-testid="topbar-repo-browser"
                 onClick={() => navigate('browser')}
               >
                 Repo Browser
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className={`ghost nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
+                variant={isNavActive('login') ? 'secondary' : 'ghost'}
+                className={`nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
                 data-testid="topbar-login"
                 onClick={() => navigate('login')}
               >
                 Login
-              </button>
-              <a className="ghost nav-link" href="https://github.com/agenttools-dev/gitslice#readme" target="_blank" rel="noreferrer" data-testid="topbar-docs-link">
-                Docs
-              </a>
-              <a className="ghost nav-link" href={githubUrl} target="_blank" rel="noreferrer" data-testid="topbar-github-link">
-                GitHub
-              </a>
-              <button
+              </Button>
+              <Button asChild variant="ghost" className="nav-link" data-testid="topbar-docs-link">
+                <a href="https://github.com/agenttools-dev/gitslice#readme" target="_blank" rel="noreferrer">
+                  Docs
+                </a>
+              </Button>
+              <Button asChild variant="ghost" className="nav-link" data-testid="topbar-github-link">
+                <a href={githubUrl} target="_blank" rel="noreferrer">
+                  GitHub
+                </a>
+              </Button>
+              <Button
                 type="button"
-                className={`primary nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`}
+                variant="default"
+                className={`nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`}
                 data-testid="topbar-get-started"
                 onClick={() => navigate('landing')}
               >
                 Get Started
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -832,12 +847,17 @@ function App() {
         )}
 
         {activePage === 'admin' && routeAccessState === 'allowed' && (
-          <section className="section" data-testid="admin-page">
+          <section className="section space-y-4" data-testid="admin-page">
             <div className="section-header">
-              <p className="eyebrow">Administration</p>
+              <Badge variant="secondary" className="eyebrow">Administration</Badge>
               <h2>Admin Console</h2>
               <p>Administrative operations are available for privileged accounts.</p>
             </div>
+            <Card className="border-border/70">
+              <CardContent className="pt-6">
+                <div className="panel-empty">No admin actions are configured for this deployment yet.</div>
+              </CardContent>
+            </Card>
           </section>
         )}
 
@@ -853,8 +873,9 @@ function App() {
 
       {showAgentButton && (
         <div className="agent-launcher" ref={agentMenuRef}>
-          <button
+          <Button
             type="button"
+            size="sm"
             className="agent-start-btn"
             onClick={() => {
               setIsAgentMenuOpen(false);
@@ -864,25 +885,29 @@ function App() {
           >
             <span className="agent-icon">🤖</span>
             <span className="agent-text">{selectedAgentLabel}</span>
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            size="sm"
+            variant="secondary"
             className="agent-provider-toggle"
             aria-label="Choose agent provider"
             aria-expanded={isAgentMenuOpen}
             onClick={() => setIsAgentMenuOpen((prev) => !prev)}
           >
             <span className={`agent-provider-arrow${isAgentMenuOpen ? ' open' : ''}`}>▾</span>
-          </button>
+          </Button>
           {isAgentMenuOpen && (
             <div className="agent-provider-menu">
               {agentProviderOptions.map((providerValue) => {
                 const value = REAL_RUNTIME_ENABLED ? normalizeAgentType(providerValue) : providerValue;
                 const label = REAL_RUNTIME_ENABLED ? formatAgentTypeLabel(value) : providerValue;
                 return (
-                  <button
+                  <Button
                     key={value}
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className={`agent-provider-item${value === selectedAgentType ? ' active' : ''}`}
                     onClick={() => {
                       setSelectedAgentType(value);
@@ -890,18 +915,20 @@ function App() {
                     }}
                   >
                     {label}
-                  </button>
+                  </Button>
                 );
               })}
               {REAL_RUNTIME_ENABLED && agentCapabilitiesError && (
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   className="agent-provider-item"
                   disabled
                   title={agentCapabilitiesError}
                 >
                   Capability fallback active
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -970,7 +997,8 @@ function App() {
         </div>
       )}
 
-      <footer className="footer" aria-label="Global footer">
+      <Separator className="mt-8" />
+      <footer className="footer bg-card/70" aria-label="Global footer">
         <p className="footer-copy">Git Slice • Slice smart. Ship faster.</p>
         <nav className="footer-links" aria-label="Self-service links">
           <a href={docsUrl} target="_blank" rel="noreferrer">Docs</a>

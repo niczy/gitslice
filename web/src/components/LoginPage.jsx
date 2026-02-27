@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { currentUsername } from '../utils/api.js';
+import { Button } from './ui/button.jsx';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card.jsx';
+import { Input } from './ui/input.jsx';
+import { Badge } from './ui/badge.jsx';
 
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
 
@@ -37,32 +41,36 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
   return (
     <section className="section auth-page" data-testid="login-page">
       <div className="section-header">
-        <p className="eyebrow">Accounts</p>
+        <Badge variant="secondary" className="eyebrow">Accounts</Badge>
         <h1>Sign in</h1>
         <p>Use your provider account to continue, or use a username for local/dev workflows.</p>
       </div>
 
-      <div className="auth-layout">
-        <div className="auth-card auth-card--oauth">
-          <span className="auth-priority-badge">Recommended</span>
-          <h2 className="auth-card-title">Continue with OAuth</h2>
-          <p className="auth-card-subtitle">Best for normal usage across devices.</p>
-          <p className="auth-trust-text">
+      <div className="auth-layout grid gap-4 lg:grid-cols-2">
+        <Card className="auth-card auth-card--oauth border-border/70">
+          <CardHeader>
+            <Badge className="auth-priority-badge w-fit">Recommended</Badge>
+            <CardTitle className="auth-card-title text-xl">Continue with OAuth</CardTitle>
+            <CardDescription className="auth-card-subtitle">Best for normal usage across devices.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="auth-trust-text">
             We use your provider identity to create your account and sign you in. We never receive your provider password.
             <a href="https://authjs.dev/reference/core/adapters#privacy" target="_blank" rel="noreferrer"> Privacy details</a>.
           </p>
-          <div className="auth-provider-list">
-            <button type="button" className="auth-provider auth-provider--google" onClick={() => onOAuthLogin?.('google')}>
+          <div className="auth-provider-list space-y-2">
+            <Button type="button" variant="outline" className="auth-provider auth-provider--google w-full justify-start" onClick={() => onOAuthLogin?.('google')}>
               <span className="auth-provider-logo" aria-hidden="true">G</span>
               <span>Continue with Google</span>
-            </button>
-            <button type="button" className="auth-provider auth-provider--github" onClick={() => onOAuthLogin?.('github')}>
+            </Button>
+            <Button type="button" variant="outline" className="auth-provider auth-provider--github w-full justify-start" onClick={() => onOAuthLogin?.('github')}>
               <span className="auth-provider-logo" aria-hidden="true">GH</span>
               <span>Continue with GitHub</span>
-            </button>
+            </Button>
           </div>
           {oauthError && <div className="panel-error" role="alert">{oauthError}</div>}
-        </div>
+          </CardContent>
+        </Card>
 
         <form
           className="auth-card auth-card--username"
@@ -84,52 +92,59 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
             }
           }}
         >
-          <h2 className="auth-card-title">Username sign-in</h2>
-          <p className="auth-card-subtitle">Fallback path for local testing and CLI-aligned flows. Press Enter to submit or Esc to cancel.</p>
+          <Card className="border-border/70">
+            <CardHeader>
+              <CardTitle className="auth-card-title text-xl">Username sign-in</CardTitle>
+              <CardDescription className="auth-card-subtitle">
+                Fallback path for local testing and CLI-aligned flows. Press Enter to submit or Esc to cancel.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <label className="field space-y-2">
+                <span className="field-label">Username</span>
+                <Input
+                  type="text"
+                  value={value}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setValue(nextValue);
+                    setUsernameError('');
+                  }}
+                  onBlur={() => setUsernameError(validateUsername(value))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      onCancel?.();
+                    }
+                  }}
+                  placeholder="e.g. nic"
+                  autoFocus
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-invalid={Boolean(usernameError || (value && inlineValidation))}
+                  aria-describedby="username-help username-error"
+                />
+                <span id="username-help" className="field-help">
+                  3–32 chars. Start with a letter/number; use letters, numbers, "_", or "-".
+                </span>
+              </label>
 
-          <label className="field">
-            <span className="field-label">Username</span>
-            <input
-              type="text"
-              value={value}
-              onChange={(e) => {
-                const nextValue = e.target.value;
-                setValue(nextValue);
-                setUsernameError('');
-              }}
-              onBlur={() => setUsernameError(validateUsername(value))}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  onCancel?.();
-                }
-              }}
-              placeholder="e.g. nic"
-              autoFocus
-              spellCheck={false}
-              autoComplete="off"
-              aria-invalid={Boolean(usernameError || (value && inlineValidation))}
-              aria-describedby="username-help username-error"
-            />
-            <span id="username-help" className="field-help">
-              3–32 chars. Start with a letter/number; use letters, numbers, "_", or "-".
-            </span>
-          </label>
+              {(usernameError || (value && inlineValidation)) && (
+                <div id="username-error" className="panel-error" role="alert">
+                  {usernameError || inlineValidation}
+                </div>
+              )}
 
-          {(usernameError || (value && inlineValidation)) && (
-            <div id="username-error" className="panel-error" role="alert">
-              {usernameError || inlineValidation}
-            </div>
-          )}
-
-          <div className="auth-actions">
-            <button type="submit" className="primary" disabled={loading || Boolean(inlineValidation)}>
-              {loading ? 'Logging in…' : 'Login with username'}
-            </button>
-            <button type="button" className="ghost" onClick={onCancel}>
-              Cancel (Esc)
-            </button>
-          </div>
+              <div className="auth-actions flex items-center gap-2">
+                <Button type="submit" disabled={loading || Boolean(inlineValidation)}>
+                  {loading ? 'Logging in…' : 'Login with username'}
+                </Button>
+                <Button type="button" variant="ghost" onClick={onCancel}>
+                  Cancel (Esc)
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </form>
       </div>
     </section>

@@ -8,6 +8,7 @@ import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDropdown from './SliceDropdown.jsx';
 import SliceSettings from './SliceSettings.jsx';
+import { Button } from './ui/button.jsx';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
@@ -341,8 +342,9 @@ export default function RepoBrowser({
       <>
         {!showHistory && (
           <>
-            <button
+            <Button
               type="button"
+              variant="secondary"
               className={`history-toggle ${isEditingFile ? 'active' : ''}`}
               onClick={() => {
                 if (isEditingFile) {
@@ -356,10 +358,11 @@ export default function RepoBrowser({
               }}
             >
               {isEditingFile ? 'Cancel' : '✏️ Edit'}
-            </button>
+            </Button>
             {isEditingFile && (
-              <button
+              <Button
                 type="button"
+                variant="secondary"
                 className="history-toggle active"
                 onClick={() => {
                   confirmFileEdit();
@@ -367,12 +370,13 @@ export default function RepoBrowser({
                 }}
               >
                 ✅ Confirm
-              </button>
+              </Button>
             )}
           </>
         )}
-        <button
+        <Button
           type="button"
+          variant="secondary"
           className={`history-toggle ${showHistory ? 'active' : ''}`}
           onClick={() => {
             toggleHistory();
@@ -382,7 +386,7 @@ export default function RepoBrowser({
           title={showHistory ? 'Show file content' : 'Show commit history'}
         >
           {showHistory ? '📄 Content' : '📜 History'}
-        </button>
+        </Button>
       </>
     );
   };
@@ -813,8 +817,9 @@ export default function RepoBrowser({
           const isExpanded = expandedPaths.includes(entry.path);
           return (
             <li key={entry.path}>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 className={`tree-entry ${entryKind}`}
                 style={{ paddingLeft: `${depth * 14 + 8}px` }}
                 onClick={() => handleEntryClick(entry)}
@@ -823,7 +828,7 @@ export default function RepoBrowser({
                 <span className="entry-icon">{entryKind === 'directory' ? '📁' : '📄'}</span>
                 <span className="entry-name">{entry.name}</span>
                 {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
-              </button>
+              </Button>
               {entryKind === 'directory' && isExpanded && renderTree(entry.path, depth + 1)}
             </li>
           );
@@ -861,31 +866,37 @@ export default function RepoBrowser({
                   >
                     <span className="tree-loading-dot" aria-hidden="true" />
                   </span>
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className="tree-action-btn"
                     onClick={createFolder}
                     title="Create folder"
                   >
                     + Folder
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className="tree-action-btn"
                     onClick={createFile}
                     title="Create file"
                   >
                     + File
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon"
                     className="sidebar-toggle"
                     onClick={() => setSidebarOpen(false)}
                     aria-label="Close sidebar"
                     title="Close sidebar"
                   >
                     ✕
-                  </button>
+                  </Button>
                 </div>
               </div>
               <h2 className="sidebar-panel-title">File tree</h2>
@@ -902,8 +913,10 @@ export default function RepoBrowser({
             <div className="code-header">
               <div className="code-header-left">
                 {!sidebarOpen && (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon"
                     className="sidebar-toggle open-btn"
                     onClick={() => setSidebarOpen(true)}
                     aria-label="Open sidebar"
@@ -911,7 +924,7 @@ export default function RepoBrowser({
                     data-testid="sidebar-toggle"
                   >
                     ☰
-                  </button>
+                  </Button>
                 )}
                 <div className="breadcrumbs">
                   {visibleBreadcrumbs.map((crumb, index) => {
@@ -919,47 +932,51 @@ export default function RepoBrowser({
                     const hasPathAfterPrefix = visibleBreadcrumbs.length > 1;
                     const separator = isSlicePrefix ? (hasPathAfterPrefix ? '://' : '') : (index < visibleBreadcrumbs.length - 1 ? '/' : '');
                     return (
-                      <button
+                      <Button
                         key={`${crumb.path || 'slice-root'}-${index}`}
                         type="button"
+                        variant="ghost"
                         className="breadcrumb"
                         onClick={() => handleBreadcrumbClick(crumb.path)}
                         title={crumb.name === '…' ? 'Jump to parent folder' : crumb.name}
                       >
                         {crumb.name}
                         {separator && <span className="separator">{separator}</span>}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
               </div>
               <div className="code-header-actions">
                 <div className="code-view-tabs">
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
                     className={`code-view-tab ${!viewingSettings ? 'active' : ''}`}
                     onClick={openFilesView}
                     data-testid="repo-view-files"
                   >
                     Files
-                  </button>
+                  </Button>
                   {canShowSettings && (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
                       className={`code-view-tab ${viewingSettings ? 'active' : ''}`}
                       onClick={openSettingsView}
                       data-testid="repo-view-settings"
                     >
                       Settings
-                    </button>
+                    </Button>
                   )}
                 </div>
                 {!viewingSettings && selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
                 {!isCompactHeader && renderFileActions()}
                 {isCompactHeader && !viewingSettings && selectedFile && (
                   <div className="header-actions-menu" ref={actionMenuRef}>
-                    <button
+                    <Button
                       type="button"
+                      variant="secondary"
                       className="history-toggle header-actions-menu-trigger"
                       onClick={() => setIsActionMenuOpen((value) => !value)}
                       aria-haspopup="menu"
@@ -967,7 +984,7 @@ export default function RepoBrowser({
                       title="More actions"
                     >
                       ☰
-                    </button>
+                    </Button>
                     {isActionMenuOpen && (
                       <div className="header-actions-menu-dropdown" role="menu">
                         <span className="header-actions-menu-status">{formatBytes(fileContent.length)}</span>

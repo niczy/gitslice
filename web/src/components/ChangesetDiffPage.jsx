@@ -7,6 +7,7 @@ import {
   normalizeChangesetSnapshotListResponse,
 } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
+import { Button } from './ui/button.jsx';
 
 // ---------------------------------------------------------------------------
 // Changeset Diff Page Component
@@ -124,9 +125,9 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
   return (
     <section className="commit-diff-page" data-testid="changeset-diff-page">
       <div className="diff-top-bar">
-        <button type="button" className="ghost diff-back-btn" onClick={onBack} data-testid="changeset-back-btn">
+        <Button type="button" variant="ghost" className="diff-back-btn" onClick={onBack} data-testid="changeset-back-btn">
           Back
-        </button>
+        </Button>
         <div className="diff-top-title">
           <p className="eyebrow">Changeset diff</p>
           <h2 data-testid="changeset-title">
@@ -169,23 +170,25 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
           </div>
         )}
         <div className="diff-view-toggle" data-testid="changeset-view-toggle">
-          <button
+          <Button
             type="button"
+            variant="ghost"
             className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
             onClick={() => setViewMode('unified')}
           >
             Unified
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
             className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
             onClick={() => setViewMode('split')}
           >
             Side-by-side
-          </button>
+          </Button>
         </div>
         <div className="changeset-actions" data-testid="changeset-actions">
-          <button
+          <Button
             type="button"
             className="primary changeset-action-merge"
             onClick={handleMerge}
@@ -193,16 +196,17 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
             data-testid="changeset-merge-btn"
           >
             {actionLoading === 'merge' ? 'Merging…' : 'Merge'}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="ghost changeset-action-close"
+            variant="ghost"
+            className="changeset-action-close"
             onClick={handleClose}
             disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged' || changeset?.status === 'rejected'}
             data-testid="changeset-close-btn"
           >
             {actionLoading === 'close' ? 'Closing…' : 'Close'}
-          </button>
+          </Button>
         </div>
       </div>
       {actionError && <div className="panel-error diff-action-error">{actionError}</div>}

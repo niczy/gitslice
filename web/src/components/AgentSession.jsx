@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mintAgentSessionToken } from '../utils/api.js';
+import { Button } from './ui/button.jsx';
+import { Input } from './ui/input.jsx';
 
 function normalizeWSURL(rawURL = '') {
   if (!rawURL) return '';
@@ -267,8 +269,8 @@ export default function AgentSession({
           <span className={`agent-status-badge status-${session.status}`}>{session.status}</span>
         </div>
         <div className="agent-session-actions">
-          <button type="button" className="agent-session-action-btn" onClick={onMinimize} title="Minimize">−</button>
-          <button type="button" className="agent-session-action-btn" onClick={onClose} title="Close">×</button>
+          <Button type="button" size="icon" variant="ghost" className="agent-session-action-btn" onClick={onMinimize} title="Minimize">−</Button>
+          <Button type="button" size="icon" variant="ghost" className="agent-session-action-btn" onClick={onClose} title="Close">×</Button>
         </div>
       </div>
 
@@ -289,7 +291,7 @@ export default function AgentSession({
             )}
           </div>
           <form className="agent-input-form" onSubmit={handleSubmit}>
-            <input
+            <Input
               type="text"
               className="agent-input"
               value={inputValue}
@@ -299,8 +301,9 @@ export default function AgentSession({
               disabled={isProcessing}
             />
           </form>
-          <button
+          <Button
             type="button"
+            variant="secondary"
             className={`session-nav-toggle ${isSessionNavOpen ? 'open' : ''}`}
             onClick={() => setIsSessionNavOpen((value) => !value)}
             aria-label={isSessionNavOpen ? 'Hide session list panel' : 'Show session list panel'}
@@ -308,7 +311,7 @@ export default function AgentSession({
           >
             <span className="session-nav-toggle-icon" aria-hidden="true">🗂️</span>
             <span className="session-nav-toggle-label">Sessions</span>
-          </button>
+          </Button>
         </div>
 
         <aside className={`agent-session-nav ${isSessionNavOpen ? 'open' : 'closed'}`} aria-label="Session list">
@@ -316,9 +319,10 @@ export default function AgentSession({
           <div className="agent-session-nav-items">
             {sessions.length === 0 && <p className="agent-session-nav-empty">No sessions for this slice yet.</p>}
             {sessions.map((sessionItem) => (
-              <button
+              <Button
                 key={sessionItem.id}
                 type="button"
+                variant="ghost"
                 className={`agent-session-nav-item ${sessionItem.id === activeSessionId ? 'active' : ''}`}
                 onClick={() => onSelectSession?.(sessionItem.id)}
               >
@@ -343,7 +347,7 @@ export default function AgentSession({
                 >
                   ×
                 </span>
-              </button>
+              </Button>
             ))}
           </div>
         </aside>

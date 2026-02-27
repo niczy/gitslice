@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchEnvironments, getSliceEnvironment, updateSliceEnvironment } from '../utils/api.js';
+import { Button } from './ui/button.jsx';
+import { Card, CardContent } from './ui/card.jsx';
 
 export default function SliceSettings({ sliceId, sliceName }) {
   const [environments, setEnvironments] = useState([]);
@@ -101,40 +103,45 @@ export default function SliceSettings({ sliceId, sliceName }) {
       {!loading && success && <div className="panel-success">{success}</div>}
 
       {!loading && !error && (
-        <div className="slice-settings-form">
-          <label htmlFor="slice-settings-environment">Environment</label>
-          <select
-            id="slice-settings-environment"
-            value={selectedEnvironment}
-            onChange={(event) => {
-              setSelectedEnvironment(event.target.value);
-              setSuccess('');
-            }}
-            data-testid="slice-settings-environment-select"
-          >
-            <option value="" disabled>
-              {sortedEnvironments.length === 0 ? 'No environments available' : 'Select an environment'}
-            </option>
-            {sortedEnvironments.map((env) => (
-              <option key={env.name} value={env.name}>
-                {env.displayName || env.name}
-              </option>
-            ))}
-          </select>
+        <Card className="border-border/70">
+          <CardContent className="pt-6">
+            <div className="slice-settings-form">
+              <label htmlFor="slice-settings-environment">Environment</label>
+              <select
+                id="slice-settings-environment"
+                value={selectedEnvironment}
+                onChange={(event) => {
+                  setSelectedEnvironment(event.target.value);
+                  setSuccess('');
+                }}
+                data-testid="slice-settings-environment-select"
+              >
+                <option value="" disabled>
+                  {sortedEnvironments.length === 0 ? 'No environments available' : 'Select an environment'}
+                </option>
+                {sortedEnvironments.map((env) => (
+                  <option key={env.name} value={env.name}>
+                    {env.displayName || env.name}
+                  </option>
+                ))}
+              </select>
 
-          <div className="slice-settings-actions">
-            <button
-              type="button"
-              className="history-toggle"
-              disabled={!canSave}
-              onClick={save}
-              data-testid="slice-settings-save"
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-            {!currentEnvironment && <span className="slice-settings-note">No default environment is set yet.</span>}
-          </div>
-        </div>
+              <div className="slice-settings-actions">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="history-toggle"
+                  disabled={!canSave}
+                  onClick={save}
+                  data-testid="slice-settings-save"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </Button>
+                {!currentEnvironment && <span className="slice-settings-note">No default environment is set yet.</span>}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
