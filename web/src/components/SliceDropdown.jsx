@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSliceDisplayName } from '../utils/slices.js';
+import { Badge } from './ui/badge.jsx';
+import { Button } from './ui/button.jsx';
+import { Input } from './ui/input.jsx';
 
 // ---------------------------------------------------------------------------
 // Slice Dropdown Component
@@ -46,21 +49,22 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
 
   return (
     <div className={`slice-dropdown ${className}`.trim()} ref={dropdownRef}>
-      <button
+      <Button
         type="button"
+        variant="outline"
         className="slice-dropdown-trigger"
         onClick={() => setIsOpen(!isOpen)}
         data-testid="slice-dropdown-trigger"
       >
         <span>{currentSlice ? getSliceDisplayName(currentSlice.name || currentSlice.slice_id) : 'Select slice'}</span>
         <span className="slice-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
-      </button>
+      </Button>
       {isOpen && (
         <div className="slice-dropdown-menu" data-testid="slice-dropdown-menu">
           <div className="slice-dropdown-header">
             <h4>Slices</h4>
             <div className="slice-search">
-              <input
+              <Input
                 type="text"
                 placeholder="Filter slices..."
                 value={filter}
@@ -77,9 +81,9 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
             {error && (
               <li className="slice-dropdown-error">
                 {error}
-                <button type="button" onClick={onRefresh} style={{ marginLeft: '8px' }}>
+                <Button type="button" variant="ghost" size="sm" onClick={onRefresh} style={{ marginLeft: '8px' }}>
                   Retry
-                </button>
+                </Button>
               </li>
             )}
             {!loading && !error && filteredSlices.length === 0 && (
@@ -87,15 +91,16 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
             )}
             {!loading && !error && filteredSlices.map((slice) => (
               <li key={slice.slice_id}>
-                <button
+                <Button
                   type="button"
-                  className={`slice-dropdown-item ${currentSliceId === slice.slice_id ? 'active' : ''}`}
+                  variant="ghost"
+                  className={`slice-dropdown-item w-full justify-start ${currentSliceId === slice.slice_id ? 'active' : ''}`}
                   onClick={() => handleSelect(slice.slice_id)}
                   data-testid="slice-dropdown-item"
                 >
                   <div className="slice-dropdown-item-title">
                     <span className="slice-name">{getSliceDisplayName(slice.name || slice.slice_id)}</span>
-                    {slice.is_root && <span className="slice-badge">root</span>}
+                    {slice.is_root && <Badge variant="outline" className="slice-badge">root</Badge>}
                   </div>
                   <div className="slice-dropdown-item-meta">
                     <span>{slice.slice_id}</span>
@@ -108,7 +113,7 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
                       {slice.description}
                     </div>
                   )}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>

@@ -4,6 +4,7 @@ import { formatChangeType } from '../utils/format.js';
 import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 import { decodeBase64 } from '../utils/highlight.js';
+import { Button } from './ui/button.jsx';
 
 function isBinaryPatchText(patch = '') {
   return /GIT binary patch|Binary files .* differ/i.test(patch);
@@ -324,9 +325,9 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
   return (
     <section className="commit-diff-page" data-testid="commit-diff-page">
       <div className="diff-top-bar">
-        <button type="button" className="ghost diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
+        <Button type="button" variant="ghost" className="diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
           Back to browser
-        </button>
+        </Button>
         <div className="diff-top-title">
           <p className="eyebrow">Commit diff</p>
           <h2 data-testid="diff-commit-title">
@@ -344,25 +345,27 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
           </div>
         )}
         <div className="diff-view-toggle" data-testid="diff-view-toggle">
-          <button
+          <Button
             type="button"
+            variant="ghost"
             className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
             onClick={() => setViewMode('unified')}
             data-testid="diff-view-unified-btn"
           >
             Unified
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
             className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
             onClick={() => setViewMode('split')}
             data-testid="diff-view-split-btn"
           >
             Side-by-side
-          </button>
+          </Button>
         </div>
         <div className="changeset-actions" data-testid="diff-actions">
-          <button
+          <Button
             type="button"
             className="primary changeset-action-merge"
             onClick={handleRevertDiff}
@@ -370,7 +373,7 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
             data-testid="diff-revert-btn"
           >
             {isRevertingDiff ? 'Reverting…' : 'Revert diff in new changeset'}
-          </button>
+          </Button>
         </div>
       </div>
       {actionError && <div className="panel-error diff-action-error">{actionError}</div>}
@@ -387,10 +390,11 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
                 const dirPath = change.path.split('/').slice(0, -1).join('/');
                 return (
                   <li key={fileKey}>
-                    <button
+                    <Button
                       ref={(el) => { panelItemRefs.current[fileKey] = el; }}
                       type="button"
-                      className={`diff-file-panel-item ${selectedFileId === fileKey ? 'diff-file-panel-item-active' : ''}`}
+                      variant="ghost"
+                      className={`diff-file-panel-item w-full justify-start ${selectedFileId === fileKey ? 'diff-file-panel-item-active' : ''}`}
                       onClick={() => handleFileSelect(fileKey)}
                       title={change.path}
                       data-testid="diff-file-panel-item"
@@ -408,7 +412,7 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
                           {change.lines_deleted > 0 && <span className="lines-deleted">-{change.lines_deleted}</span>}
                         </span>
                       )}
-                    </button>
+                    </Button>
                   </li>
                 );
               })}
@@ -426,9 +430,9 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
               {patchLoadError && (
                 <>
                   <p className="panel-error">{patchLoadError}</p>
-                  <button type="button" className="ghost" onClick={loadPatches} data-testid="diff-retry-load-patches-btn" disabled={isPatchLoading}>
+                  <Button type="button" variant="ghost" onClick={loadPatches} data-testid="diff-retry-load-patches-btn" disabled={isPatchLoading}>
                     Retry patch load
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -471,14 +475,14 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
                       isBinaryPatch && !showBinary ? (
                         <div className="diff-binary-block" data-testid="diff-file-binary-block">
                           <p>This file contains binary content. Click to view.</p>
-                          <button
+                          <Button
                             type="button"
-                            className="ghost"
+                            variant="ghost"
                             data-testid="diff-file-view-binary-btn"
                             onClick={() => setBinaryVisibleByFile((previous) => ({ ...previous, [fileKey]: true }))}
                           >
                             View binary
-                          </button>
+                          </Button>
                         </div>
                       ) : (
                         <pre className="diff-patch" data-testid="diff-file-patch">
@@ -490,14 +494,14 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
                       isBinaryPatch && !showBinary ? (
                         <div className="diff-binary-block" data-testid="diff-file-binary-block">
                           <p>This file contains binary content. Click to view.</p>
-                          <button
+                          <Button
                             type="button"
-                            className="ghost"
+                            variant="ghost"
                             data-testid="diff-file-view-binary-btn"
                             onClick={() => setBinaryVisibleByFile((previous) => ({ ...previous, [fileKey]: true }))}
                           >
                             View binary
-                          </button>
+                          </Button>
                         </div>
                       ) : (
                         <div className="diff-split-container" data-testid="diff-file-patch">
@@ -515,14 +519,14 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
                         {!showBinary && (
                           <>
                             <p>Binary file hidden by default.</p>
-                            <button
+                            <Button
                               type="button"
-                              className="ghost"
+                              variant="ghost"
                               data-testid="diff-file-view-binary-btn"
                               onClick={() => setBinaryVisibleByFile((previous) => ({ ...previous, [fileKey]: true }))}
                             >
                               View binary
-                            </button>
+                            </Button>
                           </>
                         )}
                         {showBinary && (
