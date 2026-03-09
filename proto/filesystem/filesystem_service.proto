@@ -166,6 +166,9 @@ service FilesystemService {
       body: "*"
     };
   }
+
+  rpc StreamRead(StreamReadRequest) returns (stream StreamReadResponse);
+  rpc StreamWrite(stream StreamWriteRequest) returns (StreamWriteResponse);
 }
 
 message CreateWorkspaceRequest {
@@ -557,4 +560,40 @@ message ResolveConflictRequest {
 message ResolveConflictResponse {
   string workspace_id = 1;
   WorkspaceConflict conflict = 2;
+}
+
+message StreamReadRequest {
+  string workspace_id = 1;
+  string path = 2;
+  int32 chunk_size = 3;
+}
+
+message StreamReadResponse {
+  string workspace_id = 1;
+  string path = 2;
+  bytes content = 3;
+  int64 offset = 4;
+  int64 size = 5;
+  string hash = 6;
+  bool eof = 7;
+}
+
+message StreamWriteMetadata {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message StreamWriteRequest {
+  oneof chunk {
+    StreamWriteMetadata metadata = 1;
+    bytes content = 2;
+  }
+}
+
+message StreamWriteResponse {
+  string workspace_id = 1;
+  string path = 2;
+  int64 size = 3;
+  string hash = 4;
+  string commit_hash = 5;
 }

@@ -1,14 +1,20 @@
 package filesystemservice
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"net"
 	"strings"
 	"testing"
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -167,6 +173,128 @@ func TestWorkspaceAccessControl(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStreamReadAndWrite(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	client, conn := newFilesystemTestClient(t, st)
+	defer conn.Close()
+
+	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "User tester")
+	if _, err := client.CreateWorkspace(authCtx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-stream",
+		Name:        "ws-stream",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	original := bytes.Repeat([]byte("stream-data-"), 32768)
+	writeStream, err := client.StreamWrite(authCtx)
+	if err != nil {
+		t.Fatalf("StreamWrite start failed: %v", err)
+	}
+	if err := writeStream.Send(&filesystemv1.StreamWriteRequest{
+		Chunk: &filesystemv1.StreamWriteRequest_Metadata{
+			Metadata: &filesystemv1.StreamWriteMetadata{
+				WorkspaceId: "ws-stream",
+				Path:        "large.bin",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("send metadata: %v", err)
+	}
+	for offset := 0; offset < len(original); offset += 65536 {
+		end := offset + 65536
+		if end > len(original) {
+			end = len(original)
+		}
+		if err := writeStream.Send(&filesystemv1.StreamWriteRequest{
+			Chunk: &filesystemv1.StreamWriteRequest_Content{
+				Content: append([]byte(nil), original[offset:end]...),
+			},
+		}); err != nil {
+			t.Fatalf("send content chunk: %v", err)
+		}
+	}
+	writeResp, err := writeStream.CloseAndRecv()
+	if err != nil {
+		t.Fatalf("StreamWrite failed: %v", err)
+	}
+	if writeResp.GetCommitHash() == "" || writeResp.GetHash() == "" || writeResp.GetSize() != int64(len(original)) {
+		t.Fatalf("unexpected StreamWrite response: %#v", writeResp)
+	}
+
+	readStream, err := client.StreamRead(authCtx, &filesystemv1.StreamReadRequest{
+		WorkspaceId: "ws-stream",
+		Path:        "large.bin",
+		ChunkSize:   131072,
+	})
+	if err != nil {
+		t.Fatalf("StreamRead failed: %v", err)
+	}
+
+	var streamed bytes.Buffer
+	chunks := 0
+	for {
+		resp, err := readStream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv stream chunk: %v", err)
+		}
+		chunks++
+		if resp.GetPath() != "large.bin" || resp.GetWorkspaceId() != "ws-stream" {
+			t.Fatalf("unexpected stream chunk metadata: %#v", resp)
+		}
+		if _, err := streamed.Write(resp.GetContent()); err != nil {
+			t.Fatalf("buffer stream chunk: %v", err)
+		}
+	}
+	if chunks < 2 {
+		t.Fatalf("expected multiple stream chunks, got %d", chunks)
+	}
+	if !bytes.Equal(streamed.Bytes(), original) {
+		t.Fatalf("streamed content mismatch")
+	}
+}
+
+func TestWorkspaceStreamWriteRequiresMetadataFirst(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	client, conn := newFilesystemTestClient(t, st)
+	defer conn.Close()
+
+	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "User tester")
+	if _, err := client.CreateWorkspace(authCtx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-stream-invalid",
+		Name:        "ws-stream-invalid",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	writeStream, err := client.StreamWrite(authCtx)
+	if err != nil {
+		t.Fatalf("StreamWrite start failed: %v", err)
+	}
+	if err := writeStream.Send(&filesystemv1.StreamWriteRequest{
+		Chunk: &filesystemv1.StreamWriteRequest_Content{Content: []byte("oops")},
+	}); err != nil {
+		t.Fatalf("send content: %v", err)
+	}
+	_, err = writeStream.CloseAndRecv()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+}
+
 func TestWorkspaceFileContentsAreIsolatedPerWorkspace(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
@@ -217,6 +345,32 @@ func TestWorkspaceFileContentsAreIsolatedPerWorkspace(t *testing.T) {
 	if got, want := string(readTwo.GetContent()), "workspace two\n"; got != want {
 		t.Fatalf("ws-two content mismatch: got %q want %q", got, want)
 	}
+}
+
+func newFilesystemTestClient(t *testing.T, st storage.Storage) (filesystemv1.FilesystemServiceClient, *grpc.ClientConn) {
+	t.Helper()
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := grpc.NewServer()
+	RegisterGRPCServer(srv, st)
+	go func() {
+		if err := srv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			t.Logf("grpc serve: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		srv.GracefulStop()
+	})
+
+	conn, err := grpc.Dial(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial grpc server: %v", err)
+	}
+	return filesystemv1.NewFilesystemServiceClient(conn), conn
 }
 
 func TestWorkspaceBatchAndPosixOperations(t *testing.T) {
