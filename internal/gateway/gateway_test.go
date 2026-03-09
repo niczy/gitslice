@@ -370,6 +370,210 @@ func TestGatewayFilesystemBatchOperations(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemSnapshots(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-snap","name":"Gateway Snapshots"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeV1Req, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-snap/files/README.md",
+		strings.NewReader(`{"workspaceId":"gw-snap","path":"README.md","content":"djEK"}`),
+	)
+	if err != nil {
+		t.Fatalf("new write v1 request: %v", err)
+	}
+	writeV1Req.Header.Set("Authorization", "User tester")
+	writeV1Req.Header.Set("Content-Type", "application/json")
+	writeV1Resp, err := client.Do(writeV1Req)
+	if err != nil {
+		t.Fatalf("write v1 request failed: %v", err)
+	}
+	if writeV1Resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeV1Resp.Body)
+		writeV1Resp.Body.Close()
+		t.Fatalf("unexpected write v1 status %d: %s", writeV1Resp.StatusCode, string(body))
+	}
+	writeV1Resp.Body.Close()
+
+	snapshotReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-snap/snapshot",
+		strings.NewReader(`{"workspaceId":"gw-snap","message":"checkpoint one"}`),
+	)
+	if err != nil {
+		t.Fatalf("new snapshot request: %v", err)
+	}
+	snapshotReq.Header.Set("Authorization", "User tester")
+	snapshotReq.Header.Set("Content-Type", "application/json")
+	snapshotResp, err := client.Do(snapshotReq)
+	if err != nil {
+		t.Fatalf("snapshot request failed: %v", err)
+	}
+	if snapshotResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(snapshotResp.Body)
+		snapshotResp.Body.Close()
+		t.Fatalf("unexpected snapshot status %d: %s", snapshotResp.StatusCode, string(body))
+	}
+
+	var snapshotPayload struct {
+		Snapshot struct {
+			SnapshotID string `json:"snapshotId"`
+			Message    string `json:"message"`
+			FileCount  int    `json:"fileCount"`
+		} `json:"snapshot"`
+	}
+	if err := json.NewDecoder(snapshotResp.Body).Decode(&snapshotPayload); err != nil {
+		snapshotResp.Body.Close()
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	snapshotResp.Body.Close()
+	if snapshotPayload.Snapshot.SnapshotID == "" || snapshotPayload.Snapshot.Message != "checkpoint one" || snapshotPayload.Snapshot.FileCount != 1 {
+		t.Fatalf("unexpected snapshot payload: %#v", snapshotPayload)
+	}
+
+	writeV2Req, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-snap:writeFiles",
+		strings.NewReader(`{"workspaceId":"gw-snap","files":[{"path":"README.md","content":"djIK"},{"path":"notes/todo.txt","content":"bGF0ZXIK"}]}`),
+	)
+	if err != nil {
+		t.Fatalf("new write v2 request: %v", err)
+	}
+	writeV2Req.Header.Set("Authorization", "User tester")
+	writeV2Req.Header.Set("Content-Type", "application/json")
+	writeV2Resp, err := client.Do(writeV2Req)
+	if err != nil {
+		t.Fatalf("write v2 request failed: %v", err)
+	}
+	if writeV2Resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeV2Resp.Body)
+		writeV2Resp.Body.Close()
+		t.Fatalf("unexpected write v2 status %d: %s", writeV2Resp.StatusCode, string(body))
+	}
+	writeV2Resp.Body.Close()
+
+	listReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-snap/snapshots?limit=3", nil)
+	if err != nil {
+		t.Fatalf("new list snapshots request: %v", err)
+	}
+	listReq.Header.Set("Authorization", "User tester")
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("list snapshots request failed: %v", err)
+	}
+	if listResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listResp.Body)
+		listResp.Body.Close()
+		t.Fatalf("unexpected list snapshots status %d: %s", listResp.StatusCode, string(body))
+	}
+
+	var listPayload struct {
+		Snapshots []struct {
+			SnapshotID string `json:"snapshotId"`
+			Message    string `json:"message"`
+			FileCount  int    `json:"fileCount"`
+		} `json:"snapshots"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listPayload); err != nil {
+		listResp.Body.Close()
+		t.Fatalf("decode list snapshots response: %v", err)
+	}
+	listResp.Body.Close()
+	if len(listPayload.Snapshots) != 3 {
+		t.Fatalf("expected 3 snapshots, got %#v", listPayload)
+	}
+	if listPayload.Snapshots[1].SnapshotID != snapshotPayload.Snapshot.SnapshotID {
+		t.Fatalf("expected explicit snapshot in list, got %#v", listPayload)
+	}
+
+	restoreReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-snap/restore/"+snapshotPayload.Snapshot.SnapshotID,
+		strings.NewReader(`{"workspaceId":"gw-snap","snapshotId":"`+snapshotPayload.Snapshot.SnapshotID+`"}`),
+	)
+	if err != nil {
+		t.Fatalf("new restore request: %v", err)
+	}
+	restoreReq.Header.Set("Authorization", "User tester")
+	restoreReq.Header.Set("Content-Type", "application/json")
+	restoreResp, err := client.Do(restoreReq)
+	if err != nil {
+		t.Fatalf("restore request failed: %v", err)
+	}
+	if restoreResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(restoreResp.Body)
+		restoreResp.Body.Close()
+		t.Fatalf("unexpected restore status %d: %s", restoreResp.StatusCode, string(body))
+	}
+	restoreResp.Body.Close()
+
+	readReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-snap/files/README.md", nil)
+	if err != nil {
+		t.Fatalf("new read restored file request: %v", err)
+	}
+	readReq.Header.Set("Authorization", "User tester")
+	readResp, err := client.Do(readReq)
+	if err != nil {
+		t.Fatalf("read restored file request failed: %v", err)
+	}
+	if readResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readResp.Body)
+		readResp.Body.Close()
+		t.Fatalf("unexpected restored read status %d: %s", readResp.StatusCode, string(body))
+	}
+
+	var readPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readResp.Body).Decode(&readPayload); err != nil {
+		readResp.Body.Close()
+		t.Fatalf("decode restored read response: %v", err)
+	}
+	readResp.Body.Close()
+	if readPayload.Content != "djEK" {
+		t.Fatalf("unexpected restored file content: %#v", readPayload)
+	}
+
+	missingReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-snap/files/notes/todo.txt", nil)
+	if err != nil {
+		t.Fatalf("new missing file request: %v", err)
+	}
+	missingReq.Header.Set("Authorization", "User tester")
+	missingResp, err := client.Do(missingReq)
+	if err != nil {
+		t.Fatalf("missing file request failed: %v", err)
+	}
+	defer missingResp.Body.Close()
+	if missingResp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(missingResp.Body)
+		t.Fatalf("expected restored extra file to be missing, got %d: %s", missingResp.StatusCode, string(body))
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }

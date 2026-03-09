@@ -745,6 +745,139 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	}, nil
 }
 
+func (s *filesystemServiceServer) Snapshot(ctx context.Context, req *filesystemv1.SnapshotRequest) (*filesystemv1.SnapshotResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		message = "snapshot"
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	if err != nil {
+		return nil, err
+	}
+	snapshotInfo, err := s.snapshotInfoByCommitHash(ctx, workspace.ID, commitHash)
+	if err != nil {
+		return nil, err
+	}
+
+	return &filesystemv1.SnapshotResponse{
+		WorkspaceId: workspace.ID,
+		Snapshot:    snapshotInfo,
+	}, nil
+}
+
+func (s *filesystemServiceServer) ListSnapshots(ctx context.Context, req *filesystemv1.ListSnapshotsRequest) (*filesystemv1.ListSnapshotsResponse, error) {
+	_, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	limit := int(req.GetLimit())
+	if limit < 0 {
+		return nil, status.Error(codes.InvalidArgument, "limit must be >= 0")
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	fromSnapshotID := strings.TrimSpace(req.GetFromSnapshotId())
+	if fromSnapshotID != "" {
+		if _, err := s.storage.GetCommitByHash(ctx, workspace.ID, fromSnapshotID); err != nil {
+			if err == storage.ErrCommitNotFound {
+				return nil, status.Error(codes.NotFound, "snapshot not found")
+			}
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot cursor: %v", err))
+		}
+	}
+
+	commits, err := s.storage.ListSliceCommits(ctx, workspace.ID, limit, fromSnapshotID)
+	if err != nil {
+		if err == storage.ErrSliceNotFound {
+			return nil, status.Error(codes.NotFound, "workspace not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list snapshots: %v", err))
+	}
+
+	response := &filesystemv1.ListSnapshotsResponse{
+		WorkspaceId: workspace.ID,
+		Snapshots:   make([]*filesystemv1.SnapshotInfo, 0, len(commits)),
+	}
+	for _, commit := range commits {
+		info, err := s.snapshotInfoFromCommit(ctx, workspace.ID, commit)
+		if err != nil {
+			return nil, err
+		}
+		response.Snapshots = append(response.Snapshots, info)
+	}
+	return response, nil
+}
+
+func (s *filesystemServiceServer) RestoreSnapshot(ctx context.Context, req *filesystemv1.RestoreSnapshotRequest) (*filesystemv1.RestoreSnapshotResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshotID := strings.TrimSpace(req.GetSnapshotId())
+	if snapshotID == "" {
+		return nil, status.Error(codes.InvalidArgument, "snapshot_id is required")
+	}
+
+	targetSnapshot, err := s.storage.GetCommitSnapshot(ctx, snapshotID)
+	if err != nil {
+		if err == storage.ErrCommitNotFound {
+			return nil, status.Error(codes.NotFound, "snapshot not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot: %v", err))
+	}
+	if targetSnapshot.SliceID != workspace.ID {
+		return nil, status.Error(codes.FailedPrecondition, "snapshot does not belong to workspace")
+	}
+
+	if err := s.resetWorkspaceToSnapshot(ctx, workspace, targetSnapshot); err != nil {
+		return nil, err
+	}
+
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		message = fmt.Sprintf("restore snapshot %s", snapshotID)
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	if err != nil {
+		return nil, err
+	}
+	snapshotInfo, err := s.snapshotInfoByCommitHash(ctx, workspace.ID, commitHash)
+	if err != nil {
+		return nil, err
+	}
+
+	return &filesystemv1.RestoreSnapshotResponse{
+		WorkspaceId:        workspace.ID,
+		RestoredSnapshotId: snapshotID,
+		Snapshot:           snapshotInfo,
+	}, nil
+}
+
 func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
 	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
 		return nil, err
@@ -941,6 +1074,103 @@ func findSearchMatches(filePath, body, query string) []*filesystemv1.SearchMatch
 		}
 	}
 	return results
+}
+
+func (s *filesystemServiceServer) snapshotInfoByCommitHash(ctx context.Context, workspaceID, commitHash string) (*filesystemv1.SnapshotInfo, error) {
+	commit, err := s.storage.GetCommitByHash(ctx, workspaceID, commitHash)
+	if err != nil {
+		if err == storage.ErrCommitNotFound {
+			return nil, status.Error(codes.NotFound, "snapshot not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot commit: %v", err))
+	}
+	return s.snapshotInfoFromCommit(ctx, workspaceID, commit)
+}
+
+func (s *filesystemServiceServer) snapshotInfoFromCommit(ctx context.Context, workspaceID string, commit *models.Commit) (*filesystemv1.SnapshotInfo, error) {
+	if commit == nil {
+		return nil, status.Error(codes.Internal, "commit is nil")
+	}
+
+	fileCount := 0
+	snapshot, err := s.storage.GetCommitSnapshot(ctx, commit.CommitHash)
+	if err != nil {
+		if err != storage.ErrCommitNotFound {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot state: %v", err))
+		}
+	} else {
+		if snapshot.SliceID != "" && snapshot.SliceID != workspaceID {
+			return nil, status.Error(codes.FailedPrecondition, "snapshot does not belong to workspace")
+		}
+		fileCount = len(snapshot.Files)
+	}
+
+	return &filesystemv1.SnapshotInfo{
+		SnapshotId:       commit.CommitHash,
+		ParentSnapshotId: commit.ParentHash,
+		Message:          commit.Message,
+		CreatedAt:        commit.Timestamp.Unix(),
+		FileCount:        int32(fileCount),
+	}, nil
+}
+
+func (s *filesystemServiceServer) resetWorkspaceToSnapshot(ctx context.Context, workspace *models.Slice, snapshot *models.CommitSnapshot) error {
+	if workspace == nil {
+		return status.Error(codes.Internal, "workspace is nil")
+	}
+	if snapshot == nil {
+		return status.Error(codes.Internal, "snapshot is nil")
+	}
+
+	entries, err := s.collectWorkspaceEntries(ctx, workspace.ID)
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if len(entries[i].Path) == len(entries[j].Path) {
+			return entries[i].Path > entries[j].Path
+		}
+		return len(entries[i].Path) > len(entries[j].Path)
+	})
+
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if entry.Type == "file" {
+			if err := s.storage.RemoveFileFromSlice(ctx, entry.Path, workspace.ID); err != nil {
+				return status.Error(codes.Internal, fmt.Sprintf("failed to clear workspace file index: %v", err))
+			}
+		}
+		if err := s.storage.DeleteEntry(ctx, entry.ID); err != nil && err != storage.ErrEntryNotFound {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to clear workspace entry: %v", err))
+		}
+	}
+
+	paths := make([]string, 0, len(snapshot.Files))
+	for filePath := range snapshot.Files {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+
+	for _, filePath := range paths {
+		contentHash := strings.TrimSpace(snapshot.Files[filePath])
+		if contentHash == "" {
+			continue
+		}
+		content, err := s.storage.GetFileContentByHash(ctx, contentHash)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				return status.Error(codes.NotFound, fmt.Sprintf("snapshot content missing for %s", filePath))
+			}
+			return status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot content for %s: %v", filePath, err))
+		}
+		if _, _, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, append([]byte(nil), content.Content...)); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *filesystemServiceServer) requireUser(ctx context.Context) (string, error) {
