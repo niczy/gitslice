@@ -648,3 +648,205 @@ func TestWorkspaceFork(t *testing.T) {
 		t.Fatalf("fork README should remain independent: got %q want %q", got, want)
 	}
 }
+
+func TestWorkspaceMerge(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-merge-main",
+		Name:        "Merge Main",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	baseWrite, err := svc.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+		WorkspaceId: "ws-merge-main",
+		Files: []*filesystemv1.WriteFileInput{
+			{Path: "README.md", Content: []byte("v1\n")},
+			{Path: "docs/info.txt", Content: []byte("base info\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteFiles(base) failed: %v", err)
+	}
+
+	if _, err := svc.Fork(ctx, &filesystemv1.ForkRequest{
+		WorkspaceId:     "ws-merge-main",
+		ForkWorkspaceId: "ws-merge-fork",
+		Name:            "Merge Fork",
+	}); err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+
+	targetOnlyWrite, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-merge-main",
+		Path:        "LOCAL.md",
+		Content:     []byte("keep me\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(target-only) failed: %v", err)
+	}
+
+	sourceWrite, err := svc.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+		WorkspaceId: "ws-merge-fork",
+		Files: []*filesystemv1.WriteFileInput{
+			{Path: "README.md", Content: []byte("v2\n")},
+			{Path: "notes/todo.txt", Content: []byte("later\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteFiles(source changes) failed: %v", err)
+	}
+
+	mergeResp, err := svc.Merge(ctx, &filesystemv1.MergeRequest{
+		WorkspaceId:       "ws-merge-main",
+		SourceWorkspaceId: "ws-merge-fork",
+	})
+	if err != nil {
+		t.Fatalf("Merge failed: %v", err)
+	}
+	if mergeResp.GetStatus() != filesystemv1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %#v", mergeResp)
+	}
+	if mergeResp.GetBaseWorkspaceId() != "ws-merge-main" || mergeResp.GetBaseSnapshotId() != baseWrite.GetCommitHash() {
+		t.Fatalf("unexpected inferred base: %#v", mergeResp)
+	}
+	if mergeResp.GetTargetSnapshotId() != targetOnlyWrite.GetCommitHash() || mergeResp.GetSourceSnapshotId() != sourceWrite.GetCommitHash() {
+		t.Fatalf("unexpected merge snapshot ids: %#v", mergeResp)
+	}
+	if mergeResp.GetSummary().GetFilesAdded() != 1 || mergeResp.GetSummary().GetFilesModified() != 1 || mergeResp.GetSummary().GetFilesDeleted() != 0 {
+		t.Fatalf("unexpected merge summary counts: %#v", mergeResp.GetSummary())
+	}
+	if mergeResp.GetSummary().GetLinesAdded() != 2 || mergeResp.GetSummary().GetLinesDeleted() != 1 {
+		t.Fatalf("unexpected merge summary lines: %#v", mergeResp.GetSummary())
+	}
+	if len(mergeResp.GetMergedPaths()) != 2 {
+		t.Fatalf("expected 2 merged paths, got %#v", mergeResp.GetMergedPaths())
+	}
+
+	readmeResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-merge-main",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(merged README) failed: %v", err)
+	}
+	if got, want := string(readmeResp.GetContent()), "v2\n"; got != want {
+		t.Fatalf("unexpected merged README content: got %q want %q", got, want)
+	}
+
+	localResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-merge-main",
+		Path:        "LOCAL.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(target-only LOCAL.md) failed: %v", err)
+	}
+	if got, want := string(localResp.GetContent()), "keep me\n"; got != want {
+		t.Fatalf("unexpected LOCAL.md content after merge: got %q want %q", got, want)
+	}
+
+	notesResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-merge-main",
+		Path:        "notes/todo.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(merged notes/todo.txt) failed: %v", err)
+	}
+	if got, want := string(notesResp.GetContent()), "later\n"; got != want {
+		t.Fatalf("unexpected notes/todo.txt content after merge: got %q want %q", got, want)
+	}
+}
+
+func TestWorkspaceMergeConflicts(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-merge-conflict-main",
+		Name:        "Merge Conflict Main",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	baseWrite, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-merge-conflict-main",
+		Path:        "README.md",
+		Content:     []byte("base\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(base) failed: %v", err)
+	}
+
+	if _, err := svc.Fork(ctx, &filesystemv1.ForkRequest{
+		WorkspaceId:     "ws-merge-conflict-main",
+		ForkWorkspaceId: "ws-merge-conflict-fork",
+		Name:            "Merge Conflict Fork",
+	}); err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-merge-conflict-main",
+		Path:        "README.md",
+		Content:     []byte("main change\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(main change) failed: %v", err)
+	}
+
+	sourceWrite, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-merge-conflict-fork",
+		Path:        "README.md",
+		Content:     []byte("fork change\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(fork change) failed: %v", err)
+	}
+
+	mergeResp, err := svc.Merge(ctx, &filesystemv1.MergeRequest{
+		WorkspaceId:       "ws-merge-conflict-main",
+		SourceWorkspaceId: "ws-merge-conflict-fork",
+	})
+	if err != nil {
+		t.Fatalf("Merge failed: %v", err)
+	}
+	if mergeResp.GetStatus() != filesystemv1.MergeStatus_MERGE_STATUS_CONFLICT {
+		t.Fatalf("expected merge conflict, got %#v", mergeResp)
+	}
+	if mergeResp.GetCommitHash() != "" {
+		t.Fatalf("expected no commit hash on conflict, got %#v", mergeResp)
+	}
+	if mergeResp.GetBaseWorkspaceId() != "ws-merge-conflict-main" || mergeResp.GetBaseSnapshotId() != baseWrite.GetCommitHash() {
+		t.Fatalf("unexpected inferred conflict base: %#v", mergeResp)
+	}
+	if mergeResp.GetSourceSnapshotId() != sourceWrite.GetCommitHash() {
+		t.Fatalf("unexpected source snapshot on conflict: %#v", mergeResp)
+	}
+	if len(mergeResp.GetConflicts()) != 1 {
+		t.Fatalf("expected 1 merge conflict, got %#v", mergeResp.GetConflicts())
+	}
+	conflict := mergeResp.GetConflicts()[0]
+	if conflict.GetPath() != "README.md" {
+		t.Fatalf("unexpected conflict path: %#v", conflict)
+	}
+	if conflict.GetSourceChangeType() != filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_MODIFY || conflict.GetTargetChangeType() != filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_MODIFY {
+		t.Fatalf("unexpected conflict change types: %#v", conflict)
+	}
+	if !strings.Contains(conflict.GetSourcePatch(), "+fork change") || !strings.Contains(conflict.GetTargetPatch(), "+main change") {
+		t.Fatalf("unexpected conflict patches: %#v", conflict)
+	}
+
+	readmeResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-merge-conflict-main",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(main after conflict) failed: %v", err)
+	}
+	if got, want := string(readmeResp.GetContent()), "main change\n"; got != want {
+		t.Fatalf("target workspace should remain unchanged on conflict: got %q want %q", got, want)
+	}
+}
