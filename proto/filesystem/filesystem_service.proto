@@ -139,6 +139,13 @@ service FilesystemService {
       body: "*"
     };
   }
+
+  rpc Fork(ForkRequest) returns (ForkResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}/fork"
+      body: "*"
+    };
+  }
 }
 
 message CreateWorkspaceRequest {
@@ -448,4 +455,18 @@ message DiffResponse {
   string to_snapshot_id = 3;
   DiffSummary summary = 4;
   repeated FileDiff files = 5;
+}
+
+message ForkRequest {
+  string workspace_id = 1;
+  string fork_workspace_id = 2;
+  string name = 3;
+  string description = 4;
+  string snapshot_id = 5;
+}
+
+message ForkResponse {
+  WorkspaceInfo workspace = 1;
+  string source_workspace_id = 2;
+  string source_snapshot_id = 3;
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -72,36 +73,15 @@ func (s *filesystemServiceServer) CreateWorkspace(ctx context.Context, req *file
 		CreatedBy:   username,
 		Files:       []string{},
 	}
-	if err := s.storage.CreateSlice(ctx, workspace); err != nil {
-		switch err {
-		case storage.ErrSliceAlreadyExists:
+	if err := s.createWorkspaceShell(ctx, workspace, "create workspace"); err != nil {
+		switch {
+		case errors.Is(err, storage.ErrSliceAlreadyExists):
 			return nil, status.Error(codes.AlreadyExists, "workspace already exists")
-		case storage.ErrInvalidInput:
+		case errors.Is(err, storage.ErrInvalidInput):
 			return nil, status.Error(codes.InvalidArgument, "invalid workspace")
 		default:
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create workspace: %v", err))
 		}
-	}
-
-	meta, err := s.storage.GetSliceMetadata(ctx, workspaceID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load workspace metadata: %v", err))
-	}
-	if err := s.storage.AddSliceCommit(ctx, workspaceID, &models.Commit{
-		CommitHash: meta.HeadCommitHash,
-		ParentHash: "",
-		Timestamp:  workspace.CreatedAt,
-		Message:    "create workspace",
-	}); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to record initial workspace commit: %v", err))
-	}
-	if err := s.storage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
-		CommitHash: meta.HeadCommitHash,
-		SliceID:    workspaceID,
-		Files:      map[string]string{},
-		Timestamp:  workspace.CreatedAt,
-	}); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save initial workspace snapshot: %v", err))
 	}
 
 	return s.workspaceInfo(ctx, workspace)
@@ -929,6 +909,94 @@ func (s *filesystemServiceServer) Diff(ctx context.Context, req *filesystemv1.Di
 	}, nil
 }
 
+func (s *filesystemServiceServer) Fork(ctx context.Context, req *filesystemv1.ForkRequest) (*filesystemv1.ForkResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceWorkspace, sourceMeta, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	sourceSnapshotID := strings.TrimSpace(req.GetSnapshotId())
+	if sourceSnapshotID == "" {
+		sourceSnapshotID = strings.TrimSpace(sourceMeta.HeadCommitHash)
+	}
+	if sourceSnapshotID == "" {
+		return nil, status.Error(codes.NotFound, "snapshot not found")
+	}
+
+	_, sourceSnapshot, err := s.resolveWorkspaceSnapshot(ctx, sourceWorkspace.ID, sourceSnapshotID, false)
+	if err != nil {
+		return nil, err
+	}
+
+	forkWorkspaceID := strings.TrimSpace(req.GetForkWorkspaceId())
+	if forkWorkspaceID == "" {
+		forkWorkspaceID = slugifyWorkspaceID(req.GetName())
+	}
+	if forkWorkspaceID == "" {
+		forkWorkspaceID = fmt.Sprintf("%s-fork", sourceWorkspace.ID)
+	}
+	if err := common.ValidateSliceID(forkWorkspaceID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid fork_workspace_id: %v", err))
+	}
+
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		baseName := strings.TrimSpace(sourceWorkspace.Name)
+		if baseName == "" {
+			baseName = sourceWorkspace.ID
+		}
+		name = baseName + " Fork"
+	}
+
+	description := strings.TrimSpace(req.GetDescription())
+	if description == "" {
+		description = fmt.Sprintf("Fork of %s", sourceWorkspace.ID)
+	}
+
+	forkWorkspace := &models.Slice{
+		ID:          forkWorkspaceID,
+		Name:        name,
+		Description: description,
+		Owners:      []string{username},
+		CreatedBy:   username,
+		Files:       []string{},
+	}
+	if err := s.createWorkspaceShell(ctx, forkWorkspace, "create workspace"); err != nil {
+		switch {
+		case errors.Is(err, storage.ErrSliceAlreadyExists):
+			return nil, status.Error(codes.AlreadyExists, "workspace already exists")
+		case errors.Is(err, storage.ErrInvalidInput):
+			return nil, status.Error(codes.InvalidArgument, "invalid workspace")
+		default:
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create fork workspace: %v", err))
+		}
+	}
+
+	if err := s.resetWorkspaceToSnapshot(ctx, forkWorkspace, sourceSnapshot); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.commitWorkspaceMutation(ctx, forkWorkspace, fmt.Sprintf("fork from %s@%s", sourceWorkspace.ID, sourceSnapshotID)); err != nil {
+		return nil, err
+	}
+
+	workspaceInfo, err := s.workspaceInfo(ctx, forkWorkspace)
+	if err != nil {
+		return nil, err
+	}
+
+	return &filesystemv1.ForkResponse{
+		Workspace:         workspaceInfo,
+		SourceWorkspaceId: sourceWorkspace.ID,
+		SourceSnapshotId:  sourceSnapshotID,
+	}, nil
+}
+
 func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
 	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
 		return nil, err
@@ -1401,6 +1469,42 @@ func summarizePatchLineDelta(patch string) (added int, deleted int) {
 		}
 	}
 	return added, deleted
+}
+
+func (s *filesystemServiceServer) createWorkspaceShell(ctx context.Context, workspace *models.Slice, initialMessage string) error {
+	if err := s.storage.CreateSlice(ctx, workspace); err != nil {
+		return err
+	}
+
+	meta, err := s.storage.GetSliceMetadata(ctx, workspace.ID)
+	if err != nil {
+		return fmt.Errorf("load workspace metadata: %w", err)
+	}
+
+	message := strings.TrimSpace(initialMessage)
+	if message == "" {
+		message = "create workspace"
+	}
+
+	if err := s.storage.AddSliceCommit(ctx, workspace.ID, &models.Commit{
+		CommitHash: meta.HeadCommitHash,
+		ParentHash: "",
+		Timestamp:  workspace.CreatedAt,
+		Message:    message,
+	}); err != nil {
+		return fmt.Errorf("record initial workspace commit: %w", err)
+	}
+
+	if err := s.storage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: meta.HeadCommitHash,
+		SliceID:    workspace.ID,
+		Files:      map[string]string{},
+		Timestamp:  workspace.CreatedAt,
+	}); err != nil {
+		return fmt.Errorf("save initial workspace snapshot: %w", err)
+	}
+
+	return nil
 }
 
 func (s *filesystemServiceServer) requireUser(ctx context.Context) (string, error) {
