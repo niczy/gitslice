@@ -751,6 +751,179 @@ func TestGatewayFilesystemDiff(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemFork(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-source","name":"Gateway Source"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-source:writeFiles",
+		strings.NewReader(`{"workspaceId":"gw-source","files":[{"path":"README.md","content":"djEK"},{"path":"docs/info.txt","content":"c291cmNlIGluZm8K"}]}`),
+	)
+	if err != nil {
+		t.Fatalf("new write request: %v", err)
+	}
+	writeReq.Header.Set("Authorization", "User tester")
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeResp, err := client.Do(writeReq)
+	if err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	if writeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
+		t.Fatalf("unexpected write status %d: %s", writeResp.StatusCode, string(body))
+	}
+
+	var writePayload struct {
+		CommitHash string `json:"commitHash"`
+	}
+	if err := json.NewDecoder(writeResp.Body).Decode(&writePayload); err != nil {
+		writeResp.Body.Close()
+		t.Fatalf("decode write response: %v", err)
+	}
+	writeResp.Body.Close()
+
+	forkReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-source/fork",
+		strings.NewReader(`{"workspaceId":"gw-source","forkWorkspaceId":"gw-fork","name":"Gateway Fork"}`),
+	)
+	if err != nil {
+		t.Fatalf("new fork request: %v", err)
+	}
+	forkReq.Header.Set("Authorization", "User tester")
+	forkReq.Header.Set("Content-Type", "application/json")
+	forkResp, err := client.Do(forkReq)
+	if err != nil {
+		t.Fatalf("fork request failed: %v", err)
+	}
+	if forkResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(forkResp.Body)
+		forkResp.Body.Close()
+		t.Fatalf("unexpected fork status %d: %s", forkResp.StatusCode, string(body))
+	}
+
+	var forkPayload struct {
+		Workspace struct {
+			WorkspaceID string `json:"workspaceId"`
+			FileCount   int    `json:"fileCount"`
+		} `json:"workspace"`
+		SourceWorkspaceID string `json:"sourceWorkspaceId"`
+		SourceSnapshotID  string `json:"sourceSnapshotId"`
+	}
+	if err := json.NewDecoder(forkResp.Body).Decode(&forkPayload); err != nil {
+		forkResp.Body.Close()
+		t.Fatalf("decode fork response: %v", err)
+	}
+	forkResp.Body.Close()
+	if forkPayload.Workspace.WorkspaceID != "gw-fork" || forkPayload.Workspace.FileCount != 2 {
+		t.Fatalf("unexpected fork payload: %#v", forkPayload)
+	}
+	if forkPayload.SourceWorkspaceID != "gw-source" || forkPayload.SourceSnapshotID != writePayload.CommitHash {
+		t.Fatalf("unexpected fork source metadata: %#v", forkPayload)
+	}
+
+	readForkReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-fork/files/README.md", nil)
+	if err != nil {
+		t.Fatalf("new read fork request: %v", err)
+	}
+	readForkReq.Header.Set("Authorization", "User tester")
+	readForkResp, err := client.Do(readForkReq)
+	if err != nil {
+		t.Fatalf("read fork request failed: %v", err)
+	}
+	if readForkResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readForkResp.Body)
+		readForkResp.Body.Close()
+		t.Fatalf("unexpected fork read status %d: %s", readForkResp.StatusCode, string(body))
+	}
+
+	var readForkPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readForkResp.Body).Decode(&readForkPayload); err != nil {
+		readForkResp.Body.Close()
+		t.Fatalf("decode fork read response: %v", err)
+	}
+	readForkResp.Body.Close()
+	if readForkPayload.Content != "djEK" {
+		t.Fatalf("unexpected fork README content: %#v", readForkPayload)
+	}
+
+	updateSourceReq, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-source/files/README.md",
+		strings.NewReader(`{"workspaceId":"gw-source","path":"README.md","content":"djIK"}`),
+	)
+	if err != nil {
+		t.Fatalf("new update source request: %v", err)
+	}
+	updateSourceReq.Header.Set("Authorization", "User tester")
+	updateSourceReq.Header.Set("Content-Type", "application/json")
+	updateSourceResp, err := client.Do(updateSourceReq)
+	if err != nil {
+		t.Fatalf("update source request failed: %v", err)
+	}
+	if updateSourceResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(updateSourceResp.Body)
+		updateSourceResp.Body.Close()
+		t.Fatalf("unexpected source update status %d: %s", updateSourceResp.StatusCode, string(body))
+	}
+	updateSourceResp.Body.Close()
+
+	readForkAfterReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-fork/files/README.md", nil)
+	if err != nil {
+		t.Fatalf("new read fork after update request: %v", err)
+	}
+	readForkAfterReq.Header.Set("Authorization", "User tester")
+	readForkAfterResp, err := client.Do(readForkAfterReq)
+	if err != nil {
+		t.Fatalf("read fork after update request failed: %v", err)
+	}
+	if readForkAfterResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readForkAfterResp.Body)
+		readForkAfterResp.Body.Close()
+		t.Fatalf("unexpected fork read after update status %d: %s", readForkAfterResp.StatusCode, string(body))
+	}
+
+	var readForkAfterPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readForkAfterResp.Body).Decode(&readForkAfterPayload); err != nil {
+		readForkAfterResp.Body.Close()
+		t.Fatalf("decode fork read after update response: %v", err)
+	}
+	readForkAfterResp.Body.Close()
+	if readForkAfterPayload.Content != "djEK" {
+		t.Fatalf("fork README should remain unchanged after source update: %#v", readForkAfterPayload)
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }

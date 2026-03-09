@@ -555,3 +555,96 @@ func TestWorkspaceDiff(t *testing.T) {
 		t.Fatalf("unexpected notes diff patch: %q", notesDiff.GetPatch())
 	}
 }
+
+func TestWorkspaceFork(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-source",
+		Name:        "Source Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	writeResp, err := svc.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+		WorkspaceId: "ws-source",
+		Files: []*filesystemv1.WriteFileInput{
+			{Path: "README.md", Content: []byte("v1\n")},
+			{Path: "docs/info.txt", Content: []byte("source info\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteFiles(source) failed: %v", err)
+	}
+
+	forkResp, err := svc.Fork(ctx, &filesystemv1.ForkRequest{
+		WorkspaceId:     "ws-source",
+		ForkWorkspaceId: "ws-fork",
+		Name:            "Fork Workspace",
+	})
+	if err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+	if forkResp.GetWorkspace().GetWorkspaceId() != "ws-fork" {
+		t.Fatalf("unexpected fork workspace: %#v", forkResp.GetWorkspace())
+	}
+	if forkResp.GetSourceWorkspaceId() != "ws-source" || forkResp.GetSourceSnapshotId() != writeResp.GetCommitHash() {
+		t.Fatalf("unexpected fork response metadata: %#v", forkResp)
+	}
+	if forkResp.GetWorkspace().GetFileCount() != 2 {
+		t.Fatalf("expected 2 forked files, got %#v", forkResp.GetWorkspace())
+	}
+
+	readmeResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-fork",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(fork README) failed: %v", err)
+	}
+	if got, want := string(readmeResp.GetContent()), "v1\n"; got != want {
+		t.Fatalf("unexpected fork README content: got %q want %q", got, want)
+	}
+
+	infoResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-fork",
+		Path:        "docs/info.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(fork docs/info.txt) failed: %v", err)
+	}
+	if got, want := string(infoResp.GetContent()), "source info\n"; got != want {
+		t.Fatalf("unexpected fork info content: got %q want %q", got, want)
+	}
+
+	rootList, err := svc.ListDirectory(ctx, &filesystemv1.ListDirectoryRequest{
+		WorkspaceId: "ws-fork",
+	})
+	if err != nil {
+		t.Fatalf("ListDirectory(fork root) failed: %v", err)
+	}
+	if len(rootList.GetEntries()) != 2 {
+		t.Fatalf("expected 2 root entries in fork, got %#v", rootList.GetEntries())
+	}
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-source",
+		Path:        "README.md",
+		Content:     []byte("v2\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(source v2) failed: %v", err)
+	}
+
+	forkReadmeAfterSourceWrite, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-fork",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(fork README after source write) failed: %v", err)
+	}
+	if got, want := string(forkReadmeAfterSourceWrite.GetContent()), "v1\n"; got != want {
+		t.Fatalf("fork README should remain independent: got %q want %q", got, want)
+	}
+}
