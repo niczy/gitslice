@@ -246,6 +246,77 @@ func TestGatewayFilesystemWorkspaceLifecycle(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemDeleteWorkspace(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-delete","name":"Gateway Delete"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	deleteReq, err := http.NewRequest(http.MethodDelete, gatewayURL+"/v1/fs/workspaces/gw-delete", nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	deleteReq.Header.Set("Authorization", "User tester")
+	deleteResp, err := client.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("delete request failed: %v", err)
+	}
+	if deleteResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(deleteResp.Body)
+		deleteResp.Body.Close()
+		t.Fatalf("unexpected delete status %d: %s", deleteResp.StatusCode, string(body))
+	}
+
+	var deletePayload struct {
+		WorkspaceID string `json:"workspaceId"`
+	}
+	if err := json.NewDecoder(deleteResp.Body).Decode(&deletePayload); err != nil {
+		deleteResp.Body.Close()
+		t.Fatalf("decode delete response: %v", err)
+	}
+	deleteResp.Body.Close()
+	if deletePayload.WorkspaceID != "gw-delete" {
+		t.Fatalf("unexpected delete payload: %#v", deletePayload)
+	}
+
+	infoReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-delete", nil)
+	if err != nil {
+		t.Fatalf("new info request: %v", err)
+	}
+	infoReq.Header.Set("Authorization", "User tester")
+	infoResp, err := client.Do(infoReq)
+	if err != nil {
+		t.Fatalf("info request failed: %v", err)
+	}
+	defer infoResp.Body.Close()
+	if infoResp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(infoResp.Body)
+		t.Fatalf("expected 404 after delete, got %d: %s", infoResp.StatusCode, string(body))
+	}
+}
+
 func TestGatewayFilesystemBatchOperations(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

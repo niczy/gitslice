@@ -906,19 +906,23 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	// Agent session lifecycle + event persistence
 	sessionID := fmt.Sprintf("sess-%s", suffix)
 	session := &models.AgentSession{
-		SessionID:       sessionID,
-		SliceID:         slice.ID,
-		EnvironmentName: "node20",
-		AgentType:       "claude",
-		UserID:          "alice",
-		State:           models.AgentSessionStateCreating,
-		Provider:        "e2b",
-		E2BTemplateID:   "tmpl-test",
-		E2BRegion:       "us-west-2",
-		IdleTimeoutSec:  1800,
-		TTLSec:          14400,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		SessionID:        sessionID,
+		SliceID:          slice.ID,
+		EnvironmentName:  "node20",
+		AgentType:        "claude",
+		UserID:           "alice",
+		State:            models.AgentSessionStateCreating,
+		Provider:         "e2b",
+		RuntimeProvider:  "e2b",
+		RuntimeSessionID: "runtime-create",
+		RuntimeStatus:    "creating",
+		RuntimeErrorCode: "none",
+		E2BTemplateID:    "tmpl-test",
+		E2BRegion:        "us-west-2",
+		IdleTimeoutSec:   1800,
+		TTLSec:           14400,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 	if err := st.CreateAgentSession(ctx, session); err != nil {
 		t.Fatalf("CreateAgentSession failed: %v", err)
@@ -1017,6 +1021,120 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if _, err := st.GetActiveAgentSessionBySlice(ctx, session.SliceID); err != ErrAgentSessionNotFound {
 		t.Fatalf("expected ErrAgentSessionNotFound for inactive slice session, got %v", err)
+	}
+
+	deleteSliceID := fmt.Sprintf("slice-delete-%s", suffix)
+	deleteCommitHash := fmt.Sprintf("delete-commit-%s", suffix)
+	deleteChangesetID := fmt.Sprintf("delete-cs-%s", suffix)
+	deleteSessionID := fmt.Sprintf("delete-session-%s", suffix)
+	deletePath := "cleanup/README.md"
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        deleteSliceID,
+		Name:      "Delete Me",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+		Files:     []string{deletePath},
+	}); err != nil {
+		t.Fatalf("CreateSlice delete failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", deleteSliceID, deletePath),
+		Path:     deletePath,
+		Type:     "file",
+		ParentID: deleteSliceID,
+		Size:     7,
+	}); err != nil {
+		t.Fatalf("AddEntry delete failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, deleteSliceID, &models.Commit{
+		CommitHash: deleteCommitHash,
+		Message:    "delete setup",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddSliceCommit delete failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: deleteCommitHash,
+		SliceID:    deleteSliceID,
+		Files:      map[string]string{deletePath: "cleanup-hash"},
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot delete failed: %v", err)
+	}
+	if err := st.CreateChangeset(ctx, &models.Changeset{
+		ID:             deleteChangesetID,
+		Hash:           "cleanup",
+		SliceID:        deleteSliceID,
+		BaseCommitHash: deleteCommitHash,
+		ModifiedFiles:  []string{deletePath},
+		Status:         models.ChangesetStatusPending,
+	}); err != nil {
+		t.Fatalf("CreateChangeset delete failed: %v", err)
+	}
+	if err := st.AddFileChange(ctx, &models.FileChangeRecord{
+		ID:         fmt.Sprintf("delete-change-%s", suffix),
+		SliceID:    deleteSliceID,
+		CommitHash: deleteCommitHash,
+		Path:       deletePath,
+		ChangeType: models.ChangeTypeAdd,
+		NewHash:    "cleanup-hash",
+		Author:     "alice",
+		Message:    "delete setup",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddFileChange delete failed: %v", err)
+	}
+	deleteSession := &models.AgentSession{
+		SessionID:        deleteSessionID,
+		SliceID:          deleteSliceID,
+		AgentType:        "cleanup",
+		UserID:           "alice",
+		State:            models.AgentSessionStateStopped,
+		Provider:         "e2b",
+		RuntimeProvider:  "e2b",
+		RuntimeSessionID: "runtime-delete",
+		RuntimeStatus:    "stopped",
+		RuntimeErrorCode: "none",
+		E2BTemplateID:    "template",
+		IdleTimeoutSec:   60,
+		TTLSec:           60,
+	}
+	if err := st.CreateAgentSession(ctx, deleteSession); err != nil {
+		t.Fatalf("CreateAgentSession delete failed: %v", err)
+	}
+	if err := st.AppendAgentSessionEvent(ctx, &models.AgentSessionEvent{
+		SessionID: deleteSessionID,
+		Seq:       1,
+		TS:        time.Now(),
+		Stream:    "system",
+		Type:      "state",
+		Payload:   []byte(`{"state":"stopped"}`),
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent delete failed: %v", err)
+	}
+	if err := st.AddAgentSessionAudit(ctx, &models.AgentSessionAudit{
+		SessionID:   deleteSessionID,
+		ActorUserID: "alice",
+		Action:      "cleanup",
+		Metadata:    []byte(`{"source":"test"}`),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("AddAgentSessionAudit delete failed: %v", err)
+	}
+	if err := st.DeleteSlice(ctx, deleteSliceID); err != nil {
+		t.Fatalf("DeleteSlice failed: %v", err)
+	}
+	if _, err := st.GetSlice(ctx, deleteSliceID); err != ErrSliceNotFound {
+		t.Fatalf("expected ErrSliceNotFound after delete, got %v", err)
+	}
+	if _, err := st.GetSliceMetadata(ctx, deleteSliceID); err != ErrSliceNotFound {
+		t.Fatalf("expected ErrSliceNotFound metadata after delete, got %v", err)
+	}
+	if _, err := st.GetEntryByPath(ctx, deleteSliceID, deletePath); err != ErrEntryNotFound {
+		t.Fatalf("expected ErrEntryNotFound after delete, got %v", err)
+	}
+	if _, err := st.GetAgentSession(ctx, deleteSessionID); err != ErrAgentSessionNotFound {
+		t.Fatalf("expected ErrAgentSessionNotFound after delete, got %v", err)
 	}
 
 	// Basic health

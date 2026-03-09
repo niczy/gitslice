@@ -894,6 +894,74 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 	return tx.Commit(ctx)
 }
 
+func (s *PostgresNativeStorage) DeleteSlice(ctx context.Context, sliceID string) error {
+	ctx = ensureCtx(ctx)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE id = $1)`, sliceID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE slices SET parent_id = NULL WHERE parent_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_session_events WHERE session_id IN (SELECT session_id FROM agent_sessions WHERE slice_id = $1)`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_session_audit WHERE session_id IN (SELECT session_id FROM agent_sessions WHERE slice_id = $1)`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_sessions WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM changesets WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM file_slice_index WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM slice_locks WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM file_locks WHERE owner_slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM directory_entries WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM file_changes WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM commit_snapshots WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM slice_commits WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM slice_metadata WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM slices WHERE id = $1`, sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (s *PostgresNativeStorage) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
 	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
