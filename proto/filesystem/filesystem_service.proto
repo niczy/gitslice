@@ -146,6 +146,13 @@ service FilesystemService {
       body: "*"
     };
   }
+
+  rpc Merge(MergeRequest) returns (MergeResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}/merge"
+      body: "*"
+    };
+  }
 }
 
 message CreateWorkspaceRequest {
@@ -469,4 +476,45 @@ message ForkResponse {
   WorkspaceInfo workspace = 1;
   string source_workspace_id = 2;
   string source_snapshot_id = 3;
+}
+
+enum MergeStatus {
+  MERGE_STATUS_UNSPECIFIED = 0;
+  MERGE_STATUS_SUCCESS = 1;
+  MERGE_STATUS_CONFLICT = 2;
+}
+
+message MergeRequest {
+  string workspace_id = 1;
+  string source_workspace_id = 2;
+  string source_snapshot_id = 3;
+  string target_snapshot_id = 4;
+  string base_workspace_id = 5;
+  string base_snapshot_id = 6;
+  string message = 7;
+}
+
+message MergeConflict {
+  string path = 1;
+  string base_hash = 2;
+  string source_hash = 3;
+  string target_hash = 4;
+  DiffChangeType source_change_type = 5;
+  DiffChangeType target_change_type = 6;
+  string source_patch = 7;
+  string target_patch = 8;
+}
+
+message MergeResponse {
+  string workspace_id = 1;
+  string source_workspace_id = 2;
+  string base_workspace_id = 3;
+  string base_snapshot_id = 4;
+  string source_snapshot_id = 5;
+  string target_snapshot_id = 6;
+  MergeStatus status = 7;
+  string commit_hash = 8;
+  DiffSummary summary = 9;
+  repeated string merged_paths = 10;
+  repeated MergeConflict conflicts = 11;
 }

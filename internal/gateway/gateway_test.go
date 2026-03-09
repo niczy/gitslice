@@ -924,6 +924,256 @@ func TestGatewayFilesystemFork(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemMerge(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-merge-main","name":"Gateway Merge Main"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	baseWriteReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-merge-main:writeFiles",
+		strings.NewReader(`{"workspaceId":"gw-merge-main","files":[{"path":"README.md","content":"djEK"},{"path":"docs/info.txt","content":"YmFzZSBpbmZvCg=="}]}`),
+	)
+	if err != nil {
+		t.Fatalf("new base write request: %v", err)
+	}
+	baseWriteReq.Header.Set("Authorization", "User tester")
+	baseWriteReq.Header.Set("Content-Type", "application/json")
+	baseWriteResp, err := client.Do(baseWriteReq)
+	if err != nil {
+		t.Fatalf("base write request failed: %v", err)
+	}
+	if baseWriteResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(baseWriteResp.Body)
+		baseWriteResp.Body.Close()
+		t.Fatalf("unexpected base write status %d: %s", baseWriteResp.StatusCode, string(body))
+	}
+
+	var baseWritePayload struct {
+		CommitHash string `json:"commitHash"`
+	}
+	if err := json.NewDecoder(baseWriteResp.Body).Decode(&baseWritePayload); err != nil {
+		baseWriteResp.Body.Close()
+		t.Fatalf("decode base write response: %v", err)
+	}
+	baseWriteResp.Body.Close()
+
+	forkReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-merge-main/fork",
+		strings.NewReader(`{"workspaceId":"gw-merge-main","forkWorkspaceId":"gw-merge-fork","name":"Gateway Merge Fork"}`),
+	)
+	if err != nil {
+		t.Fatalf("new fork request: %v", err)
+	}
+	forkReq.Header.Set("Authorization", "User tester")
+	forkReq.Header.Set("Content-Type", "application/json")
+	forkResp, err := client.Do(forkReq)
+	if err != nil {
+		t.Fatalf("fork request failed: %v", err)
+	}
+	if forkResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(forkResp.Body)
+		forkResp.Body.Close()
+		t.Fatalf("unexpected fork status %d: %s", forkResp.StatusCode, string(body))
+	}
+	forkResp.Body.Close()
+
+	targetOnlyReq, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-merge-main/files/LOCAL.md",
+		strings.NewReader(`{"workspaceId":"gw-merge-main","path":"LOCAL.md","content":"a2VlcCBtZQo="}`),
+	)
+	if err != nil {
+		t.Fatalf("new target-only write request: %v", err)
+	}
+	targetOnlyReq.Header.Set("Authorization", "User tester")
+	targetOnlyReq.Header.Set("Content-Type", "application/json")
+	targetOnlyResp, err := client.Do(targetOnlyReq)
+	if err != nil {
+		t.Fatalf("target-only write request failed: %v", err)
+	}
+	if targetOnlyResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(targetOnlyResp.Body)
+		targetOnlyResp.Body.Close()
+		t.Fatalf("unexpected target-only write status %d: %s", targetOnlyResp.StatusCode, string(body))
+	}
+
+	var targetOnlyPayload struct {
+		CommitHash string `json:"commitHash"`
+	}
+	if err := json.NewDecoder(targetOnlyResp.Body).Decode(&targetOnlyPayload); err != nil {
+		targetOnlyResp.Body.Close()
+		t.Fatalf("decode target-only write response: %v", err)
+	}
+	targetOnlyResp.Body.Close()
+
+	sourceWriteReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-merge-fork:writeFiles",
+		strings.NewReader(`{"workspaceId":"gw-merge-fork","files":[{"path":"README.md","content":"djIK"},{"path":"notes/todo.txt","content":"bGF0ZXIK"}]}`),
+	)
+	if err != nil {
+		t.Fatalf("new source write request: %v", err)
+	}
+	sourceWriteReq.Header.Set("Authorization", "User tester")
+	sourceWriteReq.Header.Set("Content-Type", "application/json")
+	sourceWriteResp, err := client.Do(sourceWriteReq)
+	if err != nil {
+		t.Fatalf("source write request failed: %v", err)
+	}
+	if sourceWriteResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(sourceWriteResp.Body)
+		sourceWriteResp.Body.Close()
+		t.Fatalf("unexpected source write status %d: %s", sourceWriteResp.StatusCode, string(body))
+	}
+
+	var sourceWritePayload struct {
+		CommitHash string `json:"commitHash"`
+	}
+	if err := json.NewDecoder(sourceWriteResp.Body).Decode(&sourceWritePayload); err != nil {
+		sourceWriteResp.Body.Close()
+		t.Fatalf("decode source write response: %v", err)
+	}
+	sourceWriteResp.Body.Close()
+
+	mergeReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-merge-main/merge",
+		strings.NewReader(`{"workspaceId":"gw-merge-main","sourceWorkspaceId":"gw-merge-fork"}`),
+	)
+	if err != nil {
+		t.Fatalf("new merge request: %v", err)
+	}
+	mergeReq.Header.Set("Authorization", "User tester")
+	mergeReq.Header.Set("Content-Type", "application/json")
+	mergeResp, err := client.Do(mergeReq)
+	if err != nil {
+		t.Fatalf("merge request failed: %v", err)
+	}
+	if mergeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(mergeResp.Body)
+		mergeResp.Body.Close()
+		t.Fatalf("unexpected merge status %d: %s", mergeResp.StatusCode, string(body))
+	}
+
+	var mergePayload struct {
+		BaseWorkspaceID  string   `json:"baseWorkspaceId"`
+		BaseSnapshotID   string   `json:"baseSnapshotId"`
+		SourceSnapshotID string   `json:"sourceSnapshotId"`
+		TargetSnapshotID string   `json:"targetSnapshotId"`
+		Status           string   `json:"status"`
+		MergedPaths      []string `json:"mergedPaths"`
+		Summary          struct {
+			FilesAdded    int `json:"filesAdded"`
+			FilesModified int `json:"filesModified"`
+			FilesDeleted  int `json:"filesDeleted"`
+			LinesAdded    int `json:"linesAdded"`
+			LinesDeleted  int `json:"linesDeleted"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(mergeResp.Body).Decode(&mergePayload); err != nil {
+		mergeResp.Body.Close()
+		t.Fatalf("decode merge response: %v", err)
+	}
+	mergeResp.Body.Close()
+	if mergePayload.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("unexpected merge payload status: %#v", mergePayload)
+	}
+	if mergePayload.BaseWorkspaceID != "gw-merge-main" || mergePayload.BaseSnapshotID != baseWritePayload.CommitHash {
+		t.Fatalf("unexpected merge base payload: %#v", mergePayload)
+	}
+	if mergePayload.TargetSnapshotID != targetOnlyPayload.CommitHash || mergePayload.SourceSnapshotID != sourceWritePayload.CommitHash {
+		t.Fatalf("unexpected merge snapshot payload: %#v", mergePayload)
+	}
+	if mergePayload.Summary.FilesAdded != 1 || mergePayload.Summary.FilesModified != 1 || mergePayload.Summary.FilesDeleted != 0 {
+		t.Fatalf("unexpected merge summary counts: %#v", mergePayload)
+	}
+	if mergePayload.Summary.LinesAdded != 2 || mergePayload.Summary.LinesDeleted != 1 {
+		t.Fatalf("unexpected merge summary lines: %#v", mergePayload)
+	}
+	if len(mergePayload.MergedPaths) != 2 {
+		t.Fatalf("expected 2 merged paths, got %#v", mergePayload)
+	}
+
+	readReadmeReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-merge-main/files/README.md", nil)
+	if err != nil {
+		t.Fatalf("new merged README request: %v", err)
+	}
+	readReadmeReq.Header.Set("Authorization", "User tester")
+	readReadmeResp, err := client.Do(readReadmeReq)
+	if err != nil {
+		t.Fatalf("merged README request failed: %v", err)
+	}
+	if readReadmeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readReadmeResp.Body)
+		readReadmeResp.Body.Close()
+		t.Fatalf("unexpected merged README status %d: %s", readReadmeResp.StatusCode, string(body))
+	}
+
+	var readReadmePayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readReadmeResp.Body).Decode(&readReadmePayload); err != nil {
+		readReadmeResp.Body.Close()
+		t.Fatalf("decode merged README response: %v", err)
+	}
+	readReadmeResp.Body.Close()
+	if readReadmePayload.Content != "djIK" {
+		t.Fatalf("unexpected merged README content: %#v", readReadmePayload)
+	}
+
+	readLocalReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-merge-main/files/LOCAL.md", nil)
+	if err != nil {
+		t.Fatalf("new LOCAL.md request: %v", err)
+	}
+	readLocalReq.Header.Set("Authorization", "User tester")
+	readLocalResp, err := client.Do(readLocalReq)
+	if err != nil {
+		t.Fatalf("LOCAL.md request failed: %v", err)
+	}
+	if readLocalResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readLocalResp.Body)
+		readLocalResp.Body.Close()
+		t.Fatalf("unexpected LOCAL.md status %d: %s", readLocalResp.StatusCode, string(body))
+	}
+
+	var readLocalPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readLocalResp.Body).Decode(&readLocalPayload); err != nil {
+		readLocalResp.Body.Close()
+		t.Fatalf("decode LOCAL.md response: %v", err)
+	}
+	readLocalResp.Body.Close()
+	if readLocalPayload.Content != "a2VlcCBtZQo=" {
+		t.Fatalf("unexpected LOCAL.md content after merge: %#v", readLocalPayload)
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }

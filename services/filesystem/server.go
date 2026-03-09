@@ -997,6 +997,121 @@ func (s *filesystemServiceServer) Fork(ctx context.Context, req *filesystemv1.Fo
 	}, nil
 }
 
+func (s *filesystemServiceServer) Merge(ctx context.Context, req *filesystemv1.MergeRequest) (*filesystemv1.MergeResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	targetWorkspace, targetMeta, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceWorkspace, sourceMeta, err := s.requireWorkspaceViewAccess(ctx, req.GetSourceWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+	if sourceWorkspace.ID == targetWorkspace.ID {
+		return nil, status.Error(codes.InvalidArgument, "source_workspace_id must differ from workspace_id")
+	}
+
+	sourceSnapshotID := strings.TrimSpace(req.GetSourceSnapshotId())
+	if sourceSnapshotID == "" {
+		sourceSnapshotID = strings.TrimSpace(sourceMeta.HeadCommitHash)
+	}
+	if sourceSnapshotID == "" {
+		return nil, status.Error(codes.NotFound, "source snapshot not found")
+	}
+
+	targetSnapshotID := strings.TrimSpace(req.GetTargetSnapshotId())
+	if targetSnapshotID == "" {
+		targetSnapshotID = strings.TrimSpace(targetMeta.HeadCommitHash)
+	}
+	if targetSnapshotID == "" {
+		return nil, status.Error(codes.NotFound, "target snapshot not found")
+	}
+
+	_, sourceSnapshot, err := s.resolveWorkspaceSnapshot(ctx, sourceWorkspace.ID, sourceSnapshotID, false)
+	if err != nil {
+		return nil, err
+	}
+	_, targetSnapshot, err := s.resolveWorkspaceSnapshot(ctx, targetWorkspace.ID, targetSnapshotID, false)
+	if err != nil {
+		return nil, err
+	}
+
+	baseWorkspaceID, baseSnapshotID, baseSnapshot, err := s.resolveMergeBase(ctx, req, sourceWorkspace.ID, targetWorkspace.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	mergedSnapshot, mergedPaths, conflicts := s.buildMergedWorkspaceSnapshot(ctx, baseSnapshot, sourceSnapshot, targetSnapshot)
+	if len(conflicts) > 0 {
+		return &filesystemv1.MergeResponse{
+			WorkspaceId:       targetWorkspace.ID,
+			SourceWorkspaceId: sourceWorkspace.ID,
+			BaseWorkspaceId:   baseWorkspaceID,
+			BaseSnapshotId:    baseSnapshotID,
+			SourceSnapshotId:  sourceSnapshotID,
+			TargetSnapshotId:  targetSnapshotID,
+			Status:            filesystemv1.MergeStatus_MERGE_STATUS_CONFLICT,
+			Summary:           &filesystemv1.DiffSummary{},
+			MergedPaths:       []string{},
+			Conflicts:         conflicts,
+		}, nil
+	}
+
+	if len(mergedPaths) == 0 {
+		return &filesystemv1.MergeResponse{
+			WorkspaceId:       targetWorkspace.ID,
+			SourceWorkspaceId: sourceWorkspace.ID,
+			BaseWorkspaceId:   baseWorkspaceID,
+			BaseSnapshotId:    baseSnapshotID,
+			SourceSnapshotId:  sourceSnapshotID,
+			TargetSnapshotId:  targetSnapshotID,
+			Status:            filesystemv1.MergeStatus_MERGE_STATUS_SUCCESS,
+			CommitHash:        targetSnapshotID,
+			Summary:           &filesystemv1.DiffSummary{},
+			MergedPaths:       []string{},
+			Conflicts:         []*filesystemv1.MergeConflict{},
+		}, nil
+	}
+
+	if err := s.resetWorkspaceToSnapshot(ctx, targetWorkspace, mergedSnapshot); err != nil {
+		return nil, err
+	}
+
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		message = fmt.Sprintf("merge %s@%s into %s", sourceWorkspace.ID, sourceSnapshotID, targetWorkspace.ID)
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, targetWorkspace, message)
+	if err != nil {
+		return nil, err
+	}
+
+	_, summary, err := s.buildFilesystemDiff(ctx, targetSnapshot, mergedSnapshot, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return &filesystemv1.MergeResponse{
+		WorkspaceId:       targetWorkspace.ID,
+		SourceWorkspaceId: sourceWorkspace.ID,
+		BaseWorkspaceId:   baseWorkspaceID,
+		BaseSnapshotId:    baseSnapshotID,
+		SourceSnapshotId:  sourceSnapshotID,
+		TargetSnapshotId:  targetSnapshotID,
+		Status:            filesystemv1.MergeStatus_MERGE_STATUS_SUCCESS,
+		CommitHash:        commitHash,
+		Summary:           summary,
+		MergedPaths:       mergedPaths,
+		Conflicts:         []*filesystemv1.MergeConflict{},
+	}, nil
+}
+
 func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
 	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
 		return nil, err
@@ -1469,6 +1584,208 @@ func summarizePatchLineDelta(patch string) (added int, deleted int) {
 		}
 	}
 	return added, deleted
+}
+
+func (s *filesystemServiceServer) resolveMergeBase(ctx context.Context, req *filesystemv1.MergeRequest, sourceWorkspaceID, targetWorkspaceID string) (string, string, *models.CommitSnapshot, error) {
+	baseSnapshotID := strings.TrimSpace(req.GetBaseSnapshotId())
+	baseWorkspaceID := strings.TrimSpace(req.GetBaseWorkspaceId())
+	if baseSnapshotID != "" {
+		candidates := make([]string, 0, 3)
+		if baseWorkspaceID != "" {
+			candidates = append(candidates, baseWorkspaceID)
+		}
+		candidates = append(candidates, targetWorkspaceID, sourceWorkspaceID)
+
+		seen := make(map[string]struct{}, len(candidates))
+		for _, candidate := range candidates {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+
+			if _, _, err := s.requireWorkspaceViewAccess(ctx, candidate); err != nil {
+				if status.Code(err) == codes.NotFound {
+					continue
+				}
+				return "", "", nil, err
+			}
+			_, snapshot, err := s.resolveWorkspaceSnapshot(ctx, candidate, baseSnapshotID, false)
+			if err == nil {
+				return candidate, baseSnapshotID, snapshot, nil
+			}
+			if status.Code(err) != codes.NotFound {
+				return "", "", nil, err
+			}
+		}
+		return "", "", nil, status.Error(codes.NotFound, "base snapshot not found")
+	}
+
+	baseWorkspaceID, baseSnapshotID, err := s.inferMergeBase(ctx, sourceWorkspaceID, targetWorkspaceID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if _, _, err := s.requireWorkspaceViewAccess(ctx, baseWorkspaceID); err != nil {
+		return "", "", nil, err
+	}
+	_, snapshot, err := s.resolveWorkspaceSnapshot(ctx, baseWorkspaceID, baseSnapshotID, false)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return baseWorkspaceID, baseSnapshotID, snapshot, nil
+}
+
+func (s *filesystemServiceServer) inferMergeBase(ctx context.Context, sourceWorkspaceID, targetWorkspaceID string) (string, string, error) {
+	if sourceWorkspaceID == "" || targetWorkspaceID == "" {
+		return "", "", status.Error(codes.InvalidArgument, "workspace ids are required to infer merge base")
+	}
+
+	lookups := []struct {
+		workspaceID   string
+		counterpartID string
+	}{
+		{workspaceID: sourceWorkspaceID, counterpartID: targetWorkspaceID},
+		{workspaceID: targetWorkspaceID, counterpartID: sourceWorkspaceID},
+	}
+
+	for _, lookup := range lookups {
+		commits, err := s.storage.ListSliceCommits(ctx, lookup.workspaceID, 200, "")
+		if err != nil {
+			if err == storage.ErrSliceNotFound {
+				continue
+			}
+			return "", "", status.Error(codes.Internal, fmt.Sprintf("failed to list workspace commits: %v", err))
+		}
+		for _, commit := range commits {
+			if commit == nil {
+				continue
+			}
+			baseWorkspaceID, baseSnapshotID, ok := parseForkProvenance(commit.Message)
+			if ok && baseWorkspaceID == lookup.counterpartID && baseSnapshotID != "" {
+				return baseWorkspaceID, baseSnapshotID, nil
+			}
+		}
+	}
+
+	return "", "", status.Error(codes.InvalidArgument, "base_snapshot_id is required when merge base cannot be inferred")
+}
+
+func parseForkProvenance(message string) (string, string, bool) {
+	const prefix = "fork from "
+
+	trimmed := strings.TrimSpace(message)
+	if !strings.HasPrefix(trimmed, prefix) {
+		return "", "", false
+	}
+
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+	at := strings.LastIndex(rest, "@")
+	if at <= 0 || at >= len(rest)-1 {
+		return "", "", false
+	}
+
+	workspaceID := strings.TrimSpace(rest[:at])
+	snapshotID := strings.TrimSpace(rest[at+1:])
+	if workspaceID == "" || snapshotID == "" {
+		return "", "", false
+	}
+	return workspaceID, snapshotID, true
+}
+
+func (s *filesystemServiceServer) buildMergedWorkspaceSnapshot(ctx context.Context, baseSnapshot, sourceSnapshot, targetSnapshot *models.CommitSnapshot) (*models.CommitSnapshot, []string, []*filesystemv1.MergeConflict) {
+	baseSnapshot = normalizedSnapshot(baseSnapshot)
+	sourceSnapshot = normalizedSnapshot(sourceSnapshot)
+	targetSnapshot = normalizedSnapshot(targetSnapshot)
+
+	mergedFiles := make(map[string]string, len(targetSnapshot.Files))
+	for filePath, contentHash := range targetSnapshot.Files {
+		mergedFiles[filePath] = strings.TrimSpace(contentHash)
+	}
+
+	pathSet := make(map[string]struct{}, len(baseSnapshot.Files)+len(sourceSnapshot.Files)+len(targetSnapshot.Files))
+	for filePath := range baseSnapshot.Files {
+		pathSet[filePath] = struct{}{}
+	}
+	for filePath := range sourceSnapshot.Files {
+		pathSet[filePath] = struct{}{}
+	}
+	for filePath := range targetSnapshot.Files {
+		pathSet[filePath] = struct{}{}
+	}
+
+	paths := make([]string, 0, len(pathSet))
+	for filePath := range pathSet {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+
+	mergedPaths := make([]string, 0)
+	conflicts := make([]*filesystemv1.MergeConflict, 0)
+	for _, filePath := range paths {
+		baseHash := strings.TrimSpace(baseSnapshot.Files[filePath])
+		sourceHash := strings.TrimSpace(sourceSnapshot.Files[filePath])
+		targetHash := strings.TrimSpace(targetSnapshot.Files[filePath])
+
+		switch {
+		case sourceHash == targetHash:
+			continue
+		case sourceHash == baseHash:
+			continue
+		case targetHash == baseHash:
+			if sourceHash == "" {
+				delete(mergedFiles, filePath)
+			} else {
+				mergedFiles[filePath] = sourceHash
+			}
+			mergedPaths = append(mergedPaths, filePath)
+		default:
+			sourcePatch, _, _ := s.buildFilesystemDiffPatch(ctx, filePath, baseHash, sourceHash)
+			targetPatch, _, _ := s.buildFilesystemDiffPatch(ctx, filePath, baseHash, targetHash)
+			conflicts = append(conflicts, &filesystemv1.MergeConflict{
+				Path:             filePath,
+				BaseHash:         baseHash,
+				SourceHash:       sourceHash,
+				TargetHash:       targetHash,
+				SourceChangeType: diffChangeTypeForHashes(baseHash, sourceHash),
+				TargetChangeType: diffChangeTypeForHashes(baseHash, targetHash),
+				SourcePatch:      sourcePatch,
+				TargetPatch:      targetPatch,
+			})
+		}
+	}
+
+	return &models.CommitSnapshot{
+		SliceID: targetSnapshot.SliceID,
+		Files:   mergedFiles,
+	}, mergedPaths, conflicts
+}
+
+func normalizedSnapshot(snapshot *models.CommitSnapshot) *models.CommitSnapshot {
+	if snapshot == nil {
+		return &models.CommitSnapshot{Files: map[string]string{}}
+	}
+	if snapshot.Files == nil {
+		snapshot.Files = map[string]string{}
+	}
+	return snapshot
+}
+
+func diffChangeTypeForHashes(oldHash, newHash string) filesystemv1.DiffChangeType {
+	oldHash = strings.TrimSpace(oldHash)
+	newHash = strings.TrimSpace(newHash)
+	switch {
+	case oldHash == "" && newHash == "":
+		return filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_UNSPECIFIED
+	case oldHash == "":
+		return filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_ADD
+	case newHash == "":
+		return filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_DELETE
+	default:
+		return filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_MODIFY
+	}
 }
 
 func (s *filesystemServiceServer) createWorkspaceShell(ctx context.Context, workspace *models.Slice, initialMessage string) error {
