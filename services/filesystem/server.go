@@ -192,12 +192,9 @@ func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	content, err := s.storage.GetSliceFileByPath(ctx, workspace.ID, filePath)
+	content, err := s.readWorkspaceFileContent(ctx, workspace.ID, filePath)
 	if err != nil {
-		if err == storage.ErrEntryNotFound {
-			return nil, status.Error(codes.NotFound, "file not found")
-		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read file: %v", err))
+		return nil, err
 	}
 
 	hash := strings.TrimSpace(content.Hash)
@@ -230,28 +227,9 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 	}
 
 	content := append([]byte(nil), req.GetContent()...)
-	hash := hashContent(content)
-	fileContentID := workspaceFileContentID(workspace.ID, filePath)
-	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(workspace.ID, filePath),
-		Path:     filePath,
-		Type:     "file",
-		ParentID: workspace.ID,
-		Size:     int64(len(content)),
-	}); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to write file entry: %v", err))
-	}
-	if err := s.storage.AddFileContent(ctx, &models.FileContent{
-		FileID:  fileContentID,
-		Path:    filePath,
-		Content: content,
-		Size:    int64(len(content)),
-		Hash:    hash,
-	}); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to persist file content: %v", err))
-	}
-	if err := s.storage.AddFileToSlice(ctx, filePath, workspace.ID); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, content)
+	if err != nil {
+		return nil, err
 	}
 
 	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("write %s", filePath))
@@ -261,7 +239,7 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 	return &filesystemv1.WriteFileResponse{
 		WorkspaceId: workspace.ID,
 		Path:        filePath,
-		Size:        int64(len(content)),
+		Size:        size,
 		Hash:        hash,
 		CommitHash:  commitHash,
 	}, nil
@@ -283,22 +261,8 @@ func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesyste
 		return nil, err
 	}
 
-	entry, err := s.storage.GetEntryByPath(ctx, workspace.ID, filePath)
-	if err != nil {
-		if err == storage.ErrEntryNotFound {
-			return nil, status.Error(codes.NotFound, "file not found")
-		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file entry: %v", err))
-	}
-	if entry.Type != "file" {
-		return nil, status.Error(codes.FailedPrecondition, "path is not a file")
-	}
-
-	if err := s.storage.DeleteEntry(ctx, entry.ID); err != nil && err != storage.ErrEntryNotFound {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete file entry: %v", err))
-	}
-	if err := s.storage.RemoveFileFromSlice(ctx, filePath, workspace.ID); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	if err := s.deleteWorkspaceFile(ctx, workspace.ID, filePath); err != nil {
+		return nil, err
 	}
 
 	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("delete %s", filePath))
@@ -309,6 +273,106 @@ func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesyste
 		WorkspaceId: workspace.ID,
 		Path:        filePath,
 		CommitHash:  commitHash,
+	}, nil
+}
+
+func (s *filesystemServiceServer) MoveFile(ctx context.Context, req *filesystemv1.MoveFileRequest) (*filesystemv1.MoveFileResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	sourcePath, err := validateWorkspacePath(req.GetSourcePath(), true)
+	if err != nil {
+		return nil, err
+	}
+	destinationPath, err := validateWorkspacePath(req.GetDestinationPath(), true)
+	if err != nil {
+		return nil, err
+	}
+	if sourcePath == destinationPath {
+		return nil, status.Error(codes.InvalidArgument, "source_path and destination_path must differ")
+	}
+
+	content, err := s.readWorkspaceFileContent(ctx, workspace.ID, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, destinationPath); err != nil {
+		return nil, err
+	}
+
+	if _, _, err := s.writeWorkspaceFileContent(ctx, workspace, destinationPath, append([]byte(nil), content.Content...)); err != nil {
+		return nil, err
+	}
+	if err := s.deleteWorkspaceFile(ctx, workspace.ID, sourcePath); err != nil {
+		return nil, err
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("move %s -> %s", sourcePath, destinationPath))
+	if err != nil {
+		return nil, err
+	}
+	return &filesystemv1.MoveFileResponse{
+		WorkspaceId:     workspace.ID,
+		SourcePath:      sourcePath,
+		DestinationPath: destinationPath,
+		CommitHash:      commitHash,
+	}, nil
+}
+
+func (s *filesystemServiceServer) CopyFile(ctx context.Context, req *filesystemv1.CopyFileRequest) (*filesystemv1.CopyFileResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	sourcePath, err := validateWorkspacePath(req.GetSourcePath(), true)
+	if err != nil {
+		return nil, err
+	}
+	destinationPath, err := validateWorkspacePath(req.GetDestinationPath(), true)
+	if err != nil {
+		return nil, err
+	}
+	if sourcePath == destinationPath {
+		return nil, status.Error(codes.InvalidArgument, "source_path and destination_path must differ")
+	}
+
+	content, err := s.readWorkspaceFileContent(ctx, workspace.ID, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, destinationPath); err != nil {
+		return nil, err
+	}
+
+	hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, destinationPath, append([]byte(nil), content.Content...))
+	if err != nil {
+		return nil, err
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("copy %s -> %s", sourcePath, destinationPath))
+	if err != nil {
+		return nil, err
+	}
+	return &filesystemv1.CopyFileResponse{
+		WorkspaceId:     workspace.ID,
+		SourcePath:      sourcePath,
+		DestinationPath: destinationPath,
+		Size:            size,
+		Hash:            hash,
+		CommitHash:      commitHash,
 	}, nil
 }
 
@@ -461,6 +525,422 @@ func (s *filesystemServiceServer) Exists(ctx context.Context, req *filesystemv1.
 		return &filesystemv1.ExistsResponse{Exists: false}, nil
 	}
 	return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check path existence: %v", err))
+}
+
+func (s *filesystemServiceServer) ReadFiles(ctx context.Context, req *filesystemv1.ReadFilesRequest) (*filesystemv1.ReadFilesResponse, error) {
+	_, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	response := &filesystemv1.ReadFilesResponse{
+		WorkspaceId: workspace.ID,
+		Files:       make([]*filesystemv1.ReadFileResult, 0, len(req.GetPaths())),
+	}
+	for _, rawPath := range req.GetPaths() {
+		filePath, err := validateWorkspacePath(rawPath, true)
+		if err != nil {
+			return nil, err
+		}
+
+		result := &filesystemv1.ReadFileResult{Path: filePath}
+		content, err := s.readWorkspaceFileContent(ctx, workspace.ID, filePath)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				result.Error = "file not found"
+				response.Files = append(response.Files, result)
+				continue
+			}
+			return nil, err
+		}
+
+		hash := strings.TrimSpace(content.Hash)
+		if hash == "" {
+			hash = hashContent(content.Content)
+		}
+		result.Content = append([]byte(nil), content.Content...)
+		result.Size = int64(len(content.Content))
+		result.Hash = hash
+		result.Found = true
+		response.Files = append(response.Files, result)
+	}
+	return response, nil
+}
+
+func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesystemv1.WriteFilesRequest) (*filesystemv1.WriteFilesResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(req.GetFiles()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "files is required")
+	}
+
+	type preparedWrite struct {
+		path    string
+		content []byte
+	}
+
+	prepared := make([]preparedWrite, 0, len(req.GetFiles()))
+	seen := make(map[string]struct{}, len(req.GetFiles()))
+	for _, file := range req.GetFiles() {
+		if file == nil {
+			return nil, status.Error(codes.InvalidArgument, "files must not contain null items")
+		}
+
+		filePath, err := validateWorkspacePath(file.GetPath(), true)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[filePath]; ok {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("duplicate file path %q", filePath))
+		}
+		if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, filePath); err != nil {
+			return nil, err
+		}
+
+		seen[filePath] = struct{}{}
+		prepared = append(prepared, preparedWrite{
+			path:    filePath,
+			content: append([]byte(nil), file.GetContent()...),
+		})
+	}
+
+	response := &filesystemv1.WriteFilesResponse{
+		WorkspaceId: workspace.ID,
+		Files:       make([]*filesystemv1.WriteFileResult, 0, len(prepared)),
+	}
+	for _, file := range prepared {
+		hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, file.path, file.content)
+		if err != nil {
+			return nil, err
+		}
+		response.Files = append(response.Files, &filesystemv1.WriteFileResult{
+			Path: file.path,
+			Size: size,
+			Hash: hash,
+		})
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("write %d files", len(prepared)))
+	if err != nil {
+		return nil, err
+	}
+	response.CommitHash = commitHash
+	return response, nil
+}
+
+func (s *filesystemServiceServer) Glob(ctx context.Context, req *filesystemv1.GlobRequest) (*filesystemv1.GlobResponse, error) {
+	_, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	pattern, err := validateGlobPattern(req.GetPattern(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := s.collectWorkspaceEntries(ctx, workspace.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
+	}
+
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		if globMatch(pattern, entry.Path) {
+			paths = append(paths, entry.Path)
+		}
+	}
+	sort.Strings(paths)
+
+	return &filesystemv1.GlobResponse{
+		WorkspaceId: workspace.ID,
+		Pattern:     pattern,
+		Paths:       paths,
+	}, nil
+}
+
+func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.SearchRequest) (*filesystemv1.SearchResponse, error) {
+	_, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	query := strings.TrimSpace(req.GetQuery())
+	if query == "" {
+		return nil, status.Error(codes.InvalidArgument, "query is required")
+	}
+
+	globPattern, err := validateGlobPattern(req.GetGlob(), false)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := s.collectWorkspaceEntries(ctx, workspace.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
+	}
+
+	matches := make([]*filesystemv1.SearchMatch, 0)
+	for _, entry := range entries {
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		if globPattern != "" && !globMatch(globPattern, entry.Path) {
+			continue
+		}
+
+		content, err := s.readWorkspaceFileContent(ctx, workspace.ID, entry.Path)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				continue
+			}
+			return nil, err
+		}
+		for _, match := range findSearchMatches(entry.Path, string(content.Content), query) {
+			matches = append(matches, match)
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].GetPath() != matches[j].GetPath() {
+			return matches[i].GetPath() < matches[j].GetPath()
+		}
+		if matches[i].GetLineNumber() != matches[j].GetLineNumber() {
+			return matches[i].GetLineNumber() < matches[j].GetLineNumber()
+		}
+		return matches[i].GetMatchStart() < matches[j].GetMatchStart()
+	})
+
+	return &filesystemv1.SearchResponse{
+		WorkspaceId: workspace.ID,
+		Query:       query,
+		Glob:        globPattern,
+		Matches:     matches,
+	}, nil
+}
+
+func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
+	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
+		return nil, err
+	}
+
+	content, err := s.storage.GetSliceFileByPath(ctx, workspaceID, filePath)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read file: %v", err))
+	}
+	return content, nil
+}
+
+func (s *filesystemServiceServer) requireWorkspaceFileEntry(ctx context.Context, workspaceID, filePath string) (*models.DirectoryEntry, error) {
+	entry, err := s.storage.GetEntryByPath(ctx, workspaceID, filePath)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file entry: %v", err))
+	}
+	if entry.Type != "file" {
+		return nil, status.Error(codes.FailedPrecondition, "path is not a file")
+	}
+	return entry, nil
+}
+
+func (s *filesystemServiceServer) ensureWorkspaceFileTarget(ctx context.Context, workspaceID, filePath string) error {
+	entry, err := s.storage.GetEntryByPath(ctx, workspaceID, filePath)
+	if err == nil {
+		if entry.Type != "file" {
+			return status.Error(codes.FailedPrecondition, "destination path is not a file")
+		}
+		return nil
+	}
+	if err == storage.ErrEntryNotFound {
+		return nil
+	}
+	return status.Error(codes.Internal, fmt.Sprintf("failed to validate destination path: %v", err))
+}
+
+func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context, workspace *models.Slice, filePath string, content []byte) (string, int64, error) {
+	if workspace == nil {
+		return "", 0, status.Error(codes.Internal, "workspace is nil")
+	}
+	if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, filePath); err != nil {
+		return "", 0, err
+	}
+
+	hash := hashContent(content)
+	size := int64(len(content))
+	fileContentID := workspaceFileContentID(workspace.ID, filePath)
+	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(workspace.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: workspace.ID,
+		Size:     size,
+	}); err != nil {
+		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to write file entry: %v", err))
+	}
+	if err := s.storage.AddFileContent(ctx, &models.FileContent{
+		FileID:  fileContentID,
+		Path:    filePath,
+		Content: append([]byte(nil), content...),
+		Size:    size,
+		Hash:    hash,
+	}); err != nil {
+		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to persist file content: %v", err))
+	}
+	if err := s.storage.AddFileToSlice(ctx, filePath, workspace.ID); err != nil {
+		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	}
+	return hash, size, nil
+}
+
+func (s *filesystemServiceServer) deleteWorkspaceFile(ctx context.Context, workspaceID, filePath string) error {
+	entry, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath)
+	if err != nil {
+		return err
+	}
+
+	if err := s.storage.DeleteEntry(ctx, entry.ID); err != nil && err != storage.ErrEntryNotFound {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to delete file entry: %v", err))
+	}
+	if err := s.storage.RemoveFileFromSlice(ctx, filePath, workspaceID); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	}
+	return nil
+}
+
+func validateGlobPattern(raw string, required bool) (string, error) {
+	pattern := strings.TrimSpace(raw)
+	if pattern == "" {
+		if required {
+			return "", status.Error(codes.InvalidArgument, "pattern is required")
+		}
+		return "", nil
+	}
+	if strings.Contains(pattern, "\x00") {
+		return "", status.Error(codes.InvalidArgument, "pattern contains null byte")
+	}
+	if strings.HasPrefix(pattern, "/") {
+		return "", status.Error(codes.InvalidArgument, "pattern must be relative")
+	}
+	if strings.Contains(pattern, "..") {
+		return "", status.Error(codes.InvalidArgument, "pattern must not contain '..'")
+	}
+
+	lowerPattern := strings.ToLower(pattern)
+	for _, suspicious := range []string{"/etc/", "/proc/", "/sys/", "/dev/", "/root/", "~"} {
+		if strings.Contains(lowerPattern, suspicious) {
+			return "", status.Error(codes.InvalidArgument, "pattern contains suspicious path segment")
+		}
+	}
+
+	cleaned := strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(pattern, "\\", "/")), "/")
+	if cleaned == "" || cleaned == "." {
+		return "", status.Error(codes.InvalidArgument, "pattern is required")
+	}
+
+	for _, segment := range strings.Split(cleaned, "/") {
+		if segment == "" || segment == "**" {
+			continue
+		}
+		if _, err := path.Match(segment, segment); err != nil {
+			return "", status.Error(codes.InvalidArgument, fmt.Sprintf("invalid pattern: %v", err))
+		}
+	}
+	return cleaned, nil
+}
+
+func globMatch(pattern, candidate string) bool {
+	pattern = strings.TrimSpace(pattern)
+	candidate = common.CleanRelativePath(candidate)
+	if pattern == "" || candidate == "" {
+		return false
+	}
+	return matchGlobSegments(strings.Split(pattern, "/"), strings.Split(candidate, "/"))
+}
+
+func matchGlobSegments(patternSegments, candidateSegments []string) bool {
+	if len(patternSegments) == 0 {
+		return len(candidateSegments) == 0
+	}
+
+	current := patternSegments[0]
+	if current == "**" {
+		if matchGlobSegments(patternSegments[1:], candidateSegments) {
+			return true
+		}
+		if len(candidateSegments) == 0 {
+			return false
+		}
+		return matchGlobSegments(patternSegments, candidateSegments[1:])
+	}
+
+	if len(candidateSegments) == 0 {
+		return false
+	}
+
+	matched, err := path.Match(current, candidateSegments[0])
+	if err != nil || !matched {
+		return false
+	}
+	return matchGlobSegments(patternSegments[1:], candidateSegments[1:])
+}
+
+func findSearchMatches(filePath, body, query string) []*filesystemv1.SearchMatch {
+	lines := strings.Split(body, "\n")
+	results := make([]*filesystemv1.SearchMatch, 0)
+	for i, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		searchStart := 0
+		for {
+			matchOffset := strings.Index(line[searchStart:], query)
+			if matchOffset < 0 {
+				break
+			}
+			matchStart := searchStart + matchOffset
+			results = append(results, &filesystemv1.SearchMatch{
+				Path:       filePath,
+				LineNumber: int32(i + 1),
+				Line:       line,
+				MatchStart: int32(matchStart),
+				MatchEnd:   int32(matchStart + len(query)),
+			})
+			searchStart = matchStart + 1
+			if searchStart > len(line) {
+				break
+			}
+		}
+	}
+	return results
 }
 
 func (s *filesystemServiceServer) requireUser(ctx context.Context) (string, error) {

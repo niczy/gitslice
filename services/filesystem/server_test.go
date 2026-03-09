@@ -217,3 +217,147 @@ func TestWorkspaceFileContentsAreIsolatedPerWorkspace(t *testing.T) {
 		t.Fatalf("ws-two content mismatch: got %q want %q", got, want)
 	}
 }
+
+func TestWorkspaceBatchAndPosixOperations(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-batch",
+		Name:        "Batch Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	writeResp, err := svc.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+		WorkspaceId: "ws-batch",
+		Files: []*filesystemv1.WriteFileInput{
+			{Path: "README.md", Content: []byte("batch workspace\n")},
+			{Path: "src/main.py", Content: []byte("print('hello')\n")},
+			{Path: "src/lib/helper.py", Content: []byte("def helper():\n    return 'hello'\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteFiles failed: %v", err)
+	}
+	if writeResp.GetCommitHash() == "" {
+		t.Fatalf("expected batch commit hash")
+	}
+	if len(writeResp.GetFiles()) != 3 {
+		t.Fatalf("expected 3 write results, got %d", len(writeResp.GetFiles()))
+	}
+
+	commits, err := st.ListSliceCommits(ctx, "ws-batch", 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceCommits failed: %v", err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("expected create + batch commit, got %d", len(commits))
+	}
+
+	readMany, err := svc.ReadFiles(ctx, &filesystemv1.ReadFilesRequest{
+		WorkspaceId: "ws-batch",
+		Paths:       []string{"src/main.py", "missing.py"},
+	})
+	if err != nil {
+		t.Fatalf("ReadFiles failed: %v", err)
+	}
+	if len(readMany.GetFiles()) != 2 {
+		t.Fatalf("expected 2 read results, got %d", len(readMany.GetFiles()))
+	}
+	if !readMany.GetFiles()[0].GetFound() || string(readMany.GetFiles()[0].GetContent()) != "print('hello')\n" {
+		t.Fatalf("unexpected found read result: %#v", readMany.GetFiles()[0])
+	}
+	if readMany.GetFiles()[1].GetFound() || readMany.GetFiles()[1].GetError() != "file not found" {
+		t.Fatalf("unexpected missing read result: %#v", readMany.GetFiles()[1])
+	}
+
+	globResp, err := svc.Glob(ctx, &filesystemv1.GlobRequest{
+		WorkspaceId: "ws-batch",
+		Pattern:     "src/**/*.py",
+	})
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if got, want := len(globResp.GetPaths()), 2; got != want {
+		t.Fatalf("glob count mismatch: got %d want %d (%#v)", got, want, globResp.GetPaths())
+	}
+	if globResp.GetPaths()[0] != "src/lib/helper.py" || globResp.GetPaths()[1] != "src/main.py" {
+		t.Fatalf("unexpected glob results: %#v", globResp.GetPaths())
+	}
+
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: "ws-batch",
+		Query:       "hello",
+		Glob:        "src/**/*.py",
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if got := len(searchResp.GetMatches()); got != 2 {
+		t.Fatalf("expected 2 search matches, got %d", got)
+	}
+	if searchResp.GetMatches()[0].GetPath() != "src/lib/helper.py" || searchResp.GetMatches()[1].GetPath() != "src/main.py" {
+		t.Fatalf("unexpected search results: %#v", searchResp.GetMatches())
+	}
+
+	copyResp, err := svc.CopyFile(ctx, &filesystemv1.CopyFileRequest{
+		WorkspaceId:     "ws-batch",
+		SourcePath:      "src/main.py",
+		DestinationPath: "src/main_copy.py",
+	})
+	if err != nil {
+		t.Fatalf("CopyFile failed: %v", err)
+	}
+	if copyResp.GetCommitHash() == "" {
+		t.Fatalf("expected copy commit hash")
+	}
+	copyRead, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-batch",
+		Path:        "src/main_copy.py",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(copy) failed: %v", err)
+	}
+	if got, want := string(copyRead.GetContent()), "print('hello')\n"; got != want {
+		t.Fatalf("copy content mismatch: got %q want %q", got, want)
+	}
+
+	moveResp, err := svc.MoveFile(ctx, &filesystemv1.MoveFileRequest{
+		WorkspaceId:     "ws-batch",
+		SourcePath:      "src/main_copy.py",
+		DestinationPath: "archive/main_copy.py",
+	})
+	if err != nil {
+		t.Fatalf("MoveFile failed: %v", err)
+	}
+	if moveResp.GetCommitHash() == "" {
+		t.Fatalf("expected move commit hash")
+	}
+
+	movedRead, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-batch",
+		Path:        "archive/main_copy.py",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(moved) failed: %v", err)
+	}
+	if got, want := string(movedRead.GetContent()), "print('hello')\n"; got != want {
+		t.Fatalf("moved content mismatch: got %q want %q", got, want)
+	}
+	if _, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-batch",
+		Path:        "src/main_copy.py",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected moved source to be missing, got %v", err)
+	}
+
+	commits, err = st.ListSliceCommits(ctx, "ws-batch", 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceCommits(after copy/move) failed: %v", err)
+	}
+	if len(commits) != 4 {
+		t.Fatalf("expected create + batch + copy + move commits, got %d", len(commits))
+	}
+}
