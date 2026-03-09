@@ -153,6 +153,19 @@ service FilesystemService {
       body: "*"
     };
   }
+
+  rpc ListConflicts(ListConflictsRequest) returns (ListConflictsResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}/conflicts"
+    };
+  }
+
+  rpc ResolveConflict(ResolveConflictRequest) returns (ResolveConflictResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}/conflicts:resolve"
+      body: "*"
+    };
+  }
 }
 
 message CreateWorkspaceRequest {
@@ -517,4 +530,31 @@ message MergeResponse {
   DiffSummary summary = 9;
   repeated string merged_paths = 10;
   repeated MergeConflict conflicts = 11;
+}
+
+message WorkspaceConflict {
+  string path = 1;
+  repeated string workspace_ids = 2;
+}
+
+message ListConflictsRequest {
+  string workspace_id = 1;
+  string other_workspace_id = 2;
+}
+
+message ListConflictsResponse {
+  string workspace_id = 1;
+  string other_workspace_id = 2;
+  repeated WorkspaceConflict conflicts = 3;
+}
+
+message ResolveConflictRequest {
+  string workspace_id = 1;
+  string path = 2;
+  string preferred_workspace_id = 3;
+}
+
+message ResolveConflictResponse {
+  string workspace_id = 1;
+  WorkspaceConflict conflict = 2;
 }

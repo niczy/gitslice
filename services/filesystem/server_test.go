@@ -850,3 +850,85 @@ func TestWorkspaceMergeConflicts(t *testing.T) {
 		t.Fatalf("target workspace should remain unchanged on conflict: got %q want %q", got, want)
 	}
 }
+
+func TestWorkspaceListAndResolveConflicts(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-conflict-main",
+		Name:        "Conflict Main",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-conflict-main",
+		Path:        "README.md",
+		Content:     []byte("shared\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(shared) failed: %v", err)
+	}
+
+	if _, err := svc.Fork(ctx, &filesystemv1.ForkRequest{
+		WorkspaceId:     "ws-conflict-main",
+		ForkWorkspaceId: "ws-conflict-fork",
+		Name:            "Conflict Fork",
+	}); err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+
+	listResp, err := svc.ListConflicts(ctx, &filesystemv1.ListConflictsRequest{
+		WorkspaceId: "ws-conflict-main",
+	})
+	if err != nil {
+		t.Fatalf("ListConflicts failed: %v", err)
+	}
+	if len(listResp.GetConflicts()) != 1 {
+		t.Fatalf("expected 1 conflict, got %#v", listResp.GetConflicts())
+	}
+	conflict := listResp.GetConflicts()[0]
+	if conflict.GetPath() != "README.md" {
+		t.Fatalf("unexpected conflict path: %#v", conflict)
+	}
+	if len(conflict.GetWorkspaceIds()) != 2 || conflict.GetWorkspaceIds()[0] != "ws-conflict-fork" || conflict.GetWorkspaceIds()[1] != "ws-conflict-main" {
+		t.Fatalf("unexpected conflict workspaces: %#v", conflict)
+	}
+
+	resolveResp, err := svc.ResolveConflict(ctx, &filesystemv1.ResolveConflictRequest{
+		WorkspaceId:          "ws-conflict-main",
+		Path:                 "README.md",
+		PreferredWorkspaceId: "ws-conflict-main",
+	})
+	if err != nil {
+		t.Fatalf("ResolveConflict failed: %v", err)
+	}
+	if resolveResp.GetConflict().GetPath() != "README.md" {
+		t.Fatalf("unexpected resolved conflict payload: %#v", resolveResp.GetConflict())
+	}
+	if len(resolveResp.GetConflict().GetWorkspaceIds()) != 1 || resolveResp.GetConflict().GetWorkspaceIds()[0] != "ws-conflict-main" {
+		t.Fatalf("unexpected resolved conflict owners: %#v", resolveResp.GetConflict())
+	}
+
+	listAfterResolve, err := svc.ListConflicts(ctx, &filesystemv1.ListConflictsRequest{
+		WorkspaceId: "ws-conflict-main",
+	})
+	if err != nil {
+		t.Fatalf("ListConflicts after resolve failed: %v", err)
+	}
+	if len(listAfterResolve.GetConflicts()) != 0 {
+		t.Fatalf("expected conflicts to be resolved, got %#v", listAfterResolve.GetConflicts())
+	}
+
+	forkReadme, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-conflict-fork",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(fork after resolve) failed: %v", err)
+	}
+	if got, want := string(forkReadme.GetContent()), "shared\n"; got != want {
+		t.Fatalf("fork content should remain readable after resolve: got %q want %q", got, want)
+	}
+}
