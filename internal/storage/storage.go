@@ -42,6 +42,7 @@ func normalizeSliceCommitLimit(limit int) int {
 type Storage interface {
 	// Slice operations
 	CreateSlice(ctx context.Context, slice *models.Slice) error
+	DeleteSlice(ctx context.Context, sliceID string) error
 	GetSlice(ctx context.Context, sliceID string) (*models.Slice, error)
 	ListSlices(ctx context.Context, limit, offset int) ([]*models.Slice, error)
 	CountSlices(ctx context.Context) (int, error)

@@ -93,6 +93,42 @@ func (s *filesystemServiceServer) CreateWorkspace(ctx context.Context, req *file
 	return s.workspaceInfo(ctx, workspace)
 }
 
+func (s *filesystemServiceServer) DeleteWorkspace(ctx context.Context, req *filesystemv1.DeleteWorkspaceRequest) (*filesystemv1.DeleteWorkspaceResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+	if workspace.IsRoot {
+		return nil, status.Error(codes.FailedPrecondition, "root workspace cannot be deleted")
+	}
+
+	activeSession, err := s.storage.GetActiveAgentSessionBySlice(ctx, workspace.ID)
+	switch {
+	case err == nil:
+		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("workspace has active agent session %s", activeSession.SessionID))
+	case err != storage.ErrAgentSessionNotFound:
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect active agent session: %v", err))
+	}
+
+	if err := s.storage.DeleteSlice(ctx, workspace.ID); err != nil {
+		switch err {
+		case storage.ErrSliceNotFound:
+			return nil, status.Error(codes.NotFound, "workspace not found")
+		default:
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete workspace: %v", err))
+		}
+	}
+
+	return &filesystemv1.DeleteWorkspaceResponse{
+		WorkspaceId: workspace.ID,
+	}, nil
+}
+
 func (s *filesystemServiceServer) ListWorkspaces(ctx context.Context, req *filesystemv1.ListWorkspacesRequest) (*filesystemv1.ListWorkspacesResponse, error) {
 	username, err := s.requireUser(ctx)
 	if err != nil {

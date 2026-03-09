@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"google.golang.org/grpc"
@@ -170,6 +171,81 @@ func TestWorkspaceAccessControl(t *testing.T) {
 		Content:     []byte("nope"),
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied on write, got %v", err)
+	}
+}
+
+func TestDeleteWorkspaceRemovesWorkspace(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-delete",
+		Name:        "ws-delete",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-delete",
+		Path:        "README.md",
+		Content:     []byte("bye\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	deleteResp, err := svc.DeleteWorkspace(ctx, &filesystemv1.DeleteWorkspaceRequest{WorkspaceId: "ws-delete"})
+	if err != nil {
+		t.Fatalf("DeleteWorkspace failed: %v", err)
+	}
+	if deleteResp.GetWorkspaceId() != "ws-delete" {
+		t.Fatalf("unexpected DeleteWorkspace response: %#v", deleteResp)
+	}
+
+	if _, err := svc.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: "ws-delete"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected workspace to be gone, got %v", err)
+	}
+}
+
+func TestDeleteWorkspaceRejectsRootAndActiveSession(t *testing.T) {
+	ctx := authContext("tester")
+	rootCtx := authContext("system")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	if _, err := svc.DeleteWorkspace(rootCtx, &filesystemv1.DeleteWorkspaceRequest{WorkspaceId: root.ID}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition deleting root, got %v", err)
+	}
+
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-delete-active",
+		Name:        "ws-delete-active",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if err := st.CreateAgentSession(ctx, &models.AgentSession{
+		SessionID:      "session-delete-active",
+		SliceID:        "ws-delete-active",
+		UserID:         "tester",
+		State:          models.AgentSessionStateRunning,
+		Provider:       "e2b",
+		E2BTemplateID:  "template",
+		IdleTimeoutSec: 60,
+		TTLSec:         60,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+	if _, err := svc.DeleteWorkspace(ctx, &filesystemv1.DeleteWorkspaceRequest{WorkspaceId: "ws-delete-active"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition deleting active workspace, got %v", err)
 	}
 }
 

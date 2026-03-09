@@ -276,6 +276,81 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 	return nil
 }
 
+// DeleteSlice removes a slice and its slice-scoped metadata.
+func (s *InMemoryStorage) DeleteSlice(ctx context.Context, sliceID string) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.slices[sliceID]; !exists {
+		return ErrSliceNotFound
+	}
+
+	delete(s.slices, sliceID)
+	delete(s.sliceMetadata, sliceID)
+	delete(s.lockedSlices, sliceID)
+
+	for fileID, ownerSliceID := range s.fileLocks {
+		if ownerSliceID == sliceID {
+			delete(s.fileLocks, fileID)
+		}
+	}
+
+	for fileID, indexedSlices := range s.fileIndex {
+		delete(indexedSlices, sliceID)
+		if len(indexedSlices) == 0 {
+			delete(s.fileIndex, fileID)
+		}
+	}
+
+	entryIDs := append([]string(nil), s.entriesBySlice[sliceID]...)
+	for _, entryID := range entryIDs {
+		s.deleteEntryLocked(entryID)
+	}
+	delete(s.entriesBySlice, sliceID)
+	delete(s.entriesByParent, sliceID)
+
+	if changeIDs, ok := s.sliceChangesets[sliceID]; ok {
+		for _, changeID := range changeIDs {
+			delete(s.changesets, changeID)
+			if versionIDs, ok := s.changesetSnapshotVersions[changeID]; ok {
+				for _, versionID := range versionIDs {
+					delete(s.changesetSnapshots, versionID)
+				}
+				delete(s.changesetSnapshotVersions, changeID)
+			}
+		}
+		delete(s.sliceChangesets, sliceID)
+	}
+
+	delete(s.sliceCommits, sliceID)
+	delete(s.commitsBySliceHash, sliceID)
+	for commitHash, snapshot := range s.commitSnapshots {
+		if snapshot != nil && snapshot.SliceID == sliceID {
+			delete(s.commitSnapshots, commitHash)
+		}
+	}
+
+	for changeID, change := range s.fileChanges {
+		if change != nil && change.SliceID == sliceID {
+			delete(s.fileChanges, changeID)
+		}
+	}
+	s.rebuildFileChangeIndexesLocked()
+
+	delete(s.activeAgentBySlice, sliceID)
+	for sessionID, session := range s.agentSessions {
+		if session != nil && session.SliceID == sliceID {
+			delete(s.agentSessions, sessionID)
+			delete(s.agentSessionEvents, sessionID)
+			delete(s.agentSessionAudit, sessionID)
+		}
+	}
+
+	return nil
+}
+
 // GetSlice retrieves a slice by ID
 func (s *InMemoryStorage) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
 	s.mu.RLock()
@@ -1413,9 +1488,19 @@ func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, exists := s.entries[entryID]; !exists {
+		return ErrEntryNotFound
+	}
+
+	s.deleteEntryLocked(entryID)
+
+	return nil
+}
+
+func (s *InMemoryStorage) deleteEntryLocked(entryID string) {
 	entry, exists := s.entries[entryID]
 	if !exists {
-		return ErrEntryNotFound
+		return
 	}
 
 	delete(s.entries, entryID)
@@ -1423,7 +1508,6 @@ func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error
 	sliceID := inferSliceIDForEntry(entry)
 	if sliceID != "" {
 		delete(s.entriesByPath, sliceID+":"+entry.Path)
-		// Remove from per-slice list.
 		ids := s.entriesBySlice[sliceID]
 		out := ids[:0]
 		for _, id := range ids {
@@ -1438,7 +1522,6 @@ func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error
 		}
 	}
 
-	// Remove from parent index.
 	parentList := s.entriesByParent[entry.ParentID]
 	outParent := parentList[:0]
 	for _, id := range parentList {
@@ -1451,8 +1534,6 @@ func (s *InMemoryStorage) DeleteEntry(ctx context.Context, entryID string) error
 	} else {
 		s.entriesByParent[entry.ParentID] = outParent
 	}
-
-	return nil
 }
 
 // GetGlobalState returns the tracked global state snapshot.
@@ -1639,6 +1720,33 @@ func (s *InMemoryStorage) indexChangeByDirectories(sliceID, path, changeID strin
 	// Also index root directory (empty prefix means all files)
 	rootKey := sliceID + ":"
 	s.fileChangesByDir[rootKey] = append([]string{changeID}, s.fileChangesByDir[rootKey]...)
+}
+
+func (s *InMemoryStorage) rebuildFileChangeIndexesLocked() {
+	s.fileChangesByPath = make(map[string][]string)
+	s.fileChangesByCommit = make(map[string][]string)
+	s.fileChangesByDir = make(map[string][]string)
+
+	changes := make([]*models.FileChangeRecord, 0, len(s.fileChanges))
+	for _, change := range s.fileChanges {
+		if change != nil {
+			changes = append(changes, change)
+		}
+	}
+
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Timestamp.Equal(changes[j].Timestamp) {
+			return changes[i].ID > changes[j].ID
+		}
+		return changes[i].Timestamp.After(changes[j].Timestamp)
+	})
+
+	for _, change := range changes {
+		pathKey := change.SliceID + ":" + change.Path
+		s.fileChangesByPath[pathKey] = append(s.fileChangesByPath[pathKey], change.ID)
+		s.fileChangesByCommit[change.CommitHash] = append(s.fileChangesByCommit[change.CommitHash], change.ID)
+		s.indexChangeByDirectories(change.SliceID, change.Path, change.ID)
+	}
 }
 
 // AddFileChanges records multiple file changes in a batch.
