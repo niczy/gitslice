@@ -2,6 +2,7 @@ package filesystemservice
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/niczy/gitslice/internal/common"
@@ -473,5 +474,84 @@ func TestWorkspaceSnapshotsAndRestore(t *testing.T) {
 		Path:        "notes/todo.txt",
 	}); status.Code(err) != codes.NotFound {
 		t.Fatalf("expected restored workspace to remove notes/todo.txt, got %v", err)
+	}
+}
+
+func TestWorkspaceDiff(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-diff",
+		Name:        "Diff Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-diff",
+		Path:        "README.md",
+		Content:     []byte("v1\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(v1) failed: %v", err)
+	}
+
+	snapshotResp, err := svc.Snapshot(ctx, &filesystemv1.SnapshotRequest{
+		WorkspaceId: "ws-diff",
+		Message:     "checkpoint one",
+	})
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+
+	writeResp, err := svc.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+		WorkspaceId: "ws-diff",
+		Files: []*filesystemv1.WriteFileInput{
+			{Path: "README.md", Content: []byte("v2\n")},
+			{Path: "notes/todo.txt", Content: []byte("later\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteFiles(v2) failed: %v", err)
+	}
+
+	diffResp, err := svc.Diff(ctx, &filesystemv1.DiffRequest{
+		WorkspaceId:    "ws-diff",
+		FromSnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+		ToSnapshotId:   writeResp.GetCommitHash(),
+		IncludePatches: true,
+	})
+	if err != nil {
+		t.Fatalf("Diff failed: %v", err)
+	}
+	if diffResp.GetSummary().GetFilesAdded() != 1 || diffResp.GetSummary().GetFilesModified() != 1 || diffResp.GetSummary().GetFilesDeleted() != 0 {
+		t.Fatalf("unexpected diff summary counts: %#v", diffResp.GetSummary())
+	}
+	if diffResp.GetSummary().GetLinesAdded() != 2 || diffResp.GetSummary().GetLinesDeleted() != 1 {
+		t.Fatalf("unexpected diff summary line counts: %#v", diffResp.GetSummary())
+	}
+	if len(diffResp.GetFiles()) != 2 {
+		t.Fatalf("expected 2 file diffs, got %#v", diffResp.GetFiles())
+	}
+
+	byPath := make(map[string]*filesystemv1.FileDiff, len(diffResp.GetFiles()))
+	for _, file := range diffResp.GetFiles() {
+		byPath[file.GetPath()] = file
+	}
+	readmeDiff := byPath["README.md"]
+	if readmeDiff == nil || readmeDiff.GetChangeType() != filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_MODIFY {
+		t.Fatalf("expected README.md modify diff, got %#v", diffResp.GetFiles())
+	}
+	if !strings.Contains(readmeDiff.GetPatch(), "-v1") || !strings.Contains(readmeDiff.GetPatch(), "+v2") {
+		t.Fatalf("unexpected README diff patch: %q", readmeDiff.GetPatch())
+	}
+
+	notesDiff := byPath["notes/todo.txt"]
+	if notesDiff == nil || notesDiff.GetChangeType() != filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_ADD {
+		t.Fatalf("expected notes/todo.txt add diff, got %#v", diffResp.GetFiles())
+	}
+	if !strings.Contains(notesDiff.GetPatch(), "+later") {
+		t.Fatalf("unexpected notes diff patch: %q", notesDiff.GetPatch())
 	}
 }

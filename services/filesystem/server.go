@@ -1,6 +1,7 @@
 package filesystemservice
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,12 +10,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
+	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -878,6 +881,54 @@ func (s *filesystemServiceServer) RestoreSnapshot(ctx context.Context, req *file
 	}, nil
 }
 
+func (s *filesystemServiceServer) Diff(ctx context.Context, req *filesystemv1.DiffRequest) (*filesystemv1.DiffResponse, error) {
+	_, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, meta, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	toSnapshotID := strings.TrimSpace(req.GetToSnapshotId())
+	if toSnapshotID == "" {
+		toSnapshotID = strings.TrimSpace(meta.HeadCommitHash)
+	}
+	if toSnapshotID == "" {
+		return nil, status.Error(codes.NotFound, "snapshot not found")
+	}
+
+	toCommit, toSnapshot, err := s.resolveWorkspaceSnapshot(ctx, workspace.ID, toSnapshotID, false)
+	if err != nil {
+		return nil, err
+	}
+
+	fromSnapshotID := strings.TrimSpace(req.GetFromSnapshotId())
+	if fromSnapshotID == "" && toCommit != nil {
+		fromSnapshotID = strings.TrimSpace(toCommit.ParentHash)
+	}
+
+	_, fromSnapshot, err := s.resolveWorkspaceSnapshot(ctx, workspace.ID, fromSnapshotID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	files, summary, err := s.buildFilesystemDiff(ctx, fromSnapshot, toSnapshot, req.GetIncludePatches())
+	if err != nil {
+		return nil, err
+	}
+
+	return &filesystemv1.DiffResponse{
+		WorkspaceId:    workspace.ID,
+		FromSnapshotId: fromSnapshotID,
+		ToSnapshotId:   toSnapshotID,
+		Summary:        summary,
+		Files:          files,
+	}, nil
+}
+
 func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
 	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
 		return nil, err
@@ -1171,6 +1222,185 @@ func (s *filesystemServiceServer) resetWorkspaceToSnapshot(ctx context.Context, 
 	}
 
 	return nil
+}
+
+func (s *filesystemServiceServer) resolveWorkspaceSnapshot(ctx context.Context, workspaceID, snapshotID string, allowEmpty bool) (*models.Commit, *models.CommitSnapshot, error) {
+	if strings.TrimSpace(snapshotID) == "" {
+		if allowEmpty {
+			return nil, &models.CommitSnapshot{
+				SliceID: workspaceID,
+				Files:   map[string]string{},
+			}, nil
+		}
+		return nil, nil, status.Error(codes.InvalidArgument, "snapshot_id is required")
+	}
+
+	commit, err := s.storage.GetCommitByHash(ctx, workspaceID, snapshotID)
+	if err != nil {
+		if err == storage.ErrCommitNotFound {
+			return nil, nil, status.Error(codes.NotFound, "snapshot not found")
+		}
+		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot commit: %v", err))
+	}
+
+	snapshot, err := s.storage.GetCommitSnapshot(ctx, snapshotID)
+	if err != nil {
+		if err == storage.ErrCommitNotFound {
+			return nil, nil, status.Error(codes.NotFound, "snapshot not found")
+		}
+		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot state: %v", err))
+	}
+	if snapshot.SliceID != "" && snapshot.SliceID != workspaceID {
+		return nil, nil, status.Error(codes.FailedPrecondition, "snapshot does not belong to workspace")
+	}
+	if snapshot.Files == nil {
+		snapshot.Files = map[string]string{}
+	}
+	return commit, snapshot, nil
+}
+
+func (s *filesystemServiceServer) buildFilesystemDiff(ctx context.Context, fromSnapshot, toSnapshot *models.CommitSnapshot, includePatches bool) ([]*filesystemv1.FileDiff, *filesystemv1.DiffSummary, error) {
+	if fromSnapshot == nil {
+		fromSnapshot = &models.CommitSnapshot{Files: map[string]string{}}
+	}
+	if toSnapshot == nil {
+		toSnapshot = &models.CommitSnapshot{Files: map[string]string{}}
+	}
+	if fromSnapshot.Files == nil {
+		fromSnapshot.Files = map[string]string{}
+	}
+	if toSnapshot.Files == nil {
+		toSnapshot.Files = map[string]string{}
+	}
+
+	pathSet := make(map[string]struct{}, len(fromSnapshot.Files)+len(toSnapshot.Files))
+	for filePath := range fromSnapshot.Files {
+		pathSet[filePath] = struct{}{}
+	}
+	for filePath := range toSnapshot.Files {
+		pathSet[filePath] = struct{}{}
+	}
+
+	paths := make([]string, 0, len(pathSet))
+	for filePath := range pathSet {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+
+	summary := &filesystemv1.DiffSummary{}
+	files := make([]*filesystemv1.FileDiff, 0, len(paths))
+	for _, filePath := range paths {
+		oldHash := strings.TrimSpace(fromSnapshot.Files[filePath])
+		newHash := strings.TrimSpace(toSnapshot.Files[filePath])
+		if oldHash == newHash {
+			continue
+		}
+
+		fileDiff := &filesystemv1.FileDiff{
+			Path:    filePath,
+			OldHash: oldHash,
+			NewHash: newHash,
+		}
+		switch {
+		case oldHash == "":
+			fileDiff.ChangeType = filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_ADD
+			summary.FilesAdded++
+		case newHash == "":
+			fileDiff.ChangeType = filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_DELETE
+			summary.FilesDeleted++
+		default:
+			fileDiff.ChangeType = filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_MODIFY
+			summary.FilesModified++
+		}
+
+		patch, linesAdded, linesDeleted := s.buildFilesystemDiffPatch(ctx, filePath, oldHash, newHash)
+		fileDiff.LinesAdded = int32(linesAdded)
+		fileDiff.LinesDeleted = int32(linesDeleted)
+		if includePatches {
+			fileDiff.Patch = patch
+		}
+		summary.LinesAdded += int32(linesAdded)
+		summary.LinesDeleted += int32(linesDeleted)
+		files = append(files, fileDiff)
+	}
+
+	return files, summary, nil
+}
+
+func (s *filesystemServiceServer) buildFilesystemDiffPatch(ctx context.Context, filePath, oldHash, newHash string) (string, int, int) {
+	beforeLines, beforeOK := s.loadFilesystemDiffLines(ctx, oldHash)
+	if !beforeOK {
+		return "", 0, 0
+	}
+	afterLines, afterOK := s.loadFilesystemDiffLines(ctx, newHash)
+	if !afterOK {
+		return "", 0, 0
+	}
+
+	if len(beforeLines) == 0 && len(afterLines) == 0 {
+		return "", 0, 0
+	}
+
+	patch, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        beforeLines,
+		B:        afterLines,
+		FromFile: "a/" + filePath,
+		ToFile:   "b/" + filePath,
+		Context:  3,
+	})
+	if err != nil {
+		return "", 0, 0
+	}
+	linesAdded, linesDeleted := summarizePatchLineDelta(patch)
+	return patch, linesAdded, linesDeleted
+}
+
+func (s *filesystemServiceServer) loadFilesystemDiffLines(ctx context.Context, contentHash string) ([]string, bool) {
+	cleaned := strings.TrimSpace(contentHash)
+	if cleaned == "" {
+		return []string{}, true
+	}
+
+	content, err := s.storage.GetFileContentByHash(ctx, cleaned)
+	if err != nil || content == nil {
+		return nil, false
+	}
+	return splitLinesForDiff(content.Content)
+}
+
+func splitLinesForDiff(content []byte) ([]string, bool) {
+	if len(content) == 0 {
+		return []string{}, true
+	}
+	if !utf8.Valid(content) || bytesContainsNUL(content) {
+		return nil, false
+	}
+	lines := strings.SplitAfter(string(content), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, true
+}
+
+func bytesContainsNUL(content []byte) bool {
+	return bytes.IndexByte(content, 0) >= 0
+}
+
+func summarizePatchLineDelta(patch string) (added int, deleted int) {
+	if strings.TrimSpace(patch) == "" {
+		return 0, 0
+	}
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"), strings.HasPrefix(line, "@@"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			added++
+		case strings.HasPrefix(line, "-"):
+			deleted++
+		}
+	}
+	return added, deleted
 }
 
 func (s *filesystemServiceServer) requireUser(ctx context.Context) (string, error) {

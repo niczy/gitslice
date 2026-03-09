@@ -132,6 +132,13 @@ service FilesystemService {
       body: "*"
     };
   }
+
+  rpc Diff(DiffRequest) returns (DiffResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:diff"
+      body: "*"
+    };
+  }
 }
 
 message CreateWorkspaceRequest {
@@ -401,4 +408,44 @@ message RestoreSnapshotResponse {
   string workspace_id = 1;
   string restored_snapshot_id = 2;
   SnapshotInfo snapshot = 3;
+}
+
+enum DiffChangeType {
+  DIFF_CHANGE_TYPE_UNSPECIFIED = 0;
+  DIFF_CHANGE_TYPE_ADD = 1;
+  DIFF_CHANGE_TYPE_MODIFY = 2;
+  DIFF_CHANGE_TYPE_DELETE = 3;
+}
+
+message DiffRequest {
+  string workspace_id = 1;
+  string from_snapshot_id = 2;
+  string to_snapshot_id = 3;
+  bool include_patches = 4;
+}
+
+message DiffSummary {
+  int32 files_added = 1;
+  int32 files_modified = 2;
+  int32 files_deleted = 3;
+  int32 lines_added = 4;
+  int32 lines_deleted = 5;
+}
+
+message FileDiff {
+  string path = 1;
+  DiffChangeType change_type = 2;
+  string old_hash = 3;
+  string new_hash = 4;
+  int32 lines_added = 5;
+  int32 lines_deleted = 6;
+  string patch = 7;
+}
+
+message DiffResponse {
+  string workspace_id = 1;
+  string from_snapshot_id = 2;
+  string to_snapshot_id = 3;
+  DiffSummary summary = 4;
+  repeated FileDiff files = 5;
 }

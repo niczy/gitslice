@@ -574,6 +574,183 @@ func TestGatewayFilesystemSnapshots(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemDiff(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-diff","name":"Gateway Diff"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeV1Req, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-diff/files/README.md",
+		strings.NewReader(`{"workspaceId":"gw-diff","path":"README.md","content":"djEK"}`),
+	)
+	if err != nil {
+		t.Fatalf("new write v1 request: %v", err)
+	}
+	writeV1Req.Header.Set("Authorization", "User tester")
+	writeV1Req.Header.Set("Content-Type", "application/json")
+	writeV1Resp, err := client.Do(writeV1Req)
+	if err != nil {
+		t.Fatalf("write v1 request failed: %v", err)
+	}
+	if writeV1Resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeV1Resp.Body)
+		writeV1Resp.Body.Close()
+		t.Fatalf("unexpected write v1 status %d: %s", writeV1Resp.StatusCode, string(body))
+	}
+	writeV1Resp.Body.Close()
+
+	snapshotReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-diff/snapshot",
+		strings.NewReader(`{"workspaceId":"gw-diff","message":"checkpoint one"}`),
+	)
+	if err != nil {
+		t.Fatalf("new snapshot request: %v", err)
+	}
+	snapshotReq.Header.Set("Authorization", "User tester")
+	snapshotReq.Header.Set("Content-Type", "application/json")
+	snapshotResp, err := client.Do(snapshotReq)
+	if err != nil {
+		t.Fatalf("snapshot request failed: %v", err)
+	}
+	if snapshotResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(snapshotResp.Body)
+		snapshotResp.Body.Close()
+		t.Fatalf("unexpected snapshot status %d: %s", snapshotResp.StatusCode, string(body))
+	}
+
+	var snapshotPayload struct {
+		Snapshot struct {
+			SnapshotID string `json:"snapshotId"`
+		} `json:"snapshot"`
+	}
+	if err := json.NewDecoder(snapshotResp.Body).Decode(&snapshotPayload); err != nil {
+		snapshotResp.Body.Close()
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	snapshotResp.Body.Close()
+
+	writeV2Req, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-diff:writeFiles",
+		strings.NewReader(`{"workspaceId":"gw-diff","files":[{"path":"README.md","content":"djIK"},{"path":"notes/todo.txt","content":"bGF0ZXIK"}]}`),
+	)
+	if err != nil {
+		t.Fatalf("new write v2 request: %v", err)
+	}
+	writeV2Req.Header.Set("Authorization", "User tester")
+	writeV2Req.Header.Set("Content-Type", "application/json")
+	writeV2Resp, err := client.Do(writeV2Req)
+	if err != nil {
+		t.Fatalf("write v2 request failed: %v", err)
+	}
+	if writeV2Resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeV2Resp.Body)
+		writeV2Resp.Body.Close()
+		t.Fatalf("unexpected write v2 status %d: %s", writeV2Resp.StatusCode, string(body))
+	}
+
+	var writeV2Payload struct {
+		CommitHash string `json:"commitHash"`
+	}
+	if err := json.NewDecoder(writeV2Resp.Body).Decode(&writeV2Payload); err != nil {
+		writeV2Resp.Body.Close()
+		t.Fatalf("decode write v2 response: %v", err)
+	}
+	writeV2Resp.Body.Close()
+
+	diffReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-diff:diff",
+		strings.NewReader(`{"workspaceId":"gw-diff","fromSnapshotId":"`+snapshotPayload.Snapshot.SnapshotID+`","toSnapshotId":"`+writeV2Payload.CommitHash+`","includePatches":true}`),
+	)
+	if err != nil {
+		t.Fatalf("new diff request: %v", err)
+	}
+	diffReq.Header.Set("Authorization", "User tester")
+	diffReq.Header.Set("Content-Type", "application/json")
+	diffResp, err := client.Do(diffReq)
+	if err != nil {
+		t.Fatalf("diff request failed: %v", err)
+	}
+	defer diffResp.Body.Close()
+	if diffResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(diffResp.Body)
+		t.Fatalf("unexpected diff status %d: %s", diffResp.StatusCode, string(body))
+	}
+
+	var diffPayload struct {
+		Summary struct {
+			FilesAdded    int `json:"filesAdded"`
+			FilesModified int `json:"filesModified"`
+			FilesDeleted  int `json:"filesDeleted"`
+			LinesAdded    int `json:"linesAdded"`
+			LinesDeleted  int `json:"linesDeleted"`
+		} `json:"summary"`
+		Files []struct {
+			Path       string `json:"path"`
+			ChangeType string `json:"changeType"`
+			Patch      string `json:"patch"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(diffResp.Body).Decode(&diffPayload); err != nil {
+		t.Fatalf("decode diff response: %v", err)
+	}
+	if diffPayload.Summary.FilesAdded != 1 || diffPayload.Summary.FilesModified != 1 || diffPayload.Summary.FilesDeleted != 0 {
+		t.Fatalf("unexpected diff summary counts: %#v", diffPayload)
+	}
+	if diffPayload.Summary.LinesAdded != 2 || diffPayload.Summary.LinesDeleted != 1 {
+		t.Fatalf("unexpected diff line summary: %#v", diffPayload)
+	}
+	if len(diffPayload.Files) != 2 {
+		t.Fatalf("expected 2 diff files, got %#v", diffPayload)
+	}
+
+	filesByPath := make(map[string]struct {
+		ChangeType string
+		Patch      string
+	}, len(diffPayload.Files))
+	for _, file := range diffPayload.Files {
+		filesByPath[file.Path] = struct {
+			ChangeType string
+			Patch      string
+		}{
+			ChangeType: file.ChangeType,
+			Patch:      file.Patch,
+		}
+	}
+	if filesByPath["README.md"].ChangeType != "DIFF_CHANGE_TYPE_MODIFY" || !strings.Contains(filesByPath["README.md"].Patch, "-v1") || !strings.Contains(filesByPath["README.md"].Patch, "+v2") {
+		t.Fatalf("unexpected README diff payload: %#v", filesByPath["README.md"])
+	}
+	if filesByPath["notes/todo.txt"].ChangeType != "DIFF_CHANGE_TYPE_ADD" || !strings.Contains(filesByPath["notes/todo.txt"].Patch, "+later") {
+		t.Fatalf("unexpected notes diff payload: %#v", filesByPath["notes/todo.txt"])
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }
