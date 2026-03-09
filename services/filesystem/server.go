@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"sort"
 	"strings"
@@ -28,6 +29,11 @@ type filesystemServiceServer struct {
 	filesystemv1.UnimplementedFilesystemServiceServer
 	storage storage.Storage
 }
+
+const (
+	defaultFilesystemStreamChunkSize = 256 * 1024
+	maxFilesystemStreamChunkSize     = 1024 * 1024
+)
 
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	return &filesystemServiceServer{storage: st}
@@ -1204,6 +1210,139 @@ func (s *filesystemServiceServer) ResolveConflict(ctx context.Context, req *file
 			WorkspaceIds: resolvedIDs,
 		},
 	}, nil
+}
+
+func (s *filesystemServiceServer) StreamRead(req *filesystemv1.StreamReadRequest, stream filesystemv1.FilesystemService_StreamReadServer) error {
+	if _, err := s.requireUser(stream.Context()); err != nil {
+		return err
+	}
+
+	workspace, _, err := s.requireWorkspaceViewAccess(stream.Context(), req.GetWorkspaceId())
+	if err != nil {
+		return err
+	}
+
+	filePath, err := validateWorkspacePath(req.GetPath(), true)
+	if err != nil {
+		return err
+	}
+
+	content, err := s.readWorkspaceFileContent(stream.Context(), workspace.ID, filePath)
+	if err != nil {
+		return err
+	}
+
+	chunkSize := int(req.GetChunkSize())
+	switch {
+	case chunkSize <= 0:
+		chunkSize = defaultFilesystemStreamChunkSize
+	case chunkSize > maxFilesystemStreamChunkSize:
+		return status.Error(codes.InvalidArgument, fmt.Sprintf("chunk_size must be <= %d", maxFilesystemStreamChunkSize))
+	}
+
+	data := content.Content
+	if len(data) == 0 {
+		return stream.Send(&filesystemv1.StreamReadResponse{
+			WorkspaceId: workspace.ID,
+			Path:        filePath,
+			Offset:      0,
+			Size:        content.Size,
+			Hash:        content.Hash,
+			Eof:         true,
+		})
+	}
+
+	for offset := 0; offset < len(data); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		if err := stream.Send(&filesystemv1.StreamReadResponse{
+			WorkspaceId: workspace.ID,
+			Path:        filePath,
+			Content:     append([]byte(nil), data[offset:end]...),
+			Offset:      int64(offset),
+			Size:        content.Size,
+			Hash:        content.Hash,
+			Eof:         end == len(data),
+		}); err != nil {
+			return status.Error(codes.Unknown, fmt.Sprintf("failed to send stream chunk: %v", err))
+		}
+	}
+
+	return nil
+}
+
+func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemService_StreamWriteServer) error {
+	ctx := stream.Context()
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return err
+	}
+
+	var (
+		workspace *models.Slice
+		filePath  string
+		buffer    bytes.Buffer
+		received  bool
+	)
+
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return status.Error(codes.Unknown, fmt.Sprintf("failed to receive stream chunk: %v", err))
+		}
+
+		switch chunk := req.GetChunk().(type) {
+		case *filesystemv1.StreamWriteRequest_Metadata:
+			if received {
+				return status.Error(codes.InvalidArgument, "stream metadata already received")
+			}
+			workspace, _, err = s.requireWorkspaceWriteAccess(ctx, chunk.Metadata.GetWorkspaceId(), username)
+			if err != nil {
+				return err
+			}
+			filePath, err = validateWorkspacePath(chunk.Metadata.GetPath(), true)
+			if err != nil {
+				return err
+			}
+			received = true
+		case *filesystemv1.StreamWriteRequest_Content:
+			if !received {
+				return status.Error(codes.InvalidArgument, "stream metadata must be sent before content")
+			}
+			if _, err := buffer.Write(chunk.Content); err != nil {
+				return status.Error(codes.Internal, fmt.Sprintf("failed to buffer stream content: %v", err))
+			}
+		default:
+			return status.Error(codes.InvalidArgument, "stream chunk is required")
+		}
+	}
+
+	if !received || workspace == nil {
+		return status.Error(codes.InvalidArgument, "stream metadata is required")
+	}
+
+	hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, buffer.Bytes())
+	if err != nil {
+		return err
+	}
+
+	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("stream write %s", filePath))
+	if err != nil {
+		return err
+	}
+
+	return stream.SendAndClose(&filesystemv1.StreamWriteResponse{
+		WorkspaceId: workspace.ID,
+		Path:        filePath,
+		Size:        size,
+		Hash:        hash,
+		CommitHash:  commitHash,
+	})
 }
 
 func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
