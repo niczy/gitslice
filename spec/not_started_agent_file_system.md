@@ -8,7 +8,22 @@
 
 ## Executive Summary
 
-Evolve Gitslice from a "slice-based version control system for massive monorepos" into an **agent-native versioned cloud filesystem** — a platform where AI agents get persistent, branching, conflict-aware file storage with a simple POSIX-like interface.
+Evolve Gitslice from a "slice-based version control system for massive monorepos" into an **agent-native versioned cloud filesystem** — a platform where AI agents get persistent, branching, conflict-aware file storage via a remote API.
+
+**This is not "better git."** Git is local-first with explicit sync. Gitslice is **cloud-first** — files live on the server, agents access them via API calls, no local clone needed. Think **"S3 with version control and POSIX semantics."**
+
+### Core Positioning
+
+| | S3 / GCS | Git | Gitslice |
+|---|---|---|---|
+| Where files live | Cloud | Local (clone) | Cloud |
+| Access pattern | API (key-value) | Local filesystem | API (POSIX paths) |
+| Directory structure | Flat (key prefix) | Real directories | Real directories |
+| Version control | Object versioning only | Full (local) | Full (server-side) |
+| Branching | None | Local branches + push | Server-side workspaces |
+| Multi-agent safety | None | Merge conflicts on push | Proactive conflict detection |
+| Agent integration | SDK required | git CLI required | SDK, MCP, CLI, or REST |
+| Setup for agent | Configure bucket + IAM | Clone repo (slow) | One API key, zero local state |
 
 ### Why Now
 
@@ -23,9 +38,9 @@ Evolve Gitslice from a "slice-based version control system for massive monorepos
 |---|---|---|
 | Core primitive | Serverless PostgreSQL | Versioned cloud filesystem |
 | File ops | Thin layer on Postgres | First-class with POSIX semantics |
-| Branching | Database branching | Slice-level isolation with merge |
-| Conflict detection | None | Automatic cross-slice detection |
-| Multi-agent | No built-in support | Native — each agent gets a slice |
+| Branching | Database branching | Workspace-level isolation with merge |
+| Conflict detection | None | Automatic cross-workspace detection |
+| Multi-agent | No built-in support | Native — each agent gets a workspace |
 | Version history | SQL migrations | Full file history, diffs, rollback |
 | Structured data | Full SQL | Metadata via key-value (future: SQL) |
 
@@ -318,9 +333,11 @@ sdk/mcp/
 
 ---
 
-## Phase 3: CLI Evolution
+## Phase 3: CLI as Remote-First Thin Client
 
-**Goal:** Add `gs fs` commands for direct filesystem interaction and an interactive shell mode.
+**Goal:** The CLI is a thin gRPC/HTTP client for remote file operations — like `curl` for your cloud filesystem. No local working directory, no clone, no sync. Every command is an API call.
+
+**Key principle:** The CLI does NOT replicate a git-like local workflow. Files live on the server. The CLI reads and writes them remotely.
 
 ### 3.1 New CLI Commands
 
@@ -333,35 +350,36 @@ gs fs list                                   # List workspaces
 gs fs delete <name>                          # Delete workspace
 gs fs info <name>                            # Show workspace details
 
-# File operations (workspace-scoped)
-gs fs cat <workspace>:<path>                 # Read file
+# Remote file operations — every call hits the server
+gs fs cat <workspace>:<path>                 # Read file (stdout)
 gs fs write <workspace>:<path> < input       # Write file from stdin
+gs fs write <workspace>:<path> -f local.py   # Write file from local file
 gs fs ls <workspace>:[path]                  # List directory
 gs fs mkdir <workspace>:<path>               # Create directory
-gs fs rm <workspace>:<path>                  # Delete file
-gs fs mv <workspace>:<src> <workspace>:<dst> # Move file
+gs fs rm <workspace>:<path>                  # Delete file/directory
+gs fs mv <workspace>:<src> <workspace>:<dst> # Move/rename file
 gs fs cp <workspace>:<src> <workspace>:<dst> # Copy file
-gs fs glob <workspace> <pattern>             # Find files
-gs fs search <workspace> <query>             # Search content
+gs fs glob <workspace> <pattern>             # Find files by pattern
+gs fs search <workspace> <query> [--glob]    # Search file contents (grep-like)
+gs fs stat <workspace>:<path>                # File metadata (size, modified, type)
 
 # Version control
 gs fs snapshot <workspace> -m "message"      # Create snapshot
 gs fs snapshots <workspace> [--limit N]      # List snapshots
 gs fs restore <workspace> <snapshot-id>      # Restore to snapshot
-gs fs diff <workspace> [snapshot-id]         # Show changes
+gs fs diff <workspace> [snapshot-id]         # Show changes since snapshot
 
 # Collaboration
 gs fs fork <workspace> <new-name>            # Fork workspace
 gs fs merge <source> <target>                # Merge workspaces
+gs fs conflicts <workspace>                  # List conflicts
 
-# Upload/download (bulk)
-gs fs push <local-dir> <workspace>:[path]    # Upload directory tree
-gs fs pull <workspace>:[path] <local-dir>    # Download directory tree
-
-# Sync (bidirectional, FUSE-like)
-gs fs mount <workspace> <local-dir>          # Mount workspace locally (FUSE)
-gs fs sync <workspace> <local-dir>           # Two-way sync
+# Bulk transfer (for bootstrapping / exporting only)
+gs fs upload <local-dir> <workspace>:[path]  # Upload local directory tree
+gs fs download <workspace>:[path] <local-dir> # Download to local directory
 ```
+
+**What's intentionally missing:** No `checkout`, `clone`, `pull`, `push`, `commit`, `status`, or any command that implies a local working directory. The `upload`/`download` commands exist for bootstrapping (import a project) and exporting (get a local copy), not as a primary workflow.
 
 ### 3.2 Interactive Shell
 
@@ -385,14 +403,66 @@ snap_def456  2026-03-09 14:00  "initial"
 gitslice:my-workspace:/src> exit
 ```
 
-This provides the same interactive UX as db9.ai's filesystem shell but with version control built in.
+The shell is an SSH-like session into the cloud filesystem. Every command is a remote API call. There is no local state between sessions — reconnecting to the same workspace picks up exactly where you left off.
 
-### 3.3 Backward Compatibility
+### 3.3 CLI Authentication
+
+Two auth methods serving different use cases:
+
+#### Interactive: OAuth Device Flow (`gs login`)
+
+For human developers, similar to `gh auth login`:
+
+```bash
+$ gs login
+→ Opening browser to https://agenttools.dev/auth/device
+→ If browser doesn't open, visit: https://agenttools.dev/auth/device
+→ Enter code: ABCD-1234
+→ Waiting for authorization... done
+→ Logged in as niczy (stored in ~/.gitslice/credentials.json)
+```
+
+- Server issues refresh token + short-lived access token
+- Tokens stored in `~/.gitslice/credentials.json` (mode 0600)
+- Access token auto-refreshed on expiry
+- Sent as `Authorization: Bearer <access_token>`
+
+#### Non-interactive: API Keys (`GS_API_KEY`)
+
+For agents, CI, and SDKs — the primary auth path:
+
+```bash
+# Environment variable (preferred for agents)
+export GS_API_KEY=gs_live_abc123...
+gs fs cat my-workspace:src/main.py
+
+# Flag override
+gs --api-key gs_live_abc123... fs cat my-workspace:src/main.py
+```
+
+- API keys generated in web dashboard under Settings
+- Scoped per org, optionally per workspace
+- Sent as `Authorization: Bearer gs_live_...`
+- No expiry (revocable from dashboard)
+- Permissions: read-only, read-write, admin
+
+#### Resolution Order
+
+```
+1. --api-key flag
+2. GS_API_KEY env var
+3. ~/.gitslice/credentials.json (OAuth tokens)
+4. (fallback) ~/.gitslice/user (legacy username auth, dev-only)
+```
+
+Server differentiates by token prefix: `gs_live_` / `gs_test_` = API key, otherwise = OAuth access token. The existing `Bearer` token path in `internal/auth/` already supports this.
+
+### 3.4 Backward Compatibility
 
 - Existing `gs slice`, `gs changeset`, `gs file` commands remain unchanged
 - `gs fs` is a new top-level command group
 - Internally, `gs fs` commands call the new `FilesystemService` gRPC API
-- Migration path: `gs slice checkout` -> `gs fs pull`, `gs changeset create` -> `gs fs snapshot`
+- Old commands are not deprecated immediately but documentation shifts to `gs fs` as primary
 
 ---
 
@@ -597,20 +667,7 @@ Agent → API Key or short-lived token (from MCP handshake)
 
 ## Phase 7: Advanced Features
 
-### 7.1 FUSE Mount (Linux/macOS)
-
-Allow mounting a workspace as a local directory:
-
-```bash
-gs fs mount my-workspace ~/mnt/workspace
-# Now any tool can read/write files normally
-vim ~/mnt/workspace/src/main.py
-# Changes sync to cloud automatically
-```
-
-Implementation: Go FUSE library (`bazil.org/fuse` or `hanwen/go-fuse`), filesystem operations proxy to gRPC.
-
-### 7.2 Webhooks & Events
+### 7.1 Webhooks & Events
 
 ```
 POST /v1/fs/workspaces/{id}/webhooks
@@ -622,7 +679,7 @@ POST /v1/fs/workspaces/{id}/webhooks
 
 Agent orchestrators can react to file changes in real-time.
 
-### 7.3 Templates
+### 7.2 Templates
 
 Pre-populated workspace templates:
 
@@ -631,7 +688,7 @@ ws = client.workspace("my-project", template="python-fastapi")
 # Workspace starts with pyproject.toml, src/, tests/, etc.
 ```
 
-### 7.4 Workspace Policies
+### 7.3 Workspace Policies
 
 Configurable rules per workspace:
 
@@ -641,7 +698,7 @@ Configurable rules per workspace:
 - Retention policy (delete snapshots older than N days)
 - Conflict resolution strategy (last-write-wins vs. manual)
 
-### 7.5 Structured Metadata Store
+### 7.4 Structured Metadata Store
 
 Key-value metadata attached to workspaces and files:
 
@@ -692,8 +749,7 @@ Phase 6: Performance (ongoing)
   └── Benchmarking
 
 Phase 7: Advanced (ongoing, feature-driven)
-  ├── FUSE mount
-  ├── Webhooks
+  ├── Webhooks & events
   ├── Templates
   └── Metadata store
 ```
@@ -713,17 +769,26 @@ Phase 7: Advanced (ongoing, feature-driven)
 | Changeset | (hidden) | Auto-managed per session |
 | Commit | Snapshot | 1:1, snapshot_id = commit_hash |
 | Root slice | Default workspace | Auto-created per org |
-| Slice checkout | `gs fs pull` | Same underlying operation |
-| Changeset merge | `ws.snapshot()` | Auto-changeset + merge |
 | Fork slice | `ws.fork()` | Same underlying operation |
+| `gs slice checkout` | `gs fs download` | Bulk export (not primary workflow) |
+| `gs changeset create + merge` | `ws.write()` + `ws.snapshot()` | Direct remote writes replace local-edit-then-push |
 
 ### Backward Compatibility
 
 - All existing gRPC services (`SliceService`, `AdminService`, `FileService`) remain operational
 - `FilesystemService` is additive — new service alongside existing ones
-- Existing CLI commands unchanged; `gs fs` is a new command group
+- Existing CLI commands (`gs slice`, `gs changeset`, `gs file`) remain unchanged
 - Existing web routes unchanged; new dashboard is at `/dashboard`
 - Gradual deprecation of old terminology in docs (slice -> workspace)
+
+### What We're Deliberately Moving Away From
+
+The git-like local workflow (`checkout → edit locally → create changeset → merge`) is **not the future path**. It remains available for backward compat but:
+
+- New documentation leads with `gs fs` and SDK examples
+- Landing page shows remote API usage, not clone-edit-push
+- Agent integrations (SDK, MCP) use the remote filesystem API exclusively
+- The old workflow becomes "advanced / power user" territory
 
 ---
 
