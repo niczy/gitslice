@@ -1112,6 +1112,100 @@ func (s *filesystemServiceServer) Merge(ctx context.Context, req *filesystemv1.M
 	}, nil
 }
 
+func (s *filesystemServiceServer) ListConflicts(ctx context.Context, req *filesystemv1.ListConflictsRequest) (*filesystemv1.ListConflictsResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+
+	otherWorkspaceID := strings.TrimSpace(req.GetOtherWorkspaceId())
+	if otherWorkspaceID != "" {
+		if _, _, err := s.requireWorkspaceViewAccess(ctx, otherWorkspaceID); err != nil {
+			return nil, err
+		}
+	}
+
+	conflicts, err := s.listVisibleWorkspaceConflicts(ctx, username, workspace.ID, otherWorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &filesystemv1.ListConflictsResponse{
+		WorkspaceId:      workspace.ID,
+		OtherWorkspaceId: otherWorkspaceID,
+		Conflicts:        conflicts,
+	}, nil
+}
+
+func (s *filesystemServiceServer) ResolveConflict(ctx context.Context, req *filesystemv1.ResolveConflictRequest) (*filesystemv1.ResolveConflictResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	conflictPath, err := validateWorkspacePath(req.GetPath(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	preferredWorkspaceID := strings.TrimSpace(req.GetPreferredWorkspaceId())
+	if preferredWorkspaceID == "" {
+		preferredWorkspaceID = workspace.ID
+	}
+	if _, _, err := s.requireWorkspaceWriteAccess(ctx, preferredWorkspaceID, username); err != nil {
+		return nil, err
+	}
+
+	conflicts, err := s.listVisibleWorkspaceConflicts(ctx, username, workspace.ID, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var selected *filesystemv1.WorkspaceConflict
+	for _, conflict := range conflicts {
+		if conflict.GetPath() == conflictPath {
+			selected = conflict
+			break
+		}
+	}
+	if selected == nil {
+		return nil, status.Error(codes.NotFound, "conflict not found")
+	}
+	if !containsString(selected.GetWorkspaceIds(), preferredWorkspaceID) {
+		return nil, status.Error(codes.InvalidArgument, "preferred_workspace_id is not part of the conflict")
+	}
+	for _, conflictingWorkspaceID := range selected.GetWorkspaceIds() {
+		if _, _, err := s.requireWorkspaceWriteAccess(ctx, conflictingWorkspaceID, username); err != nil {
+			return nil, err
+		}
+	}
+
+	resolved, err := s.storage.ResolveConflict(ctx, conflictPath, preferredWorkspaceID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve conflict: %v", err))
+	}
+
+	resolvedIDs := append([]string(nil), resolved.ConflictingSlices...)
+	sort.Strings(resolvedIDs)
+	return &filesystemv1.ResolveConflictResponse{
+		WorkspaceId: workspace.ID,
+		Conflict: &filesystemv1.WorkspaceConflict{
+			Path:         conflictPath,
+			WorkspaceIds: resolvedIDs,
+		},
+	}, nil
+}
+
 func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
 	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
 		return nil, err
@@ -1786,6 +1880,76 @@ func diffChangeTypeForHashes(oldHash, newHash string) filesystemv1.DiffChangeTyp
 	default:
 		return filesystemv1.DiffChangeType_DIFF_CHANGE_TYPE_MODIFY
 	}
+}
+
+func (s *filesystemServiceServer) listVisibleWorkspaceConflicts(ctx context.Context, username, workspaceID, otherWorkspaceID string) ([]*filesystemv1.WorkspaceConflict, error) {
+	rawConflicts, err := s.storage.ListConflicts(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list conflicts: %v", err))
+	}
+
+	conflicts := make([]*filesystemv1.WorkspaceConflict, 0, len(rawConflicts))
+	for _, conflict := range rawConflicts {
+		if conflict == nil {
+			continue
+		}
+
+		pathValue := strings.TrimSpace(conflict.Path)
+		if pathValue == "" {
+			pathValue = common.CleanRelativePath(conflict.FileID)
+		}
+		if pathValue == "" {
+			continue
+		}
+
+		workspaceIDs := append([]string(nil), conflict.ConflictingSlices...)
+		sort.Strings(workspaceIDs)
+		if !containsString(workspaceIDs, workspaceID) {
+			continue
+		}
+		if otherWorkspaceID != "" && !containsString(workspaceIDs, otherWorkspaceID) {
+			continue
+		}
+
+		visible := true
+		for _, conflictingWorkspaceID := range workspaceIDs {
+			otherWorkspace, err := s.storage.GetSlice(ctx, conflictingWorkspaceID)
+			if err != nil {
+				visible = false
+				break
+			}
+			if !canViewWorkspace(otherWorkspace, username) {
+				visible = false
+				break
+			}
+		}
+		if !visible {
+			continue
+		}
+
+		conflicts = append(conflicts, &filesystemv1.WorkspaceConflict{
+			Path:         pathValue,
+			WorkspaceIds: workspaceIDs,
+		})
+	}
+
+	sort.Slice(conflicts, func(i, j int) bool {
+		return conflicts[i].GetPath() < conflicts[j].GetPath()
+	})
+	return conflicts, nil
+}
+
+func containsString(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *filesystemServiceServer) createWorkspaceShell(ctx context.Context, workspace *models.Slice, initialMessage string) error {

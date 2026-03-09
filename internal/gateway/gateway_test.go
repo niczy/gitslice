@@ -1174,6 +1174,198 @@ func TestGatewayFilesystemMerge(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemConflicts(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-conflict-main","name":"Gateway Conflict Main"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeReq, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-conflict-main/files/README.md",
+		strings.NewReader(`{"workspaceId":"gw-conflict-main","path":"README.md","content":"c2hhcmVkCg=="}`),
+	)
+	if err != nil {
+		t.Fatalf("new write request: %v", err)
+	}
+	writeReq.Header.Set("Authorization", "User tester")
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeResp, err := client.Do(writeReq)
+	if err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	if writeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
+		t.Fatalf("unexpected write status %d: %s", writeResp.StatusCode, string(body))
+	}
+	writeResp.Body.Close()
+
+	forkReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-conflict-main/fork",
+		strings.NewReader(`{"workspaceId":"gw-conflict-main","forkWorkspaceId":"gw-conflict-fork","name":"Gateway Conflict Fork"}`),
+	)
+	if err != nil {
+		t.Fatalf("new fork request: %v", err)
+	}
+	forkReq.Header.Set("Authorization", "User tester")
+	forkReq.Header.Set("Content-Type", "application/json")
+	forkResp, err := client.Do(forkReq)
+	if err != nil {
+		t.Fatalf("fork request failed: %v", err)
+	}
+	if forkResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(forkResp.Body)
+		forkResp.Body.Close()
+		t.Fatalf("unexpected fork status %d: %s", forkResp.StatusCode, string(body))
+	}
+	forkResp.Body.Close()
+
+	listReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-conflict-main/conflicts", nil)
+	if err != nil {
+		t.Fatalf("new list conflicts request: %v", err)
+	}
+	listReq.Header.Set("Authorization", "User tester")
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("list conflicts request failed: %v", err)
+	}
+	if listResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listResp.Body)
+		listResp.Body.Close()
+		t.Fatalf("unexpected list conflicts status %d: %s", listResp.StatusCode, string(body))
+	}
+
+	var listPayload struct {
+		Conflicts []struct {
+			Path         string   `json:"path"`
+			WorkspaceIDs []string `json:"workspaceIds"`
+		} `json:"conflicts"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listPayload); err != nil {
+		listResp.Body.Close()
+		t.Fatalf("decode list conflicts response: %v", err)
+	}
+	listResp.Body.Close()
+	if len(listPayload.Conflicts) != 1 || listPayload.Conflicts[0].Path != "README.md" {
+		t.Fatalf("unexpected list conflicts payload: %#v", listPayload)
+	}
+
+	resolveReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-conflict-main/conflicts:resolve",
+		strings.NewReader(`{"workspaceId":"gw-conflict-main","path":"README.md","preferredWorkspaceId":"gw-conflict-main"}`),
+	)
+	if err != nil {
+		t.Fatalf("new resolve conflict request: %v", err)
+	}
+	resolveReq.Header.Set("Authorization", "User tester")
+	resolveReq.Header.Set("Content-Type", "application/json")
+	resolveResp, err := client.Do(resolveReq)
+	if err != nil {
+		t.Fatalf("resolve conflict request failed: %v", err)
+	}
+	if resolveResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resolveResp.Body)
+		resolveResp.Body.Close()
+		t.Fatalf("unexpected resolve conflict status %d: %s", resolveResp.StatusCode, string(body))
+	}
+
+	var resolvePayload struct {
+		Conflict struct {
+			Path         string   `json:"path"`
+			WorkspaceIDs []string `json:"workspaceIds"`
+		} `json:"conflict"`
+	}
+	if err := json.NewDecoder(resolveResp.Body).Decode(&resolvePayload); err != nil {
+		resolveResp.Body.Close()
+		t.Fatalf("decode resolve conflict response: %v", err)
+	}
+	resolveResp.Body.Close()
+	if resolvePayload.Conflict.Path != "README.md" || len(resolvePayload.Conflict.WorkspaceIDs) != 1 || resolvePayload.Conflict.WorkspaceIDs[0] != "gw-conflict-main" {
+		t.Fatalf("unexpected resolve conflict payload: %#v", resolvePayload)
+	}
+
+	listAfterReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-conflict-main/conflicts", nil)
+	if err != nil {
+		t.Fatalf("new list-after request: %v", err)
+	}
+	listAfterReq.Header.Set("Authorization", "User tester")
+	listAfterResp, err := client.Do(listAfterReq)
+	if err != nil {
+		t.Fatalf("list-after request failed: %v", err)
+	}
+	if listAfterResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listAfterResp.Body)
+		listAfterResp.Body.Close()
+		t.Fatalf("unexpected list-after status %d: %s", listAfterResp.StatusCode, string(body))
+	}
+
+	var listAfterPayload struct {
+		Conflicts []struct {
+			Path string `json:"path"`
+		} `json:"conflicts"`
+	}
+	if err := json.NewDecoder(listAfterResp.Body).Decode(&listAfterPayload); err != nil {
+		listAfterResp.Body.Close()
+		t.Fatalf("decode list-after response: %v", err)
+	}
+	listAfterResp.Body.Close()
+	if len(listAfterPayload.Conflicts) != 0 {
+		t.Fatalf("expected conflicts to be resolved, got %#v", listAfterPayload)
+	}
+
+	readForkReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-conflict-fork/files/README.md", nil)
+	if err != nil {
+		t.Fatalf("new fork read request: %v", err)
+	}
+	readForkReq.Header.Set("Authorization", "User tester")
+	readForkResp, err := client.Do(readForkReq)
+	if err != nil {
+		t.Fatalf("fork read request failed: %v", err)
+	}
+	if readForkResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readForkResp.Body)
+		readForkResp.Body.Close()
+		t.Fatalf("unexpected fork read status %d: %s", readForkResp.StatusCode, string(body))
+	}
+
+	var readForkPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readForkResp.Body).Decode(&readForkPayload); err != nil {
+		readForkResp.Body.Close()
+		t.Fatalf("decode fork read response: %v", err)
+	}
+	readForkResp.Body.Close()
+	if readForkPayload.Content != "c2hhcmVkCg==" {
+		t.Fatalf("unexpected fork content after resolve: %#v", readForkPayload)
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }
