@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package filesystem.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/filesystem;filesystemv1";
+
+import "google/api/annotations.proto";
+
+service FilesystemService {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceInfo) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces"
+      body: "*"
+    };
+  }
+
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces"
+    };
+  }
+
+  rpc GetWorkspaceInfo(GetWorkspaceInfoRequest) returns (WorkspaceInfo) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}"
+    };
+  }
+
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}/files/{path=**}"
+    };
+  }
+
+  rpc WriteFile(WriteFileRequest) returns (WriteFileResponse) {
+    option (google.api.http) = {
+      put: "/v1/fs/workspaces/{workspace_id}/files/{path=**}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse) {
+    option (google.api.http) = {
+      delete: "/v1/fs/workspaces/{workspace_id}/files/{path=**}"
+    };
+  }
+
+  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}/ls"
+      additional_bindings { get: "/v1/fs/workspaces/{workspace_id}/ls/{path=**}" }
+    };
+  }
+
+  rpc MakeDirectory(MakeDirectoryRequest) returns (MakeDirectoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}/mkdir/{path=**}"
+      body: "*"
+    };
+  }
+
+  rpc Stat(StatRequest) returns (StatResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}/stat"
+      additional_bindings { get: "/v1/fs/workspaces/{workspace_id}/stat/{path=**}" }
+    };
+  }
+
+  rpc Exists(ExistsRequest) returns (ExistsResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}/exists"
+      additional_bindings { get: "/v1/fs/workspaces/{workspace_id}/exists/{path=**}" }
+    };
+  }
+}
+
+message CreateWorkspaceRequest {
+  string workspace_id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message ListWorkspacesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message GetWorkspaceInfoRequest {
+  string workspace_id = 1;
+}
+
+message WorkspaceInfo {
+  string workspace_id = 1;
+  string name = 2;
+  string description = 3;
+  string created_by = 4;
+  repeated string owners = 5;
+  string head_commit_hash = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  int32 path_count = 9;
+  int32 file_count = 10;
+  bool is_root = 11;
+}
+
+message ListWorkspacesResponse {
+  repeated WorkspaceInfo workspaces = 1;
+  int32 total = 2;
+}
+
+message ReadFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message ReadFileResponse {
+  string workspace_id = 1;
+  string path = 2;
+  bytes content = 3;
+  int64 size = 4;
+  string hash = 5;
+}
+
+message WriteFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+  bytes content = 3;
+}
+
+message WriteFileResponse {
+  string workspace_id = 1;
+  string path = 2;
+  int64 size = 3;
+  string hash = 4;
+  string commit_hash = 5;
+}
+
+message DeleteFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message DeleteFileResponse {
+  string workspace_id = 1;
+  string path = 2;
+  string commit_hash = 3;
+}
+
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0;
+  ENTRY_TYPE_FILE = 1;
+  ENTRY_TYPE_DIRECTORY = 2;
+}
+
+message WorkspaceEntry {
+  string name = 1;
+  string path = 2;
+  EntryType type = 3;
+  int64 size = 4;
+  string hash = 5;
+}
+
+message ListDirectoryRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message ListDirectoryResponse {
+  string workspace_id = 1;
+  string path = 2;
+  repeated WorkspaceEntry entries = 3;
+}
+
+message MakeDirectoryRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message MakeDirectoryResponse {
+  string workspace_id = 1;
+  string path = 2;
+  string commit_hash = 3;
+}
+
+message StatRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message StatResponse {
+  bool exists = 1;
+  WorkspaceEntry entry = 2;
+}
+
+message ExistsRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message ExistsResponse {
+  bool exists = 1;
+}

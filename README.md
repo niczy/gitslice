@@ -22,6 +22,11 @@
 │   │   ├── file_service.pb.go
 │   │   ├── file_service_grpc.pb.go
 │   │   └── file_service.pb.gw.go
+│   ├── filesystem/        # Filesystem service proto files
+│   │   ├── filesystem_service.proto
+│   │   ├── filesystem_service.pb.go
+│   │   ├── filesystem_service_grpc.pb.go
+│   │   └── filesystem_service.pb.gw.go
 │   ├── admin/             # Admin service proto files
 │   │   ├── admin_service.proto
 │   │   ├── admin_service.pb.go
@@ -40,6 +45,7 @@
 │   ├── admin/
 │   ├── agent/
 │   ├── file/
+│   ├── filesystem/
 │   └── slice/
 ├── servers/               # Binary servers
 │   └── core/              # Core server (gRPC + gateway)
@@ -89,6 +95,10 @@ protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=p
 cd ../file
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
   --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto
+
+cd ../filesystem
+protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative filesystem_service.proto
 
 cd ../admin
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
@@ -270,7 +280,7 @@ gs --user your_name fork my-slice ./some/folder --parent root_slice
 
 ### Adding New Proto Definitions
 
-1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/account/`, `proto/file/`, or `proto/agent/`
+1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/account/`, `proto/file/`, `proto/filesystem/`, or `proto/agent/`
 2. Regenerate the Go code using protoc (`make proto` works)
 3. Do not commit generated `*.pb.go` / `*.pb.gw.go` files
 4. Update the service implementations as needed

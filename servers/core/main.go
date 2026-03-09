@@ -23,6 +23,7 @@ import (
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
+	filesystemservice "github.com/niczy/gitslice/services/filesystem"
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -54,6 +55,7 @@ func main() {
 	grpcServer := grpc.NewServer()
 	sliceservice.RegisterGRPCServer(grpcServer, st)
 	fileservice.RegisterGRPCServer(grpcServer, st)
+	filesystemservice.RegisterGRPCServer(grpcServer, st)
 	adminservice.RegisterGRPCServer(grpcServer, st)
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)

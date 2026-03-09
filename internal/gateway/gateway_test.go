@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
+	filesystemservice "github.com/niczy/gitslice/services/filesystem"
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
 )
@@ -163,6 +165,86 @@ func TestGatewayGetFileETagAndConditional304(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemWorkspaceLifecycle(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-ws","name":"Gateway Workspace"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeReq, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-ws/files/docs/readme.md",
+		strings.NewReader(`{"workspaceId":"gw-ws","path":"docs/readme.md","content":"aGVsbG8gd29ybGQK"}`),
+	)
+	if err != nil {
+		t.Fatalf("new write request: %v", err)
+	}
+	writeReq.Header.Set("Authorization", "User tester")
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeResp, err := client.Do(writeReq)
+	if err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	if writeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
+		t.Fatalf("unexpected write status %d: %s", writeResp.StatusCode, string(body))
+	}
+	writeResp.Body.Close()
+
+	readReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-ws/files/docs/readme.md", nil)
+	if err != nil {
+		t.Fatalf("new read request: %v", err)
+	}
+	readReq.Header.Set("Authorization", "User tester")
+	readResp, err := client.Do(readReq)
+	if err != nil {
+		t.Fatalf("read request failed: %v", err)
+	}
+	defer readResp.Body.Close()
+	if readResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readResp.Body)
+		t.Fatalf("unexpected read status %d: %s", readResp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		WorkspaceID string `json:"workspaceId"`
+		Path        string `json:"path"`
+		Content     string `json:"content"`
+	}
+	if err := json.NewDecoder(readResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode read response: %v", err)
+	}
+	if payload.WorkspaceID != "gw-ws" || payload.Path != "docs/readme.md" {
+		t.Fatalf("unexpected read payload: %#v", payload)
+	}
+	if payload.Content != "aGVsbG8gd29ybGQK" {
+		t.Fatalf("unexpected read content: %q", payload.Content)
+	}
+}
+
 type entriesResponse struct {
 	Entries []entryResponse `json:"entries"`
 }
@@ -213,6 +295,7 @@ func startGRPCServer(t *testing.T, st storage.Storage) string {
 	srv := grpc.NewServer()
 	sliceservice.RegisterGRPCServer(srv, st)
 	fileservice.RegisterGRPCServer(srv, st)
+	filesystemservice.RegisterGRPCServer(srv, st)
 	adminservice.RegisterGRPCServer(srv, st)
 	agentservice.RegisterGRPCServer(srv, st, agentsession.NewService(st, "test-secret"))
 

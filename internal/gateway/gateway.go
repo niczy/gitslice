@@ -12,6 +12,7 @@ import (
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,6 +41,7 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 	accountClient := accountv1.NewAccountServiceClient(conn)
 	agentClient := agentv1.NewAgentServiceClient(conn)
 	sliceClient := slicev1.NewSliceServiceClient(conn)
+	filesystemClient := filesystemv1.NewFilesystemServiceClient(conn)
 
 	if err := filev1.RegisterFileServiceHandlerClient(ctx, mux, fileClient); err != nil {
 		_ = conn.Close()
@@ -58,6 +60,10 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 		return nil, func() {}, err
 	}
 	if err := slicev1.RegisterSliceServiceHandlerClient(ctx, mux, sliceClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := filesystemv1.RegisterFilesystemServiceHandlerClient(ctx, mux, filesystemClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
