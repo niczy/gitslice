@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -242,6 +243,130 @@ func TestGatewayFilesystemWorkspaceLifecycle(t *testing.T) {
 	}
 	if payload.Content != "aGVsbG8gd29ybGQK" {
 		t.Fatalf("unexpected read content: %q", payload.Content)
+	}
+}
+
+func TestGatewayFilesystemBatchOperations(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-batch","name":"Gateway Batch"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-batch:writeFiles",
+		strings.NewReader(`{"workspaceId":"gw-batch","files":[{"path":"docs/readme.md","content":"aGVsbG8K"},{"path":"src/app.go","content":"cGFja2FnZSBtYWluCg=="}]}`),
+	)
+	if err != nil {
+		t.Fatalf("new batch write request: %v", err)
+	}
+	writeReq.Header.Set("Authorization", "User tester")
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeResp, err := client.Do(writeReq)
+	if err != nil {
+		t.Fatalf("batch write request failed: %v", err)
+	}
+	if writeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
+		t.Fatalf("unexpected batch write status %d: %s", writeResp.StatusCode, string(body))
+	}
+	writeResp.Body.Close()
+
+	readReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-batch:readFiles",
+		strings.NewReader(`{"workspaceId":"gw-batch","paths":["docs/readme.md","missing.md"]}`),
+	)
+	if err != nil {
+		t.Fatalf("new batch read request: %v", err)
+	}
+	readReq.Header.Set("Authorization", "User tester")
+	readReq.Header.Set("Content-Type", "application/json")
+	readResp, err := client.Do(readReq)
+	if err != nil {
+		t.Fatalf("batch read request failed: %v", err)
+	}
+	if readResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readResp.Body)
+		readResp.Body.Close()
+		t.Fatalf("unexpected batch read status %d: %s", readResp.StatusCode, string(body))
+	}
+
+	var readPayload struct {
+		Files []struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+			Found   bool   `json:"found"`
+			Error   string `json:"error"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(readResp.Body).Decode(&readPayload); err != nil {
+		readResp.Body.Close()
+		t.Fatalf("decode batch read response: %v", err)
+	}
+	readResp.Body.Close()
+	if len(readPayload.Files) != 2 {
+		t.Fatalf("expected 2 batch read results, got %#v", readPayload.Files)
+	}
+	if !readPayload.Files[0].Found || readPayload.Files[0].Path != "docs/readme.md" || readPayload.Files[0].Content != "aGVsbG8K" {
+		t.Fatalf("unexpected first batch read result: %#v", readPayload.Files[0])
+	}
+	if readPayload.Files[1].Found || readPayload.Files[1].Error != "file not found" {
+		t.Fatalf("unexpected second batch read result: %#v", readPayload.Files[1])
+	}
+
+	searchValues := url.Values{}
+	searchValues.Set("query", "hello")
+	searchValues.Set("glob", "**/*.md")
+	searchReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-batch:search?"+searchValues.Encode(), nil)
+	if err != nil {
+		t.Fatalf("new search request: %v", err)
+	}
+	searchReq.Header.Set("Authorization", "User tester")
+	searchResp, err := client.Do(searchReq)
+	if err != nil {
+		t.Fatalf("search request failed: %v", err)
+	}
+	defer searchResp.Body.Close()
+	if searchResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(searchResp.Body)
+		t.Fatalf("unexpected search status %d: %s", searchResp.StatusCode, string(body))
+	}
+
+	var searchPayload struct {
+		Matches []struct {
+			Path string `json:"path"`
+			Line string `json:"line"`
+		} `json:"matches"`
+	}
+	if err := json.NewDecoder(searchResp.Body).Decode(&searchPayload); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if len(searchPayload.Matches) != 1 || searchPayload.Matches[0].Path != "docs/readme.md" || searchPayload.Matches[0].Line != "hello" {
+		t.Fatalf("unexpected search payload: %#v", searchPayload)
 	}
 }
 

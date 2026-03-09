@@ -45,6 +45,20 @@ service FilesystemService {
     };
   }
 
+  rpc MoveFile(MoveFileRequest) returns (MoveFileResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:move"
+      body: "*"
+    };
+  }
+
+  rpc CopyFile(CopyFileRequest) returns (CopyFileResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:copy"
+      body: "*"
+    };
+  }
+
   rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse) {
     option (google.api.http) = {
       get: "/v1/fs/workspaces/{workspace_id}/ls"
@@ -70,6 +84,32 @@ service FilesystemService {
     option (google.api.http) = {
       get: "/v1/fs/workspaces/{workspace_id}/exists"
       additional_bindings { get: "/v1/fs/workspaces/{workspace_id}/exists/{path=**}" }
+    };
+  }
+
+  rpc ReadFiles(ReadFilesRequest) returns (ReadFilesResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:readFiles"
+      body: "*"
+    };
+  }
+
+  rpc WriteFiles(WriteFilesRequest) returns (WriteFilesResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:writeFiles"
+      body: "*"
+    };
+  }
+
+  rpc Glob(GlobRequest) returns (GlobResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}:glob"
+    };
+  }
+
+  rpc Search(SearchRequest) returns (SearchResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}:search"
     };
   }
 }
@@ -146,6 +186,34 @@ message DeleteFileResponse {
   string commit_hash = 3;
 }
 
+message MoveFileRequest {
+  string workspace_id = 1;
+  string source_path = 2;
+  string destination_path = 3;
+}
+
+message MoveFileResponse {
+  string workspace_id = 1;
+  string source_path = 2;
+  string destination_path = 3;
+  string commit_hash = 4;
+}
+
+message CopyFileRequest {
+  string workspace_id = 1;
+  string source_path = 2;
+  string destination_path = 3;
+}
+
+message CopyFileResponse {
+  string workspace_id = 1;
+  string source_path = 2;
+  string destination_path = 3;
+  int64 size = 4;
+  string hash = 5;
+  string commit_hash = 6;
+}
+
 enum EntryType {
   ENTRY_TYPE_UNSPECIFIED = 0;
   ENTRY_TYPE_FILE = 1;
@@ -199,4 +267,77 @@ message ExistsRequest {
 
 message ExistsResponse {
   bool exists = 1;
+}
+
+message ReadFilesRequest {
+  string workspace_id = 1;
+  repeated string paths = 2;
+}
+
+message ReadFileResult {
+  string path = 1;
+  bytes content = 2;
+  int64 size = 3;
+  string hash = 4;
+  bool found = 5;
+  string error = 6;
+}
+
+message ReadFilesResponse {
+  string workspace_id = 1;
+  repeated ReadFileResult files = 2;
+}
+
+message WriteFileInput {
+  string path = 1;
+  bytes content = 2;
+}
+
+message WriteFileResult {
+  string path = 1;
+  int64 size = 2;
+  string hash = 3;
+}
+
+message WriteFilesRequest {
+  string workspace_id = 1;
+  repeated WriteFileInput files = 2;
+}
+
+message WriteFilesResponse {
+  string workspace_id = 1;
+  repeated WriteFileResult files = 2;
+  string commit_hash = 3;
+}
+
+message GlobRequest {
+  string workspace_id = 1;
+  string pattern = 2;
+}
+
+message GlobResponse {
+  string workspace_id = 1;
+  string pattern = 2;
+  repeated string paths = 3;
+}
+
+message SearchRequest {
+  string workspace_id = 1;
+  string query = 2;
+  string glob = 3;
+}
+
+message SearchMatch {
+  string path = 1;
+  int32 line_number = 2;
+  string line = 3;
+  int32 match_start = 4;
+  int32 match_end = 5;
+}
+
+message SearchResponse {
+  string workspace_id = 1;
+  string query = 2;
+  string glob = 3;
+  repeated SearchMatch matches = 4;
 }
