@@ -361,3 +361,117 @@ func TestWorkspaceBatchAndPosixOperations(t *testing.T) {
 		t.Fatalf("expected create + batch + copy + move commits, got %d", len(commits))
 	}
 }
+
+func TestWorkspaceSnapshotsAndRestore(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-snapshots",
+		Name:        "Snapshot Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-snapshots",
+		Path:        "README.md",
+		Content:     []byte("v1\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(v1) failed: %v", err)
+	}
+
+	snapshotResp, err := svc.Snapshot(ctx, &filesystemv1.SnapshotRequest{
+		WorkspaceId: "ws-snapshots",
+		Message:     "checkpoint one",
+	})
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+	if snapshotResp.GetSnapshot() == nil || snapshotResp.GetSnapshot().GetSnapshotId() == "" {
+		t.Fatalf("expected snapshot metadata, got %#v", snapshotResp)
+	}
+	if snapshotResp.GetSnapshot().GetMessage() != "checkpoint one" {
+		t.Fatalf("unexpected snapshot message: %#v", snapshotResp.GetSnapshot())
+	}
+	if snapshotResp.GetSnapshot().GetFileCount() != 1 {
+		t.Fatalf("expected snapshot file count 1, got %#v", snapshotResp.GetSnapshot())
+	}
+
+	if _, err := svc.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+		WorkspaceId: "ws-snapshots",
+		Files: []*filesystemv1.WriteFileInput{
+			{Path: "README.md", Content: []byte("v2\n")},
+			{Path: "notes/todo.txt", Content: []byte("later\n")},
+		},
+	}); err != nil {
+		t.Fatalf("WriteFiles(v2) failed: %v", err)
+	}
+
+	listResp, err := svc.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
+		WorkspaceId: "ws-snapshots",
+		Limit:       4,
+	})
+	if err != nil {
+		t.Fatalf("ListSnapshots failed: %v", err)
+	}
+	if len(listResp.GetSnapshots()) != 4 {
+		t.Fatalf("expected 4 snapshots, got %#v", listResp.GetSnapshots())
+	}
+	if listResp.GetSnapshots()[0].GetFileCount() != 2 {
+		t.Fatalf("expected newest snapshot to include 2 files, got %#v", listResp.GetSnapshots()[0])
+	}
+	if listResp.GetSnapshots()[1].GetSnapshotId() != snapshotResp.GetSnapshot().GetSnapshotId() {
+		t.Fatalf("expected explicit snapshot second, got %#v", listResp.GetSnapshots())
+	}
+
+	olderResp, err := svc.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
+		WorkspaceId:    "ws-snapshots",
+		Limit:          2,
+		FromSnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+	})
+	if err != nil {
+		t.Fatalf("ListSnapshots(from) failed: %v", err)
+	}
+	if len(olderResp.GetSnapshots()) != 2 {
+		t.Fatalf("expected 2 older snapshots, got %#v", olderResp.GetSnapshots())
+	}
+	if olderResp.GetSnapshots()[0].GetMessage() != "write README.md" {
+		t.Fatalf("unexpected paginated snapshot list: %#v", olderResp.GetSnapshots())
+	}
+
+	restoreResp, err := svc.RestoreSnapshot(ctx, &filesystemv1.RestoreSnapshotRequest{
+		WorkspaceId: "ws-snapshots",
+		SnapshotId:  snapshotResp.GetSnapshot().GetSnapshotId(),
+	})
+	if err != nil {
+		t.Fatalf("RestoreSnapshot failed: %v", err)
+	}
+	if restoreResp.GetSnapshot() == nil || restoreResp.GetSnapshot().GetSnapshotId() == "" {
+		t.Fatalf("expected restore snapshot metadata, got %#v", restoreResp)
+	}
+	if restoreResp.GetRestoredSnapshotId() != snapshotResp.GetSnapshot().GetSnapshotId() {
+		t.Fatalf("unexpected restored snapshot id: %#v", restoreResp)
+	}
+	if restoreResp.GetSnapshot().GetFileCount() != 1 {
+		t.Fatalf("expected restored workspace to have 1 file, got %#v", restoreResp.GetSnapshot())
+	}
+
+	readResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-snapshots",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(after restore) failed: %v", err)
+	}
+	if got, want := string(readResp.GetContent()), "v1\n"; got != want {
+		t.Fatalf("restored content mismatch: got %q want %q", got, want)
+	}
+	if _, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-snapshots",
+		Path:        "notes/todo.txt",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected restored workspace to remove notes/todo.txt, got %v", err)
+	}
+}

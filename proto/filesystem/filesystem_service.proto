@@ -112,6 +112,26 @@ service FilesystemService {
       get: "/v1/fs/workspaces/{workspace_id}:search"
     };
   }
+
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}/snapshot"
+      body: "*"
+    };
+  }
+
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs/workspaces/{workspace_id}/snapshots"
+    };
+  }
+
+  rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}/restore/{snapshot_id}"
+      body: "*"
+    };
+  }
 }
 
 message CreateWorkspaceRequest {
@@ -340,4 +360,45 @@ message SearchResponse {
   string query = 2;
   string glob = 3;
   repeated SearchMatch matches = 4;
+}
+
+message SnapshotInfo {
+  string snapshot_id = 1;
+  string parent_snapshot_id = 2;
+  string message = 3;
+  int64 created_at = 4;
+  int32 file_count = 5;
+}
+
+message SnapshotRequest {
+  string workspace_id = 1;
+  string message = 2;
+}
+
+message SnapshotResponse {
+  string workspace_id = 1;
+  SnapshotInfo snapshot = 2;
+}
+
+message ListSnapshotsRequest {
+  string workspace_id = 1;
+  int32 limit = 2;
+  string from_snapshot_id = 3;
+}
+
+message ListSnapshotsResponse {
+  string workspace_id = 1;
+  repeated SnapshotInfo snapshots = 2;
+}
+
+message RestoreSnapshotRequest {
+  string workspace_id = 1;
+  string snapshot_id = 2;
+  string message = 3;
+}
+
+message RestoreSnapshotResponse {
+  string workspace_id = 1;
+  string restored_snapshot_id = 2;
+  SnapshotInfo snapshot = 3;
 }
