@@ -35,6 +35,10 @@ third_party/
 .DS_Store
 Thumbs.db
 
+# Python cache artifacts
+__pycache__/
+*.pyc
+
 # Web app build artifacts
 web/node_modules/
 web/dist/
