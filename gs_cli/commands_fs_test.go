@@ -7,38 +7,52 @@ import (
 	"testing"
 )
 
-func TestParseWorkspacePathArg(t *testing.T) {
-	t.Run("workspace and path", func(t *testing.T) {
-		workspaceID, path, err := parseWorkspacePathArg("demo:src/main.go", true)
+func TestParseAbsoluteFilesystemPathArg(t *testing.T) {
+	t.Run("accepts absolute path", func(t *testing.T) {
+		value, err := parseAbsoluteFilesystemPathArg("/demo/src/main.go", true)
 		if err != nil {
-			t.Fatalf("parseWorkspacePathArg failed: %v", err)
+			t.Fatalf("parseAbsoluteFilesystemPathArg failed: %v", err)
 		}
-		if workspaceID != "demo" || path != "src/main.go" {
-			t.Fatalf("unexpected parse result: workspace=%q path=%q", workspaceID, path)
+		if value != "/demo/src/main.go" {
+			t.Fatalf("unexpected parse result: %q", value)
 		}
 	})
 
-	t.Run("workspace only allowed", func(t *testing.T) {
-		workspaceID, path, err := parseWorkspacePathArg("demo", false)
+	t.Run("cleans absolute path", func(t *testing.T) {
+		value, err := parseAbsoluteFilesystemPathArg("/demo/src/../README.md", true)
 		if err != nil {
-			t.Fatalf("parseWorkspacePathArg failed: %v", err)
+			t.Fatalf("parseAbsoluteFilesystemPathArg failed: %v", err)
 		}
-		if workspaceID != "demo" || path != "" {
-			t.Fatalf("unexpected parse result: workspace=%q path=%q", workspaceID, path)
-		}
-	})
-
-	t.Run("missing path rejected", func(t *testing.T) {
-		if _, _, err := parseWorkspacePathArg("demo", true); err == nil {
-			t.Fatal("expected error when path is required")
+		if value != "/demo/README.md" {
+			t.Fatalf("unexpected cleaned path: %q", value)
 		}
 	})
 
-	t.Run("missing workspace rejected", func(t *testing.T) {
-		if _, _, err := parseWorkspacePathArg(":README.md", true); err == nil {
-			t.Fatal("expected error when workspace is missing")
+	t.Run("rejects relative path", func(t *testing.T) {
+		if _, err := parseAbsoluteFilesystemPathArg("demo/README.md", true); err == nil {
+			t.Fatal("expected relative path rejection")
 		}
 	})
+
+	t.Run("rejects missing required path", func(t *testing.T) {
+		if _, err := parseAbsoluteFilesystemPathArg("", true); err == nil {
+			t.Fatal("expected missing path rejection")
+		}
+	})
+}
+
+func TestParseAbsoluteFilesystemPatternArg(t *testing.T) {
+	value, err := parseAbsoluteFilesystemPatternArg("/demo/**/*.md", true)
+	if err != nil {
+		t.Fatalf("parseAbsoluteFilesystemPatternArg failed: %v", err)
+	}
+	if value != "/demo/**/*.md" {
+		t.Fatalf("unexpected pattern parse result: %q", value)
+	}
+
+	if _, err := parseAbsoluteFilesystemPatternArg("demo/**/*.md", true); err == nil {
+		t.Fatal("expected relative pattern rejection")
+	}
 }
 
 func TestReadFilesystemWriteInput(t *testing.T) {

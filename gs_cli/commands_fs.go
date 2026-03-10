@@ -2,19 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/niczy/gitslice/internal/homeslice"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
-func handleFilesystemCommand(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) < 1 {
 		printFilesystemHelp()
 		return
@@ -30,25 +34,25 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, args []string) {
 	case "info":
 		handleFilesystemInfo(ctx, cli, args[1:])
 	case "cat":
-		handleFilesystemCat(ctx, cli, args[1:])
+		handleFilesystemCat(ctx, cli, authConfig, args[1:])
 	case "write":
-		handleFilesystemWrite(ctx, cli, args[1:])
+		handleFilesystemWrite(ctx, cli, authConfig, args[1:])
 	case "ls":
-		handleFilesystemListDirectory(ctx, cli, args[1:])
+		handleFilesystemListDirectory(ctx, cli, authConfig, args[1:])
 	case "mkdir":
-		handleFilesystemMkdir(ctx, cli, args[1:])
+		handleFilesystemMkdir(ctx, cli, authConfig, args[1:])
 	case "rm":
-		handleFilesystemRemove(ctx, cli, args[1:])
+		handleFilesystemRemove(ctx, cli, authConfig, args[1:])
 	case "mv":
-		handleFilesystemMove(ctx, cli, args[1:])
+		handleFilesystemMove(ctx, cli, authConfig, args[1:])
 	case "cp":
-		handleFilesystemCopy(ctx, cli, args[1:])
+		handleFilesystemCopy(ctx, cli, authConfig, args[1:])
 	case "glob":
-		handleFilesystemGlob(ctx, cli, args[1:])
+		handleFilesystemGlob(ctx, cli, authConfig, args[1:])
 	case "search":
-		handleFilesystemSearch(ctx, cli, args[1:])
+		handleFilesystemSearch(ctx, cli, authConfig, args[1:])
 	case "stat":
-		handleFilesystemStat(ctx, cli, args[1:])
+		handleFilesystemStat(ctx, cli, authConfig, args[1:])
 	case "snapshot":
 		handleFilesystemSnapshot(ctx, cli, args[1:])
 	case "snapshots":
@@ -183,13 +187,13 @@ func handleFilesystemInfo(ctx context.Context, cli *CLI, args []string) {
 	printFilesystemWorkspaceInfo(resp)
 }
 
-func handleFilesystemCat(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemCat(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 1 {
-		log.Println("Usage: gs fs cat <workspace>:<path>")
+		log.Println("Usage: gs fs cat </absolute/path>")
 		return
 	}
 
-	workspaceID, filePath, err := parseWorkspacePathArg(args[0], true)
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -207,17 +211,17 @@ func handleFilesystemCat(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleFilesystemWrite(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemWrite(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs write", flag.ExitOnError)
 	fileFlag := fs.String("f", "", "Read file content from a local path instead of stdin")
 	parseFlagSetInterspersed(fs, args)
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs write <workspace>:<path> [-f <local-file>] < input")
+		log.Println("Usage: gs fs write </absolute/path> [-f <local-file>] < input")
 		return
 	}
 
-	workspaceID, filePath, err := parseWorkspacePathArg(fs.Arg(0), true)
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -236,17 +240,17 @@ func handleFilesystemWrite(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write file: %v", err)
 	}
 
-	fmt.Printf("Wrote %s:%s (%d bytes)\n", resp.GetWorkspaceId(), resp.GetPath(), resp.GetSize())
+	fmt.Printf("Wrote %s (%d bytes)\n", resp.GetPath(), resp.GetSize())
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
 }
 
-func handleFilesystemListDirectory(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemListDirectory(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 1 {
-		log.Println("Usage: gs fs ls <workspace>[:path]")
+		log.Println("Usage: gs fs ls </absolute/path>")
 		return
 	}
 
-	workspaceID, dirPath, err := parseWorkspacePathArg(args[0], false)
+	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -259,7 +263,6 @@ func handleFilesystemListDirectory(ctx context.Context, cli *CLI, args []string)
 		log.Fatalf("Failed to list directory: %v", err)
 	}
 
-	fmt.Printf("Workspace: %s\n", resp.GetWorkspaceId())
 	fmt.Printf("Path: %s\n", filesystemDisplayPath(resp.GetPath()))
 	for _, entry := range resp.GetEntries() {
 		line := fmt.Sprintf("- %s", entry.GetPath())
@@ -272,13 +275,13 @@ func handleFilesystemListDirectory(ctx context.Context, cli *CLI, args []string)
 	}
 }
 
-func handleFilesystemMkdir(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemMkdir(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 1 {
-		log.Println("Usage: gs fs mkdir <workspace>:<path>")
+		log.Println("Usage: gs fs mkdir </absolute/path>")
 		return
 	}
 
-	workspaceID, dirPath, err := parseWorkspacePathArg(args[0], true)
+	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -291,17 +294,17 @@ func handleFilesystemMkdir(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to create directory: %v", err)
 	}
 
-	fmt.Printf("Created directory %s:%s\n", resp.GetWorkspaceId(), resp.GetPath())
+	fmt.Printf("Created directory %s\n", resp.GetPath())
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
 }
 
-func handleFilesystemRemove(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 1 {
-		log.Println("Usage: gs fs rm <workspace>:<path>")
+		log.Println("Usage: gs fs rm </absolute/path>")
 		return
 	}
 
-	workspaceID, filePath, err := parseWorkspacePathArg(args[0], true)
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -314,26 +317,27 @@ func handleFilesystemRemove(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to delete path: %v", err)
 	}
 
-	fmt.Printf("Deleted %s:%s\n", resp.GetWorkspaceId(), resp.GetPath())
+	fmt.Printf("Deleted %s\n", resp.GetPath())
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
 }
 
-func handleFilesystemMove(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 2 {
-		log.Println("Usage: gs fs mv <workspace>:<source> <workspace>:<destination>")
+		log.Println("Usage: gs fs mv </absolute/source> </absolute/destination>")
 		return
 	}
 
-	sourceWorkspaceID, sourcePath, err := parseWorkspacePathArg(args[0], true)
+	workspaceID, sourcePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
-	destinationWorkspaceID, destinationPath, err := parseWorkspacePathArg(args[1], true)
+	destinationWorkspaceID, destinationPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
+	sourceWorkspaceID := workspaceID
 	if sourceWorkspaceID != destinationWorkspaceID {
-		log.Fatal("source and destination must be in the same workspace for fs mv")
+		log.Fatal("source and destination resolved to different home slices")
 	}
 
 	resp, err := cli.filesystemClient.MoveFile(ctx, &filesystemv1.MoveFileRequest{
@@ -345,26 +349,27 @@ func handleFilesystemMove(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to move path: %v", err)
 	}
 
-	fmt.Printf("Moved %s:%s -> %s:%s\n", resp.GetWorkspaceId(), resp.GetSourcePath(), resp.GetWorkspaceId(), resp.GetDestinationPath())
+	fmt.Printf("Moved %s -> %s\n", resp.GetSourcePath(), resp.GetDestinationPath())
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
 }
 
-func handleFilesystemCopy(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 2 {
-		log.Println("Usage: gs fs cp <workspace>:<source> <workspace>:<destination>")
+		log.Println("Usage: gs fs cp </absolute/source> </absolute/destination>")
 		return
 	}
 
-	sourceWorkspaceID, sourcePath, err := parseWorkspacePathArg(args[0], true)
+	workspaceID, sourcePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
-	destinationWorkspaceID, destinationPath, err := parseWorkspacePathArg(args[1], true)
+	destinationWorkspaceID, destinationPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
+	sourceWorkspaceID := workspaceID
 	if sourceWorkspaceID != destinationWorkspaceID {
-		log.Fatal("source and destination must be in the same workspace for fs cp")
+		log.Fatal("source and destination resolved to different home slices")
 	}
 
 	resp, err := cli.filesystemClient.CopyFile(ctx, &filesystemv1.CopyFileRequest{
@@ -376,19 +381,27 @@ func handleFilesystemCopy(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to copy path: %v", err)
 	}
 
-	fmt.Printf("Copied %s:%s -> %s:%s\n", resp.GetWorkspaceId(), resp.GetSourcePath(), resp.GetWorkspaceId(), resp.GetDestinationPath())
+	fmt.Printf("Copied %s -> %s\n", resp.GetSourcePath(), resp.GetDestinationPath())
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
 }
 
-func handleFilesystemGlob(ctx context.Context, cli *CLI, args []string) {
-	if len(args) != 2 {
-		log.Println("Usage: gs fs glob <workspace> <pattern>")
+func handleFilesystemGlob(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	if len(args) != 1 {
+		log.Println("Usage: gs fs glob </absolute/pattern>")
 		return
 	}
 
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pattern, err := parseAbsoluteFilesystemPatternArg(args[0], true)
+	if err != nil {
+		log.Fatal(err)
+	}
 	resp, err := cli.filesystemClient.Glob(ctx, &filesystemv1.GlobRequest{
-		WorkspaceId: strings.TrimSpace(args[0]),
-		Pattern:     strings.TrimSpace(args[1]),
+		WorkspaceId: workspaceID,
+		Pattern:     pattern,
 	})
 	if err != nil {
 		log.Fatalf("Failed to glob workspace: %v", err)
@@ -399,20 +412,28 @@ func handleFilesystemGlob(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleFilesystemSearch(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemSearch(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs search", flag.ExitOnError)
 	glob := fs.String("glob", "", "Restrict search to matching paths")
 	parseFlagSetInterspersed(fs, args)
 
-	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs search <workspace> <query> [--glob <pattern>]")
+	if fs.NArg() != 1 {
+		log.Println("Usage: gs fs search <query> [--glob </absolute/pattern>]")
 		return
 	}
 
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	globPattern, err := parseAbsoluteFilesystemPatternArg(*glob, false)
+	if err != nil {
+		log.Fatal(err)
+	}
 	resp, err := cli.filesystemClient.Search(ctx, &filesystemv1.SearchRequest{
-		WorkspaceId: strings.TrimSpace(fs.Arg(0)),
-		Query:       strings.TrimSpace(fs.Arg(1)),
-		Glob:        strings.TrimSpace(*glob),
+		WorkspaceId: workspaceID,
+		Query:       strings.TrimSpace(fs.Arg(0)),
+		Glob:        globPattern,
 	})
 	if err != nil {
 		log.Fatalf("Failed to search workspace: %v", err)
@@ -423,13 +444,13 @@ func handleFilesystemSearch(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleFilesystemStat(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemStat(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) != 1 {
-		log.Println("Usage: gs fs stat <workspace>:<path>")
+		log.Println("Usage: gs fs stat </absolute/path>")
 		return
 	}
 
-	workspaceID, filePath, err := parseWorkspacePathArg(args[0], true)
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -442,12 +463,11 @@ func handleFilesystemStat(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to stat path: %v", err)
 	}
 	if !resp.GetExists() {
-		fmt.Printf("Not found: %s:%s\n", workspaceID, filePath)
+		fmt.Printf("Not found: %s\n", filePath)
 		return
 	}
 
 	entry := resp.GetEntry()
-	fmt.Printf("Workspace: %s\n", workspaceID)
 	fmt.Printf("Path: %s\n", entry.GetPath())
 	fmt.Printf("Type: %s\n", filesystemEntryTypeLabel(entry.GetType()))
 	fmt.Printf("Size: %d\n", entry.GetSize())
@@ -690,6 +710,65 @@ func parseWorkspacePathArg(value string, requirePath bool) (string, string, erro
 		return "", "", fmt.Errorf("path is required; expected <workspace>:<path>")
 	}
 	return workspaceID, path, nil
+}
+
+func resolveFilesystemHomeWorkspace(ctx context.Context, cli *CLI, authConfig cliAuth) (string, error) {
+	username := strings.TrimSpace(authConfig.Username)
+	if username == "" {
+		resp, err := cli.accountClient.GetMe(ctx, &accountv1.GetMeRequest{})
+		if err != nil {
+			return "", fmt.Errorf("resolve current user for home slice: %w", err)
+		}
+		username = strings.TrimSpace(resp.GetUsername())
+	}
+	if username == "" {
+		return "", errors.New("current auth did not resolve a username")
+	}
+	return homeslice.IDForUsername(username), nil
+}
+
+func resolveFilesystemAbsolutePath(ctx context.Context, cli *CLI, authConfig cliAuth, raw string) (string, string, error) {
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		return "", "", err
+	}
+	remotePath, err := parseAbsoluteFilesystemPathArg(raw, true)
+	if err != nil {
+		return "", "", err
+	}
+	return workspaceID, remotePath, nil
+}
+
+func parseAbsoluteFilesystemPathArg(value string, required bool) (string, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		if required {
+			return "", fmt.Errorf("absolute remote path is required")
+		}
+		return "", nil
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("absolute remote path is required")
+	}
+	cleaned := path.Clean(raw)
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	return cleaned, nil
+}
+
+func parseAbsoluteFilesystemPatternArg(value string, required bool) (string, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		if required {
+			return "", fmt.Errorf("absolute remote pattern is required")
+		}
+		return "", nil
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("absolute remote pattern is required")
+	}
+	return raw, nil
 }
 
 func readFilesystemWriteInput(localPath string) ([]byte, error) {
