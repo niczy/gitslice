@@ -1799,27 +1799,150 @@ func (s *PostgresNativeStorage) GetSliceFiles(ctx context.Context, sliceID strin
 	}
 
 	var files []*models.FileContent
+	seenPaths := make(map[string]struct{}, len(fileIDs))
 	for _, fileID := range fileIDs {
-		// Try to hydrate from object store.
-		raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", fileID))
-		if err == nil {
-			var fc models.FileContent
-			if err := json.Unmarshal(raw, &fc); err == nil {
-				files = append(files, &fc)
+		ref, err := s.resolveSliceFileReference(ctx, sliceID, fileID)
+		if err != nil {
+			return nil, err
+		}
+		if ref.entryID != "" && !ref.isFile {
+			continue
+		}
+		if ref.path == "" {
+			ref.path = fileID
+		}
+		if _, ok := seenPaths[ref.path]; ok {
+			continue
+		}
+		content, found, err := s.loadPreferredFileContent(ctx, ref.path, ref.size, ref.candidates(fileID)...)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			if ref.entryID == "" || !ref.isFile {
 				continue
 			}
+			content = &models.FileContent{
+				FileID: ref.path,
+				Path:   ref.path,
+				Size:   ref.size,
+			}
 		}
-
-		// Fall back to metadata from file_contents table.
-		var fc models.FileContent
-		err = s.pool.QueryRow(ctx, `
-			SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
-		`, fileID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
-		if err == nil {
-			files = append(files, &fc)
-		}
+		seenPaths[ref.path] = struct{}{}
+		files = append(files, content)
 	}
 	return files, nil
+}
+
+type sliceFileReference struct {
+	entryID string
+	path    string
+	size    int64
+	isFile  bool
+}
+
+func (ref sliceFileReference) candidates(fileID string) []string {
+	ids := []string{ref.entryID, ref.path, fileID}
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, candidate := range ids {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func (s *PostgresNativeStorage) resolveSliceFileReference(ctx context.Context, sliceID, fileID string) (sliceFileReference, error) {
+	var ref sliceFileReference
+	var typ string
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, path, size, type
+		FROM directory_entries
+		WHERE slice_id = $1 AND (path = $2 OR id = $2)
+		ORDER BY CASE WHEN path = $2 THEN 0 ELSE 1 END
+		LIMIT 1
+	`, sliceID, fileID).Scan(&ref.entryID, &ref.path, &ref.size, &typ)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			ref.path = fileID
+			return ref, nil
+		}
+		return ref, err
+	}
+	ref.isFile = typ == "file"
+	if ref.path == "" {
+		ref.path = fileID
+	}
+	return ref, nil
+}
+
+func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, path string, size int64, candidateIDs ...string) (*models.FileContent, bool, error) {
+	ordered := make([]string, 0, len(candidateIDs))
+	seen := make(map[string]struct{}, len(candidateIDs))
+	for _, candidateID := range candidateIDs {
+		candidateID = strings.TrimSpace(candidateID)
+		if candidateID == "" {
+			continue
+		}
+		if _, ok := seen[candidateID]; ok {
+			continue
+		}
+		seen[candidateID] = struct{}{}
+		ordered = append(ordered, candidateID)
+	}
+
+	for _, candidateID := range ordered {
+		raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", candidateID))
+		if err != nil {
+			continue
+		}
+		var fc models.FileContent
+		if err := json.Unmarshal(raw, &fc); err != nil {
+			continue
+		}
+		if fc.FileID == "" {
+			fc.FileID = candidateID
+		}
+		if fc.Path == "" {
+			fc.Path = path
+		}
+		if fc.Size == 0 {
+			fc.Size = size
+		}
+		return &fc, true, nil
+	}
+
+	for _, candidateID := range ordered {
+		var fc models.FileContent
+		err := s.pool.QueryRow(ctx, `
+			SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
+		`, candidateID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				continue
+			}
+			return nil, false, err
+		}
+		if fc.FileID == "" {
+			fc.FileID = candidateID
+		}
+		if fc.Path == "" {
+			fc.Path = path
+		}
+		if fc.Size == 0 {
+			fc.Size = size
+		}
+		return &fc, true, nil
+	}
+
+	return nil, false, nil
 }
 
 func (s *PostgresNativeStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
@@ -1838,49 +1961,12 @@ func (s *PostgresNativeStorage) GetSliceFileByPath(ctx context.Context, sliceID,
 		return nil, err
 	}
 
-	// Try object store hydration using path as file ID.
-	for _, candidateID := range []string{path, entryID} {
-		if candidateID == "" {
-			continue
-		}
-		raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", candidateID))
-		if err != nil {
-			continue
-		}
-		var fc models.FileContent
-		if err := json.Unmarshal(raw, &fc); err != nil {
-			continue
-		}
-		if fc.FileID == "" {
-			fc.FileID = candidateID
-		}
-		if fc.Path == "" {
-			fc.Path = path
-		}
-		if fc.Size == 0 {
-			fc.Size = entrySize
-		}
-		return &fc, nil
+	content, found, err := s.loadPreferredFileContent(ctx, path, entrySize, entryID, path)
+	if err != nil {
+		return nil, err
 	}
-
-	// Fall back to file_contents table metadata.
-	var fc models.FileContent
-	err = s.pool.QueryRow(ctx, `
-		SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
-	`, path).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
-	if err == nil {
-		return &fc, nil
-	}
-
-	// Try by entry ID.
-	err = s.pool.QueryRow(ctx, `
-		SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
-	`, entryID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
-	if err == nil {
-		if fc.Path == "" {
-			fc.Path = path
-		}
-		return &fc, nil
+	if found {
+		return content, nil
 	}
 
 	// Last resort: return metadata-only entry.
@@ -1997,8 +2083,12 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 			COALESCE((
 				SELECT fc.hash
 				FROM file_contents fc
-				WHERE fc.file_id = directory_entries.path OR fc.path = directory_entries.path
-				ORDER BY CASE WHEN fc.file_id = directory_entries.path THEN 0 ELSE 1 END
+				WHERE fc.file_id = directory_entries.id OR fc.file_id = directory_entries.path OR fc.path = directory_entries.path
+				ORDER BY CASE
+					WHEN fc.file_id = directory_entries.id THEN 0
+					WHEN fc.file_id = directory_entries.path THEN 1
+					ELSE 2
+				END
 				LIMIT 1
 			), '')
 		FROM directory_entries
@@ -2022,8 +2112,12 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 			COALESCE((
 				SELECT fc.hash
 				FROM file_contents fc
-				WHERE fc.file_id = directory_entries.path OR fc.path = directory_entries.path
-				ORDER BY CASE WHEN fc.file_id = directory_entries.path THEN 0 ELSE 1 END
+				WHERE fc.file_id = directory_entries.id OR fc.file_id = directory_entries.path OR fc.path = directory_entries.path
+				ORDER BY CASE
+					WHEN fc.file_id = directory_entries.id THEN 0
+					WHEN fc.file_id = directory_entries.path THEN 1
+					ELSE 2
+				END
 				LIMIT 1
 			), '')
 		FROM directory_entries
@@ -2046,8 +2140,12 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 			COALESCE((
 				SELECT fc.hash
 				FROM file_contents fc
-				WHERE fc.file_id = directory_entries.path OR fc.path = directory_entries.path
-				ORDER BY CASE WHEN fc.file_id = directory_entries.path THEN 0 ELSE 1 END
+				WHERE fc.file_id = directory_entries.id OR fc.file_id = directory_entries.path OR fc.path = directory_entries.path
+				ORDER BY CASE
+					WHEN fc.file_id = directory_entries.id THEN 0
+					WHEN fc.file_id = directory_entries.path THEN 1
+					ELSE 2
+				END
 				LIMIT 1
 			), '')
 		FROM directory_entries

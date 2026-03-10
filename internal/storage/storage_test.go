@@ -10,9 +10,10 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 )
 
-func TestStorageCompliance(t *testing.T) {
-	ctx := context.Background()
-
+func storageTestCases(ctx context.Context) []struct {
+	name    string
+	factory func(t *testing.T) Storage
+} {
 	cases := []struct {
 		name    string
 		factory func(t *testing.T) Storage
@@ -42,20 +43,34 @@ func TestStorageCompliance(t *testing.T) {
 			},
 		})
 	}
+	return cases
+}
 
-	for _, tc := range cases {
+func TestStorageCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
 		t.Run(tc.name, func(t *testing.T) {
 			runStorageContract(ctx, t, tc.factory(t))
 		})
 	}
 }
 
-func TestInMemoryStoragePrefersSliceScopedFileContentOverSharedPathContent(t *testing.T) {
+func TestStoragePrefersSliceScopedFileContentOverSharedPathContent(t *testing.T) {
 	ctx := context.Background()
-	st := NewInMemoryStorage()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runSliceScopedContentPreferenceTest(ctx, t, tc.factory(t))
+		})
+	}
+}
 
-	root := &models.Slice{ID: "root_slice", Name: "Root", Files: []string{}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
-	home := &models.Slice{ID: "home.alice", Name: "alice", Files: []string{}, Owners: []string{"alice"}, CreatedBy: "alice"}
+func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	filePath := "README.md"
+	root := &models.Slice{ID: "root_slice", Name: "Root", Files: []string{filePath}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
+	home := &models.Slice{ID: "home.alice", Name: "alice", Files: []string{filePath}, Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, root); err != nil {
 		t.Fatalf("CreateSlice root failed: %v", err)
 	}
@@ -63,11 +78,10 @@ func TestInMemoryStoragePrefersSliceScopedFileContentOverSharedPathContent(t *te
 		t.Fatalf("CreateSlice home failed: %v", err)
 	}
 
-	filePath := "alice/docs/readme.md"
 	rootEntryID := generateEntryID(root.ID, filePath)
 	homeEntryID := generateEntryID(home.ID, filePath)
 
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: rootEntryID, Path: filePath, Type: "file", ParentID: root.ID, Size: 12}); err != nil {
+	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{ID: rootEntryID, Path: filePath, Type: "file", ParentID: root.ID, Size: 12}); err != nil {
 		t.Fatalf("AddEntry root failed: %v", err)
 	}
 	if err := st.AddFileContent(ctx, &models.FileContent{
@@ -79,11 +93,7 @@ func TestInMemoryStoragePrefersSliceScopedFileContentOverSharedPathContent(t *te
 	}); err != nil {
 		t.Fatalf("AddFileContent root failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, filePath, root.ID); err != nil {
-		t.Fatalf("AddFileToSlice root failed: %v", err)
-	}
-
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: homeEntryID, Path: filePath, Type: "file", ParentID: home.ID, Size: 12}); err != nil {
+	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{ID: homeEntryID, Path: filePath, Type: "file", ParentID: home.ID, Size: 12}); err != nil {
 		t.Fatalf("AddEntry home failed: %v", err)
 	}
 	if err := st.AddFileContent(ctx, &models.FileContent{
@@ -95,10 +105,6 @@ func TestInMemoryStoragePrefersSliceScopedFileContentOverSharedPathContent(t *te
 	}); err != nil {
 		t.Fatalf("AddFileContent home failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, filePath, home.ID); err != nil {
-		t.Fatalf("AddFileToSlice home failed: %v", err)
-	}
-
 	content, err := st.GetSliceFileByPath(ctx, home.ID, filePath)
 	if err != nil {
 		t.Fatalf("GetSliceFileByPath home failed: %v", err)
@@ -110,12 +116,45 @@ func TestInMemoryStoragePrefersSliceScopedFileContentOverSharedPathContent(t *te
 		t.Fatalf("expected home hash, got %q", content.Hash)
 	}
 
+	files, err := st.GetSliceFiles(ctx, home.ID)
+	if err != nil {
+		t.Fatalf("GetSliceFiles home failed: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one home file, got %#v", files)
+	}
+	if got := string(files[0].Content); got != "home version" {
+		t.Fatalf("expected home file list content, got %q", got)
+	}
+	if files[0].Hash != "home-hash" {
+		t.Fatalf("expected home file list hash, got %q", files[0].Hash)
+	}
+
 	entry, err := st.GetEntry(ctx, homeEntryID)
 	if err != nil {
 		t.Fatalf("GetEntry home failed: %v", err)
 	}
 	if entry.Hash != "home-hash" {
 		t.Fatalf("expected home entry hash, got %q", entry.Hash)
+	}
+
+	byPath, err := st.GetEntryByPath(ctx, home.ID, filePath)
+	if err != nil {
+		t.Fatalf("GetEntryByPath home failed: %v", err)
+	}
+	if byPath.Hash != "home-hash" {
+		t.Fatalf("expected home path hash, got %q", byPath.Hash)
+	}
+
+	entries, err := st.ListEntries(ctx, home.ID, home.ID)
+	if err != nil {
+		t.Fatalf("ListEntries home failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one root child entry, got %#v", entries)
+	}
+	if entries[0].Hash != "home-hash" {
+		t.Fatalf("expected home list hash, got %q", entries[0].Hash)
 	}
 }
 
