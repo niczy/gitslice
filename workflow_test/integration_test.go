@@ -1391,6 +1391,15 @@ func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("failed to add file content: %v", err)
 		}
+		if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(rootSlice.ID, file.path),
+			Path:     file.path,
+			Type:     "file",
+			ParentID: rootSlice.ID,
+			Size:     int64(len(file.content)),
+		}); err != nil {
+			t.Fatalf("failed to add directory entry: %v", err)
+		}
 		if err := testStorage.AddFileToSlice(ctx, file.path, rootSlice.ID); err != nil {
 			t.Fatalf("failed to add file to root slice: %v", err)
 		}
