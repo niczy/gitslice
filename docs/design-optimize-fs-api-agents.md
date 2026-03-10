@@ -10,7 +10,7 @@ file content is stored and transferred as monolithic blobs.
 
 ```
 AddFileContent(FileContent{
-    FileID:  "workspace-1:src/main.go",
+    FileID:  "slice-1:src/main.go",
     Content: []byte{...entire file...},   ← one opaque blob
     Hash:    "sha256-of-whole-file",
     Size:    52431,
@@ -65,7 +65,7 @@ ObjectStore keys:
   block:def456 → 16384 bytes
   block:ghi789 → 16384 bytes
   block:jkl012 → 3279 bytes
-  manifest:workspace-1:src/main.go → FileManifest JSON
+  manifest:slice-1:src/main.go → FileManifest JSON
 ```
 
 Each block is keyed by the SHA-256 of its content. Identical blocks across files
@@ -118,16 +118,16 @@ HasBlock(ctx context.Context, hash string) (bool, error)
 PutBlocks(ctx context.Context, blocks map[string][]byte) error  // batch
 
 // File manifest operations
-PutFileManifest(ctx context.Context, workspaceID, path string, manifest *models.FileManifest) error
-GetFileManifest(ctx context.Context, workspaceID, path string) (*models.FileManifest, error)
-DeleteFileManifest(ctx context.Context, workspaceID, path string) error
+PutFileManifest(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error
+GetFileManifest(ctx context.Context, sliceID, path string) (*models.FileManifest, error)
+DeleteFileManifest(ctx context.Context, sliceID, path string) error
 ```
 
 ### ObjectStore key layout
 
 ```
 blocks/{hash}                               ← content-addressed, shared
-manifests/{workspaceID}/{path}              ← per-workspace-file
+manifests/{sliceID}/{path}                 ← per-slice-file
 ```
 
 On R2/GCS, blocks are immutable and globally deduplicated. Manifests are small
@@ -140,7 +140,7 @@ JSON documents (~200 bytes per file) that point to blocks.
 ### 1. Efficient `EditFile` — rewrite only affected blocks
 
 ```
-EditFile(workspace_id, "src/main.go", edits=[{old: "foo", new: "bar"}])
+EditFile(slice_id, "src/main.go", edits=[{old: "foo", new: "bar"}])
 
 Server:
   1. Load manifest (1 small GET)         ← ~200 bytes
@@ -285,8 +285,8 @@ writes dramatically — most blocks across most files never change.
 3. Implement for `InMemoryStorage` (map-based, straightforward)
 4. Implement for `PostgresNativeStorage` using existing `ObjectStore`:
    - Blocks: `PutObject("blocks/{hash}", data)` — idempotent, content-addressed
-   - Manifests: `PutObject("manifests/{workspaceID}/{path}", json)` — small metadata
-   - Postgres metadata table: `file_manifests(workspace_id, path, hash, total_size, block_count)`
+   - Manifests: `PutObject("manifests/{sliceID}/{path}", json)` — small metadata
+   - Postgres metadata table: `file_manifests(slice_id, path, hash, total_size, block_count)`
 5. Add helper functions:
    - `ChunkFile(data []byte, blockSize int) ([]Block, map[string][]byte)` — splits file into blocks
    - `AssembleFile(manifest *FileManifest, getBlock func(hash string) ([]byte, error)) ([]byte, error)` — reassembles
@@ -348,7 +348,7 @@ Breaking change — no backward compatibility required. Clean cutover.
 | `GetSliceFileByPath()` | `GetFileManifest()` + `GetBlock()` |
 | `GetFileContentByHash()` | `GetBlock()` (blocks are content-addressed) |
 | `collectWorkspaceSnapshotFiles()` | Read manifest hashes directly |
-| `workspaceStats()` / `collectWorkspaceEntries()` | Derive from snapshot |
+| `workspaceStats()` / `collectWorkspaceEntries()` | Derive from snapshot/manifests |
 | `file_contents` Postgres table | `file_manifests` table |
 | `versioned_content` Postgres table | `blocks` table (or just ObjectStore keys) |
 | `file_content:*` ObjectStore keys | `blocks/{hash}` keys |
@@ -372,9 +372,9 @@ PutBlock(ctx context.Context, hash string, data []byte) error
 GetBlock(ctx context.Context, hash string) ([]byte, error)
 HasBlock(ctx context.Context, hash string) (bool, error)
 PutBlocks(ctx context.Context, blocks map[string][]byte) error
-PutFileManifest(ctx context.Context, workspaceID, path string, manifest *models.FileManifest) error
-GetFileManifest(ctx context.Context, workspaceID, path string) (*models.FileManifest, error)
-DeleteFileManifest(ctx context.Context, workspaceID, path string) error
+PutFileManifest(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error
+GetFileManifest(ctx context.Context, sliceID, path string) (*models.FileManifest, error)
+DeleteFileManifest(ctx context.Context, sliceID, path string) error
 ```
 
 ### Database migration
@@ -382,12 +382,12 @@ DeleteFileManifest(ctx context.Context, workspaceID, path string) error
 ```sql
 -- New tables
 CREATE TABLE file_manifests (
-    workspace_id TEXT NOT NULL,
-    path         TEXT NOT NULL,
-    hash         TEXT NOT NULL,
-    total_size   BIGINT NOT NULL,
-    block_count  INT NOT NULL,
-    PRIMARY KEY (workspace_id, path)
+    slice_id   TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    hash       TEXT NOT NULL,
+    total_size BIGINT NOT NULL,
+    block_count INT NOT NULL,
+    PRIMARY KEY (slice_id, path)
 );
 
 -- Drop old tables
@@ -395,7 +395,7 @@ DROP TABLE IF EXISTS file_contents;
 DROP TABLE IF EXISTS versioned_content;
 ```
 
-Existing workspace data is discarded. Workspaces start fresh after the migration.
+Existing slice data is discarded. Slices start fresh after the migration.
 
 ---
 
@@ -441,7 +441,7 @@ want different sizes:
 | Large generated files (> 1 MB) | 64 KB | Fewer blocks in manifest |
 | Binary assets | 64 KB or 256 KB | Dedup unlikely, minimize manifest size |
 
-Start with a single global block size (16 KB). Make it configurable per-workspace
+Start with a single global block size (16 KB). Make it configurable per-slice
 later if needed — the manifest format supports variable block sizes since each
 block entry records its own size.
 
@@ -455,7 +455,7 @@ block entry records its own size.
 | Manifest consistency (crash between block write and manifest update) | Blocks are content-addressed — writing an extra block is harmless. Manifest update is atomic (single PutObject). If manifest write fails, old manifest is still valid. |
 | Small file overhead (manifest larger than file) | Files < 16 KB have a single block. Manifest adds ~200 bytes. Acceptable. Could inline tiny files (< 1 KB) directly in manifest. |
 | Cross-block edits (edit spans a block boundary) | Load both blocks, concatenate, apply edit, re-chunk. Slightly more I/O but correct. Rare for typical edits. |
-| Existing workspace data lost | Acceptable — breaking change. Workspaces start fresh after migration. |
+| Existing slice data lost | Acceptable — breaking change. Slices start fresh after migration. |
 | R2/GCS latency for many small GETs | `PutBlocks`/`GetBlocks` batch API. Manifest reads are cacheable (small, frequent). |
 
 ---
