@@ -65,6 +65,15 @@ func TestStoragePrefersSliceScopedFileContentOverSharedPathContent(t *testing.T)
 	}
 }
 
+func TestStoragePrefersManifestOverSharedPathContent(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runManifestPreferenceTest(ctx, t, tc.factory(t))
+		})
+	}
+}
+
 func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
@@ -155,6 +164,67 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	}
 	if entries[0].Hash != "home-hash" {
 		t.Fatalf("expected home list hash, got %q", entries[0].Hash)
+	}
+}
+
+func runManifestPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	filePath := "alice/README.md"
+	root := &models.Slice{ID: "root_slice", Name: "Root", Files: []string{filePath}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
+	home := &models.Slice{ID: "home.alice", Name: "alice", Files: []string{filePath}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, root); err != nil {
+		t.Fatalf("CreateSlice root failed: %v", err)
+	}
+	if err := st.CreateSlice(ctx, home); err != nil {
+		t.Fatalf("CreateSlice home failed: %v", err)
+	}
+
+	homeEntryID := generateEntryID(home.ID, filePath)
+	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{ID: homeEntryID, Path: filePath, Type: "file", ParentID: home.ID}); err != nil {
+		t.Fatalf("UpdateEntry home failed: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  filePath,
+		Path:    filePath,
+		Content: []byte("root version"),
+		Size:    int64(len("root version")),
+		Hash:    "root-hash",
+	}); err != nil {
+		t.Fatalf("AddFileContent root failed: %v", err)
+	}
+
+	putManifest := func(content string) {
+		blocks, payloads := ChunkFile([]byte(content), DefaultFileBlockSize)
+		if err := st.PutBlocks(ctx, payloads); err != nil {
+			t.Fatalf("PutBlocks failed: %v", err)
+		}
+		if err := st.PutFileManifest(ctx, home.ID, filePath, &models.FileManifest{
+			Path:      filePath,
+			TotalSize: int64(len(content)),
+			Hash:      fmt.Sprintf("hash-%s", content),
+			Blocks:    blocks,
+		}); err != nil {
+			t.Fatalf("PutFileManifest failed: %v", err)
+		}
+	}
+
+	putManifest("home version v1")
+	first, err := st.GetSliceFileByPath(ctx, home.ID, filePath)
+	if err != nil {
+		t.Fatalf("GetSliceFileByPath(home first) failed: %v", err)
+	}
+	if got, want := string(first.Content), "home version v1"; got != want {
+		t.Fatalf("expected manifest-backed home content, got %q want %q", got, want)
+	}
+
+	putManifest("home version v2")
+	second, err := st.GetSliceFileByPath(ctx, home.ID, filePath)
+	if err != nil {
+		t.Fatalf("GetSliceFileByPath(home second) failed: %v", err)
+	}
+	if got, want := string(second.Content), "home version v2"; got != want {
+		t.Fatalf("expected updated manifest-backed home content, got %q want %q", got, want)
 	}
 }
 
