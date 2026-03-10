@@ -1,3 +1,4 @@
+import { HomeFilesystem } from "./home.js";
 import { Workspace } from "./workspace.js";
 import { parseWorkspaceInfo, type WorkspaceInfo } from "./types.js";
 
@@ -45,6 +46,7 @@ export class GitsliceClient {
   private readonly timeoutMs: number;
   private readonly fetchFn: FetchLike;
   private readonly authHeader: string;
+  private username?: string;
 
   constructor(options: GitsliceClientOptions = {}) {
     const username = (options.username ?? "").trim();
@@ -57,6 +59,7 @@ export class GitsliceClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
     this.authHeader = GitsliceClient.buildAuthHeader(username, apiKey);
+    this.username = username || undefined;
   }
 
   async createWorkspace(workspaceId: string, options: WorkspaceOptions = {}): Promise<WorkspaceInfo> {
@@ -100,6 +103,10 @@ export class GitsliceClient {
       await this.createWorkspace(workspaceId, options);
     }
     return new Workspace(this, workspaceId);
+  }
+
+  async home(): Promise<HomeFilesystem> {
+    return new HomeFilesystem(this, await this.resolveUsername());
   }
 
   async requestJson(
@@ -161,6 +168,19 @@ export class GitsliceClient {
       }
     }
     return url.toString();
+  }
+
+  private async resolveUsername(): Promise<string> {
+    if (this.username) {
+      return this.username;
+    }
+    const payload = await this.requestJson("GET", "/v1/users/me");
+    const username = String(payload.username ?? "").trim();
+    if (!username) {
+      throw new ServerError("current user did not include a username");
+    }
+    this.username = username;
+    return username;
   }
 
   private static buildAuthHeader(username: string, apiKey: string): string {

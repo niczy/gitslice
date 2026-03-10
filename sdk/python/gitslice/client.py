@@ -13,6 +13,7 @@ from .exceptions import (
     ServerError,
     ValidationError,
 )
+from .home import HomeFilesystem
 from .types import WorkspaceInfo
 from .workspace import Workspace
 
@@ -38,6 +39,7 @@ class GitsliceClient:
         self._timeout = timeout
         self._transport = transport or self._default_transport
         self._auth_header = self._build_auth_header(identity, token)
+        self._username = identity or None
 
     def create_workspace(self, workspace_id: str, *, name: Optional[str] = None, description: str = "") -> WorkspaceInfo:
         payload = {
@@ -80,6 +82,9 @@ class GitsliceClient:
         if cleanup_on_exit is None:
             cleanup_on_exit = created
         return Workspace(self, workspace_id, cleanup_on_exit=cleanup_on_exit)
+
+    def home(self) -> HomeFilesystem:
+        return HomeFilesystem(self, self._resolve_username())
 
     def request_json(
         self,
@@ -143,6 +148,16 @@ class GitsliceClient:
         if not query:
             return url
         return f"{url}?{query}"
+
+    def _resolve_username(self) -> str:
+        if self._username:
+            return self._username
+        payload = self._request_json("GET", "/v1/users/me")
+        username = str(payload.get("username", "")).strip()
+        if not username:
+            raise ServerError("current user did not include a username")
+        self._username = username
+        return username
 
     @staticmethod
     def _build_auth_header(username: str, api_key: str) -> str:
