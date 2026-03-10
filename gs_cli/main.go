@@ -10,6 +10,7 @@ import (
 
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -21,18 +22,21 @@ var (
 	sliceServerAddr = flag.String("slice-addr", "localhost:50051", "Slice service address")
 	adminServerAddr = flag.String("admin-addr", "localhost:50051", "Admin service address")
 	fileServerAddr  = flag.String("file-addr", "localhost:50051", "File service address")
+	fsServerAddr    = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
 	useTLS          = flag.Bool("tls", false, "Use TLS for gRPC connections")
 	userFlag        = flag.String("user", "", "Username for fake login (overrides GS_USERNAME and ~/.gitslice/user)")
 )
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
 type CLI struct {
-	sliceConn   *grpc.ClientConn
-	adminConn   *grpc.ClientConn
-	fileConn    *grpc.ClientConn
-	sliceClient slicev1.SliceServiceClient
-	adminClient adminv1.AdminServiceClient
-	fileClient  filev1.FileServiceClient
+	sliceConn        *grpc.ClientConn
+	adminConn        *grpc.ClientConn
+	fileConn         *grpc.ClientConn
+	filesystemConn   *grpc.ClientConn
+	sliceClient      slicev1.SliceServiceClient
+	adminClient      adminv1.AdminServiceClient
+	fileClient       filev1.FileServiceClient
+	filesystemClient filesystemv1.FilesystemServiceClient
 }
 
 func main() {
@@ -42,9 +46,10 @@ func main() {
 		*sliceServerAddr = *coreServerAddr
 		*adminServerAddr = *coreServerAddr
 		*fileServerAddr = *coreServerAddr
+		*fsServerAddr = *coreServerAddr
 	}
 
-	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr, *fileServerAddr, *useTLS)
+	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
 	if err != nil {
 		log.Fatalf("Failed to initialize CLI: %v", err)
 	}
@@ -87,6 +92,8 @@ func main() {
 		handleImportCommand(ctx, cli, args[1:])
 	case "file":
 		handleFileCommand(ctx, cli, args[1:])
+	case "fs":
+		handleFilesystemCommand(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown command: %s", args[0])
 		printHelp()
@@ -94,7 +101,7 @@ func main() {
 }
 
 // NewCLI creates a new CLI instance with connections to the gitslice services.
-func NewCLI(sliceAddr, adminAddr, fileAddr string, tlsEnabled bool) (*CLI, error) {
+func NewCLI(sliceAddr, adminAddr, fileAddr, filesystemAddr string, tlsEnabled bool) (*CLI, error) {
 	transportCreds := insecure.NewCredentials()
 	if tlsEnabled {
 		transportCreds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
@@ -118,13 +125,23 @@ func NewCLI(sliceAddr, adminAddr, fileAddr string, tlsEnabled bool) (*CLI, error
 		return nil, fmt.Errorf("failed to connect to file service: %w", err)
 	}
 
+	filesystemConn, err := grpc.Dial(filesystemAddr, grpc.WithTransportCredentials(transportCreds))
+	if err != nil {
+		sliceConn.Close()
+		adminConn.Close()
+		fileConn.Close()
+		return nil, fmt.Errorf("failed to connect to filesystem service: %w", err)
+	}
+
 	return &CLI{
-		sliceConn:   sliceConn,
-		adminConn:   adminConn,
-		fileConn:    fileConn,
-		sliceClient: slicev1.NewSliceServiceClient(sliceConn),
-		adminClient: adminv1.NewAdminServiceClient(adminConn),
-		fileClient:  filev1.NewFileServiceClient(fileConn),
+		sliceConn:        sliceConn,
+		adminConn:        adminConn,
+		fileConn:         fileConn,
+		filesystemConn:   filesystemConn,
+		sliceClient:      slicev1.NewSliceServiceClient(sliceConn),
+		adminClient:      adminv1.NewAdminServiceClient(adminConn),
+		fileClient:       filev1.NewFileServiceClient(fileConn),
+		filesystemClient: filesystemv1.NewFilesystemServiceClient(filesystemConn),
 	}, nil
 }
 
@@ -138,5 +155,8 @@ func (c *CLI) Close() {
 	}
 	if c.fileConn != nil {
 		c.fileConn.Close()
+	}
+	if c.filesystemConn != nil {
+		c.filesystemConn.Close()
 	}
 }

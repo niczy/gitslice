@@ -27,13 +27,17 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
+	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
+	filesystemservice "github.com/niczy/gitslice/services/filesystem"
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -119,6 +123,7 @@ func startGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
 	srv := grpc.NewServer()
 	sliceservice.RegisterGRPCServer(srv, st)
 	fileservice.RegisterGRPCServer(srv, st)
+	filesystemservice.RegisterGRPCServer(srv, st)
 	adminservice.RegisterGRPCServer(srv, st)
 	testAgentSvc = agentsession.NewService(st, "test-agent-ws-secret")
 	testAgentSvc.StartLifecycleLoop(context.Background())
@@ -247,7 +252,13 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	fullArgs := append([]string{"--slice-addr", grpcServiceAddr, "--admin-addr", grpcServiceAddr, "--user", testUsername}, args...)
+	fullArgs := append([]string{
+		"--slice-addr", grpcServiceAddr,
+		"--admin-addr", grpcServiceAddr,
+		"--file-addr", grpcServiceAddr,
+		"--fs-addr", grpcServiceAddr,
+		"--user", testUsername,
+	}, args...)
 	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
 	if workdir != "" {
 		cmd.Dir = workdir
@@ -308,6 +319,15 @@ func extractCreatedSliceID(output string) string {
 	return strings.TrimSpace(matches[1])
 }
 
+func extractSnapshotID(output string) string {
+	re := regexp.MustCompile(`Snapshot created: ([^\n]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
 func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
 	t.Helper()
 
@@ -351,6 +371,21 @@ func newFileClient(t *testing.T) filev1.FileServiceClient {
 	})
 
 	return filev1.NewFileServiceClient(conn)
+}
+
+func newFilesystemClient(t *testing.T) filesystemv1.FilesystemServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(grpcServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial filesystem service: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return filesystemv1.NewFilesystemServiceClient(conn)
 }
 
 func assertEntryNames(t *testing.T, entries []*filev1.DirectoryEntry, expected ...string) {
@@ -630,6 +665,74 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	if rootCommit == sliceCommit {
 		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
+	}
+}
+
+func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	workspaceID := fmt.Sprintf("fs-cli-%d", time.Now().UnixNano())
+	output := runCLIOrFail(t, "", "fs", "create", workspaceID, "--description", "filesystem cli workflow")
+	if !strings.Contains(output, "Created workspace "+workspaceID) {
+		t.Fatalf("expected workspace creation output, got: %s", output)
+	}
+
+	localFile := filepath.Join(t.TempDir(), "README.md")
+	if err := os.WriteFile(localFile, []byte("hello from fs cli\n"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "write", workspaceID+":README.md", "-f", localFile)
+	if !strings.Contains(output, "Commit: ") {
+		t.Fatalf("expected write commit output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "cat", workspaceID+":README.md")
+	if output != "hello from fs cli\n" {
+		t.Fatalf("unexpected cat output: %q", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "ls", workspaceID)
+	if !strings.Contains(output, "README.md") {
+		t.Fatalf("expected README.md in listing, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "stat", workspaceID+":README.md")
+	if !strings.Contains(output, "Type: file") {
+		t.Fatalf("expected file stat output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "snapshot", workspaceID, "-m", "initial")
+	snapshotID := extractSnapshotID(output)
+	if snapshotID == "" {
+		t.Fatalf("failed to extract snapshot id from output: %s", output)
+	}
+
+	if err := os.WriteFile(localFile, []byte("hello from fs cli v2\n"), 0o600); err != nil {
+		t.Fatalf("rewrite local file: %v", err)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "write", workspaceID+":README.md", "-f", localFile)
+	if !strings.Contains(output, "Commit: ") {
+		t.Fatalf("expected write commit output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "diff", workspaceID, snapshotID)
+	if !strings.Contains(output, "README.md") || !strings.Contains(output, "MODIFY") {
+		t.Fatalf("expected diff output for README.md, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "delete", workspaceID)
+	if !strings.Contains(output, "Deleted workspace "+workspaceID) {
+		t.Fatalf("expected delete output, got: %s", output)
+	}
+
+	client := newFilesystemClient(t)
+	_, err := client.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected workspace to be deleted, got err=%v", err)
 	}
 }
 

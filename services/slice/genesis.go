@@ -2,6 +2,7 @@ package sliceservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -109,7 +110,8 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 			continue
 		}
 
-		contentHash := fmt.Sprintf("%x", len(content))
+		sum := sha256.Sum256(content)
+		contentHash := fmt.Sprintf("%x", sum)
 
 		fileEntry := &models.DirectoryEntry{
 			ID:       common.GenerateEntryID(sliceID, slicePath),
