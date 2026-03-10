@@ -2788,11 +2788,11 @@ func (s *PostgresNativeStorage) CreateAuthSession(ctx context.Context, session *
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO auth_sessions (
-			session_id, username, token, device_info, created_at, last_seen_at, revoked_at
+			session_id, username, token, refresh_token, device_info, created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, NULL
+			$1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, NULL
 		)
-	`, session.SessionID, session.Username, session.Token, session.DeviceInfo, session.CreatedAt, session.LastSeenAt)
+	`, session.SessionID, session.Username, session.Token, strings.TrimSpace(session.RefreshToken), session.DeviceInfo, session.CreatedAt, session.LastSeenAt, session.AccessTokenExpiresAt, session.RefreshTokenExpiresAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
@@ -2800,6 +2800,46 @@ func (s *PostgresNativeStorage) CreateAuthSession(ctx context.Context, session *
 		return err
 	}
 	return nil
+}
+
+func (s *PostgresNativeStorage) GetAuthSession(ctx context.Context, sessionID string) (*models.AuthSession, error) {
+	ctx = ensureCtx(ctx)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var session models.AuthSession
+	var accessTokenExpiresAt *time.Time
+	var refreshTokenExpiresAt *time.Time
+	var revokedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+		FROM auth_sessions
+		WHERE session_id = $1 AND revoked_at IS NULL
+		LIMIT 1
+	`, sessionID).Scan(
+		&session.SessionID,
+		&session.Username,
+		&session.Token,
+		&session.RefreshToken,
+		&session.DeviceInfo,
+		&session.CreatedAt,
+		&session.LastSeenAt,
+		&accessTokenExpiresAt,
+		&refreshTokenExpiresAt,
+		&revokedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	session.AccessTokenExpiresAt = accessTokenExpiresAt
+	session.RefreshTokenExpiresAt = refreshTokenExpiresAt
+	session.RevokedAt = revokedAt
+	return &session, nil
 }
 
 func (s *PostgresNativeStorage) GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error) {
@@ -2810,19 +2850,24 @@ func (s *PostgresNativeStorage) GetAuthSessionByToken(ctx context.Context, token
 	}
 
 	var session models.AuthSession
+	var accessTokenExpiresAt *time.Time
+	var refreshTokenExpiresAt *time.Time
 	var revokedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT session_id, username, token, COALESCE(device_info, ''), created_at, last_seen_at, revoked_at
+		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		FROM auth_sessions
-		WHERE token = $1 AND revoked_at IS NULL
+		WHERE token = $1 AND revoked_at IS NULL AND (access_token_expires_at IS NULL OR access_token_expires_at > NOW())
 		LIMIT 1
 	`, token).Scan(
 		&session.SessionID,
 		&session.Username,
 		&session.Token,
+		&session.RefreshToken,
 		&session.DeviceInfo,
 		&session.CreatedAt,
 		&session.LastSeenAt,
+		&accessTokenExpiresAt,
+		&refreshTokenExpiresAt,
 		&revokedAt,
 	)
 	if err != nil {
@@ -2831,6 +2876,48 @@ func (s *PostgresNativeStorage) GetAuthSessionByToken(ctx context.Context, token
 		}
 		return nil, err
 	}
+	session.AccessTokenExpiresAt = accessTokenExpiresAt
+	session.RefreshTokenExpiresAt = refreshTokenExpiresAt
+	session.RevokedAt = revokedAt
+	return &session, nil
+}
+
+func (s *PostgresNativeStorage) GetAuthSessionByRefreshToken(ctx context.Context, refreshToken string) (*models.AuthSession, error) {
+	ctx = ensureCtx(ctx)
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var session models.AuthSession
+	var accessTokenExpiresAt *time.Time
+	var refreshTokenExpiresAt *time.Time
+	var revokedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+		FROM auth_sessions
+		WHERE refresh_token = $1 AND revoked_at IS NULL AND (refresh_token_expires_at IS NULL OR refresh_token_expires_at > NOW())
+		LIMIT 1
+	`, refreshToken).Scan(
+		&session.SessionID,
+		&session.Username,
+		&session.Token,
+		&session.RefreshToken,
+		&session.DeviceInfo,
+		&session.CreatedAt,
+		&session.LastSeenAt,
+		&accessTokenExpiresAt,
+		&refreshTokenExpiresAt,
+		&revokedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	session.AccessTokenExpiresAt = accessTokenExpiresAt
+	session.RefreshTokenExpiresAt = refreshTokenExpiresAt
 	session.RevokedAt = revokedAt
 	return &session, nil
 }
@@ -2843,7 +2930,7 @@ func (s *PostgresNativeStorage) ListAuthSessionsByUser(ctx context.Context, user
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, username, token, COALESCE(device_info, ''), created_at, last_seen_at, revoked_at
+		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		FROM auth_sessions
 		WHERE username = $1 AND revoked_at IS NULL
 		ORDER BY created_at DESC
@@ -2856,18 +2943,25 @@ func (s *PostgresNativeStorage) ListAuthSessionsByUser(ctx context.Context, user
 	out := make([]*models.AuthSession, 0)
 	for rows.Next() {
 		var session models.AuthSession
+		var accessTokenExpiresAt *time.Time
+		var refreshTokenExpiresAt *time.Time
 		var revokedAt *time.Time
 		if err := rows.Scan(
 			&session.SessionID,
 			&session.Username,
 			&session.Token,
+			&session.RefreshToken,
 			&session.DeviceInfo,
 			&session.CreatedAt,
 			&session.LastSeenAt,
+			&accessTokenExpiresAt,
+			&refreshTokenExpiresAt,
 			&revokedAt,
 		); err != nil {
 			return nil, err
 		}
+		session.AccessTokenExpiresAt = accessTokenExpiresAt
+		session.RefreshTokenExpiresAt = refreshTokenExpiresAt
 		session.RevokedAt = revokedAt
 		sessionCopy := session
 		out = append(out, &sessionCopy)
@@ -2876,6 +2970,35 @@ func (s *PostgresNativeStorage) ListAuthSessionsByUser(ctx context.Context, user
 		out = []*models.AuthSession{}
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresNativeStorage) UpdateAuthSessionTokens(ctx context.Context, sessionID, accessToken string, accessTokenExpiresAt *time.Time, refreshToken string, refreshTokenExpiresAt *time.Time) error {
+	ctx = ensureCtx(ctx)
+	sessionID = strings.TrimSpace(sessionID)
+	accessToken = strings.TrimSpace(accessToken)
+	refreshToken = strings.TrimSpace(refreshToken)
+	if sessionID == "" || accessToken == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE auth_sessions
+		SET token = $1,
+		    access_token_expires_at = $2,
+		    refresh_token = NULLIF($3, ''),
+		    refresh_token_expires_at = $4
+		WHERE session_id = $5 AND revoked_at IS NULL
+	`, accessToken, accessTokenExpiresAt, refreshToken, refreshTokenExpiresAt, sessionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
 }
 
 func (s *PostgresNativeStorage) TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error {
@@ -2937,6 +3060,171 @@ func (s *PostgresNativeStorage) RevokeAuthSessionByToken(ctx context.Context, to
 		WHERE token = $1 AND revoked_at IS NULL
 	`, token)
 	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) CreateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error {
+	ctx = ensureCtx(ctx)
+	if authorization == nil {
+		return ErrInvalidInput
+	}
+	deviceCode := strings.TrimSpace(authorization.DeviceCode)
+	userCode := strings.TrimSpace(authorization.UserCode)
+	if deviceCode == "" || userCode == "" {
+		return ErrInvalidInput
+	}
+	if authorization.Status == "" {
+		authorization.Status = models.DeviceAuthorizationPending
+	}
+	now := time.Now()
+	if authorization.CreatedAt.IsZero() {
+		authorization.CreatedAt = now
+	}
+	if authorization.ExpiresAt.IsZero() {
+		authorization.ExpiresAt = now.Add(10 * time.Minute)
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO device_authorizations (
+			device_code, user_code, username, session_id, device_info, status, created_at, expires_at, approved_at, denied_at
+		) VALUES (
+			$1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9, $10
+		)
+	`, deviceCode, userCode, strings.TrimSpace(authorization.Username), strings.TrimSpace(authorization.SessionID), authorization.DeviceInfo, string(authorization.Status), authorization.CreatedAt, authorization.ExpiresAt, authorization.ApprovedAt, authorization.DeniedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetDeviceAuthorizationByDeviceCode(ctx context.Context, deviceCode string) (*models.DeviceAuthorization, error) {
+	ctx = ensureCtx(ctx)
+	deviceCode = strings.TrimSpace(deviceCode)
+	if deviceCode == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var authorization models.DeviceAuthorization
+	var username *string
+	var sessionID *string
+	var approvedAt *time.Time
+	var deniedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT device_code, user_code, username, session_id, COALESCE(device_info, ''), status, created_at, expires_at, approved_at, denied_at
+		FROM device_authorizations
+		WHERE device_code = $1
+		LIMIT 1
+	`, deviceCode).Scan(
+		&authorization.DeviceCode,
+		&authorization.UserCode,
+		&username,
+		&sessionID,
+		&authorization.DeviceInfo,
+		&authorization.Status,
+		&authorization.CreatedAt,
+		&authorization.ExpiresAt,
+		&approvedAt,
+		&deniedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	if username != nil {
+		authorization.Username = *username
+	}
+	if sessionID != nil {
+		authorization.SessionID = *sessionID
+	}
+	authorization.ApprovedAt = approvedAt
+	authorization.DeniedAt = deniedAt
+	return &authorization, nil
+}
+
+func (s *PostgresNativeStorage) GetDeviceAuthorizationByUserCode(ctx context.Context, userCode string) (*models.DeviceAuthorization, error) {
+	ctx = ensureCtx(ctx)
+	userCode = strings.TrimSpace(userCode)
+	if userCode == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var authorization models.DeviceAuthorization
+	var username *string
+	var sessionID *string
+	var approvedAt *time.Time
+	var deniedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT device_code, user_code, username, session_id, COALESCE(device_info, ''), status, created_at, expires_at, approved_at, denied_at
+		FROM device_authorizations
+		WHERE user_code = $1
+		LIMIT 1
+	`, userCode).Scan(
+		&authorization.DeviceCode,
+		&authorization.UserCode,
+		&username,
+		&sessionID,
+		&authorization.DeviceInfo,
+		&authorization.Status,
+		&authorization.CreatedAt,
+		&authorization.ExpiresAt,
+		&approvedAt,
+		&deniedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	if username != nil {
+		authorization.Username = *username
+	}
+	if sessionID != nil {
+		authorization.SessionID = *sessionID
+	}
+	authorization.ApprovedAt = approvedAt
+	authorization.DeniedAt = deniedAt
+	return &authorization, nil
+}
+
+func (s *PostgresNativeStorage) UpdateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error {
+	ctx = ensureCtx(ctx)
+	if authorization == nil {
+		return ErrInvalidInput
+	}
+	deviceCode := strings.TrimSpace(authorization.DeviceCode)
+	userCode := strings.TrimSpace(authorization.UserCode)
+	if deviceCode == "" || userCode == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE device_authorizations
+		SET user_code = $1,
+		    username = NULLIF($2, ''),
+		    session_id = NULLIF($3, ''),
+		    device_info = $4,
+		    status = $5,
+		    created_at = $6,
+		    expires_at = $7,
+		    approved_at = $8,
+		    denied_at = $9
+		WHERE device_code = $10
+	`, userCode, strings.TrimSpace(authorization.Username), strings.TrimSpace(authorization.SessionID), authorization.DeviceInfo, string(authorization.Status), authorization.CreatedAt, authorization.ExpiresAt, authorization.ApprovedAt, authorization.DeniedAt, deviceCode)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {

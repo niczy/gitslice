@@ -61,19 +61,22 @@ type InMemoryStorage struct {
 	fileChangesByDir    map[string][]string                 // "sliceID:dirPrefix" -> []changeID (newest first)
 
 	// Accounts / Orgs
-	users              map[string]*models.User                          // username -> user
-	userByEmail        map[string]string                                // lower(email) -> username
-	authSessions       map[string]*models.AuthSession                   // sessionID -> auth session
-	authSessionByToken map[string]string                                // token -> sessionID
-	authSessionsByUser map[string]map[string]bool                       // username -> sessionID -> true
-	orgs               map[string]*models.Organization                  // orgSlug -> org
-	orgMembers         map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
-	userOrgs           map[string]map[string]bool                       // username -> orgSlug -> true
-	orgInvites         map[string]map[string]*models.OrganizationInvite // orgSlug -> inviteID -> invite
-	teams              map[string]*models.Team                          // teamID -> team
-	teamsByOrg         map[string]map[string]bool                       // orgSlug -> teamID -> true
-	teamMembers        map[string]map[string]*models.TeamMember         // teamID -> username -> membership
-	environments       map[string]*models.Environment                   // env name -> environment
+	users                            map[string]*models.User                          // username -> user
+	userByEmail                      map[string]string                                // lower(email) -> username
+	authSessions                     map[string]*models.AuthSession                   // sessionID -> auth session
+	authSessionByToken               map[string]string                                // token -> sessionID
+	authSessionByRefreshToken        map[string]string                                // refresh token -> sessionID
+	authSessionsByUser               map[string]map[string]bool                       // username -> sessionID -> true
+	deviceAuthorizationsByDeviceCode map[string]*models.DeviceAuthorization           // device code -> auth request
+	deviceAuthorizationByUserCode    map[string]string                                // user code -> device code
+	orgs                             map[string]*models.Organization                  // orgSlug -> org
+	orgMembers                       map[string]map[string]*models.OrganizationMember // orgSlug -> username -> membership
+	userOrgs                         map[string]map[string]bool                       // username -> orgSlug -> true
+	orgInvites                       map[string]map[string]*models.OrganizationInvite // orgSlug -> inviteID -> invite
+	teams                            map[string]*models.Team                          // teamID -> team
+	teamsByOrg                       map[string]map[string]bool                       // orgSlug -> teamID -> true
+	teamMembers                      map[string]map[string]*models.TeamMember         // teamID -> username -> membership
+	environments                     map[string]*models.Environment                   // env name -> environment
 
 	// Agent sessions
 	agentSessions      map[string]*models.AgentSession        // sessionID -> session
@@ -87,47 +90,50 @@ type InMemoryStorage struct {
 // NewInMemoryStorage creates a new in-memory storage instance
 func NewInMemoryStorage() *InMemoryStorage {
 	return &InMemoryStorage{
-		slices:                    make(map[string]*models.Slice),
-		sliceMetadata:             make(map[string]*models.SliceMetadata),
-		fileIndex:                 make(map[string]map[string]bool),
-		fileContents:              make(map[string]*models.FileContent),
-		entries:                   make(map[string]*models.DirectoryEntry),
-		entriesByPath:             make(map[string]string),
-		entriesBySlice:            make(map[string][]string),
-		entriesByParent:           make(map[string][]string),
-		changesets:                make(map[string]*models.Changeset),
-		sliceChangesets:           make(map[string][]string),
-		changesetSnapshots:        make(map[string]*models.ChangesetSnapshot),
-		changesetSnapshotVersions: make(map[string][]string),
-		sliceCommits:              make(map[string][]*models.Commit),
-		commitsBySliceHash:        make(map[string]map[string]*models.Commit),
-		lockedSlices:              make(map[string]bool),
-		fileLocks:                 make(map[string]string),
-		commitSnapshots:           make(map[string]*models.CommitSnapshot),
-		versionedContent:          make(map[string]*models.FileContent),
-		fileChanges:               make(map[string]*models.FileChangeRecord),
-		fileChangesByPath:         make(map[string][]string),
-		fileChangesByCommit:       make(map[string][]string),
-		fileChangesByDir:          make(map[string][]string),
-		users:                     make(map[string]*models.User),
-		userByEmail:               make(map[string]string),
-		authSessions:              make(map[string]*models.AuthSession),
-		authSessionByToken:        make(map[string]string),
-		authSessionsByUser:        make(map[string]map[string]bool),
-		orgs:                      make(map[string]*models.Organization),
-		orgMembers:                make(map[string]map[string]*models.OrganizationMember),
-		userOrgs:                  make(map[string]map[string]bool),
-		orgInvites:                make(map[string]map[string]*models.OrganizationInvite),
-		teams:                     make(map[string]*models.Team),
-		teamsByOrg:                make(map[string]map[string]bool),
-		teamMembers:               make(map[string]map[string]*models.TeamMember),
-		environments:              make(map[string]*models.Environment),
-		agentSessions:             make(map[string]*models.AgentSession),
-		activeAgentBySlice:        make(map[string]string),
-		agentSessionEvents:        make(map[string][]*models.AgentSessionEvent),
-		agentSessionAudit:         make(map[string][]*models.AgentSessionAudit),
-		nextAuditID:               1,
-		nextChangesetSeq:          1,
+		slices:                           make(map[string]*models.Slice),
+		sliceMetadata:                    make(map[string]*models.SliceMetadata),
+		fileIndex:                        make(map[string]map[string]bool),
+		fileContents:                     make(map[string]*models.FileContent),
+		entries:                          make(map[string]*models.DirectoryEntry),
+		entriesByPath:                    make(map[string]string),
+		entriesBySlice:                   make(map[string][]string),
+		entriesByParent:                  make(map[string][]string),
+		changesets:                       make(map[string]*models.Changeset),
+		sliceChangesets:                  make(map[string][]string),
+		changesetSnapshots:               make(map[string]*models.ChangesetSnapshot),
+		changesetSnapshotVersions:        make(map[string][]string),
+		sliceCommits:                     make(map[string][]*models.Commit),
+		commitsBySliceHash:               make(map[string]map[string]*models.Commit),
+		lockedSlices:                     make(map[string]bool),
+		fileLocks:                        make(map[string]string),
+		commitSnapshots:                  make(map[string]*models.CommitSnapshot),
+		versionedContent:                 make(map[string]*models.FileContent),
+		fileChanges:                      make(map[string]*models.FileChangeRecord),
+		fileChangesByPath:                make(map[string][]string),
+		fileChangesByCommit:              make(map[string][]string),
+		fileChangesByDir:                 make(map[string][]string),
+		users:                            make(map[string]*models.User),
+		userByEmail:                      make(map[string]string),
+		authSessions:                     make(map[string]*models.AuthSession),
+		authSessionByToken:               make(map[string]string),
+		authSessionByRefreshToken:        make(map[string]string),
+		authSessionsByUser:               make(map[string]map[string]bool),
+		deviceAuthorizationsByDeviceCode: make(map[string]*models.DeviceAuthorization),
+		deviceAuthorizationByUserCode:    make(map[string]string),
+		orgs:                             make(map[string]*models.Organization),
+		orgMembers:                       make(map[string]map[string]*models.OrganizationMember),
+		userOrgs:                         make(map[string]map[string]bool),
+		orgInvites:                       make(map[string]map[string]*models.OrganizationInvite),
+		teams:                            make(map[string]*models.Team),
+		teamsByOrg:                       make(map[string]map[string]bool),
+		teamMembers:                      make(map[string]map[string]*models.TeamMember),
+		environments:                     make(map[string]*models.Environment),
+		agentSessions:                    make(map[string]*models.AgentSession),
+		activeAgentBySlice:               make(map[string]string),
+		agentSessionEvents:               make(map[string][]*models.AgentSessionEvent),
+		agentSessionAudit:                make(map[string][]*models.AgentSessionAudit),
+		nextAuditID:                      1,
+		nextChangesetSeq:                 1,
 		globalState: &models.GlobalState{
 			GlobalCommitHash: "global-init",
 			Timestamp:        time.Now(),
@@ -173,7 +179,10 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.userByEmail = fresh.userByEmail
 	s.authSessions = fresh.authSessions
 	s.authSessionByToken = fresh.authSessionByToken
+	s.authSessionByRefreshToken = fresh.authSessionByRefreshToken
 	s.authSessionsByUser = fresh.authSessionsByUser
+	s.deviceAuthorizationsByDeviceCode = fresh.deviceAuthorizationsByDeviceCode
+	s.deviceAuthorizationByUserCode = fresh.deviceAuthorizationByUserCode
 	s.orgs = fresh.orgs
 	s.orgMembers = fresh.orgMembers
 	s.userOrgs = fresh.userOrgs

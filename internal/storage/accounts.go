@@ -50,9 +50,33 @@ func copyAuthSession(session *models.AuthSession) *models.AuthSession {
 		return nil
 	}
 	out := *session
+	if session.AccessTokenExpiresAt != nil {
+		expiresAt := *session.AccessTokenExpiresAt
+		out.AccessTokenExpiresAt = &expiresAt
+	}
+	if session.RefreshTokenExpiresAt != nil {
+		expiresAt := *session.RefreshTokenExpiresAt
+		out.RefreshTokenExpiresAt = &expiresAt
+	}
 	if session.RevokedAt != nil {
 		revoked := *session.RevokedAt
 		out.RevokedAt = &revoked
+	}
+	return &out
+}
+
+func copyDeviceAuthorization(authorization *models.DeviceAuthorization) *models.DeviceAuthorization {
+	if authorization == nil {
+		return nil
+	}
+	out := *authorization
+	if authorization.ApprovedAt != nil {
+		approvedAt := *authorization.ApprovedAt
+		out.ApprovedAt = &approvedAt
+	}
+	if authorization.DeniedAt != nil {
+		deniedAt := *authorization.DeniedAt
+		out.DeniedAt = &deniedAt
 	}
 	return &out
 }
@@ -355,6 +379,7 @@ func (s *InMemoryStorage) CreateAuthSession(ctx context.Context, session *models
 	if sessionID == "" || token == "" || !auth.ValidateUsername(username) {
 		return ErrInvalidInput
 	}
+	refreshToken := strings.TrimSpace(session.RefreshToken)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -369,11 +394,17 @@ func (s *InMemoryStorage) CreateAuthSession(ctx context.Context, session *models
 	if _, ok := s.authSessionByToken[token]; ok {
 		return ErrEntryExists
 	}
+	if refreshToken != "" {
+		if _, ok := s.authSessionByRefreshToken[refreshToken]; ok {
+			return ErrEntryExists
+		}
+	}
 
 	newSession := *session
 	newSession.SessionID = sessionID
 	newSession.Username = username
 	newSession.Token = token
+	newSession.RefreshToken = refreshToken
 	if newSession.CreatedAt.IsZero() {
 		newSession.CreatedAt = now
 	}
@@ -384,11 +415,31 @@ func (s *InMemoryStorage) CreateAuthSession(ctx context.Context, session *models
 
 	s.authSessions[sessionID] = &newSession
 	s.authSessionByToken[token] = sessionID
+	if refreshToken != "" {
+		s.authSessionByRefreshToken[refreshToken] = sessionID
+	}
 	if s.authSessionsByUser[username] == nil {
 		s.authSessionsByUser[username] = make(map[string]bool)
 	}
 	s.authSessionsByUser[username][sessionID] = true
 	return nil
+}
+
+func (s *InMemoryStorage) GetAuthSession(ctx context.Context, sessionID string) (*models.AuthSession, error) {
+	_ = ctx
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	session, ok := s.authSessions[sessionID]
+	if !ok || session == nil || session.RevokedAt != nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyAuthSession(session), nil
 }
 
 func (s *InMemoryStorage) GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error) {
@@ -407,6 +458,36 @@ func (s *InMemoryStorage) GetAuthSessionByToken(ctx context.Context, token strin
 	}
 	session, ok := s.authSessions[sessionID]
 	if !ok || session == nil || session.RevokedAt != nil {
+		return nil, ErrEntryNotFound
+	}
+	if session.AccessTokenExpiresAt != nil && !session.AccessTokenExpiresAt.After(time.Now()) {
+		return nil, ErrEntryNotFound
+	}
+	return copyAuthSession(session), nil
+}
+
+func (s *InMemoryStorage) GetAuthSessionByRefreshToken(ctx context.Context, refreshToken string) (*models.AuthSession, error) {
+	_ = ctx
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sessionID, ok := s.authSessionByRefreshToken[refreshToken]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	session, ok := s.authSessions[sessionID]
+	if !ok || session == nil || session.RevokedAt != nil {
+		return nil, ErrEntryNotFound
+	}
+	if session.RefreshToken != refreshToken {
+		return nil, ErrEntryNotFound
+	}
+	if session.RefreshTokenExpiresAt != nil && !session.RefreshTokenExpiresAt.After(time.Now()) {
 		return nil, ErrEntryNotFound
 	}
 	return copyAuthSession(session), nil
@@ -437,6 +518,56 @@ func (s *InMemoryStorage) ListAuthSessionsByUser(ctx context.Context, username s
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *InMemoryStorage) UpdateAuthSessionTokens(ctx context.Context, sessionID, accessToken string, accessTokenExpiresAt *time.Time, refreshToken string, refreshTokenExpiresAt *time.Time) error {
+	_ = ctx
+	sessionID = strings.TrimSpace(sessionID)
+	accessToken = strings.TrimSpace(accessToken)
+	refreshToken = strings.TrimSpace(refreshToken)
+	if sessionID == "" || accessToken == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.authSessions[sessionID]
+	if !ok || session == nil || session.RevokedAt != nil {
+		return ErrEntryNotFound
+	}
+	if existingSessionID, ok := s.authSessionByToken[accessToken]; ok && existingSessionID != sessionID {
+		return ErrEntryExists
+	}
+	if refreshToken != "" {
+		if existingSessionID, ok := s.authSessionByRefreshToken[refreshToken]; ok && existingSessionID != sessionID {
+			return ErrEntryExists
+		}
+	}
+
+	if session.Token != "" {
+		delete(s.authSessionByToken, session.Token)
+	}
+	if session.RefreshToken != "" {
+		delete(s.authSessionByRefreshToken, session.RefreshToken)
+	}
+	session.Token = accessToken
+	session.AccessTokenExpiresAt = nil
+	if accessTokenExpiresAt != nil {
+		expiresAtCopy := *accessTokenExpiresAt
+		session.AccessTokenExpiresAt = &expiresAtCopy
+	}
+	session.RefreshToken = refreshToken
+	session.RefreshTokenExpiresAt = nil
+	if refreshTokenExpiresAt != nil {
+		expiresAtCopy := *refreshTokenExpiresAt
+		session.RefreshTokenExpiresAt = &expiresAtCopy
+	}
+	s.authSessionByToken[accessToken] = sessionID
+	if refreshToken != "" {
+		s.authSessionByRefreshToken[refreshToken] = sessionID
+	}
+	return nil
 }
 
 func (s *InMemoryStorage) TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error {
@@ -482,6 +613,9 @@ func (s *InMemoryStorage) RevokeAuthSession(ctx context.Context, username, sessi
 	revokedAt := now
 	session.RevokedAt = &revokedAt
 	delete(s.authSessionByToken, session.Token)
+	if session.RefreshToken != "" {
+		delete(s.authSessionByRefreshToken, session.RefreshToken)
+	}
 	return nil
 }
 
@@ -507,6 +641,115 @@ func (s *InMemoryStorage) RevokeAuthSessionByToken(ctx context.Context, token st
 	revokedAt := now
 	session.RevokedAt = &revokedAt
 	delete(s.authSessionByToken, token)
+	if session.RefreshToken != "" {
+		delete(s.authSessionByRefreshToken, session.RefreshToken)
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) CreateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error {
+	_ = ctx
+	if authorization == nil {
+		return ErrInvalidInput
+	}
+	deviceCode := strings.TrimSpace(authorization.DeviceCode)
+	userCode := strings.TrimSpace(authorization.UserCode)
+	if deviceCode == "" || userCode == "" {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.deviceAuthorizationsByDeviceCode[deviceCode]; ok {
+		return ErrEntryExists
+	}
+	if _, ok := s.deviceAuthorizationByUserCode[userCode]; ok {
+		return ErrEntryExists
+	}
+
+	record := *authorization
+	record.DeviceCode = deviceCode
+	record.UserCode = userCode
+	if record.Status == "" {
+		record.Status = models.DeviceAuthorizationPending
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	if record.ExpiresAt.IsZero() {
+		record.ExpiresAt = now.Add(10 * time.Minute)
+	}
+	s.deviceAuthorizationsByDeviceCode[deviceCode] = &record
+	s.deviceAuthorizationByUserCode[userCode] = deviceCode
+	return nil
+}
+
+func (s *InMemoryStorage) GetDeviceAuthorizationByDeviceCode(ctx context.Context, deviceCode string) (*models.DeviceAuthorization, error) {
+	_ = ctx
+	deviceCode = strings.TrimSpace(deviceCode)
+	if deviceCode == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	record, ok := s.deviceAuthorizationsByDeviceCode[deviceCode]
+	if !ok || record == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyDeviceAuthorization(record), nil
+}
+
+func (s *InMemoryStorage) GetDeviceAuthorizationByUserCode(ctx context.Context, userCode string) (*models.DeviceAuthorization, error) {
+	_ = ctx
+	userCode = strings.TrimSpace(userCode)
+	if userCode == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	deviceCode, ok := s.deviceAuthorizationByUserCode[userCode]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	record, ok := s.deviceAuthorizationsByDeviceCode[deviceCode]
+	if !ok || record == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyDeviceAuthorization(record), nil
+}
+
+func (s *InMemoryStorage) UpdateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error {
+	_ = ctx
+	if authorization == nil {
+		return ErrInvalidInput
+	}
+	deviceCode := strings.TrimSpace(authorization.DeviceCode)
+	userCode := strings.TrimSpace(authorization.UserCode)
+	if deviceCode == "" || userCode == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.deviceAuthorizationsByDeviceCode[deviceCode]
+	if !ok || record == nil {
+		return ErrEntryNotFound
+	}
+	if record.UserCode != userCode {
+		return ErrInvalidInput
+	}
+	updated := *authorization
+	updated.DeviceCode = deviceCode
+	updated.UserCode = userCode
+	s.deviceAuthorizationsByDeviceCode[deviceCode] = &updated
+	s.deviceAuthorizationByUserCode[userCode] = deviceCode
 	return nil
 }
 

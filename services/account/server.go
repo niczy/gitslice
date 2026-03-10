@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -21,11 +23,17 @@ import (
 )
 
 const (
-	passwordMinLen = 8
-	timeRFC3339    = time.RFC3339
+	passwordMinLen          = 8
+	timeRFC3339             = time.RFC3339
+	accessTokenTTL          = 15 * time.Minute
+	refreshTokenTTL         = 30 * 24 * time.Hour
+	deviceAuthorizationTTL  = 10 * time.Minute
+	devicePollInterval      = 5 * time.Second
+	defaultPublicWebBaseURL = "http://localhost:4173"
 )
 
 var orgSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,39}$`)
+var deviceUserCodeAlphabet = []byte("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
 
 type accountServiceServer struct {
 	accountv1.UnimplementedAccountServiceServer
@@ -101,6 +109,17 @@ func randomToken(prefix string, bytesLen int) (string, error) {
 	return prefix + base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
+func randomUserCode() (string, error) {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		buf[i] = deviceUserCodeAlphabet[int(buf[i])%len(deviceUserCodeAlphabet)]
+	}
+	return string(buf[:4]) + "-" + string(buf[4:]), nil
+}
+
 func deviceInfoFromContext(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -113,6 +132,20 @@ func deviceInfoFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+func publicWebBaseURL() string {
+	if value := strings.TrimSpace(os.Getenv("PUBLIC_WEB_BASE_URL")); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return defaultPublicWebBaseURL
+}
+
+func formatOptionalTime(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return ""
+	}
+	return value.Format(timeRFC3339)
 }
 
 func userToProto(user *models.User) *accountv1.User {
@@ -138,6 +171,20 @@ func sessionToProto(session *models.AuthSession, current bool) *accountv1.Sessio
 		LastSeenAt: session.LastSeenAt.Format(timeRFC3339),
 		DeviceInfo: session.DeviceInfo,
 		Current:    current,
+	}
+}
+
+func deviceAuthorizationStatusToProto(status models.DeviceAuthorizationStatus, expiresAt time.Time) accountv1.DeviceAuthorizationStatus {
+	if !expiresAt.IsZero() && !expiresAt.After(time.Now()) {
+		return accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_EXPIRED
+	}
+	switch status {
+	case models.DeviceAuthorizationApproved:
+		return accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_APPROVED
+	case models.DeviceAuthorizationDenied:
+		return accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_DENIED
+	default:
+		return accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_PENDING
 	}
 }
 
@@ -266,16 +313,16 @@ func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdenti
 	return &authIdentity{username: username}, nil
 }
 
-func (s *accountServiceServer) createSession(ctx context.Context, username string) (*models.AuthSession, string, error) {
+func (s *accountServiceServer) createSession(ctx context.Context, username string) (*models.AuthSession, error) {
 	deviceInfo := deviceInfoFromContext(ctx)
 	for i := 0; i < 3; i++ {
 		sessionID, err := randomToken("sess_", 16)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		token, err := randomToken("gs_", 24)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		session := &models.AuthSession{
 			SessionID:  sessionID,
@@ -285,16 +332,76 @@ func (s *accountServiceServer) createSession(ctx context.Context, username strin
 		}
 		err = s.st.CreateAuthSession(ctx, session)
 		if err == nil {
-			return session, token, nil
+			return session, nil
 		}
 		if err != storage.ErrEntryExists {
-			return nil, "", err
+			return nil, err
 		}
 	}
-	return nil, "", status.Error(codes.Aborted, "failed to create session")
+	return nil, status.Error(codes.Aborted, "failed to create session")
 }
 
-func (s *accountServiceServer) buildAuthResponse(ctx context.Context, user *models.User, session *models.AuthSession, token string) (*accountv1.AuthResponse, error) {
+func (s *accountServiceServer) createRefreshableSession(ctx context.Context, username string) (*models.AuthSession, error) {
+	deviceInfo := deviceInfoFromContext(ctx)
+	now := time.Now()
+	accessTokenExpiresAt := now.Add(accessTokenTTL)
+	refreshTokenExpiresAt := now.Add(refreshTokenTTL)
+	for i := 0; i < 3; i++ {
+		sessionID, err := randomToken("sess_", 16)
+		if err != nil {
+			return nil, err
+		}
+		accessToken, err := randomToken("gs_", 24)
+		if err != nil {
+			return nil, err
+		}
+		refreshToken, err := randomToken("gsr_", 24)
+		if err != nil {
+			return nil, err
+		}
+		session := &models.AuthSession{
+			SessionID:             sessionID,
+			Username:              username,
+			Token:                 accessToken,
+			RefreshToken:          refreshToken,
+			DeviceInfo:            deviceInfo,
+			AccessTokenExpiresAt:  &accessTokenExpiresAt,
+			RefreshTokenExpiresAt: &refreshTokenExpiresAt,
+		}
+		if err := s.st.CreateAuthSession(ctx, session); err == nil {
+			return session, nil
+		} else if err != storage.ErrEntryExists {
+			return nil, err
+		}
+	}
+	return nil, status.Error(codes.Aborted, "failed to create refreshable session")
+}
+
+func (s *accountServiceServer) rotateAccessToken(ctx context.Context, session *models.AuthSession) (*models.AuthSession, error) {
+	if session == nil || strings.TrimSpace(session.SessionID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "session is required")
+	}
+	for i := 0; i < 3; i++ {
+		accessToken, err := randomToken("gs_", 24)
+		if err != nil {
+			return nil, err
+		}
+		accessTokenExpiresAt := time.Now().Add(accessTokenTTL)
+		err = s.st.UpdateAuthSessionTokens(ctx, session.SessionID, accessToken, &accessTokenExpiresAt, session.RefreshToken, session.RefreshTokenExpiresAt)
+		if err == nil {
+			sessionCopy := *session
+			sessionCopy.Token = accessToken
+			sessionCopy.AccessTokenExpiresAt = &accessTokenExpiresAt
+			return &sessionCopy, nil
+		}
+		if err != storage.ErrEntryExists {
+			return nil, err
+		}
+	}
+	return nil, status.Error(codes.Aborted, "failed to rotate access token")
+}
+
+func (s *accountServiceServer) buildAuthResponse(ctx context.Context, user *models.User, session *models.AuthSession) (*accountv1.AuthResponse, error) {
 	orgs, err := s.st.ListOrganizationsForUser(ctx, user.Username)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to load organizations")
@@ -304,10 +411,14 @@ func (s *accountServiceServer) buildAuthResponse(ctx context.Context, user *mode
 		outOrgs = append(outOrgs, orgToProto(org))
 	}
 	return &accountv1.AuthResponse{
-		User:          userToProto(user),
-		Organizations: outOrgs,
-		Session:       sessionToProto(session, true),
-		AccessToken:   token,
+		User:                  userToProto(user),
+		Organizations:         outOrgs,
+		Session:               sessionToProto(session, true),
+		AccessToken:           session.Token,
+		RefreshToken:          session.RefreshToken,
+		AccessTokenExpiresAt:  formatOptionalTime(session.AccessTokenExpiresAt),
+		RefreshTokenExpiresAt: formatOptionalTime(session.RefreshTokenExpiresAt),
+		TokenType:             "Bearer",
 	}, nil
 }
 
@@ -351,14 +462,14 @@ func (s *accountServiceServer) Signup(ctx context.Context, req *accountv1.Signup
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to load user")
 	}
-	session, token, err := s.createSession(ctx, username)
+	session, err := s.createSession(ctx, username)
 	if err != nil {
 		if stErr, ok := status.FromError(err); ok {
 			return nil, stErr.Err()
 		}
 		return nil, status.Error(codes.Internal, "failed to create session")
 	}
-	return s.buildAuthResponse(ctx, user, session, token)
+	return s.buildAuthResponse(ctx, user, session)
 }
 
 func (s *accountServiceServer) Login(ctx context.Context, req *accountv1.LoginRequest) (*accountv1.AuthResponse, error) {
@@ -399,7 +510,7 @@ func (s *accountServiceServer) Login(ctx context.Context, req *accountv1.LoginRe
 		}
 	}
 
-	session, token, err := s.createSession(ctx, user.Username)
+	session, err := s.createSession(ctx, user.Username)
 	if err != nil {
 		if stErr, ok := status.FromError(err); ok {
 			return nil, stErr.Err()
@@ -407,7 +518,7 @@ func (s *accountServiceServer) Login(ctx context.Context, req *accountv1.LoginRe
 		return nil, status.Error(codes.Internal, "failed to create session")
 	}
 
-	return s.buildAuthResponse(ctx, user, session, token)
+	return s.buildAuthResponse(ctx, user, session)
 }
 
 func (s *accountServiceServer) Logout(ctx context.Context, req *accountv1.LogoutRequest) (*emptypb.Empty, error) {
@@ -443,6 +554,181 @@ func (s *accountServiceServer) Logout(ctx context.Context, req *accountv1.Logout
 		return nil, err
 	}
 	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) StartDeviceAuthorization(ctx context.Context, req *accountv1.StartDeviceAuthorizationRequest) (*accountv1.StartDeviceAuthorizationResponse, error) {
+	deviceInfo := deviceInfoFromContext(ctx)
+	expiresAt := time.Now().Add(deviceAuthorizationTTL)
+	for i := 0; i < 5; i++ {
+		deviceCode, err := randomToken("dev_", 24)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to create device code")
+		}
+		userCode, err := randomUserCode()
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to create user code")
+		}
+		record := &models.DeviceAuthorization{
+			DeviceCode: deviceCode,
+			UserCode:   userCode,
+			DeviceInfo: deviceInfo,
+			Status:     models.DeviceAuthorizationPending,
+			ExpiresAt:  expiresAt,
+		}
+		if err := s.st.CreateDeviceAuthorization(ctx, record); err != nil {
+			if err == storage.ErrEntryExists {
+				continue
+			}
+			return nil, status.Error(codes.Internal, "failed to store device authorization")
+		}
+		verificationURI := publicWebBaseURL() + "/auth/device"
+		return &accountv1.StartDeviceAuthorizationResponse{
+			DeviceCode:              deviceCode,
+			UserCode:                userCode,
+			VerificationUri:         verificationURI,
+			VerificationUriComplete: verificationURI + "?user_code=" + url.QueryEscape(userCode),
+			PollIntervalSeconds:     int32(devicePollInterval / time.Second),
+			ExpiresAt:               expiresAt.Format(timeRFC3339),
+		}, nil
+	}
+	return nil, status.Error(codes.Aborted, "failed to create device authorization")
+}
+
+func (s *accountServiceServer) ApproveDeviceAuthorization(ctx context.Context, req *accountv1.ApproveDeviceAuthorizationRequest) (*accountv1.ApproveDeviceAuthorizationResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	userCode := strings.ToUpper(strings.TrimSpace(req.GetUserCode()))
+	if userCode == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_code is required")
+	}
+	record, err := s.st.GetDeviceAuthorizationByUserCode(ctx, userCode)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "device authorization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load device authorization")
+	}
+	if !record.ExpiresAt.After(time.Now()) {
+		return nil, status.Error(codes.FailedPrecondition, "device authorization expired")
+	}
+	if record.Status == models.DeviceAuthorizationDenied {
+		return nil, status.Error(codes.FailedPrecondition, "device authorization denied")
+	}
+	if record.Status == models.DeviceAuthorizationApproved {
+		if record.Username != "" && record.Username != identity.username {
+			return nil, status.Error(codes.PermissionDenied, "device authorization already approved by another user")
+		}
+		user, err := s.st.GetUser(ctx, identity.username)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to load user")
+		}
+		return &accountv1.ApproveDeviceAuthorizationResponse{
+			User:       userToProto(user),
+			ApprovedAt: formatOptionalTime(record.ApprovedAt),
+		}, nil
+	}
+
+	session, err := s.createRefreshableSession(ctx, identity.username)
+	if err != nil {
+		if stErr, ok := status.FromError(err); ok {
+			return nil, stErr.Err()
+		}
+		return nil, status.Error(codes.Internal, "failed to create session")
+	}
+	approvedAt := time.Now()
+	record.Username = identity.username
+	record.SessionID = session.SessionID
+	record.Status = models.DeviceAuthorizationApproved
+	record.ApprovedAt = &approvedAt
+	record.DeniedAt = nil
+	if err := s.st.UpdateDeviceAuthorization(ctx, record); err != nil {
+		return nil, status.Error(codes.Internal, "failed to update device authorization")
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	return &accountv1.ApproveDeviceAuthorizationResponse{
+		User:       userToProto(user),
+		ApprovedAt: approvedAt.Format(timeRFC3339),
+	}, nil
+}
+
+func (s *accountServiceServer) PollDeviceAuthorization(ctx context.Context, req *accountv1.PollDeviceAuthorizationRequest) (*accountv1.PollDeviceAuthorizationResponse, error) {
+	deviceCode := strings.TrimSpace(req.GetDeviceCode())
+	if deviceCode == "" {
+		return nil, status.Error(codes.InvalidArgument, "device_code is required")
+	}
+	record, err := s.st.GetDeviceAuthorizationByDeviceCode(ctx, deviceCode)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "device authorization not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load device authorization")
+	}
+
+	statusValue := deviceAuthorizationStatusToProto(record.Status, record.ExpiresAt)
+	response := &accountv1.PollDeviceAuthorizationResponse{
+		Status:    statusValue,
+		ExpiresAt: record.ExpiresAt.Format(timeRFC3339),
+	}
+	if statusValue != accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_APPROVED {
+		return response, nil
+	}
+	if strings.TrimSpace(record.SessionID) == "" {
+		return nil, status.Error(codes.Internal, "approved device authorization missing session")
+	}
+	session, err := s.st.GetAuthSession(ctx, record.SessionID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Unauthenticated, "authorized session no longer exists")
+		}
+		return nil, status.Error(codes.Internal, "failed to load authorized session")
+	}
+	user, err := s.st.GetUser(ctx, session.Username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	authResp, err := s.buildAuthResponse(ctx, user, session)
+	if err != nil {
+		return nil, err
+	}
+	response.Auth = authResp
+	return response, nil
+}
+
+func (s *accountServiceServer) RefreshAccessToken(ctx context.Context, req *accountv1.RefreshAccessTokenRequest) (*accountv1.AuthResponse, error) {
+	refreshToken := strings.TrimSpace(req.GetRefreshToken())
+	if refreshToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "refresh_token is required")
+	}
+	session, err := s.st.GetAuthSessionByRefreshToken(ctx, refreshToken)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
+		}
+		return nil, status.Error(codes.Internal, "failed to resolve refresh token")
+	}
+	session, err = s.rotateAccessToken(ctx, session)
+	if err != nil {
+		if stErr, ok := status.FromError(err); ok {
+			return nil, stErr.Err()
+		}
+		return nil, status.Error(codes.Internal, "failed to refresh access token")
+	}
+	user, err := s.st.GetUser(ctx, session.Username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	return s.buildAuthResponse(ctx, user, session)
 }
 
 func (s *accountServiceServer) ResetPassword(ctx context.Context, req *accountv1.ResetPasswordRequest) (*emptypb.Empty, error) {
