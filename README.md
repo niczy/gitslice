@@ -386,11 +386,23 @@ To restore PM2 apps on reboot (user crontab approach):
 @reboot PATH=/home/<user>/.nvm/versions/node/<node-version>/bin:/home/<user>/.local/go/bin:/home/<user>/.local/protoc/bin:/home/<user>/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /home/<user>/.nvm/versions/node/<node-version>/bin/pm2 resurrect >> /home/<user>/workspace/gitslice/logs/pm2_reboot.log 2>&1
 ```
 
-### NGINX (Cloudflare in Front, Origin HTTP)
+### NGINX (Cloudflare in Front, Origin HTTPS)
 
-`ops/nginx.conf` is configured for HTTP origin traffic (no local TLS termination). Cloudflare serves public HTTPS and proxies to origin HTTP.
+`ops/nginx.conf` terminates TLS on the origin for both `agenttools.dev` and `api.agenttools.dev`, redirects port `80` to HTTPS, and serves HTTP/2 on port `443`.
 
-`api.agenttools.dev` routes gRPC service paths (`/slice.v1.SliceService/` and `/admin.v1.AdminService/`) to the core server and is configured as an HTTP/2 listener (`listen 80 http2`) for plaintext gRPC (h2c) CLI traffic. `agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths. CLI clients should target `api.agenttools.dev` for gRPC connectivity.
+`api.agenttools.dev` routes the public gRPC service paths to the core server:
+- `/slice.v1.SliceService/`
+- `/admin.v1.AdminService/`
+- `/account.v1.AccountService/`
+- `/file.v1.FileService/`
+- `/filesystem.v1.FilesystemService/`
+- `/agent.v1.AgentService/`
+
+`agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths.
+
+For CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
+
+Cloudflare must proxy `api.agenttools.dev` in gRPC mode and use an HTTPS origin mode such as `Full (strict)`. Plain HTTP origin mode and h2c on port `80` are not compatible with Cloudflare gRPC proxying.
 
 Apply config:
 
