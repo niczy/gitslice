@@ -272,6 +272,10 @@ For local setup, copy the template and fill in values:
 cp web/.env.example web/.env
 ```
 
+For production deploys managed by `ops/restart_all.sh` or PM2, put the same `AUTH_*`
+values in `ops/.env`. The restart script sources `ops/.env`, and the PM2 ecosystem
+reads it directly so hourly restarts keep the web auth middleware configured.
+
 
 CLI usage:
 
@@ -372,6 +376,9 @@ npm install -g pm2
 pm2 start ops/ecosystem.config.cjs
 pm2 save
 ```
+
+The PM2 ecosystem reads `ops/.env` for both core and web settings, including
+Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
 
 To restore PM2 apps on reboot (user crontab approach):
 
