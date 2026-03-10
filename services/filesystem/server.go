@@ -803,7 +803,7 @@ func (s *filesystemServiceServer) Snapshot(ctx context.Context, req *filesystemv
 		message = "snapshot"
 	}
 
-	commitHash, _, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	commitHash, _, err := s.commitWorkspaceMutation(ctx, workspace, message, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1041,7 +1041,7 @@ func (s *filesystemServiceServer) Fork(ctx context.Context, req *filesystemv1.Fo
 		return nil, err
 	}
 
-	if _, _, err := s.commitWorkspaceMutation(ctx, forkWorkspace, fmt.Sprintf("fork from %s@%s", sourceWorkspace.ID, sourceSnapshotID)); err != nil {
+	if _, _, err := s.commitWorkspaceMutation(ctx, forkWorkspace, fmt.Sprintf("fork from %s@%s", sourceWorkspace.ID, sourceSnapshotID), nil); err != nil {
 		return nil, err
 	}
 
@@ -1456,7 +1456,30 @@ func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context,
 
 	hash := hashContent(content)
 	size := int64(len(content))
-	fileContentID := workspaceFileContentID(workspace.ID, filePath)
+	blocks, payloads := storage.ChunkFile(content, storage.DefaultFileBlockSize)
+	manifest := &models.FileManifest{
+		Path:      filePath,
+		TotalSize: size,
+		Hash:      hash,
+		Blocks:    blocks,
+	}
+	if len(payloads) > 0 {
+		missing := make(map[string][]byte, len(payloads))
+		for blockHash, payload := range payloads {
+			hasBlock, err := s.storage.HasBlock(ctx, blockHash)
+			if err != nil {
+				return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to check block presence: %v", err))
+			}
+			if !hasBlock {
+				missing[blockHash] = payload
+			}
+		}
+		if len(missing) > 0 {
+			if err := s.storage.PutBlocks(ctx, missing); err != nil {
+				return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to persist file blocks: %v", err))
+			}
+		}
+	}
 	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(workspace.ID, filePath),
 		Path:     filePath,
@@ -1466,14 +1489,11 @@ func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context,
 	}); err != nil {
 		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to write file entry: %v", err))
 	}
-	if err := s.storage.AddFileContent(ctx, &models.FileContent{
-		FileID:  fileContentID,
-		Path:    filePath,
-		Content: append([]byte(nil), content...),
-		Size:    size,
-		Hash:    hash,
-	}); err != nil {
-		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to persist file content: %v", err))
+	if err := s.storage.PutFileManifest(ctx, workspace.ID, filePath, manifest); err != nil {
+		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to persist file manifest: %v", err))
+	}
+	if err := s.storage.PutVersionedFileManifest(ctx, manifest); err != nil {
+		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to persist versioned file manifest: %v", err))
 	}
 	if err := s.storage.AddFileToSlice(ctx, filePath, workspace.ID); err != nil {
 		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
@@ -1489,6 +1509,9 @@ func (s *filesystemServiceServer) deleteWorkspaceFile(ctx context.Context, works
 
 	if err := s.storage.DeleteEntry(ctx, entry.ID); err != nil && err != storage.ErrEntryNotFound {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to delete file entry: %v", err))
+	}
+	if err := s.storage.DeleteFileManifest(ctx, workspaceID, filePath); err != nil && err != storage.ErrEntryNotFound {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to delete file manifest: %v", err))
 	}
 	if err := s.storage.RemoveFileFromSlice(ctx, filePath, workspaceID); err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
@@ -2292,7 +2315,7 @@ func (s *filesystemServiceServer) workspaceStats(ctx context.Context, workspaceI
 }
 
 func (s *filesystemServiceServer) finalizeWorkspaceMutation(ctx context.Context, workspace *models.Slice, homeMode bool, message string, modifiedPaths []string) (string, error) {
-	commitHash, commitTime, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	commitHash, commitTime, err := s.commitWorkspaceMutation(ctx, workspace, message, modifiedPaths)
 	if err != nil {
 		return "", err
 	}
@@ -2313,7 +2336,7 @@ func (s *filesystemServiceServer) finalizeWorkspaceMutation(ctx context.Context,
 	return commitHash, nil
 }
 
-func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, workspace *models.Slice, message string) (string, time.Time, error) {
+func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, workspace *models.Slice, message string, modifiedPaths []string) (string, time.Time, error) {
 	if workspace == nil {
 		return "", time.Time{}, status.Error(codes.Internal, "workspace is nil")
 	}
@@ -2327,9 +2350,40 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 	if err != nil {
 		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace paths: %v", err))
 	}
-	files, err := s.collectWorkspaceSnapshotFiles(ctx, workspace.ID)
-	if err != nil {
-		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace snapshot: %v", err))
+
+	files := make(map[string]string)
+	if strings.TrimSpace(meta.HeadCommitHash) != "" {
+		parentSnapshot, err := s.storage.GetCommitSnapshot(ctx, meta.HeadCommitHash)
+		if err != nil && err != storage.ErrCommitNotFound {
+			return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to load parent snapshot: %v", err))
+		}
+		if parentSnapshot != nil && parentSnapshot.Files != nil {
+			for filePath, fileHash := range parentSnapshot.Files {
+				files[filePath] = fileHash
+			}
+		}
+	}
+	changedPaths := normalizePromotionPaths(modifiedPaths)
+	if len(changedPaths) == 0 {
+		files, err = s.collectWorkspaceSnapshotFiles(ctx, workspace.ID)
+		if err != nil {
+			return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace snapshot: %v", err))
+		}
+	} else {
+		for _, filePath := range changedPaths {
+			manifest, err := s.storage.GetFileManifest(ctx, workspace.ID, filePath)
+			if err == nil && manifest != nil {
+				files[filePath] = strings.TrimSpace(manifest.Hash)
+				continue
+			}
+			if err == storage.ErrEntryNotFound {
+				delete(files, filePath)
+				continue
+			}
+			if err != nil {
+				return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to load file manifest: %v", err))
+			}
+		}
 	}
 
 	now := time.Now()
@@ -2407,6 +2461,14 @@ func (s *filesystemServiceServer) collectWorkspaceSnapshotFiles(ctx context.Cont
 	for _, entry := range entries {
 		if entry == nil || entry.Type != "file" {
 			continue
+		}
+		manifest, err := s.storage.GetFileManifest(ctx, workspaceID, entry.Path)
+		if err == nil && manifest != nil {
+			files[entry.Path] = strings.TrimSpace(manifest.Hash)
+			continue
+		}
+		if err != nil && err != storage.ErrEntryNotFound {
+			return nil, err
 		}
 		content, err := s.storage.GetSliceFileByPath(ctx, workspaceID, entry.Path)
 		if err != nil {
@@ -2609,8 +2671,4 @@ func slugifyWorkspaceID(name string) string {
 func hashContent(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
-}
-
-func workspaceFileContentID(workspaceID, filePath string) string {
-	return common.GenerateEntryID(workspaceID, filePath)
 }

@@ -29,9 +29,10 @@ type InMemoryStorage struct {
 	fileIndex map[string]map[string]bool // fileID -> {sliceID: true}
 
 	// File content storage
-	fileContents map[string]*models.FileContent  // fileID -> content
-	blocks       map[string][]byte               // block hash -> content
-	manifests    map[string]*models.FileManifest // sliceID:path -> manifest
+	fileContents       map[string]*models.FileContent  // fileID -> content
+	blocks             map[string][]byte               // block hash -> content
+	manifests          map[string]*models.FileManifest // sliceID:path -> manifest
+	versionedManifests map[string]*models.FileManifest // file hash -> manifest
 
 	// Directory entries
 	entries         map[string]*models.DirectoryEntry // entryID -> entry
@@ -98,6 +99,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		fileContents:                     make(map[string]*models.FileContent),
 		blocks:                           make(map[string][]byte),
 		manifests:                        make(map[string]*models.FileManifest),
+		versionedManifests:               make(map[string]*models.FileManifest),
 		entries:                          make(map[string]*models.DirectoryEntry),
 		entriesByPath:                    make(map[string]string),
 		entriesBySlice:                   make(map[string][]string),
@@ -164,6 +166,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.fileContents = fresh.fileContents
 	s.blocks = fresh.blocks
 	s.manifests = fresh.manifests
+	s.versionedManifests = fresh.versionedManifests
 	s.entries = fresh.entries
 	s.entriesByPath = fresh.entriesByPath
 	s.entriesBySlice = fresh.entriesBySlice
@@ -1115,6 +1118,28 @@ func (s *InMemoryStorage) DeleteFileManifest(ctx context.Context, sliceID, path 
 	return nil
 }
 
+func (s *InMemoryStorage) PutVersionedFileManifest(ctx context.Context, manifest *models.FileManifest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if manifest == nil || strings.TrimSpace(manifest.Hash) == "" {
+		return ErrInvalidInput
+	}
+	s.versionedManifests[strings.TrimSpace(manifest.Hash)] = cloneManifest(manifest)
+	return nil
+}
+
+func (s *InMemoryStorage) GetVersionedFileManifest(ctx context.Context, hash string) (*models.FileManifest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	manifest, ok := s.versionedManifests[strings.TrimSpace(hash)]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return cloneManifest(manifest), nil
+}
+
 // GetRootSlice returns the root slice
 func (s *InMemoryStorage) GetRootSlice(ctx context.Context) (*models.Slice, error) {
 	s.mu.RLock()
@@ -1488,6 +1513,12 @@ func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
 	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
 		return strings.TrimSpace(fc.Hash)
 	}
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID != "" {
+		if manifest, ok := s.manifests[sliceID+":"+cleanRelativePath(entry.Path)]; ok && manifest != nil && strings.TrimSpace(manifest.Hash) != "" {
+			return strings.TrimSpace(manifest.Hash)
+		}
+	}
 	return strings.TrimSpace(entry.Hash)
 }
 
@@ -1566,6 +1597,23 @@ func (s *InMemoryStorage) fileContentForEntryLocked(entry *models.DirectoryEntry
 	}
 	if len(entry.Content) > 0 {
 		out.Content = append([]byte(nil), entry.Content...)
+	}
+	sliceID := inferSliceIDForEntry(entry)
+	if sliceID != "" {
+		if manifest, ok := s.manifests[sliceID+":"+cleanRelativePath(entry.Path)]; ok && manifest != nil {
+			assembled, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
+				payload, ok := s.blocks[hash]
+				if !ok {
+					return nil, ErrEntryNotFound
+				}
+				return append([]byte(nil), payload...), nil
+			})
+			if err == nil {
+				out.Size = manifest.TotalSize
+				out.Hash = strings.TrimSpace(manifest.Hash)
+				out.Content = assembled
+			}
+		}
 	}
 	return out
 }
@@ -1775,7 +1823,27 @@ func (s *InMemoryStorage) GetFileContentByHash(ctx context.Context, contentHash 
 
 	content, exists := s.versionedContent[contentHash]
 	if !exists {
-		return nil, ErrEntryNotFound
+		manifest, ok := s.versionedManifests[contentHash]
+		if !ok || manifest == nil {
+			return nil, ErrEntryNotFound
+		}
+		assembled, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
+			payload, ok := s.blocks[hash]
+			if !ok {
+				return nil, ErrEntryNotFound
+			}
+			return append([]byte(nil), payload...), nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &models.FileContent{
+			FileID:  manifest.Path,
+			Path:    manifest.Path,
+			Content: assembled,
+			Size:    manifest.TotalSize,
+			Hash:    strings.TrimSpace(manifest.Hash),
+		}, nil
 	}
 
 	copyContent := *content
