@@ -1096,6 +1096,18 @@ func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 	if !ok {
 		return nil, ErrEntryNotFound
 	}
+	if entry.Type != "file" {
+		out := &models.FileContent{
+			FileID: entry.Path,
+			Path:   entry.Path,
+			Size:   entry.Size,
+			Hash:   strings.TrimSpace(entry.Hash),
+		}
+		if len(entry.Content) > 0 {
+			out.Content = append([]byte(nil), entry.Content...)
+		}
+		return out, nil
+	}
 
 	return s.fileContentForEntryLocked(entry), nil
 }
