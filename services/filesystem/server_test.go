@@ -388,6 +388,62 @@ func TestEditFilesRejectsConflictingExpectedHash(t *testing.T) {
 	}
 }
 
+func TestFilesystemBlockMetricsTrackReuse(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	before := snapshotFilesystemMetrics()
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-metrics",
+		Name:        "Metrics",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	content := []byte("shared block content\n")
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-metrics",
+		Path:        "README.md",
+		Content:     content,
+	}); err != nil {
+		t.Fatalf("WriteFile(README) failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-metrics",
+		Path:        "docs/README.md",
+		Content:     content,
+	}); err != nil {
+		t.Fatalf("WriteFile(docs/README) failed: %v", err)
+	}
+
+	after := snapshotFilesystemMetrics()
+	if got, want := after.BlocksWrittenTotal-before.BlocksWrittenTotal, int64(1); got != want {
+		t.Fatalf("blocks written delta mismatch: got %d want %d", got, want)
+	}
+	if got, want := after.BlocksReusedTotal-before.BlocksReusedTotal, int64(1); got != want {
+		t.Fatalf("blocks reused delta mismatch: got %d want %d", got, want)
+	}
+	if got, want := after.ManifestWrites-before.ManifestWrites, int64(2); got != want {
+		t.Fatalf("manifest writes delta mismatch: got %d want %d", got, want)
+	}
+	if got := after.ManifestBytesTotal - before.ManifestBytesTotal; got <= 0 {
+		t.Fatalf("expected manifest bytes total to increase, got delta=%d", got)
+	}
+	if got, want := filesystemDedupRatio(
+		after.BlocksWrittenTotal-before.BlocksWrittenTotal,
+		after.BlocksReusedTotal-before.BlocksReusedTotal,
+	), 0.5; got != want {
+		t.Fatalf("dedup ratio mismatch: got %.2f want %.2f", got, want)
+	}
+	if after.DedupRatio < 0 || after.DedupRatio > 1 {
+		t.Fatalf("global dedup ratio out of range: %.4f", after.DedupRatio)
+	}
+}
+
 func TestReadFileRanges(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()

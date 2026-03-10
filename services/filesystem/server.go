@@ -1908,6 +1908,7 @@ func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context,
 		Hash:      hash,
 		Blocks:    blocks,
 	}
+	writtenBlocks := 0
 	if len(payloads) > 0 {
 		missing := make(map[string][]byte, len(payloads))
 		for blockHash, payload := range payloads {
@@ -1924,6 +1925,7 @@ func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context,
 				return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to persist file blocks: %v", err))
 			}
 		}
+		writtenBlocks = len(missing)
 	}
 	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(workspace.ID, filePath),
@@ -1943,6 +1945,7 @@ func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context,
 	if err := s.storage.AddFileToSlice(ctx, filePath, workspace.ID); err != nil {
 		return "", 0, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
 	}
+	observeFilesystemManifestWrite(manifest, writtenBlocks, len(payloads)-writtenBlocks)
 	return hash, size, nil
 }
 
