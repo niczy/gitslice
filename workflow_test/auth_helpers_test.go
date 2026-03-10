@@ -11,3 +11,7 @@ const testUsername = "testuser"
 func withTestUser(ctx context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "authorization", "User "+testUsername)
 }
+
+func withBearerToken(ctx context.Context, token string) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+}

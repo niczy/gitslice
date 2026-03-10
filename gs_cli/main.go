@@ -24,7 +24,8 @@ var (
 	fileServerAddr  = flag.String("file-addr", "localhost:50051", "File service address")
 	fsServerAddr    = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
 	useTLS          = flag.Bool("tls", false, "Use TLS for gRPC connections")
-	userFlag        = flag.String("user", "", "Username for fake login (overrides GS_USERNAME and ~/.gitslice/user)")
+	apiKeyFlag      = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY and ~/.gitslice/credentials.json)")
+	userFlag        = flag.String("user", "", "Legacy username auth for dev use (overrides GS_USERNAME and ~/.gitslice/user after bearer auth sources)")
 )
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
@@ -41,6 +42,20 @@ type CLI struct {
 
 func main() {
 	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		printHelp()
+		return
+	}
+
+	if args[0] == "login" {
+		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
+		if err != nil && len(args) == 1 {
+			log.Fatalf("Failed to resolve current auth: %v", err)
+		}
+		handleLogin(authConfig, args[1:])
+		return
+	}
 
 	if *coreServerAddr != "" {
 		*sliceServerAddr = *coreServerAddr
@@ -57,21 +72,13 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	defer cancel()
-	username := resolveUsername(*userFlag)
-	ctx, err = withUserAuth(ctx, username)
+	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
 	if err != nil {
-		log.Fatalf("Invalid --user: %v", err)
+		log.Fatalf("Failed to resolve auth: %v", err)
 	}
-
-	args := flag.Args()
-	if len(args) < 1 {
-		printHelp()
-		return
-	}
+	ctx = withCLIAuth(ctx, authConfig)
 
 	switch args[0] {
-	case "login":
-		handleLogin(username, args[1:])
 	case "slice":
 		handleSliceCommand(ctx, cli, args[1:])
 	case "changeset":

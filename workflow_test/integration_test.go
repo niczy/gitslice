@@ -253,6 +253,10 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 }
 
 func runCLIWithDirInput(workdir, input string, args ...string) (string, error) {
+	return runCLIWithDirInputEnv(workdir, input, nil, args...)
+}
+
+func runCLIWithDirInputEnv(workdir, input string, env map[string]string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -269,6 +273,12 @@ func runCLIWithDirInput(workdir, input string, args ...string) (string, error) {
 	}
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
+	}
+	if env != nil {
+		cmd.Env = os.Environ()
+		for key, value := range env {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -740,6 +750,49 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	_, err := client.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected workspace to be deleted, got err=%v", err)
+	}
+}
+
+func TestFilesystemCLIUsesAPIKeyEnvOverLegacyUser(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	apiUsername := fmt.Sprintf("api-key-user-%d", time.Now().UnixNano())
+	if _, err := testStorage.EnsureUser(ctx, apiUsername); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+	token := fmt.Sprintf("gs_test_%d", time.Now().UnixNano())
+	if err := testStorage.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID: fmt.Sprintf("sess-%d", time.Now().UnixNano()),
+		Username:  apiUsername,
+		Token:     token,
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+
+	workspaceID := fmt.Sprintf("fs-cli-auth-%d", time.Now().UnixNano())
+	output, err := runCLIWithDirInputEnv("", "", map[string]string{"GS_API_KEY": token}, "fs", "create", workspaceID)
+	if err != nil {
+		t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Created workspace "+workspaceID) {
+		t.Fatalf("expected workspace creation output, got: %s", output)
+	}
+	defer func() {
+		_, _ = runCLIWithDirInputEnv("", "", map[string]string{"GS_API_KEY": token}, "fs", "delete", workspaceID)
+	}()
+
+	client := newFilesystemClient(t)
+	authCtx := withBearerToken(ctx, token)
+	workspace, err := client.GetWorkspaceInfo(authCtx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("GetWorkspaceInfo failed: %v", err)
+	}
+	if workspace.CreatedBy != apiUsername {
+		t.Fatalf("expected workspace created by %q, got %q", apiUsername, workspace.CreatedBy)
+	}
+	if len(workspace.Owners) != 1 || workspace.Owners[0] != apiUsername {
+		t.Fatalf("expected workspace owner %q, got %#v", apiUsername, workspace.Owners)
 	}
 }
 
