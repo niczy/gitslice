@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
@@ -121,6 +121,25 @@ func (c *slicePathCache) put(key string, v *cachedPaths) {
 // NewService constructs the file service implementation for use without gRPC.
 func NewService(st storage.Storage) filev1.FileServiceServer {
 	return newFileServiceServer(st)
+}
+
+func (s *fileServiceServer) requireUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	return identity.Username, nil
+}
+
+func (s *fileServiceServer) optionalUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.OptionalGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	if identity == nil {
+		return "", nil
+	}
+	return identity.Username, nil
 }
 
 // resolveVersion extracts the effective slice and commit from oneof version specifiers.
@@ -290,7 +309,10 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -702,7 +724,10 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -1049,7 +1074,10 @@ func (s *fileServiceServer) GetFileHistory(ctx context.Context, req *filev1.GetF
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -1116,7 +1144,10 @@ func (s *fileServiceServer) GetDirectoryHistory(ctx context.Context, req *filev1
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -1289,7 +1320,10 @@ func (s *fileServiceServer) GetCommitChanges(ctx context.Context, req *filev1.Ge
 }
 
 func (s *fileServiceServer) authorizeCommitChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return err
+	}
 	checked := make(map[string]struct{})
 	for _, change := range changes {
 		if change == nil || strings.TrimSpace(change.SliceID) == "" {

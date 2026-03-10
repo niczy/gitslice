@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -2164,10 +2164,11 @@ func (s *filesystemServiceServer) createWorkspaceShell(ctx context.Context, work
 }
 
 func (s *filesystemServiceServer) requireUser(ctx context.Context) (string, error) {
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return "", status.Error(codes.Unauthenticated, "login required")
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
 	}
+	username := identity.Username
 	if _, err := s.storage.EnsureUser(ctx, username); err != nil {
 		return "", status.Error(codes.InvalidArgument, "invalid user")
 	}
@@ -2188,7 +2189,10 @@ func (s *filesystemServiceServer) requireWorkspaceViewAccess(ctx context.Context
 		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load workspace: %v", err))
 	}
 
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !canViewWorkspace(workspace, username) {
 		return nil, nil, status.Error(codes.PermissionDenied, "not authorized for workspace")
 	}

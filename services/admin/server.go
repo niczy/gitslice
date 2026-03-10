@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/sliceconfig"
@@ -125,15 +126,34 @@ func copyStringMap(values map[string]string) map[string]string {
 }
 
 func (s *adminServiceServer) requireUser(ctx context.Context) (string, *models.User, error) {
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return "", nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return "", nil, err
 	}
 	user, err := s.storage.EnsureUser(ctx, username)
 	if err != nil {
 		return "", nil, status.Error(codes.InvalidArgument, "invalid user")
 	}
 	return username, user, nil
+}
+
+func (s *adminServiceServer) requireUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	return identity.Username, nil
+}
+
+func (s *adminServiceServer) optionalUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.OptionalGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	if identity == nil {
+		return "", nil
+	}
+	return identity.Username, nil
 }
 
 func (s *adminServiceServer) Login(ctx context.Context, req *adminv1.LoginRequest) (*adminv1.MeResponse, error) {
@@ -425,9 +445,9 @@ func (s *adminServiceServer) UpdateSliceEnvironment(ctx context.Context, req *ad
 
 func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchMergeRequest) (*adminv1.BatchMergeResponse, error) {
 	log.Printf("BatchMerge called: max_slices=%v", req.MaxSlices)
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	rootSlice, err := s.storage.GetRootSlice(ctx)
@@ -566,9 +586,8 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 
 func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.ConflictsRequest) (*adminv1.ConflictsResponse, error) {
 	log.Printf("GetConflicts called: slice_id=%v", req.SliceId)
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	if _, err := s.requireUsername(ctx); err != nil {
+		return nil, err
 	}
 
 	conflicts, err := s.storage.ListConflicts(ctx)
@@ -605,9 +624,8 @@ func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.Conf
 
 func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.ResolveConflictRequest) (*adminv1.ResolveConflictResponse, error) {
 	log.Printf("ResolveConflict called: file_id=%s preferred_slice_id=%s", req.FileId, req.PreferredSliceId)
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	if _, err := s.requireUsername(ctx); err != nil {
+		return nil, err
 	}
 
 	if req.FileId == "" {
@@ -655,9 +673,8 @@ func (s *adminServiceServer) GetGlobalState(ctx context.Context, req *adminv1.Gl
 }
 
 func (s *adminServiceServer) ImportGitRepo(ctx context.Context, req *adminv1.ImportGitRepoRequest) (*adminv1.ImportGitRepoResponse, error) {
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	if _, err := s.requireUsername(ctx); err != nil {
+		return nil, err
 	}
 
 	repoPath := strings.TrimSpace(req.GetRepoPath())
@@ -706,7 +723,10 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 		limit = int(^uint(0) >> 1)
 	}
 
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root slice: %v", err))
@@ -765,9 +785,8 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 
 func (s *adminServiceServer) WatchConflicts(req *adminv1.WatchConflictsRequest, stream adminv1.AdminService_WatchConflictsServer) error {
 	log.Printf("WatchConflicts called: slice_id=%v", req.SliceId)
-	username := auth.UsernameFromGRPCContext(stream.Context())
-	if username == "" {
-		return status.Error(codes.Unauthenticated, "login required")
+	if _, err := s.requireUsername(stream.Context()); err != nil {
+		return err
 	}
 
 	conflicts, err := s.storage.ListConflicts(stream.Context())

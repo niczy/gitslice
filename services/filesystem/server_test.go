@@ -24,6 +24,40 @@ func authContext(username string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User "+username))
 }
 
+func bearerAuthContext(token string) context.Context {
+	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
+}
+
+func TestCreateWorkspaceAcceptsBearerSessionToken(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+	if _, err := st.EnsureUser(ctx, "tester"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+	if err := st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID: "sess-tester",
+		Username:  "tester",
+		Token:     "gs_test_tester",
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+
+	svc := NewService(st)
+	workspace, err := svc.CreateWorkspace(bearerAuthContext("gs_test_tester"), &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-bearer",
+		Name:        "Bearer Workspace",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if workspace.GetCreatedBy() != "tester" {
+		t.Fatalf("expected created_by tester, got %q", workspace.GetCreatedBy())
+	}
+}
+
 func TestWorkspaceFileLifecycle(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
