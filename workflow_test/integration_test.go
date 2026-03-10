@@ -29,6 +29,7 @@ import (
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	accountservice "github.com/niczy/gitslice/services/account"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
@@ -121,6 +122,7 @@ func startGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
 	}
 
 	srv := grpc.NewServer()
+	accountservice.RegisterGRPCServer(srv, st)
 	sliceservice.RegisterGRPCServer(srv, st)
 	fileservice.RegisterGRPCServer(srv, st)
 	filesystemservice.RegisterGRPCServer(srv, st)
@@ -261,6 +263,7 @@ func runCLIWithDirInputEnv(workdir, input string, env map[string]string, args ..
 	defer cancel()
 
 	fullArgs := append([]string{
+		"--account-addr", grpcServiceAddr,
 		"--slice-addr", grpcServiceAddr,
 		"--admin-addr", grpcServiceAddr,
 		"--file-addr", grpcServiceAddr,
@@ -793,6 +796,85 @@ func TestFilesystemCLIUsesAPIKeyEnvOverLegacyUser(t *testing.T) {
 	}
 	if len(workspace.Owners) != 1 || workspace.Owners[0] != apiUsername {
 		t.Fatalf("expected workspace owner %q, got %#v", apiUsername, workspace.Owners)
+	}
+}
+
+func TestCLILoginAndLogoutUseStoredBearerCredentials(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	homeDir := t.TempDir()
+	loginUsername := fmt.Sprintf("login-user-%d", time.Now().UnixNano())
+	env := map[string]string{"HOME": homeDir}
+
+	output, err := runCLIWithDirInputEnv("", "", env, "login", loginUsername)
+	if err != nil {
+		t.Fatalf("login command failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Logged in as: "+loginUsername) {
+		t.Fatalf("unexpected login output: %s", output)
+	}
+
+	credentialsPath := filepath.Join(homeDir, ".gitslice", "credentials.json")
+	data, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile credentials failed: %v", err)
+	}
+	var creds struct {
+		AccessToken string `json:"access_token"`
+		Username    string `json:"username"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		t.Fatalf("Unmarshal credentials failed: %v", err)
+	}
+	if creds.AccessToken == "" || creds.Username != loginUsername {
+		t.Fatalf("unexpected credentials contents: %+v", creds)
+	}
+
+	output, err = runCLIWithDirInputEnv("", "", env, "login")
+	if err != nil {
+		t.Fatalf("login status command failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Logged in as: "+loginUsername) {
+		t.Fatalf("unexpected login status output: %s", output)
+	}
+
+	client := newFilesystemClient(t)
+	authCtx := withBearerToken(ctx, creds.AccessToken)
+	if _, err := client.ListWorkspaces(authCtx, &filesystemv1.ListWorkspacesRequest{}); err != nil {
+		t.Fatalf("stored bearer token was not accepted before fs create: %v", err)
+	}
+
+	workspaceID := fmt.Sprintf("fs-cli-login-%d", time.Now().UnixNano())
+	output, err = runCLIWithDirInputEnv("", "", env, "fs", "create", workspaceID)
+	if err != nil {
+		t.Fatalf("fs create failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Created workspace "+workspaceID) {
+		t.Fatalf("unexpected fs create output: %s", output)
+	}
+
+	defer func() {
+		_, _ = client.DeleteWorkspace(authCtx, &filesystemv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID})
+	}()
+
+	workspace, err := client.GetWorkspaceInfo(authCtx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("GetWorkspaceInfo failed: %v", err)
+	}
+	if workspace.CreatedBy != loginUsername {
+		t.Fatalf("expected workspace created by %q, got %q", loginUsername, workspace.CreatedBy)
+	}
+
+	output, err = runCLIWithDirInputEnv("", "", env, "logout")
+	if err != nil {
+		t.Fatalf("logout command failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Logged out.") {
+		t.Fatalf("unexpected logout output: %s", output)
+	}
+	if _, err := os.Stat(credentialsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected credentials file to be removed, stat err=%v", err)
 	}
 }
 

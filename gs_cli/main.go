@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
@@ -18,22 +19,25 @@ import (
 )
 
 var (
-	coreServerAddr  = flag.String("addr", "", "Core gRPC service address (overrides slice-addr/admin-addr/file-addr)")
-	sliceServerAddr = flag.String("slice-addr", "localhost:50051", "Slice service address")
-	adminServerAddr = flag.String("admin-addr", "localhost:50051", "Admin service address")
-	fileServerAddr  = flag.String("file-addr", "localhost:50051", "File service address")
-	fsServerAddr    = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
-	useTLS          = flag.Bool("tls", false, "Use TLS for gRPC connections")
-	apiKeyFlag      = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY and ~/.gitslice/credentials.json)")
-	userFlag        = flag.String("user", "", "Legacy username auth for dev use (overrides GS_USERNAME and ~/.gitslice/user after bearer auth sources)")
+	coreServerAddr    = flag.String("addr", "", "Core gRPC service address (overrides account-addr/slice-addr/admin-addr/file-addr/fs-addr)")
+	accountServerAddr = flag.String("account-addr", "localhost:50051", "Account service address")
+	sliceServerAddr   = flag.String("slice-addr", "localhost:50051", "Slice service address")
+	adminServerAddr   = flag.String("admin-addr", "localhost:50051", "Admin service address")
+	fileServerAddr    = flag.String("file-addr", "localhost:50051", "File service address")
+	fsServerAddr      = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
+	useTLS            = flag.Bool("tls", false, "Use TLS for gRPC connections")
+	apiKeyFlag        = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY and ~/.gitslice/credentials.json)")
+	userFlag          = flag.String("user", "", "Legacy username auth for dev use (overrides GS_USERNAME and ~/.gitslice/user after bearer auth sources)")
 )
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
 type CLI struct {
+	accountConn      *grpc.ClientConn
 	sliceConn        *grpc.ClientConn
 	adminConn        *grpc.ClientConn
 	fileConn         *grpc.ClientConn
 	filesystemConn   *grpc.ClientConn
+	accountClient    accountv1.AccountServiceClient
 	sliceClient      slicev1.SliceServiceClient
 	adminClient      adminv1.AdminServiceClient
 	fileClient       filev1.FileServiceClient
@@ -48,27 +52,40 @@ func main() {
 		return
 	}
 
-	if args[0] == "login" {
-		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
-		if err != nil && len(args) == 1 {
-			log.Fatalf("Failed to resolve current auth: %v", err)
-		}
-		handleLogin(authConfig, args[1:])
-		return
-	}
-
 	if *coreServerAddr != "" {
+		*accountServerAddr = *coreServerAddr
 		*sliceServerAddr = *coreServerAddr
 		*adminServerAddr = *coreServerAddr
 		*fileServerAddr = *coreServerAddr
 		*fsServerAddr = *coreServerAddr
 	}
 
-	cli, err := NewCLI(*sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
+	cli, err := NewCLI(*accountServerAddr, *sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
 	if err != nil {
 		log.Fatalf("Failed to initialize CLI: %v", err)
 	}
 	defer cli.Close()
+
+	if args[0] == "login" {
+		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
+		if err != nil && len(args) == 1 {
+			log.Fatalf("Failed to resolve current auth: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		handleLogin(ctx, cli, authConfig, args[1:])
+		return
+	}
+	if args[0] == "logout" {
+		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
+		if err != nil {
+			log.Fatalf("Failed to resolve current auth: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		handleLogout(ctx, cli, authConfig, args[1:])
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	defer cancel()
@@ -108,25 +125,33 @@ func main() {
 }
 
 // NewCLI creates a new CLI instance with connections to the gitslice services.
-func NewCLI(sliceAddr, adminAddr, fileAddr, filesystemAddr string, tlsEnabled bool) (*CLI, error) {
+func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, tlsEnabled bool) (*CLI, error) {
 	transportCreds := insecure.NewCredentials()
 	if tlsEnabled {
 		transportCreds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	}
 
+	accountConn, err := grpc.Dial(accountAddr, grpc.WithTransportCredentials(transportCreds))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to account service: %w", err)
+	}
+
 	sliceConn, err := grpc.Dial(sliceAddr, grpc.WithTransportCredentials(transportCreds))
 	if err != nil {
+		accountConn.Close()
 		return nil, fmt.Errorf("failed to connect to slice service: %w", err)
 	}
 
 	adminConn, err := grpc.Dial(adminAddr, grpc.WithTransportCredentials(transportCreds))
 	if err != nil {
+		accountConn.Close()
 		sliceConn.Close()
 		return nil, fmt.Errorf("failed to connect to admin service: %w", err)
 	}
 
 	fileConn, err := grpc.Dial(fileAddr, grpc.WithTransportCredentials(transportCreds))
 	if err != nil {
+		accountConn.Close()
 		sliceConn.Close()
 		adminConn.Close()
 		return nil, fmt.Errorf("failed to connect to file service: %w", err)
@@ -134,6 +159,7 @@ func NewCLI(sliceAddr, adminAddr, fileAddr, filesystemAddr string, tlsEnabled bo
 
 	filesystemConn, err := grpc.Dial(filesystemAddr, grpc.WithTransportCredentials(transportCreds))
 	if err != nil {
+		accountConn.Close()
 		sliceConn.Close()
 		adminConn.Close()
 		fileConn.Close()
@@ -141,10 +167,12 @@ func NewCLI(sliceAddr, adminAddr, fileAddr, filesystemAddr string, tlsEnabled bo
 	}
 
 	return &CLI{
+		accountConn:      accountConn,
 		sliceConn:        sliceConn,
 		adminConn:        adminConn,
 		fileConn:         fileConn,
 		filesystemConn:   filesystemConn,
+		accountClient:    accountv1.NewAccountServiceClient(accountConn),
 		sliceClient:      slicev1.NewSliceServiceClient(sliceConn),
 		adminClient:      adminv1.NewAdminServiceClient(adminConn),
 		fileClient:       filev1.NewFileServiceClient(fileConn),
@@ -154,6 +182,9 @@ func NewCLI(sliceAddr, adminAddr, fileAddr, filesystemAddr string, tlsEnabled bo
 
 // Close closes all gRPC connections.
 func (c *CLI) Close() {
+	if c.accountConn != nil {
+		c.accountConn.Close()
+	}
 	if c.sliceConn != nil {
 		c.sliceConn.Close()
 	}
