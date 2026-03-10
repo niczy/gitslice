@@ -23,15 +23,22 @@ PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://agenttools.dev}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
 PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
 PM2_BIN="${PM2_BIN:-}"
+PM2_NODE_BIN="${PM2_NODE_BIN:-}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
 discover_pm2_bin() {
-  if [ -n "$PM2_BIN" ] && [ -x "$PM2_BIN" ]; then
-    printf '%s\n' "$PM2_BIN"
-    return 0
+  if [ -n "$PM2_BIN" ]; then
+    if [ -n "$PM2_NODE_BIN" ] && [ -x "$PM2_NODE_BIN" ] && [ -f "$PM2_BIN" ]; then
+      printf '%s\n' "$PM2_BIN"
+      return 0
+    fi
+    if [ -x "$PM2_BIN" ]; then
+      printf '%s\n' "$PM2_BIN"
+      return 0
+    fi
   fi
 
   if command -v pm2 >/dev/null 2>&1; then
@@ -44,11 +51,37 @@ discover_pm2_bin() {
   candidate="$(find "$HOME/.nvm/versions/node" -mindepth 3 -maxdepth 3 -type f -path '*/bin/pm2' 2>/dev/null | sort -V | tail -n 1 || true)"
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
     PM2_BIN="$candidate"
+    PM2_NODE_BIN=""
     printf '%s\n' "$PM2_BIN"
     return 0
   fi
 
+  candidate="$(find "$HOME/.nvm/versions/node" -type f -path '*/lib/node_modules/pm2/lib/binaries/CLI.js' 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    local node_bin
+    node_bin="${candidate%/lib/node_modules/pm2/lib/binaries/CLI.js}/bin/node"
+    if [ -x "$node_bin" ]; then
+      PM2_BIN="$candidate"
+      PM2_NODE_BIN="$node_bin"
+      printf '%s\n' "$PM2_BIN"
+      return 0
+    fi
+  fi
+
   return 1
+}
+
+run_pm2() {
+  if ! discover_pm2_bin >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if [ -n "$PM2_NODE_BIN" ]; then
+    "$PM2_NODE_BIN" "$PM2_BIN" "$@"
+    return $?
+  fi
+
+  "$PM2_BIN" "$@"
 }
 
 wait_for_health() {
@@ -126,16 +159,20 @@ ensure_node_runtime() {
 }
 
 stop_pm2_gitslice_apps() {
-  local pm2_bin
-  pm2_bin="$(discover_pm2_bin)" || return 0
+  discover_pm2_bin >/dev/null 2>&1 || return 0
 
   # Prevent PM2 autorestart from racing the manual restart flow.
   if command -v timeout >/dev/null 2>&1; then
-    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$pm2_bin" stop gitslice-core >/dev/null 2>&1 || true
-    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$pm2_bin" stop gitslice-web >/dev/null 2>&1 || true
+    if [ -n "$PM2_NODE_BIN" ]; then
+      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_NODE_BIN" "$PM2_BIN" stop gitslice-core >/dev/null 2>&1 || true
+      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_NODE_BIN" "$PM2_BIN" stop gitslice-web >/dev/null 2>&1 || true
+    else
+      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_BIN" stop gitslice-core >/dev/null 2>&1 || true
+      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_BIN" stop gitslice-web >/dev/null 2>&1 || true
+    fi
   else
-    "$pm2_bin" stop gitslice-core >/dev/null 2>&1 || true
-    "$pm2_bin" stop gitslice-web >/dev/null 2>&1 || true
+    run_pm2 stop gitslice-core >/dev/null 2>&1 || true
+    run_pm2 stop gitslice-web >/dev/null 2>&1 || true
   fi
 }
 
@@ -212,14 +249,13 @@ start_web_preview_nohup() {
 }
 
 start_services_with_pm2() {
-  local pm2_bin
-  pm2_bin="$(discover_pm2_bin)" || return 1
+  discover_pm2_bin >/dev/null 2>&1 || return 1
 
-  log "Starting services via PM2 ecosystem ($pm2_bin)..."
+  log "Starting services via PM2 ecosystem ($PM2_BIN)..."
   pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
   pkill -f "vite preview" >/dev/null 2>&1 || true
 
-  "$pm2_bin" startOrRestart "$PM2_ECOSYSTEM_FILE" --update-env >/dev/null
+  run_pm2 startOrRestart "$PM2_ECOSYSTEM_FILE" --update-env >/dev/null
 
   if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
     log "ERROR: Failed to start core gRPC via PM2"
