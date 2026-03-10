@@ -22,6 +22,7 @@ import (
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gateway"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -720,66 +721,51 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	defer cancel()
 	ctx = withTestUser(ctx)
 
-	workspaceID := fmt.Sprintf("fs-cli-%d", time.Now().UnixNano())
-	output := runCLIOrFail(t, "", "fs", "create", workspaceID, "--description", "filesystem cli workflow")
-	if !strings.Contains(output, "Created workspace "+workspaceID) {
-		t.Fatalf("expected workspace creation output, got: %s", output)
-	}
+	remoteDir := fmt.Sprintf("/%s/fs-cli-%d", testUsername, time.Now().UnixNano())
+	remoteFile := remoteDir + "/README.md"
 
 	localFile := filepath.Join(t.TempDir(), "README.md")
 	if err := os.WriteFile(localFile, []byte("hello from fs cli\n"), 0o600); err != nil {
 		t.Fatalf("write local file: %v", err)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "write", workspaceID+":README.md", "-f", localFile)
+	output := runCLIOrFail(t, "", "fs", "mkdir", remoteDir)
+	if !strings.Contains(output, "Commit: ") {
+		t.Fatalf("expected mkdir commit output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "write", remoteFile, "-f", localFile)
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected write commit output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "cat", workspaceID+":README.md")
+	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
 	if output != "hello from fs cli\n" {
 		t.Fatalf("unexpected cat output: %q", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "ls", workspaceID)
+	output = runCLIOrFail(t, "", "fs", "ls", remoteDir)
 	if !strings.Contains(output, "README.md") {
 		t.Fatalf("expected README.md in listing, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "stat", workspaceID+":README.md")
+	output = runCLIOrFail(t, "", "fs", "stat", remoteFile)
 	if !strings.Contains(output, "Type: file") {
 		t.Fatalf("expected file stat output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "snapshot", workspaceID, "-m", "initial")
-	snapshotID := extractSnapshotID(output)
-	if snapshotID == "" {
-		t.Fatalf("failed to extract snapshot id from output: %s", output)
-	}
-
-	if err := os.WriteFile(localFile, []byte("hello from fs cli v2\n"), 0o600); err != nil {
-		t.Fatalf("rewrite local file: %v", err)
-	}
-
-	output = runCLIOrFail(t, "", "fs", "write", workspaceID+":README.md", "-f", localFile)
+	output = runCLIOrFail(t, "", "fs", "rm", remoteFile)
 	if !strings.Contains(output, "Commit: ") {
-		t.Fatalf("expected write commit output, got: %s", output)
-	}
-
-	output = runCLIOrFail(t, "", "fs", "diff", workspaceID, snapshotID)
-	if !strings.Contains(output, "README.md") || !strings.Contains(output, "MODIFY") {
-		t.Fatalf("expected diff output for README.md, got: %s", output)
-	}
-
-	output = runCLIOrFail(t, "", "fs", "delete", workspaceID)
-	if !strings.Contains(output, "Deleted workspace "+workspaceID) {
-		t.Fatalf("expected delete output, got: %s", output)
+		t.Fatalf("expected rm commit output, got: %s", output)
 	}
 
 	client := newFilesystemClient(t)
-	_, err := client.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
+	_, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: homeslice.IDForUsername(testUsername),
+		Path:        remoteFile,
+	})
 	if status.Code(err) != codes.NotFound {
-		t.Fatalf("expected workspace to be deleted, got err=%v", err)
+		t.Fatalf("expected remote file to be deleted, got err=%v", err)
 	}
 }
 
