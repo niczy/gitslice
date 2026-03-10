@@ -241,6 +241,153 @@ func TestEditFileExpectedHashConflict(t *testing.T) {
 	}
 }
 
+func TestEditFilesAppliesSingleCommit(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-edit-files",
+		Name:        "Edit Files",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	readmeWrite, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-edit-files",
+		Path:        "README.md",
+		Content:     []byte("hello world\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(README) failed: %v", err)
+	}
+	noteWrite, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-edit-files",
+		Path:        "notes/todo.txt",
+		Content:     []byte("ship later\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(notes) failed: %v", err)
+	}
+
+	editResp, err := svc.EditFiles(ctx, &filesystemv1.EditFilesRequest{
+		WorkspaceId: "ws-edit-files",
+		Files: []*filesystemv1.EditFileInput{
+			{
+				Path:         "README.md",
+				ExpectedHash: readmeWrite.GetHash(),
+				Edits: []*filesystemv1.FileEdit{
+					{OldText: "world", NewText: "agent"},
+				},
+			},
+			{
+				Path:         "notes/todo.txt",
+				ExpectedHash: noteWrite.GetHash(),
+				Edits: []*filesystemv1.FileEdit{
+					{OldText: "later", NewText: "now"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditFiles failed: %v", err)
+	}
+	if editResp.GetCommitHash() == "" {
+		t.Fatalf("expected commit hash after EditFiles")
+	}
+	if len(editResp.GetFiles()) != 2 {
+		t.Fatalf("expected 2 edit results, got %d", len(editResp.GetFiles()))
+	}
+
+	readmeResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-edit-files",
+		Path:        "README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(README after edit) failed: %v", err)
+	}
+	if got, want := string(readmeResp.GetContent()), "hello agent\n"; got != want {
+		t.Fatalf("README content mismatch: got %q want %q", got, want)
+	}
+
+	noteResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-edit-files",
+		Path:        "notes/todo.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(notes after edit) failed: %v", err)
+	}
+	if got, want := string(noteResp.GetContent()), "ship now\n"; got != want {
+		t.Fatalf("notes content mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestEditFilesRejectsConflictingExpectedHash(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-edit-files-conflict",
+		Name:        "Edit Files Conflict",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-edit-files-conflict",
+		Path:        "README.md",
+		Content:     []byte("hello world\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(README) failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-edit-files-conflict",
+		Path:        "notes/todo.txt",
+		Content:     []byte("ship later\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(notes) failed: %v", err)
+	}
+
+	_, err := svc.EditFiles(ctx, &filesystemv1.EditFilesRequest{
+		WorkspaceId: "ws-edit-files-conflict",
+		Files: []*filesystemv1.EditFileInput{
+			{
+				Path:         "README.md",
+				ExpectedHash: "stale-hash",
+				Edits: []*filesystemv1.FileEdit{
+					{OldText: "world", NewText: "agent"},
+				},
+			},
+			{
+				Path: "notes/todo.txt",
+				Edits: []*filesystemv1.FileEdit{
+					{OldText: "later", NewText: "now"},
+				},
+			},
+		},
+	})
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("expected Aborted, got %v", err)
+	}
+
+	noteResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-edit-files-conflict",
+		Path:        "notes/todo.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(notes after rejected edit) failed: %v", err)
+	}
+	if got, want := string(noteResp.GetContent()), "ship later\n"; got != want {
+		t.Fatalf("expected notes file to remain unchanged, got %q want %q", got, want)
+	}
+}
+
 func TestReadFileRanges(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()

@@ -51,6 +51,12 @@ type readFileOptions struct {
 	lineRange  bool
 }
 
+type preparedFilesystemEdit struct {
+	path        string
+	displayPath string
+	updated     []byte
+}
+
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	return &filesystemServiceServer{
 		storage:               st,
@@ -307,39 +313,93 @@ func (s *filesystemServiceServer) EditFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	current, err := s.readWorkspaceFileContent(ctx, workspace.ID, filePath)
-	if err != nil {
-		return nil, err
-	}
-	currentHash := strings.TrimSpace(current.Hash)
-	if currentHash == "" {
-		currentHash = hashContent(current.Content)
-	}
-	if expected := strings.TrimSpace(req.GetExpectedHash()); expected != "" && expected != currentHash {
-		return nil, status.Error(codes.Aborted, "expected_hash does not match current file hash")
-	}
-
-	updated, err := applyFilesystemEdits(current.Content, req.GetEdits())
+	prepared, err := s.prepareFilesystemEdit(ctx, workspace.ID, filePath, displayPath, req.GetExpectedHash(), req.GetEdits())
 	if err != nil {
 		return nil, err
 	}
 
-	hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, updated)
+	hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, prepared.path, prepared.updated)
 	if err != nil {
 		return nil, err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("edit %s", filePath), []string{filePath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("edit %s", prepared.path), []string{prepared.path})
 	if err != nil {
 		return nil, err
 	}
 	return &filesystemv1.EditFileResponse{
 		WorkspaceId: workspace.ID,
-		Path:        displayPath,
+		Path:        prepared.displayPath,
 		Size:        size,
 		Hash:        hash,
 		CommitHash:  commitHash,
 	}, nil
+}
+
+func (s *filesystemServiceServer) EditFiles(ctx context.Context, req *filesystemv1.EditFilesRequest) (*filesystemv1.EditFilesResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(req.GetFiles()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "files is required")
+	}
+
+	prepared := make([]preparedFilesystemEdit, 0, len(req.GetFiles()))
+	seen := make(map[string]struct{}, len(req.GetFiles()))
+	for _, file := range req.GetFiles() {
+		if file == nil {
+			return nil, status.Error(codes.InvalidArgument, "files must not contain null items")
+		}
+
+		filePath, displayPath, err := s.resolveOperationPath(username, homeMode, file.GetPath(), true)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[filePath]; ok {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("duplicate file path %q", filePath))
+		}
+		seen[filePath] = struct{}{}
+
+		preparedEdit, err := s.prepareFilesystemEdit(ctx, workspace.ID, filePath, displayPath, file.GetExpectedHash(), file.GetEdits())
+		if err != nil {
+			return nil, annotateFilesystemEditError(displayPath, err)
+		}
+		prepared = append(prepared, *preparedEdit)
+	}
+
+	response := &filesystemv1.EditFilesResponse{
+		WorkspaceId: workspace.ID,
+		Files:       make([]*filesystemv1.EditFileResult, 0, len(prepared)),
+	}
+	for _, file := range prepared {
+		hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, file.path, file.updated)
+		if err != nil {
+			return nil, err
+		}
+		response.Files = append(response.Files, &filesystemv1.EditFileResult{
+			Path: file.displayPath,
+			Size: size,
+			Hash: hash,
+		})
+	}
+
+	modifiedPaths := make([]string, 0, len(prepared))
+	for _, file := range prepared {
+		modifiedPaths = append(modifiedPaths, file.path)
+	}
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("edit %d files", len(prepared)), modifiedPaths)
+	if err != nil {
+		return nil, err
+	}
+	response.CommitHash = commitHash
+	return response, nil
 }
 
 func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesystemv1.DeleteFileRequest) (*filesystemv1.DeleteFileResponse, error) {
@@ -1902,6 +1962,45 @@ func (s *filesystemServiceServer) deleteWorkspaceFile(ctx context.Context, works
 		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
 	}
 	return nil
+}
+
+func (s *filesystemServiceServer) prepareFilesystemEdit(ctx context.Context, workspaceID, filePath, displayPath, expectedHash string, edits []*filesystemv1.FileEdit) (*preparedFilesystemEdit, error) {
+	current, err := s.readWorkspaceFileContent(ctx, workspaceID, filePath)
+	if err != nil {
+		return nil, err
+	}
+	currentHash := strings.TrimSpace(current.Hash)
+	if currentHash == "" {
+		currentHash = hashContent(current.Content)
+	}
+	if expected := strings.TrimSpace(expectedHash); expected != "" && expected != currentHash {
+		return nil, status.Error(codes.Aborted, "expected_hash does not match current file hash")
+	}
+
+	updated, err := applyFilesystemEdits(current.Content, edits)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedFilesystemEdit{
+		path:        filePath,
+		displayPath: displayPath,
+		updated:     updated,
+	}, nil
+}
+
+func annotateFilesystemEditError(displayPath string, err error) error {
+	if err == nil {
+		return nil
+	}
+	statusErr, ok := status.FromError(err)
+	if !ok {
+		return err
+	}
+	message := statusErr.Message()
+	if displayPath != "" {
+		message = fmt.Sprintf("%s: %s", displayPath, message)
+	}
+	return status.Error(statusErr.Code(), message)
 }
 
 func applyFilesystemEdits(content []byte, edits []*filesystemv1.FileEdit) ([]byte, error) {
