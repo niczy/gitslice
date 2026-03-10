@@ -85,6 +85,13 @@ type Storage interface {
 	GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)
 	GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error)
 	AddFileContent(ctx context.Context, content *models.FileContent) error
+	PutBlock(ctx context.Context, hash string, data []byte) error
+	GetBlock(ctx context.Context, hash string) ([]byte, error)
+	HasBlock(ctx context.Context, hash string) (bool, error)
+	PutBlocks(ctx context.Context, blocks map[string][]byte) error
+	PutFileManifest(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error
+	GetFileManifest(ctx context.Context, sliceID, path string) (*models.FileManifest, error)
+	DeleteFileManifest(ctx context.Context, sliceID, path string) error
 
 	// Directory entries
 	AddEntry(ctx context.Context, entry *models.DirectoryEntry) error

@@ -29,7 +29,9 @@ type InMemoryStorage struct {
 	fileIndex map[string]map[string]bool // fileID -> {sliceID: true}
 
 	// File content storage
-	fileContents map[string]*models.FileContent // fileID -> content
+	fileContents map[string]*models.FileContent  // fileID -> content
+	blocks       map[string][]byte               // block hash -> content
+	manifests    map[string]*models.FileManifest // sliceID:path -> manifest
 
 	// Directory entries
 	entries         map[string]*models.DirectoryEntry // entryID -> entry
@@ -94,6 +96,8 @@ func NewInMemoryStorage() *InMemoryStorage {
 		sliceMetadata:                    make(map[string]*models.SliceMetadata),
 		fileIndex:                        make(map[string]map[string]bool),
 		fileContents:                     make(map[string]*models.FileContent),
+		blocks:                           make(map[string][]byte),
+		manifests:                        make(map[string]*models.FileManifest),
 		entries:                          make(map[string]*models.DirectoryEntry),
 		entriesByPath:                    make(map[string]string),
 		entriesBySlice:                   make(map[string][]string),
@@ -158,6 +162,8 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.sliceMetadata = fresh.sliceMetadata
 	s.fileIndex = fresh.fileIndex
 	s.fileContents = fresh.fileContents
+	s.blocks = fresh.blocks
+	s.manifests = fresh.manifests
 	s.entries = fresh.entries
 	s.entriesByPath = fresh.entriesByPath
 	s.entriesBySlice = fresh.entriesBySlice
@@ -1026,6 +1032,86 @@ func (s *InMemoryStorage) AddFileContent(ctx context.Context, content *models.Fi
 	if content.Hash != "" {
 		s.versionedContent[content.Hash] = content
 	}
+	return nil
+}
+
+func (s *InMemoryStorage) PutBlock(ctx context.Context, hash string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(hash) == "" {
+		return ErrInvalidInput
+	}
+	s.blocks[hash] = append([]byte(nil), data...)
+	return nil
+}
+
+func (s *InMemoryStorage) GetBlock(ctx context.Context, hash string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data, ok := s.blocks[strings.TrimSpace(hash)]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return append([]byte(nil), data...), nil
+}
+
+func (s *InMemoryStorage) HasBlock(ctx context.Context, hash string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_, ok := s.blocks[strings.TrimSpace(hash)]
+	return ok, nil
+}
+
+func (s *InMemoryStorage) PutBlocks(ctx context.Context, blocks map[string][]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for hash, data := range blocks {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			return ErrInvalidInput
+		}
+		s.blocks[hash] = append([]byte(nil), data...)
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) PutFileManifest(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sliceID = strings.TrimSpace(sliceID)
+	path = cleanRelativePath(path)
+	if sliceID == "" || path == "" || manifest == nil {
+		return ErrInvalidInput
+	}
+	s.manifests[sliceID+":"+path] = cloneManifest(manifest)
+	return nil
+}
+
+func (s *InMemoryStorage) GetFileManifest(ctx context.Context, sliceID, path string) (*models.FileManifest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	manifest, ok := s.manifests[strings.TrimSpace(sliceID)+":"+cleanRelativePath(path)]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return cloneManifest(manifest), nil
+}
+
+func (s *InMemoryStorage) DeleteFileManifest(ctx context.Context, sliceID, path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := strings.TrimSpace(sliceID) + ":" + cleanRelativePath(path)
+	if _, ok := s.manifests[key]; !ok {
+		return ErrEntryNotFound
+	}
+	delete(s.manifests, key)
 	return nil
 }
 
