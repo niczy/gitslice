@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const E2E_GATEWAY_PORT = process.env.E2E_GATEWAY_PORT || '18080';
+const E2E_WEB_PORT = process.env.E2E_WEB_PORT || '4173';
 
 export default defineConfig({
   testDir: './tests',
@@ -9,7 +10,7 @@ export default defineConfig({
     timeout: 10000,
   },
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: `http://127.0.0.1:${E2E_WEB_PORT}`,
     headless: true,
   },
   projects: [
@@ -30,8 +31,8 @@ export default defineConfig({
       timeout: 120 * 1000,
     },
     {
-      command: `VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run build && VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run preview -- --host --port 4173`,
-      port: 4173,
+      command: `AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run build && AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run preview -- --host --port ${E2E_WEB_PORT}`,
+      port: parseInt(E2E_WEB_PORT, 10),
       reuseExistingServer: !process.env.CI,
       timeout: 60 * 1000,
     },
