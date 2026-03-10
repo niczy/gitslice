@@ -292,15 +292,21 @@ writes dramatically — most blocks across most files never change.
    - `AssembleFile(manifest *FileManifest, getBlock func(hash string) ([]byte, error)) ([]byte, error)` — reassembles
    - `FindBlocksForRange(manifest *FileManifest, offset, length int64) []int` — which blocks to fetch
 
-### Phase 1: Migrate WriteFile / ReadFile to block storage
+### Phase 1: Replace file storage with block storage
 
-1. **WriteFile**: chunk content → PutBlocks (skip existing via HasBlock) → PutFileManifest
-   - Keep writing to legacy `AddFileContent` path in parallel for backward compat
-   - Dual-write until all read paths are migrated
-2. **ReadFile**: try GetFileManifest first → assemble from blocks
-   - Fall back to legacy `GetSliceFileByPath` if no manifest exists
-3. **commitWorkspaceMutationIncremental**: use manifest hashes instead of loading content
-4. Validate: run existing tests, compare hashes between old and new paths
+1. **Replace `AddFileContent`** with block-based write:
+   chunk content → PutBlocks (skip existing via HasBlock) → PutFileManifest
+2. **Replace `GetSliceFileByPath`** with block-based read:
+   GetFileManifest → GetBlock for each block → assemble
+3. **Remove legacy `FileContent` storage path entirely** — no dual-write,
+   no fallback. All file I/O goes through manifests + blocks.
+4. **Replace `commitWorkspaceMutation`** with `commitWorkspaceMutationIncremental`:
+   use manifest hashes instead of loading content
+5. **Drop legacy storage methods** that are now unused:
+   - Remove `AddFileContent`, `GetSliceFileByPath`, `GetFileContentByHash`
+   - Remove `collectWorkspaceSnapshotFiles`, `workspaceStats`
+   - Drop `file_contents` and `versioned_content` Postgres tables
+   - Remove corresponding `ObjectStore` keys (`file_content:*`, `versioned_content:*`)
 
 ### Phase 2: EditFile RPC with block-level targeting
 
@@ -331,49 +337,65 @@ writes dramatically — most blocks across most files never change.
 
 ## Migration Strategy
 
-### Dual-write / fallback-read pattern
+Breaking change — no backward compatibility required. Clean cutover.
 
-To avoid a big-bang migration:
+### What gets removed
 
-```
-Write path (Phase 1):
-  WriteFile()
-    → writeWorkspaceFileContent()      ← legacy (keep working)
-    → chunkAndStoreBlocks()            ← new (dual-write)
-    → putFileManifest()                ← new
+| Legacy component | Replacement |
+|-----------------|-------------|
+| `FileContent` model (monolithic blob) | `FileManifest` + `Block` models |
+| `AddFileContent()` | `PutBlocks()` + `PutFileManifest()` |
+| `GetSliceFileByPath()` | `GetFileManifest()` + `GetBlock()` |
+| `GetFileContentByHash()` | `GetBlock()` (blocks are content-addressed) |
+| `collectWorkspaceSnapshotFiles()` | Read manifest hashes directly |
+| `workspaceStats()` / `collectWorkspaceEntries()` | Derive from snapshot |
+| `file_contents` Postgres table | `file_manifests` table |
+| `versioned_content` Postgres table | `blocks` table (or just ObjectStore keys) |
+| `file_content:*` ObjectStore keys | `blocks/{hash}` keys |
+| `versioned_content:*` ObjectStore keys | `blocks/{hash}` keys (same) |
 
-Read path (Phase 1):
-  ReadFile()
-    → getFileManifest()                ← try new first
-    → if found: assembleFromBlocks()
-    → else: getSliceFileByPath()       ← legacy fallback
-```
+### Storage interface changes
 
-Old data continues to work through the legacy path. New writes populate both.
-Once all workspaces have manifests (or after a backfill job), remove the legacy
-path.
-
-### Backfill existing files
-
-A one-time migration job:
-
+Remove:
 ```go
-func backfillBlockStorage(ctx context.Context, storage Storage) error {
-    workspaces, _ := storage.ListSlices(ctx, 0, 0)
-    for _, ws := range workspaces {
-        files, _ := storage.GetSliceFiles(ctx, ws.ID)
-        for _, f := range files {
-            manifest := chunkFileToManifest(f.Content)
-            storeBlocks(ctx, storage, manifest, f.Content)
-            storage.PutFileManifest(ctx, ws.ID, f.Path, manifest)
-        }
-    }
-    return nil
-}
+// DELETE these methods from Storage interface
+AddFileContent(ctx context.Context, content *models.FileContent) error
+GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)
+GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error)
+GetFileContentByHash(ctx context.Context, contentHash string) (*models.FileContent, error)
 ```
 
-Can run as a background job. Non-blocking — the fallback read path handles
-non-migrated files.
+Add:
+```go
+// ADD these methods to Storage interface
+PutBlock(ctx context.Context, hash string, data []byte) error
+GetBlock(ctx context.Context, hash string) ([]byte, error)
+HasBlock(ctx context.Context, hash string) (bool, error)
+PutBlocks(ctx context.Context, blocks map[string][]byte) error
+PutFileManifest(ctx context.Context, workspaceID, path string, manifest *models.FileManifest) error
+GetFileManifest(ctx context.Context, workspaceID, path string) (*models.FileManifest, error)
+DeleteFileManifest(ctx context.Context, workspaceID, path string) error
+```
+
+### Database migration
+
+```sql
+-- New tables
+CREATE TABLE file_manifests (
+    workspace_id TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    hash         TEXT NOT NULL,
+    total_size   BIGINT NOT NULL,
+    block_count  INT NOT NULL,
+    PRIMARY KEY (workspace_id, path)
+);
+
+-- Drop old tables
+DROP TABLE IF EXISTS file_contents;
+DROP TABLE IF EXISTS versioned_content;
+```
+
+Existing workspace data is discarded. Workspaces start fresh after the migration.
 
 ---
 
@@ -433,7 +455,7 @@ block entry records its own size.
 | Manifest consistency (crash between block write and manifest update) | Blocks are content-addressed — writing an extra block is harmless. Manifest update is atomic (single PutObject). If manifest write fails, old manifest is still valid. |
 | Small file overhead (manifest larger than file) | Files < 16 KB have a single block. Manifest adds ~200 bytes. Acceptable. Could inline tiny files (< 1 KB) directly in manifest. |
 | Cross-block edits (edit spans a block boundary) | Load both blocks, concatenate, apply edit, re-chunk. Slightly more I/O but correct. Rare for typical edits. |
-| Migration period: two storage formats coexist | Dual-write + fallback-read pattern. Legacy path stays until backfill completes. No flag day. |
+| Existing workspace data lost | Acceptable — breaking change. Workspaces start fresh after migration. |
 | R2/GCS latency for many small GETs | `PutBlocks`/`GetBlocks` batch API. Manifest reads are cacheable (small, frequent). |
 
 ---
@@ -444,8 +466,9 @@ block entry records its own size.
   and block sizes. Verify content-hash stability. Test cross-block edits.
 - **Storage tests**: `internal/storage/` — test `PutBlock`/`GetBlock`/`HasBlock`
   for both in-memory and Postgres+ObjectStore backends.
-- **Integration tests**: Write a file via legacy path, read via block path (and
-  vice versa) to validate the dual-write/fallback pattern.
-- **Snapshot correctness**: Perform identical mutation sequences with old and new
-  commit paths, assert identical snapshot hashes.
+- **End-to-end tests**: Full write → read → edit → snapshot cycle through the
+  new block storage path. Verify file content integrity after chunking and
+  reassembly.
+- **Snapshot correctness**: Verify incremental snapshots produce correct hashes
+  by writing multiple files, editing one, and checking the snapshot diff.
 - **Build verification**: `go build ./servers/core/` and `go build ./gs_cli/`
