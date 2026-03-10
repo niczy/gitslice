@@ -50,7 +50,8 @@
 ├── servers/               # Binary servers
 │   └── core/              # Core server (gRPC + gateway)
 ├── sdk/                   # Client SDKs
-│   └── python/            # Python filesystem SDK
+│   ├── python/            # Python filesystem SDK
+│   └── typescript/        # TypeScript filesystem SDK
 ├── spec/                 # Design specifications
 │   ├── PRODUCT_VISION.md
 │   ├── DATA_MODEL.md
@@ -296,6 +297,10 @@ make test
 
 # Run Python SDK tests
 PYTHONPATH=sdk/python python3 -m unittest discover -s sdk/python/tests
+
+# Run TypeScript SDK tests
+npm ci --prefix sdk/typescript
+npm test --prefix sdk/typescript
 
 # Run integration tests
 RUN_INTEGRATION_TESTS=1 make test
