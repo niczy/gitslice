@@ -63,6 +63,8 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, args []string) {
 		handleFilesystemMerge(ctx, cli, args[1:])
 	case "conflicts":
 		handleFilesystemConflicts(ctx, cli, args[1:])
+	case "shell":
+		handleFilesystemShell(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown fs command: %s", args[0])
 		printFilesystemHelp()

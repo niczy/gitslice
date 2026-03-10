@@ -249,6 +249,10 @@ func runCLI(args ...string) (string, error) {
 
 // runCLIWithDir executes a CLI command from the provided working directory.
 func runCLIWithDir(workdir string, args ...string) (string, error) {
+	return runCLIWithDirInput(workdir, "", args...)
+}
+
+func runCLIWithDirInput(workdir, input string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -262,6 +266,9 @@ func runCLIWithDir(workdir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
 	if workdir != "" {
 		cmd.Dir = workdir
+	}
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -733,6 +740,59 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	_, err := client.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected workspace to be deleted, got err=%v", err)
+	}
+}
+
+func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	workspaceID := fmt.Sprintf("fs-shell-%d", time.Now().UnixNano())
+	createOutput := runCLIOrFail(t, "", "fs", "create", workspaceID, "--description", "filesystem shell workflow")
+	if !strings.Contains(createOutput, "Created workspace "+workspaceID) {
+		t.Fatalf("expected workspace creation output, got: %s", createOutput)
+	}
+
+	script := strings.Join([]string{
+		"mkdir src",
+		"cd src",
+		`echo "print('hello world')" > main.py`,
+		"ls",
+		"cat main.py",
+		`snapshot "added main"`,
+		"history",
+		"pwd",
+		"exit",
+	}, "\n") + "\n"
+
+	output, err := runCLIWithDirInput("", script, "fs", "shell", workspaceID)
+	if err != nil {
+		t.Fatalf("shell command failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "main.py") {
+		t.Fatalf("expected ls output to include main.py, got: %s", output)
+	}
+	if !strings.Contains(output, "print('hello world')") {
+		t.Fatalf("expected cat output in shell transcript, got: %s", output)
+	}
+	if !strings.Contains(output, `Snapshot created: `) || !strings.Contains(output, `"added main"`) {
+		t.Fatalf("expected snapshot history in shell transcript, got: %s", output)
+	}
+	if !strings.Contains(output, "/src") {
+		t.Fatalf("expected pwd output in shell transcript, got: %s", output)
+	}
+
+	client := newFilesystemClient(t)
+	readResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        "src/main.py",
+	})
+	if err != nil {
+		t.Fatalf("failed to read shell-written file: %v", err)
+	}
+	if got := string(readResp.GetContent()); got != "print('hello world')\n" {
+		t.Fatalf("unexpected shell-written file content: %q", got)
 	}
 }
 

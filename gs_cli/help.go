@@ -86,4 +86,5 @@ func printFilesystemHelp() {
 	fmt.Println("  fork         Fork a workspace")
 	fmt.Println("  merge        Merge workspaces")
 	fmt.Println("  conflicts    List workspace conflicts")
+	fmt.Println("  shell        Open an interactive remote filesystem shell")
 }

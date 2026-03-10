@@ -283,6 +283,7 @@ gs --user your_name fork my-slice ./some/folder --parent root_slice
 gs --user your_name fs create my-workspace
 gs --user your_name fs write my-workspace:README.md -f ./README.md
 gs --user your_name fs cat my-workspace:README.md
+gs --user your_name fs shell my-workspace
 ```
 
 ## Development
