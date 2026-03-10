@@ -77,6 +77,61 @@ func authCtx() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 }
 
+func TestGetFileAllowsAnonymousRootSliceAccess(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+
+	const path = "o/genesis/projects/org/repo/hello.txt"
+
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, path, "root_slice"); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  path,
+		Path:    path,
+		Hash:    "hash-hello",
+		Content: []byte("hello"),
+		Size:    5,
+	}); err != nil {
+		t.Fatalf("AddFileContent failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID("root_slice", path),
+		Path:     path,
+		Type:     "file",
+		ParentID: "root_slice",
+		Content:  []byte("hello"),
+		Size:     5,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	meta, err := st.GetSliceMetadata(ctx, "root_slice")
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.ModifiedFiles = []string{path}
+	meta.ModifiedFilesCount = 1
+	if err := st.UpdateSliceMetadata(ctx, "root_slice", meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path:    path,
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: "root_slice"}},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(resp.GetFile().GetContent()); got != "hello" {
+		t.Fatalf("unexpected content: %q", got)
+	}
+}
+
 func TestSlicePathCacheTTLExpiresEntries(t *testing.T) {
 	cache := newSlicePathCache(4)
 	cache.ttl = 5 * time.Millisecond

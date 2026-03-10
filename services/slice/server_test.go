@@ -16,6 +16,28 @@ import (
 
 const statusFilterAll = slicev1.ChangesetStatus(-1)
 
+func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	const path = "o/genesis/projects/repo/main.go"
+	if err := st.AddFileToSlice(ctx, path, "root_slice"); err != nil {
+		t.Fatalf("failed to add root file: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "root_slice"})
+	if err != nil {
+		t.Fatalf("CheckoutSlice returned error: %v", err)
+	}
+	if len(resp.GetManifest().GetFileMetadata()) != 1 || resp.GetManifest().GetFileMetadata()[0].GetFileId() != path {
+		t.Fatalf("unexpected manifest: %#v", resp.GetManifest().GetFileMetadata())
+	}
+}
+
 func TestListChangesetsFiltersByStatus(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

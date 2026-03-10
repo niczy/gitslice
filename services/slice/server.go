@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
@@ -40,6 +40,25 @@ type sliceServiceServer struct {
 	promotionWG           sync.WaitGroup
 	promotionBatchWindow  time.Duration
 	promotionBatchMaxSize int
+}
+
+func (s *sliceServiceServer) requireUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	return identity.Username, nil
+}
+
+func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.OptionalGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	if identity == nil {
+		return "", nil
+	}
+	return identity.Username, nil
 }
 
 type rootPromotionJob struct {
@@ -109,7 +128,10 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -175,9 +197,9 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.CreateChangesetRequest) (*slicev1.CreateChangesetResponse, error) {
 	log.Printf("CreateChangeset called: slice_id=%s, author=%s", req.SliceId, req.Author)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	modifiedFiles := normalizeModifiedFiles(req.ModifiedFiles)
@@ -285,9 +307,9 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.ReviewChangesetRequest) (*slicev1.ReviewChangesetResponse, error) {
 	log.Printf("ReviewChangeset called: changeset_id=%s", req.ChangesetId)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
@@ -333,9 +355,9 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *slicev1.ListChangesetSnapshotsRequest) (*slicev1.ListChangesetSnapshotsResponse, error) {
 	log.Printf("ListChangesetSnapshots called: changeset_id=%s", req.GetChangesetId())
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	cs, err := s.storage.GetChangeset(ctx, req.GetChangesetId())
@@ -374,9 +396,9 @@ func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *sl
 func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.MergeChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
 	log.Printf("MergeChangeset called: changeset_id=%s", req.ChangesetId)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
@@ -506,9 +528,9 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 func (s *sliceServiceServer) CloseChangeset(ctx context.Context, req *slicev1.CloseChangesetRequest) (*slicev1.CloseChangesetResponse, error) {
 	log.Printf("CloseChangeset called: changeset_id=%s", req.ChangesetId)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
@@ -542,9 +564,9 @@ func (s *sliceServiceServer) CloseChangeset(ctx context.Context, req *slicev1.Cl
 func (s *sliceServiceServer) RevertCommitChange(ctx context.Context, req *slicev1.RevertCommitChangeRequest) (*slicev1.CreateChangesetResponse, error) {
 	log.Printf("RevertCommitChange called: commit_hash=%s, change_id=%s", req.GetCommitHash(), req.GetChangeId())
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := s.storage.EnsureUser(ctx, username); err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid user")
@@ -1557,9 +1579,9 @@ func changesetSnapshotToProto(snapshot *models.ChangesetSnapshot) *slicev1.Chang
 func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.RebaseChangesetRequest) (*slicev1.RebaseChangesetResponse, error) {
 	log.Printf("RebaseChangeset called: changeset_id=%s", req.ChangesetId)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
@@ -1598,7 +1620,10 @@ func (s *sliceServiceServer) GetSliceCommits(ctx context.Context, req *slicev1.C
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice: %v", err))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -1634,7 +1659,10 @@ func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.Sta
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")
@@ -1658,9 +1686,9 @@ func (s *sliceServiceServer) GetSliceState(ctx context.Context, req *slicev1.Sta
 func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.ListChangesetsRequest) (*slicev1.ListChangesetsResponse, error) {
 	log.Printf("ListChangesets called: slice_id=%s", req.SliceId)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 	slice, err := s.storage.GetSlice(ctx, req.SliceId)
 	if err != nil {
@@ -1757,9 +1785,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, folder_paths=%d, new_slice_id=%s",
 		req.ParentSliceId, req.FolderPath, len(req.FolderPaths), req.NewSliceId)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate parent slice ID
@@ -1846,9 +1874,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.RenameSliceRequest) (*slicev1.RenameSliceResponse, error) {
 	log.Printf("RenameSlice called: slice_id=%s, new_name=%s", req.SliceId, req.NewName)
 
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := common.ValidateSliceID(req.SliceId); err != nil {
@@ -1891,7 +1919,10 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to look up slice: %v", err))
 	}
 
-	username := auth.UsernameFromGRPCContext(ctx)
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
 			return nil, status.Error(codes.Unauthenticated, "login required")

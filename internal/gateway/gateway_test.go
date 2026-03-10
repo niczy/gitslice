@@ -246,6 +246,55 @@ func TestGatewayFilesystemWorkspaceLifecycle(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemCreateWorkspaceWithBearer(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+	if _, err := st.EnsureUser(ctx, "tester"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+	if err := st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID: "sess-tester",
+		Username:  "tester",
+		Token:     "gs_test_tester",
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-bearer","name":"Gateway Bearer"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "Bearer gs_test_tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		WorkspaceID string `json:"workspaceId"`
+		CreatedBy   string `json:"createdBy"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if payload.WorkspaceID != "gw-bearer" || payload.CreatedBy != "tester" {
+		t.Fatalf("unexpected create payload: %#v", payload)
+	}
+}
+
 func TestGatewayFilesystemDeleteWorkspace(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
