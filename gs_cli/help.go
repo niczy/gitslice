@@ -87,4 +87,6 @@ func printFilesystemHelp() {
 	fmt.Println("  merge        Merge workspaces")
 	fmt.Println("  conflicts    List workspace conflicts")
 	fmt.Println("  shell        Open an interactive remote filesystem shell")
+	fmt.Println("  upload       Upload a local directory tree")
+	fmt.Println("  download     Download a remote directory tree")
 }

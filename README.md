@@ -284,6 +284,8 @@ gs --user your_name fs create my-workspace
 gs --user your_name fs write my-workspace:README.md -f ./README.md
 gs --user your_name fs cat my-workspace:README.md
 gs --user your_name fs shell my-workspace
+gs --user your_name fs upload ./project my-workspace:project
+gs --user your_name fs download my-workspace:project ./project-copy
 ```
 
 ## Development
