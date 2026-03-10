@@ -754,6 +754,46 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected file stat output, got: %s", output)
 	}
 
+	output = runCLIOrFail(t, "", "fs", "snapshot", "-m", "initial")
+	snapshotID := extractSnapshotID(output)
+	if snapshotID == "" {
+		t.Fatalf("failed to extract snapshot id from output: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "snapshots")
+	if !strings.Contains(output, snapshotID) {
+		t.Fatalf("expected snapshots output to include %s, got: %s", snapshotID, output)
+	}
+
+	if err := os.WriteFile(localFile, []byte("hello from fs cli v2\n"), 0o600); err != nil {
+		t.Fatalf("rewrite local file: %v", err)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "write", remoteFile, "-f", localFile)
+	if !strings.Contains(output, "Commit: ") {
+		t.Fatalf("expected second write commit output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
+	if output != "hello from fs cli v2\n" {
+		t.Fatalf("unexpected cat output after second write: %q", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "diff", snapshotID)
+	if !strings.Contains(output, "README.md") || !strings.Contains(output, "MODIFY") {
+		t.Fatalf("expected diff output for README.md, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "restore", snapshotID)
+	if !strings.Contains(output, "Restored to "+snapshotID) {
+		t.Fatalf("expected restore output, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
+	if output != "hello from fs cli\n" {
+		t.Fatalf("unexpected cat output after restore: %q", output)
+	}
+
 	output = runCLIOrFail(t, "", "fs", "rm", remoteFile)
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected rm commit output, got: %s", output)

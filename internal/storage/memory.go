@@ -1104,13 +1104,13 @@ func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 		hash    string
 		size    = entry.Size
 	)
-	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
+	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
 		content = fc.Content
 		hash = fc.Hash
 		if size == 0 {
 			size = fc.Size
 		}
-	} else if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
+	} else if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
 		content = fc.Content
 		hash = fc.Hash
 		if size == 0 {
@@ -1417,10 +1417,10 @@ func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
 	if entry == nil || entry.Type != "file" {
 		return ""
 	}
-	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
+	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
 		return strings.TrimSpace(fc.Hash)
 	}
-	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
+	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
 		return strings.TrimSpace(fc.Hash)
 	}
 	return strings.TrimSpace(entry.Hash)
