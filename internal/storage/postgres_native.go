@@ -2673,6 +2673,48 @@ func (s *PostgresNativeStorage) GetUserByEmail(ctx context.Context, email string
 	return &u, nil
 }
 
+func (s *PostgresNativeStorage) ListUsers(ctx context.Context, limit, offset int) ([]*models.User, error) {
+	ctx = ensureCtx(ctx)
+	if offset < 0 {
+		return nil, ErrInvalidInput
+	}
+
+	query := `
+		SELECT username, COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(root_path, ''), created_at, updated_at
+		FROM users
+		ORDER BY username ASC
+	`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT $1 OFFSET $2`
+		args = append(args, limit, offset)
+	} else {
+		query += ` OFFSET $1`
+		args = append(args, offset)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]*models.User, 0)
+	for rows.Next() {
+		var user models.User
+		if err := rows.Scan(&user.Username, &user.Name, &user.PrimaryEmail, &user.PasswordHash, &user.RootPath, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		user.PrimaryEmail = strings.ToLower(strings.TrimSpace(user.PrimaryEmail))
+		if user.RootPath == "" {
+			user.RootPath = rootPathForSlug(user.Username)
+		}
+		userCopy := user
+		users = append(users, &userCopy)
+	}
+	return users, rows.Err()
+}
+
 func (s *PostgresNativeStorage) CreateUser(ctx context.Context, user *models.User) error {
 	ctx = ensureCtx(ctx)
 	if user == nil {

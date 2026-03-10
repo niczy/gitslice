@@ -211,6 +211,43 @@ func (s *InMemoryStorage) GetUserByEmail(ctx context.Context, email string) (*mo
 	return copyUser(u), nil
 }
 
+func (s *InMemoryStorage) ListUsers(ctx context.Context, limit, offset int) ([]*models.User, error) {
+	_ = ctx
+	if offset < 0 {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	usernames := make([]string, 0, len(s.users))
+	for username := range s.users {
+		usernames = append(usernames, username)
+	}
+	sort.Strings(usernames)
+
+	if offset > len(usernames) {
+		offset = len(usernames)
+	}
+	end := len(usernames)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+
+	users := make([]*models.User, 0, end-offset)
+	for _, username := range usernames[offset:end] {
+		user := s.users[username]
+		if user == nil {
+			continue
+		}
+		if user.RootPath == "" {
+			user.RootPath = rootPathForSlug(user.Username)
+		}
+		users = append(users, copyUser(user))
+	}
+	return users, nil
+}
+
 func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) error {
 	_ = ctx
 	if user == nil {
