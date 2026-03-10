@@ -22,6 +22,9 @@ type cliAuth struct {
 type credentialsConfig struct {
 	AccessToken      string `json:"access_token"`
 	AccessTokenCamel string `json:"accessToken"`
+	Username         string `json:"username,omitempty"`
+	SessionID        string `json:"session_id,omitempty"`
+	SessionIDCamel   string `json:"sessionId,omitempty"`
 }
 
 func gitsliceConfigDir() (string, error) {
@@ -71,6 +74,17 @@ func writeUsernameConfig(username string) error {
 	return os.WriteFile(path, []byte(username+"\n"), 0o600)
 }
 
+func removeUsernameConfig() error {
+	path, err := userConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func readCredentialsConfig() (credentialsConfig, error) {
 	path, err := credentialsConfigPath()
 	if err != nil {
@@ -86,6 +100,33 @@ func readCredentialsConfig() (credentialsConfig, error) {
 		return credentialsConfig{}, fmt.Errorf("parse credentials config: %w", err)
 	}
 	return cfg, nil
+}
+
+func writeCredentialsConfig(cfg credentialsConfig) error {
+	path, err := credentialsConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o600)
+}
+
+func removeCredentialsConfig() error {
+	path, err := credentialsConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func (c credentialsConfig) accessToken() string {
@@ -125,6 +166,7 @@ func resolveAuthConfig(apiKeyFlag, userFlag string) (cliAuth, error) {
 		if token := cfg.accessToken(); token != "" {
 			return cliAuth{
 				Authorization: "Bearer " + token,
+				Username:      strings.TrimSpace(cfg.Username),
 				Source:        "~/.gitslice/credentials.json",
 			}, nil
 		}

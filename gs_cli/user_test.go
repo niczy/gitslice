@@ -30,7 +30,7 @@ func TestResolveAuthConfigUsesCredentialsFileBeforeLegacyUsername(t *testing.T) 
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "credentials.json"), []byte("{\"access_token\":\"cred-token\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "credentials.json"), []byte("{\"access_token\":\"cred-token\",\"username\":\"cred-user\"}\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile credentials failed: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(configDir, "user"), []byte("legacy-user\n"), 0o600); err != nil {
@@ -44,8 +44,8 @@ func TestResolveAuthConfigUsesCredentialsFileBeforeLegacyUsername(t *testing.T) 
 	if authConfig.Authorization != "Bearer cred-token" {
 		t.Fatalf("unexpected authorization: %q", authConfig.Authorization)
 	}
-	if authConfig.Username != "" {
-		t.Fatalf("expected empty username for bearer auth, got %q", authConfig.Username)
+	if authConfig.Username != "cred-user" {
+		t.Fatalf("unexpected username: %q", authConfig.Username)
 	}
 	if authConfig.Source != "~/.gitslice/credentials.json" {
 		t.Fatalf("unexpected source: %q", authConfig.Source)
