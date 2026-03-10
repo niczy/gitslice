@@ -229,12 +229,21 @@ message ListWorkspacesResponse {
 message ReadFileRequest {
   string workspace_id = 1;
   string path = 2;
+  // Zero-based byte offset within the file. When byte_limit is 0, reads to EOF.
+  int64 byte_offset = 3;
+  // Maximum number of bytes to return. A value of 0 means no byte limit.
+  int64 byte_limit = 4;
+  // Zero-based line offset within the file. When line_limit is 0, reads to EOF.
+  int64 line_offset = 5;
+  // Maximum number of lines to return. A value of 0 means no line limit.
+  int64 line_limit = 6;
 }
 
 message ReadFileResponse {
   string workspace_id = 1;
   string path = 2;
   bytes content = 3;
+  // Total file size, even when content contains a partial range.
   int64 size = 4;
   string hash = 5;
 }

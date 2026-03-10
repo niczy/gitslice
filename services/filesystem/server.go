@@ -42,6 +42,15 @@ const (
 	maxFilesystemStreamChunkSize     = 1024 * 1024
 )
 
+type readFileOptions struct {
+	byteOffset int64
+	byteLimit  int64
+	lineOffset int64
+	lineLimit  int64
+	byteRange  bool
+	lineRange  bool
+}
+
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	return &filesystemServiceServer{
 		storage:               st,
@@ -218,6 +227,11 @@ func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
+	readOpts, err := parseReadFileOptions(req)
+	if err != nil {
+		return nil, err
+	}
+
 	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
@@ -228,20 +242,16 @@ func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	content, err := s.readWorkspaceFileContent(ctx, workspace.ID, filePath)
+	content, size, hash, err := s.readWorkspaceFileSelection(ctx, workspace.ID, filePath, readOpts)
 	if err != nil {
 		return nil, err
 	}
 
-	hash := strings.TrimSpace(content.Hash)
-	if hash == "" {
-		hash = hashContent(content.Content)
-	}
 	return &filesystemv1.ReadFileResponse{
 		WorkspaceId: workspace.ID,
 		Path:        displayPath,
-		Content:     append([]byte(nil), content.Content...),
-		Size:        int64(len(content.Content)),
+		Content:     content,
+		Size:        size,
 		Hash:        hash,
 	}, nil
 }
@@ -1467,6 +1477,330 @@ func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, 
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read file: %v", err))
 	}
 	return content, nil
+}
+
+func parseReadFileOptions(req *filesystemv1.ReadFileRequest) (readFileOptions, error) {
+	opts := readFileOptions{
+		byteOffset: req.GetByteOffset(),
+		byteLimit:  req.GetByteLimit(),
+		lineOffset: req.GetLineOffset(),
+		lineLimit:  req.GetLineLimit(),
+	}
+	if opts.byteOffset < 0 {
+		return readFileOptions{}, status.Error(codes.InvalidArgument, "byte_offset must be non-negative")
+	}
+	if opts.byteLimit < 0 {
+		return readFileOptions{}, status.Error(codes.InvalidArgument, "byte_limit must be non-negative")
+	}
+	if opts.lineOffset < 0 {
+		return readFileOptions{}, status.Error(codes.InvalidArgument, "line_offset must be non-negative")
+	}
+	if opts.lineLimit < 0 {
+		return readFileOptions{}, status.Error(codes.InvalidArgument, "line_limit must be non-negative")
+	}
+
+	opts.byteRange = opts.byteOffset > 0 || opts.byteLimit > 0
+	opts.lineRange = opts.lineOffset > 0 || opts.lineLimit > 0
+	if opts.byteRange && opts.lineRange {
+		return readFileOptions{}, status.Error(codes.InvalidArgument, "byte and line ranges cannot be combined")
+	}
+	return opts, nil
+}
+
+func (s *filesystemServiceServer) readWorkspaceFileSelection(ctx context.Context, workspaceID, filePath string, opts readFileOptions) ([]byte, int64, string, error) {
+	if !opts.byteRange && !opts.lineRange {
+		content, err := s.readWorkspaceFileContent(ctx, workspaceID, filePath)
+		if err != nil {
+			return nil, 0, "", err
+		}
+
+		hash := strings.TrimSpace(content.Hash)
+		if hash == "" {
+			hash = hashContent(content.Content)
+		}
+		return append([]byte(nil), content.Content...), int64(len(content.Content)), hash, nil
+	}
+
+	if _, err := s.requireWorkspaceFileEntry(ctx, workspaceID, filePath); err != nil {
+		return nil, 0, "", err
+	}
+
+	manifest, err := s.storage.GetFileManifest(ctx, workspaceID, filePath)
+	if err == nil {
+		return s.readWorkspaceFileFromManifest(ctx, workspaceID, filePath, manifest, opts)
+	}
+	if err != storage.ErrEntryNotFound {
+		return nil, 0, "", status.Error(codes.Internal, fmt.Sprintf("failed to load file manifest: %v", err))
+	}
+
+	content, readErr := s.readWorkspaceFileContent(ctx, workspaceID, filePath)
+	if readErr != nil {
+		return nil, 0, "", readErr
+	}
+	hash := strings.TrimSpace(content.Hash)
+	if hash == "" {
+		hash = hashContent(content.Content)
+	}
+
+	selected, err := sliceContentForReadRange(content.Content, opts)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	return selected, int64(len(content.Content)), hash, nil
+}
+
+func (s *filesystemServiceServer) readWorkspaceFileFromManifest(ctx context.Context, workspaceID, filePath string, manifest *models.FileManifest, opts readFileOptions) ([]byte, int64, string, error) {
+	if manifest == nil {
+		return nil, 0, "", status.Error(codes.Internal, "file manifest is nil")
+	}
+
+	hash := strings.TrimSpace(manifest.Hash)
+	if hash == "" {
+		content, err := s.readWorkspaceFileContent(ctx, workspaceID, filePath)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		hash = strings.TrimSpace(content.Hash)
+		if hash == "" {
+			hash = hashContent(content.Content)
+		}
+	}
+
+	var (
+		selected []byte
+		err      error
+	)
+	switch {
+	case opts.byteRange:
+		selected, err = s.readManifestByteRange(ctx, manifest, opts.byteOffset, opts.byteLimit)
+	case opts.lineRange:
+		selected, err = s.readManifestLineRange(ctx, manifest, opts.lineOffset, opts.lineLimit)
+	default:
+		selected, err = s.readManifestByteRange(ctx, manifest, 0, 0)
+	}
+	if err != nil {
+		return nil, 0, "", err
+	}
+	return selected, manifest.TotalSize, hash, nil
+}
+
+func (s *filesystemServiceServer) readManifestByteRange(ctx context.Context, manifest *models.FileManifest, offset, limit int64) ([]byte, error) {
+	start, end, err := normalizeByteRange(manifest.TotalSize, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	if start >= end {
+		return []byte{}, nil
+	}
+
+	indices := storage.FindBlocksForRange(manifest, start, end-start)
+	if len(indices) == 0 {
+		return []byte{}, nil
+	}
+
+	var out bytes.Buffer
+	selectedPos := 0
+	var cursor int64
+	for idx, block := range manifest.Blocks {
+		blockStart := cursor
+		blockEnd := blockStart + int64(block.Size)
+		cursor = blockEnd
+		if selectedPos >= len(indices) {
+			break
+		}
+		if idx != indices[selectedPos] {
+			continue
+		}
+		selectedPos++
+
+		payload, err := s.readBlockPayload(ctx, block.Hash)
+		if err != nil {
+			return nil, err
+		}
+		rangeStart := maxInt64(start, blockStart) - blockStart
+		rangeEnd := minInt64(end, blockEnd) - blockStart
+		if rangeStart < 0 {
+			rangeStart = 0
+		}
+		if rangeEnd > int64(len(payload)) {
+			rangeEnd = int64(len(payload))
+		}
+		if rangeStart >= rangeEnd {
+			continue
+		}
+		if _, err := out.Write(payload[int(rangeStart):int(rangeEnd)]); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to assemble file range: %v", err))
+		}
+	}
+	return out.Bytes(), nil
+}
+
+func (s *filesystemServiceServer) readManifestLineRange(ctx context.Context, manifest *models.FileManifest, lineOffset, lineLimit int64) ([]byte, error) {
+	if manifest == nil || manifest.TotalSize == 0 || len(manifest.Blocks) == 0 {
+		return []byte{}, nil
+	}
+
+	remainingOffset := lineOffset
+	remainingLines := lineLimit
+	collecting := remainingOffset == 0
+	var out bytes.Buffer
+
+	for _, block := range manifest.Blocks {
+		payload, err := s.readBlockPayload(ctx, block.Hash)
+		if err != nil {
+			return nil, err
+		}
+
+		start := 0
+		if !collecting {
+			for idx, b := range payload {
+				if b != '\n' {
+					continue
+				}
+				remainingOffset--
+				if remainingOffset == 0 {
+					collecting = true
+					start = idx + 1
+					break
+				}
+			}
+			if !collecting {
+				continue
+			}
+		}
+
+		if remainingLines == 0 {
+			if _, err := out.Write(payload[start:]); err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to assemble file lines: %v", err))
+			}
+			continue
+		}
+
+		segmentStart := start
+		for idx := start; idx < len(payload); idx++ {
+			if payload[idx] != '\n' {
+				continue
+			}
+			remainingLines--
+			if remainingLines == 0 {
+				if _, err := out.Write(payload[segmentStart : idx+1]); err != nil {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to assemble file lines: %v", err))
+				}
+				return out.Bytes(), nil
+			}
+		}
+		if _, err := out.Write(payload[segmentStart:]); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to assemble file lines: %v", err))
+		}
+	}
+
+	if !collecting {
+		return []byte{}, nil
+	}
+	return out.Bytes(), nil
+}
+
+func (s *filesystemServiceServer) readBlockPayload(ctx context.Context, hash string) ([]byte, error) {
+	payload, err := s.storage.GetBlock(ctx, hash)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("missing file block %s", hash))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file block %s: %v", hash, err))
+	}
+	return payload, nil
+}
+
+func sliceContentForReadRange(content []byte, opts readFileOptions) ([]byte, error) {
+	switch {
+	case opts.byteRange:
+		start, end, err := normalizeByteRange(int64(len(content)), opts.byteOffset, opts.byteLimit)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte(nil), content[int(start):int(end)]...), nil
+	case opts.lineRange:
+		start, end := findLineByteRange(content, opts.lineOffset, opts.lineLimit)
+		return append([]byte(nil), content[start:end]...), nil
+	default:
+		return append([]byte(nil), content...), nil
+	}
+}
+
+func normalizeByteRange(totalSize, offset, limit int64) (int64, int64, error) {
+	if offset < 0 {
+		return 0, 0, status.Error(codes.InvalidArgument, "byte_offset must be non-negative")
+	}
+	if limit < 0 {
+		return 0, 0, status.Error(codes.InvalidArgument, "byte_limit must be non-negative")
+	}
+	if offset >= totalSize {
+		return totalSize, totalSize, nil
+	}
+
+	end := totalSize
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return offset, end, nil
+}
+
+func findLineByteRange(content []byte, lineOffset, lineLimit int64) (int, int) {
+	if len(content) == 0 {
+		return 0, 0
+	}
+	if lineOffset == 0 && lineLimit == 0 {
+		return 0, len(content)
+	}
+
+	remainingOffset := lineOffset
+	start := 0
+	if remainingOffset > 0 {
+		start = len(content)
+		for idx, b := range content {
+			if b != '\n' {
+				continue
+			}
+			remainingOffset--
+			if remainingOffset == 0 {
+				start = idx + 1
+				break
+			}
+		}
+		if remainingOffset > 0 {
+			return len(content), len(content)
+		}
+	}
+
+	if lineLimit == 0 {
+		return start, len(content)
+	}
+
+	remainingLines := lineLimit
+	for idx := start; idx < len(content); idx++ {
+		if content[idx] != '\n' {
+			continue
+		}
+		remainingLines--
+		if remainingLines == 0 {
+			return start, idx + 1
+		}
+	}
+	return start, len(content)
+}
+
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (s *filesystemServiceServer) requireWorkspaceFileEntry(ctx context.Context, workspaceID, filePath string) (*models.DirectoryEntry, error) {

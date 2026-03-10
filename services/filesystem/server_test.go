@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -237,6 +238,114 @@ func TestEditFileExpectedHashConflict(t *testing.T) {
 	})
 	if status.Code(err) != codes.Aborted {
 		t.Fatalf("expected Aborted, got %v", err)
+	}
+}
+
+func TestReadFileRanges(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-read-range",
+		Name:        "Read Range",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	var builder strings.Builder
+	lines := make([]string, 0, 800)
+	for i := 0; i < 800; i++ {
+		line := fmt.Sprintf("line-%03d: 0123456789abcdef0123456789abcdef\n", i)
+		lines = append(lines, line)
+		builder.WriteString(line)
+	}
+	original := []byte(builder.String())
+
+	writeResp, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-read-range",
+		Path:        "README.md",
+		Content:     original,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	byteOffset := int64(storage.DefaultFileBlockSize - 8)
+	byteLimit := int64(32)
+	byteResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-read-range",
+		Path:        "README.md",
+		ByteOffset:  byteOffset,
+		ByteLimit:   byteLimit,
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(byte range) failed: %v", err)
+	}
+	if got, want := string(byteResp.GetContent()), string(original[int(byteOffset):int(byteOffset+byteLimit)]); got != want {
+		t.Fatalf("byte range mismatch: got %q want %q", got, want)
+	}
+	if got, want := byteResp.GetSize(), int64(len(original)); got != want {
+		t.Fatalf("byte range size mismatch: got %d want %d", got, want)
+	}
+	if got, want := byteResp.GetHash(), writeResp.GetHash(); got != want {
+		t.Fatalf("byte range hash mismatch: got %q want %q", got, want)
+	}
+
+	lineResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-read-range",
+		Path:        "README.md",
+		LineOffset:  10,
+		LineLimit:   3,
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(line range) failed: %v", err)
+	}
+	expectedLines := strings.Join(lines[10:13], "")
+	if got, want := string(lineResp.GetContent()), expectedLines; got != want {
+		t.Fatalf("line range mismatch: got %q want %q", got, want)
+	}
+	if got, want := lineResp.GetSize(), int64(len(original)); got != want {
+		t.Fatalf("line range size mismatch: got %d want %d", got, want)
+	}
+	if got, want := lineResp.GetHash(), writeResp.GetHash(); got != want {
+		t.Fatalf("line range hash mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestReadFileRejectsMixedRanges(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-read-range-invalid",
+		Name:        "Read Range Invalid",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-read-range-invalid",
+		Path:        "README.md",
+		Content:     []byte("hello\nworld\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-read-range-invalid",
+		Path:        "README.md",
+		ByteLimit:   5,
+		LineLimit:   1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
 

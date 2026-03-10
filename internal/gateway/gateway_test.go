@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -243,6 +244,119 @@ func TestGatewayFilesystemWorkspaceLifecycle(t *testing.T) {
 	}
 	if payload.Content != "aGVsbG8gd29ybGQK" {
 		t.Fatalf("unexpected read content: %q", payload.Content)
+	}
+}
+
+func TestGatewayFilesystemReadFileRanges(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-range","name":"Gateway Range"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	content := "zero\none\ntwo\nthree\nfour\n"
+	writeReq, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-range/files/docs/readme.md",
+		strings.NewReader(`{"workspaceId":"gw-range","path":"docs/readme.md","content":"`+base64.StdEncoding.EncodeToString([]byte(content))+`"}`),
+	)
+	if err != nil {
+		t.Fatalf("new write request: %v", err)
+	}
+	writeReq.Header.Set("Authorization", "User tester")
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeResp, err := client.Do(writeReq)
+	if err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	if writeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
+		t.Fatalf("unexpected write status %d: %s", writeResp.StatusCode, string(body))
+	}
+	writeResp.Body.Close()
+
+	byteReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-range/files/docs/readme.md?byteOffset=5&byteLimit=8", nil)
+	if err != nil {
+		t.Fatalf("new byte read request: %v", err)
+	}
+	byteReq.Header.Set("Authorization", "User tester")
+	byteResp, err := client.Do(byteReq)
+	if err != nil {
+		t.Fatalf("byte read request failed: %v", err)
+	}
+	defer byteResp.Body.Close()
+	if byteResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(byteResp.Body)
+		t.Fatalf("unexpected byte read status %d: %s", byteResp.StatusCode, string(body))
+	}
+
+	var bytePayload struct {
+		Content string `json:"content"`
+		Size    string `json:"size"`
+	}
+	if err := json.NewDecoder(byteResp.Body).Decode(&bytePayload); err != nil {
+		t.Fatalf("decode byte read response: %v", err)
+	}
+	decodedByteContent, err := base64.StdEncoding.DecodeString(bytePayload.Content)
+	if err != nil {
+		t.Fatalf("decode byte read content: %v", err)
+	}
+	if got, want := string(decodedByteContent), content[5:13]; got != want {
+		t.Fatalf("byte range mismatch: got %q want %q", got, want)
+	}
+	if got, want := bytePayload.Size, fmt.Sprintf("%d", len(content)); got != want {
+		t.Fatalf("byte range size mismatch: got %q want %q", got, want)
+	}
+
+	lineReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-range/files/docs/readme.md?lineOffset=1&lineLimit=2", nil)
+	if err != nil {
+		t.Fatalf("new line read request: %v", err)
+	}
+	lineReq.Header.Set("Authorization", "User tester")
+	lineResp, err := client.Do(lineReq)
+	if err != nil {
+		t.Fatalf("line read request failed: %v", err)
+	}
+	defer lineResp.Body.Close()
+	if lineResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(lineResp.Body)
+		t.Fatalf("unexpected line read status %d: %s", lineResp.StatusCode, string(body))
+	}
+
+	var linePayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(lineResp.Body).Decode(&linePayload); err != nil {
+		t.Fatalf("decode line read response: %v", err)
+	}
+	decodedLineContent, err := base64.StdEncoding.DecodeString(linePayload.Content)
+	if err != nil {
+		t.Fatalf("decode line read content: %v", err)
+	}
+	if got, want := string(decodedLineContent), "one\ntwo\n"; got != want {
+		t.Fatalf("line range mismatch: got %q want %q", got, want)
 	}
 }
 
