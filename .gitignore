@@ -45,6 +45,8 @@ web/dist/
 web/playwright-report/
 web/test-results/
 test-results/
+sdk/typescript/node_modules/
+sdk/typescript/dist/
 servers/cloudflare_control_plane/node_modules/
 servers/cloudflare_control_plane/.wrangler/
 

@@ -71,6 +71,11 @@ jobs:
     - name: Run Python SDK tests
       run: PYTHONPATH=sdk/python python3 -m unittest discover -s sdk/python/tests
 
+    - name: Run TypeScript SDK tests
+      run: |
+        npm ci --prefix sdk/typescript
+        npm test --prefix sdk/typescript
+
     - name: Test coverage for workflow tests
       run: |
         cd workflow_test
