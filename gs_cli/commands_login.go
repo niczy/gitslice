@@ -8,13 +8,17 @@ import (
 	"github.com/niczy/gitslice/internal/auth"
 )
 
-func handleLogin(currentUsername string, args []string) {
+func handleLogin(currentAuth cliAuth, args []string) {
 	if len(args) == 0 {
-		if strings.TrimSpace(currentUsername) == "" {
+		if strings.TrimSpace(currentAuth.Authorization) == "" {
 			fmt.Println("Not logged in. Usage: gs login <username>")
 			return
 		}
-		fmt.Printf("Logged in as: %s\n", strings.TrimSpace(currentUsername))
+		if strings.TrimSpace(currentAuth.Username) != "" {
+			fmt.Printf("Logged in as: %s\n", strings.TrimSpace(currentAuth.Username))
+			return
+		}
+		fmt.Printf("Authenticated via %s\n", strings.TrimSpace(currentAuth.Source))
 		return
 	}
 

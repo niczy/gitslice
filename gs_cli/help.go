@@ -4,8 +4,13 @@ import "fmt"
 
 func printHelp() {
 	fmt.Println("Usage: gs <command> [options]")
+	fmt.Println("\nGlobal auth resolution:")
+	fmt.Println("  1. --api-key")
+	fmt.Println("  2. GS_API_KEY")
+	fmt.Println("  3. ~/.gitslice/credentials.json")
+	fmt.Println("  4. legacy username auth (--user, GS_USERNAME, ~/.gitslice/user)")
 	fmt.Println("\nCommands:")
-	fmt.Println("  login      Set your username for fake auth")
+	fmt.Println("  login      Show current auth or set legacy username auth")
 	fmt.Println("  slice       Manage slices")
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
