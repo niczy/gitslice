@@ -10,7 +10,7 @@ func printHelp() {
 	fmt.Println("  3. ~/.gitslice/credentials.json")
 	fmt.Println("  4. legacy username auth (--user, GS_USERNAME, ~/.gitslice/user)")
 	fmt.Println("\nCommands:")
-	fmt.Println("  login      Show current auth or store bearer credentials")
+	fmt.Println("  login      Start OAuth device login or show current auth")
 	fmt.Println("  logout     Clear stored bearer credentials or legacy auth")
 	fmt.Println("  slice       Manage slices")
 	fmt.Println("  changeset   Manage change lists")

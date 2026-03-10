@@ -8,24 +8,37 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/auth"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	"google.golang.org/grpc/metadata"
 )
 
 type cliAuth struct {
-	Authorization string
-	Username      string
-	Source        string
+	Authorization   string
+	Username        string
+	Source          string
+	CredentialStore bool
 }
 
 type credentialsConfig struct {
-	AccessToken      string `json:"access_token"`
-	AccessTokenCamel string `json:"accessToken"`
-	Username         string `json:"username,omitempty"`
-	SessionID        string `json:"session_id,omitempty"`
-	SessionIDCamel   string `json:"sessionId,omitempty"`
+	AccessToken                string `json:"access_token,omitempty"`
+	AccessTokenCamel           string `json:"accessToken,omitempty"`
+	RefreshToken               string `json:"refresh_token,omitempty"`
+	RefreshTokenCamel          string `json:"refreshToken,omitempty"`
+	AccessTokenExpiresAt       string `json:"access_token_expires_at,omitempty"`
+	AccessTokenExpiresAtCamel  string `json:"accessTokenExpiresAt,omitempty"`
+	RefreshTokenExpiresAt      string `json:"refresh_token_expires_at,omitempty"`
+	RefreshTokenExpiresAtCamel string `json:"refreshTokenExpiresAt,omitempty"`
+	TokenType                  string `json:"token_type,omitempty"`
+	TokenTypeCamel             string `json:"tokenType,omitempty"`
+	Username                   string `json:"username,omitempty"`
+	SessionID                  string `json:"session_id,omitempty"`
+	SessionIDCamel             string `json:"sessionId,omitempty"`
 }
+
+const accessTokenRefreshSkew = 30 * time.Second
 
 func gitsliceConfigDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -136,6 +149,105 @@ func (c credentialsConfig) accessToken() string {
 	return strings.TrimSpace(c.AccessTokenCamel)
 }
 
+func (c credentialsConfig) refreshToken() string {
+	if token := strings.TrimSpace(c.RefreshToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(c.RefreshTokenCamel)
+}
+
+func (c credentialsConfig) accessTokenExpiresAtValue() string {
+	if value := strings.TrimSpace(c.AccessTokenExpiresAt); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.AccessTokenExpiresAtCamel)
+}
+
+func (c credentialsConfig) refreshTokenExpiresAtValue() string {
+	if value := strings.TrimSpace(c.RefreshTokenExpiresAt); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.RefreshTokenExpiresAtCamel)
+}
+
+func (c credentialsConfig) parseOptionalTime(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse credentials time %q: %w", raw, err)
+	}
+	return &parsed, nil
+}
+
+func (c credentialsConfig) accessTokenExpiresAtTime() (*time.Time, error) {
+	return c.parseOptionalTime(c.accessTokenExpiresAtValue())
+}
+
+func (c credentialsConfig) refreshTokenExpiresAtTime() (*time.Time, error) {
+	return c.parseOptionalTime(c.refreshTokenExpiresAtValue())
+}
+
+func (c credentialsConfig) needsRefresh(now time.Time) (bool, error) {
+	accessToken := c.accessToken()
+	if accessToken == "" {
+		return strings.TrimSpace(c.refreshToken()) != "", nil
+	}
+	expiresAt, err := c.accessTokenExpiresAtTime()
+	if err != nil {
+		return false, err
+	}
+	if expiresAt == nil {
+		return false, nil
+	}
+	return !expiresAt.After(now.Add(accessTokenRefreshSkew)), nil
+}
+
+func (c credentialsConfig) refreshedFromAuthResponse(resp *accountv1.AuthResponse) credentialsConfig {
+	if resp == nil {
+		return c
+	}
+	refreshed := credentialsConfig{
+		AccessToken:           strings.TrimSpace(resp.GetAccessToken()),
+		RefreshToken:          strings.TrimSpace(resp.GetRefreshToken()),
+		AccessTokenExpiresAt:  strings.TrimSpace(resp.GetAccessTokenExpiresAt()),
+		RefreshTokenExpiresAt: strings.TrimSpace(resp.GetRefreshTokenExpiresAt()),
+		TokenType:             strings.TrimSpace(resp.GetTokenType()),
+		Username:              strings.TrimSpace(resp.GetUser().GetUsername()),
+		SessionID:             strings.TrimSpace(resp.GetSession().GetId()),
+	}
+	if refreshed.AccessToken == "" {
+		refreshed.AccessToken = c.accessToken()
+	}
+	if refreshed.RefreshToken == "" {
+		refreshed.RefreshToken = c.refreshToken()
+	}
+	if refreshed.AccessTokenExpiresAt == "" {
+		refreshed.AccessTokenExpiresAt = c.accessTokenExpiresAtValue()
+	}
+	if refreshed.RefreshTokenExpiresAt == "" {
+		refreshed.RefreshTokenExpiresAt = c.refreshTokenExpiresAtValue()
+	}
+	if refreshed.TokenType == "" {
+		refreshed.TokenType = strings.TrimSpace(c.TokenType)
+		if refreshed.TokenType == "" {
+			refreshed.TokenType = strings.TrimSpace(c.TokenTypeCamel)
+		}
+	}
+	if refreshed.Username == "" {
+		refreshed.Username = strings.TrimSpace(c.Username)
+	}
+	if refreshed.SessionID == "" {
+		refreshed.SessionID = strings.TrimSpace(c.SessionID)
+		if refreshed.SessionID == "" {
+			refreshed.SessionID = strings.TrimSpace(c.SessionIDCamel)
+		}
+	}
+	return refreshed
+}
+
 func resolveUsername(flagValue string) string {
 	if u := strings.TrimSpace(flagValue); u != "" {
 		return u
@@ -163,11 +275,16 @@ func resolveAuthConfig(apiKeyFlag, userFlag string) (cliAuth, error) {
 		}, nil
 	}
 	if cfg, err := readCredentialsConfig(); err == nil {
-		if token := cfg.accessToken(); token != "" {
+		if token := cfg.accessToken(); token != "" || cfg.refreshToken() != "" {
+			authorization := ""
+			if token != "" {
+				authorization = "Bearer " + token
+			}
 			return cliAuth{
-				Authorization: "Bearer " + token,
-				Username:      strings.TrimSpace(cfg.Username),
-				Source:        "~/.gitslice/credentials.json",
+				Authorization:   authorization,
+				Username:        strings.TrimSpace(cfg.Username),
+				Source:          "~/.gitslice/credentials.json",
+				CredentialStore: true,
 			}, nil
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -194,4 +311,58 @@ func withCLIAuth(ctx context.Context, authConfig cliAuth) context.Context {
 		return ctx
 	}
 	return metadata.AppendToOutgoingContext(ctx, "authorization", authConfig.Authorization)
+}
+
+func ensureCLIAuthReady(ctx context.Context, cli *CLI, authConfig cliAuth) (cliAuth, error) {
+	if !authConfig.CredentialStore {
+		return authConfig, nil
+	}
+
+	cfg, err := readCredentialsConfig()
+	if err != nil {
+		return cliAuth{}, err
+	}
+	needsRefresh, err := cfg.needsRefresh(time.Now())
+	if err != nil {
+		return cliAuth{}, err
+	}
+	if !needsRefresh {
+		token := strings.TrimSpace(cfg.accessToken())
+		if token == "" {
+			return cliAuth{}, errors.New("stored credentials are missing an access token")
+		}
+		return cliAuth{
+			Authorization:   "Bearer " + token,
+			Username:        strings.TrimSpace(cfg.Username),
+			Source:          "~/.gitslice/credentials.json",
+			CredentialStore: true,
+		}, nil
+	}
+
+	refreshToken := strings.TrimSpace(cfg.refreshToken())
+	if refreshToken == "" {
+		return cliAuth{}, errors.New("stored login expired and cannot be refreshed; run gs login again")
+	}
+	refreshExpiresAt, err := cfg.refreshTokenExpiresAtTime()
+	if err != nil {
+		return cliAuth{}, err
+	}
+	if refreshExpiresAt != nil && !refreshExpiresAt.After(time.Now()) {
+		return cliAuth{}, errors.New("stored login expired; run gs login again")
+	}
+
+	resp, err := cli.accountClient.RefreshAccessToken(ctx, &accountv1.RefreshAccessTokenRequest{RefreshToken: refreshToken})
+	if err != nil {
+		return cliAuth{}, fmt.Errorf("refresh access token: %w", err)
+	}
+	cfg = cfg.refreshedFromAuthResponse(resp)
+	if err := writeCredentialsConfig(cfg); err != nil {
+		return cliAuth{}, fmt.Errorf("write refreshed credentials: %w", err)
+	}
+	return cliAuth{
+		Authorization:   "Bearer " + cfg.accessToken(),
+		Username:        strings.TrimSpace(cfg.Username),
+		Source:          "~/.gitslice/credentials.json",
+		CredentialStore: true,
+	}, nil
 }

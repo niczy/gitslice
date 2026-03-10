@@ -276,10 +276,16 @@ cp web/.env.example web/.env
 CLI usage:
 
 ```bash
-# Persist a username to ~/.gitslice/user
+# Start OAuth device login and store refreshable credentials in ~/.gitslice/credentials.json
+gs login
+
+# Check the current stored login
+gs login status
+
+# Dev-only fallback: persist a username to ~/.gitslice/user
 gs login your_name
 
-# Or pass per-command
+# Or pass a dev username per-command
 gs --user your_name fork my-slice ./some/folder --parent root_slice
 
 # Remote filesystem commands

@@ -71,7 +71,7 @@ func main() {
 		if err != nil && len(args) == 1 {
 			log.Fatalf("Failed to resolve current auth: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		handleLogin(ctx, cli, authConfig, args[1:])
 		return
@@ -92,6 +92,10 @@ func main() {
 	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
 	if err != nil {
 		log.Fatalf("Failed to resolve auth: %v", err)
+	}
+	authConfig, err = ensureCLIAuthReady(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatalf("Failed to refresh stored auth: %v", err)
 	}
 	ctx = withCLIAuth(ctx, authConfig)
 
