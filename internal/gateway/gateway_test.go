@@ -871,6 +871,112 @@ func TestGatewayFilesystemDiff(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemEditFile(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-edit","name":"Gateway Edit"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	writeReq, err := http.NewRequest(
+		http.MethodPut,
+		gatewayURL+"/v1/fs/workspaces/gw-edit/files/README.md",
+		strings.NewReader(`{"workspaceId":"gw-edit","path":"README.md","content":"aGVsbG8gd29ybGQK"}`),
+	)
+	if err != nil {
+		t.Fatalf("new write request: %v", err)
+	}
+	writeReq.Header.Set("Authorization", "User tester")
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeResp, err := client.Do(writeReq)
+	if err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	if writeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(writeResp.Body)
+		writeResp.Body.Close()
+		t.Fatalf("unexpected write status %d: %s", writeResp.StatusCode, string(body))
+	}
+
+	var writePayload struct {
+		Hash string `json:"hash"`
+	}
+	if err := json.NewDecoder(writeResp.Body).Decode(&writePayload); err != nil {
+		writeResp.Body.Close()
+		t.Fatalf("decode write response: %v", err)
+	}
+	writeResp.Body.Close()
+
+	editReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-edit:editFile",
+		strings.NewReader(fmt.Sprintf(`{"workspaceId":"gw-edit","path":"README.md","expectedHash":"%s","edits":[{"oldText":"world","newText":"agent"}]}`, writePayload.Hash)),
+	)
+	if err != nil {
+		t.Fatalf("new edit request: %v", err)
+	}
+	editReq.Header.Set("Authorization", "User tester")
+	editReq.Header.Set("Content-Type", "application/json")
+	editResp, err := client.Do(editReq)
+	if err != nil {
+		t.Fatalf("edit request failed: %v", err)
+	}
+	if editResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(editResp.Body)
+		editResp.Body.Close()
+		t.Fatalf("unexpected edit status %d: %s", editResp.StatusCode, string(body))
+	}
+	editResp.Body.Close()
+
+	readReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-edit/files/README.md", nil)
+	if err != nil {
+		t.Fatalf("new read request: %v", err)
+	}
+	readReq.Header.Set("Authorization", "User tester")
+	readResp, err := client.Do(readReq)
+	if err != nil {
+		t.Fatalf("read request failed: %v", err)
+	}
+	if readResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(readResp.Body)
+		readResp.Body.Close()
+		t.Fatalf("unexpected read status %d: %s", readResp.StatusCode, string(body))
+	}
+
+	var readPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(readResp.Body).Decode(&readPayload); err != nil {
+		readResp.Body.Close()
+		t.Fatalf("decode read response: %v", err)
+	}
+	readResp.Body.Close()
+	if readPayload.Content != "aGVsbG8gYWdlbnQK" {
+		t.Fatalf("unexpected edited content: %q", readPayload.Content)
+	}
+}
+
 func TestGatewayFilesystemFork(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

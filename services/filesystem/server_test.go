@@ -109,6 +109,32 @@ func TestWorkspaceFileLifecycle(t *testing.T) {
 		t.Fatalf("content mismatch: got %q want %q", got, want)
 	}
 
+	editResp, err := svc.EditFile(ctx, &filesystemv1.EditFileRequest{
+		WorkspaceId:  "ws-demo",
+		Path:         "docs/guides/README.md",
+		ExpectedHash: readResp.GetHash(),
+		Edits: []*filesystemv1.FileEdit{
+			{OldText: "world", NewText: "agent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditFile failed: %v", err)
+	}
+	if editResp.GetCommitHash() == "" || editResp.GetHash() == readResp.GetHash() {
+		t.Fatalf("expected new commit/hash after edit: %#v", editResp)
+	}
+
+	editedResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-demo",
+		Path:        "docs/guides/README.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(after edit) failed: %v", err)
+	}
+	if got, want := string(editedResp.GetContent()), "hello agent\n"; got != want {
+		t.Fatalf("edited content mismatch: got %q want %q", got, want)
+	}
+
 	rootList, err := svc.ListDirectory(ctx, &filesystemv1.ListDirectoryRequest{
 		WorkspaceId: "ws-demo",
 	})
@@ -176,6 +202,41 @@ func TestWorkspaceFileLifecycle(t *testing.T) {
 	}
 	if workspaces.GetTotal() != 2 {
 		t.Fatalf("expected root + created workspace, got total=%d", workspaces.GetTotal())
+	}
+}
+
+func TestEditFileExpectedHashConflict(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-edit-conflict",
+		Name:        "Edit Conflict",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-edit-conflict",
+		Path:        "README.md",
+		Content:     []byte("hello world\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := svc.EditFile(ctx, &filesystemv1.EditFileRequest{
+		WorkspaceId:  "ws-edit-conflict",
+		Path:         "README.md",
+		ExpectedHash: "stale-hash",
+		Edits: []*filesystemv1.FileEdit{
+			{OldText: "world", NewText: "agent"},
+		},
+	})
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("expected Aborted, got %v", err)
 	}
 }
 
