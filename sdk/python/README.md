@@ -15,26 +15,22 @@ python3 -m pip install -e .
 from gitslice import GitsliceClient
 
 client = GitsliceClient(base_url="https://agenttools.dev", username="tester")
-ws = client.workspace("demo-sdk-workspace")
+home = client.home()
 
-ws.write("README.md", "hello from python\n")
-print(ws.read("README.md"))
-print(ws.glob("**/*.md"))
+home.write("/tester/README.md", "hello from python\n")
+print(home.read("/tester/README.md"))
+print(home.glob("/tester/**/*.md"))
 
-snap = ws.snapshot("initial write")
+snap = home.snapshot("initial write")
 print(snap.snapshot_id)
-
-with client.workspace("task-123") as task_ws:
-    task_ws.write("output.txt", "done\n")
-    task_ws.snapshot("task complete")
 ```
 
 ## Notes
 
 - This initial SDK uses the repo's current fake-user auth model via `Authorization: User <username>`.
 - Filesystem content is sent using the existing JSON/base64 gateway format.
-- `workspace()` will connect to an existing workspace or create it on demand if it does not exist.
-- When used as a context manager, a workspace is auto-deleted on exit only if that `workspace()` call created it. Use `cleanup_on_exit=True` to force cleanup.
+- `home()` resolves the caller's home slice internally and requires absolute paths like `/tester/README.md`.
+- The lower-level `workspace()` API is still available for advanced flows that need explicit workspace IDs.
 
 ## Tests
 

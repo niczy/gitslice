@@ -8,6 +8,7 @@ from .exceptions import (
     ServerError,
     ValidationError,
 )
+from .home import HomeFilesystem
 from .workspace import Workspace
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "ConflictError",
     "GitsliceClient",
     "GitsliceError",
+    "HomeFilesystem",
     "NotFoundError",
     "PermissionDeniedError",
     "ServerError",

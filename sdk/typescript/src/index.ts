@@ -11,6 +11,7 @@ export {
   type GitsliceClientOptions,
   type WorkspaceOptions,
 } from "./client.js";
+export { HomeFilesystem } from "./home.js";
 export { Workspace, type ForkOptions, type MergeOptions } from "./workspace.js";
 export type {
   DiffResult,
