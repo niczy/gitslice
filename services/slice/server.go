@@ -19,6 +19,7 @@ import (
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -32,12 +33,10 @@ import (
 type sliceServiceServer struct {
 	slicev1.UnimplementedSliceServiceServer
 	storage               storage.Storage
-	promoteMu             sync.Mutex
 	rootSliceMu           sync.RWMutex
 	rootSliceID           string
-	promotionQueueOnce    sync.Once
-	promotionQueue        chan rootPromotionJob
-	promotionWG           sync.WaitGroup
+	promotionQueueMu      sync.Mutex
+	promotionQueue        *rootpromote.Queue
 	promotionBatchWindow  time.Duration
 	promotionBatchMaxSize int
 }
@@ -61,17 +60,9 @@ func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, erro
 	return identity.Username, nil
 }
 
-type rootPromotionJob struct {
-	sliceID    string
-	commitHash string
-	files      []string
-	commitTime time.Time
-}
-
 const (
-	defaultPromotionQueueSize    = 8192
-	defaultPromotionBatchWindow  = 100 * time.Millisecond
-	defaultPromotionBatchMaxSize = 256
+	defaultPromotionBatchWindow  = rootpromote.DefaultBatchWindow
+	defaultPromotionBatchMaxSize = rootpromote.DefaultBatchMaxSize
 	revertChangesetHashPrefix    = "revert~"
 	revertAllChangesToken        = "*"
 )
@@ -79,7 +70,6 @@ const (
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
 	return &sliceServiceServer{
 		storage:               st,
-		promotionQueue:        make(chan rootPromotionJob, defaultPromotionQueueSize),
 		promotionBatchWindow:  defaultPromotionBatchWindow,
 		promotionBatchMaxSize: defaultPromotionBatchMaxSize,
 	}
@@ -2013,163 +2003,93 @@ func buildSliceFolderMounts(folderPaths []string) []models.SliceFolderMount {
 }
 
 func (s *sliceServiceServer) enqueueRootPromotion(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	s.startRootPromotionWorker()
-
-	job := rootPromotionJob{
-		sliceID:    sliceID,
-		commitHash: commitHash,
-		files:      append([]string(nil), files...),
-		commitTime: commitTime,
-	}
-
-	s.promotionWG.Add(1)
-	select {
-	case s.promotionQueue <- job:
-		return nil
-	default:
-		// Keep merge throughput stable under sustained queue pressure.
-		// Fallback preserves correctness even when the async buffer is saturated.
-		defer s.promotionWG.Done()
-		return s.promoteSlice(ctx, sliceID, commitHash, files, commitTime)
-	case <-ctx.Done():
-		s.promotionWG.Done()
-		return ctx.Err()
-	}
-}
-
-func (s *sliceServiceServer) startRootPromotionWorker() {
-	s.promotionQueueOnce.Do(func() {
-		go s.runRootPromotionWorker()
+	return s.rootPromotionQueue().Enqueue(ctx, rootpromote.Job{
+		SliceID:    sliceID,
+		CommitHash: commitHash,
+		Files:      append([]string(nil), files...),
+		CommitTime: commitTime,
 	})
 }
 
-func (s *sliceServiceServer) runRootPromotionWorker() {
-	batchLimit := s.promotionBatchMaxSize
-	if batchLimit <= 0 {
-		batchLimit = defaultPromotionBatchMaxSize
-	}
-	batchWindow := s.promotionBatchWindow
-	if batchWindow <= 0 {
-		batchWindow = defaultPromotionBatchWindow
-	}
-
-	for {
-		current, ok := <-s.promotionQueue
-		if !ok {
-			return
-		}
-
-		batch := []rootPromotionJob{current}
-		timer := time.NewTimer(batchWindow)
-		collecting := true
-		for collecting && len(batch) < batchLimit {
-			select {
-			case nextJob, open := <-s.promotionQueue:
-				if !open {
-					collecting = false
-					break
-				}
-				batch = append(batch, nextJob)
-			case <-timer.C:
-				collecting = false
-			}
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-
-		if err := s.promoteSliceBatch(context.Background(), batch); err != nil {
-			log.Printf("failed to promote %d queued commits for slice %s: %v", len(batch), current.sliceID, err)
-		}
-		for range batch {
-			s.promotionWG.Done()
-		}
-	}
-}
-
 func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.promoteSliceBatch(ctx, []rootPromotionJob{{
-		sliceID:    sliceID,
-		commitHash: commitHash,
-		files:      files,
-		commitTime: commitTime,
+	return s.promoteSliceBatch(ctx, []rootpromote.Job{{
+		SliceID:    sliceID,
+		CommitHash: commitHash,
+		Files:      files,
+		CommitTime: commitTime,
 	}})
 }
 
-func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []rootPromotionJob) error {
+func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []rootpromote.Job) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	s.promoteMu.Lock()
-	defer s.promoteMu.Unlock()
-
-	rootSliceID, err := s.getRootSliceID(ctx)
-	if err != nil {
-		return err
-	}
-
-	rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSliceID)
-	if err != nil {
-		return fmt.Errorf("failed to load root metadata: %w", err)
-	}
-
-	files := collectUniquePromotionFiles(batch)
-	for _, fileID := range files {
-		if err := s.storage.AddFileToSlice(ctx, fileID, rootSliceID); err != nil {
-			return fmt.Errorf("failed to add file to root slice: %w", err)
+	return rootpromote.WithGlobalLock(func() error {
+		rootSliceID, err := s.getRootSliceID(ctx)
+		if err != nil {
+			return err
 		}
-	}
 
-	state, err := s.storage.GetGlobalState(ctx)
-	if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
-		return fmt.Errorf("failed to load global state: %w", err)
-	}
-	if state == nil {
-		state = &models.GlobalState{}
-	}
+		rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSliceID)
+		if err != nil {
+			return fmt.Errorf("failed to load root metadata: %w", err)
+		}
 
-	history := make([]*models.GlobalCommit, 0, len(batch))
-	for i := len(batch) - 1; i >= 0; i-- {
-		job := batch[i]
-		history = append(history, &models.GlobalCommit{
-			CommitHash:     job.commitHash,
-			Timestamp:      job.commitTime,
-			MergedSliceIDs: []string{job.sliceID},
-		})
-	}
-	latest := batch[len(batch)-1]
-	state.GlobalCommitHash = latest.commitHash
-	state.Timestamp = latest.commitTime
-	state.History = append(history, state.History...)
+		files := collectUniquePromotionFiles(batch)
+		for _, fileID := range files {
+			if err := s.storage.AddFileToSlice(ctx, fileID, rootSliceID); err != nil {
+				return fmt.Errorf("failed to add file to root slice: %w", err)
+			}
+		}
 
-	if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
-		return fmt.Errorf("failed to update global state: %w", err)
-	}
+		state, err := s.storage.GetGlobalState(ctx)
+		if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
+			return fmt.Errorf("failed to load global state: %w", err)
+		}
+		if state == nil {
+			state = &models.GlobalState{}
+		}
 
-	rootMetadata.HeadCommitHash = state.GlobalCommitHash
-	latestFiles := normalizeModifiedFiles(latest.files)
-	rootMetadata.ModifiedFiles = latestFiles
-	rootMetadata.ModifiedFilesCount = len(latestFiles)
-	rootMetadata.LastModified = state.Timestamp
-	if err := s.storage.UpdateSliceMetadata(ctx, rootSliceID, rootMetadata); err != nil {
-		return fmt.Errorf("failed to update root metadata: %w", err)
-	}
+		history := make([]*models.GlobalCommit, 0, len(batch))
+		for i := len(batch) - 1; i >= 0; i-- {
+			job := batch[i]
+			history = append(history, &models.GlobalCommit{
+				CommitHash:     job.CommitHash,
+				Timestamp:      job.CommitTime,
+				MergedSliceIDs: []string{job.SliceID},
+			})
+		}
+		latest := batch[len(batch)-1]
+		state.GlobalCommitHash = latest.CommitHash
+		state.Timestamp = latest.CommitTime
+		state.History = append(history, state.History...)
 
-	return nil
+		if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
+			return fmt.Errorf("failed to update global state: %w", err)
+		}
+
+		rootMetadata.HeadCommitHash = state.GlobalCommitHash
+		latestFiles := normalizeModifiedFiles(latest.Files)
+		rootMetadata.ModifiedFiles = latestFiles
+		rootMetadata.ModifiedFilesCount = len(latestFiles)
+		rootMetadata.LastModified = state.Timestamp
+		if err := s.storage.UpdateSliceMetadata(ctx, rootSliceID, rootMetadata); err != nil {
+			return fmt.Errorf("failed to update root metadata: %w", err)
+		}
+
+		return nil
+	})
 }
 
-func collectUniquePromotionFiles(batch []rootPromotionJob) []string {
+func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
 	if len(batch) == 0 {
 		return nil
 	}
 	dedup := make(map[string]struct{})
 	files := make([]string, 0)
 	for _, job := range batch {
-		for _, fileID := range normalizeModifiedFiles(job.files) {
+		for _, fileID := range normalizeModifiedFiles(job.Files) {
 			if _, exists := dedup[fileID]; exists {
 				continue
 			}
@@ -2181,17 +2101,27 @@ func collectUniquePromotionFiles(batch []rootPromotionJob) []string {
 }
 
 func (s *sliceServiceServer) waitForQueuedPromotions(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		s.promotionWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	return s.rootPromotionQueue().Wait(ctx)
+}
+
+func (s *sliceServiceServer) rootPromotionQueue() *rootpromote.Queue {
+	s.promotionQueueMu.Lock()
+	defer s.promotionQueueMu.Unlock()
+	if s.promotionQueue != nil {
+		return s.promotionQueue
 	}
+	s.promotionQueue = rootpromote.New(s.promotionBatchWindow, s.promotionBatchMaxSize, func(ctx context.Context, batch []rootpromote.Job) error {
+		if err := s.promoteSliceBatch(ctx, batch); err != nil {
+			sliceID := ""
+			if len(batch) > 0 {
+				sliceID = batch[0].SliceID
+			}
+			log.Printf("failed to promote %d queued commits for slice %s: %v", len(batch), sliceID, err)
+			return err
+		}
+		return nil
+	})
+	return s.promotionQueue
 }
 
 func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error) {
