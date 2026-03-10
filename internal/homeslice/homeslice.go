@@ -13,6 +13,15 @@ import (
 
 const idPrefix = "home."
 
+type BackfillResult struct {
+	Username          string
+	HomeSliceID       string
+	Created           bool
+	Seeded            bool
+	FilesCopied       int
+	DirectoriesCopied int
+}
+
 // IDForUsername returns the deterministic home-slice ID for a user.
 func IDForUsername(username string) string {
 	return idPrefix + strings.TrimSpace(username)
@@ -52,7 +61,7 @@ func EnsureUserHomeSlice(ctx context.Context, st storage.Storage, username strin
 		return nil, err
 	}
 
-	homeSlice, err := ensureHomeSliceRecord(ctx, st, user)
+	homeSlice, _, err := ensureHomeSliceRecord(ctx, st, user)
 	if err != nil {
 		return nil, err
 	}
@@ -64,27 +73,84 @@ func EnsureUserHomeSlice(ctx context.Context, st storage.Storage, username strin
 	if rootPath == "" {
 		rootPath = RelativeRootPath(user.Username)
 	}
-	if err := ensureDirectory(ctx, st, homeSlice.ID, rootPath); err != nil {
+	if _, err := ensureDirectory(ctx, st, homeSlice.ID, rootPath); err != nil {
 		return nil, err
 	}
-	if err := ensureDirectory(ctx, st, rootSlice.ID, rootPath); err != nil {
+	if _, err := ensureDirectory(ctx, st, rootSlice.ID, rootPath); err != nil {
 		return nil, err
 	}
 	return homeSlice, nil
 }
 
-func ensureHomeSliceRecord(ctx context.Context, st storage.Storage, user *models.User) (*models.Slice, error) {
+func BackfillUserHomeSlice(ctx context.Context, st storage.Storage, username string) (*BackfillResult, error) {
+	if st == nil {
+		return nil, fmt.Errorf("storage is nil")
+	}
+
+	user, err := st.GetUser(ctx, strings.TrimSpace(username))
+	if err != nil {
+		return nil, err
+	}
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		return nil, err
+	}
+
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	homeSlice, created, err := ensureHomeSliceRecord(ctx, st, user)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureInitialHeadArtifacts(ctx, st, homeSlice, "create home slice"); err != nil {
+		return nil, err
+	}
+
+	rootPath := strings.TrimPrefix(strings.TrimSpace(user.RootPath), "/")
+	if rootPath == "" {
+		rootPath = RelativeRootPath(user.Username)
+	}
+	if _, err := ensureDirectory(ctx, st, homeSlice.ID, rootPath); err != nil {
+		return nil, err
+	}
+	if _, err := ensureDirectory(ctx, st, rootSlice.ID, rootPath); err != nil {
+		return nil, err
+	}
+
+	filesCopied, directoriesCopied, err := copyRootSubtreeToHomeSlice(ctx, st, rootSlice.ID, homeSlice.ID, rootPath)
+	if err != nil {
+		return nil, err
+	}
+	if filesCopied > 0 || directoriesCopied > 0 {
+		if err := recordSliceStateCommit(ctx, st, homeSlice, "backfill home slice from root"); err != nil {
+			return nil, err
+		}
+	}
+
+	return &BackfillResult{
+		Username:          user.Username,
+		HomeSliceID:       homeSlice.ID,
+		Created:           created,
+		Seeded:            filesCopied > 0 || directoriesCopied > 0,
+		FilesCopied:       filesCopied,
+		DirectoriesCopied: directoriesCopied,
+	}, nil
+}
+
+func ensureHomeSliceRecord(ctx context.Context, st storage.Storage, user *models.User) (*models.Slice, bool, error) {
 	if user == nil {
-		return nil, fmt.Errorf("user is nil")
+		return nil, false, fmt.Errorf("user is nil")
 	}
 
 	sliceID := IDForUsername(user.Username)
 	slice, err := st.GetSlice(ctx, sliceID)
 	if err == nil {
-		return slice, nil
+		return slice, false, nil
 	}
 	if err != storage.ErrSliceNotFound {
-		return nil, err
+		return nil, false, err
 	}
 
 	now := time.Now()
@@ -98,9 +164,10 @@ func ensureHomeSliceRecord(ctx context.Context, st storage.Storage, user *models
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}); err != nil && err != storage.ErrSliceAlreadyExists {
-		return nil, err
+		return nil, false, err
 	}
-	return st.GetSlice(ctx, sliceID)
+	slice, err = st.GetSlice(ctx, sliceID)
+	return slice, true, err
 }
 
 func ensureInitialHeadArtifacts(ctx context.Context, st storage.Storage, slice *models.Slice, message string) error {
@@ -153,29 +220,240 @@ func ensureInitialHeadArtifacts(ctx context.Context, st storage.Storage, slice *
 	return nil
 }
 
-func ensureDirectory(ctx context.Context, st storage.Storage, sliceID, dirPath string) error {
+func ensureDirectory(ctx context.Context, st storage.Storage, sliceID, dirPath string) (bool, error) {
 	dirPath = strings.TrimSpace(dirPath)
 	if dirPath == "" {
-		return nil
+		return false, nil
 	}
 
 	entry, err := st.GetEntryByPath(ctx, sliceID, dirPath)
 	if err == nil {
 		if entry.Type != "directory" {
-			return fmt.Errorf("path %q already exists as %s in slice %s", dirPath, entry.Type, sliceID)
+			return false, fmt.Errorf("path %q already exists as %s in slice %s", dirPath, entry.Type, sliceID)
 		}
-		return nil
+		return false, nil
 	}
 	if err != storage.ErrEntryNotFound {
-		return err
+		return false, err
 	}
 
-	return st.AddEntry(ctx, &models.DirectoryEntry{
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(sliceID, dirPath),
 		Path:     dirPath,
 		Type:     "directory",
 		ParentID: sliceID,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func copyRootSubtreeToHomeSlice(ctx context.Context, st storage.Storage, rootSliceID, homeSliceID, rootPath string) (int, int, error) {
+	entries, err := collectSubtreeEntries(ctx, st, rootSliceID, rootPath)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	filesCopied := 0
+	directoriesCopied := 0
+	for _, entry := range entries {
+		if entry == nil || strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		switch entry.Type {
+		case "directory":
+			created, err := ensureDirectory(ctx, st, homeSliceID, entry.Path)
+			if err != nil {
+				return 0, 0, err
+			}
+			if created {
+				directoriesCopied++
+			}
+		default:
+			copied, err := copyFile(ctx, st, rootSliceID, homeSliceID, entry.Path)
+			if err != nil {
+				return 0, 0, err
+			}
+			if copied {
+				filesCopied++
+			}
+		}
+	}
+	return filesCopied, directoriesCopied, nil
+}
+
+func collectSubtreeEntries(ctx context.Context, st storage.Storage, sliceID, rootPath string) ([]*models.DirectoryEntry, error) {
+	rootPath = strings.TrimSpace(rootPath)
+	if rootPath == "" {
+		return nil, nil
+	}
+
+	rootEntry, err := st.GetEntryByPath(ctx, sliceID, rootPath)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	entries := []*models.DirectoryEntry{rootEntry}
+	queue := []string{rootEntry.ID}
+	for len(queue) > 0 {
+		parentID := queue[0]
+		queue = queue[1:]
+
+		children, err := st.ListEntries(ctx, sliceID, parentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, child := range children {
+			if child == nil {
+				continue
+			}
+			entries = append(entries, child)
+			if child.Type == "directory" {
+				queue = append(queue, child.ID)
+			}
+		}
+	}
+	return entries, nil
+}
+
+func copyFile(ctx context.Context, st storage.Storage, sourceSliceID, targetSliceID, filePath string) (bool, error) {
+	if entry, err := st.GetEntryByPath(ctx, targetSliceID, filePath); err == nil {
+		if entry.Type != "file" {
+			return false, fmt.Errorf("path %q already exists as %s in slice %s", filePath, entry.Type, targetSliceID)
+		}
+		if _, err := st.GetSliceFileByPath(ctx, targetSliceID, filePath); err == nil {
+			return false, nil
+		} else if err != storage.ErrEntryNotFound {
+			return false, err
+		}
+	} else if err != storage.ErrEntryNotFound {
+		return false, err
+	}
+
+	sourceFile, err := st.GetSliceFileByPath(ctx, sourceSliceID, filePath)
+	if err != nil {
+		return false, err
+	}
+
+	if err := st.AddFileContent(ctx, &models.FileContent{
+		FileID:  filePath,
+		Path:    filePath,
+		Content: append([]byte(nil), sourceFile.Content...),
+		Size:    sourceFile.Size,
+		Hash:    sourceFile.Hash,
+	}); err != nil {
+		return false, err
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(targetSliceID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: targetSliceID,
+		Size:     sourceFile.Size,
+		Hash:     sourceFile.Hash,
+	}); err != nil {
+		return false, err
+	}
+	if err := st.AddFileToSlice(ctx, filePath, targetSliceID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func recordSliceStateCommit(ctx context.Context, st storage.Storage, slice *models.Slice, message string) error {
+	if slice == nil {
+		return fmt.Errorf("slice is nil")
+	}
+
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		return err
+	}
+
+	files, err := st.GetSliceFiles(ctx, slice.ID)
+	if err != nil {
+		return err
+	}
+	snapshotFiles := make(map[string]string, len(files))
+	for _, file := range files {
+		if file == nil || strings.TrimSpace(file.Path) == "" {
+			continue
+		}
+		snapshotFiles[file.Path] = file.Hash
+	}
+
+	paths, err := collectSlicePaths(ctx, st, slice.ID)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	commitHash := fmt.Sprintf("home-backfill-%d", now.UnixNano())
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: commitHash,
+		ParentHash: meta.HeadCommitHash,
+		Timestamp:  now,
+		Message:    strings.TrimSpace(message),
+	}); err != nil {
+		return err
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Files:      snapshotFiles,
+		Timestamp:  now,
+	}); err != nil {
+		return err
+	}
+	return st.UpdateSliceMetadata(ctx, slice.ID, &models.SliceMetadata{
+		SliceID:            slice.ID,
+		HeadCommitHash:     commitHash,
+		ModifiedFiles:      paths,
+		LastModified:       now,
+		ModifiedFilesCount: len(paths),
 	})
+}
+
+func collectSlicePaths(ctx context.Context, st storage.Storage, sliceID string) ([]string, error) {
+	rootChildren, err := st.ListEntries(ctx, sliceID, sliceID)
+	if err != nil {
+		return nil, err
+	}
+
+	paths := make([]string, 0)
+	queue := make([]string, 0, len(rootChildren))
+	for _, child := range rootChildren {
+		if child == nil || strings.TrimSpace(child.Path) == "" {
+			continue
+		}
+		paths = append(paths, child.Path)
+		if child.Type == "directory" {
+			queue = append(queue, child.ID)
+		}
+	}
+
+	for len(queue) > 0 {
+		parentID := queue[0]
+		queue = queue[1:]
+
+		children, err := st.ListEntries(ctx, sliceID, parentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, child := range children {
+			if child == nil || strings.TrimSpace(child.Path) == "" {
+				continue
+			}
+			paths = append(paths, child.Path)
+			if child.Type == "directory" {
+				queue = append(queue, child.ID)
+			}
+		}
+	}
+	return paths, nil
 }
 
 func isDuplicateWrite(err error) bool {

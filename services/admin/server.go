@@ -13,6 +13,7 @@ import (
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
@@ -82,6 +83,20 @@ func userToProto(user *models.User) *adminv1.UserInfo {
 	return &adminv1.UserInfo{
 		Username:  user.Username,
 		CreatedAt: user.CreatedAt.Unix(),
+	}
+}
+
+func backfillResultToProto(result *homeslice.BackfillResult) *adminv1.HomeSliceBackfillResult {
+	if result == nil {
+		return nil
+	}
+	return &adminv1.HomeSliceBackfillResult{
+		Username:          result.Username,
+		HomeSliceId:       result.HomeSliceID,
+		Created:           result.Created,
+		Seeded:            result.Seeded,
+		FilesCopied:       int32(result.FilesCopied),
+		DirectoriesCopied: int32(result.DirectoriesCopied),
 	}
 }
 
@@ -778,6 +793,65 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 			IsRoot:      slice.IsRoot,
 			Environment: slice.Environment,
 		})
+	}
+
+	return response, nil
+}
+
+func (s *adminServiceServer) BackfillHomeSlices(ctx context.Context, req *adminv1.BackfillHomeSlicesRequest) (*adminv1.BackfillHomeSlicesResponse, error) {
+	if _, _, err := s.requireUser(ctx); err != nil {
+		return nil, err
+	}
+
+	var users []*models.User
+	if len(req.GetUsernames()) > 0 {
+		seen := make(map[string]struct{}, len(req.GetUsernames()))
+		users = make([]*models.User, 0, len(req.GetUsernames()))
+		for _, rawUsername := range req.GetUsernames() {
+			username := strings.TrimSpace(rawUsername)
+			if username == "" {
+				continue
+			}
+			if _, ok := seen[username]; ok {
+				continue
+			}
+			seen[username] = struct{}{}
+			user, err := s.storage.GetUser(ctx, username)
+			if err != nil {
+				if err == storage.ErrEntryNotFound {
+					return nil, status.Error(codes.NotFound, fmt.Sprintf("user not found: %s", username))
+				}
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load user %s: %v", username, err))
+			}
+			users = append(users, user)
+		}
+	} else {
+		listedUsers, err := s.storage.ListUsers(ctx, int(req.GetLimit()), int(req.GetOffset()))
+		if err != nil {
+			if err == storage.ErrInvalidInput {
+				return nil, status.Error(codes.InvalidArgument, "invalid limit or offset")
+			}
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list users: %v", err))
+		}
+		users = listedUsers
+	}
+
+	response := &adminv1.BackfillHomeSlicesResponse{
+		Results: make([]*adminv1.HomeSliceBackfillResult, 0, len(users)),
+	}
+	for _, user := range users {
+		result, err := homeslice.BackfillUserHomeSlice(ctx, s.storage, user.Username)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to backfill home slice for %s: %v", user.Username, err))
+		}
+		response.Results = append(response.Results, backfillResultToProto(result))
+		response.Processed++
+		if result.Created {
+			response.Created++
+		}
+		if result.Seeded {
+			response.Seeded++
+		}
 	}
 
 	return response, nil

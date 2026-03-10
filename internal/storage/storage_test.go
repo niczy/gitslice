@@ -578,6 +578,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if updatedUser.RootPath != "/"+accountUsername {
 		t.Fatalf("unexpected user root path after update: %q", updatedUser.RootPath)
 	}
+	users, err := st.ListUsers(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListUsers failed: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != accountUsername {
+		t.Fatalf("unexpected users from ListUsers after first create: %#v", users)
+	}
 
 	memberUsername := "member" + suffix[len(suffix)-6:]
 	memberEmail := "member+" + suffix + "@example.com"
@@ -588,6 +595,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		PasswordHash: "member-hash",
 	}); err != nil {
 		t.Fatalf("CreateUser org member failed: %v", err)
+	}
+	users, err = st.ListUsers(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListUsers after second create failed: %v", err)
+	}
+	if len(users) != 2 || users[0].Username != accountUsername || users[1].Username != memberUsername {
+		t.Fatalf("unexpected users after second create: %#v", users)
 	}
 
 	orgSlug := "org" + suffix[len(suffix)-6:]
