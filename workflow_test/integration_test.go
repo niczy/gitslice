@@ -826,29 +826,26 @@ func TestFilesystemCLIUsesAPIKeyEnvOverLegacyUser(t *testing.T) {
 		t.Fatalf("CreateAuthSession failed: %v", err)
 	}
 
-	workspaceID := fmt.Sprintf("fs-cli-auth-%d", time.Now().UnixNano())
-	output, err := runCLIWithDirInputEnv("", "", map[string]string{"GS_API_KEY": token}, "fs", "create", workspaceID)
+	remoteDir := fmt.Sprintf("/%s/fs-cli-auth-%d", apiUsername, time.Now().UnixNano())
+	output, err := runCLIWithDirInputEnv("", "", map[string]string{"GS_API_KEY": token}, "fs", "mkdir", remoteDir)
 	if err != nil {
 		t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
 	}
-	if !strings.Contains(output, "Created workspace "+workspaceID) {
-		t.Fatalf("expected workspace creation output, got: %s", output)
+	if !strings.Contains(output, "Created directory") {
+		t.Fatalf("expected directory creation output, got: %s", output)
 	}
-	defer func() {
-		_, _ = runCLIWithDirInputEnv("", "", map[string]string{"GS_API_KEY": token}, "fs", "delete", workspaceID)
-	}()
 
 	client := newFilesystemClient(t)
 	authCtx := withBearerToken(ctx, token)
-	workspace, err := client.GetWorkspaceInfo(authCtx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
+	statResp, err := client.Stat(authCtx, &filesystemv1.StatRequest{
+		WorkspaceId: homeslice.IDForUsername(apiUsername),
+		Path:        remoteDir,
+	})
 	if err != nil {
-		t.Fatalf("GetWorkspaceInfo failed: %v", err)
+		t.Fatalf("Stat failed: %v", err)
 	}
-	if workspace.CreatedBy != apiUsername {
-		t.Fatalf("expected workspace created by %q, got %q", apiUsername, workspace.CreatedBy)
-	}
-	if len(workspace.Owners) != 1 || workspace.Owners[0] != apiUsername {
-		t.Fatalf("expected workspace owner %q, got %#v", apiUsername, workspace.Owners)
+	if !statResp.GetExists() || statResp.GetEntry().GetType() != filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
+		t.Fatalf("expected remote directory to exist, got %#v", statResp)
 	}
 }
 
@@ -895,28 +892,27 @@ func TestCLILoginAndLogoutUseStoredBearerCredentials(t *testing.T) {
 	client := newFilesystemClient(t)
 	authCtx := withBearerToken(ctx, creds.AccessToken)
 	if _, err := client.ListWorkspaces(authCtx, &filesystemv1.ListWorkspacesRequest{}); err != nil {
-		t.Fatalf("stored bearer token was not accepted before fs create: %v", err)
+		t.Fatalf("stored bearer token was not accepted before fs mkdir: %v", err)
 	}
 
-	workspaceID := fmt.Sprintf("fs-cli-login-%d", time.Now().UnixNano())
-	output, err = runCLIWithDirInputEnv("", "", env, "fs", "create", workspaceID)
+	remoteDir := fmt.Sprintf("/%s/login-smoke-%d", loginUsername, time.Now().UnixNano())
+	output, err = runCLIWithDirInputEnv("", "", env, "fs", "mkdir", remoteDir)
 	if err != nil {
-		t.Fatalf("fs create failed: %v\nOutput:\n%s", err, output)
+		t.Fatalf("fs mkdir failed: %v\nOutput:\n%s", err, output)
 	}
-	if !strings.Contains(output, "Created workspace "+workspaceID) {
-		t.Fatalf("unexpected fs create output: %s", output)
+	if !strings.Contains(output, "Created directory") {
+		t.Fatalf("unexpected fs mkdir output: %s", output)
 	}
 
-	defer func() {
-		_, _ = client.DeleteWorkspace(authCtx, &filesystemv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID})
-	}()
-
-	workspace, err := client.GetWorkspaceInfo(authCtx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: workspaceID})
+	statResp, err := client.Stat(authCtx, &filesystemv1.StatRequest{
+		WorkspaceId: homeslice.IDForUsername(loginUsername),
+		Path:        remoteDir,
+	})
 	if err != nil {
-		t.Fatalf("GetWorkspaceInfo failed: %v", err)
+		t.Fatalf("Stat failed: %v", err)
 	}
-	if workspace.CreatedBy != loginUsername {
-		t.Fatalf("expected workspace created by %q, got %q", loginUsername, workspace.CreatedBy)
+	if !statResp.GetExists() || statResp.GetEntry().GetType() != filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
+		t.Fatalf("expected remote directory to exist, got %#v", statResp)
 	}
 
 	output, err = runCLIWithDirInputEnv("", "", env, "logout")
@@ -1007,8 +1003,8 @@ curl -sf -X POST "$GS_DEVICE_APPROVE_BASE/v1/auth/device/approve" \
 		t.Fatalf("WriteFile refreshed credentials failed: %v", err)
 	}
 
-	if _, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "fs", "list"); err != nil {
-		t.Fatalf("fs list with expired stored access token failed: %v", err)
+	if _, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "fs", "ls", "/"+loginUsername); err != nil {
+		t.Fatalf("fs ls with expired stored access token failed: %v", err)
 	}
 
 	data, err = os.ReadFile(credentialsPath)

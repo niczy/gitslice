@@ -293,12 +293,12 @@ gs login your_name
 gs --user your_name fork my-slice ./some/folder --parent root_slice
 
 # Remote filesystem commands
-gs --user your_name fs create my-workspace
-gs --user your_name fs write my-workspace:README.md -f ./README.md
-gs --user your_name fs cat my-workspace:README.md
-gs --user your_name fs shell my-workspace
-gs --user your_name fs upload ./project my-workspace:project
-gs --user your_name fs download my-workspace:project ./project-copy
+gs --user your_name fs write /your_name/README.md -f ./README.md
+gs --user your_name fs cat /your_name/README.md
+gs --user your_name fs snapshot -m "save point"
+gs --user your_name fs shell
+gs --user your_name fs upload ./project /your_name/project
+gs --user your_name fs download /your_name/project ./project-copy
 ```
 
 ## Development
