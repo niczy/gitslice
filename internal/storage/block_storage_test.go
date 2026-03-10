@@ -139,6 +139,21 @@ func TestStorageBlockManifestRoundTrip(t *testing.T) {
 			if err := st.PutFileManifest(ctx, sliceID, manifest.Path, manifest); err != nil {
 				t.Fatalf("PutFileManifest failed: %v", err)
 			}
+			if err := st.PutVersionedFileManifest(ctx, manifest); err != nil {
+				t.Fatalf("PutVersionedFileManifest failed: %v", err)
+			}
+			if err := st.AddEntry(ctx, &models.DirectoryEntry{
+				ID:       generateEntryID(sliceID, manifest.Path),
+				Path:     manifest.Path,
+				Type:     "file",
+				ParentID: sliceID,
+				Size:     manifest.TotalSize,
+			}); err != nil {
+				t.Fatalf("AddEntry failed: %v", err)
+			}
+			if err := st.AddFileToSlice(ctx, manifest.Path, sliceID); err != nil {
+				t.Fatalf("AddFileToSlice failed: %v", err)
+			}
 			gotManifest, err := st.GetFileManifest(ctx, sliceID, manifest.Path)
 			if err != nil {
 				t.Fatalf("GetFileManifest failed: %v", err)
@@ -155,6 +170,44 @@ func TestStorageBlockManifestRoundTrip(t *testing.T) {
 			}
 			if !bytes.Equal(assembled, content) {
 				t.Fatalf("assembled content mismatch")
+			}
+
+			versioned, err := st.GetVersionedFileManifest(ctx, manifest.Hash)
+			if err != nil {
+				t.Fatalf("GetVersionedFileManifest failed: %v", err)
+			}
+			assembledFromVersioned, err := AssembleFile(versioned, func(hash string) ([]byte, error) {
+				return st.GetBlock(ctx, hash)
+			})
+			if err != nil {
+				t.Fatalf("AssembleFile versioned failed: %v", err)
+			}
+			if !bytes.Equal(assembledFromVersioned, content) {
+				t.Fatalf("versioned assembled content mismatch")
+			}
+
+			legacyRead, err := st.GetSliceFileByPath(ctx, sliceID, manifest.Path)
+			if err != nil {
+				t.Fatalf("GetSliceFileByPath manifest fallback failed: %v", err)
+			}
+			if !bytes.Equal(legacyRead.Content, content) {
+				t.Fatalf("legacy path content mismatch")
+			}
+
+			entry, err := st.GetEntryByPath(ctx, sliceID, manifest.Path)
+			if err != nil {
+				t.Fatalf("GetEntryByPath manifest hash failed: %v", err)
+			}
+			if entry.Hash != manifest.Hash {
+				t.Fatalf("entry hash mismatch: got=%q want=%q", entry.Hash, manifest.Hash)
+			}
+
+			hashRead, err := st.GetFileContentByHash(ctx, manifest.Hash)
+			if err != nil {
+				t.Fatalf("GetFileContentByHash manifest fallback failed: %v", err)
+			}
+			if !bytes.Equal(hashRead.Content, content) {
+				t.Fatalf("hash content mismatch")
 			}
 
 			if err := st.DeleteFileManifest(ctx, sliceID, manifest.Path); err != nil {

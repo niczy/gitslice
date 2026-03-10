@@ -92,6 +92,8 @@ type Storage interface {
 	PutFileManifest(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error
 	GetFileManifest(ctx context.Context, sliceID, path string) (*models.FileManifest, error)
 	DeleteFileManifest(ctx context.Context, sliceID, path string) error
+	PutVersionedFileManifest(ctx context.Context, manifest *models.FileManifest) error
+	GetVersionedFileManifest(ctx context.Context, hash string) (*models.FileManifest, error)
 
 	// Directory entries
 	AddEntry(ctx context.Context, entry *models.DirectoryEntry) error

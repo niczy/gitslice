@@ -781,6 +781,14 @@ func (s *postgresNativeTxView) DeleteFileManifest(ctx context.Context, sliceID, 
 	return nil
 }
 
+func (s *postgresNativeTxView) PutVersionedFileManifest(ctx context.Context, manifest *models.FileManifest) error {
+	return s.PostgresNativeStorage.PutVersionedFileManifest(ctx, manifest)
+}
+
+func (s *postgresNativeTxView) GetVersionedFileManifest(ctx context.Context, hash string) (*models.FileManifest, error) {
+	return s.PostgresNativeStorage.GetVersionedFileManifest(ctx, hash)
+}
+
 func (s *postgresNativeTxView) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
 	ctx = ensureCtx(ctx)
 	var cs models.CommitSnapshot
@@ -1880,7 +1888,7 @@ func (s *PostgresNativeStorage) GetSliceFiles(ctx context.Context, sliceID strin
 		if _, ok := seenPaths[ref.path]; ok {
 			continue
 		}
-		content, found, err := s.loadPreferredFileContent(ctx, ref.path, ref.size, ref.candidates(fileID)...)
+		content, found, err := s.loadPreferredFileContent(ctx, sliceID, ref.path, ref.size, ref.candidates(fileID)...)
 		if err != nil {
 			return nil, err
 		}
@@ -1949,7 +1957,7 @@ func (s *PostgresNativeStorage) resolveSliceFileReference(ctx context.Context, s
 	return ref, nil
 }
 
-func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, path string, size int64, candidateIDs ...string) (*models.FileContent, bool, error) {
+func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, sliceID, path string, size int64, candidateIDs ...string) (*models.FileContent, bool, error) {
 	ordered := make([]string, 0, len(candidateIDs))
 	seen := make(map[string]struct{}, len(candidateIDs))
 	for _, candidateID := range candidateIDs {
@@ -2008,6 +2016,28 @@ func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, pa
 		return &fc, true, nil
 	}
 
+	if strings.TrimSpace(sliceID) != "" && strings.TrimSpace(path) != "" {
+		manifest, err := s.GetFileManifest(ctx, sliceID, path)
+		if err != nil && err != ErrEntryNotFound {
+			return nil, false, err
+		}
+		if err == nil && manifest != nil {
+			assembled, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
+				return s.GetBlock(ctx, hash)
+			})
+			if err != nil {
+				return nil, false, err
+			}
+			return &models.FileContent{
+				FileID:  path,
+				Path:    path,
+				Content: assembled,
+				Size:    manifest.TotalSize,
+				Hash:    strings.TrimSpace(manifest.Hash),
+			}, true, nil
+		}
+	}
+
 	return nil, false, nil
 }
 
@@ -2027,7 +2057,7 @@ func (s *PostgresNativeStorage) GetSliceFileByPath(ctx context.Context, sliceID,
 		return nil, err
 	}
 
-	content, found, err := s.loadPreferredFileContent(ctx, path, entrySize, entryID, path)
+	content, found, err := s.loadPreferredFileContent(ctx, sliceID, path, entrySize, entryID, path)
 	if err != nil {
 		return nil, err
 	}
@@ -2202,6 +2232,40 @@ func (s *PostgresNativeStorage) DeleteFileManifest(ctx context.Context, sliceID,
 	return nil
 }
 
+func (s *PostgresNativeStorage) PutVersionedFileManifest(ctx context.Context, manifest *models.FileManifest) error {
+	ctx = ensureCtx(ctx)
+	if manifest == nil || strings.TrimSpace(manifest.Hash) == "" {
+		return ErrInvalidInput
+	}
+
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	return s.objectStore.PutObject(ctx, s.objKey("versioned_manifests", strings.TrimSpace(manifest.Hash)), raw)
+}
+
+func (s *PostgresNativeStorage) GetVersionedFileManifest(ctx context.Context, hash string) (*models.FileManifest, error) {
+	ctx = ensureCtx(ctx)
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, ErrInvalidInput
+	}
+
+	raw, err := s.objectStore.GetObject(ctx, s.objKey("versioned_manifests", hash))
+	if err != nil {
+		if err == ErrEntryNotFound {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	var manifest models.FileManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, err
+	}
+	return cloneManifest(&manifest), nil
+}
+
 // ============ Directory Entries ============
 
 func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.DirectoryEntry) error {
@@ -2271,6 +2335,11 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 					ELSE 2
 				END
 				LIMIT 1
+			), (
+				SELECT fm.hash
+				FROM file_manifests fm
+				WHERE fm.slice_id = directory_entries.slice_id AND fm.path = directory_entries.path
+				LIMIT 1
 			), '')
 		FROM directory_entries
 		WHERE id = $1
@@ -2300,6 +2369,11 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 					ELSE 2
 				END
 				LIMIT 1
+			), (
+				SELECT fm.hash
+				FROM file_manifests fm
+				WHERE fm.slice_id = directory_entries.slice_id AND fm.path = directory_entries.path
+				LIMIT 1
 			), '')
 		FROM directory_entries
 		WHERE slice_id = $1 AND path = $2
@@ -2327,6 +2401,11 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 					WHEN fc.file_id = directory_entries.path THEN 1
 					ELSE 2
 				END
+				LIMIT 1
+			), (
+				SELECT fm.hash
+				FROM file_manifests fm
+				WHERE fm.slice_id = directory_entries.slice_id AND fm.path = directory_entries.path
 				LIMIT 1
 			), '')
 		FROM directory_entries
@@ -2536,6 +2615,23 @@ func (s *PostgresNativeStorage) GetFileContentByHash(ctx context.Context, conten
 	if err == nil {
 		fc.Hash = contentHash
 		return &fc, nil
+	}
+
+	manifest, err := s.GetVersionedFileManifest(ctx, contentHash)
+	if err == nil && manifest != nil {
+		assembled, assembleErr := AssembleFile(manifest, func(hash string) ([]byte, error) {
+			return s.GetBlock(ctx, hash)
+		})
+		if assembleErr != nil {
+			return nil, assembleErr
+		}
+		return &models.FileContent{
+			FileID:  manifest.Path,
+			Path:    manifest.Path,
+			Content: assembled,
+			Size:    manifest.TotalSize,
+			Hash:    strings.TrimSpace(manifest.Hash),
+		}, nil
 	}
 
 	return nil, ErrEntryNotFound
