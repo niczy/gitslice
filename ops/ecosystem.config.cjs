@@ -17,7 +17,8 @@ module.exports = {
         SKIP_GIT_POPULATION: "1",
         // Prod default: store blobs on the local filesystem (avoid requiring GCS ADC creds).
         OBJECT_STORE_TYPE: "filesystem",
-        OBJECT_STORE_DIR: "/home/nic/workspace/gitslice/.objectstore"
+        OBJECT_STORE_DIR: "/home/nic/workspace/gitslice/.objectstore",
+        PUBLIC_WEB_BASE_URL: "https://agenttools.dev"
       }
     },
     {

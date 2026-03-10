@@ -75,11 +75,35 @@ type TeamMember struct {
 }
 
 type AuthSession struct {
-	SessionID  string     `json:"session_id"`
-	Username   string     `json:"username"`
-	Token      string     `json:"token"`
-	DeviceInfo string     `json:"device_info"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastSeenAt time.Time  `json:"last_seen_at"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	SessionID             string     `json:"session_id"`
+	Username              string     `json:"username"`
+	Token                 string     `json:"token"`
+	RefreshToken          string     `json:"refresh_token,omitempty"`
+	DeviceInfo            string     `json:"device_info"`
+	CreatedAt             time.Time  `json:"created_at"`
+	LastSeenAt            time.Time  `json:"last_seen_at"`
+	AccessTokenExpiresAt  *time.Time `json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt *time.Time `json:"refresh_token_expires_at,omitempty"`
+	RevokedAt             *time.Time `json:"revoked_at,omitempty"`
+}
+
+type DeviceAuthorizationStatus string
+
+const (
+	DeviceAuthorizationPending  DeviceAuthorizationStatus = "pending"
+	DeviceAuthorizationApproved DeviceAuthorizationStatus = "approved"
+	DeviceAuthorizationDenied   DeviceAuthorizationStatus = "denied"
+)
+
+type DeviceAuthorization struct {
+	DeviceCode string                    `json:"device_code"`
+	UserCode   string                    `json:"user_code"`
+	Username   string                    `json:"username,omitempty"`
+	SessionID  string                    `json:"session_id,omitempty"`
+	DeviceInfo string                    `json:"device_info"`
+	Status     DeviceAuthorizationStatus `json:"status"`
+	CreatedAt  time.Time                 `json:"created_at"`
+	ExpiresAt  time.Time                 `json:"expires_at"`
+	ApprovedAt *time.Time                `json:"approved_at,omitempty"`
+	DeniedAt   *time.Time                `json:"denied_at,omitempty"`
 }

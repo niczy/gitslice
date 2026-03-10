@@ -138,11 +138,18 @@ type Storage interface {
 	UpdateUser(ctx context.Context, user *models.User) error
 	DeleteUser(ctx context.Context, username string) error
 	CreateAuthSession(ctx context.Context, session *models.AuthSession) error
+	GetAuthSession(ctx context.Context, sessionID string) (*models.AuthSession, error)
 	GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error)
+	GetAuthSessionByRefreshToken(ctx context.Context, refreshToken string) (*models.AuthSession, error)
 	ListAuthSessionsByUser(ctx context.Context, username string) ([]*models.AuthSession, error)
+	UpdateAuthSessionTokens(ctx context.Context, sessionID, accessToken string, accessTokenExpiresAt *time.Time, refreshToken string, refreshTokenExpiresAt *time.Time) error
 	TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error
 	RevokeAuthSession(ctx context.Context, username, sessionID string) error
 	RevokeAuthSessionByToken(ctx context.Context, token string) error
+	CreateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error
+	GetDeviceAuthorizationByDeviceCode(ctx context.Context, deviceCode string) (*models.DeviceAuthorization, error)
+	GetDeviceAuthorizationByUserCode(ctx context.Context, userCode string) (*models.DeviceAuthorization, error)
+	UpdateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error
 
 	CreateOrganization(ctx context.Context, org *models.Organization) error
 	GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error)

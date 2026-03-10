@@ -3,6 +3,7 @@ package accountservice
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -107,6 +108,126 @@ func TestResetPasswordFlow(t *testing.T) {
 	}
 	if _, err := srv.ListSessions(bearerCtx(ctx, oldToken), &accountv1.ListSessionsRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected old token invalidated by reset, got %v", err)
+	}
+}
+
+func TestDeviceAuthorizationFlowAndRefresh(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	if _, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "deviceuser",
+		Email:    "device@example.com",
+		Password: "password123",
+		Name:     "Device User",
+	}); err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+
+	startResp, err := srv.StartDeviceAuthorization(ctx, &accountv1.StartDeviceAuthorizationRequest{})
+	if err != nil {
+		t.Fatalf("StartDeviceAuthorization failed: %v", err)
+	}
+	if startResp.GetDeviceCode() == "" || startResp.GetUserCode() == "" {
+		t.Fatalf("expected device + user code, got %#v", startResp)
+	}
+	if startResp.GetVerificationUri() == "" || startResp.GetVerificationUriComplete() == "" {
+		t.Fatalf("expected verification URIs, got %#v", startResp)
+	}
+
+	pendingResp, err := srv.PollDeviceAuthorization(ctx, &accountv1.PollDeviceAuthorizationRequest{DeviceCode: startResp.GetDeviceCode()})
+	if err != nil {
+		t.Fatalf("PollDeviceAuthorization pending failed: %v", err)
+	}
+	if pendingResp.GetStatus() != accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_PENDING {
+		t.Fatalf("expected pending status, got %#v", pendingResp)
+	}
+	if pendingResp.GetAuth() != nil {
+		t.Fatalf("pending device auth should not return tokens: %#v", pendingResp)
+	}
+
+	approveResp, err := srv.ApproveDeviceAuthorization(userCtx(ctx, "deviceuser"), &accountv1.ApproveDeviceAuthorizationRequest{UserCode: startResp.GetUserCode()})
+	if err != nil {
+		t.Fatalf("ApproveDeviceAuthorization failed: %v", err)
+	}
+	if approveResp.GetUser().GetUsername() != "deviceuser" {
+		t.Fatalf("expected approved user deviceuser, got %#v", approveResp)
+	}
+
+	approvedResp, err := srv.PollDeviceAuthorization(ctx, &accountv1.PollDeviceAuthorizationRequest{DeviceCode: startResp.GetDeviceCode()})
+	if err != nil {
+		t.Fatalf("PollDeviceAuthorization approved failed: %v", err)
+	}
+	if approvedResp.GetStatus() != accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_APPROVED {
+		t.Fatalf("expected approved status, got %#v", approvedResp)
+	}
+	if approvedResp.GetAuth().GetAccessToken() == "" || approvedResp.GetAuth().GetRefreshToken() == "" {
+		t.Fatalf("expected auth tokens, got %#v", approvedResp)
+	}
+	if approvedResp.GetAuth().GetAccessTokenExpiresAt() == "" || approvedResp.GetAuth().GetRefreshTokenExpiresAt() == "" {
+		t.Fatalf("expected token expiry metadata, got %#v", approvedResp)
+	}
+
+	if _, err := srv.ListSessions(bearerCtx(ctx, approvedResp.GetAuth().GetAccessToken()), &accountv1.ListSessionsRequest{}); err != nil {
+		t.Fatalf("device auth access token should be usable, got %v", err)
+	}
+
+	oldAccessToken := approvedResp.GetAuth().GetAccessToken()
+	refreshResp, err := srv.RefreshAccessToken(ctx, &accountv1.RefreshAccessTokenRequest{RefreshToken: approvedResp.GetAuth().GetRefreshToken()})
+	if err != nil {
+		t.Fatalf("RefreshAccessToken failed: %v", err)
+	}
+	if refreshResp.GetAccessToken() == "" || refreshResp.GetAccessToken() == oldAccessToken {
+		t.Fatalf("expected rotated access token, got %#v", refreshResp)
+	}
+	if refreshResp.GetRefreshToken() != approvedResp.GetAuth().GetRefreshToken() {
+		t.Fatalf("expected refresh token to remain stable, got %#v", refreshResp)
+	}
+
+	if _, err := srv.ListSessions(bearerCtx(ctx, oldAccessToken), &accountv1.ListSessionsRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected old access token to be invalid after refresh, got %v", err)
+	}
+	if _, err := srv.ListSessions(bearerCtx(ctx, refreshResp.GetAccessToken()), &accountv1.ListSessionsRequest{}); err != nil {
+		t.Fatalf("refreshed access token should be usable, got %v", err)
+	}
+}
+
+func TestDeviceAuthorizationExpiry(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	srv := &accountServiceServer{st: st}
+
+	if _, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "expireuser",
+		Email:    "expire@example.com",
+		Password: "password123",
+		Name:     "Expire User",
+	}); err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+
+	startResp, err := srv.StartDeviceAuthorization(ctx, &accountv1.StartDeviceAuthorizationRequest{})
+	if err != nil {
+		t.Fatalf("StartDeviceAuthorization failed: %v", err)
+	}
+	record, err := st.GetDeviceAuthorizationByDeviceCode(ctx, startResp.GetDeviceCode())
+	if err != nil {
+		t.Fatalf("GetDeviceAuthorizationByDeviceCode failed: %v", err)
+	}
+	record.ExpiresAt = time.Now().Add(-1 * time.Minute)
+	if err := st.UpdateDeviceAuthorization(ctx, record); err != nil {
+		t.Fatalf("UpdateDeviceAuthorization failed: %v", err)
+	}
+
+	pollResp, err := srv.PollDeviceAuthorization(ctx, &accountv1.PollDeviceAuthorizationRequest{DeviceCode: startResp.GetDeviceCode()})
+	if err != nil {
+		t.Fatalf("PollDeviceAuthorization failed: %v", err)
+	}
+	if pollResp.GetStatus() != accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_EXPIRED {
+		t.Fatalf("expected expired status, got %#v", pollResp)
+	}
+	if _, err := srv.ApproveDeviceAuthorization(userCtx(ctx, "expireuser"), &accountv1.ApproveDeviceAuthorizationRequest{UserCode: startResp.GetUserCode()}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for expired approval, got %v", err)
 	}
 }
 

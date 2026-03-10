@@ -133,6 +133,9 @@ go build -o gs_cli/gs_cli ./gs_cli/
 # Run core server (gRPC on :50051, gateway on :8080)
 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 
+# Optional: override the browser URL returned by OAuth device login
+PUBLIC_WEB_BASE_URL=http://localhost:4173 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+
 # Run core server with PostgreSQL + GCS storage
 STORAGE_TYPE=postgres \
 POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \

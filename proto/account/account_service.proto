@@ -30,6 +30,34 @@ service AccountService {
     };
   }
 
+  rpc StartDeviceAuthorization(StartDeviceAuthorizationRequest) returns (StartDeviceAuthorizationResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/device/start"
+      body: "*"
+    };
+  }
+
+  rpc ApproveDeviceAuthorization(ApproveDeviceAuthorizationRequest) returns (ApproveDeviceAuthorizationResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/device/approve"
+      body: "*"
+    };
+  }
+
+  rpc PollDeviceAuthorization(PollDeviceAuthorizationRequest) returns (PollDeviceAuthorizationResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/device/poll"
+      body: "*"
+    };
+  }
+
+  rpc RefreshAccessToken(RefreshAccessTokenRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/token/refresh"
+      body: "*"
+    };
+  }
+
   rpc ResetPassword(ResetPasswordRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
       post: "/v1/auth/password/reset"
@@ -473,6 +501,10 @@ message AuthResponse {
   repeated Organization organizations = 2;
   Session session = 3;
   string access_token = 4;
+  string refresh_token = 5;
+  string access_token_expires_at = 6;
+  string refresh_token_expires_at = 7;
+  string token_type = 8;
 }
 
 message SignupRequest {
@@ -490,6 +522,48 @@ message LoginRequest {
 
 message LogoutRequest {
   string session_id = 1;
+}
+
+message StartDeviceAuthorizationRequest {}
+
+message StartDeviceAuthorizationResponse {
+  string device_code = 1;
+  string user_code = 2;
+  string verification_uri = 3;
+  string verification_uri_complete = 4;
+  int32 poll_interval_seconds = 5;
+  string expires_at = 6;
+}
+
+message ApproveDeviceAuthorizationRequest {
+  string user_code = 1;
+}
+
+message ApproveDeviceAuthorizationResponse {
+  User user = 1;
+  string approved_at = 2;
+}
+
+enum DeviceAuthorizationStatus {
+  DEVICE_AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  DEVICE_AUTHORIZATION_STATUS_PENDING = 1;
+  DEVICE_AUTHORIZATION_STATUS_APPROVED = 2;
+  DEVICE_AUTHORIZATION_STATUS_DENIED = 3;
+  DEVICE_AUTHORIZATION_STATUS_EXPIRED = 4;
+}
+
+message PollDeviceAuthorizationRequest {
+  string device_code = 1;
+}
+
+message PollDeviceAuthorizationResponse {
+  DeviceAuthorizationStatus status = 1;
+  AuthResponse auth = 2;
+  string expires_at = 3;
+}
+
+message RefreshAccessTokenRequest {
+  string refresh_token = 1;
 }
 
 message ResetPasswordRequest {

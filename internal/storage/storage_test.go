@@ -893,6 +893,99 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	} else if len(activeSessions) != 0 {
 		t.Fatalf("expected zero active sessions after revocation, got %d", len(activeSessions))
 	}
+
+	accessExpiresAt := time.Now().Add(15 * time.Minute)
+	refreshExpiresAt := time.Now().Add(24 * time.Hour)
+	authSession3 := &models.AuthSession{
+		SessionID:             "auth-sess3-" + suffix,
+		Username:              accountUsername,
+		Token:                 "auth-token3-" + suffix,
+		RefreshToken:          "refresh-token3-" + suffix,
+		DeviceInfo:            "device flow",
+		AccessTokenExpiresAt:  &accessExpiresAt,
+		RefreshTokenExpiresAt: &refreshExpiresAt,
+	}
+	if err := st.CreateAuthSession(ctx, authSession3); err != nil {
+		t.Fatalf("CreateAuthSession third failed: %v", err)
+	}
+	sessionByID, err := st.GetAuthSession(ctx, authSession3.SessionID)
+	if err != nil {
+		t.Fatalf("GetAuthSession failed: %v", err)
+	}
+	if sessionByID.RefreshToken != authSession3.RefreshToken {
+		t.Fatalf("GetAuthSession refresh token mismatch: %#v", sessionByID)
+	}
+	sessionByRefreshToken, err := st.GetAuthSessionByRefreshToken(ctx, authSession3.RefreshToken)
+	if err != nil {
+		t.Fatalf("GetAuthSessionByRefreshToken failed: %v", err)
+	}
+	if sessionByRefreshToken.SessionID != authSession3.SessionID {
+		t.Fatalf("GetAuthSessionByRefreshToken mismatch: %#v", sessionByRefreshToken)
+	}
+	rotatedAccessExpiresAt := time.Now().Add(20 * time.Minute)
+	if err := st.UpdateAuthSessionTokens(ctx, authSession3.SessionID, "auth-token3-rotated-"+suffix, &rotatedAccessExpiresAt, authSession3.RefreshToken, authSession3.RefreshTokenExpiresAt); err != nil {
+		t.Fatalf("UpdateAuthSessionTokens failed: %v", err)
+	}
+	if _, err := st.GetAuthSessionByToken(ctx, authSession3.Token); err != ErrEntryNotFound {
+		t.Fatalf("expected old access token to be invalid after rotation, got %v", err)
+	}
+	rotatedSession, err := st.GetAuthSessionByToken(ctx, "auth-token3-rotated-"+suffix)
+	if err != nil {
+		t.Fatalf("GetAuthSessionByToken rotated failed: %v", err)
+	}
+	if rotatedSession.SessionID != authSession3.SessionID {
+		t.Fatalf("rotated access token session mismatch: %#v", rotatedSession)
+	}
+	expiredAccessAt := time.Now().Add(-1 * time.Minute)
+	if err := st.UpdateAuthSessionTokens(ctx, authSession3.SessionID, "auth-token3-expired-"+suffix, &expiredAccessAt, authSession3.RefreshToken, authSession3.RefreshTokenExpiresAt); err != nil {
+		t.Fatalf("UpdateAuthSessionTokens expired failed: %v", err)
+	}
+	if _, err := st.GetAuthSessionByToken(ctx, "auth-token3-expired-"+suffix); err != ErrEntryNotFound {
+		t.Fatalf("expected expired access token lookup to fail, got %v", err)
+	}
+
+	deviceAuthorization := &models.DeviceAuthorization{
+		DeviceCode: "device-code-" + suffix,
+		UserCode:   "ABCD-1234",
+		DeviceInfo: "cli",
+		Status:     models.DeviceAuthorizationPending,
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+	}
+	if err := st.CreateDeviceAuthorization(ctx, deviceAuthorization); err != nil {
+		t.Fatalf("CreateDeviceAuthorization failed: %v", err)
+	}
+	if err := st.CreateDeviceAuthorization(ctx, deviceAuthorization); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate device authorization, got %v", err)
+	}
+	deviceByCode, err := st.GetDeviceAuthorizationByDeviceCode(ctx, deviceAuthorization.DeviceCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthorizationByDeviceCode failed: %v", err)
+	}
+	if deviceByCode.UserCode != deviceAuthorization.UserCode {
+		t.Fatalf("device authorization by code mismatch: %#v", deviceByCode)
+	}
+	deviceByUserCode, err := st.GetDeviceAuthorizationByUserCode(ctx, deviceAuthorization.UserCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthorizationByUserCode failed: %v", err)
+	}
+	if deviceByUserCode.DeviceCode != deviceAuthorization.DeviceCode {
+		t.Fatalf("device authorization by user code mismatch: %#v", deviceByUserCode)
+	}
+	approvedAt := time.Now()
+	deviceAuthorization.Username = accountUsername
+	deviceAuthorization.SessionID = authSession3.SessionID
+	deviceAuthorization.Status = models.DeviceAuthorizationApproved
+	deviceAuthorization.ApprovedAt = &approvedAt
+	if err := st.UpdateDeviceAuthorization(ctx, deviceAuthorization); err != nil {
+		t.Fatalf("UpdateDeviceAuthorization failed: %v", err)
+	}
+	updatedDeviceAuth, err := st.GetDeviceAuthorizationByDeviceCode(ctx, deviceAuthorization.DeviceCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthorizationByDeviceCode after update failed: %v", err)
+	}
+	if updatedDeviceAuth.Username != accountUsername || updatedDeviceAuth.SessionID != authSession3.SessionID {
+		t.Fatalf("updated device authorization mismatch: %#v", updatedDeviceAuth)
+	}
 	if err := st.DeleteUser(ctx, accountUsername); err != nil {
 		t.Fatalf("DeleteUser failed: %v", err)
 	}
