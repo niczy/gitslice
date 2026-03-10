@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	accountv1 "github.com/niczy/gitslice/proto/account"
@@ -19,6 +20,26 @@ func bearerCtx(ctx context.Context, token string) context.Context {
 
 func userCtx(ctx context.Context, username string) context.Context {
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "User "+username))
+}
+
+func assertHomeSliceProvisioned(t *testing.T, ctx context.Context, st storage.Storage, username string) {
+	t.Helper()
+
+	homeSliceID := homeslice.IDForUsername(username)
+	if _, err := st.GetSlice(ctx, homeSliceID); err != nil {
+		t.Fatalf("home slice %s not found: %v", homeSliceID, err)
+	}
+	rootPath := homeslice.RelativeRootPath(username)
+	if _, err := st.GetEntryByPath(ctx, homeSliceID, rootPath); err != nil {
+		t.Fatalf("home slice path %s not found: %v", rootPath, err)
+	}
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	if _, err := st.GetEntryByPath(ctx, rootSlice.ID, rootPath); err != nil {
+		t.Fatalf("root slice path %s not found: %v", rootPath, err)
+	}
 }
 
 func TestSignupLoginAndSessionLifecycle(t *testing.T) {
@@ -37,6 +58,7 @@ func TestSignupLoginAndSessionLifecycle(t *testing.T) {
 	if signupResp.GetAccessToken() == "" || signupResp.GetSession().GetId() == "" {
 		t.Fatalf("signup should return token + session, got %#v", signupResp)
 	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "alice")
 
 	listResp, err := srv.ListSessions(bearerCtx(ctx, signupResp.GetAccessToken()), &accountv1.ListSessionsRequest{})
 	if err != nil {
@@ -79,6 +101,7 @@ func TestSignupLoginAndSessionLifecycle(t *testing.T) {
 	if fallbackResp.GetAccessToken() == "" {
 		t.Fatalf("dev fallback login should still create a session token")
 	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "devonly")
 }
 
 func TestResetPasswordFlow(t *testing.T) {
@@ -153,6 +176,7 @@ func TestDeviceAuthorizationFlowAndRefresh(t *testing.T) {
 	if approveResp.GetUser().GetUsername() != "deviceuser" {
 		t.Fatalf("expected approved user deviceuser, got %#v", approveResp)
 	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "deviceuser")
 
 	approvedResp, err := srv.PollDeviceAuthorization(ctx, &accountv1.PollDeviceAuthorizationRequest{DeviceCode: startResp.GetDeviceCode()})
 	if err != nil {
@@ -190,6 +214,31 @@ func TestDeviceAuthorizationFlowAndRefresh(t *testing.T) {
 	if _, err := srv.ListSessions(bearerCtx(ctx, refreshResp.GetAccessToken()), &accountv1.ListSessionsRequest{}); err != nil {
 		t.Fatalf("refreshed access token should be usable, got %v", err)
 	}
+}
+
+func TestApproveDeviceAuthorizationBackfillsHomeSlice(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	srv := &accountServiceServer{st: st}
+
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "backfilluser",
+		Name:         "Backfill User",
+		PrimaryEmail: "backfill@example.com",
+		PasswordHash: "unused",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	startResp, err := srv.StartDeviceAuthorization(ctx, &accountv1.StartDeviceAuthorizationRequest{})
+	if err != nil {
+		t.Fatalf("StartDeviceAuthorization failed: %v", err)
+	}
+	if _, err := srv.ApproveDeviceAuthorization(userCtx(ctx, "backfilluser"), &accountv1.ApproveDeviceAuthorizationRequest{UserCode: startResp.GetUserCode()}); err != nil {
+		t.Fatalf("ApproveDeviceAuthorization failed: %v", err)
+	}
+
+	assertHomeSliceProvisioned(t, ctx, st, "backfilluser")
 }
 
 func TestDeviceAuthorizationExpiry(t *testing.T) {

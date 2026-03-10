@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	accountv1 "github.com/niczy/gitslice/proto/account"
@@ -457,6 +458,9 @@ func (s *accountServiceServer) Signup(ctx context.Context, req *accountv1.Signup
 			return nil, status.Error(codes.Internal, "failed to create account")
 		}
 	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
+	}
 
 	user, err := s.st.GetUser(ctx, username)
 	if err != nil {
@@ -508,6 +512,9 @@ func (s *accountServiceServer) Login(ctx context.Context, req *accountv1.LoginRe
 		if !verifyPassword(user.PasswordHash, password) {
 			return nil, status.Error(codes.Unauthenticated, "invalid credentials")
 		}
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, user.Username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
 	}
 
 	session, err := s.createSession(ctx, user.Username)
@@ -620,6 +627,9 @@ func (s *accountServiceServer) ApproveDeviceAuthorization(ctx context.Context, r
 		if record.Username != "" && record.Username != identity.username {
 			return nil, status.Error(codes.PermissionDenied, "device authorization already approved by another user")
 		}
+		if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, identity.username); err != nil {
+			return nil, status.Error(codes.Internal, "failed to provision home slice")
+		}
 		user, err := s.st.GetUser(ctx, identity.username)
 		if err != nil {
 			return nil, status.Error(codes.Internal, "failed to load user")
@@ -628,6 +638,9 @@ func (s *accountServiceServer) ApproveDeviceAuthorization(ctx context.Context, r
 			User:       userToProto(user),
 			ApprovedAt: formatOptionalTime(record.ApprovedAt),
 		}, nil
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, identity.username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
 	}
 
 	session, err := s.createRefreshableSession(ctx, identity.username)
