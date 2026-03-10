@@ -8,6 +8,7 @@ CORE_BIN="$REPO_ROOT/core_server"
 LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pwd)"
 WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
+PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 # In production we don't want to auto-scan the local git repo and populate genesis.
@@ -21,9 +22,33 @@ OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://agenttools.dev}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
 PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
+PM2_BIN="${PM2_BIN:-}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+discover_pm2_bin() {
+  if [ -n "$PM2_BIN" ] && [ -x "$PM2_BIN" ]; then
+    printf '%s\n' "$PM2_BIN"
+    return 0
+  fi
+
+  if command -v pm2 >/dev/null 2>&1; then
+    PM2_BIN="$(command -v pm2)"
+    printf '%s\n' "$PM2_BIN"
+    return 0
+  fi
+
+  local candidate
+  candidate="$(find "$HOME/.nvm/versions/node" -mindepth 3 -maxdepth 3 -type f -path '*/bin/pm2' 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    PM2_BIN="$candidate"
+    printf '%s\n' "$PM2_BIN"
+    return 0
+  fi
+
+  return 1
 }
 
 wait_for_health() {
@@ -101,21 +126,27 @@ ensure_node_runtime() {
 }
 
 stop_pm2_gitslice_apps() {
-  if ! command -v pm2 >/dev/null 2>&1; then
-    return 0
-  fi
+  local pm2_bin
+  pm2_bin="$(discover_pm2_bin)" || return 0
 
   # Prevent PM2 autorestart from racing the manual restart flow.
   if command -v timeout >/dev/null 2>&1; then
-    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" pm2 stop gitslice-core >/dev/null 2>&1 || true
-    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" pm2 stop gitslice-web >/dev/null 2>&1 || true
+    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$pm2_bin" stop gitslice-core >/dev/null 2>&1 || true
+    timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$pm2_bin" stop gitslice-web >/dev/null 2>&1 || true
   else
-    pm2 stop gitslice-core >/dev/null 2>&1 || true
-    pm2 stop gitslice-web >/dev/null 2>&1 || true
+    "$pm2_bin" stop gitslice-core >/dev/null 2>&1 || true
+    "$pm2_bin" stop gitslice-web >/dev/null 2>&1 || true
   fi
 }
 
-start_core_server() {
+wait_for_web_preview() {
+  if ! wait_for_port "Web preview" 4173 30 "$WEB_LOG"; then
+    log "ERROR: Failed to start web preview. Check $WEB_LOG for details"
+    exit 1
+  fi
+}
+
+build_core_server() {
   cd "$REPO_ROOT"
   stop_pm2_gitslice_apps
 
@@ -127,6 +158,22 @@ start_core_server() {
 
   log "Building core server (with proto generation)..."
   make build-core
+}
+
+build_web_preview() {
+  cd "$WEB_DIR"
+
+  if [ ! -d node_modules ]; then
+    log "Installing web dependencies..."
+    npm ci
+  fi
+
+  log "Building web preview..."
+  npm run build
+}
+
+start_core_server_nohup() {
+  cd "$REPO_ROOT"
 
   log "Starting core server (log: $CORE_LOG)..."
   CORE_SERVICE_PORT="$CORE_SERVICE_PORT" \
@@ -152,19 +199,7 @@ start_core_server() {
   fi
 }
 
-build_web_preview() {
-  cd "$WEB_DIR"
-
-  if [ ! -d node_modules ]; then
-    log "Installing web dependencies..."
-    npm ci
-  fi
-
-  log "Building web preview..."
-  npm run build
-}
-
-start_web_preview() {
+start_web_preview_nohup() {
   cd "$WEB_DIR"
 
   log "Stopping existing web preview..."
@@ -173,11 +208,46 @@ start_web_preview() {
   log "Starting web preview (log: $WEB_LOG)..."
   nohup npm run preview -- --host 0.0.0.0 --port 4173 > "$WEB_LOG" 2>&1 &
   log "Web preview started with PID $!"
+  wait_for_web_preview
+}
+
+start_services_with_pm2() {
+  local pm2_bin
+  pm2_bin="$(discover_pm2_bin)" || return 1
+
+  log "Starting services via PM2 ecosystem ($pm2_bin)..."
+  pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
+  pkill -f "vite preview" >/dev/null 2>&1 || true
+
+  "$pm2_bin" startOrRestart "$PM2_ECOSYSTEM_FILE" --update-env >/dev/null
+
+  if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
+    log "ERROR: Failed to start core gRPC via PM2"
+    exit 1
+  fi
+
+  if ! wait_for_health "Gateway" "http://localhost:${GATEWAY_PORT}/health" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
+    log "ERROR: Failed to start gateway via PM2"
+    exit 1
+  fi
+
+  wait_for_web_preview
+}
+
+start_services() {
+  build_core_server
+
+  if discover_pm2_bin >/dev/null 2>&1; then
+    start_services_with_pm2
+    return 0
+  fi
+
+  start_core_server_nohup
+  start_web_preview_nohup
 }
 
 log "=== Starting all services ==="
 ensure_node_runtime
 build_web_preview
-start_core_server
-start_web_preview
+start_services
 log "=== All services started ==="
