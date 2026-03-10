@@ -16,6 +16,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
@@ -202,17 +203,17 @@ func (s *filesystemServiceServer) GetWorkspaceInfo(ctx context.Context, req *fil
 }
 
 func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv1.ReadFileRequest) (*filesystemv1.ReadFileResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
 
-	filePath, err := validateWorkspacePath(req.GetPath(), true)
+	filePath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +229,7 @@ func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv
 	}
 	return &filesystemv1.ReadFileResponse{
 		WorkspaceId: workspace.ID,
-		Path:        filePath,
+		Path:        displayPath,
 		Content:     append([]byte(nil), content.Content...),
 		Size:        int64(len(content.Content)),
 		Hash:        hash,
@@ -241,12 +242,12 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
 	if err != nil {
 		return nil, err
 	}
 
-	filePath, err := validateWorkspacePath(req.GetPath(), true)
+	filePath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +264,7 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 	}
 	return &filesystemv1.WriteFileResponse{
 		WorkspaceId: workspace.ID,
-		Path:        filePath,
+		Path:        displayPath,
 		Size:        size,
 		Hash:        hash,
 		CommitHash:  commitHash,
@@ -276,12 +277,12 @@ func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesyste
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
 	if err != nil {
 		return nil, err
 	}
 
-	filePath, err := validateWorkspacePath(req.GetPath(), true)
+	filePath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +297,7 @@ func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesyste
 	}
 	return &filesystemv1.DeleteFileResponse{
 		WorkspaceId: workspace.ID,
-		Path:        filePath,
+		Path:        displayPath,
 		CommitHash:  commitHash,
 	}, nil
 }
@@ -307,16 +308,16 @@ func (s *filesystemServiceServer) MoveFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
 	if err != nil {
 		return nil, err
 	}
 
-	sourcePath, err := validateWorkspacePath(req.GetSourcePath(), true)
+	sourcePath, sourceDisplayPath, err := s.resolveOperationPath(username, homeMode, req.GetSourcePath(), true)
 	if err != nil {
 		return nil, err
 	}
-	destinationPath, err := validateWorkspacePath(req.GetDestinationPath(), true)
+	destinationPath, destinationDisplayPath, err := s.resolveOperationPath(username, homeMode, req.GetDestinationPath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -345,8 +346,8 @@ func (s *filesystemServiceServer) MoveFile(ctx context.Context, req *filesystemv
 	}
 	return &filesystemv1.MoveFileResponse{
 		WorkspaceId:     workspace.ID,
-		SourcePath:      sourcePath,
-		DestinationPath: destinationPath,
+		SourcePath:      sourceDisplayPath,
+		DestinationPath: destinationDisplayPath,
 		CommitHash:      commitHash,
 	}, nil
 }
@@ -357,16 +358,16 @@ func (s *filesystemServiceServer) CopyFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
 	if err != nil {
 		return nil, err
 	}
 
-	sourcePath, err := validateWorkspacePath(req.GetSourcePath(), true)
+	sourcePath, sourceDisplayPath, err := s.resolveOperationPath(username, homeMode, req.GetSourcePath(), true)
 	if err != nil {
 		return nil, err
 	}
-	destinationPath, err := validateWorkspacePath(req.GetDestinationPath(), true)
+	destinationPath, destinationDisplayPath, err := s.resolveOperationPath(username, homeMode, req.GetDestinationPath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -393,8 +394,8 @@ func (s *filesystemServiceServer) CopyFile(ctx context.Context, req *filesystemv
 	}
 	return &filesystemv1.CopyFileResponse{
 		WorkspaceId:     workspace.ID,
-		SourcePath:      sourcePath,
-		DestinationPath: destinationPath,
+		SourcePath:      sourceDisplayPath,
+		DestinationPath: destinationDisplayPath,
 		Size:            size,
 		Hash:            hash,
 		CommitHash:      commitHash,
@@ -402,17 +403,17 @@ func (s *filesystemServiceServer) CopyFile(ctx context.Context, req *filesystemv
 }
 
 func (s *filesystemServiceServer) ListDirectory(ctx context.Context, req *filesystemv1.ListDirectoryRequest) (*filesystemv1.ListDirectoryResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
 
-	dirPath, err := validateWorkspacePath(req.GetPath(), false)
+	dirPath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -440,11 +441,11 @@ func (s *filesystemServiceServer) ListDirectory(ctx context.Context, req *filesy
 
 	response := &filesystemv1.ListDirectoryResponse{
 		WorkspaceId: workspace.ID,
-		Path:        dirPath,
+		Path:        displayPath,
 		Entries:     make([]*filesystemv1.WorkspaceEntry, 0, len(entries)),
 	}
 	for _, entry := range entries {
-		response.Entries = append(response.Entries, entryToProto(entry))
+		response.Entries = append(response.Entries, entryToProto(entry, homeMode))
 	}
 	return response, nil
 }
@@ -455,12 +456,12 @@ func (s *filesystemServiceServer) MakeDirectory(ctx context.Context, req *filesy
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
 	if err != nil {
 		return nil, err
 	}
 
-	dirPath, err := validateWorkspacePath(req.GetPath(), true)
+	dirPath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -479,27 +480,27 @@ func (s *filesystemServiceServer) MakeDirectory(ctx context.Context, req *filesy
 	}
 	return &filesystemv1.MakeDirectoryResponse{
 		WorkspaceId: workspace.ID,
-		Path:        dirPath,
+		Path:        displayPath,
 		CommitHash:  commitHash,
 	}, nil
 }
 
 func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.StatRequest) (*filesystemv1.StatResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
 
-	statPath, err := validateWorkspacePath(req.GetPath(), false)
+	statPath, _, err := s.resolveOperationPath(username, homeMode, req.GetPath(), false)
 	if err != nil {
 		return nil, err
 	}
-	if statPath == "" {
+	if !homeMode && statPath == "" {
 		return &filesystemv1.StatResponse{
 			Exists: true,
 			Entry: &filesystemv1.WorkspaceEntry{
@@ -519,26 +520,26 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 	}
 	return &filesystemv1.StatResponse{
 		Exists: true,
-		Entry:  entryToProto(entry),
+		Entry:  entryToProto(entry, homeMode),
 	}, nil
 }
 
 func (s *filesystemServiceServer) Exists(ctx context.Context, req *filesystemv1.ExistsRequest) (*filesystemv1.ExistsResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
 
-	existsPath, err := validateWorkspacePath(req.GetPath(), false)
+	existsPath, _, err := s.resolveOperationPath(username, homeMode, req.GetPath(), false)
 	if err != nil {
 		return nil, err
 	}
-	if existsPath == "" {
+	if !homeMode && existsPath == "" {
 		return &filesystemv1.ExistsResponse{Exists: true}, nil
 	}
 
@@ -553,12 +554,12 @@ func (s *filesystemServiceServer) Exists(ctx context.Context, req *filesystemv1.
 }
 
 func (s *filesystemServiceServer) ReadFiles(ctx context.Context, req *filesystemv1.ReadFilesRequest) (*filesystemv1.ReadFilesResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
@@ -568,12 +569,12 @@ func (s *filesystemServiceServer) ReadFiles(ctx context.Context, req *filesystem
 		Files:       make([]*filesystemv1.ReadFileResult, 0, len(req.GetPaths())),
 	}
 	for _, rawPath := range req.GetPaths() {
-		filePath, err := validateWorkspacePath(rawPath, true)
+		filePath, displayPath, err := s.resolveOperationPath(username, homeMode, rawPath, true)
 		if err != nil {
 			return nil, err
 		}
 
-		result := &filesystemv1.ReadFileResult{Path: filePath}
+		result := &filesystemv1.ReadFileResult{Path: displayPath}
 		content, err := s.readWorkspaceFileContent(ctx, workspace.ID, filePath)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
@@ -603,7 +604,7 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceWriteAccess(ctx, req.GetWorkspaceId(), username)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
 	if err != nil {
 		return nil, err
 	}
@@ -613,8 +614,9 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 	}
 
 	type preparedWrite struct {
-		path    string
-		content []byte
+		path        string
+		displayPath string
+		content     []byte
 	}
 
 	prepared := make([]preparedWrite, 0, len(req.GetFiles()))
@@ -624,7 +626,7 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 			return nil, status.Error(codes.InvalidArgument, "files must not contain null items")
 		}
 
-		filePath, err := validateWorkspacePath(file.GetPath(), true)
+		filePath, displayPath, err := s.resolveOperationPath(username, homeMode, file.GetPath(), true)
 		if err != nil {
 			return nil, err
 		}
@@ -637,8 +639,9 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 
 		seen[filePath] = struct{}{}
 		prepared = append(prepared, preparedWrite{
-			path:    filePath,
-			content: append([]byte(nil), file.GetContent()...),
+			path:        filePath,
+			displayPath: displayPath,
+			content:     append([]byte(nil), file.GetContent()...),
 		})
 	}
 
@@ -652,7 +655,7 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 			return nil, err
 		}
 		response.Files = append(response.Files, &filesystemv1.WriteFileResult{
-			Path: file.path,
+			Path: file.displayPath,
 			Size: size,
 			Hash: hash,
 		})
@@ -667,17 +670,17 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 }
 
 func (s *filesystemServiceServer) Glob(ctx context.Context, req *filesystemv1.GlobRequest) (*filesystemv1.GlobResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
 
-	pattern, err := validateGlobPattern(req.GetPattern(), true)
+	pattern, err := s.resolveOperationPattern(username, homeMode, req.GetPattern(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -693,25 +696,25 @@ func (s *filesystemServiceServer) Glob(ctx context.Context, req *filesystemv1.Gl
 			continue
 		}
 		if globMatch(pattern, entry.Path) {
-			paths = append(paths, entry.Path)
+			paths = append(paths, displayOperationPath(entry.Path, homeMode))
 		}
 	}
 	sort.Strings(paths)
 
 	return &filesystemv1.GlobResponse{
 		WorkspaceId: workspace.ID,
-		Pattern:     pattern,
+		Pattern:     displaySearchGlob(pattern, homeMode),
 		Paths:       paths,
 	}, nil
 }
 
 func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.SearchRequest) (*filesystemv1.SearchResponse, error) {
-	_, err := s.requireUser(ctx)
+	username, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace, _, err := s.requireWorkspaceViewAccess(ctx, req.GetWorkspaceId())
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
@@ -721,7 +724,7 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
 
-	globPattern, err := validateGlobPattern(req.GetGlob(), false)
+	globPattern, err := s.resolveOperationPattern(username, homeMode, req.GetGlob(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -747,7 +750,7 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 			}
 			return nil, err
 		}
-		for _, match := range findSearchMatches(entry.Path, string(content.Content), query) {
+		for _, match := range findSearchMatches(displayOperationPath(entry.Path, homeMode), string(content.Content), query) {
 			matches = append(matches, match)
 		}
 	}
@@ -765,7 +768,7 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	return &filesystemv1.SearchResponse{
 		WorkspaceId: workspace.ID,
 		Query:       query,
-		Glob:        globPattern,
+		Glob:        displaySearchGlob(globPattern, homeMode),
 		Matches:     matches,
 	}, nil
 }
@@ -1249,16 +1252,17 @@ func (s *filesystemServiceServer) ResolveConflict(ctx context.Context, req *file
 }
 
 func (s *filesystemServiceServer) StreamRead(req *filesystemv1.StreamReadRequest, stream filesystemv1.FilesystemService_StreamReadServer) error {
-	if _, err := s.requireUser(stream.Context()); err != nil {
-		return err
-	}
-
-	workspace, _, err := s.requireWorkspaceViewAccess(stream.Context(), req.GetWorkspaceId())
+	username, err := s.requireUser(stream.Context())
 	if err != nil {
 		return err
 	}
 
-	filePath, err := validateWorkspacePath(req.GetPath(), true)
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(stream.Context(), req.GetWorkspaceId(), username, false)
+	if err != nil {
+		return err
+	}
+
+	filePath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
 	if err != nil {
 		return err
 	}
@@ -1280,7 +1284,7 @@ func (s *filesystemServiceServer) StreamRead(req *filesystemv1.StreamReadRequest
 	if len(data) == 0 {
 		return stream.Send(&filesystemv1.StreamReadResponse{
 			WorkspaceId: workspace.ID,
-			Path:        filePath,
+			Path:        displayPath,
 			Offset:      0,
 			Size:        content.Size,
 			Hash:        content.Hash,
@@ -1295,7 +1299,7 @@ func (s *filesystemServiceServer) StreamRead(req *filesystemv1.StreamReadRequest
 		}
 		if err := stream.Send(&filesystemv1.StreamReadResponse{
 			WorkspaceId: workspace.ID,
-			Path:        filePath,
+			Path:        displayPath,
 			Content:     append([]byte(nil), data[offset:end]...),
 			Offset:      int64(offset),
 			Size:        content.Size,
@@ -1317,10 +1321,11 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 	}
 
 	var (
-		workspace *models.Slice
-		filePath  string
-		buffer    bytes.Buffer
-		received  bool
+		workspace   *models.Slice
+		filePath    string
+		displayPath string
+		buffer      bytes.Buffer
+		received    bool
 	)
 
 	for {
@@ -1337,11 +1342,12 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 			if received {
 				return status.Error(codes.InvalidArgument, "stream metadata already received")
 			}
-			workspace, _, err = s.requireWorkspaceWriteAccess(ctx, chunk.Metadata.GetWorkspaceId(), username)
+			var homeMode bool
+			workspace, _, homeMode, err = s.resolveOperationWorkspace(ctx, chunk.Metadata.GetWorkspaceId(), username, true)
 			if err != nil {
 				return err
 			}
-			filePath, err = validateWorkspacePath(chunk.Metadata.GetPath(), true)
+			filePath, displayPath, err = s.resolveOperationPath(username, homeMode, chunk.Metadata.GetPath(), true)
 			if err != nil {
 				return err
 			}
@@ -1374,7 +1380,7 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 
 	return stream.SendAndClose(&filesystemv1.StreamWriteResponse{
 		WorkspaceId: workspace.ID,
-		Path:        filePath,
+		Path:        displayPath,
 		Size:        size,
 		Hash:        hash,
 		CommitHash:  commitHash,
@@ -2400,16 +2406,93 @@ func dedupeEntries(entries []*models.DirectoryEntry) []*models.DirectoryEntry {
 	return result
 }
 
-func entryToProto(entry *models.DirectoryEntry) *filesystemv1.WorkspaceEntry {
+func (s *filesystemServiceServer) resolveOperationWorkspace(ctx context.Context, workspaceID, username string, requireWrite bool) (*models.Slice, *models.SliceMetadata, bool, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" || workspaceID == homeslice.IDForUsername(username) {
+		workspace, err := homeslice.EnsureUserHomeSlice(ctx, s.storage, username)
+		if err != nil {
+			return nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to ensure home slice: %v", err))
+		}
+		meta, err := s.storage.GetSliceMetadata(ctx, workspace.ID)
+		if err != nil {
+			return nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to load workspace metadata: %v", err))
+		}
+		return workspace, meta, true, nil
+	}
+
+	if requireWrite {
+		workspace, meta, err := s.requireWorkspaceWriteAccess(ctx, workspaceID, username)
+		return workspace, meta, false, err
+	}
+	workspace, meta, err := s.requireWorkspaceViewAccess(ctx, workspaceID)
+	return workspace, meta, false, err
+}
+
+func (s *filesystemServiceServer) resolveOperationPath(username string, homeMode bool, raw string, required bool) (string, string, error) {
+	if !homeMode {
+		filePath, err := validateWorkspacePath(raw, required)
+		return filePath, filePath, err
+	}
+
+	storedPath, displayPath, err := homeslice.ResolveVisiblePath(username, raw, required)
+	if err != nil {
+		return "", "", homePathErrorToStatus(err, "path")
+	}
+	return storedPath, displayPath, nil
+}
+
+func (s *filesystemServiceServer) resolveOperationPattern(username string, homeMode bool, raw string, required bool) (string, error) {
+	if !homeMode {
+		return validateGlobPattern(raw, required)
+	}
+
+	storedPattern, err := homeslice.ResolveVisiblePattern(username, raw, required)
+	if err != nil {
+		return "", homePathErrorToStatus(err, "pattern")
+	}
+	return validateGlobPattern(storedPattern, required)
+}
+
+func entryToProto(entry *models.DirectoryEntry, homeMode bool) *filesystemv1.WorkspaceEntry {
 	if entry == nil {
 		return nil
 	}
+	displayPath := displayOperationPath(entry.Path, homeMode)
 	return &filesystemv1.WorkspaceEntry{
-		Name: path.Base(entry.Path),
-		Path: entry.Path,
+		Name: path.Base(displayPath),
+		Path: displayPath,
 		Type: entryTypeToProto(entry.Type),
 		Size: entry.Size,
 		Hash: strings.TrimSpace(entry.Hash),
+	}
+}
+
+func displayOperationPath(storedPath string, homeMode bool) string {
+	if !homeMode {
+		return storedPath
+	}
+	return homeslice.VisiblePathForStored(storedPath)
+}
+
+func displaySearchGlob(storedPattern string, homeMode bool) string {
+	if !homeMode || strings.TrimSpace(storedPattern) == "" {
+		return storedPattern
+	}
+	return homeslice.VisiblePathForStored(storedPattern)
+}
+
+func homePathErrorToStatus(err error, noun string) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(err.Error())
+	switch {
+	case strings.Contains(message, "must stay under"):
+		return status.Error(codes.PermissionDenied, message)
+	case strings.Contains(message, "must be absolute"):
+		return status.Error(codes.InvalidArgument, fmt.Sprintf("%s must be absolute", noun))
+	default:
+		return status.Error(codes.InvalidArgument, message)
 	}
 }
 
