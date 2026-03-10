@@ -1960,6 +1960,7 @@ func (s *PostgresNativeStorage) resolveSliceFileReference(ctx context.Context, s
 func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, sliceID, path string, size int64, candidateIDs ...string) (*models.FileContent, bool, error) {
 	ordered := make([]string, 0, len(candidateIDs))
 	seen := make(map[string]struct{}, len(candidateIDs))
+	sharedPathCandidate := ""
 	for _, candidateID := range candidateIDs {
 		candidateID = strings.TrimSpace(candidateID)
 		if candidateID == "" {
@@ -1969,6 +1970,10 @@ func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, sl
 			continue
 		}
 		seen[candidateID] = struct{}{}
+		if candidateID == path {
+			sharedPathCandidate = candidateID
+			continue
+		}
 		ordered = append(ordered, candidateID)
 	}
 
@@ -2035,6 +2040,48 @@ func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, sl
 				Size:    manifest.TotalSize,
 				Hash:    strings.TrimSpace(manifest.Hash),
 			}, true, nil
+		}
+	}
+
+	if sharedPathCandidate != "" {
+		for _, candidateID := range []string{sharedPathCandidate} {
+			raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", candidateID))
+			if err == nil {
+				var fc models.FileContent
+				if err := json.Unmarshal(raw, &fc); err == nil {
+					if fc.FileID == "" {
+						fc.FileID = candidateID
+					}
+					if fc.Path == "" {
+						fc.Path = path
+					}
+					if fc.Size == 0 {
+						fc.Size = size
+					}
+					return &fc, true, nil
+				}
+			}
+
+			var fc models.FileContent
+			err = s.pool.QueryRow(ctx, `
+				SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
+			`, candidateID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
+			if err != nil {
+				if err == pgx.ErrNoRows {
+					continue
+				}
+				return nil, false, err
+			}
+			if fc.FileID == "" {
+				fc.FileID = candidateID
+			}
+			if fc.Path == "" {
+				fc.Path = path
+			}
+			if fc.Size == 0 {
+				fc.Size = size
+			}
+			return &fc, true, nil
 		}
 	}
 

@@ -1571,19 +1571,8 @@ func (s *InMemoryStorage) fileContentForEntryLocked(entry *models.DirectoryEntry
 		Size:   entry.Size,
 		Hash:   strings.TrimSpace(entry.Hash),
 	}
+	usedSliceScopedContent := false
 	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
-		if out.Size == 0 {
-			out.Size = fc.Size
-		}
-		if strings.TrimSpace(fc.Hash) != "" {
-			out.Hash = strings.TrimSpace(fc.Hash)
-		}
-		if len(fc.Content) > 0 {
-			out.Content = append([]byte(nil), fc.Content...)
-		}
-		return out
-	}
-	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
 		if out.Size == 0 {
 			out.Size = fc.Size
 		}
@@ -1597,6 +1586,7 @@ func (s *InMemoryStorage) fileContentForEntryLocked(entry *models.DirectoryEntry
 	}
 	if len(entry.Content) > 0 {
 		out.Content = append([]byte(nil), entry.Content...)
+		usedSliceScopedContent = true
 	}
 	sliceID := inferSliceIDForEntry(entry)
 	if sliceID != "" {
@@ -1612,6 +1602,20 @@ func (s *InMemoryStorage) fileContentForEntryLocked(entry *models.DirectoryEntry
 				out.Size = manifest.TotalSize
 				out.Hash = strings.TrimSpace(manifest.Hash)
 				out.Content = assembled
+				usedSliceScopedContent = true
+			}
+		}
+	}
+	if !usedSliceScopedContent {
+		if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
+			if out.Size == 0 {
+				out.Size = fc.Size
+			}
+			if strings.TrimSpace(fc.Hash) != "" {
+				out.Hash = strings.TrimSpace(fc.Hash)
+			}
+			if len(fc.Content) > 0 {
+				out.Content = append([]byte(nil), fc.Content...)
 			}
 		}
 	}
