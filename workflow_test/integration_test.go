@@ -796,6 +796,102 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	}
 }
 
+func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	workspaceID := fmt.Sprintf("fs-transfer-%d", time.Now().UnixNano())
+	createOutput := runCLIOrFail(t, "", "fs", "create", workspaceID, "--description", "filesystem transfer workflow")
+	if !strings.Contains(createOutput, "Created workspace "+workspaceID) {
+		t.Fatalf("expected workspace creation output, got: %s", createOutput)
+	}
+
+	uploadRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(uploadRoot, "src"), 0o755); err != nil {
+		t.Fatalf("create src dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(uploadRoot, "docs", "empty"), 0o755); err != nil {
+		t.Fatalf("create empty dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(uploadRoot, "README.md"), []byte("transfer root\n"), 0o600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(uploadRoot, "src", "main.py"), []byte("print('transfer')\n"), 0o600); err != nil {
+		t.Fatalf("write src/main.py: %v", err)
+	}
+
+	output := runCLIOrFail(t, "", "fs", "upload", uploadRoot, workspaceID+":project")
+	if !strings.Contains(output, "Uploaded 2 files and 3 directories") {
+		t.Fatalf("expected upload summary, got: %s", output)
+	}
+
+	client := newFilesystemClient(t)
+	readmeResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        "project/README.md",
+	})
+	if err != nil {
+		t.Fatalf("failed to read uploaded README.md: %v", err)
+	}
+	if got := string(readmeResp.GetContent()); got != "transfer root\n" {
+		t.Fatalf("unexpected uploaded README.md content: %q", got)
+	}
+
+	mainResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        "project/src/main.py",
+	})
+	if err != nil {
+		t.Fatalf("failed to read uploaded src/main.py: %v", err)
+	}
+	if got := string(mainResp.GetContent()); got != "print('transfer')\n" {
+		t.Fatalf("unexpected uploaded src/main.py content: %q", got)
+	}
+
+	emptyDirResp, err := client.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: workspaceID,
+		Path:        "project/docs/empty",
+	})
+	if err != nil {
+		t.Fatalf("failed to stat uploaded empty dir: %v", err)
+	}
+	if !emptyDirResp.GetExists() || emptyDirResp.GetEntry().GetType() != filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
+		t.Fatalf("expected uploaded empty dir to exist, got: %#v", emptyDirResp)
+	}
+
+	downloadRoot := t.TempDir()
+	output = runCLIOrFail(t, "", "fs", "download", workspaceID+":project", downloadRoot)
+	if !strings.Contains(output, "Downloaded 2 files and 3 directories") {
+		t.Fatalf("expected download summary, got: %s", output)
+	}
+
+	downloadedReadme, err := os.ReadFile(filepath.Join(downloadRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read downloaded README.md: %v", err)
+	}
+	if got := string(downloadedReadme); got != "transfer root\n" {
+		t.Fatalf("unexpected downloaded README.md content: %q", got)
+	}
+
+	downloadedMain, err := os.ReadFile(filepath.Join(downloadRoot, "src", "main.py"))
+	if err != nil {
+		t.Fatalf("read downloaded src/main.py: %v", err)
+	}
+	if got := string(downloadedMain); got != "print('transfer')\n" {
+		t.Fatalf("unexpected downloaded src/main.py content: %q", got)
+	}
+
+	downloadedEmptyDir := filepath.Join(downloadRoot, "docs", "empty")
+	info, err := os.Stat(downloadedEmptyDir)
+	if err != nil {
+		t.Fatalf("stat downloaded empty dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected downloaded empty path to be a directory: %s", downloadedEmptyDir)
+	}
+}
+
 func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	t.Setenv("RUN_INTEGRATION_TESTS", "")
 	t.Setenv("SKIP_GIT_POPULATION", "")

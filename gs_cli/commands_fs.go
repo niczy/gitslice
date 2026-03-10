@@ -65,6 +65,10 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, args []string) {
 		handleFilesystemConflicts(ctx, cli, args[1:])
 	case "shell":
 		handleFilesystemShell(ctx, cli, args[1:])
+	case "upload":
+		handleFilesystemUpload(ctx, cli, args[1:])
+	case "download":
+		handleFilesystemDownload(ctx, cli, args[1:])
 	default:
 		log.Printf("Unknown fs command: %s", args[0])
 		printFilesystemHelp()
