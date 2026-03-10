@@ -11,6 +11,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"github.com/pmezard/go-difflib/difflib"
@@ -28,7 +30,11 @@ import (
 
 type filesystemServiceServer struct {
 	filesystemv1.UnimplementedFilesystemServiceServer
-	storage storage.Storage
+	storage               storage.Storage
+	promotionQueueMu      sync.Mutex
+	promotionQueue        *rootpromote.Queue
+	promotionBatchWindow  time.Duration
+	promotionBatchMaxSize int
 }
 
 const (
@@ -37,7 +43,11 @@ const (
 )
 
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
-	return &filesystemServiceServer{storage: st}
+	return &filesystemServiceServer{
+		storage:               st,
+		promotionBatchWindow:  rootpromote.DefaultBatchWindow,
+		promotionBatchMaxSize: rootpromote.DefaultBatchMaxSize,
+	}
 }
 
 // RegisterGRPCServer registers the filesystem service handlers on an existing gRPC server.
@@ -258,7 +268,7 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 		return nil, err
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("write %s", filePath))
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("write %s", filePath), []string{filePath})
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +301,7 @@ func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesyste
 		return nil, err
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("delete %s", filePath))
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("delete %s", filePath), []string{filePath})
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +350,7 @@ func (s *filesystemServiceServer) MoveFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("move %s -> %s", sourcePath, destinationPath))
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("move %s -> %s", sourcePath, destinationPath), []string{sourcePath, destinationPath})
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +398,7 @@ func (s *filesystemServiceServer) CopyFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("copy %s -> %s", sourcePath, destinationPath))
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("copy %s -> %s", sourcePath, destinationPath), []string{sourcePath, destinationPath})
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +484,7 @@ func (s *filesystemServiceServer) MakeDirectory(ctx context.Context, req *filesy
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create directory: %v", err))
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("mkdir %s", dirPath))
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("mkdir %s", dirPath), []string{dirPath})
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +671,11 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 		})
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("write %d files", len(prepared)))
+	modifiedPaths := make([]string, 0, len(prepared))
+	for _, file := range prepared {
+		modifiedPaths = append(modifiedPaths, file.path)
+	}
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("write %d files", len(prepared)), modifiedPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -789,7 +803,7 @@ func (s *filesystemServiceServer) Snapshot(ctx context.Context, req *filesystemv
 		message = "snapshot"
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	commitHash, _, err := s.commitWorkspaceMutation(ctx, workspace, message)
 	if err != nil {
 		return nil, err
 	}
@@ -864,6 +878,7 @@ func (s *filesystemServiceServer) RestoreSnapshot(ctx context.Context, req *file
 	if err != nil {
 		return nil, err
 	}
+	homeMode := workspace.ID == homeslice.IDForUsername(username)
 
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	if snapshotID == "" {
@@ -890,7 +905,7 @@ func (s *filesystemServiceServer) RestoreSnapshot(ctx context.Context, req *file
 		message = fmt.Sprintf("restore snapshot %s", snapshotID)
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, message, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1026,7 +1041,7 @@ func (s *filesystemServiceServer) Fork(ctx context.Context, req *filesystemv1.Fo
 		return nil, err
 	}
 
-	if _, err := s.commitWorkspaceMutation(ctx, forkWorkspace, fmt.Sprintf("fork from %s@%s", sourceWorkspace.ID, sourceSnapshotID)); err != nil {
+	if _, _, err := s.commitWorkspaceMutation(ctx, forkWorkspace, fmt.Sprintf("fork from %s@%s", sourceWorkspace.ID, sourceSnapshotID)); err != nil {
 		return nil, err
 	}
 
@@ -1132,7 +1147,8 @@ func (s *filesystemServiceServer) Merge(ctx context.Context, req *filesystemv1.M
 		message = fmt.Sprintf("merge %s@%s into %s", sourceWorkspace.ID, sourceSnapshotID, targetWorkspace.ID)
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, targetWorkspace, message)
+	homeMode := targetWorkspace.ID == homeslice.IDForUsername(username)
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, targetWorkspace, homeMode, message, mergedPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -1324,6 +1340,7 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 		workspace   *models.Slice
 		filePath    string
 		displayPath string
+		homeMode    bool
 		buffer      bytes.Buffer
 		received    bool
 	)
@@ -1342,7 +1359,6 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 			if received {
 				return status.Error(codes.InvalidArgument, "stream metadata already received")
 			}
-			var homeMode bool
 			workspace, _, homeMode, err = s.resolveOperationWorkspace(ctx, chunk.Metadata.GetWorkspaceId(), username, true)
 			if err != nil {
 				return err
@@ -1373,7 +1389,7 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 		return err
 	}
 
-	commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("stream write %s", filePath))
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("stream write %s", filePath), []string{filePath})
 	if err != nil {
 		return err
 	}
@@ -2275,23 +2291,45 @@ func (s *filesystemServiceServer) workspaceStats(ctx context.Context, workspaceI
 	return paths, fileCount, nil
 }
 
-func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, workspace *models.Slice, message string) (string, error) {
+func (s *filesystemServiceServer) finalizeWorkspaceMutation(ctx context.Context, workspace *models.Slice, homeMode bool, message string, modifiedPaths []string) (string, error) {
+	commitHash, commitTime, err := s.commitWorkspaceMutation(ctx, workspace, message)
+	if err != nil {
+		return "", err
+	}
+	if !homeMode {
+		return commitHash, nil
+	}
+	modified := normalizePromotionPaths(modifiedPaths)
+	if len(modified) == 0 {
+		currentPaths, _, err := s.workspaceStats(ctx, workspace.ID)
+		if err != nil {
+			return "", status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace paths for promotion: %v", err))
+		}
+		modified = normalizePromotionPaths(currentPaths)
+	}
+	if err := s.enqueueHomeSlicePromotion(ctx, workspace.ID, commitHash, modified, commitTime); err != nil {
+		return "", status.Error(codes.Internal, fmt.Sprintf("failed to enqueue root promotion: %v", err))
+	}
+	return commitHash, nil
+}
+
+func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, workspace *models.Slice, message string) (string, time.Time, error) {
 	if workspace == nil {
-		return "", status.Error(codes.Internal, "workspace is nil")
+		return "", time.Time{}, status.Error(codes.Internal, "workspace is nil")
 	}
 
 	meta, err := s.storage.GetSliceMetadata(ctx, workspace.ID)
 	if err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to load workspace metadata: %v", err))
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to load workspace metadata: %v", err))
 	}
 
 	paths, _, err := s.workspaceStats(ctx, workspace.ID)
 	if err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace paths: %v", err))
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace paths: %v", err))
 	}
 	files, err := s.collectWorkspaceSnapshotFiles(ctx, workspace.ID)
 	if err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace snapshot: %v", err))
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace snapshot: %v", err))
 	}
 
 	now := time.Now()
@@ -2302,7 +2340,7 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		Timestamp:  now,
 		Message:    message,
 	}); err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to record workspace commit: %v", err))
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to record workspace commit: %v", err))
 	}
 	if err := s.storage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
 		CommitHash: commitHash,
@@ -2310,7 +2348,7 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		Files:      files,
 		Timestamp:  now,
 	}); err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to save workspace snapshot: %v", err))
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to save workspace snapshot: %v", err))
 	}
 	if err := s.storage.UpdateSliceMetadata(ctx, workspace.ID, &models.SliceMetadata{
 		SliceID:            workspace.ID,
@@ -2319,9 +2357,9 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		LastModified:       now,
 		ModifiedFilesCount: len(paths),
 	}); err != nil {
-		return "", status.Error(codes.Internal, fmt.Sprintf("failed to update workspace metadata: %v", err))
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace metadata: %v", err))
 	}
-	return commitHash, nil
+	return commitHash, now, nil
 }
 
 func (s *filesystemServiceServer) collectWorkspaceEntries(ctx context.Context, workspaceID string) ([]*models.DirectoryEntry, error) {
