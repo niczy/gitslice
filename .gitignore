@@ -47,6 +47,8 @@ web/test-results/
 test-results/
 sdk/typescript/node_modules/
 sdk/typescript/dist/
+sdk/mcp/node_modules/
+sdk/mcp/dist/
 servers/cloudflare_control_plane/node_modules/
 servers/cloudflare_control_plane/.wrangler/
 

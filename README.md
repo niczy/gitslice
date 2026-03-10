@@ -51,7 +51,8 @@
 │   └── core/              # Core server (gRPC + gateway)
 ├── sdk/                   # Client SDKs
 │   ├── python/            # Python filesystem SDK
-│   └── typescript/        # TypeScript filesystem SDK
+│   ├── typescript/        # TypeScript filesystem SDK
+│   └── mcp/               # MCP stdio server for filesystem tools
 ├── spec/                 # Design specifications
 │   ├── PRODUCT_VISION.md
 │   ├── DATA_MODEL.md
@@ -301,6 +302,10 @@ PYTHONPATH=sdk/python python3 -m unittest discover -s sdk/python/tests
 # Run TypeScript SDK tests
 npm ci --prefix sdk/typescript
 npm test --prefix sdk/typescript
+
+# Run MCP server tests
+npm ci --prefix sdk/mcp
+npm test --prefix sdk/mcp
 
 # Run integration tests
 RUN_INTEGRATION_TESTS=1 make test
