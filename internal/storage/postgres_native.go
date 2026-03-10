@@ -288,6 +288,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			users,
 			file_changes,
 			global_state,
+			file_manifests,
 			versioned_content,
 			commit_snapshots,
 			file_contents,
@@ -711,6 +712,71 @@ func (s *postgresNativeTxView) AddFileContent(ctx context.Context, content *mode
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *postgresNativeTxView) PutBlock(ctx context.Context, hash string, data []byte) error {
+	return s.PostgresNativeStorage.PutBlock(ctx, hash, data)
+}
+
+func (s *postgresNativeTxView) GetBlock(ctx context.Context, hash string) ([]byte, error) {
+	return s.PostgresNativeStorage.GetBlock(ctx, hash)
+}
+
+func (s *postgresNativeTxView) HasBlock(ctx context.Context, hash string) (bool, error) {
+	return s.PostgresNativeStorage.HasBlock(ctx, hash)
+}
+
+func (s *postgresNativeTxView) PutBlocks(ctx context.Context, blocks map[string][]byte) error {
+	return s.PostgresNativeStorage.PutBlocks(ctx, blocks)
+}
+
+func (s *postgresNativeTxView) PutFileManifest(ctx context.Context, sliceID, filePath string, manifest *models.FileManifest) error {
+	ctx = ensureCtx(ctx)
+	if manifest == nil {
+		return ErrInvalidInput
+	}
+
+	sliceID = strings.TrimSpace(sliceID)
+	filePath = cleanRelativePath(filePath)
+	if sliceID == "" || filePath == "" {
+		return ErrInvalidInput
+	}
+
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	if err := s.objectStore.PutObject(ctx, s.objKey("manifests", sliceID, filePath), raw); err != nil {
+		return err
+	}
+	_, err = s.tx.Exec(ctx, `
+		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (slice_id, path) DO UPDATE SET hash = $3, total_size = $4, block_count = $5, updated_at = NOW()
+	`, sliceID, filePath, manifest.Hash, manifest.TotalSize, len(manifest.Blocks))
+	return err
+}
+
+func (s *postgresNativeTxView) GetFileManifest(ctx context.Context, sliceID, filePath string) (*models.FileManifest, error) {
+	return s.PostgresNativeStorage.GetFileManifest(ctx, sliceID, filePath)
+}
+
+func (s *postgresNativeTxView) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
+	ctx = ensureCtx(ctx)
+	sliceID = strings.TrimSpace(sliceID)
+	filePath = cleanRelativePath(filePath)
+	if sliceID == "" || filePath == "" {
+		return ErrInvalidInput
+	}
+
+	_, err := s.tx.Exec(ctx, `DELETE FROM file_manifests WHERE slice_id = $1 AND path = $2`, sliceID, filePath)
+	if err != nil {
+		return err
+	}
+	if err := s.objectStore.DeleteObject(ctx, s.objKey("manifests", sliceID, filePath)); err != nil && err != ErrEntryNotFound {
+		return err
 	}
 	return nil
 }
@@ -2018,6 +2084,121 @@ func (s *PostgresNativeStorage) AddFileContent(ctx context.Context, content *mod
 		}
 	}
 
+	return nil
+}
+
+func (s *PostgresNativeStorage) PutBlock(ctx context.Context, hash string, data []byte) error {
+	ctx = ensureCtx(ctx)
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return ErrInvalidInput
+	}
+	return s.objectStore.PutObject(ctx, s.objKey("blocks", hash), append([]byte(nil), data...))
+}
+
+func (s *PostgresNativeStorage) GetBlock(ctx context.Context, hash string) ([]byte, error) {
+	ctx = ensureCtx(ctx)
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, ErrInvalidInput
+	}
+	return s.objectStore.GetObject(ctx, s.objKey("blocks", hash))
+}
+
+func (s *PostgresNativeStorage) HasBlock(ctx context.Context, hash string) (bool, error) {
+	ctx = ensureCtx(ctx)
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return false, ErrInvalidInput
+	}
+	_, err := s.objectStore.GetObject(ctx, s.objKey("blocks", hash))
+	if err == nil {
+		return true, nil
+	}
+	if err == ErrEntryNotFound {
+		return false, nil
+	}
+	return false, err
+}
+
+func (s *PostgresNativeStorage) PutBlocks(ctx context.Context, blocks map[string][]byte) error {
+	ctx = ensureCtx(ctx)
+	for hash, data := range blocks {
+		if err := s.PutBlock(ctx, hash, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) PutFileManifest(ctx context.Context, sliceID, filePath string, manifest *models.FileManifest) error {
+	ctx = ensureCtx(ctx)
+	if manifest == nil {
+		return ErrInvalidInput
+	}
+
+	sliceID = strings.TrimSpace(sliceID)
+	filePath = cleanRelativePath(filePath)
+	if sliceID == "" || filePath == "" {
+		return ErrInvalidInput
+	}
+
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	if err := s.objectStore.PutObject(ctx, s.objKey("manifests", sliceID, filePath), raw); err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (slice_id, path) DO UPDATE SET hash = $3, total_size = $4, block_count = $5, updated_at = NOW()
+	`, sliceID, filePath, manifest.Hash, manifest.TotalSize, len(manifest.Blocks))
+	return err
+}
+
+func (s *PostgresNativeStorage) GetFileManifest(ctx context.Context, sliceID, filePath string) (*models.FileManifest, error) {
+	ctx = ensureCtx(ctx)
+	sliceID = strings.TrimSpace(sliceID)
+	filePath = cleanRelativePath(filePath)
+	if sliceID == "" || filePath == "" {
+		return nil, ErrInvalidInput
+	}
+
+	raw, err := s.objectStore.GetObject(ctx, s.objKey("manifests", sliceID, filePath))
+	if err != nil {
+		if err == ErrEntryNotFound {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+
+	var manifest models.FileManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, err
+	}
+	return cloneManifest(&manifest), nil
+}
+
+func (s *PostgresNativeStorage) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
+	ctx = ensureCtx(ctx)
+	sliceID = strings.TrimSpace(sliceID)
+	filePath = cleanRelativePath(filePath)
+	if sliceID == "" || filePath == "" {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `DELETE FROM file_manifests WHERE slice_id = $1 AND path = $2`, sliceID, filePath)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	if err := s.objectStore.DeleteObject(ctx, s.objKey("manifests", sliceID, filePath)); err != nil && err != ErrEntryNotFound {
+		return err
+	}
 	return nil
 }
 
