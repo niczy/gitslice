@@ -1009,7 +1009,7 @@ func (s *InMemoryStorage) GetSliceFiles(ctx context.Context, sliceID string) ([]
 
 	var files []*models.FileContent
 	for _, fileID := range slice.Files {
-		if content, ok := s.fileContents[fileID]; ok {
+		if content := s.sliceFileContentLocked(sliceID, fileID); content != nil {
 			files = append(files, content)
 		}
 	}
@@ -1096,41 +1096,20 @@ func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path 
 	if !ok {
 		return nil, ErrEntryNotFound
 	}
-
-	// Prefer file content stored in the fileContents map; DirectoryEntry.Content is
-	// best-effort metadata and should not be required for correctness.
-	var (
-		content []byte
-		hash    string
-		size    = entry.Size
-	)
-	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
-		content = fc.Content
-		hash = fc.Hash
-		if size == 0 {
-			size = fc.Size
+	if entry.Type != "file" {
+		out := &models.FileContent{
+			FileID: entry.Path,
+			Path:   entry.Path,
+			Size:   entry.Size,
+			Hash:   strings.TrimSpace(entry.Hash),
 		}
-	} else if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
-		content = fc.Content
-		hash = fc.Hash
-		if size == 0 {
-			size = fc.Size
+		if len(entry.Content) > 0 {
+			out.Content = append([]byte(nil), entry.Content...)
 		}
-	} else if len(entry.Content) > 0 {
-		// Backward-compatible fallback for legacy callers that stored bytes on entries.
-		content = entry.Content
+		return out, nil
 	}
 
-	out := &models.FileContent{
-		FileID: entry.Path,
-		Path:   entry.Path,
-		Size:   size,
-		Hash:   hash,
-	}
-	if len(content) > 0 {
-		out.Content = append([]byte(nil), content...)
-	}
-	return out, nil
+	return s.fileContentForEntryLocked(entry), nil
 }
 
 func sliceIDFromEntryID(entryID string) string {
@@ -1424,6 +1403,85 @@ func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
 		return strings.TrimSpace(fc.Hash)
 	}
 	return strings.TrimSpace(entry.Hash)
+}
+
+func (s *InMemoryStorage) sliceFileContentLocked(sliceID, fileID string) *models.FileContent {
+	if entry := s.sliceFileEntryLocked(sliceID, fileID); entry != nil {
+		return s.fileContentForEntryLocked(entry)
+	}
+	if fc, ok := s.fileContents[fileID]; ok && fc != nil {
+		copy := *fc
+		if len(fc.Content) > 0 {
+			copy.Content = append([]byte(nil), fc.Content...)
+		}
+		return &copy
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) sliceFileEntryLocked(sliceID, fileID string) *models.DirectoryEntry {
+	if fileID == "" {
+		return nil
+	}
+	for _, candidate := range []string{fileID, cleanRelativePath(fileID)} {
+		if candidate == "" {
+			continue
+		}
+		entryID, ok := s.entriesByPath[sliceID+":"+candidate]
+		if !ok {
+			continue
+		}
+		if entry, ok := s.entries[entryID]; ok && entry != nil && entry.Type == "file" {
+			return entry
+		}
+	}
+	if entry, ok := s.entries[fileID]; ok && entry != nil && entry.Type == "file" {
+		if entrySlice := inferSliceIDForEntry(entry); entrySlice == "" || entrySlice == sliceID {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) fileContentForEntryLocked(entry *models.DirectoryEntry) *models.FileContent {
+	if entry == nil || entry.Type != "file" {
+		return nil
+	}
+
+	out := &models.FileContent{
+		FileID: entry.Path,
+		Path:   entry.Path,
+		Size:   entry.Size,
+		Hash:   strings.TrimSpace(entry.Hash),
+	}
+	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
+		if out.Size == 0 {
+			out.Size = fc.Size
+		}
+		if strings.TrimSpace(fc.Hash) != "" {
+			out.Hash = strings.TrimSpace(fc.Hash)
+		}
+		if len(fc.Content) > 0 {
+			out.Content = append([]byte(nil), fc.Content...)
+		}
+		return out
+	}
+	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
+		if out.Size == 0 {
+			out.Size = fc.Size
+		}
+		if strings.TrimSpace(fc.Hash) != "" {
+			out.Hash = strings.TrimSpace(fc.Hash)
+		}
+		if len(fc.Content) > 0 {
+			out.Content = append([]byte(nil), fc.Content...)
+		}
+		return out
+	}
+	if len(entry.Content) > 0 {
+		out.Content = append([]byte(nil), entry.Content...)
+	}
+	return out
 }
 
 // UpdateEntry updates a directory entry
