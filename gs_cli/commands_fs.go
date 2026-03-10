@@ -54,13 +54,13 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 	case "stat":
 		handleFilesystemStat(ctx, cli, authConfig, args[1:])
 	case "snapshot":
-		handleFilesystemSnapshot(ctx, cli, args[1:])
+		handleFilesystemSnapshot(ctx, cli, authConfig, args[1:])
 	case "snapshots":
-		handleFilesystemSnapshots(ctx, cli, args[1:])
+		handleFilesystemSnapshots(ctx, cli, authConfig, args[1:])
 	case "restore":
-		handleFilesystemRestore(ctx, cli, args[1:])
+		handleFilesystemRestore(ctx, cli, authConfig, args[1:])
 	case "diff":
-		handleFilesystemDiff(ctx, cli, args[1:])
+		handleFilesystemDiff(ctx, cli, authConfig, args[1:])
 	case "fork":
 		handleFilesystemFork(ctx, cli, args[1:])
 	case "merge":
@@ -476,22 +476,26 @@ func handleFilesystemStat(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	}
 }
 
-func handleFilesystemSnapshot(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemSnapshot(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs snapshot", flag.ExitOnError)
 	message := fs.String("m", "", "Snapshot message")
 	parseFlagSetInterspersed(fs, args)
 
-	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs snapshot <workspace> -m <message>")
+	if fs.NArg() != 0 {
+		log.Println("Usage: gs fs snapshot -m <message>")
 		return
 	}
 	if strings.TrimSpace(*message) == "" {
 		log.Println("Snapshot message is required")
 		return
 	}
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	resp, err := cli.filesystemClient.Snapshot(ctx, &filesystemv1.SnapshotRequest{
-		WorkspaceId: strings.TrimSpace(fs.Arg(0)),
+		WorkspaceId: workspaceID,
 		Message:     strings.TrimSpace(*message),
 	})
 	if err != nil {
@@ -503,18 +507,22 @@ func handleFilesystemSnapshot(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Message: %s\n", snapshot.GetMessage())
 }
 
-func handleFilesystemSnapshots(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemSnapshots(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs snapshots", flag.ExitOnError)
 	limit := fs.Int("limit", 10, "Maximum snapshots to return")
 	parseFlagSetInterspersed(fs, args)
 
-	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs snapshots <workspace> [--limit <n>]")
+	if fs.NArg() != 0 {
+		log.Println("Usage: gs fs snapshots [--limit <n>]")
 		return
+	}
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	resp, err := cli.filesystemClient.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
-		WorkspaceId: strings.TrimSpace(fs.Arg(0)),
+		WorkspaceId: workspaceID,
 		Limit:       int32(*limit),
 	})
 	if err != nil {
@@ -526,46 +534,53 @@ func handleFilesystemSnapshots(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleFilesystemRestore(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemRestore(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs restore", flag.ExitOnError)
 	message := fs.String("m", "", "Optional restore message")
 	parseFlagSetInterspersed(fs, args)
 
-	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs restore <workspace> <snapshot-id> [-m <message>]")
+	if fs.NArg() != 1 {
+		log.Println("Usage: gs fs restore <snapshot-id> [-m <message>]")
 		return
+	}
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	resp, err := cli.filesystemClient.RestoreSnapshot(ctx, &filesystemv1.RestoreSnapshotRequest{
-		WorkspaceId: strings.TrimSpace(fs.Arg(0)),
-		SnapshotId:  strings.TrimSpace(fs.Arg(1)),
+		WorkspaceId: workspaceID,
+		SnapshotId:  strings.TrimSpace(fs.Arg(0)),
 		Message:     strings.TrimSpace(*message),
 	})
 	if err != nil {
 		log.Fatalf("Failed to restore snapshot: %v", err)
 	}
 
-	fmt.Printf("Restored workspace %s to %s\n", resp.GetWorkspaceId(), resp.GetRestoredSnapshotId())
+	fmt.Printf("Restored to %s\n", resp.GetRestoredSnapshotId())
 	if snapshot := resp.GetSnapshot(); snapshot != nil {
 		fmt.Printf("New head snapshot: %s\n", snapshot.GetSnapshotId())
 	}
 }
 
-func handleFilesystemDiff(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs diff", flag.ExitOnError)
 	toSnapshot := fs.String("to", "", "Optional target snapshot ID")
 	includePatches := fs.Bool("patch", true, "Include unified patches")
 	parseFlagSetInterspersed(fs, args)
 
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		log.Println("Usage: gs fs diff <workspace> [snapshot-id] [--to <snapshot-id>] [--patch=false]")
+	if fs.NArg() > 1 {
+		log.Println("Usage: gs fs diff [snapshot-id] [--to <snapshot-id>] [--patch=false]")
 		return
 	}
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	workspaceID := strings.TrimSpace(fs.Arg(0))
 	fromSnapshotID := ""
-	if fs.NArg() == 2 {
-		fromSnapshotID = strings.TrimSpace(fs.Arg(1))
+	if fs.NArg() == 1 {
+		fromSnapshotID = strings.TrimSpace(fs.Arg(0))
 	} else {
 		listResp, err := cli.filesystemClient.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
 			WorkspaceId: workspaceID,
