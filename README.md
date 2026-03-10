@@ -49,6 +49,8 @@
 │   └── slice/
 ├── servers/               # Binary servers
 │   └── core/              # Core server (gRPC + gateway)
+├── sdk/                   # Client SDKs
+│   └── python/            # Python filesystem SDK
 ├── spec/                 # Design specifications
 │   ├── PRODUCT_VISION.md
 │   ├── DATA_MODEL.md
@@ -291,6 +293,9 @@ gs --user your_name fork my-slice ./some/folder --parent root_slice
 ```bash
 # Run all tests (installs dependencies first)
 make test
+
+# Run Python SDK tests
+PYTHONPATH=sdk/python python3 -m unittest discover -s sdk/python/tests
 
 # Run integration tests
 RUN_INTEGRATION_TESTS=1 make test

@@ -25,6 +25,11 @@ jobs:
         cache: 'npm'
         cache-dependency-path: web/package-lock.json
 
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
     - name: Install protoc
       run: |
         sudo apt-get update
@@ -62,6 +67,9 @@ jobs:
         (cd services/file && go test ./...)
         (cd services/slice && go test ./...)
         (cd servers/core && go test ./...)
+
+    - name: Run Python SDK tests
+      run: PYTHONPATH=sdk/python python3 -m unittest discover -s sdk/python/tests
 
     - name: Test coverage for workflow tests
       run: |
