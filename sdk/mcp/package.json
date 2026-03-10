@@ -1,0 +1,29 @@
+{
+  "name": "@gitslice/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the Gitslice remote filesystem API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "gitslice-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "typescript": "^5.9.2"
+  }
+}
