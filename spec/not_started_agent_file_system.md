@@ -2,7 +2,11 @@
 
 **Status:** Not Started
 **Created:** 2026-03-09
-**Last Updated:** 2026-03-09
+**Last Updated:** 2026-03-10
+
+---
+
+> Note: the `gs fs` UX in this document is superseded by [not_started_HOME_SLICE_FILESYSTEM_EXECUTION_PLAN.md](/home/nic/workspace/gitslice/spec/not_started_HOME_SLICE_FILESYSTEM_EXECUTION_PLAN.md). The newer plan keeps slices internal, gives each user an implicit home slice, uses absolute paths like `/username/...`, and publishes into `root_slice` asynchronously.
 
 ---
 
