@@ -2,496 +2,426 @@
 
 ## Problem Statement
 
-The `FilesystemService` API has three performance bottlenecks that compound badly
-for agent workloads (AI coding agents making many small file edits):
+The `FilesystemService` API has performance bottlenecks that compound for agent
+workloads (AI coding agents making many small file edits). The root cause is that
+file content is stored and transferred as monolithic blobs.
 
-### Bottleneck 1: Full-file round-trip for every edit
-
-To change one line in a file, an agent must:
-
-1. `ReadFile` — download the entire file content over the wire
-2. Apply the edit client-side (string replacement, line insert, etc.)
-3. `WriteFile` — upload the entire file content back
-
-For a 50 KB file where the agent changes one line, this moves ~100 KB over the
-network. Agents doing dozens of edits per task pay this cost every time.
-
-### Bottleneck 2: Full tree walk on every mutation commit
-
-Every call to `WriteFile`, `DeleteFile`, `MoveFile`, `CopyFile`, or
-`MakeDirectory` calls `commitWorkspaceMutation`, which does:
+### Current storage model
 
 ```
-commitWorkspaceMutation
-  ├── workspaceStats()              ← walks entire directory tree
-  │     └── collectWorkspaceEntries()   ← recursive ListEntries from root
-  ├── collectWorkspaceSnapshotFiles()  ← walks entire tree AGAIN
-  │     ├── collectWorkspaceEntries()   ← same recursive walk
-  │     └── GetSliceFileByPath() × N   ← loads every file's content to hash it
-  └── SaveCommitSnapshot()
+AddFileContent(FileContent{
+    FileID:  "workspace-1:src/main.go",
+    Content: []byte{...entire file...},   ← one opaque blob
+    Hash:    "sha256-of-whole-file",
+    Size:    52431,
+})
+    ↓
+ObjectStore.PutObject("file_content:src/main.go", json(FileContent))
 ```
 
-**Two full tree walks plus N file-content reads per single-file write.**
-For a workspace with 500 files, writing one file triggers ~1000 storage calls.
+Every read, write, edit, and snapshot operation must load or store the **entire
+file** as a single object. This creates cascading inefficiencies:
 
-### Bottleneck 3: No partial file reads
-
-`ReadFile` always returns the complete `bytes content`. Agents frequently only
-need a portion of a file (e.g., lines 100-120 to understand context around a
-function). There is no way to request a byte range or line range.
+1. **Full-file round-trip for edits**: Changing one line requires downloading
+   ~50 KB, editing client-side, re-uploading ~50 KB.
+2. **Full tree walk on every commit**: `commitWorkspaceMutation` calls
+   `GetSliceFileByPath()` for *every* file to compute hashes for the snapshot —
+   even though only one file changed.
+3. **No partial reads**: Reading lines 100-120 of a file requires transferring
+   the entire blob from object storage into server memory.
+4. **No deduplication**: Two files with identical regions store redundant bytes.
+   Two versions of a file that differ by one line store two full copies.
+5. **O(total-size) writes**: Writing a 1-byte edit to a 1 MB file rewrites 1 MB
+   to object storage.
 
 ---
 
-## Proposed Changes
+## Core Proposal: Content-Addressable Block Storage
 
-### 1. Add `EditFile` RPC — server-side text replacement
+Split file content into fixed-size, content-addressed blocks stored on R2/GCS.
+This is the same model used by git packfiles, rsync, IPFS, and every modern CAS.
 
-Add a new RPC to `FilesystemService` that applies text edits server-side,
-eliminating the read-modify-write round trip.
+### Block model
 
-#### Proto changes (`proto/filesystem/filesystem_service.proto`)
+```
+┌─────────────────────────────────────────────────────┐
+│ File: src/main.go  (52 KB)                          │
+│                                                     │
+│ FileManifest {                                      │
+│   path: "src/main.go"                               │
+│   total_size: 52431                                 │
+│   hash: "sha256-of-whole-file"                      │
+│   blocks: [                                         │
+│     { hash: "abc123", offset: 0,     size: 16384 }, │
+│     { hash: "def456", offset: 16384, size: 16384 }, │
+│     { hash: "ghi789", offset: 32768, size: 16384 }, │
+│     { hash: "jkl012", offset: 49152, size: 3279  }, │
+│   ]                                                 │
+│ }                                                   │
+└─────────────────────────────────────────────────────┘
 
-```protobuf
-rpc EditFile(EditFileRequest) returns (EditFileResponse) {
-  option (google.api.http) = {
-    post: "/v1/fs/workspaces/{workspace_id}/files/{path=**}:edit"
-    body: "*"
-  };
-}
-
-message TextEdit {
-  string old_text = 1;      // Exact text to find and replace
-  string new_text = 2;      // Replacement text
-  bool replace_all = 3;     // Replace all occurrences (default: first only)
-}
-
-message EditFileRequest {
-  string workspace_id = 1;
-  string path = 2;
-  repeated TextEdit edits = 3;   // Applied sequentially
-  string expected_hash = 4;      // Optional: fail if file hash doesn't match (optimistic concurrency)
-}
-
-message EditFileResponse {
-  string workspace_id = 1;
-  string path = 2;
-  int64 size = 3;
-  string hash = 4;
-  string commit_hash = 5;
-  bool applied = 6;              // False if expected_hash mismatch
-  int32 edits_applied = 7;       // How many edits succeeded
-}
+ObjectStore keys:
+  block:abc123 → 16384 bytes
+  block:def456 → 16384 bytes
+  block:ghi789 → 16384 bytes
+  block:jkl012 → 3279 bytes
+  manifest:workspace-1:src/main.go → FileManifest JSON
 ```
 
-#### Server implementation (`services/filesystem/server.go`)
+Each block is keyed by the SHA-256 of its content. Identical blocks across files
+and versions are stored once.
+
+### Data structures
+
+#### New Go types (`internal/models/block.go`)
 
 ```go
-func (s *filesystemServiceServer) EditFile(ctx context.Context, req *filesystemv1.EditFileRequest) (*filesystemv1.EditFileResponse, error) {
-    username, err := s.requireUser(ctx)
-    if err != nil {
-        return nil, err
-    }
+package models
 
-    workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
-    if err != nil {
-        return nil, err
-    }
+// Block represents a content-addressed chunk of file data.
+type Block struct {
+    Hash string `json:"hash"`          // SHA-256 of content
+    Size int    `json:"size"`          // Byte length
+}
 
-    filePath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
-    if err != nil {
-        return nil, err
-    }
-
-    // Read current content
-    content, err := s.storage.GetSliceFileByPath(ctx, workspace.ID, filePath)
-    if err != nil {
-        return nil, status.Error(codes.NotFound, fmt.Sprintf("file not found: %s", filePath))
-    }
-
-    // Optimistic concurrency check
-    if req.ExpectedHash != "" {
-        currentHash := strings.TrimSpace(content.Hash)
-        if currentHash == "" {
-            currentHash = hashContent(content.Content)
-        }
-        if currentHash != req.ExpectedHash {
-            return &filesystemv1.EditFileResponse{
-                WorkspaceId: workspace.ID,
-                Path:        displayPath,
-                Applied:     false,
-            }, nil
-        }
-    }
-
-    // Apply edits sequentially
-    data := content.Content
-    appliedCount := int32(0)
-    for _, edit := range req.GetEdits() {
-        old := []byte(edit.GetOldText())
-        new := []byte(edit.GetNewText())
-        if len(old) == 0 {
-            continue
-        }
-        if edit.GetReplaceAll() {
-            data = bytes.ReplaceAll(data, old, new)
-        } else {
-            data = bytes.Replace(data, old, new, 1)
-        }
-        appliedCount++
-    }
-
-    // Write back
-    hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, data)
-    if err != nil {
-        return nil, err
-    }
-
-    commitHash, err := s.commitWorkspaceMutation(ctx, workspace, fmt.Sprintf("edit %s", filePath))
-    if err != nil {
-        return nil, err
-    }
-
-    return &filesystemv1.EditFileResponse{
-        WorkspaceId:  workspace.ID,
-        Path:         displayPath,
-        Size:         size,
-        Hash:         hash,
-        CommitHash:   commitHash,
-        Applied:      true,
-        EditsApplied: appliedCount,
-    }, nil
+// FileManifest describes a file as an ordered list of blocks.
+type FileManifest struct {
+    Path      string  `json:"path"`
+    TotalSize int64   `json:"total_size"`
+    Hash      string  `json:"hash"`        // SHA-256 of full file content
+    Blocks    []Block `json:"blocks"`
 }
 ```
 
-#### Why this matters
+#### Block size selection
 
-- Agent sends only the old/new strings (~200 bytes) instead of the full file (~50 KB) × 2
-- Eliminates the client-side read step entirely
-- `expected_hash` provides safe concurrent editing without locking
-- Multiple edits in one request = one commit instead of N commits
+| Block size | Blocks per 50 KB file | Blocks per 1 MB file | Overhead |
+|-----------|----------------------|---------------------|----------|
+| 4 KB      | 13                   | 256                 | High manifest size |
+| 16 KB     | 4                    | 64                  | Good balance |
+| 64 KB     | 1                    | 16                  | Less dedup opportunity |
+
+**Recommendation: 16 KB.** Source code files are typically 1-100 KB. At 16 KB
+blocks, a typical file has 1-6 blocks — small manifests, good dedup, and edits
+usually touch only 1-2 blocks.
+
+For files smaller than the block size, the manifest has exactly one block — no
+overhead compared to the current monolithic model.
+
+### New storage interface methods (`internal/storage/storage.go`)
+
+```go
+// Block storage operations (content-addressable)
+PutBlock(ctx context.Context, hash string, data []byte) error
+GetBlock(ctx context.Context, hash string) ([]byte, error)
+HasBlock(ctx context.Context, hash string) (bool, error)
+PutBlocks(ctx context.Context, blocks map[string][]byte) error  // batch
+
+// File manifest operations
+PutFileManifest(ctx context.Context, workspaceID, path string, manifest *models.FileManifest) error
+GetFileManifest(ctx context.Context, workspaceID, path string) (*models.FileManifest, error)
+DeleteFileManifest(ctx context.Context, workspaceID, path string) error
+```
+
+### ObjectStore key layout
+
+```
+blocks/{hash}                               ← content-addressed, shared
+manifests/{workspaceID}/{path}              ← per-workspace-file
+```
+
+On R2/GCS, blocks are immutable and globally deduplicated. Manifests are small
+JSON documents (~200 bytes per file) that point to blocks.
 
 ---
 
-### 2. Incremental commit snapshots — eliminate redundant tree walks
+## How Chunking Enables Each Optimization
 
-Replace the current `commitWorkspaceMutation` implementation that walks the
-entire tree twice with an incremental approach that only processes changed files.
+### 1. Efficient `EditFile` — rewrite only affected blocks
 
-#### Core idea
+```
+EditFile(workspace_id, "src/main.go", edits=[{old: "foo", new: "bar"}])
 
-Instead of rebuilding the snapshot from scratch, copy the parent snapshot and
-patch in only the changed file(s).
-
-#### New method signature
-
-```go
-// commitWorkspaceMutationIncremental creates a commit by patching the parent
-// snapshot with only the specified changed paths, avoiding a full tree walk.
-func (s *filesystemServiceServer) commitWorkspaceMutationIncremental(
-    ctx context.Context,
-    workspace *models.Slice,
-    message string,
-    changedPaths []string,    // paths that were added/modified
-    deletedPaths []string,    // paths that were removed
-) (string, error)
+Server:
+  1. Load manifest (1 small GET)         ← ~200 bytes
+  2. Determine which blocks contain "foo"
+     - Option A (fast): load block hashes, try each block
+     - Option B (indexed): use a line→block index (see below)
+  3. Load only affected block(s) (1 GET)  ← ~16 KB
+  4. Apply edit in memory
+  5. Hash the new block
+  6. PUT new block if hash is new         ← ~16 KB
+  7. Update manifest with new block hash  ← ~200 bytes
+  8. Incremental commit (manifest already has all hashes)
 ```
 
-#### Implementation
+**Before**: Edit touches 50 KB file → 50 KB GET + 50 KB PUT = 100 KB I/O.
+**After**: Edit touches 1 block → 200B GET + 16 KB GET + 16 KB PUT + 200B PUT ≈ 33 KB I/O.
+
+For larger files the savings compound: editing a 1 MB file drops from 2 MB I/O
+to ~33 KB I/O.
+
+#### Optional: line-to-block index
+
+For text files, store a small side index mapping line number ranges to block
+indices. This allows `EditFile` to skip straight to the right block(s) without
+scanning:
 
 ```go
-func (s *filesystemServiceServer) commitWorkspaceMutationIncremental(
+// LineIndex maps line ranges to block indices within a FileManifest.
+type LineIndex struct {
+    Entries []LineBlockEntry `json:"entries"`
+}
+
+type LineBlockEntry struct {
+    StartLine  int `json:"start_line"`   // 1-based
+    EndLine    int `json:"end_line"`     // inclusive
+    BlockIndex int `json:"block_index"` // index into FileManifest.Blocks
+}
+```
+
+Stored alongside the manifest. Rebuilt on write (cheap — just scan for newlines
+while chunking). Makes line-based reads O(1) lookup instead of O(blocks) scan.
+
+**Whether to build this index depends on typical file sizes.** For files with
+1-4 blocks (< 64 KB), sequential scan is fine. For files with 64+ blocks (> 1 MB),
+the index pays off. **Recommendation: defer the line index to Phase 2 and
+measure first.** The block-level architecture works without it.
+
+### 2. Incremental commit snapshots — free with manifests
+
+The current bottleneck in `commitWorkspaceMutation`:
+
+```
+workspaceStats()                    ← walks ALL entries
+collectWorkspaceSnapshotFiles()     ← walks ALL entries AGAIN
+  └── GetSliceFileByPath() × N     ← loads EVERY file to hash it
+```
+
+With block storage, the manifest already contains the file hash. The commit
+snapshot becomes:
+
+```go
+func (s *server) commitWorkspaceMutationIncremental(
     ctx context.Context,
     workspace *models.Slice,
     message string,
     changedPaths []string,
     deletedPaths []string,
 ) (string, error) {
-    if workspace == nil {
-        return "", status.Error(codes.Internal, "workspace is nil")
-    }
+    meta, _ := s.storage.GetSliceMetadata(ctx, workspace.ID)
 
-    meta, err := s.storage.GetSliceMetadata(ctx, workspace.ID)
-    if err != nil {
-        return "", status.Error(codes.Internal, fmt.Sprintf("failed to load workspace metadata: %v", err))
-    }
+    // Start from parent snapshot
+    files := copyParentSnapshot(ctx, meta.HeadCommitHash)
 
-    // Start from parent snapshot instead of walking the tree
-    files := make(map[string]string)
-    if meta.HeadCommitHash != "" {
-        parentSnapshot, err := s.storage.GetCommitSnapshot(ctx, meta.HeadCommitHash)
-        if err == nil && parentSnapshot != nil {
-            for k, v := range parentSnapshot.Files {
-                files[k] = v
-            }
-        }
-    }
-
-    // If no parent snapshot exists, fall back to full collection
-    // (first commit in workspace — cold start only)
-    if len(files) == 0 && meta.HeadCommitHash == "" {
-        collected, err := s.collectWorkspaceSnapshotFiles(ctx, workspace.ID)
-        if err != nil {
-            return "", status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace snapshot: %v", err))
-        }
-        files = collected
-    }
-
-    // Patch in changed files
+    // Patch in changed files — just read manifests, NOT content
     for _, p := range changedPaths {
-        content, err := s.storage.GetSliceFileByPath(ctx, workspace.ID, p)
+        manifest, err := s.storage.GetFileManifest(ctx, workspace.ID, p)
         if err != nil {
-            continue // file may have been deleted between write and commit
+            continue
         }
-        hash := strings.TrimSpace(content.Hash)
-        if hash == "" {
-            hash = hashContent(content.Content)
-        }
-        files[p] = hash
+        files[p] = manifest.Hash  // Hash already computed during write
     }
 
-    // Remove deleted files
     for _, p := range deletedPaths {
         delete(files, p)
     }
 
-    // Build paths list from snapshot keys (avoids tree walk)
-    paths := make([]string, 0, len(files))
-    for p := range files {
-        paths = append(paths, p)
-    }
-    sort.Strings(paths)
-
-    now := time.Now()
-    commitHash := fmt.Sprintf("fs-%d", now.UnixNano())
-
-    if err := s.storage.AddSliceCommit(ctx, workspace.ID, &models.Commit{
-        CommitHash: commitHash,
-        ParentHash: meta.HeadCommitHash,
-        Timestamp:  now,
-        Message:    message,
-    }); err != nil {
-        return "", status.Error(codes.Internal, fmt.Sprintf("failed to record workspace commit: %v", err))
-    }
-
-    if err := s.storage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
-        CommitHash: commitHash,
-        SliceID:    workspace.ID,
-        Files:      files,
-        Timestamp:  now,
-    }); err != nil {
-        return "", status.Error(codes.Internal, fmt.Sprintf("failed to save workspace snapshot: %v", err))
-    }
-
-    if err := s.storage.UpdateSliceMetadata(ctx, workspace.ID, &models.SliceMetadata{
-        SliceID:            workspace.ID,
-        HeadCommitHash:     commitHash,
-        ModifiedFiles:      paths,
-        LastModified:       now,
-        ModifiedFilesCount: len(paths),
-    }); err != nil {
-        return "", status.Error(codes.Internal, fmt.Sprintf("failed to update workspace metadata: %v", err))
-    }
-
-    return commitHash, nil
+    // Save snapshot + metadata (same as before)
+    return saveCommitAndSnapshot(ctx, workspace, files, message)
 }
 ```
 
-#### Migration strategy
+**Before**: 500-file workspace, 1 edit → ~1500 storage calls.
+**After**: 1 GetCommitSnapshot + 1 GetFileManifest + 3 saves = **5 storage calls**.
 
-1. Add `commitWorkspaceMutationIncremental` alongside existing `commitWorkspaceMutation`
-2. Convert each mutation RPC one at a time (WriteFile, DeleteFile, etc.) to use
-   the incremental variant, since each already knows which paths changed
-3. Keep `commitWorkspaceMutation` as fallback for operations where changed paths
-   aren't easily enumerable (shouldn't be any, but safety net)
-4. Remove the old method once all callers are migrated
+The key insight: **block storage makes file hashes available from the manifest
+without loading content**. This is why chunking is foundational — it fixes the
+snapshot problem as a side effect.
 
-#### Call sites to update
+### 3. Partial file reads — serve only the needed blocks
 
-| RPC | changedPaths | deletedPaths |
-|-----|-------------|-------------|
-| `WriteFile` | `[filePath]` | `[]` |
-| `DeleteFile` | `[]` | `[filePath]` |
-| `MoveFile` | `[destinationPath]` | `[sourcePath]` |
-| `CopyFile` | `[destinationPath]` | `[]` |
-| `MakeDirectory` | `[dirPath]` | `[]` |
-| `WriteFiles` | `[...paths]` | `[]` |
-| `EditFile` (new) | `[filePath]` | `[]` |
+```
+ReadFile(path="src/main.go", byte_offset=32768, byte_limit=16384)
 
-#### Performance impact
-
-For a workspace with 500 files where one file is edited:
-
-| | Before | After |
-|--|--------|-------|
-| Tree walks | 2 full walks | 0 |
-| `ListEntries` calls | ~500 × 2 | 0 |
-| `GetSliceFileByPath` calls | ~500 | 1 |
-| `GetCommitSnapshot` calls | 0 | 1 |
-| Total storage calls | ~1500 | 4 |
-
----
-
-### 3. Add `ReadFile` with offset/limit — partial file reads
-
-Extend the existing `ReadFile` RPC to support byte-range and line-range reads.
-
-#### Proto changes (`proto/filesystem/filesystem_service.proto`)
-
-```protobuf
-message ReadFileRequest {
-  string workspace_id = 1;
-  string path = 2;
-  int64 byte_offset = 3;    // Start reading from this byte (0 = beginning)
-  int64 byte_limit = 4;     // Max bytes to return (0 = entire file)
-  int32 line_offset = 5;    // Start reading from this line (1-based, 0 = ignore)
-  int32 line_limit = 6;     // Max lines to return (0 = all remaining)
-}
-
-message ReadFileResponse {
-  string workspace_id = 1;
-  string path = 2;
-  bytes content = 3;
-  int64 size = 4;            // Total file size (always returned)
-  string hash = 5;           // Hash of FULL file (always returned)
-  int64 content_offset = 6;  // Byte offset of returned content within the file
-  bool truncated = 7;        // True if content was trimmed by limit
-  int32 total_lines = 8;     // Total line count (only when line_offset/limit used)
-}
+Server:
+  1. Load manifest                            ← 200 bytes
+  2. Compute: offset 32768 falls in block[2]  ← arithmetic
+  3. GET block[2] only                        ← 16 KB
+  4. Slice to requested range
+  5. Return
 ```
 
-#### Server implementation
+**Before**: Read 16 KB of a 1 MB file → transfer 1 MB from object store.
+**After**: Transfer 16 KB. The server never loads the rest.
 
-```go
-func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv1.ReadFileRequest) (*filesystemv1.ReadFileResponse, error) {
-    // ... existing workspace/path resolution ...
+Line-based reads work the same way with the optional line index — look up which
+block(s) contain the target lines, fetch only those blocks.
 
-    content, err := s.storage.GetSliceFileByPath(ctx, workspace.ID, filePath)
-    if err != nil {
-        // ... existing error handling ...
-    }
+### 4. Cross-version deduplication
 
-    data := content.Content
-    totalSize := int64(len(data))
-    hash := strings.TrimSpace(content.Hash)
-    if hash == "" {
-        hash = hashContent(data)
-    }
+When an agent edits line 50 of a 200-line file, only the block containing that
+line changes. The other blocks share the same hash as the previous version and
+are **not re-stored**. `HasBlock` short-circuits the PUT.
 
-    resp := &filesystemv1.ReadFileResponse{
-        WorkspaceId: workspace.ID,
-        Path:        displayPath,
-        Size:        totalSize,
-        Hash:        hash,
-    }
-
-    // Line-based slicing (takes precedence over byte-based)
-    if req.LineOffset > 0 || req.LineLimit > 0 {
-        lines := bytes.Split(data, []byte("\n"))
-        resp.TotalLines = int32(len(lines))
-
-        start := int(req.LineOffset)
-        if start > 0 {
-            start-- // Convert 1-based to 0-based
-        }
-        if start > len(lines) {
-            start = len(lines)
-        }
-
-        end := len(lines)
-        if req.LineLimit > 0 && start+int(req.LineLimit) < end {
-            end = start + int(req.LineLimit)
-            resp.Truncated = true
-        }
-
-        data = bytes.Join(lines[start:end], []byte("\n"))
-        // Calculate byte offset of the start line
-        byteOffset := int64(0)
-        for i := 0; i < start; i++ {
-            byteOffset += int64(len(lines[i])) + 1
-        }
-        resp.ContentOffset = byteOffset
-        resp.Content = data
-        return resp, nil
-    }
-
-    // Byte-range slicing
-    if req.ByteOffset > 0 || req.ByteLimit > 0 {
-        offset := req.ByteOffset
-        if offset > totalSize {
-            offset = totalSize
-        }
-        data = data[offset:]
-        resp.ContentOffset = offset
-
-        if req.ByteLimit > 0 && int64(len(data)) > req.ByteLimit {
-            data = data[:req.ByteLimit]
-            resp.Truncated = true
-        }
-    }
-
-    resp.Content = data
-    return resp, nil
-}
+```
+Version 1: [block:aaa, block:bbb, block:ccc, block:ddd]
+Version 2: [block:aaa, block:bbb, block:XYZ, block:ddd]
+                                       ↑ only new block stored
 ```
 
-#### Backward compatibility
-
-All new fields have zero-value defaults. Existing clients that send no
-offset/limit get the full file as before — no breaking change.
+For agent workloads doing 20-50 small edits to a codebase, this cuts storage
+writes dramatically — most blocks across most files never change.
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Incremental snapshots (highest impact, lowest risk)
+### Phase 0: Block storage layer (foundation)
 
-1. Add `commitWorkspaceMutationIncremental` method
-2. Update `WriteFile` to use it (single file = easy to validate)
-3. Add unit test comparing snapshot output of old vs new path
-4. Migrate remaining mutation RPCs one by one
-5. Remove old `commitWorkspaceMutation`
+1. Add `Block` and `FileManifest` types to `internal/models/block.go`
+2. Add `PutBlock`, `GetBlock`, `HasBlock`, `PutBlocks`, `PutFileManifest`,
+   `GetFileManifest`, `DeleteFileManifest` to the `Storage` interface
+3. Implement for `InMemoryStorage` (map-based, straightforward)
+4. Implement for `PostgresNativeStorage` using existing `ObjectStore`:
+   - Blocks: `PutObject("blocks/{hash}", data)` — idempotent, content-addressed
+   - Manifests: `PutObject("manifests/{workspaceID}/{path}", json)` — small metadata
+   - Postgres metadata table: `file_manifests(workspace_id, path, hash, total_size, block_count)`
+5. Add helper functions:
+   - `ChunkFile(data []byte, blockSize int) ([]Block, map[string][]byte)` — splits file into blocks
+   - `AssembleFile(manifest *FileManifest, getBlock func(hash string) ([]byte, error)) ([]byte, error)` — reassembles
+   - `FindBlocksForRange(manifest *FileManifest, offset, length int64) []int` — which blocks to fetch
 
-### Phase 2: `EditFile` RPC
+### Phase 1: Migrate WriteFile / ReadFile to block storage
 
-1. Add proto message definitions
-2. Run `make proto` to regenerate
-3. Implement `EditFile` in `services/filesystem/server.go`
-4. Wire into incremental commit from Phase 1
-5. Add tests for: single edit, multiple edits, `replace_all`, hash mismatch,
-   file not found, empty old_text
+1. **WriteFile**: chunk content → PutBlocks (skip existing via HasBlock) → PutFileManifest
+   - Keep writing to legacy `AddFileContent` path in parallel for backward compat
+   - Dual-write until all read paths are migrated
+2. **ReadFile**: try GetFileManifest first → assemble from blocks
+   - Fall back to legacy `GetSliceFileByPath` if no manifest exists
+3. **commitWorkspaceMutationIncremental**: use manifest hashes instead of loading content
+4. Validate: run existing tests, compare hashes between old and new paths
 
-### Phase 3: Partial `ReadFile`
+### Phase 2: EditFile RPC with block-level targeting
 
-1. Add new fields to existing proto messages
-2. Run `make proto`
-3. Implement slicing logic in `ReadFile`
-4. Test: byte offset, byte limit, line offset, line limit, combinations,
-   backward compat (no params = full file)
+1. Add `EditFile` proto definition and RPC
+2. Server-side implementation:
+   - Load manifest
+   - For each edit: scan blocks to find which contain `old_text`
+     (for files with ≤6 blocks, just load and scan all — still fast)
+   - Load only affected blocks, apply edits, re-chunk the modified region
+   - PutBlock for new blocks, update manifest
+3. Add `expected_hash` for optimistic concurrency (compare against manifest.Hash)
+4. Wire into incremental commit
 
-### Phase 4: Batch `EditFiles` (optional follow-up)
+### Phase 3: Partial ReadFile with block-level serving
 
-If agents commonly edit multiple files in one logical operation, add a batch
-variant similar to `WriteFiles`/`ReadFiles`:
+1. Add `byte_offset`/`byte_limit`/`line_offset`/`line_limit` to ReadFileRequest
+2. Compute which blocks overlap the requested range
+3. Fetch only those blocks, slice to exact range
+4. Optional: add LineIndex for O(1) line→block lookup on large files
 
-```protobuf
-rpc EditFiles(EditFilesRequest) returns (EditFilesResponse);
-```
+### Phase 4: Batch EditFiles + dedup metrics
 
-This would apply edits to multiple files with a single commit.
+1. `EditFiles` RPC: multiple files, one commit
+2. Add metrics: block dedup ratio, blocks reused vs written, manifest sizes
+3. Optional: background GC for orphaned blocks (blocks with no manifest references)
 
 ---
 
-## Testing Strategy
+## Migration Strategy
 
-All changes should be testable with existing infrastructure:
+### Dual-write / fallback-read pattern
 
-- **Unit tests**: `services/filesystem/server_test.go` — test each new RPC
-  directly against in-memory storage
-- **Snapshot correctness**: Write a test that performs the same sequence of
-  mutations via old and new commit paths, assert identical snapshots
-- **Integration tests**: `workflow_test/` — add a test that exercises EditFile
-  through the full gRPC stack
-- **Build verification**: `go build ./servers/core/` and `go build ./gs_cli/`
+To avoid a big-bang migration:
+
+```
+Write path (Phase 1):
+  WriteFile()
+    → writeWorkspaceFileContent()      ← legacy (keep working)
+    → chunkAndStoreBlocks()            ← new (dual-write)
+    → putFileManifest()                ← new
+
+Read path (Phase 1):
+  ReadFile()
+    → getFileManifest()                ← try new first
+    → if found: assembleFromBlocks()
+    → else: getSliceFileByPath()       ← legacy fallback
+```
+
+Old data continues to work through the legacy path. New writes populate both.
+Once all workspaces have manifests (or after a backfill job), remove the legacy
+path.
+
+### Backfill existing files
+
+A one-time migration job:
+
+```go
+func backfillBlockStorage(ctx context.Context, storage Storage) error {
+    workspaces, _ := storage.ListSlices(ctx, 0, 0)
+    for _, ws := range workspaces {
+        files, _ := storage.GetSliceFiles(ctx, ws.ID)
+        for _, f := range files {
+            manifest := chunkFileToManifest(f.Content)
+            storeBlocks(ctx, storage, manifest, f.Content)
+            storage.PutFileManifest(ctx, ws.ID, f.Path, manifest)
+        }
+    }
+    return nil
+}
+```
+
+Can run as a background job. Non-blocking — the fallback read path handles
+non-migrated files.
+
+---
+
+## Performance Analysis
+
+### Single-file edit (50 KB file, 1-line change)
+
+| Operation | Current | With blocks |
+|-----------|---------|-------------|
+| Client → Server | 50 KB (full file) | ~200 B (edit instruction) |
+| Server → Object Store reads | 50 KB (full blob) | 200 B (manifest) + 16 KB (1 block) |
+| Server → Object Store writes | 50 KB (full blob) | 16 KB (1 block) + 200 B (manifest) |
+| Commit snapshot work | ~1500 storage calls (full tree walk) | 5 calls (incremental) |
+| **Total I/O** | **~100 KB + 1500 calls** | **~33 KB + 7 calls** |
+
+### Partial read (lines 100-120 of 1 MB file)
+
+| Operation | Current | With blocks |
+|-----------|---------|-------------|
+| Object Store → Server | 1 MB (full file) | 200 B (manifest) + 16 KB (1 block) |
+| Server → Client | ~2 KB (after server-side trim) | ~2 KB |
+| **Object Store I/O** | **1 MB** | **~16 KB** |
+
+### Cross-version storage (20 edits to 500-file workspace)
+
+| Metric | Current | With blocks |
+|--------|---------|-------------|
+| New objects stored per edit | 1 × full file | 1-2 blocks (16-32 KB) |
+| Total new storage for 20 edits | 20 × ~50 KB = 1 MB | 20 × ~16 KB = 320 KB |
+| Shared blocks reused | N/A | ~95% of blocks unchanged |
+
+---
+
+## Block Size Considerations
+
+The 16 KB recommendation assumes source code files. Different workloads might
+want different sizes:
+
+| Content type | Recommended block size | Rationale |
+|-------------|----------------------|-----------|
+| Source code (1-100 KB) | 16 KB | 1-6 blocks per file, good edit locality |
+| Config/JSON (< 4 KB) | 16 KB | Single block, no overhead |
+| Large generated files (> 1 MB) | 64 KB | Fewer blocks in manifest |
+| Binary assets | 64 KB or 256 KB | Dedup unlikely, minimize manifest size |
+
+Start with a single global block size (16 KB). Make it configurable per-workspace
+later if needed — the manifest format supports variable block sizes since each
+block entry records its own size.
 
 ---
 
@@ -499,7 +429,23 @@ All changes should be testable with existing infrastructure:
 
 | Risk | Mitigation |
 |------|-----------|
-| Incremental snapshot diverges from truth | Fallback: if parent snapshot is missing, do full tree walk (already in design). Add periodic consistency check. |
-| `EditFile` old_text not found in file | Return success with `edits_applied=0`. Agent can detect and fall back to full WriteFile. |
-| Large file line-split allocates too much memory | For files > 10 MB, reject line-based reads and require byte-range instead. |
-| Proto field additions break existing clients | All new fields use zero-value semantics. Protobuf is backward-compatible by design. |
+| Block GC complexity (orphaned blocks) | Blocks are immutable and cheap. Defer GC. Reference counting can be added later via a `block_refs` table. |
+| Manifest consistency (crash between block write and manifest update) | Blocks are content-addressed — writing an extra block is harmless. Manifest update is atomic (single PutObject). If manifest write fails, old manifest is still valid. |
+| Small file overhead (manifest larger than file) | Files < 16 KB have a single block. Manifest adds ~200 bytes. Acceptable. Could inline tiny files (< 1 KB) directly in manifest. |
+| Cross-block edits (edit spans a block boundary) | Load both blocks, concatenate, apply edit, re-chunk. Slightly more I/O but correct. Rare for typical edits. |
+| Migration period: two storage formats coexist | Dual-write + fallback-read pattern. Legacy path stays until backfill completes. No flag day. |
+| R2/GCS latency for many small GETs | `PutBlocks`/`GetBlocks` batch API. Manifest reads are cacheable (small, frequent). |
+
+---
+
+## Testing Strategy
+
+- **Unit tests**: `ChunkFile` / `AssembleFile` round-trip for various file sizes
+  and block sizes. Verify content-hash stability. Test cross-block edits.
+- **Storage tests**: `internal/storage/` — test `PutBlock`/`GetBlock`/`HasBlock`
+  for both in-memory and Postgres+ObjectStore backends.
+- **Integration tests**: Write a file via legacy path, read via block path (and
+  vice versa) to validate the dual-write/fallback pattern.
+- **Snapshot correctness**: Perform identical mutation sequences with old and new
+  commit paths, assert identical snapshot hashes.
+- **Build verification**: `go build ./servers/core/` and `go build ./gs_cli/`
