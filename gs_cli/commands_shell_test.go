@@ -26,12 +26,12 @@ func TestResolveFilesystemShellPath(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "relative from root", cwd: "", raw: "src/main.go", want: "src/main.go"},
-		{name: "relative from cwd", cwd: "src", raw: "utils.py", want: "src/utils.py"},
-		{name: "absolute", cwd: "src", raw: "/README.md", want: "README.md"},
-		{name: "parent directory", cwd: "src/nested", raw: "../main.go", want: "src/main.go"},
-		{name: "root", cwd: "src", raw: "/", want: ""},
-		{name: "missing path", cwd: "", raw: "", wantErr: true},
+		{name: "relative from root", cwd: "/testuser", raw: "src/main.go", want: "/testuser/src/main.go"},
+		{name: "relative from cwd", cwd: "/testuser/src", raw: "utils.py", want: "/testuser/src/utils.py"},
+		{name: "absolute", cwd: "/testuser/src", raw: "/testuser/README.md", want: "/testuser/README.md"},
+		{name: "parent directory", cwd: "/testuser/src/nested", raw: "../main.go", want: "/testuser/src/main.go"},
+		{name: "root", cwd: "/testuser/src", raw: "/", want: "/"},
+		{name: "missing path", cwd: "/testuser", raw: "", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -57,7 +57,7 @@ func TestShellDisplayPath(t *testing.T) {
 	if got := shellDisplayPath(""); got != "/" {
 		t.Fatalf("unexpected root display path: %q", got)
 	}
-	if got := shellDisplayPath("src/utils"); got != "/src/utils" {
+	if got := shellDisplayPath("/testuser/src/utils"); got != "/testuser/src/utils" {
 		t.Fatalf("unexpected nested display path: %q", got)
 	}
 }

@@ -996,11 +996,7 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	defer cancel()
 	ctx = withTestUser(ctx)
 
-	workspaceID := fmt.Sprintf("fs-shell-%d", time.Now().UnixNano())
-	createOutput := runCLIOrFail(t, "", "fs", "create", workspaceID, "--description", "filesystem shell workflow")
-	if !strings.Contains(createOutput, "Created workspace "+workspaceID) {
-		t.Fatalf("expected workspace creation output, got: %s", createOutput)
-	}
+	remoteRoot := fmt.Sprintf("/%s/fs-shell-%d", testUsername, time.Now().UnixNano())
 
 	script := strings.Join([]string{
 		"mkdir src",
@@ -1014,7 +1010,7 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 		"exit",
 	}, "\n") + "\n"
 
-	output, err := runCLIWithDirInput("", script, "fs", "shell", workspaceID)
+	output, err := runCLIWithDirInput("", script, "fs", "shell", remoteRoot)
 	if err != nil {
 		t.Fatalf("shell command failed: %v\nOutput:\n%s", err, output)
 	}
@@ -1027,14 +1023,14 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	if !strings.Contains(output, `Snapshot created: `) || !strings.Contains(output, `"added main"`) {
 		t.Fatalf("expected snapshot history in shell transcript, got: %s", output)
 	}
-	if !strings.Contains(output, "/src") {
+	if !strings.Contains(output, remoteRoot+"/src") {
 		t.Fatalf("expected pwd output in shell transcript, got: %s", output)
 	}
 
 	client := newFilesystemClient(t)
 	readResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: workspaceID,
-		Path:        "src/main.py",
+		WorkspaceId: homeslice.IDForUsername(testUsername),
+		Path:        remoteRoot + "/src/main.py",
 	})
 	if err != nil {
 		t.Fatalf("failed to read shell-written file: %v", err)
@@ -1049,11 +1045,7 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	defer cancel()
 	ctx = withTestUser(ctx)
 
-	workspaceID := fmt.Sprintf("fs-transfer-%d", time.Now().UnixNano())
-	createOutput := runCLIOrFail(t, "", "fs", "create", workspaceID, "--description", "filesystem transfer workflow")
-	if !strings.Contains(createOutput, "Created workspace "+workspaceID) {
-		t.Fatalf("expected workspace creation output, got: %s", createOutput)
-	}
+	remoteProjectRoot := fmt.Sprintf("/%s/fs-transfer-%d/project", testUsername, time.Now().UnixNano())
 
 	uploadRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(uploadRoot, "src"), 0o755); err != nil {
@@ -1069,15 +1061,15 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("write src/main.py: %v", err)
 	}
 
-	output := runCLIOrFail(t, "", "fs", "upload", uploadRoot, workspaceID+":project")
+	output := runCLIOrFail(t, "", "fs", "upload", uploadRoot, remoteProjectRoot)
 	if !strings.Contains(output, "Uploaded 2 files and 3 directories") {
 		t.Fatalf("expected upload summary, got: %s", output)
 	}
 
 	client := newFilesystemClient(t)
 	readmeResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: workspaceID,
-		Path:        "project/README.md",
+		WorkspaceId: homeslice.IDForUsername(testUsername),
+		Path:        remoteProjectRoot + "/README.md",
 	})
 	if err != nil {
 		t.Fatalf("failed to read uploaded README.md: %v", err)
@@ -1087,8 +1079,8 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	}
 
 	mainResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: workspaceID,
-		Path:        "project/src/main.py",
+		WorkspaceId: homeslice.IDForUsername(testUsername),
+		Path:        remoteProjectRoot + "/src/main.py",
 	})
 	if err != nil {
 		t.Fatalf("failed to read uploaded src/main.py: %v", err)
@@ -1098,8 +1090,8 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	}
 
 	emptyDirResp, err := client.Stat(ctx, &filesystemv1.StatRequest{
-		WorkspaceId: workspaceID,
-		Path:        "project/docs/empty",
+		WorkspaceId: homeslice.IDForUsername(testUsername),
+		Path:        remoteProjectRoot + "/docs/empty",
 	})
 	if err != nil {
 		t.Fatalf("failed to stat uploaded empty dir: %v", err)
@@ -1109,7 +1101,7 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	}
 
 	downloadRoot := t.TempDir()
-	output = runCLIOrFail(t, "", "fs", "download", workspaceID+":project", downloadRoot)
+	output = runCLIOrFail(t, "", "fs", "download", remoteProjectRoot, downloadRoot)
 	if !strings.Contains(output, "Downloaded 2 files and 3 directories") {
 		t.Fatalf("expected download summary, got: %s", output)
 	}

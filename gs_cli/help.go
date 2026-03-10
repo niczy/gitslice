@@ -92,7 +92,7 @@ func printFilesystemHelp() {
 	fmt.Println("  fork         Fork a workspace")
 	fmt.Println("  merge        Merge workspaces")
 	fmt.Println("  conflicts    List workspace conflicts")
-	fmt.Println("  shell        Open an interactive remote filesystem shell")
-	fmt.Println("  upload       Upload a local directory tree")
-	fmt.Println("  download     Download a remote directory tree")
+	fmt.Println("  shell        Open an interactive home-slice shell")
+	fmt.Println("  upload       Upload a local directory tree to an absolute home path")
+	fmt.Println("  download     Download an absolute home path to a local directory")
 }
