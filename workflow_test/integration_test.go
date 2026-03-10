@@ -25,6 +25,7 @@ import (
 	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
@@ -259,17 +260,28 @@ func runCLIWithDirInput(workdir, input string, args ...string) (string, error) {
 }
 
 func runCLIWithDirInputEnv(workdir, input string, env map[string]string, args ...string) (string, error) {
+	return runCLIWithDirInputEnvLegacy(workdir, input, env, true, args...)
+}
+
+func runCLIWithDirInputEnvNoLegacyUser(workdir, input string, env map[string]string, args ...string) (string, error) {
+	return runCLIWithDirInputEnvLegacy(workdir, input, env, false, args...)
+}
+
+func runCLIWithDirInputEnvLegacy(workdir, input string, env map[string]string, includeLegacyUser bool, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	fullArgs := append([]string{
+	fullArgs := []string{
 		"--account-addr", grpcServiceAddr,
 		"--slice-addr", grpcServiceAddr,
 		"--admin-addr", grpcServiceAddr,
 		"--file-addr", grpcServiceAddr,
 		"--fs-addr", grpcServiceAddr,
-		"--user", testUsername,
-	}, args...)
+	}
+	if includeLegacyUser {
+		fullArgs = append(fullArgs, "--user", testUsername)
+	}
+	fullArgs = append(fullArgs, args...)
 	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
 	if workdir != "" {
 		cmd.Dir = workdir
@@ -406,6 +418,21 @@ func newFilesystemClient(t *testing.T) filesystemv1.FilesystemServiceClient {
 	})
 
 	return filesystemv1.NewFilesystemServiceClient(conn)
+}
+
+func newAccountClient(t *testing.T) accountv1.AccountServiceClient {
+	t.Helper()
+
+	conn, err := grpc.Dial(grpcServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial account service: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	return accountv1.NewAccountServiceClient(conn)
 }
 
 func assertEntryNames(t *testing.T, entries []*filev1.DirectoryEntry, expected ...string) {
@@ -875,6 +902,106 @@ func TestCLILoginAndLogoutUseStoredBearerCredentials(t *testing.T) {
 	}
 	if _, err := os.Stat(credentialsPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected credentials file to be removed, stat err=%v", err)
+	}
+}
+
+func TestCLIDeviceLoginAndRefreshesStoredCredentials(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	homeDir := t.TempDir()
+	loginUsername := fmt.Sprintf("device-login-%d", time.Now().UnixNano())
+	browserScript := filepath.Join(t.TempDir(), "approve-device-login.sh")
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+url="$1"
+user_code="${url##*user_code=}"
+curl -sf -X POST "$GS_DEVICE_APPROVE_BASE/v1/auth/device/approve" \
+  -H "Authorization: User $GS_DEVICE_APPROVE_USER" \
+  -H "Content-Type: application/json" \
+  -d "{\"userCode\":\"${user_code}\"}" >/dev/null
+`
+	if err := os.WriteFile(browserScript, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile browser script failed: %v", err)
+	}
+
+	env := map[string]string{
+		"HOME":                   homeDir,
+		"GS_BROWSER_COMMAND":     browserScript,
+		"GS_DEVICE_APPROVE_BASE": gatewayServiceURL,
+		"GS_DEVICE_APPROVE_USER": loginUsername,
+	}
+
+	output, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "login")
+	if err != nil {
+		t.Fatalf("device login command failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Enter code:") || !strings.Contains(output, "Logged in as "+loginUsername) {
+		t.Fatalf("unexpected device login output: %s", output)
+	}
+
+	credentialsPath := filepath.Join(homeDir, ".gitslice", "credentials.json")
+	data, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile credentials failed: %v", err)
+	}
+	var creds struct {
+		AccessToken           string `json:"access_token"`
+		RefreshToken          string `json:"refresh_token"`
+		AccessTokenExpiresAt  string `json:"access_token_expires_at"`
+		RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
+		Username              string `json:"username"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		t.Fatalf("Unmarshal credentials failed: %v", err)
+	}
+	if creds.AccessToken == "" || creds.RefreshToken == "" || creds.AccessTokenExpiresAt == "" || creds.RefreshTokenExpiresAt == "" {
+		t.Fatalf("unexpected device credentials contents: %+v", creds)
+	}
+	if creds.Username != loginUsername {
+		t.Fatalf("expected device login username %q, got %+v", loginUsername, creds)
+	}
+
+	statusOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "login", "status")
+	if err != nil {
+		t.Fatalf("login status command failed: %v\nOutput:\n%s", err, statusOutput)
+	}
+	if !strings.Contains(statusOutput, "Logged in as: "+loginUsername) {
+		t.Fatalf("unexpected login status output: %s", statusOutput)
+	}
+
+	originalAccessToken := creds.AccessToken
+	creds.AccessTokenExpiresAt = time.Now().Add(-1 * time.Minute).Format(time.RFC3339)
+	updatedData, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		t.Fatalf("Marshal credentials failed: %v", err)
+	}
+	updatedData = append(updatedData, '\n')
+	if err := os.WriteFile(credentialsPath, updatedData, 0o600); err != nil {
+		t.Fatalf("WriteFile refreshed credentials failed: %v", err)
+	}
+
+	if _, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "fs", "list"); err != nil {
+		t.Fatalf("fs list with expired stored access token failed: %v", err)
+	}
+
+	data, err = os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile refreshed credentials failed: %v", err)
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		t.Fatalf("Unmarshal refreshed credentials failed: %v", err)
+	}
+	if creds.AccessToken == originalAccessToken {
+		t.Fatalf("expected CLI to refresh access token, still have %q", creds.AccessToken)
+	}
+
+	accountClient := newAccountClient(t)
+	if _, err := accountClient.ListSessions(withBearerToken(ctx, originalAccessToken), &accountv1.ListSessionsRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected old access token to be invalid after refresh, got %v", err)
+	}
+	if _, err := accountClient.ListSessions(withBearerToken(ctx, creds.AccessToken), &accountv1.ListSessionsRequest{}); err != nil {
+		t.Fatalf("refreshed access token should be accepted, got %v", err)
 	}
 }
 
