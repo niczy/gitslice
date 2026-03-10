@@ -45,6 +45,13 @@ service FilesystemService {
     };
   }
 
+  rpc EditFile(EditFileRequest) returns (EditFileResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:editFile"
+      body: "*"
+    };
+  }
+
   rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse) {
     option (google.api.http) = {
       delete: "/v1/fs/workspaces/{workspace_id}/files/{path=**}"
@@ -239,6 +246,26 @@ message WriteFileRequest {
 }
 
 message WriteFileResponse {
+  string workspace_id = 1;
+  string path = 2;
+  int64 size = 3;
+  string hash = 4;
+  string commit_hash = 5;
+}
+
+message FileEdit {
+  string old_text = 1;
+  string new_text = 2;
+}
+
+message EditFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+  repeated FileEdit edits = 3;
+  string expected_hash = 4;
+}
+
+message EditFileResponse {
   string workspace_id = 1;
   string path = 2;
   int64 size = 3;

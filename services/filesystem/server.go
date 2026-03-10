@@ -281,6 +281,57 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 	}, nil
 }
 
+func (s *filesystemServiceServer) EditFile(ctx context.Context, req *filesystemv1.EditFileRequest) (*filesystemv1.EditFileResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
+	if err != nil {
+		return nil, err
+	}
+
+	filePath, displayPath, err := s.resolveOperationPath(username, homeMode, req.GetPath(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	current, err := s.readWorkspaceFileContent(ctx, workspace.ID, filePath)
+	if err != nil {
+		return nil, err
+	}
+	currentHash := strings.TrimSpace(current.Hash)
+	if currentHash == "" {
+		currentHash = hashContent(current.Content)
+	}
+	if expected := strings.TrimSpace(req.GetExpectedHash()); expected != "" && expected != currentHash {
+		return nil, status.Error(codes.Aborted, "expected_hash does not match current file hash")
+	}
+
+	updated, err := applyFilesystemEdits(current.Content, req.GetEdits())
+	if err != nil {
+		return nil, err
+	}
+
+	hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, updated)
+	if err != nil {
+		return nil, err
+	}
+
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("edit %s", filePath), []string{filePath})
+	if err != nil {
+		return nil, err
+	}
+	return &filesystemv1.EditFileResponse{
+		WorkspaceId: workspace.ID,
+		Path:        displayPath,
+		Size:        size,
+		Hash:        hash,
+		CommitHash:  commitHash,
+	}, nil
+}
+
 func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesystemv1.DeleteFileRequest) (*filesystemv1.DeleteFileResponse, error) {
 	username, err := s.requireUser(ctx)
 	if err != nil {
@@ -1517,6 +1568,29 @@ func (s *filesystemServiceServer) deleteWorkspaceFile(ctx context.Context, works
 		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
 	}
 	return nil
+}
+
+func applyFilesystemEdits(content []byte, edits []*filesystemv1.FileEdit) ([]byte, error) {
+	if len(edits) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "edits are required")
+	}
+
+	updated := append([]byte(nil), content...)
+	for _, edit := range edits {
+		if edit == nil {
+			return nil, status.Error(codes.InvalidArgument, "edit is required")
+		}
+		oldText := edit.GetOldText()
+		if oldText == "" {
+			return nil, status.Error(codes.InvalidArgument, "edit old_text is required")
+		}
+		oldBytes := []byte(oldText)
+		if !bytes.Contains(updated, oldBytes) {
+			return nil, status.Error(codes.FailedPrecondition, "edit old_text not found in file")
+		}
+		updated = bytes.ReplaceAll(updated, oldBytes, []byte(edit.GetNewText()))
+	}
+	return updated, nil
 }
 
 func validateGlobPattern(raw string, required bool) (string, error) {
