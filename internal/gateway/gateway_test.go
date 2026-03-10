@@ -1091,6 +1091,139 @@ func TestGatewayFilesystemEditFile(t *testing.T) {
 	}
 }
 
+func TestGatewayFilesystemEditFiles(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"gw-edit-files","name":"Gateway Edit Files"}`))
+	if err != nil {
+		t.Fatalf("new create request: %v", err)
+	}
+	createReq.Header.Set("Authorization", "User tester")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		t.Fatalf("unexpected create status %d: %s", createResp.StatusCode, string(body))
+	}
+	createResp.Body.Close()
+
+	type writePayload struct {
+		Hash string `json:"hash"`
+	}
+	writeFile := func(path, content string) string {
+		req, err := http.NewRequest(
+			http.MethodPut,
+			gatewayURL+"/v1/fs/workspaces/gw-edit-files/files/"+path,
+			strings.NewReader(`{"workspaceId":"gw-edit-files","path":"`+path+`","content":"`+base64.StdEncoding.EncodeToString([]byte(content))+`"}`),
+		)
+		if err != nil {
+			t.Fatalf("new write request for %s: %v", path, err)
+		}
+		req.Header.Set("Authorization", "User tester")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("write request for %s failed: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("unexpected write status %d for %s: %s", resp.StatusCode, path, string(body))
+		}
+		defer resp.Body.Close()
+
+		var payload writePayload
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode write response for %s: %v", path, err)
+		}
+		return payload.Hash
+	}
+
+	readmeHash := writeFile("README.md", "hello world\n")
+	notesHash := writeFile("notes/todo.txt", "ship later\n")
+
+	editReq, err := http.NewRequest(
+		http.MethodPost,
+		gatewayURL+"/v1/fs/workspaces/gw-edit-files:editFiles",
+		strings.NewReader(fmt.Sprintf(`{"workspaceId":"gw-edit-files","files":[{"path":"README.md","expectedHash":"%s","edits":[{"oldText":"world","newText":"agent"}]},{"path":"notes/todo.txt","expectedHash":"%s","edits":[{"oldText":"later","newText":"now"}]}]}`, readmeHash, notesHash)),
+	)
+	if err != nil {
+		t.Fatalf("new editFiles request: %v", err)
+	}
+	editReq.Header.Set("Authorization", "User tester")
+	editReq.Header.Set("Content-Type", "application/json")
+	editResp, err := client.Do(editReq)
+	if err != nil {
+		t.Fatalf("editFiles request failed: %v", err)
+	}
+	if editResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(editResp.Body)
+		editResp.Body.Close()
+		t.Fatalf("unexpected editFiles status %d: %s", editResp.StatusCode, string(body))
+	}
+
+	var editPayload struct {
+		CommitHash string `json:"commitHash"`
+		Files      []struct {
+			Path string `json:"path"`
+			Hash string `json:"hash"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(editResp.Body).Decode(&editPayload); err != nil {
+		editResp.Body.Close()
+		t.Fatalf("decode editFiles response: %v", err)
+	}
+	editResp.Body.Close()
+	if editPayload.CommitHash == "" || len(editPayload.Files) != 2 {
+		t.Fatalf("unexpected editFiles payload: %#v", editPayload)
+	}
+
+	readFile := func(path string) string {
+		req, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-edit-files/files/"+path, nil)
+		if err != nil {
+			t.Fatalf("new read request for %s: %v", path, err)
+		}
+		req.Header.Set("Authorization", "User tester")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("read request for %s failed: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("unexpected read status %d for %s: %s", resp.StatusCode, path, string(body))
+		}
+		defer resp.Body.Close()
+
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode read response for %s: %v", path, err)
+		}
+		return payload.Content
+	}
+
+	if got, want := readFile("README.md"), "aGVsbG8gYWdlbnQK"; got != want {
+		t.Fatalf("unexpected README content: got %q want %q", got, want)
+	}
+	if got, want := readFile("notes/todo.txt"), "c2hpcCBub3cK"; got != want {
+		t.Fatalf("unexpected notes content: got %q want %q", got, want)
+	}
+}
+
 func TestGatewayFilesystemFork(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
