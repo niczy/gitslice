@@ -17,12 +17,12 @@ import (
 
 const filesystemTransferChunkSize = 64 * 1024
 
-func handleFilesystemUpload(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs upload", flag.ExitOnError)
 	parseFlagSetInterspersed(fs, args)
 
 	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs upload <local-dir> <workspace>[:path]")
+		log.Println("Usage: gs fs upload <local-dir> </absolute/path>")
 		return
 	}
 
@@ -35,7 +35,11 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, args []string) {
 		log.Fatal("local source must be a directory")
 	}
 
-	workspaceID, remoteBase, err := parseWorkspacePathArg(fs.Arg(1), false)
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	remoteBase, err := parseAbsoluteFilesystemPathArg(fs.Arg(1), true)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,24 +50,27 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	fmt.Printf(
-		"Uploaded %d files and %d directories to %s:%s\n",
+		"Uploaded %d files and %d directories to %s\n",
 		filesUploaded,
 		dirsUploaded,
-		workspaceID,
 		filesystemDisplayPath(remoteBase),
 	)
 }
 
-func handleFilesystemDownload(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs download", flag.ExitOnError)
 	parseFlagSetInterspersed(fs, args)
 
 	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs download <workspace>[:path] <local-dir>")
+		log.Println("Usage: gs fs download </absolute/path> <local-dir>")
 		return
 	}
 
-	workspaceID, remoteBase, err := parseWorkspacePathArg(fs.Arg(0), false)
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	remoteBase, err := parseAbsoluteFilesystemPathArg(fs.Arg(0), true)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -79,10 +86,9 @@ func handleFilesystemDownload(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	fmt.Printf(
-		"Downloaded %d files and %d directories from %s:%s to %s\n",
+		"Downloaded %d files and %d directories from %s to %s\n",
 		filesDownloaded,
 		dirsDownloaded,
-		workspaceID,
 		filesystemDisplayPath(remoteBase),
 		localRoot,
 	)
@@ -144,7 +150,7 @@ func downloadFilesystemTree(
 		return 0, 0, err
 	}
 	if !statResp.GetExists() {
-		return 0, 0, fmt.Errorf("remote path not found: %s:%s", workspaceID, filesystemDisplayPath(remoteBase))
+		return 0, 0, fmt.Errorf("remote path not found: %s", filesystemDisplayPath(remoteBase))
 	}
 
 	entry := statResp.GetEntry()
@@ -220,7 +226,7 @@ func ensureFilesystemRemoteDirectory(
 	}
 	if statResp.GetExists() {
 		if statResp.GetEntry().GetType() != filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
-			return fmt.Errorf("remote path is not a directory: %s:%s", workspaceID, remotePath)
+			return fmt.Errorf("remote path is not a directory: %s", remotePath)
 		}
 		return nil
 	}

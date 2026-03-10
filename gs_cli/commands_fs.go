@@ -68,11 +68,11 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 	case "conflicts":
 		handleFilesystemConflicts(ctx, cli, args[1:])
 	case "shell":
-		handleFilesystemShell(ctx, cli, args[1:])
+		handleFilesystemShell(ctx, cli, authConfig, args[1:])
 	case "upload":
-		handleFilesystemUpload(ctx, cli, args[1:])
+		handleFilesystemUpload(ctx, cli, authConfig, args[1:])
 	case "download":
-		handleFilesystemDownload(ctx, cli, args[1:])
+		handleFilesystemDownload(ctx, cli, authConfig, args[1:])
 	default:
 		log.Printf("Unknown fs command: %s", args[0])
 		printFilesystemHelp()
@@ -712,19 +712,24 @@ func parseWorkspacePathArg(value string, requirePath bool) (string, string, erro
 	return workspaceID, path, nil
 }
 
-func resolveFilesystemHomeWorkspace(ctx context.Context, cli *CLI, authConfig cliAuth) (string, error) {
+func resolveFilesystemHomeIdentity(ctx context.Context, cli *CLI, authConfig cliAuth) (string, string, error) {
 	username := strings.TrimSpace(authConfig.Username)
 	if username == "" {
 		resp, err := cli.accountClient.GetMe(ctx, &accountv1.GetMeRequest{})
 		if err != nil {
-			return "", fmt.Errorf("resolve current user for home slice: %w", err)
+			return "", "", fmt.Errorf("resolve current user for home slice: %w", err)
 		}
 		username = strings.TrimSpace(resp.GetUsername())
 	}
 	if username == "" {
-		return "", errors.New("current auth did not resolve a username")
+		return "", "", errors.New("current auth did not resolve a username")
 	}
-	return homeslice.IDForUsername(username), nil
+	return homeslice.IDForUsername(username), username, nil
+}
+
+func resolveFilesystemHomeWorkspace(ctx context.Context, cli *CLI, authConfig cliAuth) (string, error) {
+	workspaceID, _, err := resolveFilesystemHomeIdentity(ctx, cli, authConfig)
+	return workspaceID, err
 }
 
 func resolveFilesystemAbsolutePath(ctx context.Context, cli *CLI, authConfig cliAuth, raw string) (string, string, error) {

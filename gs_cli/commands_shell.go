@@ -11,27 +11,35 @@ import (
 	"path"
 	"strings"
 
+	"github.com/niczy/gitslice/internal/homeslice"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
-func handleFilesystemShell(ctx context.Context, cli *CLI, args []string) {
+func handleFilesystemShell(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs shell", flag.ExitOnError)
 	parseFlagSetInterspersed(fs, args)
 
-	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs shell <workspace>")
+	if fs.NArg() > 1 {
+		log.Println("Usage: gs fs shell [</absolute/path>]")
 		return
 	}
 
-	workspaceID := strings.TrimSpace(fs.Arg(0))
-	if workspaceID == "" {
-		log.Println("Workspace name is required")
-		return
+	workspaceID, username, err := resolveFilesystemHomeIdentity(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	startPath := homeslice.VisibleRootPath(username)
+	if fs.NArg() == 1 {
+		startPath, err = parseAbsoluteFilesystemPathArg(fs.Arg(0), true)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	shell := &filesystemShell{
 		workspaceID: workspaceID,
 		client:      cli.filesystemClient,
+		cwd:         startPath,
 		interactive: stdinIsTerminal(os.Stdin),
 	}
 	if err := shell.run(ctx, os.Stdin, os.Stdout); err != nil {
@@ -287,7 +295,7 @@ func (s *filesystemShell) executeLine(ctx context.Context, line string, output i
 		if err != nil {
 			return false, err
 		}
-		_, err = fmt.Fprintf(output, "Restored workspace %s to %s\n", resp.GetWorkspaceId(), resp.GetRestoredSnapshotId())
+		_, err = fmt.Fprintf(output, "Restored to %s\n", resp.GetRestoredSnapshotId())
 		return false, err
 	case "diff":
 		if len(fields) > 2 {
@@ -332,7 +340,7 @@ func (s *filesystemShell) executeLine(ctx context.Context, line string, output i
 }
 
 func (s *filesystemShell) prompt() string {
-	return fmt.Sprintf("gitslice:%s:%s> ", s.workspaceID, shellDisplayPath(s.cwd))
+	return fmt.Sprintf("gitslice:%s> ", shellDisplayPath(s.cwd))
 }
 
 func (s *filesystemShell) printHelp(output io.Writer) error {
@@ -381,9 +389,6 @@ func trimFilesystemShellQuotes(value string) string {
 func resolveFilesystemShellPath(cwd, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		if cwd != "" {
-			return cwd, nil
-		}
 		return "", fmt.Errorf("path is required")
 	}
 
@@ -391,12 +396,7 @@ func resolveFilesystemShellPath(cwd, raw string) (string, error) {
 	if strings.HasPrefix(cleaned, "/") {
 		cleaned = path.Clean(cleaned)
 	} else {
-		cleaned = path.Clean(path.Join("/", cwd, cleaned))
-	}
-
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	if cleaned == "." {
-		return "", nil
+		cleaned = path.Clean(path.Join(cwd, cleaned))
 	}
 	return cleaned, nil
 }
@@ -405,7 +405,7 @@ func shellDisplayPath(cwd string) string {
 	if strings.TrimSpace(cwd) == "" {
 		return "/"
 	}
-	return "/" + strings.TrimPrefix(cwd, "/")
+	return path.Clean(cwd)
 }
 
 func printFilesystemShellEntries(output io.Writer, entries []*filesystemv1.WorkspaceEntry) error {
