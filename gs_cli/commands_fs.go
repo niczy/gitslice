@@ -10,7 +10,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/niczy/gitslice/internal/homeslice"
@@ -25,14 +24,6 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 	}
 
 	switch args[0] {
-	case "create":
-		handleFilesystemCreate(ctx, cli, args[1:])
-	case "list":
-		handleFilesystemList(ctx, cli, args[1:])
-	case "delete":
-		handleFilesystemDelete(ctx, cli, args[1:])
-	case "info":
-		handleFilesystemInfo(ctx, cli, args[1:])
 	case "cat":
 		handleFilesystemCat(ctx, cli, authConfig, args[1:])
 	case "write":
@@ -61,12 +52,6 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		handleFilesystemRestore(ctx, cli, authConfig, args[1:])
 	case "diff":
 		handleFilesystemDiff(ctx, cli, authConfig, args[1:])
-	case "fork":
-		handleFilesystemFork(ctx, cli, args[1:])
-	case "merge":
-		handleFilesystemMerge(ctx, cli, args[1:])
-	case "conflicts":
-		handleFilesystemConflicts(ctx, cli, args[1:])
 	case "shell":
 		handleFilesystemShell(ctx, cli, authConfig, args[1:])
 	case "upload":
@@ -77,114 +62,6 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		log.Printf("Unknown fs command: %s", args[0])
 		printFilesystemHelp()
 	}
-}
-
-func handleFilesystemCreate(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("fs create", flag.ExitOnError)
-	fromWorkspace := fs.String("from", "", "Fork from an existing workspace instead of creating empty")
-	description := fs.String("description", "", "Workspace description")
-	parseFlagSetInterspersed(fs, args)
-
-	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs create <name> [--from <workspace>] [--description <text>]")
-		return
-	}
-
-	workspaceID := strings.TrimSpace(fs.Arg(0))
-	if workspaceID == "" {
-		log.Println("Workspace name is required")
-		return
-	}
-
-	if strings.TrimSpace(*fromWorkspace) != "" {
-		resp, err := cli.filesystemClient.Fork(ctx, &filesystemv1.ForkRequest{
-			WorkspaceId:     strings.TrimSpace(*fromWorkspace),
-			ForkWorkspaceId: workspaceID,
-			Name:            workspaceID,
-			Description:     strings.TrimSpace(*description),
-		})
-		if err != nil {
-			log.Fatalf("Failed to fork workspace: %v", err)
-		}
-		fmt.Printf("Forked workspace %s from %s\n", resp.GetWorkspace().GetWorkspaceId(), resp.GetSourceWorkspaceId())
-		printFilesystemWorkspaceInfo(resp.GetWorkspace())
-		return
-	}
-
-	resp, err := cli.filesystemClient.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
-		WorkspaceId: workspaceID,
-		Name:        workspaceID,
-		Description: strings.TrimSpace(*description),
-	})
-	if err != nil {
-		log.Fatalf("Failed to create workspace: %v", err)
-	}
-
-	fmt.Printf("Created workspace %s\n", resp.GetWorkspaceId())
-	printFilesystemWorkspaceInfo(resp)
-}
-
-func handleFilesystemList(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("fs list", flag.ExitOnError)
-	limit := fs.Int("limit", 100, "Maximum workspaces to return")
-	offset := fs.Int("offset", 0, "Result offset")
-	parseFlagSetInterspersed(fs, args)
-
-	if fs.NArg() != 0 {
-		log.Println("Usage: gs fs list [--limit <n>] [--offset <n>]")
-		return
-	}
-
-	resp, err := cli.filesystemClient.ListWorkspaces(ctx, &filesystemv1.ListWorkspacesRequest{
-		Limit:  int32(*limit),
-		Offset: int32(*offset),
-	})
-	if err != nil {
-		log.Fatalf("Failed to list workspaces: %v", err)
-	}
-
-	fmt.Printf("Workspaces: %d (total=%d)\n", len(resp.GetWorkspaces()), resp.GetTotal())
-	for _, workspace := range resp.GetWorkspaces() {
-		fmt.Printf("- %s", workspace.GetWorkspaceId())
-		if workspace.GetIsRoot() {
-			fmt.Print(" [root]")
-		}
-		fmt.Printf(" files=%d updated=%s\n", workspace.GetFileCount(), formatTimestamp(workspace.GetUpdatedAt()))
-	}
-}
-
-func handleFilesystemDelete(ctx context.Context, cli *CLI, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs delete <workspace>")
-		return
-	}
-
-	workspaceID := strings.TrimSpace(args[0])
-	if workspaceID == "" {
-		log.Println("Workspace name is required")
-		return
-	}
-
-	resp, err := cli.filesystemClient.DeleteWorkspace(ctx, &filesystemv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID})
-	if err != nil {
-		log.Fatalf("Failed to delete workspace: %v", err)
-	}
-	fmt.Printf("Deleted workspace %s\n", resp.GetWorkspaceId())
-}
-
-func handleFilesystemInfo(ctx context.Context, cli *CLI, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs info <workspace>")
-		return
-	}
-
-	resp, err := cli.filesystemClient.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{
-		WorkspaceId: strings.TrimSpace(args[0]),
-	})
-	if err != nil {
-		log.Fatalf("Failed to fetch workspace info: %v", err)
-	}
-	printFilesystemWorkspaceInfo(resp)
 }
 
 func handleFilesystemCat(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
@@ -617,116 +494,6 @@ func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	}
 }
 
-func handleFilesystemFork(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("fs fork", flag.ExitOnError)
-	description := fs.String("description", "", "Fork description")
-	parseFlagSetInterspersed(fs, args)
-
-	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs fork <workspace> <new-name> [--description <text>]")
-		return
-	}
-
-	resp, err := cli.filesystemClient.Fork(ctx, &filesystemv1.ForkRequest{
-		WorkspaceId:     strings.TrimSpace(fs.Arg(0)),
-		ForkWorkspaceId: strings.TrimSpace(fs.Arg(1)),
-		Name:            strings.TrimSpace(fs.Arg(1)),
-		Description:     strings.TrimSpace(*description),
-	})
-	if err != nil {
-		log.Fatalf("Failed to fork workspace: %v", err)
-	}
-
-	fmt.Printf("Forked workspace %s from %s\n", resp.GetWorkspace().GetWorkspaceId(), resp.GetSourceWorkspaceId())
-	printFilesystemWorkspaceInfo(resp.GetWorkspace())
-}
-
-func handleFilesystemMerge(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("fs merge", flag.ExitOnError)
-	message := fs.String("m", "", "Optional merge message")
-	parseFlagSetInterspersed(fs, args)
-
-	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs merge <source> <target> [-m <message>]")
-		return
-	}
-
-	sourceWorkspaceID := strings.TrimSpace(fs.Arg(0))
-	targetWorkspaceID := strings.TrimSpace(fs.Arg(1))
-
-	resp, err := cli.filesystemClient.Merge(ctx, &filesystemv1.MergeRequest{
-		WorkspaceId:       targetWorkspaceID,
-		SourceWorkspaceId: sourceWorkspaceID,
-		Message:           strings.TrimSpace(*message),
-	})
-	if err != nil {
-		log.Fatalf("Failed to merge workspaces: %v", err)
-	}
-
-	fmt.Printf("Merge status: %s\n", resp.GetStatus().String())
-	if resp.GetCommitHash() != "" {
-		fmt.Printf("Commit: %s\n", resp.GetCommitHash())
-	}
-	if len(resp.GetMergedPaths()) > 0 {
-		fmt.Println("Merged paths:")
-		for _, path := range resp.GetMergedPaths() {
-			fmt.Printf("- %s\n", path)
-		}
-	}
-	if len(resp.GetConflicts()) > 0 {
-		fmt.Println("Conflicts:")
-		for _, conflict := range resp.GetConflicts() {
-			fmt.Printf("- %s\n", conflict.GetPath())
-		}
-	}
-}
-
-func handleFilesystemConflicts(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("fs conflicts", flag.ExitOnError)
-	other := fs.String("other", "", "Optional workspace to compare against")
-	parseFlagSetInterspersed(fs, args)
-
-	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs conflicts <workspace> [--other <workspace>]")
-		return
-	}
-
-	resp, err := cli.filesystemClient.ListConflicts(ctx, &filesystemv1.ListConflictsRequest{
-		WorkspaceId:      strings.TrimSpace(fs.Arg(0)),
-		OtherWorkspaceId: strings.TrimSpace(*other),
-	})
-	if err != nil {
-		log.Fatalf("Failed to list conflicts: %v", err)
-	}
-
-	if len(resp.GetConflicts()) == 0 {
-		fmt.Println("No conflicts")
-		return
-	}
-
-	for _, conflict := range resp.GetConflicts() {
-		workspaceIDs := append([]string(nil), conflict.GetWorkspaceIds()...)
-		sort.Strings(workspaceIDs)
-		fmt.Printf("- %s [%s]\n", conflict.GetPath(), strings.Join(workspaceIDs, ", "))
-	}
-}
-
-func parseWorkspacePathArg(value string, requirePath bool) (string, string, error) {
-	workspaceID := strings.TrimSpace(value)
-	path := ""
-	if cutWorkspace, cutPath, ok := strings.Cut(value, ":"); ok {
-		workspaceID = strings.TrimSpace(cutWorkspace)
-		path = strings.TrimSpace(cutPath)
-	}
-	if workspaceID == "" {
-		return "", "", fmt.Errorf("workspace is required")
-	}
-	if requirePath && path == "" {
-		return "", "", fmt.Errorf("path is required; expected <workspace>:<path>")
-	}
-	return workspaceID, path, nil
-}
-
 func resolveFilesystemHomeIdentity(ctx context.Context, cli *CLI, authConfig cliAuth) (string, string, error) {
 	username := strings.TrimSpace(authConfig.Username)
 	if username == "" {
@@ -796,26 +563,6 @@ func readFilesystemWriteInput(localPath string) ([]byte, error) {
 		return os.ReadFile(filepath.Clean(localPath))
 	}
 	return io.ReadAll(os.Stdin)
-}
-
-func printFilesystemWorkspaceInfo(info *filesystemv1.WorkspaceInfo) {
-	fmt.Printf("Workspace: %s\n", info.GetWorkspaceId())
-	fmt.Printf("Name: %s\n", info.GetName())
-	if info.GetDescription() != "" {
-		fmt.Printf("Description: %s\n", info.GetDescription())
-	}
-	fmt.Printf("Created by: %s\n", info.GetCreatedBy())
-	if len(info.GetOwners()) > 0 {
-		fmt.Printf("Owners: %s\n", strings.Join(info.GetOwners(), ", "))
-	}
-	fmt.Printf("Head commit: %s\n", blankOrCurrent(info.GetHeadCommitHash()))
-	fmt.Printf("Files: %d\n", info.GetFileCount())
-	fmt.Printf("Paths: %d\n", info.GetPathCount())
-	fmt.Printf("Created at: %s\n", formatTimestamp(info.GetCreatedAt()))
-	fmt.Printf("Updated at: %s\n", formatTimestamp(info.GetUpdatedAt()))
-	if info.GetIsRoot() {
-		fmt.Println("Root workspace: true")
-	}
 }
 
 func filesystemDisplayPath(path string) string {
