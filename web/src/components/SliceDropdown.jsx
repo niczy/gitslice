@@ -18,6 +18,16 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
     [slices, currentSliceId]
   );
 
+  const currentSliceLabel = useMemo(() => {
+    if (currentSlice) {
+      return getSliceDisplayName(currentSlice.name || currentSlice.slice_id);
+    }
+    if (String(currentSliceId || '').startsWith('home.')) {
+      return getSliceDisplayName(String(currentSliceId).slice('home.'.length));
+    }
+    return getSliceDisplayName(currentSliceId);
+  }, [currentSlice, currentSliceId]);
+
   const filteredSlices = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return slices;
@@ -56,7 +66,7 @@ export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, l
         onClick={() => setIsOpen(!isOpen)}
         data-testid="slice-dropdown-trigger"
       >
-        <span>{currentSlice ? getSliceDisplayName(currentSlice.name || currentSlice.slice_id) : 'Select slice'}</span>
+        <span>{currentSliceLabel || 'Select slice'}</span>
         <span className="slice-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
       </Button>
       {isOpen && (

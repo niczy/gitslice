@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { buildLegacyRedirectPath, buildPath } from './utils/routing.js';
@@ -22,6 +22,25 @@ import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import RouteAccessState from './components/RouteAccessState.jsx';
 import { trackRouteEvent } from './utils/analytics.js';
 
+function getPreferredSliceId(slices, username) {
+  const trimmedUsername = String(username || '').trim();
+  if (trimmedUsername) {
+    const homeSliceId = getHomeSliceId(trimmedUsername);
+    const homeSlice = slices.find((slice) => slice.slice_id === homeSliceId);
+    if (homeSlice) {
+      return homeSlice.slice_id;
+    }
+  }
+
+  const root = slices.find((slice) => slice.is_root);
+  return root ? root.slice_id : slices[0]?.slice_id || '';
+}
+
+function getHomeSliceId(username) {
+  const trimmedUsername = String(username || '').trim();
+  return trimmedUsername ? `home.${trimmedUsername}` : '';
+}
+
 function App({ initialRoute, initialSession = null, routerNavigate }) {
   const queryClient = useQueryClient();
   const [activePage, setActivePage] = useState(() => initialRoute.page);
@@ -34,8 +53,10 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
   const [username, setUsername] = useState(() => initialSession?.user?.username || currentUsername());
   const [authSessionSource, setAuthSessionSource] = useState(() => initialSession?.source || '');
   const [browserMounted, setBrowserMounted] = useState(() => initialRoute.page === 'browser');
-  const [currentSliceId, setCurrentSliceId] = useState('');
+  const [currentSliceId, setCurrentSliceId] = useState(() => getHomeSliceId(initialSession?.user?.username || currentUsername()));
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
+  const previousUsernameRef = useRef(username);
+  const hasExplicitSliceSelectionRef = useRef(false);
 
   const githubUrl = 'https://github.com/niczy/gitslice';
   const docsUrl = 'https://github.com/niczy/gitslice/blob/main/README.md';
@@ -97,13 +118,21 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
       return;
     }
     setCurrentSliceId((prev) => {
-      if (prev && slices.some((slice) => slice.slice_id === prev)) {
+      if (prev && slices.some((slice) => slice.slice_id === prev) && hasExplicitSliceSelectionRef.current) {
         return prev;
       }
-      const root = slices.find((slice) => slice.is_root);
-      return root ? root.slice_id : slices[0]?.slice_id || '';
+      return getPreferredSliceId(slices, username);
     });
-  }, [slices]);
+  }, [slices, username]);
+
+  useEffect(() => {
+    if (previousUsernameRef.current === username) {
+      return;
+    }
+    previousUsernameRef.current = username;
+    hasExplicitSliceSelectionRef.current = false;
+    setCurrentSliceId(getHomeSliceId(username));
+  }, [username]);
 
   useEffect(() => {
     const nextUsername = webSessionQuery.data?.user?.username || '';
@@ -136,6 +165,11 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
     navigate('changeset', '', changesetId);
   }, [navigate]);
 
+  const handleSliceChange = useCallback((sliceId) => {
+    hasExplicitSliceSelectionRef.current = true;
+    setCurrentSliceId(sliceId);
+  }, []);
+
   const navigateBackFromDiff = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
       window.history.back();
@@ -167,6 +201,7 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
   const doLogin = useCallback(async (nextUsername) => {
     const signedInUsername = await signInWithAccount(apiBaseUrl, nextUsername);
     setUsername(signedInUsername);
+    setCurrentSliceId(getHomeSliceId(signedInUsername));
     setAuthSessionSource('dev');
     await queryClient.invalidateQueries({ queryKey: ['web-session'] });
     await queryClient.invalidateQueries({ queryKey: ['slices'] });
@@ -284,7 +319,7 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
             <RepoBrowser
               slices={slices}
               currentSliceId={currentSliceId}
-              onSliceChange={setCurrentSliceId}
+              onSliceChange={handleSliceChange}
               onNavigateToDiff={navigateToDiff}
               refreshHistoryToken={historyRefreshToken}
               isActive={activePage === 'browser'}

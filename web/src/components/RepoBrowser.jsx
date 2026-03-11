@@ -99,9 +99,6 @@ export default function RepoBrowser({
   const [activeView, setActiveView] = useState('files');
   const [isCompactHeader, setIsCompactHeader] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth <= 920));
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
-  const [pendingCreateKind, setPendingCreateKind] = useState('');
-  const [pendingCreatePath, setPendingCreatePath] = useState('');
-  const [pendingCreateError, setPendingCreateError] = useState('');
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
@@ -128,7 +125,6 @@ export default function RepoBrowser({
 
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = activeView === 'settings' && canShowSettings;
-  const defaultParentPath = selectedFile ? selectedFile.split('/').slice(0, -1).join('/') : '';
 
   const openFilesView = useCallback(() => {
     setActiveView('files');
@@ -667,113 +663,6 @@ export default function RepoBrowser({
     }
   };
 
-  const beginCreateFolder = () => {
-    if (!canLoad) {
-      return;
-    }
-    setPendingCreateKind('folder');
-    setPendingCreatePath(defaultParentPath ? `${defaultParentPath}/` : '');
-    setPendingCreateError('');
-  };
-
-  const beginCreateFile = () => {
-    if (!canLoad) {
-      return;
-    }
-    setPendingCreateKind('file');
-    setPendingCreatePath(defaultParentPath ? `${defaultParentPath}/` : '');
-    setPendingCreateError('');
-  };
-
-  const submitCreateFolder = (cleanPath) => {
-    const parts = cleanPath.split('/').filter(Boolean);
-    setTreeEntries((prev) => {
-      const next = { ...prev };
-      let parentPath = '';
-
-      for (const part of parts) {
-        const path = parentPath ? `${parentPath}/${part}` : part;
-        const parentEntries = next[parentPath] || [];
-        const alreadyExists = parentEntries.some((entry) => entry.path === path);
-        if (!alreadyExists) {
-          next[parentPath] = [
-            ...parentEntries,
-            { name: part, path, type: 'directory' },
-          ];
-        }
-        if (!next[path]) {
-          next[path] = [];
-        }
-        parentPath = path;
-      }
-
-      return next;
-    });
-
-    setExpandedPaths((prev) => [...new Set([...prev, '', ...parts.map((_, index) => parts.slice(0, index + 1).join('/'))])]);
-  };
-
-  const submitCreateFile = (cleanPath) => {
-    const parts = cleanPath.split('/').filter(Boolean);
-    const fileName = parts[parts.length - 1];
-    const parentParts = parts.slice(0, -1);
-
-    setTreeEntries((prev) => {
-      const next = { ...prev };
-      let parentPath = '';
-
-      for (const part of parentParts) {
-        const path = parentPath ? `${parentPath}/${part}` : part;
-        const parentEntries = next[parentPath] || [];
-        const exists = parentEntries.some((entry) => entry.path === path);
-        if (!exists) {
-          next[parentPath] = [...parentEntries, { name: part, path, type: 'directory' }];
-        }
-        if (!next[path]) {
-          next[path] = [];
-        }
-        parentPath = path;
-      }
-
-      const parentEntries = next[parentPath] || [];
-      const alreadyExists = parentEntries.some((entry) => entry.path === cleanPath);
-      if (!alreadyExists) {
-        next[parentPath] = [...parentEntries, { name: fileName, path: cleanPath, type: 'file', size: 0 }];
-      }
-
-      return next;
-    });
-
-    const pathsToExpand = parentParts.map((_, index) => parentParts.slice(0, index + 1).join('/'));
-    setExpandedPaths((prev) => [...new Set([...prev, '', ...pathsToExpand])]);
-    setSelectedFile(cleanPath);
-    setFileContent('');
-    setEncodedFileContent('');
-    setDraftContent('');
-    setFileError('');
-    setShowHistory(false);
-    setFileHistory([]);
-    setHistoryError('');
-    setIsEditingFile(true);
-    setFileDrafts((prev) => ({ ...prev, [cleanPath]: '' }));
-  };
-
-  const submitCreateEntry = () => {
-    const cleanPath = pendingCreatePath.trim().replace(/^\/+/, '').replace(/\/+$/, '');
-    if (!cleanPath) {
-      setPendingCreateError(`Enter a ${pendingCreateKind || 'file'} path.`);
-      return;
-    }
-    if (pendingCreateKind === 'folder') {
-      submitCreateFolder(cleanPath);
-    } else if (pendingCreateKind === 'file') {
-      submitCreateFile(cleanPath);
-    }
-    setPendingCreateKind('');
-    setPendingCreatePath('');
-    setPendingCreateError('');
-  };
-
   const confirmFileEdit = () => {
     if (!selectedFile) {
       return;
@@ -829,6 +718,7 @@ export default function RepoBrowser({
         {entries.map((entry) => {
           const entryKind = normalizeEntryType(entry.type);
           const isExpanded = expandedPaths.includes(entry.path);
+          const entryLabel = entryKind === 'directory' ? `/${entry.path.replace(/^\/+/, '')}` : entry.name;
           return (
             <li key={entry.path}>
               <Button
@@ -840,7 +730,7 @@ export default function RepoBrowser({
               >
                 <span className="tree-caret">{entryKind === 'directory' ? (isExpanded ? '▼' : '▶') : '•'}</span>
                 <span className="entry-icon">{entryKind === 'directory' ? '📁' : '📄'}</span>
-                <span className="entry-name">{entry.name}</span>
+                <span className="entry-name">{entryLabel}</span>
                 {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
               </Button>
               {entryKind === 'directory' && isExpanded && renderTree(entry.path, depth + 1)}
@@ -883,26 +773,6 @@ export default function RepoBrowser({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
-                    className="tree-action-btn"
-                    onClick={beginCreateFolder}
-                    title="Create folder"
-                  >
-                    + Folder
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="tree-action-btn"
-                    onClick={beginCreateFile}
-                    title="Create file"
-                  >
-                    + File
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
                     size="icon"
                     className="sidebar-toggle"
                     onClick={() => setSidebarOpen(false)}
@@ -915,49 +785,6 @@ export default function RepoBrowser({
               </div>
               <h2 className="sidebar-panel-title">File tree</h2>
               {error && <div className="panel-error">{error}</div>}
-              {pendingCreateKind && (
-                <form
-                  className="repo-create-panel"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    submitCreateEntry();
-                  }}
-                >
-                  <label className="repo-create-label" htmlFor="repo-create-path">
-                    {pendingCreateKind === 'folder' ? 'New folder path' : 'New file path'}
-                  </label>
-                  <input
-                    id="repo-create-path"
-                    className="repo-create-input"
-                    value={pendingCreatePath}
-                    onChange={(event) => {
-                      setPendingCreatePath(event.target.value);
-                      setPendingCreateError('');
-                    }}
-                    placeholder={pendingCreateKind === 'folder' ? 'docs/guides' : 'docs/notes.txt'}
-                    autoFocus
-                    spellCheck={false}
-                  />
-                  {pendingCreateError && <div className="panel-error">{pendingCreateError}</div>}
-                  <div className="repo-create-actions">
-                    <Button type="submit" size="sm">
-                      Create {pendingCreateKind}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setPendingCreateKind('');
-                        setPendingCreatePath('');
-                        setPendingCreateError('');
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </form>
-              )}
               {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
               {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
                 <div className="panel-empty">No entries found.</div>

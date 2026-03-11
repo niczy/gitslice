@@ -547,6 +547,22 @@ export function authJsMiddlewarePlugin({ gatewayTarget }) {
       return;
     }
 
+    const loginResponse = await fetch(new URL('/v1/auth/login', gatewayTarget), {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ username }),
+    });
+    if (!loginResponse.ok) {
+      const bodyText = await loginResponse.text();
+      res.statusCode = loginResponse.status;
+      res.setHeader('Content-Type', loginResponse.headers.get('content-type') || 'application/json');
+      res.end(bodyText || JSON.stringify({ error: 'Unable to provision development account' }));
+      return;
+    }
+
     appendSetCookie(res, serializeCookie(req, DEV_SESSION_COOKIE, signDevSession(username, authSecret), 60 * 60 * 24 * 30));
     json(res, 200, {
       user: {
