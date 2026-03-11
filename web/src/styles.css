@@ -1911,55 +1911,6 @@ body {
   }
 }
 
-.tree-action-btn {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-elevated);
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 8px;
-  cursor: pointer;
-}
-
-.tree-action-btn:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-}
-
-.repo-create-panel {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(9, 105, 218, 0.14);
-  background: var(--surface-spotlight);
-}
-
-.repo-create-label {
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
-}
-
-.repo-create-input {
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--text-primary);
-}
-
-.repo-create-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
 .sidebar-toggle {
   display: flex;
   align-items: center;

@@ -11,6 +11,9 @@ test.describe('Cookie-backed web auth', () => {
 
     await expect(page).toHaveURL(/\/browser(\?.*)?$/);
     await expect(page.getByTestId('topbar-profile')).toContainText('webtester1');
+    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester1/i);
+    await expect(page.getByRole('button', { name: /\+ Folder/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /\+ File/i })).toHaveCount(0);
 
     await page.getByTestId('topbar-settings').click();
     await expect(page.getByTestId('settings-page')).toBeVisible();

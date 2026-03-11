@@ -13,8 +13,8 @@ test.describe('Root Repository Browsing (real server)', () => {
     await expect(page.getByTestId('slice-list')).toBeVisible();
     await page.getByRole('button', { name: /root_slice/i }).click();
 
-    // The genesis files live under "o" at the root level
-    await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
+    // The navigator should render the full folder path, even at the root level.
+    await expect(page.getByRole('button', { name: /📁.*\/o$/i })).toBeVisible();
   });
 
   test('navigates into genesis directory and finds repo files', async ({ page }) => {
