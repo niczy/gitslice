@@ -6,11 +6,17 @@ export function decodeBase64(value) {
   if (!value) {
     return '';
   }
+  const decode = (input) => {
+    if (typeof window !== 'undefined' && typeof window.atob === 'function') {
+      return window.atob(input);
+    }
+    return Buffer.from(input, 'base64').toString('binary');
+  };
   try {
-    return decodeURIComponent(escape(window.atob(value)));
+    return decodeURIComponent(escape(decode(value)));
   } catch (error) {
     try {
-      return window.atob(value);
+      return decode(value);
     } catch (innerError) {
       return value;
     }

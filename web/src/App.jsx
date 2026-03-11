@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 // Routing helpers
-import { buildLegacyRedirectPath, buildPath, parseLocation } from './utils/routing.js';
+import { buildLegacyRedirectPath, buildPath } from './utils/routing.js';
 
 // API helpers
 import {
@@ -117,9 +117,8 @@ const MOCK_TERMINAL_LINES = [
 // Main App Component
 // ---------------------------------------------------------------------------
 
-function App() {
+function App({ initialRoute, initialSession = null, routerNavigate }) {
   const queryClient = useQueryClient();
-  const initialRoute = parseLocation();
   const [activePage, setActivePage] = useState(() => initialRoute.page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
@@ -131,9 +130,9 @@ function App() {
   const docsUrl = 'https://github.com/niczy/gitslice/blob/main/README.md';
   const statusUrl = `${apiBaseUrl}/health`;
   const supportUrl = 'https://github.com/niczy/gitslice/issues';
-  const [username, setUsername] = useState(() => currentUsername());
-  const [authSessionSource, setAuthSessionSource] = useState('');
-  const webSessionQuery = useWebSession();
+  const [username, setUsername] = useState(() => initialSession?.user?.username || currentUsername());
+  const [authSessionSource, setAuthSessionSource] = useState(() => initialSession?.source || '');
+  const webSessionQuery = useWebSession(initialSession);
 
   // Track whether the browser page has been visited so we can keep it mounted
   const [browserMounted, setBrowserMounted] = useState(() => initialRoute.page === 'browser');
@@ -170,7 +169,13 @@ function App() {
     }
   }, [activePage]);
 
-  const navigate = useCallback((page, commitHash = '', changesetId = '') => {
+  const navigate = useCallback((page, commitHash = '', changesetId = '', options = {}) => {
+    const nextPath = buildPath(page, commitHash, changesetId);
+    if (routerNavigate) {
+      routerNavigate(nextPath, options);
+      return;
+    }
+
     setActivePage(page);
     if (page === 'diff') {
       setDiffCommitHash(commitHash);
@@ -183,30 +188,24 @@ function App() {
       setDiffChangesetId('');
     }
     setUnknownRoute('');
-    window.history.pushState(null, '', buildPath(page, commitHash, changesetId));
-  }, []);
+  }, [routerNavigate]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const nextPath = buildLegacyRedirectPath(window.location);
     if (nextPath) {
-      window.history.replaceState(null, '', nextPath);
+      routerNavigate?.(nextPath, { replace: true });
     }
-  }, []);
+  }, [routerNavigate]);
 
-  // Keep app state in sync for back/forward navigation.
   useEffect(() => {
-    const syncRouteFromLocation = () => {
-      const { page, commitHash, changesetId, unknownPath } = parseLocation();
-      setActivePage(page);
-      setDiffCommitHash(commitHash);
-      setDiffChangesetId(changesetId);
-      setUnknownRoute(unknownPath || '');
-    };
-    window.addEventListener('popstate', syncRouteFromLocation);
-    return () => {
-      window.removeEventListener('popstate', syncRouteFromLocation);
-    };
-  }, []);
+    setActivePage(initialRoute.page);
+    setDiffCommitHash(initialRoute.commitHash);
+    setDiffChangesetId(initialRoute.changesetId);
+    setUnknownRoute(initialRoute.unknownPath || '');
+  }, [initialRoute]);
 
   useEffect(() => {
     if (slices.length === 0) {
@@ -230,10 +229,12 @@ function App() {
   }, [navigate]);
 
   const navigateBackFromDiff = useCallback(() => {
-    // Use history.back() to restore the previous browser URL with query params.
-    // The RepoBrowser component stays mounted, so all state is preserved.
-    window.history.back();
-  }, []);
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    navigate('browser');
+  }, [navigate]);
 
   const handleChangesetMerged = useCallback(() => {
     setHistoryRefreshToken((value) => value + 1);
@@ -271,14 +272,12 @@ function App() {
     await signOutAccount();
     setUsername('');
     setAuthSessionSource('');
-    setActivePage('landing');
-    setUnknownRoute('');
-    window.history.pushState(null, '', buildPath('landing', ''));
+    navigate('landing', '', '', { replace: true });
     await queryClient.invalidateQueries({ queryKey: ['web-session'] });
     if (authSessionSource === 'oauth') {
       startOAuthSignOut();
     }
-  }, [authSessionSource, queryClient]);
+  }, [authSessionSource, navigate, queryClient]);
 
   const doLogin = useCallback(async (nextUsername) => {
     const signedInUsername = await signInWithAccount(apiBaseUrl, nextUsername);

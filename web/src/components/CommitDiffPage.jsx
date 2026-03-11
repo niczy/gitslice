@@ -32,7 +32,9 @@ function detectBinaryFromBase64(encoded = '') {
     return false;
   }
   try {
-    const raw = window.atob(encoded);
+    const raw = typeof window !== 'undefined'
+      ? window.atob(encoded)
+      : Buffer.from(encoded, 'base64').toString('binary');
     const sampleSize = Math.min(raw.length, 2048);
     let controlChars = 0;
     for (let index = 0; index < sampleSize; index += 1) {

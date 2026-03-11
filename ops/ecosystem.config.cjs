@@ -50,6 +50,8 @@ const coreEnv = {
 };
 
 const webEnv = {
+  HOST: fileEnv.WEB_HOST || "127.0.0.1",
+  PORT: fileEnv.WEB_PORT || "4173",
   VITE_FILE_API_PROXY_TARGET: fileEnv.VITE_FILE_API_PROXY_TARGET || "http://127.0.0.1:8080",
   VITE_WEB_AGENT_REAL_RUNTIME: fileEnv.VITE_WEB_AGENT_REAL_RUNTIME,
   AUTH_SECRET: fileEnv.AUTH_SECRET,
@@ -74,7 +76,7 @@ module.exports = {
     {
       name: "gitslice-web",
       script: "npm",
-      args: "run preview -- --host 127.0.0.1 --port 4173",
+      args: "run start",
       cwd: path.join(repoRoot, "web"),
       autorestart: true,
       max_restarts: 10,

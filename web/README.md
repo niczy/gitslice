@@ -1,6 +1,6 @@
 # Git Slice Web
 
-A lightweight landing page for Git Slice built with Vite and React. This static site is ready for local development and future integrations.
+A React Router framework-mode web app for Git Slice with server-side rendering, resource routes for `/auth/*`, and a server proxy path for `/v1/*` when running directly on the web port.
 
 ## Getting started
 
@@ -10,7 +10,7 @@ A lightweight landing page for Git Slice built with Vite and React. This static 
    npm install
    ```
 
-2. Run the dev server:
+2. Run the SSR dev server:
 
    ```bash
    npm run dev
@@ -22,16 +22,16 @@ A lightweight landing page for Git Slice built with Vite and React. This static 
    npm run build
    ```
 
-4. Preview the build locally:
+4. Start the production server locally after building:
 
    ```bash
-   npm run preview
+   npm run start -- --host 127.0.0.1 --port 4173
    ```
 
-5. Run end-to-end tests (starts the dev server automatically):
+5. Run end-to-end tests (builds and starts the SSR server automatically):
 
    ```bash
    npm run test:e2e
    ```
 
-The site will compile without errors and is ready to be deployed as a static bundle.
+The production output is `build/client` plus `build/server`, served by `react-router-serve`.

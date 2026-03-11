@@ -29,6 +29,9 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     if (params.get('error')) {
       setOAuthError('OAuth sign-in failed or was cancelled. Try again or use a username.');

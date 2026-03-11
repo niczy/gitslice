@@ -20,6 +20,8 @@ POSTGRES_DSN="${POSTGRES_DSN:-}"
 OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
 OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://agenttools.dev}"
+WEB_HOST="${WEB_HOST:-0.0.0.0}"
+WEB_PORT="${WEB_PORT:-4173}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
 PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
 PM2_BIN="${PM2_BIN:-}"
@@ -176,9 +178,9 @@ stop_pm2_gitslice_apps() {
   fi
 }
 
-wait_for_web_preview() {
-  if ! wait_for_port "Web preview" 4173 30 "$WEB_LOG"; then
-    log "ERROR: Failed to start web preview. Check $WEB_LOG for details"
+wait_for_web_server() {
+  if ! wait_for_port "Web SSR server" "$WEB_PORT" 30 "$WEB_LOG"; then
+    log "ERROR: Failed to start web SSR server. Check $WEB_LOG for details"
     exit 1
   fi
 }
@@ -197,7 +199,7 @@ build_core_server() {
   make build-core
 }
 
-build_web_preview() {
+build_web_server() {
   cd "$WEB_DIR"
 
   if [ ! -d node_modules ]; then
@@ -205,7 +207,7 @@ build_web_preview() {
     npm ci
   fi
 
-  log "Building web preview..."
+  log "Building web SSR bundle..."
   npm run build
 }
 
@@ -236,16 +238,22 @@ start_core_server_nohup() {
   fi
 }
 
-start_web_preview_nohup() {
+stop_web_server_processes() {
+  pkill -f "vite preview" >/dev/null 2>&1 || true
+  pkill -f "react-router-serve ./build/server/index.js" >/dev/null 2>&1 || true
+  pkill -f "$WEB_DIR/build/server/index.js" >/dev/null 2>&1 || true
+}
+
+start_web_server_nohup() {
   cd "$WEB_DIR"
 
-  log "Stopping existing web preview..."
-  pkill -f "vite preview" >/dev/null 2>&1 || true
+  log "Stopping existing web server..."
+  stop_web_server_processes
 
-  log "Starting web preview (log: $WEB_LOG)..."
-  nohup npm run preview -- --host 0.0.0.0 --port 4173 > "$WEB_LOG" 2>&1 &
-  log "Web preview started with PID $!"
-  wait_for_web_preview
+  log "Starting web SSR server (log: $WEB_LOG)..."
+  HOST="$WEB_HOST" PORT="$WEB_PORT" nohup npm run start > "$WEB_LOG" 2>&1 &
+  log "Web SSR server started with PID $!"
+  wait_for_web_server
 }
 
 start_services_with_pm2() {
@@ -253,7 +261,7 @@ start_services_with_pm2() {
 
   log "Starting services via PM2 ecosystem ($PM2_BIN)..."
   pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
-  pkill -f "vite preview" >/dev/null 2>&1 || true
+  stop_web_server_processes
 
   run_pm2 startOrRestart "$PM2_ECOSYSTEM_FILE" --update-env >/dev/null
 
@@ -267,7 +275,7 @@ start_services_with_pm2() {
     exit 1
   fi
 
-  wait_for_web_preview
+  wait_for_web_server
 }
 
 start_services() {
@@ -279,11 +287,11 @@ start_services() {
   fi
 
   start_core_server_nohup
-  start_web_preview_nohup
+  start_web_server_nohup
 }
 
 log "=== Starting all services ==="
 ensure_node_runtime
-build_web_preview
+build_web_server
 start_services
 log "=== All services started ==="

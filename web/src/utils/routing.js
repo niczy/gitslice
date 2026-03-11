@@ -62,7 +62,7 @@ function parseLegacyHash(rawHash) {
   return { page: 'not-found', commitHash: '', changesetId: '', unknownPath: hash };
 }
 
-export function parseLocation(locationLike = window.location) {
+export function parseLocation(locationLike = (typeof window !== 'undefined' ? window.location : { pathname: '/', search: '', hash: '' })) {
   const hash = String(locationLike?.hash || '').trim();
   if (hash.startsWith('#/')) {
     return {
@@ -157,7 +157,7 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
   return '/';
 }
 
-export function buildLegacyRedirectPath(locationLike = window.location) {
+export function buildLegacyRedirectPath(locationLike = (typeof window !== 'undefined' ? window.location : { hash: '' })) {
   const parsed = parseLocation(locationLike);
   if (!parsed.legacyHash) {
     return '';

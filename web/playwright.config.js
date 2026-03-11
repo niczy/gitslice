@@ -31,7 +31,7 @@ export default defineConfig({
       timeout: 120 * 1000,
     },
     {
-      command: `AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run build && AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run preview -- --host --port ${E2E_WEB_PORT}`,
+      command: `AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run build && HOST=127.0.0.1 PORT=${E2E_WEB_PORT} AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret VITE_FILE_API_PROXY_TARGET=http://localhost:${E2E_GATEWAY_PORT} npm run start`,
       port: parseInt(E2E_WEB_PORT, 10),
       reuseExistingServer: !process.env.CI,
       timeout: 60 * 1000,

@@ -379,6 +379,7 @@ pm2 save
 
 The PM2 ecosystem reads `ops/.env` for both core and web settings, including
 Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
+The web app now runs a React Router SSR server on `127.0.0.1:4173` instead of `vite preview`.
 
 To restore PM2 apps on reboot (user crontab approach):
 
