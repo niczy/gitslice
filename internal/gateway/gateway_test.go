@@ -26,6 +26,15 @@ import (
 	"google.golang.org/grpc"
 )
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	return manifest.Hash
+}
+
 func TestGatewayListEntries(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -47,13 +56,7 @@ func TestGatewayListEntries(t *testing.T) {
 		{id: "docs/readme.md", path: "docs/readme.md", content: "nested file"},
 	}
 	for _, file := range files {
-		if err := st.AddFileContent(ctx, &models.FileContent{
-			FileID:  file.id,
-			Path:    file.path,
-			Content: []byte(file.content),
-		}); err != nil {
-			t.Fatalf("add file content: %v", err)
-		}
+		mustWriteSliceManifest(t, ctx, st, rootSlice.ID, file.path, []byte(file.content))
 	}
 
 	fileIDs := []string{}
@@ -95,19 +98,8 @@ func TestGatewayGetFileETagAndConditional304(t *testing.T) {
 		t.Fatalf("create slice: %v", err)
 	}
 
-	const (
-		filePath = "README.md"
-		fileHash = "gateway-hash"
-	)
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: []byte("root file"),
-		Size:    9,
-		Hash:    fileHash,
-	}); err != nil {
-		t.Fatalf("add file content: %v", err)
-	}
+	const filePath = "README.md"
+	fileHash := mustWriteSliceManifest(t, ctx, st, "gateway", filePath, []byte("root file"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID("gateway", filePath),
 		Path:     filePath,

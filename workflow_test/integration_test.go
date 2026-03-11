@@ -56,6 +56,15 @@ var (
 	testAgentSvc    *agentsession.Service
 )
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	return manifest.Hash
+}
+
 // TestMain sets up and tears down services for all tests
 func TestMain(m *testing.M) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
@@ -1322,14 +1331,7 @@ func TestFileBrowserIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("failed to add entry metadata: %v", err)
 	}
-	if err := testStorage.AddFileContent(ctx, &models.FileContent{
-		FileID:  "apps/readme.md",
-		Path:    "apps/readme.md",
-		Content: readmeContent,
-		Size:    int64(len(readmeContent)),
-	}); err != nil {
-		t.Fatalf("failed to add file content: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, testStorage, sliceID, "apps/readme.md", readmeContent)
 
 	fileClient := newFileClient(t)
 
@@ -1397,14 +1399,7 @@ func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
 	}
 
 	for _, file := range files {
-		if err := testStorage.AddFileContent(ctx, &models.FileContent{
-			FileID:  file.path,
-			Path:    file.path,
-			Content: file.content,
-			Size:    int64(len(file.content)),
-		}); err != nil {
-			t.Fatalf("failed to add file content: %v", err)
-		}
+		mustWriteSliceManifest(t, ctx, testStorage, rootSlice.ID, file.path, file.content)
 		if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
 			ID:       common.GenerateEntryID(rootSlice.ID, file.path),
 			Path:     file.path,

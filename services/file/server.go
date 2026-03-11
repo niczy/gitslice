@@ -687,7 +687,7 @@ func (s *fileServiceServer) resolveFileContent(
 		}
 	}
 
-	content, err := s.storage.GetSliceFileByPath(ctx, primarySliceID, storedPath)
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, primarySliceID, storedPath)
 	if err == nil && content != nil {
 		return content, nil
 	}
@@ -696,7 +696,7 @@ func (s *fileServiceServer) resolveFileContent(
 	}
 
 	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != primarySliceID {
-		parentContent, parentErr := s.storage.GetSliceFileByPath(ctx, slice.ParentSlice, storedPath)
+		parentContent, parentErr := storage.ReadSliceFileContent(ctx, s.storage, slice.ParentSlice, storedPath)
 		if parentErr == nil && parentContent != nil {
 			return parentContent, nil
 		}
@@ -1448,7 +1448,7 @@ func (s *fileServiceServer) loadSnapshot(ctx context.Context, commitHash string)
 
 func (s *fileServiceServer) getFileContent(ctx context.Context, contentHash, commitHash, filePath string) *models.FileContent {
 	if strings.TrimSpace(contentHash) != "" {
-		if content, err := s.storage.GetFileContentByHash(ctx, contentHash); err == nil && content != nil {
+		if content, err := storage.ReadVersionedFileContent(ctx, s.storage, contentHash); err == nil && content != nil {
 			return content
 		}
 	}
