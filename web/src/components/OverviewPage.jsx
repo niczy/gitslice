@@ -7,8 +7,8 @@ import { Badge } from './ui/badge.jsx';
 
 const BENEFITS = [
   {
-    title: 'API-first for agents',
-    detail: 'Every action starts from typed APIs and gRPC definitions so your AI workflow is scriptable from day one.',
+    title: 'API-first foundation',
+    detail: 'Every workflow starts from typed APIs and gRPC definitions so repo actions stay scriptable from day one.',
   },
   {
     title: 'Simple by default',
@@ -16,7 +16,7 @@ const BENEFITS = [
   },
   {
     title: 'Dev environment + codebase together',
-    detail: 'Attach environment context directly to slice work so agents run against the same code and setup you do.',
+    detail: 'Attach environment context directly to slice work so every run uses the same code and setup you do.',
   },
 ];
 
@@ -28,13 +28,13 @@ const WORKFLOW = [
   },
   {
     title: 'Sync environment',
-    copy: 'Bind the same environment assumptions used by your dev tools and agents.',
+    copy: 'Bind the same environment assumptions used by your dev tools and CI.',
     command: 'gs env attach checkout-api --from .devcontainer',
   },
   {
-    title: 'Ship through API',
-    copy: 'Trigger agent runs, validate diffs, and merge cleanly without branch-heavy handoffs.',
-    command: 'gs agent run checkout-api --provider codex --prompt "open PR"',
+    title: 'Ship through review',
+    copy: 'Validate diffs, review changesets, and merge cleanly without branch-heavy handoffs.',
+    command: 'gs changeset merge checkout-api',
   },
 ];
 
@@ -43,10 +43,10 @@ export default function OverviewPage({ onBrowseRepo }) {
     <>
       <section className="hero hero--landing-redesign bg-gradient-to-br from-secondary/60 via-background to-card">
         <div className="hero-content py-8">
-          <Badge variant="secondary" className="eyebrow border border-border/60">Built for modern agent workflows</Badge>
+          <Badge variant="secondary" className="eyebrow border border-border/60">Built for modern delivery workflows</Badge>
           <h1>Ship reliable software faster with API-first slices.</h1>
           <p className="lede">
-            Keep code, environment context, and agent runs aligned from first commit to merge.
+            Keep code, environment context, and review history aligned from first commit to merge.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -63,17 +63,16 @@ export default function OverviewPage({ onBrowseRepo }) {
         <div className="hero-panel">
           <Card className="hero-card hero-card--api border-border/70 bg-card/95">
             <CardHeader>
-              <Badge variant="outline" className="w-fit">Agent-ready core</Badge>
-              <CardTitle className="text-xl">One platform for code + environment + automation</CardTitle>
+              <Badge variant="outline" className="w-fit">API-first core</Badge>
+              <CardTitle className="text-xl">One platform for code, review, and environment context</CardTitle>
             </CardHeader>
             <CardContent>
             <pre className="code-block">
-              <code>{`service AgentSessionService {
-  rpc CreateAgentSession(CreateAgentSessionRequest)
-      returns (CreateAgentSessionResponse) {
+              <code>{`service FileService {
+  rpc GetCommitChanges(GetCommitChangesRequest)
+      returns (GetCommitChangesResponse) {
     option (google.api.http) = {
-      post: "/v1/agent-sessions"
-      body: "*"
+      get: "/v1/commits/{commit_hash}/changes"
     };
   }
 }`}</code>
@@ -86,8 +85,8 @@ export default function OverviewPage({ onBrowseRepo }) {
       <section className="section space-y-6">
         <div className="section-header space-y-2">
           <Badge variant="secondary" className="eyebrow">Why Gitslice</Badge>
-          <h2>Built for clarity across human and agent workflows</h2>
-          <p>Designed for human + agent collaboration without process overhead.</p>
+          <h2>Built for clarity across code and review workflows</h2>
+          <p>Designed for collaborative delivery without process overhead.</p>
         </div>
         <div className="benefit-grid grid gap-4 md:grid-cols-3">
           {BENEFITS.map((benefit) => (
@@ -107,7 +106,7 @@ export default function OverviewPage({ onBrowseRepo }) {
         <div className="section-header">
           <Badge variant="secondary" className="eyebrow">Workflow</Badge>
           <h2>Simple flow, no branch maze</h2>
-          <p>Run the same clean sequence in local development, CI, or managed agent sessions.</p>
+          <p>Run the same clean sequence in local development, CI, or review automation.</p>
         </div>
         <div className="workflow-grid grid gap-4 md:grid-cols-3">
           {WORKFLOW.map((item, index) => (

@@ -39,7 +39,7 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                 <div className="panel-empty" data-testid="settings-empty-state">
                   UI preferences are still light here, but the session plumbing is now cookie-backed and ready for fuller account settings.
                 </div>
-                <div className="status">Next sensible additions: editor preferences, preferred agent provider, and workspace defaults.</div>
+                <div className="status">Next sensible additions: editor preferences, workspace defaults, and richer account controls.</div>
               </CardContent>
             </Card>
           </div>
