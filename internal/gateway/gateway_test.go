@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -156,6 +157,49 @@ func TestGatewayGetFileETagAndConditional304(t *testing.T) {
 	body, _ := io.ReadAll(secondResp.Body)
 	if len(body) != 0 {
 		t.Fatalf("expected empty body on 304, got %q", string(body))
+	}
+}
+
+func TestWithNoBodyWriteGuardSuppressesHeadBodies(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodHead, "/v1/example", nil)
+
+	WithNoBodyWriteGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"ok":true}`)); err != nil {
+			t.Fatalf("write body: %v", err)
+		}
+	})).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if body := recorder.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+}
+
+func TestWithNoBodyWriteGuardSuppressesNotModifiedBodies(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/example", nil)
+
+	WithNoBodyWriteGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"abc123"`)
+		w.WriteHeader(http.StatusNotModified)
+		if _, err := w.Write([]byte(`{"cached":true}`)); err != nil {
+			t.Fatalf("write body: %v", err)
+		}
+	})).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", recorder.Code)
+	}
+	if body := recorder.Body.String(); body != "" {
+		t.Fatalf("expected empty 304 body, got %q", body)
+	}
+	if got := recorder.Header().Get("ETag"); got != `"abc123"` {
+		t.Fatalf("expected ETag to survive, got %q", got)
 	}
 }
 
@@ -1907,7 +1951,7 @@ func startGatewayServer(t *testing.T, grpcAddr string) string {
 		t.Fatalf("register gateway mux: %v", err)
 	}
 
-	server := &http.Server{Handler: WithCORS(gatewayMux)}
+	server := &http.Server{Handler: WithNoBodyWriteGuard(WithCORS(gatewayMux))}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen gateway: %v", err)

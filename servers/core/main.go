@@ -158,7 +158,7 @@ func main() {
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.
-	httpMux.Handle("/", gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux)))
+	httpMux.Handle("/", gateway.WithNoBodyWriteGuard(gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux))))
 
 	server := &http.Server{
 		Addr:    cfg.GetGatewayAddr(),
