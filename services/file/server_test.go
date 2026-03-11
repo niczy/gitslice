@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -77,6 +78,40 @@ func authCtx() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 }
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	return manifest.Hash
+}
+
+func mustWriteVersionedManifest(tb testing.TB, ctx context.Context, st storage.Storage, filePath, hash string, content []byte) {
+	tb.Helper()
+	blocks, payloads := storage.ChunkFile(content, storage.DefaultFileBlockSize)
+	if len(payloads) > 0 {
+		ordered := make([]string, 0, len(payloads))
+		for key := range payloads {
+			ordered = append(ordered, key)
+		}
+		sort.Strings(ordered)
+		for _, key := range ordered {
+			if err := st.PutBlock(ctx, key, payloads[key]); err != nil {
+				tb.Fatalf("PutBlock failed: %v", err)
+			}
+		}
+	}
+	if err := st.PutVersionedFileManifest(ctx, &models.FileManifest{
+		Path:      filePath,
+		TotalSize: int64(len(content)),
+		Hash:      hash,
+		Blocks:    blocks,
+	}); err != nil {
+		tb.Fatalf("PutVersionedFileManifest failed: %v", err)
+	}
+}
+
 func TestGetFileAllowsAnonymousRootSliceAccess(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -89,15 +124,7 @@ func TestGetFileAllowsAnonymousRootSliceAccess(t *testing.T) {
 	if err := st.AddFileToSlice(ctx, path, "root_slice"); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  path,
-		Path:    path,
-		Hash:    "hash-hello",
-		Content: []byte("hello"),
-		Size:    5,
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, "root_slice", path, []byte("hello"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID("root_slice", path),
 		Path:     path,
@@ -159,14 +186,7 @@ func TestGetFileRejectsLargeUnaryPayloads(t *testing.T) {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
 	content := bytes.Repeat([]byte("a"), int(maxUnaryGetFileBytes)+1)
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  path,
-		Path:    path,
-		Content: content,
-		Size:    int64(len(content)),
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, "big", path, content)
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID("big", path),
 		Path:     path,
@@ -202,15 +222,7 @@ func TestListEntriesReturnsFileHash(t *testing.T) {
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  path,
-		Path:    path,
-		Content: []byte("hello"),
-		Size:    5,
-		Hash:    "abc123",
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	hash := mustWriteSliceManifest(t, ctx, st, "hashy", path, []byte("hello"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID("hashy", path),
 		Path:     path,
@@ -231,8 +243,8 @@ func TestListEntriesReturnsFileHash(t *testing.T) {
 	if len(resp.GetEntries()) != 1 {
 		t.Fatalf("expected one entry, got %d", len(resp.GetEntries()))
 	}
-	if got := resp.GetEntries()[0].GetHash(); got != "abc123" {
-		t.Fatalf("expected hash abc123, got %q", got)
+	if got := resp.GetEntries()[0].GetHash(); got != hash {
+		t.Fatalf("expected hash %s, got %q", hash, got)
 	}
 }
 
@@ -243,7 +255,6 @@ func TestGetFileIfNoneMatchReturnsNotModifiedWithoutContentRead(t *testing.T) {
 	const (
 		sliceID = "conditional"
 		path    = "README.md"
-		hash    = "cond-hash"
 	)
 	if err := base.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
@@ -254,15 +265,7 @@ func TestGetFileIfNoneMatchReturnsNotModifiedWithoutContentRead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
-	if err := base.AddFileContent(ctx, &models.FileContent{
-		FileID:  path,
-		Path:    path,
-		Content: []byte("hello"),
-		Size:    5,
-		Hash:    hash,
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	hash := mustWriteSliceManifest(t, ctx, base, sliceID, path, []byte("hello"))
 	if err := base.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(sliceID, path),
 		Path:     path,
@@ -313,14 +316,7 @@ func TestListEntriesIncludesMetadataModifiedFiles(t *testing.T) {
 	if err := st.AddFileToSlice(ctx, "o/genesis/projects/org/repo/README.md", "org"); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  "o/genesis/projects/org/repo/README.md",
-		Path:    "o/genesis/projects/org/repo/README.md",
-		Content: []byte("hello"),
-		Size:    5,
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, "org", "o/genesis/projects/org/repo/README.md", []byte("hello"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID("org", "o/genesis/projects/org/repo/README.md"),
 		Path:     "o/genesis/projects/org/repo/README.md",
@@ -367,9 +363,7 @@ func TestGetFileFindsMetadataModifiedPath(t *testing.T) {
 	if err := st.AddFileToSlice(ctx, path, "org"); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Content: []byte("hello")}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, "org", path, []byte("hello"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID("org", path),
 		Path:     path,
@@ -431,14 +425,7 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 		"o/genesis/projects/repo-b/main.go":   []byte("package main"),
 	}
 	for storedPath, content := range seed {
-		if err := st.AddFileContent(ctx, &models.FileContent{
-			FileID:  storedPath,
-			Path:    storedPath,
-			Content: content,
-			Size:    int64(len(content)),
-		}); err != nil {
-			t.Fatalf("AddFileContent failed for %s: %v", storedPath, err)
-		}
+		mustWriteSliceManifest(t, ctx, st, "multi", storedPath, content)
 		if err := st.AddEntry(ctx, &models.DirectoryEntry{
 			ID:       common.GenerateEntryID("multi", storedPath),
 			Path:     storedPath,
@@ -736,12 +723,8 @@ func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 		t.Fatalf("AddSliceCommit failed: %v", err)
 	}
 
-	if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: "oldhash", Content: []byte("hello\n")}); err != nil {
-		t.Fatalf("AddFileContent old failed: %v", err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: "newhash", Content: []byte{0xff, 0xfe, 0x00, 0x61}}); err != nil {
-		t.Fatalf("AddFileContent new failed: %v", err)
-	}
+	mustWriteVersionedManifest(t, ctx, st, path, "oldhash", []byte("hello\n"))
+	mustWriteVersionedManifest(t, ctx, st, path, "newhash", []byte{0xff, 0xfe, 0x00, 0x61})
 
 	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: parentHash, SliceID: sliceID, Files: map[string]string{path: "oldhash"}}); err != nil {
 		t.Fatalf("SaveCommitSnapshot parent failed: %v", err)
@@ -792,12 +775,8 @@ func TestGetCommitChangesLooksUpParentCommitByHashOncePerCommit(t *testing.T) {
 		oldHash := fmt.Sprintf("old-%d", i)
 		newHash := fmt.Sprintf("new-%d", i)
 
-		if err := baseStorage.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: oldHash, Content: []byte("before\n")}); err != nil {
-			t.Fatalf("AddFileContent old failed: %v", err)
-		}
-		if err := baseStorage.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: newHash, Content: []byte("after\n")}); err != nil {
-			t.Fatalf("AddFileContent new failed: %v", err)
-		}
+		mustWriteVersionedManifest(t, ctx, baseStorage, path, oldHash, []byte("before\n"))
+		mustWriteVersionedManifest(t, ctx, baseStorage, path, newHash, []byte("after\n"))
 
 		parentFiles[path] = oldHash
 		headFiles[path] = newHash
@@ -908,12 +887,8 @@ func BenchmarkGetCommitChangesDiffLoading(b *testing.B) {
 		oldHash := fmt.Sprintf("old-%03d", i)
 		newHash := fmt.Sprintf("new-%03d", i)
 
-		if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: oldHash, Content: []byte("line 1\nline 2\n")}); err != nil {
-			b.Fatalf("AddFileContent old failed: %v", err)
-		}
-		if err := st.AddFileContent(ctx, &models.FileContent{FileID: path, Path: path, Hash: newHash, Content: []byte("line 1\nline 2 changed\n")}); err != nil {
-			b.Fatalf("AddFileContent new failed: %v", err)
-		}
+		mustWriteVersionedManifest(b, ctx, st, path, oldHash, []byte("line 1\nline 2\n"))
+		mustWriteVersionedManifest(b, ctx, st, path, newHash, []byte("line 1\nline 2 changed\n"))
 
 		parentFiles[path] = oldHash
 		headFiles[path] = newHash
@@ -963,12 +938,8 @@ func TestGetCommitChangesOmitsPatchesByDefault(t *testing.T) {
 	if err := st.AddSliceCommit(ctx, sliceID, &models.Commit{CommitHash: commitHash, ParentHash: parentHash, Timestamp: time.Now().UTC(), Message: "edit"}); err != nil {
 		t.Fatalf("AddSliceCommit failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{FileID: filePath, Path: filePath, Hash: "old", Content: []byte("before\n")}); err != nil {
-		t.Fatalf("AddFileContent old failed: %v", err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{FileID: filePath, Path: filePath, Hash: "new", Content: []byte("after\n")}); err != nil {
-		t.Fatalf("AddFileContent new failed: %v", err)
-	}
+	mustWriteVersionedManifest(t, ctx, st, filePath, "old", []byte("before\n"))
+	mustWriteVersionedManifest(t, ctx, st, filePath, "new", []byte("after\n"))
 	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{CommitHash: parentHash, SliceID: sliceID, Files: map[string]string{filePath: "old"}}); err != nil {
 		t.Fatalf("SaveCommitSnapshot parent failed: %v", err)
 	}
@@ -1031,12 +1002,8 @@ func TestGetCommitChangesSkipsPatchesOverThreshold(t *testing.T) {
 		p := fmt.Sprintf("o/genesis/projects/org/repo/file-%03d.txt", i)
 		oldHash := fmt.Sprintf("old-%03d", i)
 		newHash := fmt.Sprintf("new-%03d", i)
-		if err := st.AddFileContent(ctx, &models.FileContent{FileID: p, Path: p, Hash: oldHash, Content: []byte("before\n")}); err != nil {
-			t.Fatalf("AddFileContent old failed: %v", err)
-		}
-		if err := st.AddFileContent(ctx, &models.FileContent{FileID: p, Path: p, Hash: newHash, Content: []byte("after\n")}); err != nil {
-			t.Fatalf("AddFileContent new failed: %v", err)
-		}
+		mustWriteVersionedManifest(t, ctx, st, p, oldHash, []byte("before\n"))
+		mustWriteVersionedManifest(t, ctx, st, p, newHash, []byte("after\n"))
 		parentFiles[p] = oldHash
 		headFiles[p] = newHash
 		if err := st.AddFileChange(ctx, &models.FileChangeRecord{ID: fmt.Sprintf("fc-%03d", i), SliceID: sliceID, CommitHash: commitHash, Path: p, ChangeType: models.ChangeTypeModify, OldHash: oldHash, NewHash: newHash, Timestamp: time.Now().UTC()}); err != nil {

@@ -99,6 +99,33 @@ func RunGenesisInit(ctx context.Context, st storage.Storage) error {
 	return svc.PopulateGenesisFromGit(ctx)
 }
 
+func (s *sliceServiceServer) collectSliceEntries(ctx context.Context, sliceID string) ([]*models.DirectoryEntry, error) {
+	rootChildren, err := s.storage.ListEntries(ctx, sliceID, sliceID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*models.DirectoryEntry, 0, len(rootChildren))
+	queue := append([]*models.DirectoryEntry(nil), rootChildren...)
+	for len(queue) > 0 {
+		entry := queue[0]
+		queue = queue[1:]
+		if entry == nil {
+			continue
+		}
+		result = append(result, entry)
+		if entry.Type != "directory" {
+			continue
+		}
+		children, err := s.storage.ListEntries(ctx, sliceID, entry.ID)
+		if err != nil {
+			return nil, err
+		}
+		queue = append(queue, children...)
+	}
+	return result, nil
+}
+
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 
@@ -129,27 +156,42 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	// Get file contents
-	files, err := s.storage.GetSliceFiles(ctx, req.SliceId)
+	entries, err := s.collectSliceEntries(ctx, req.SliceId)
 	if err != nil {
-		files = []*models.FileContent{}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
 	}
 
-	// Build manifest with file metadata
 	var fileMetadata []*slicev1.FileMetadata
-	for _, file := range files {
-		storedPath := file.Path
-		if strings.TrimSpace(storedPath) == "" {
-			storedPath = file.FileID
+	for _, entry := range entries {
+		if entry == nil || entry.Type != "file" {
+			continue
 		}
+
+		storedPath := entry.Path
+		size := entry.Size
+		hash := strings.TrimSpace(entry.Hash)
+		if manifest, manifestErr := s.storage.GetFileManifest(ctx, req.SliceId, storedPath); manifestErr == nil && manifest != nil {
+			if size == 0 {
+				size = manifest.TotalSize
+			}
+			if hash == "" {
+				hash = strings.TrimSpace(manifest.Hash)
+			}
+		} else if manifestErr != nil && manifestErr != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load manifest for %s: %v", storedPath, manifestErr))
+		}
+
 		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
-			FileId:     file.FileID,
+			FileId:     storedPath,
 			Path:       common.SliceDisplayPath(slice, storedPath),
-			Size:       file.Size,
-			Hash:       file.Hash,
+			Size:       size,
+			Hash:       hash,
 			ContentUrl: "", // No presigned URL for in-memory storage
 		})
 	}
+	sort.Slice(fileMetadata, func(i, j int) bool {
+		return fileMetadata[i].GetPath() < fileMetadata[j].GetPath()
+	})
 
 	// If no files in storage, create metadata from slice definition
 	if len(fileMetadata) == 0 {
@@ -164,9 +206,19 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		}
 	}
 
-	// Convert file contents to proto format
+	// Convert file contents to proto format.
 	var fileContents []*slicev1.FileContent
-	for _, file := range files {
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		file, err := storage.ReadSliceFileContent(ctx, s.storage, req.SliceId, meta.GetFileId())
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				continue
+			}
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load content for %s: %v", meta.GetFileId(), err))
+		}
 		fileContents = append(fileContents, &slicev1.FileContent{
 			FileId:  file.FileID,
 			Content: file.Content,
@@ -954,7 +1006,7 @@ func (s *sliceServiceServer) loadReviewFileAtHead(ctx context.Context, cs *model
 		return state, ""
 	}
 
-	content, err := s.storage.GetSliceFileByPath(ctx, strings.TrimSpace(cs.SliceID), filePath)
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, strings.TrimSpace(cs.SliceID), filePath)
 	if err != nil {
 		if errors.Is(err, storage.ErrEntryNotFound) {
 			return state, ""
@@ -975,7 +1027,7 @@ func (s *sliceServiceServer) extractDiffLinesFromContent(ctx context.Context, fi
 	fileHash := strings.TrimSpace(content.Hash)
 	fileBytes := content.Content
 	if len(fileBytes) == 0 && content.Size > 0 && fileHash != "" {
-		versioned, err := s.storage.GetFileContentByHash(ctx, fileHash)
+		versioned, err := storage.ReadVersionedFileContent(ctx, s.storage, fileHash)
 		if err == nil && versioned != nil {
 			fileBytes = versioned.Content
 			if fileHash == "" {
@@ -1204,7 +1256,7 @@ func (s *sliceServiceServer) loadRevertContentByHash(ctx context.Context, conten
 	if hash == "" {
 		return []byte{}, nil
 	}
-	content, err := s.storage.GetFileContentByHash(ctx, hash)
+	content, err := storage.ReadVersionedFileContent(ctx, s.storage, hash)
 	if err != nil || content == nil {
 		return nil, fmt.Errorf("content hash %s not found", shortHash(hash))
 	}
@@ -1227,14 +1279,12 @@ func (s *sliceServiceServer) upsertSliceFilePath(ctx context.Context, sliceID, f
 		return fmt.Errorf("failed to upsert file entry: %w", err)
 	}
 
-	if err := s.storage.AddFileContent(ctx, &models.FileContent{
-		FileID:  cleanedPath,
-		Path:    cleanedPath,
-		Content: append([]byte(nil), data...),
-		Size:    int64(len(data)),
-		Hash:    strings.TrimSpace(contentHash),
-	}); err != nil {
+	manifest, err := storage.WriteSliceFileManifest(ctx, s.storage, sliceID, cleanedPath, append([]byte(nil), data...))
+	if err != nil {
 		return fmt.Errorf("failed to upsert file content: %w", err)
+	}
+	if expected := strings.TrimSpace(contentHash); expected != "" && expected != strings.TrimSpace(manifest.Hash) {
+		return fmt.Errorf("content hash mismatch for %s", cleanedPath)
 	}
 
 	if err := s.storage.AddFileToSlice(ctx, cleanedPath, sliceID); err != nil {
@@ -1379,7 +1429,7 @@ func (s *sliceServiceServer) loadDiffLinesFromHash(ctx context.Context, hash str
 	if cleaned == "" {
 		return []string{}, true
 	}
-	content, err := s.storage.GetFileContentByHash(ctx, cleaned)
+	content, err := storage.ReadVersionedFileContent(ctx, s.storage, cleaned)
 	if err != nil || content == nil {
 		return []string{}, true
 	}
@@ -2185,11 +2235,11 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 			if filePath == "" {
 				continue
 			}
-			fileContent, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath)
+			manifest, err := s.storage.GetFileManifest(ctx, sliceID, filePath)
 			if err != nil {
 				continue
 			}
-			hash := effectiveContentHash(filePath, fileContent)
+			hash := strings.TrimSpace(manifest.Hash)
 			if hash == "" {
 				continue
 			}
@@ -2203,7 +2253,7 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 			continue
 		}
 
-		fileContent, err := s.storage.GetSliceFileByPath(ctx, sliceID, filePath)
+		manifest, err := s.storage.GetFileManifest(ctx, sliceID, filePath)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
 				delete(files, filePath)
@@ -2212,7 +2262,7 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 			return fmt.Errorf("failed to load file %s for snapshot: %w", filePath, err)
 		}
 
-		hash := effectiveContentHash(filePath, fileContent)
+		hash := strings.TrimSpace(manifest.Hash)
 		if hash == "" {
 			delete(files, filePath)
 			continue
@@ -2258,30 +2308,38 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 		newHash := ""
 		linesAdded := 0
 		linesDeleted := 0
+		hasCurrentEntry := false
 		if oldHash == "" {
 			oldHash = s.findPreviousKnownFileHash(ctx, cs.SliceID, filePath, "")
 		}
 
-		fileContent, err := s.storage.GetSliceFileByPath(ctx, cs.SliceID, filePath)
-		if err == nil && fileContent != nil {
-			newHash = effectiveContentHash(filePath, fileContent)
+		if entry, entryErr := s.storage.GetEntryByPath(ctx, cs.SliceID, filePath); entryErr == nil && entry != nil {
+			hasCurrentEntry = true
+		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to load file entry %s for change history: %w", filePath, entryErr)
+		}
+
+		manifest, err := s.storage.GetFileManifest(ctx, cs.SliceID, filePath)
+		if err == nil && manifest != nil {
+			newHash = strings.TrimSpace(manifest.Hash)
 		} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 			return fmt.Errorf("failed to load file %s for change history: %w", filePath, err)
 		}
 
 		changeType := models.ChangeTypeModify
 		switch {
-		case oldHash == "" && newHash != "":
+		case oldHash == "" && (newHash != "" || hasCurrentEntry):
 			changeType = models.ChangeTypeAdd
-			if fileContent != nil && len(fileContent.Content) > 0 {
+			fileContent, readErr := storage.ReadSliceFileContent(ctx, s.storage, cs.SliceID, filePath)
+			if readErr == nil && fileContent != nil && len(fileContent.Content) > 0 {
 				linesAdded = countTextLines(fileContent.Content)
 			}
-		case oldHash != "" && newHash == "":
+		case oldHash != "" && newHash == "" && !hasCurrentEntry:
 			changeType = models.ChangeTypeDelete
-			if previousContent, hashErr := s.storage.GetFileContentByHash(ctx, oldHash); hashErr == nil && previousContent != nil {
+			if previousContent, hashErr := storage.ReadVersionedFileContent(ctx, s.storage, oldHash); hashErr == nil && previousContent != nil {
 				linesDeleted = countTextLines(previousContent.Content)
 			}
-		case oldHash != "" && newHash != "" && oldHash != newHash:
+		case oldHash != "" && (newHash != "" || hasCurrentEntry):
 			changeType = models.ChangeTypeModify
 		}
 

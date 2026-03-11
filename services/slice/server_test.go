@@ -16,6 +16,33 @@ import (
 
 const statusFilterAll = slicev1.ChangesetStatus(-1)
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	return manifest.Hash
+}
+
+func mustWriteVersionedManifest(tb testing.TB, ctx context.Context, st storage.Storage, filePath, hash string, content []byte) {
+	tb.Helper()
+	blocks, payloads := storage.ChunkFile(content, storage.DefaultFileBlockSize)
+	if len(payloads) > 0 {
+		if err := st.PutBlocks(ctx, payloads); err != nil {
+			tb.Fatalf("PutBlocks failed: %v", err)
+		}
+	}
+	if err := st.PutVersionedFileManifest(ctx, &models.FileManifest{
+		Path:      filePath,
+		TotalSize: int64(len(content)),
+		Hash:      hash,
+		Blocks:    blocks,
+	}); err != nil {
+		tb.Fatalf("PutVersionedFileManifest failed: %v", err)
+	}
+}
+
 func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -254,14 +281,7 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 		if err := st.AddFileToSlice(ctx, filePath, "root_slice"); err != nil {
 			t.Fatalf("failed to add root file %s: %v", filePath, err)
 		}
-		if err := st.AddFileContent(ctx, &models.FileContent{
-			FileID:  filePath,
-			Path:    filePath,
-			Content: content,
-			Size:    int64(len(content)),
-		}); err != nil {
-			t.Fatalf("failed to add content for %s: %v", filePath, err)
-		}
+		mustWriteSliceManifest(t, ctx, st, "root_slice", filePath, content)
 	}
 
 	srv := NewService(st)
@@ -511,17 +531,8 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	baseContent := []byte("line1\n")
 	headContent := []byte("line1\nline2\n")
 	baseHash := hashBytes(baseContent)
-	headHash := hashBytes(headContent)
 
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  "base-readme-content",
-		Path:    filePath,
-		Content: baseContent,
-		Size:    int64(len(baseContent)),
-		Hash:    baseHash,
-	}); err != nil {
-		t.Fatalf("failed to add base content: %v", err)
-	}
+	mustWriteVersionedManifest(t, ctx, st, filePath, baseHash, baseContent)
 	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
 		CommitHash: baseCommit,
 		SliceID:    slice.ID,
@@ -542,15 +553,7 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("failed to add current file entry: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: headContent,
-		Size:    int64(len(headContent)),
-		Hash:    headHash,
-	}); err != nil {
-		t.Fatalf("failed to add current content: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, headContent)
 	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
 		t.Fatalf("failed to index current file in slice: %v", err)
 	}
@@ -848,24 +851,8 @@ func TestReviewChangesetIncludesRevertPatch(t *testing.T) {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  "content-old",
-		Path:    "README.md",
-		Content: []byte("line1\n"),
-		Size:    int64(len("line1\n")),
-		Hash:    "content-old",
-	}); err != nil {
-		t.Fatalf("failed to add old content: %v", err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  "content-new",
-		Path:    "README.md",
-		Content: []byte("line1\nline2\n"),
-		Size:    int64(len("line1\nline2\n")),
-		Hash:    "content-new",
-	}); err != nil {
-		t.Fatalf("failed to add new content: %v", err)
-	}
+	mustWriteVersionedManifest(t, ctx, st, "README.md", "content-old", []byte("line1\n"))
+	mustWriteVersionedManifest(t, ctx, st, "README.md", "content-new", []byte("line1\nline2\n"))
 
 	const sourceCommit = "commit-source"
 	const sourceChangeID = "chg-source"
@@ -931,9 +918,7 @@ func TestReviewChangesetIncludesAllCommitDiffChangesForRevert(t *testing.T) {
 		{FileID: "newfile", Path: "NEW.md", Content: []byte("new file\n"), Size: int64(len("new file\n")), Hash: "newfile"},
 	}
 	for _, content := range contents {
-		if err := st.AddFileContent(ctx, content); err != nil {
-			t.Fatalf("failed to add content %s: %v", content.Hash, err)
-		}
+		mustWriteVersionedManifest(t, ctx, st, content.Path, content.Hash, content.Content)
 	}
 
 	const sourceCommit = "commit-source-all"
@@ -1032,10 +1017,10 @@ func TestMergeRevertChangesetAppliesRevertedContent(t *testing.T) {
 	}
 
 	const filePath = "README.md"
-	const oldHash = "hash-old"
-	const newHash = "hash-new"
 	oldContent := []byte("line1\n")
 	newContent := []byte("line1\nline2\n")
+	oldHash := hashBytes(oldContent)
+	newHash := hashBytes(newContent)
 
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       slice.ID + ":" + filePath,
@@ -1049,24 +1034,8 @@ func TestMergeRevertChangesetAppliesRevertedContent(t *testing.T) {
 	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
 		t.Fatalf("failed to add file to slice index: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: newContent,
-		Size:    int64(len(newContent)),
-		Hash:    newHash,
-	}); err != nil {
-		t.Fatalf("failed to add current slice content: %v", err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  oldHash,
-		Path:    filePath,
-		Content: oldContent,
-		Size:    int64(len(oldContent)),
-		Hash:    oldHash,
-	}); err != nil {
-		t.Fatalf("failed to add old versioned content: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, newContent)
+	mustWriteVersionedManifest(t, ctx, st, filePath, oldHash, oldContent)
 
 	const sourceCommit = "commit-revert-merge"
 	const sourceChangeID = "chg-revert-merge"
@@ -1159,10 +1128,10 @@ func TestMergeRevertChangesetBypassesCrossSliceConflictChecks(t *testing.T) {
 	}
 
 	const filePath = "README.md"
-	const oldHash = "hash-old-cross-slice"
-	const newHash = "hash-new-cross-slice"
 	oldContent := []byte("line1\n")
 	newContent := []byte("line1\nline2\n")
+	oldHash := hashBytes(oldContent)
+	newHash := hashBytes(newContent)
 
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       ownerSlice.ID + ":" + filePath,
@@ -1179,24 +1148,8 @@ func TestMergeRevertChangesetBypassesCrossSliceConflictChecks(t *testing.T) {
 	if err := st.AddFileToSlice(ctx, filePath, otherSlice.ID); err != nil {
 		t.Fatalf("failed to add file to other slice index: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: newContent,
-		Size:    int64(len(newContent)),
-		Hash:    newHash,
-	}); err != nil {
-		t.Fatalf("failed to add current slice content: %v", err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  oldHash,
-		Path:    filePath,
-		Content: oldContent,
-		Size:    int64(len(oldContent)),
-		Hash:    oldHash,
-	}); err != nil {
-		t.Fatalf("failed to add old versioned content: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, ownerSlice.ID, filePath, newContent)
+	mustWriteVersionedManifest(t, ctx, st, filePath, oldHash, oldContent)
 
 	const sourceCommit = "commit-revert-cross-slice"
 	const sourceChangeID = "chg-revert-cross-slice"
@@ -1262,10 +1215,10 @@ func TestMergeRevertChangesetBackfillsMissingOldHash(t *testing.T) {
 	}
 
 	const filePath = "README.md"
-	const oldHash = "hash-old-backfill"
-	const newHash = "hash-new-backfill"
 	oldContent := []byte("line1\n")
 	newContent := []byte("line1\nline2\n")
+	oldHash := hashBytes(oldContent)
+	newHash := hashBytes(newContent)
 
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       slice.ID + ":" + filePath,
@@ -1279,24 +1232,8 @@ func TestMergeRevertChangesetBackfillsMissingOldHash(t *testing.T) {
 	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
 		t.Fatalf("failed to add file to slice index: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: newContent,
-		Size:    int64(len(newContent)),
-		Hash:    newHash,
-	}); err != nil {
-		t.Fatalf("failed to add current slice content: %v", err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  oldHash,
-		Path:    filePath,
-		Content: oldContent,
-		Size:    int64(len(oldContent)),
-		Hash:    oldHash,
-	}); err != nil {
-		t.Fatalf("failed to add old versioned content: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, newContent)
+	mustWriteVersionedManifest(t, ctx, st, filePath, oldHash, oldContent)
 
 	previousCommit := "commit-backfill-previous"
 	sourceCommit := "commit-backfill-source"

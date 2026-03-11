@@ -2,7 +2,6 @@ package sliceservice
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -110,9 +109,6 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 			continue
 		}
 
-		sum := sha256.Sum256(content)
-		contentHash := fmt.Sprintf("%x", sum)
-
 		fileEntry := &models.DirectoryEntry{
 			ID:       common.GenerateEntryID(sliceID, slicePath),
 			Path:     slicePath,
@@ -129,14 +125,7 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 			log.Printf("Warning: failed to add file %s to root slice: %v", slicePath, err)
 			continue
 		}
-		fileContent := &models.FileContent{
-			FileID:  slicePath,
-			Path:    slicePath,
-			Content: content,
-			Size:    int64(len(content)),
-			Hash:    contentHash,
-		}
-		if err := s.storage.AddFileContent(ctx, fileContent); err != nil {
+		if _, err := storage.WriteSliceFileManifest(ctx, s.storage, sliceID, slicePath, content); err != nil {
 			log.Printf("Warning: failed to store content for %s: %v", slicePath, err)
 			continue
 		}

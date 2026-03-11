@@ -1857,30 +1857,29 @@ func (s *InMemoryStorage) GetFileContentByHash(ctx context.Context, contentHash 
 // GetFileAtCommit retrieves a file's content at a specific commit.
 func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	snapshot, exists := s.commitSnapshots[commitHash]
 	if !exists {
+		s.mu.RUnlock()
 		return nil, ErrCommitNotFound
 	}
 
 	contentHash, exists := snapshot.Files[path]
 	if !exists {
+		s.mu.RUnlock()
 		return nil, ErrEntryNotFound
 	}
+	s.mu.RUnlock()
 
-	content, exists := s.versionedContent[contentHash]
-	if !exists {
-		return nil, ErrEntryNotFound
+	content, err := s.GetFileContentByHash(ctx, contentHash)
+	if err != nil {
+		return nil, err
 	}
 
-	// Return a copy
-	copyContent := *content
 	// The underlying blob store is keyed only by hash; the caller's requested
 	// path is the authoritative lookup key at a given commit.
-	copyContent.Path = path
-	copyContent.FileID = path
-	return &copyContent, nil
+	content.Path = path
+	content.FileID = path
+	return content, nil
 }
 
 // ListFilesAtCommit lists all files at a specific commit, optionally filtered by path prefix.
