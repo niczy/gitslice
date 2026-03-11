@@ -72,7 +72,7 @@ export default function AppHeader({
               variant={isNavActive('repos') ? 'default' : 'secondary'}
               className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
               data-testid="topbar-repo-browser"
-              onClick={onOpenRepos}
+              onClick={() => navigate('browser')}
             >
               Repo Browser
             </Button>
