@@ -165,6 +165,12 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
     navigate('changeset', '', changesetId);
   }, [navigate]);
 
+  const openBrowserHome = useCallback(() => {
+    hasExplicitSliceSelectionRef.current = false;
+    setCurrentSliceId(getHomeSliceId(username));
+    navigate('browser');
+  }, [navigate, username]);
+
   const handleSliceChange = useCallback((sliceId) => {
     hasExplicitSliceSelectionRef.current = true;
     setCurrentSliceId(sliceId);
@@ -274,12 +280,13 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
         username={username}
         githubUrl={githubUrl}
         navigate={navigate}
+        onOpenRepos={openBrowserHome}
         onLogout={doLogout}
         isNavActive={isNavActive}
       />
 
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
-        {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
+        {activePage === 'landing' && <OverviewPage onBrowseRepo={openBrowserHome} />}
         {activePage === 'login' && (
           <LoginPage
             onLogin={doLogin}
@@ -298,7 +305,7 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
             slices={slices}
             slicesLoading={slicesLoading}
             slicesError={slicesError}
-            onOpenRepos={() => navigate('browser')}
+            onOpenRepos={openBrowserHome}
             onRefresh={refreshSlices}
           />
         )}
