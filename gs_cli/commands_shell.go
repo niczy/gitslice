@@ -270,7 +270,7 @@ func (s *filesystemShell) executeLine(ctx context.Context, line string, output i
 		}
 		_, err = fmt.Fprintf(output, "Snapshot created: %s\n", resp.GetSnapshot().GetSnapshotId())
 		return false, err
-	case "history", "snapshots":
+	case "history", "snapshots", "log":
 		resp, err := s.client.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
 			WorkspaceId: s.workspaceID,
 			Limit:       20,
@@ -344,7 +344,7 @@ func (s *filesystemShell) prompt() string {
 }
 
 func (s *filesystemShell) printHelp(output io.Writer) error {
-	_, err := fmt.Fprintln(output, "Commands: ls, cd, pwd, cat, mkdir, rm, mv, cp, snapshot, history, restore, diff, help, exit")
+	_, err := fmt.Fprintln(output, "Commands: ls, cd, pwd, cat, mkdir, rm, mv, cp, snapshot, history, log, restore, diff, help, exit")
 	return err
 }
 

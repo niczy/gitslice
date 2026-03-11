@@ -370,6 +370,15 @@ func extractSnapshotID(output string) string {
 	return strings.TrimSpace(matches[1])
 }
 
+func extractFilesystemCommitHash(output string) string {
+	re := regexp.MustCompile(`Commit: ([^\n]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
 func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
 	t.Helper()
 
@@ -782,10 +791,30 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected second write commit output, got: %s", output)
 	}
+	secondWriteCommit := extractFilesystemCommitHash(output)
+	if secondWriteCommit == "" {
+		t.Fatalf("failed to extract fs commit from output: %s", output)
+	}
 
 	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
 	if output != "hello from fs cli v2\n" {
 		t.Fatalf("unexpected cat output after second write: %q", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "log", "--limit", "3")
+	if !strings.Contains(output, "commit "+secondWriteCommit) {
+		t.Fatalf("expected fs log to include %s, got: %s", secondWriteCommit, output)
+	}
+	if !strings.Contains(output, "write "+remoteFile) {
+		t.Fatalf("expected fs log to show visible write path, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "show", secondWriteCommit)
+	if !strings.Contains(output, "MODIFY "+remoteFile) {
+		t.Fatalf("expected fs show to include modified visible path, got: %s", output)
+	}
+	if !strings.Contains(output, "-hello from fs cli") || !strings.Contains(output, "+hello from fs cli v2") {
+		t.Fatalf("expected fs show patch output, got: %s", output)
 	}
 
 	output = runCLIOrFail(t, "", "fs", "diff", snapshotID)
