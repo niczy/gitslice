@@ -675,47 +675,6 @@ func (s *postgresNativeTxView) DeleteEntry(ctx context.Context, entryID string) 
 	return nil
 }
 
-func (s *postgresNativeTxView) AddFileContent(ctx context.Context, content *models.FileContent) error {
-	ctx = ensureCtx(ctx)
-	if content == nil || content.FileID == "" {
-		return ErrInvalidInput
-	}
-
-	// Store blob in object store (idempotent, content-addressed).
-	raw, err := json.Marshal(content)
-	if err != nil {
-		return err
-	}
-	if err := s.objectStore.PutObject(ctx, s.objKey("file_content", content.FileID), raw); err != nil {
-		return err
-	}
-	if content.Hash != "" {
-		if err := s.objectStore.PutObject(ctx, s.objKey("versioned_content", content.Hash), raw); err != nil {
-			return err
-		}
-	}
-
-	_, err = s.tx.Exec(ctx, `
-		INSERT INTO file_contents (file_id, path, size, hash)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (file_id) DO UPDATE SET path = $2, size = $3, hash = $4
-	`, content.FileID, content.Path, content.Size, content.Hash)
-	if err != nil {
-		return err
-	}
-	if content.Hash != "" {
-		_, err = s.tx.Exec(ctx, `
-			INSERT INTO versioned_content (content_hash, file_id, path, size)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (content_hash) DO NOTHING
-		`, content.Hash, content.FileID, content.Path, content.Size)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *postgresNativeTxView) PutBlock(ctx context.Context, hash string, data []byte) error {
 	return s.PostgresNativeStorage.PutBlock(ctx, hash, data)
 }
@@ -1852,317 +1811,7 @@ func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, chan
 	return result, rows.Err()
 }
 
-// ============ File Content ============
-
-func (s *PostgresNativeStorage) GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error) {
-	ctx = ensureCtx(ctx)
-
-	// Get the file list from the slice.
-	var filesJSON []byte
-	err := s.pool.QueryRow(ctx, `SELECT files FROM slices WHERE id = $1`, sliceID).Scan(&filesJSON)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrSliceNotFound
-		}
-		return nil, err
-	}
-
-	var fileIDs []string
-	if err := json.Unmarshal(filesJSON, &fileIDs); err != nil {
-		return nil, err
-	}
-
-	var files []*models.FileContent
-	seenPaths := make(map[string]struct{}, len(fileIDs))
-	for _, fileID := range fileIDs {
-		ref, err := s.resolveSliceFileReference(ctx, sliceID, fileID)
-		if err != nil {
-			return nil, err
-		}
-		if ref.entryID != "" && !ref.isFile {
-			continue
-		}
-		if ref.path == "" {
-			ref.path = fileID
-		}
-		if _, ok := seenPaths[ref.path]; ok {
-			continue
-		}
-		content, found, err := s.loadPreferredFileContent(ctx, sliceID, ref.path, ref.size, ref.candidates(fileID)...)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			if ref.entryID == "" || !ref.isFile {
-				continue
-			}
-			content = &models.FileContent{
-				FileID: ref.path,
-				Path:   ref.path,
-				Size:   ref.size,
-			}
-		}
-		seenPaths[ref.path] = struct{}{}
-		files = append(files, content)
-	}
-	return files, nil
-}
-
-type sliceFileReference struct {
-	entryID string
-	path    string
-	size    int64
-	isFile  bool
-}
-
-func (ref sliceFileReference) candidates(fileID string) []string {
-	ids := []string{ref.entryID, ref.path, fileID}
-	seen := make(map[string]struct{}, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, candidate := range ids {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		out = append(out, candidate)
-	}
-	return out
-}
-
-func (s *PostgresNativeStorage) resolveSliceFileReference(ctx context.Context, sliceID, fileID string) (sliceFileReference, error) {
-	var ref sliceFileReference
-	var typ string
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, path, size, type
-		FROM directory_entries
-		WHERE slice_id = $1 AND (path = $2 OR id = $2)
-		ORDER BY CASE WHEN path = $2 THEN 0 ELSE 1 END
-		LIMIT 1
-	`, sliceID, fileID).Scan(&ref.entryID, &ref.path, &ref.size, &typ)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			ref.path = fileID
-			return ref, nil
-		}
-		return ref, err
-	}
-	ref.isFile = typ == "file"
-	if ref.path == "" {
-		ref.path = fileID
-	}
-	return ref, nil
-}
-
-func (s *PostgresNativeStorage) loadPreferredFileContent(ctx context.Context, sliceID, path string, size int64, candidateIDs ...string) (*models.FileContent, bool, error) {
-	ordered := make([]string, 0, len(candidateIDs))
-	seen := make(map[string]struct{}, len(candidateIDs))
-	sharedPathCandidate := ""
-	for _, candidateID := range candidateIDs {
-		candidateID = strings.TrimSpace(candidateID)
-		if candidateID == "" {
-			continue
-		}
-		if _, ok := seen[candidateID]; ok {
-			continue
-		}
-		seen[candidateID] = struct{}{}
-		if candidateID == path {
-			sharedPathCandidate = candidateID
-			continue
-		}
-		ordered = append(ordered, candidateID)
-	}
-
-	for _, candidateID := range ordered {
-		raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", candidateID))
-		if err != nil {
-			continue
-		}
-		var fc models.FileContent
-		if err := json.Unmarshal(raw, &fc); err != nil {
-			continue
-		}
-		if fc.FileID == "" {
-			fc.FileID = candidateID
-		}
-		if fc.Path == "" {
-			fc.Path = path
-		}
-		if fc.Size == 0 {
-			fc.Size = size
-		}
-		return &fc, true, nil
-	}
-
-	for _, candidateID := range ordered {
-		var fc models.FileContent
-		err := s.pool.QueryRow(ctx, `
-			SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
-		`, candidateID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
-		if err != nil {
-			if err == pgx.ErrNoRows {
-				continue
-			}
-			return nil, false, err
-		}
-		if fc.FileID == "" {
-			fc.FileID = candidateID
-		}
-		if fc.Path == "" {
-			fc.Path = path
-		}
-		if fc.Size == 0 {
-			fc.Size = size
-		}
-		return &fc, true, nil
-	}
-
-	if strings.TrimSpace(sliceID) != "" && strings.TrimSpace(path) != "" {
-		manifest, err := s.GetFileManifest(ctx, sliceID, path)
-		if err != nil && err != ErrEntryNotFound {
-			return nil, false, err
-		}
-		if err == nil && manifest != nil {
-			assembled, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
-				return s.GetBlock(ctx, hash)
-			})
-			if err != nil {
-				return nil, false, err
-			}
-			return &models.FileContent{
-				FileID:  path,
-				Path:    path,
-				Content: assembled,
-				Size:    manifest.TotalSize,
-				Hash:    strings.TrimSpace(manifest.Hash),
-			}, true, nil
-		}
-	}
-
-	if sharedPathCandidate != "" {
-		for _, candidateID := range []string{sharedPathCandidate} {
-			raw, err := s.objectStore.GetObject(ctx, s.objKey("file_content", candidateID))
-			if err == nil {
-				var fc models.FileContent
-				if err := json.Unmarshal(raw, &fc); err == nil {
-					if fc.FileID == "" {
-						fc.FileID = candidateID
-					}
-					if fc.Path == "" {
-						fc.Path = path
-					}
-					if fc.Size == 0 {
-						fc.Size = size
-					}
-					return &fc, true, nil
-				}
-			}
-
-			var fc models.FileContent
-			err = s.pool.QueryRow(ctx, `
-				SELECT file_id, path, size, hash FROM file_contents WHERE file_id = $1
-			`, candidateID).Scan(&fc.FileID, &fc.Path, &fc.Size, &fc.Hash)
-			if err != nil {
-				if err == pgx.ErrNoRows {
-					continue
-				}
-				return nil, false, err
-			}
-			if fc.FileID == "" {
-				fc.FileID = candidateID
-			}
-			if fc.Path == "" {
-				fc.Path = path
-			}
-			if fc.Size == 0 {
-				fc.Size = size
-			}
-			return &fc, true, nil
-		}
-	}
-
-	return nil, false, nil
-}
-
-func (s *PostgresNativeStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
-	ctx = ensureCtx(ctx)
-
-	// Look up the directory entry.
-	var entryID string
-	var entrySize int64
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, size FROM directory_entries WHERE slice_id = $1 AND path = $2
-	`, sliceID, path).Scan(&entryID, &entrySize)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, ErrEntryNotFound
-		}
-		return nil, err
-	}
-
-	content, found, err := s.loadPreferredFileContent(ctx, sliceID, path, entrySize, entryID, path)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		return content, nil
-	}
-
-	// Last resort: return metadata-only entry.
-	return &models.FileContent{
-		FileID: path,
-		Path:   path,
-		Size:   entrySize,
-	}, nil
-}
-
-func (s *PostgresNativeStorage) AddFileContent(ctx context.Context, content *models.FileContent) error {
-	ctx = ensureCtx(ctx)
-	if content == nil || content.FileID == "" {
-		return ErrInvalidInput
-	}
-
-	// Store blob in object store.
-	raw, err := json.Marshal(content)
-	if err != nil {
-		return err
-	}
-	if err := s.objectStore.PutObject(ctx, s.objKey("file_content", content.FileID), raw); err != nil {
-		return err
-	}
-	if content.Hash != "" {
-		if err := s.objectStore.PutObject(ctx, s.objKey("versioned_content", content.Hash), raw); err != nil {
-			return err
-		}
-	}
-
-	// Upsert metadata in DB.
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO file_contents (file_id, path, size, hash)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (file_id) DO UPDATE SET path = $2, size = $3, hash = $4
-	`, content.FileID, content.Path, content.Size, content.Hash)
-	if err != nil {
-		return err
-	}
-
-	if content.Hash != "" {
-		_, err = s.pool.Exec(ctx, `
-			INSERT INTO versioned_content (content_hash, file_id, path, size)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (content_hash) DO NOTHING
-		`, content.Hash, content.FileID, content.Path, content.Size)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
+// ============ Block-Backed File Content ============
 
 func (s *PostgresNativeStorage) PutBlock(ctx context.Context, hash string, data []byte) error {
 	ctx = ensureCtx(ctx)
@@ -2373,16 +2022,6 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, path, type, parent_id, content, size,
 			COALESCE((
-				SELECT fc.hash
-				FROM file_contents fc
-				WHERE fc.file_id = directory_entries.id OR fc.file_id = directory_entries.path OR fc.path = directory_entries.path
-				ORDER BY CASE
-					WHEN fc.file_id = directory_entries.id THEN 0
-					WHEN fc.file_id = directory_entries.path THEN 1
-					ELSE 2
-				END
-				LIMIT 1
-			), (
 				SELECT fm.hash
 				FROM file_manifests fm
 				WHERE fm.slice_id = directory_entries.slice_id AND fm.path = directory_entries.path
@@ -2407,16 +2046,6 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, path, type, parent_id, content, size,
 			COALESCE((
-				SELECT fc.hash
-				FROM file_contents fc
-				WHERE fc.file_id = directory_entries.id OR fc.file_id = directory_entries.path OR fc.path = directory_entries.path
-				ORDER BY CASE
-					WHEN fc.file_id = directory_entries.id THEN 0
-					WHEN fc.file_id = directory_entries.path THEN 1
-					ELSE 2
-				END
-				LIMIT 1
-			), (
 				SELECT fm.hash
 				FROM file_manifests fm
 				WHERE fm.slice_id = directory_entries.slice_id AND fm.path = directory_entries.path
@@ -2440,16 +2069,6 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, path, type, parent_id, content, size,
 			COALESCE((
-				SELECT fc.hash
-				FROM file_contents fc
-				WHERE fc.file_id = directory_entries.id OR fc.file_id = directory_entries.path OR fc.path = directory_entries.path
-				ORDER BY CASE
-					WHEN fc.file_id = directory_entries.id THEN 0
-					WHEN fc.file_id = directory_entries.path THEN 1
-					ELSE 2
-				END
-				LIMIT 1
-			), (
 				SELECT fm.hash
 				FROM file_manifests fm
 				WHERE fm.slice_id = directory_entries.slice_id AND fm.path = directory_entries.path
@@ -2642,48 +2261,6 @@ func (s *PostgresNativeStorage) SaveCommitSnapshot(ctx context.Context, snapshot
 	return err
 }
 
-func (s *PostgresNativeStorage) GetFileContentByHash(ctx context.Context, contentHash string) (*models.FileContent, error) {
-	ctx = ensureCtx(ctx)
-
-	// Try object store.
-	raw, err := s.objectStore.GetObject(ctx, s.objKey("versioned_content", contentHash))
-	if err == nil {
-		var content models.FileContent
-		if err := json.Unmarshal(raw, &content); err == nil {
-			return &content, nil
-		}
-	}
-
-	// Try versioned_content table metadata.
-	var fc models.FileContent
-	err = s.pool.QueryRow(ctx, `
-		SELECT file_id, path, size FROM versioned_content WHERE content_hash = $1
-	`, contentHash).Scan(&fc.FileID, &fc.Path, &fc.Size)
-	if err == nil {
-		fc.Hash = contentHash
-		return &fc, nil
-	}
-
-	manifest, err := s.GetVersionedFileManifest(ctx, contentHash)
-	if err == nil && manifest != nil {
-		assembled, assembleErr := AssembleFile(manifest, func(hash string) ([]byte, error) {
-			return s.GetBlock(ctx, hash)
-		})
-		if assembleErr != nil {
-			return nil, assembleErr
-		}
-		return &models.FileContent{
-			FileID:  manifest.Path,
-			Path:    manifest.Path,
-			Content: assembled,
-			Size:    manifest.TotalSize,
-			Hash:    strings.TrimSpace(manifest.Hash),
-		}, nil
-	}
-
-	return nil, ErrEntryNotFound
-}
-
 func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
 	ctx = ensureCtx(ctx)
 
@@ -2697,7 +2274,7 @@ func (s *PostgresNativeStorage) GetFileAtCommit(ctx context.Context, commitHash,
 		return nil, ErrEntryNotFound
 	}
 
-	content, err := s.GetFileContentByHash(ctx, contentHash)
+	content, err := ReadVersionedFileContent(ctx, s, contentHash)
 	if err != nil {
 		return nil, err
 	}

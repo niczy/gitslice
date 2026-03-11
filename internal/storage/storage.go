@@ -81,10 +81,7 @@ type Storage interface {
 	GetChangesetSnapshot(ctx context.Context, changesetID string, version int32) (*models.ChangesetSnapshot, error)
 	ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error)
 
-	// File content for checkout
-	GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error)
-	GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error)
-	AddFileContent(ctx context.Context, content *models.FileContent) error
+	// Block-backed file content storage
 	PutBlock(ctx context.Context, hash string, data []byte) error
 	GetBlock(ctx context.Context, hash string) ([]byte, error)
 	HasBlock(ctx context.Context, hash string) (bool, error)
@@ -113,7 +110,6 @@ type Storage interface {
 	// Commit snapshot operations for versioned file access
 	GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error)
 	SaveCommitSnapshot(ctx context.Context, snapshot *models.CommitSnapshot) error
-	GetFileContentByHash(ctx context.Context, contentHash string) (*models.FileContent, error)
 	GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error)
 	ListFilesAtCommit(ctx context.Context, commitHash, pathPrefix string) ([]string, error)
 

@@ -44,7 +44,7 @@ func TestHomeSlicePromotionPublishesAndDeletesFromRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get root slice: %v", err)
 	}
-	rootFile, err := st.GetSliceFileByPath(context.Background(), rootSlice.ID, "tester/docs/readme.md")
+	rootFile, err := storage.ReadSliceFileContent(context.Background(), st, rootSlice.ID, "tester/docs/readme.md")
 	if err != nil {
 		t.Fatalf("root file missing after promotion: %v", err)
 	}

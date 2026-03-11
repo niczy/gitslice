@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -46,6 +47,49 @@ func ReadManifestContent(ctx context.Context, st Storage, manifest *models.FileM
 		Size:    manifest.TotalSize,
 		Hash:    strings.TrimSpace(manifest.Hash),
 	}, nil
+}
+
+// ListSliceFileContents walks the slice entry tree and assembles all file
+// contents from their manifests.
+func ListSliceFileContents(ctx context.Context, st Storage, sliceID string) ([]*models.FileContent, error) {
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var (
+		files []*models.FileContent
+		visit func(parentID string) error
+	)
+
+	visit = func(parentID string) error {
+		entries, err := st.ListEntries(ctx, sliceID, parentID)
+		if err != nil {
+			return err
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Path < entries[j].Path
+		})
+		for _, entry := range entries {
+			if entry.Type == "directory" {
+				if err := visit(entry.ID); err != nil {
+					return err
+				}
+				continue
+			}
+			content, err := ReadSliceFileContent(ctx, st, sliceID, entry.Path)
+			if err != nil {
+				return err
+			}
+			files = append(files, content)
+		}
+		return nil
+	}
+
+	if err := visit(sliceID); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 // WriteSliceFileManifest chunks content into blocks and persists both the

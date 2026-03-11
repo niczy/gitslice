@@ -43,7 +43,6 @@ type contentReadGuardStorage struct {
 	mu                  sync.Mutex
 	blockContentReads   bool
 	getFileAtCommitCall int
-	getByPathCall       int
 }
 
 func (c *contentReadGuardStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
@@ -57,21 +56,10 @@ func (c *contentReadGuardStorage) GetFileAtCommit(ctx context.Context, commitHas
 	return c.InMemoryStorage.GetFileAtCommit(ctx, commitHash, path)
 }
 
-func (c *contentReadGuardStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
-	c.mu.Lock()
-	c.getByPathCall++
-	block := c.blockContentReads
-	c.mu.Unlock()
-	if block {
-		return nil, errors.New("unexpected GetSliceFileByPath call")
-	}
-	return c.InMemoryStorage.GetSliceFileByPath(ctx, sliceID, path)
-}
-
 func (c *contentReadGuardStorage) contentReadCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.getByPathCall + c.getFileAtCommitCall
+	return c.getFileAtCommitCall
 }
 
 func authCtx() context.Context {
