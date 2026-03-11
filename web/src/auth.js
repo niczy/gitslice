@@ -1,34 +1,39 @@
-const STORAGE_KEY = 'gs_auth_username';
+let cachedSession = null;
 
-function readStoredUsername() {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY) || '';
-  } catch {
-    return '';
+function normalizeSession(session) {
+  const username = String(session?.user?.username || '').trim();
+  if (!username) {
+    return null;
   }
-}
-
-function writeStoredUsername(username) {
-  try {
-    if (username) {
-      window.localStorage.setItem(STORAGE_KEY, username);
-    } else {
-      window.localStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {
-    // ignore storage errors (private mode, blocked storage, etc.)
-  }
+  return {
+    ...session,
+    user: {
+      ...(session?.user || {}),
+      username,
+    },
+    source: String(session?.source || '').trim() || 'oauth',
+  };
 }
 
 export function getSignedInUsername() {
-  return readStoredUsername();
+  return cachedSession?.user?.username || '';
 }
 
-export async function signInWithAccount(apiBaseUrl, username) {
+export function getCachedSession() {
+  return cachedSession;
+}
+
+export function setCachedSession(session) {
+  cachedSession = normalizeSession(session);
+  return cachedSession;
+}
+
+export async function signInWithAccount(_apiBaseUrl, username) {
   const trimmed = (username || '').trim();
-  const response = await fetch(`${apiBaseUrl}/v1/auth/login`, {
+  const response = await fetch('/auth/dev-login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ username: trimmed }),
   });
 
@@ -36,8 +41,9 @@ export async function signInWithAccount(apiBaseUrl, username) {
     throw new Error('Invalid username');
   }
 
-  writeStoredUsername(trimmed);
-  return trimmed;
+  const session = await response.json();
+  const normalized = setCachedSession(session);
+  return normalized?.user?.username || trimmed;
 }
 
 export async function fetchOAuthSession() {
@@ -46,25 +52,35 @@ export async function fetchOAuthSession() {
     headers: { Accept: 'application/json' },
   });
   if (!response.ok) {
+    setCachedSession(null);
     return null;
   }
-  return response.json();
+  return setCachedSession(await response.json());
 }
 
 export function startOAuthSignIn(providerId) {
-  const callbackUrl = `${window.location.origin}/#/login`;
+  const callbackUrl = `${window.location.origin}/login`;
   const url = new URL(`/auth/signin/${providerId}`, window.location.origin);
   url.searchParams.set('callbackUrl', callbackUrl);
   window.location.assign(url.toString());
 }
 
 export function startOAuthSignOut() {
-  const callbackUrl = `${window.location.origin}/#/landing`;
+  const callbackUrl = `${window.location.origin}/`;
   const url = new URL('/auth/signout', window.location.origin);
   url.searchParams.set('callbackUrl', callbackUrl);
   window.location.assign(url.toString());
 }
 
-export function signOutAccount() {
-  writeStoredUsername('');
+export async function signOutAccount() {
+  try {
+    await fetch('/auth/dev-logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+  } catch {
+    // best effort cookie clear
+  }
+  setCachedSession(null);
 }

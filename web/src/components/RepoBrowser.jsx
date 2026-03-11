@@ -6,6 +6,7 @@ import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../uti
 import { decodeBase64, highlightCode } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
+import { buildBrowserPath, parseLocation } from '../utils/routing.js';
 import SliceDropdown from './SliceDropdown.jsx';
 import SliceSettings from './SliceSettings.jsx';
 import { Button } from './ui/button.jsx';
@@ -69,18 +70,10 @@ export default function RepoBrowser({
   slicesError,
   onRefreshSlices,
 }) {
-  // Parse initial browser state from URL hash on mount
+  // Parse initial browser state from the current route on mount.
   const initialBrowserState = useMemo(() => {
-    const raw = window.location.hash.replace(/^#\/?/, '');
-    if (raw.startsWith('browser?')) {
-      const params = new URLSearchParams(raw.slice(raw.indexOf('?') + 1));
-      return {
-        file: params.get('file') || '',
-        slice: params.get('slice') || '',
-        sliceHash: params.get('sliceHash') || '',
-      };
-    }
-    return null;
+    const route = parseLocation(window.location);
+    return route.page === 'browser' ? route.browserState || null : null;
   }, []);
 
   const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
@@ -103,6 +96,9 @@ export default function RepoBrowser({
   const [activeView, setActiveView] = useState('files');
   const [isCompactHeader, setIsCompactHeader] = useState(() => window.innerWidth <= 920);
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const [pendingCreateKind, setPendingCreateKind] = useState('');
+  const [pendingCreatePath, setPendingCreatePath] = useState('');
+  const [pendingCreateError, setPendingCreateError] = useState('');
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
@@ -129,6 +125,7 @@ export default function RepoBrowser({
 
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = activeView === 'settings' && canShowSettings;
+  const defaultParentPath = selectedFile ? selectedFile.split('/').slice(0, -1).join('/') : '';
 
   const openFilesView = useCallback(() => {
     setActiveView('files');
@@ -589,12 +586,11 @@ export default function RepoBrowser({
 
   // Push current browser state to navigation history
   const pushBrowserState = useCallback((file) => {
-    const params = new URLSearchParams();
-    if (file) params.set('file', file);
-    if (sliceId) params.set('slice', sliceId);
-    if (sliceHash) params.set('sliceHash', sliceHash);
-    const qs = params.toString();
-    window.history.replaceState(null, '', qs ? `#/browser?${qs}` : '#/browser');
+    window.history.replaceState(null, '', buildBrowserPath({
+      file,
+      slice: sliceId,
+      sliceHash,
+    }));
   }, [sliceId, sliceHash]);
 
   // Update URL when browser state changes or page becomes active again
@@ -659,21 +655,25 @@ export default function RepoBrowser({
     }
   };
 
-  const createFolder = () => {
+  const beginCreateFolder = () => {
     if (!canLoad) {
       return;
     }
+    setPendingCreateKind('folder');
+    setPendingCreatePath(defaultParentPath ? `${defaultParentPath}/` : '');
+    setPendingCreateError('');
+  };
 
-    const rawPath = window.prompt('Enter folder path (for example: docs/guides):', '');
-    if (!rawPath) {
+  const beginCreateFile = () => {
+    if (!canLoad) {
       return;
     }
+    setPendingCreateKind('file');
+    setPendingCreatePath(defaultParentPath ? `${defaultParentPath}/` : '');
+    setPendingCreateError('');
+  };
 
-    const cleanPath = rawPath.trim().replace(/^\/+|\/+$/g, '');
-    if (!cleanPath) {
-      return;
-    }
-
+  const submitCreateFolder = (cleanPath) => {
     const parts = cleanPath.split('/').filter(Boolean);
     setTreeEntries((prev) => {
       const next = { ...prev };
@@ -701,21 +701,7 @@ export default function RepoBrowser({
     setExpandedPaths((prev) => [...new Set([...prev, '', ...parts.map((_, index) => parts.slice(0, index + 1).join('/'))])]);
   };
 
-  const createFile = () => {
-    if (!canLoad) {
-      return;
-    }
-
-    const rawPath = window.prompt('Enter file path (for example: docs/notes.txt):', selectedFile ? `${selectedFile.split('/').slice(0, -1).join('/')}/` : '');
-    if (!rawPath) {
-      return;
-    }
-
-    const cleanPath = rawPath.trim().replace(/^\/+/, '').replace(/\/+$/, '');
-    if (!cleanPath) {
-      return;
-    }
-
+  const submitCreateFile = (cleanPath) => {
     const parts = cleanPath.split('/').filter(Boolean);
     const fileName = parts[parts.length - 1];
     const parentParts = parts.slice(0, -1);
@@ -758,6 +744,22 @@ export default function RepoBrowser({
     setHistoryError('');
     setIsEditingFile(true);
     setFileDrafts((prev) => ({ ...prev, [cleanPath]: '' }));
+  };
+
+  const submitCreateEntry = () => {
+    const cleanPath = pendingCreatePath.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!cleanPath) {
+      setPendingCreateError(`Enter a ${pendingCreateKind || 'file'} path.`);
+      return;
+    }
+    if (pendingCreateKind === 'folder') {
+      submitCreateFolder(cleanPath);
+    } else if (pendingCreateKind === 'file') {
+      submitCreateFile(cleanPath);
+    }
+    setPendingCreateKind('');
+    setPendingCreatePath('');
+    setPendingCreateError('');
   };
 
   const confirmFileEdit = () => {
@@ -871,7 +873,7 @@ export default function RepoBrowser({
                     variant="ghost"
                     size="sm"
                     className="tree-action-btn"
-                    onClick={createFolder}
+                    onClick={beginCreateFolder}
                     title="Create folder"
                   >
                     + Folder
@@ -881,7 +883,7 @@ export default function RepoBrowser({
                     variant="ghost"
                     size="sm"
                     className="tree-action-btn"
-                    onClick={createFile}
+                    onClick={beginCreateFile}
                     title="Create file"
                   >
                     + File
@@ -901,6 +903,49 @@ export default function RepoBrowser({
               </div>
               <h2 className="sidebar-panel-title">File tree</h2>
               {error && <div className="panel-error">{error}</div>}
+              {pendingCreateKind && (
+                <form
+                  className="repo-create-panel"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitCreateEntry();
+                  }}
+                >
+                  <label className="repo-create-label" htmlFor="repo-create-path">
+                    {pendingCreateKind === 'folder' ? 'New folder path' : 'New file path'}
+                  </label>
+                  <input
+                    id="repo-create-path"
+                    className="repo-create-input"
+                    value={pendingCreatePath}
+                    onChange={(event) => {
+                      setPendingCreatePath(event.target.value);
+                      setPendingCreateError('');
+                    }}
+                    placeholder={pendingCreateKind === 'folder' ? 'docs/guides' : 'docs/notes.txt'}
+                    autoFocus
+                    spellCheck={false}
+                  />
+                  {pendingCreateError && <div className="panel-error">{pendingCreateError}</div>}
+                  <div className="repo-create-actions">
+                    <Button type="submit" size="sm">
+                      Create {pendingCreateKind}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setPendingCreateKind('');
+                        setPendingCreatePath('');
+                        setPendingCreateError('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </form>
+              )}
               {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
               {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
                 <div className="panel-empty">No entries found.</div>

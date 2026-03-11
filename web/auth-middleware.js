@@ -1,7 +1,10 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Auth } from '@auth/core';
 import Google from '@auth/core/providers/google';
 import GitHub from '@auth/core/providers/github';
+
+const DEV_SESSION_COOKIE = 'gs_dev_session';
+const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
 
 function buildUsernameFromProfile(profile) {
   const raw = [
@@ -50,10 +53,6 @@ function createAuthContext() {
       }),
     );
   }
-  if (providers.length === 0) {
-    return { startupError: 'No OAuth providers configured' };
-  }
-
   return {
     startupError: '',
     authConfig: {
@@ -78,6 +77,7 @@ function createAuthContext() {
         },
       },
     },
+    authSecret,
   };
 }
 
@@ -113,6 +113,10 @@ async function sendResponse(res, response) {
   response.headers.forEach((value, key) => {
     res.setHeader(key, value);
   });
+  if (String(res.req?.method || '').toUpperCase() === 'HEAD') {
+    res.end();
+    return;
+  }
   const payload = await response.arrayBuffer();
   res.end(Buffer.from(payload));
 }
@@ -120,10 +124,98 @@ async function sendResponse(res, response) {
 function json(res, statusCode, payload) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
+  if (String(res.req?.method || '').toUpperCase() === 'HEAD') {
+    res.end();
+    return;
+  }
   res.end(JSON.stringify(payload));
 }
 
-async function loadSession(req, authConfig) {
+function parseCookies(req) {
+  const raw = String(req.headers.cookie || '');
+  const cookies = new Map();
+  for (const chunk of raw.split(';')) {
+    const trimmed = chunk.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const separator = trimmed.indexOf('=');
+    if (separator < 0) {
+      continue;
+    }
+    const name = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    cookies.set(name, value);
+  }
+  return cookies;
+}
+
+function encodeBase64URL(value) {
+  return Buffer.from(value, 'utf8').toString('base64url');
+}
+
+function decodeBase64URL(value) {
+  return Buffer.from(value, 'base64url').toString('utf8');
+}
+
+function signDevSession(username, authSecret) {
+  const payload = encodeBase64URL(JSON.stringify({ username }));
+  const signature = createHmac('sha256', authSecret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyDevSession(rawValue, authSecret) {
+  if (!rawValue || !authSecret) {
+    return '';
+  }
+  const [payload, signature] = String(rawValue).split('.');
+  if (!payload || !signature) {
+    return '';
+  }
+  const expected = createHmac('sha256', authSecret).update(payload).digest('base64url');
+  const actualBuffer = Buffer.from(signature, 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+    return '';
+  }
+  try {
+    const parsed = JSON.parse(decodeBase64URL(payload));
+    const username = String(parsed?.username || '').trim();
+    return USERNAME_PATTERN.test(username) ? username : '';
+  } catch {
+    return '';
+  }
+}
+
+function appendSetCookie(res, value) {
+  const existing = res.getHeader('Set-Cookie');
+  if (!existing) {
+    res.setHeader('Set-Cookie', value);
+    return;
+  }
+  const next = Array.isArray(existing) ? [...existing, value] : [existing, value];
+  res.setHeader('Set-Cookie', next);
+}
+
+function serializeCookie(req, name, value, maxAgeSeconds) {
+  const parts = [
+    `${name}=${value}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+  ];
+  if (typeof maxAgeSeconds === 'number') {
+    parts.push(`Max-Age=${maxAgeSeconds}`);
+  }
+  const proto = String(req.headers['x-forwarded-proto'] || '').trim();
+  const isSecure = proto === 'https' || requestOrigin(req).startsWith('https://');
+  if (isSecure) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
+async function loadAuthJsSession(req, authConfig) {
   if (!authConfig) {
     return null;
   }
@@ -133,6 +225,35 @@ async function loadSession(req, authConfig) {
     return null;
   }
   return response.json();
+}
+
+async function loadSession(req, authConfig, authSecret) {
+  const authSession = await loadAuthJsSession(req, authConfig);
+  const oauthUsername = String(authSession?.user?.username || '').trim();
+  if (oauthUsername) {
+    return {
+      ...authSession,
+      source: 'oauth',
+      user: {
+        ...(authSession?.user || {}),
+        username: oauthUsername,
+      },
+    };
+  }
+
+  const devUsername = verifyDevSession(parseCookies(req).get(DEV_SESSION_COOKIE), authSecret);
+  if (!devUsername) {
+    return null;
+  }
+
+  return {
+    user: {
+      name: devUsername,
+      username: devUsername,
+    },
+    expires: '',
+    source: 'dev',
+  };
 }
 
 async function readJSON(req) {
@@ -382,19 +503,80 @@ function createAuthHandler(authConfig, startupError) {
 }
 
 export function authJsMiddlewarePlugin({ gatewayTarget }) {
-  const { authConfig, startupError } = createAuthContext();
+  const { authConfig, authSecret, startupError } = createAuthContext();
   const authHandler = createAuthHandler(authConfig, startupError);
+
+  const sessionHandler = async (req, res) => {
+    if (!['GET', 'HEAD'].includes(req.method || 'GET')) {
+      json(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    if (startupError || !authSecret) {
+      json(res, 500, { error: startupError || 'Auth is not configured' });
+      return;
+    }
+    const session = await loadSession(req, authConfig, authSecret);
+    if (!session?.user?.username) {
+      json(res, 401, { error: 'Not signed in' });
+      return;
+    }
+    json(res, 200, session);
+  };
+
+  const devLoginHandler = async (req, res) => {
+    if (req.method !== 'POST') {
+      json(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    if (startupError || !authSecret) {
+      json(res, 500, { error: startupError || 'Auth is not configured' });
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJSON(req);
+    } catch {
+      json(res, 400, { error: 'Invalid JSON body' });
+      return;
+    }
+
+    const username = String(payload?.username || '').trim();
+    if (!USERNAME_PATTERN.test(username)) {
+      json(res, 400, { error: 'Invalid username' });
+      return;
+    }
+
+    appendSetCookie(res, serializeCookie(req, DEV_SESSION_COOKIE, signDevSession(username, authSecret), 60 * 60 * 24 * 30));
+    json(res, 200, {
+      user: {
+        name: username,
+        username,
+      },
+      source: 'dev',
+      expires: '',
+    });
+  };
+
+  const devLogoutHandler = async (req, res) => {
+    if (req.method !== 'POST') {
+      json(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    appendSetCookie(res, serializeCookie(req, DEV_SESSION_COOKIE, '', 0));
+    json(res, 200, { ok: true });
+  };
 
   const approveHandler = async (req, res) => {
     if (req.method !== 'POST') {
       json(res, 405, { error: 'Method not allowed' });
       return;
     }
-    if (startupError || !authConfig) {
+    if (startupError || !authSecret) {
       json(res, 500, { error: startupError || 'Auth is not configured' });
       return;
     }
-    const session = await loadSession(req, authConfig);
+    const session = await loadSession(req, authConfig, authSecret);
     const username = String(session?.user?.username || '').trim();
     if (!username) {
       json(res, 401, { error: 'Sign in required' });
@@ -442,11 +624,17 @@ export function authJsMiddlewarePlugin({ gatewayTarget }) {
   return {
     name: 'authjs-middleware',
     configureServer(server) {
+      server.middlewares.use('/auth/dev-login', devLoginHandler);
+      server.middlewares.use('/auth/dev-logout', devLogoutHandler);
+      server.middlewares.use('/auth/session', sessionHandler);
       server.middlewares.use('/auth/device/approve', approveHandler);
       server.middlewares.use('/auth/device', devicePageHandler);
       server.middlewares.use('/auth', authHandler);
     },
     configurePreviewServer(server) {
+      server.middlewares.use('/auth/dev-login', devLoginHandler);
+      server.middlewares.use('/auth/dev-logout', devLogoutHandler);
+      server.middlewares.use('/auth/session', sessionHandler);
       server.middlewares.use('/auth/device/approve', approveHandler);
       server.middlewares.use('/auth/device', devicePageHandler);
       server.middlewares.use('/auth', authHandler);

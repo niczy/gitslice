@@ -1,24 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 // Routing helpers
-import { parseHash, buildHash } from './utils/routing.js';
+import { buildLegacyRedirectPath, buildPath, parseLocation } from './utils/routing.js';
 
 // API helpers
 import {
   apiBaseUrl,
   createAgentSession as createAgentSessionRequest,
   currentUsername,
-  fetchAgentCapabilities,
-  fetchWithAuth,
   stopAgentSession as stopAgentSessionRequest,
 } from './utils/api.js';
-import { fetchOAuthSession, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
-
-// Normalization
-import { normalizeSliceInfo } from './utils/normalize.js';
+import { signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
+import { useWebSession } from './hooks/useWebSession.js';
+import { useSlicesQuery } from './hooks/useSlices.js';
+import { useAgentCapabilitiesQuery } from './hooks/useAgentCapabilities.js';
 
 // Components
 import OverviewPage from './components/OverviewPage.jsx';
+import AppHeader from './components/AppHeader.jsx';
+import AppFooter from './components/AppFooter.jsx';
+import AdminPage from './components/AdminPage.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
@@ -31,9 +33,6 @@ import AgentSession from './components/AgentSession.jsx';
 import RouteAccessState from './components/RouteAccessState.jsx';
 import { trackRouteEvent } from './utils/analytics.js';
 import { Button } from './components/ui/button.jsx';
-import { Badge } from './components/ui/badge.jsx';
-import { Card, CardContent } from './components/ui/card.jsx';
-import { Separator } from './components/ui/separator.jsx';
 
 // ---------------------------------------------------------------------------
 // Agent Session Types
@@ -119,7 +118,8 @@ const MOCK_TERMINAL_LINES = [
 // ---------------------------------------------------------------------------
 
 function App() {
-  const initialRoute = parseHash();
+  const queryClient = useQueryClient();
+  const initialRoute = parseLocation();
   const [activePage, setActivePage] = useState(() => initialRoute.page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
@@ -132,16 +132,19 @@ function App() {
   const statusUrl = `${apiBaseUrl}/health`;
   const supportUrl = 'https://github.com/niczy/gitslice/issues';
   const [username, setUsername] = useState(() => currentUsername());
+  const [authSessionSource, setAuthSessionSource] = useState('');
+  const webSessionQuery = useWebSession();
 
   // Track whether the browser page has been visited so we can keep it mounted
   const [browserMounted, setBrowserMounted] = useState(() => initialRoute.page === 'browser');
 
   // Slice data (shared across pages)
-  const [slices, setSlices] = useState([]);
   const [currentSliceId, setCurrentSliceId] = useState('');
-  const [slicesLoading, setSlicesLoading] = useState(false);
-  const [slicesError, setSlicesError] = useState('');
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
+  const slicesQuery = useSlicesQuery();
+  const slices = slicesQuery.data || [];
+  const slicesLoading = slicesQuery.isLoading;
+  const slicesError = slicesQuery.error ? 'Unable to load slices.' : '';
 
   // Agent sessions state
   const [agentSessions, setAgentSessions] = useState([]);
@@ -150,11 +153,9 @@ function App() {
   const [isOverlayClosing, setIsOverlayClosing] = useState(false);
   const [selectedOverlayIndex, setSelectedOverlayIndex] = useState(0);
   const [selectedAgentType, setSelectedAgentType] = useState(() => (REAL_RUNTIME_ENABLED ? 'codex' : 'Codex'));
-  const [agentCapabilities, setAgentCapabilities] = useState({
-    supportedAgentTypes: ['codex', 'claude'],
-    defaultAgentType: 'codex',
-  });
-  const [agentCapabilitiesError, setAgentCapabilitiesError] = useState('');
+  const agentCapabilitiesQuery = useAgentCapabilitiesQuery(REAL_RUNTIME_ENABLED && Boolean(username));
+  const agentCapabilities = normalizeCapabilities(agentCapabilitiesQuery.data || null);
+  const agentCapabilitiesError = agentCapabilitiesQuery.error?.message || '';
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef(null);
   const holdModeRef = useRef(false);
@@ -182,53 +183,43 @@ function App() {
       setDiffChangesetId('');
     }
     setUnknownRoute('');
-    window.history.pushState(null, '', buildHash(page, commitHash, changesetId));
+    window.history.pushState(null, '', buildPath(page, commitHash, changesetId));
   }, []);
 
-  // Keep app state in sync for both back/forward navigation and hash-only URL updates.
+  useEffect(() => {
+    const nextPath = buildLegacyRedirectPath(window.location);
+    if (nextPath) {
+      window.history.replaceState(null, '', nextPath);
+    }
+  }, []);
+
+  // Keep app state in sync for back/forward navigation.
   useEffect(() => {
     const syncRouteFromLocation = () => {
-      const { page, commitHash, changesetId, unknownPath } = parseHash();
+      const { page, commitHash, changesetId, unknownPath } = parseLocation();
       setActivePage(page);
       setDiffCommitHash(commitHash);
       setDiffChangesetId(changesetId);
       setUnknownRoute(unknownPath || '');
     };
     window.addEventListener('popstate', syncRouteFromLocation);
-    window.addEventListener('hashchange', syncRouteFromLocation);
     return () => {
       window.removeEventListener('popstate', syncRouteFromLocation);
-      window.removeEventListener('hashchange', syncRouteFromLocation);
     };
   }, []);
 
-  // Load slices on mount
   useEffect(() => {
-    const loadSlices = async () => {
-      setSlicesLoading(true);
-      setSlicesError('');
-      try {
-        const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices?limit=200`);
-        if (!response.ok) {
-          throw new Error(`Request failed (${response.status})`);
-        }
-        const payload = await response.json();
-        const loaded = (payload.slices || []).map(normalizeSliceInfo);
-        setSlices(loaded);
-        // Set default slice if none selected
-        setCurrentSliceId((prev) => {
-          if (prev) return prev;
-          const root = loaded.find((slice) => slice.is_root);
-          return root ? root.slice_id : loaded[0]?.slice_id || '';
-        });
-      } catch (err) {
-        setSlicesError('Unable to load slices.');
-      } finally {
-        setSlicesLoading(false);
+    if (slices.length === 0) {
+      return;
+    }
+    setCurrentSliceId((prev) => {
+      if (prev && slices.some((slice) => slice.slice_id === prev)) {
+        return prev;
       }
-    };
-    loadSlices();
-  }, [username]);
+      const root = slices.find((slice) => slice.is_root);
+      return root ? root.slice_id : slices[0]?.slice_id || '';
+    });
+  }, [slices]);
 
   const navigateToDiff = (commitHash) => {
     navigate('diff', commitHash);
@@ -254,91 +245,58 @@ function App() {
   }, [navigate]);
 
   useEffect(() => {
-    const syncOAuthSession = async () => {
-      if (username) {
-        return;
-      }
-      try {
-        const session = await fetchOAuthSession();
-        const oauthUsername = session?.user?.username || '';
-        if (!oauthUsername) {
-          return;
-        }
-        const signedInUsername = await signInWithAccount(apiBaseUrl, oauthUsername);
-        setUsername(signedInUsername);
-        if (activePage === 'login') {
-          const nextPage = returnToPage || 'browser';
-          const nextCommitHash = nextPage === 'diff' ? returnToCommitHash : '';
-          const nextChangesetId = nextPage === 'changeset' ? returnToChangesetId : '';
-          navigate(nextPage, nextCommitHash, nextChangesetId);
-        }
-      } catch {
-        // ignore oauth session sync failures
-      }
-    };
-    syncOAuthSession();
-  }, [activePage, apiBaseUrl, navigate, returnToChangesetId, returnToCommitHash, returnToPage, username]);
+    const nextUsername = webSessionQuery.data?.user?.username || '';
+    setUsername(nextUsername);
+    setAuthSessionSource(webSessionQuery.data?.source || '');
+    if (nextUsername && activePage === 'login') {
+      const nextPage = returnToPage || 'browser';
+      const nextCommitHash = nextPage === 'diff' ? returnToCommitHash : '';
+      const nextChangesetId = nextPage === 'changeset' ? returnToChangesetId : '';
+      navigate(nextPage, nextCommitHash, nextChangesetId);
+    }
+  }, [
+    activePage,
+    navigate,
+    returnToChangesetId,
+    returnToCommitHash,
+    returnToPage,
+    webSessionQuery.data,
+  ]);
 
   const refreshSlices = useCallback(async () => {
-    setSlicesLoading(true);
-    setSlicesError('');
-    try {
-      const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices?limit=200`);
-      if (!response.ok) {
-        throw new Error(`Request failed (${response.status})`);
-      }
-      const payload = await response.json();
-      const loaded = (payload.slices || []).map(normalizeSliceInfo);
-      setSlices(loaded);
-    } catch (err) {
-      setSlicesError('Unable to load slices.');
-    } finally {
-      setSlicesLoading(false);
-    }
-  }, []);
+    await slicesQuery.refetch();
+  }, [slicesQuery]);
 
-  const doLogout = useCallback(() => {
-    signOutAccount();
+  const doLogout = useCallback(async () => {
+    await signOutAccount();
     setUsername('');
+    setAuthSessionSource('');
     setActivePage('landing');
     setUnknownRoute('');
-    window.history.pushState(null, '', buildHash('landing', ''));
-    startOAuthSignOut();
-  }, []);
+    window.history.pushState(null, '', buildPath('landing', ''));
+    await queryClient.invalidateQueries({ queryKey: ['web-session'] });
+    if (authSessionSource === 'oauth') {
+      startOAuthSignOut();
+    }
+  }, [authSessionSource, queryClient]);
 
   const doLogin = useCallback(async (nextUsername) => {
     const signedInUsername = await signInWithAccount(apiBaseUrl, nextUsername);
     setUsername(signedInUsername);
-  }, [apiBaseUrl]);
+    setAuthSessionSource('dev');
+    await queryClient.invalidateQueries({ queryKey: ['web-session'] });
+    await queryClient.invalidateQueries({ queryKey: ['slices'] });
+  }, [apiBaseUrl, queryClient]);
 
   const doOAuthLogin = useCallback((providerId) => {
     startOAuthSignIn(providerId);
   }, []);
 
   useEffect(() => {
-    if (!REAL_RUNTIME_ENABLED || !username) {
-      return;
-    }
-    let cancelled = false;
-    setAgentCapabilitiesError('');
-    fetchAgentCapabilities()
-      .then((payload) => {
-        if (cancelled) return;
-        const next = normalizeCapabilities(payload);
-        setAgentCapabilities(next);
-        setSelectedAgentType((prev) => (next.supportedAgentTypes.includes(prev) ? prev : next.defaultAgentType));
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setAgentCapabilitiesError(error?.message || 'Unable to load agent capabilities.');
-        const fallback = normalizeCapabilities(null);
-        setAgentCapabilities(fallback);
-        setSelectedAgentType((prev) => (fallback.supportedAgentTypes.includes(prev) ? prev : fallback.defaultAgentType));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [username]);
+    setSelectedAgentType((prev) => (
+      agentCapabilities.supportedAgentTypes.includes(prev) ? prev : agentCapabilities.defaultAgentType
+    ));
+  }, [agentCapabilities]);
 
   const handleSessionStateChange = useCallback((sessionID, nextState) => {
     const status = normalizeRuntimeState(nextState);
@@ -685,104 +643,14 @@ function App() {
 
   return (
     <div className={`app-shell min-h-screen bg-background text-foreground${isBrowserLayout ? ' app-shell--browser' : ''}`}>
-      <header className="top-bar border-b border-border/80 bg-card/90 backdrop-blur-sm">
-        <Button type="button" variant="ghost" className="brand" onClick={() => navigate('landing')}>
-          <span className="brand-icon">◆</span>
-          <span className="brand-text">Git Slice</span>
-        </Button>
-        <div className="top-bar-actions">
-          {isAuthenticated ? (
-            <>
-              <Button
-                type="button"
-                variant={isNavActive('projects') ? 'secondary' : 'ghost'}
-                className={`nav-link${isNavActive('projects') ? ' nav-link--active' : ''}`}
-                data-testid="topbar-projects"
-                onClick={() => navigate('projects')}
-              >
-                Projects
-              </Button>
-              <Button
-                type="button"
-                variant={isNavActive('repos') ? 'secondary' : 'ghost'}
-                className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
-                data-testid="topbar-repos"
-                onClick={() => navigate('browser')}
-              >
-                Repos
-              </Button>
-              <Button
-                type="button"
-                variant={isNavActive('settings') ? 'secondary' : 'ghost'}
-                className={`nav-link${isNavActive('settings') ? ' nav-link--active' : ''}`}
-                data-testid="topbar-settings"
-                onClick={() => navigate('settings')}
-              >
-                Settings
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="nav-link"
-                data-testid="topbar-profile"
-                onClick={() => navigate('profile')}
-                title="Profile"
-              >
-                {username}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="nav-link"
-                data-testid="topbar-logout"
-                onClick={doLogout}
-              >
-                Logout
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                type="button"
-                variant={isNavActive('repos') ? 'default' : 'secondary'}
-                className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
-                data-testid="topbar-repo-browser"
-                onClick={() => navigate('browser')}
-              >
-                Repo Browser
-              </Button>
-              <Button
-                type="button"
-                variant={isNavActive('login') ? 'secondary' : 'ghost'}
-                className={`nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
-                data-testid="topbar-login"
-                onClick={() => navigate('login')}
-              >
-                Login
-              </Button>
-              <Button asChild variant="ghost" className="nav-link" data-testid="topbar-docs-link">
-                <a href="https://github.com/agenttools-dev/gitslice#readme" target="_blank" rel="noreferrer">
-                  Docs
-                </a>
-              </Button>
-              <Button asChild variant="ghost" className="nav-link" data-testid="topbar-github-link">
-                <a href={githubUrl} target="_blank" rel="noreferrer">
-                  GitHub
-                </a>
-              </Button>
-              <Button
-                type="button"
-                variant="default"
-                className={`nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`}
-                data-testid="topbar-get-started"
-                onClick={() => navigate('landing')}
-              >
-                Get Started
-              </Button>
-            </>
-          )}
-        </div>
-      </header>
+      <AppHeader
+        isAuthenticated={isAuthenticated}
+        username={username}
+        githubUrl={githubUrl}
+        navigate={navigate}
+        onLogout={doLogout}
+        isNavActive={isNavActive}
+      />
 
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
         {activePage === 'landing' && <OverviewPage onBrowseRepo={() => navigate('browser')} />}
@@ -805,12 +673,20 @@ function App() {
             slicesLoading={slicesLoading}
             slicesError={slicesError}
             onOpenRepos={() => navigate('browser')}
+            onRefresh={refreshSlices}
           />
         )}
         {activePage === 'profile' && routeAccessState === 'allowed' && (
           <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
         )}
-        {activePage === 'settings' && routeAccessState === 'allowed' && <SettingsPage username={username} onOpenProfile={() => navigate('profile')} />}
+        {activePage === 'settings' && routeAccessState === 'allowed' && (
+          <SettingsPage
+            username={username}
+            authSessionSource={authSessionSource}
+            onOpenProfile={() => navigate('profile')}
+            onLogout={doLogout}
+          />
+        )}
 
         {/* RepoBrowser stays mounted once visited to preserve state across browser<->diff navigation */}
         {browserMounted && routeAccessState === 'allowed' && (
@@ -846,20 +722,7 @@ function App() {
           />
         )}
 
-        {activePage === 'admin' && routeAccessState === 'allowed' && (
-          <section className="section space-y-4" data-testid="admin-page">
-            <div className="section-header">
-              <Badge variant="secondary" className="eyebrow">Administration</Badge>
-              <h2>Admin Console</h2>
-              <p>Administrative operations are available for privileged accounts.</p>
-            </div>
-            <Card className="border-border/70">
-              <CardContent className="pt-6">
-                <div className="panel-empty">No admin actions are configured for this deployment yet.</div>
-              </CardContent>
-            </Card>
-          </section>
-        )}
+        {activePage === 'admin' && routeAccessState === 'allowed' && <AdminPage />}
 
         {isProtectedPage && routeAccessState !== 'allowed' && (
           <RouteAccessState
@@ -997,16 +860,7 @@ function App() {
         </div>
       )}
 
-      <Separator className="mt-8" />
-      <footer className="footer bg-card/70" aria-label="Global footer">
-        <p className="footer-copy">Git Slice • Slice smart. Ship faster.</p>
-        <nav className="footer-links" aria-label="Self-service links">
-          <a href={docsUrl} target="_blank" rel="noreferrer">Docs</a>
-          <a href={statusUrl} target="_blank" rel="noreferrer">Status</a>
-          <a href={supportUrl} target="_blank" rel="noreferrer">Support</a>
-          <a href={githubUrl} target="_blank" rel="noreferrer">GitHub</a>
-        </nav>
-      </footer>
+      <AppFooter docsUrl={docsUrl} statusUrl={statusUrl} supportUrl={supportUrl} githubUrl={githubUrl} />
     </div>
   );
 }
