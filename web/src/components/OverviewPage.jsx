@@ -7,8 +7,8 @@ import { Badge } from './ui/badge.jsx';
 
 const BENEFITS = [
   {
-    title: 'API-first foundation',
-    detail: 'Every workflow starts from typed APIs and gRPC definitions so repo actions stay scriptable from day one.',
+    title: 'Remote filesystem, plain CLI',
+    detail: 'Use absolute paths with `gs fs` so reading, writing, and diffing files feels direct instead of branch-heavy.',
   },
   {
     title: 'Simple by default',
@@ -22,19 +22,25 @@ const BENEFITS = [
 
 const WORKFLOW = [
   {
-    title: 'Define scope',
-    copy: 'Create a slice for one outcome with clear ownership and minimal blast radius.',
-    command: 'gs fork checkout-api ./internal/httpapi --parent root_slice',
+    title: 'Create a home path',
+    copy: 'Log in once, then create a directory and write a file in your remote home slice.',
+    command: `gs login
+gs fs mkdir /$USER/demo
+gs fs write /$USER/demo/README.md --from ./README.md`,
   },
   {
-    title: 'Review changes',
-    copy: 'Inspect commit diffs and changesets before merging, without branch-heavy handoffs.',
-    command: 'gs file commit-changes <commit-hash>',
+    title: 'Inspect and snapshot',
+    copy: 'Read the remote file back, list the directory, and capture a checkpoint before you publish anything.',
+    command: `gs fs cat /$USER/demo/README.md
+gs fs ls /$USER/demo
+gs fs snapshot -m "demo ready"`,
   },
   {
-    title: 'Ship through review',
-    copy: 'Validate diffs, review changesets, and merge cleanly without branch-heavy handoffs.',
-    command: 'gs changeset merge checkout-api',
+    title: 'Check out locally',
+    copy: 'When you want a full working tree, check the slice out into an empty directory and use normal Git commands.',
+    command: `mkdir checkout-demo && cd checkout-demo
+gs slice checkout <slice-id>
+git status`,
   },
 ];
 
@@ -46,7 +52,7 @@ export default function OverviewPage({ onBrowseRepo }) {
           <Badge variant="secondary" className="eyebrow border border-border/60">Built for modern delivery workflows</Badge>
           <h1>Ship reliable software faster with API-first slices.</h1>
           <p className="lede">
-            Keep code, commit history, and review flow aligned from first commit to merge.
+            Keep files, snapshots, and review flow aligned from first write to merge.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -63,19 +69,16 @@ export default function OverviewPage({ onBrowseRepo }) {
         <div className="hero-panel">
           <Card className="hero-card hero-card--api border-border/70 bg-card/95">
             <CardHeader>
-              <Badge variant="outline" className="w-fit">API-first core</Badge>
-              <CardTitle className="text-xl">One platform for code, review, and versioned change history</CardTitle>
+              <Badge variant="outline" className="w-fit">FS CLI Quickstart</Badge>
+              <CardTitle className="text-xl">Try the remote filesystem in under a minute</CardTitle>
             </CardHeader>
             <CardContent>
             <pre className="code-block">
-              <code>{`service FileService {
-  rpc GetCommitChanges(GetCommitChangesRequest)
-      returns (GetCommitChangesResponse) {
-    option (google.api.http) = {
-      get: "/v1/commits/{commit_hash}/changes"
-    };
-  }
-}`}</code>
+              <code>{`gs login
+gs fs mkdir /$USER/demo
+gs fs write /$USER/demo/hello.txt --text "hello from gitslice"
+gs fs cat /$USER/demo/hello.txt
+gs fs snapshot -m "first remote edit"`}</code>
             </pre>
             </CardContent>
           </Card>
@@ -104,9 +107,9 @@ export default function OverviewPage({ onBrowseRepo }) {
 
       <section className="section quickstart space-y-6">
         <div className="section-header">
-          <Badge variant="secondary" className="eyebrow">Workflow</Badge>
-          <h2>Simple flow, no branch maze</h2>
-          <p>Run the same clean sequence in local development, CI, or review automation.</p>
+          <Badge variant="secondary" className="eyebrow">Tutorial</Badge>
+          <h2>Learn `gs fs` in three steps</h2>
+          <p>Start with remote file operations, capture a snapshot, then move into a git-compatible local checkout when you need a full worktree.</p>
         </div>
         <div className="workflow-grid grid gap-4 md:grid-cols-3">
           {WORKFLOW.map((item, index) => (
