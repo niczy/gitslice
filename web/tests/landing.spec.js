@@ -14,6 +14,6 @@ test('renders Git Slice landing content and navigation', async ({ page }) => {
 
   await page.getByRole('button', { name: /Git Slice/i }).click();
   await expect(page.getByRole('heading', { level: 1, name: /ship reliable software faster with api-first slices/i })).toBeVisible();
-  await expect(page.getByRole('heading', { name: /built for clarity across human and agent workflows/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /built for clarity across code and review workflows/i })).toBeVisible();
   await expect(page.getByRole('heading', { name: /simple flow, no branch maze/i })).toBeVisible();
 });
