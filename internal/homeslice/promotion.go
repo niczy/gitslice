@@ -165,7 +165,7 @@ func SyncHomeSliceToRoot(ctx context.Context, st storage.Storage, homeSliceID st
 		if entry == nil {
 			continue
 		}
-		content, err := st.GetSliceFileByPath(ctx, homeSlice.ID, entry.Path)
+		content, err := storage.ReadSliceFileContent(ctx, st, homeSlice.ID, entry.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -173,13 +173,8 @@ func SyncHomeSliceToRoot(ctx context.Context, st storage.Storage, homeSliceID st
 		if hash == "" {
 			hash = entry.Hash
 		}
-		if err := st.AddFileContent(ctx, &models.FileContent{
-			FileID:  entry.Path,
-			Path:    entry.Path,
-			Content: append([]byte(nil), content.Content...),
-			Size:    content.Size,
-			Hash:    hash,
-		}); err != nil {
+		manifest, err := storage.WriteSliceFileManifest(ctx, st, rootSlice.ID, entry.Path, append([]byte(nil), content.Content...))
+		if err != nil {
 			return nil, err
 		}
 		if err := st.AddEntry(ctx, &models.DirectoryEntry{
@@ -188,7 +183,7 @@ func SyncHomeSliceToRoot(ctx context.Context, st storage.Storage, homeSliceID st
 			Type:     "file",
 			ParentID: rootSlice.ID,
 			Size:     content.Size,
-			Hash:     hash,
+			Hash:     manifest.Hash,
 		}); err != nil {
 			return nil, err
 		}

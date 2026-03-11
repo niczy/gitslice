@@ -320,13 +320,14 @@ func upsertFile(ctx context.Context, st storage.Storage, sliceID string, mounted
 		return err
 	}
 
-	return st.AddFileContent(ctx, &models.FileContent{
-		FileID:  mountedPath,
-		Path:    mountedPath,
-		Content: content,
-		Size:    int64(len(content)),
-		Hash:    contentHash,
-	})
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, mountedPath, content)
+	if err != nil {
+		return err
+	}
+	if got := strings.TrimSpace(manifest.Hash); got != strings.TrimSpace(contentHash) {
+		return fmt.Errorf("manifest hash mismatch for %s", mountedPath)
+	}
+	return nil
 }
 
 func saveCommitSnapshot(ctx context.Context, st storage.Storage, sliceID string, commitHash string, commitTime time.Time, fileHashes map[string]string) error {

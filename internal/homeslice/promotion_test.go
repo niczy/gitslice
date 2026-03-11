@@ -69,23 +69,16 @@ func TestSyncHomeSliceToRootMirrorsSubtree(t *testing.T) {
 func writeHomeFile(t *testing.T, ctx context.Context, st storage.Storage, sliceID, filePath, content string) {
 	t.Helper()
 
+	hash := mustWriteSliceManifest(t, ctx, st, sliceID, filePath, []byte(content))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(sliceID, filePath),
 		Path:     filePath,
 		Type:     "file",
 		ParentID: sliceID,
 		Size:     int64(len(content)),
+		Hash:     hash,
 	}); err != nil {
 		t.Fatalf("add entry %s: %v", filePath, err)
-	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: []byte(content),
-		Size:    int64(len(content)),
-		Hash:    "",
-	}); err != nil {
-		t.Fatalf("add content %s: %v", filePath, err)
 	}
 	if err := st.AddFileToSlice(ctx, filePath, sliceID); err != nil {
 		t.Fatalf("add file to slice %s: %v", filePath, err)
