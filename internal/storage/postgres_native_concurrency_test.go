@@ -55,23 +55,23 @@ func TestPostgresNativeStorageFileContentReadWriteIsolation(t *testing.T) {
 	}
 	content[0] = 'x'
 
-	files, err := ListSliceFileContents(ctx, st, "slice-1")
+	file, err := ReadSliceFileContent(ctx, st, "slice-1", "src/main.go")
 	if err != nil {
-		t.Fatalf("ListSliceFileContents failed: %v", err)
+		t.Fatalf("ReadSliceFileContent failed: %v", err)
 	}
-	if len(files) != 1 || string(files[0].Content) != "hello" {
-		t.Fatalf("expected stored content to remain hello, got %+v", files)
+	if string(file.Content) != "hello" {
+		t.Fatalf("expected stored content to remain hello, got %+v", file)
 	}
-	if files[0].Hash != manifest.Hash {
-		t.Fatalf("expected stored hash %q, got %q", manifest.Hash, files[0].Hash)
+	if file.Hash != manifest.Hash {
+		t.Fatalf("expected stored hash %q, got %q", manifest.Hash, file.Hash)
 	}
 
-	files[0].Content[0] = 'y'
-	filesAgain, err := ListSliceFileContents(ctx, st, "slice-1")
+	file.Content[0] = 'y'
+	fileAgain, err := ReadSliceFileContent(ctx, st, "slice-1", "src/main.go")
 	if err != nil {
-		t.Fatalf("ListSliceFileContents second failed: %v", err)
+		t.Fatalf("ReadSliceFileContent second failed: %v", err)
 	}
-	if string(filesAgain[0].Content) != "hello" {
-		t.Fatalf("read mutation should not alias stored content, got %q", string(filesAgain[0].Content))
+	if string(fileAgain.Content) != "hello" {
+		t.Fatalf("read mutation should not alias stored content, got %q", string(fileAgain.Content))
 	}
 }

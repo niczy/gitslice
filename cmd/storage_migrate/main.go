@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,10 +14,14 @@ import (
 	"strings"
 	"time"
 
+	gcsstorage "cloud.google.com/go/storage"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	"google.golang.org/api/option"
 )
 
 func main() {
@@ -61,6 +67,46 @@ func mustPool(ctx context.Context, dsn string) *pgxpool.Pool {
 	return pool
 }
 
+func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectStore, func(), error) {
+	switch strings.ToLower(cfg.ObjectStoreType) {
+	case "filesystem", "fs", "file":
+		store, err := storage.NewFilesystemObjectStore(cfg.ObjectStoreDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, func() {}, nil
+	case "", "gcs":
+		// Continue below.
+	default:
+		return nil, nil, fmt.Errorf("unsupported OBJECT_STORE_TYPE: %s", cfg.ObjectStoreType)
+	}
+
+	if cfg.GCSBucket == "" {
+		return nil, nil, fmt.Errorf("GCS_BUCKET is required")
+	}
+
+	clientOpts := []option.ClientOption{}
+	if cfg.GCSEndpoint != "" {
+		clientOpts = append(clientOpts, option.WithEndpoint(cfg.GCSEndpoint))
+	}
+	if cfg.GCSDisableAuth {
+		clientOpts = append(clientOpts, option.WithoutAuthentication())
+	}
+	if cfg.GCSCredentialsFile != "" {
+		clientOpts = append(clientOpts, option.WithCredentialsFile(cfg.GCSCredentialsFile))
+	}
+	if cfg.GCSCredentialsJSON != "" {
+		clientOpts = append(clientOpts, option.WithCredentialsJSON([]byte(cfg.GCSCredentialsJSON)))
+	}
+
+	client, err := gcsstorage.NewClient(ctx, clientOpts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return storage.NewGCSObjectStore(client, cfg.GCSBucket), func() { _ = client.Close() }, nil
+}
+
 func readSnapshotPayload(ctx context.Context, pool *pgxpool.Pool, namespace string) ([]byte, error) {
 	var payload []byte
 	err := pool.QueryRow(ctx, `SELECT payload FROM public.storage_state WHERE namespace = $1`, namespace).Scan(&payload)
@@ -83,8 +129,9 @@ type backfillStats struct {
 	Slices         int
 	Entries        int
 	CommitSnaps    int
-	FileContents   int
+	FileManifests  int
 	Versioned      int
+	Blocks         int
 	FileChanges    int
 	SliceCommits   int
 	Changesets     int
@@ -117,12 +164,19 @@ func cmdBackfillNative(args []string) {
 		log.Fatalf("RunMigrations: %v", err)
 	}
 
-	stats, err := backfillNative(ctx, pool, snap)
+	cfg := config.LoadConfig()
+	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("build object store: %v", err)
+	}
+	defer closeObjectStore()
+
+	stats, err := backfillNative(ctx, pool, objectStore, *namespace, snap)
 	if err != nil {
 		log.Fatalf("backfill: %v", err)
 	}
-	log.Printf("Backfill complete: slices=%d entries=%d commit_snapshots=%d file_contents=%d versioned=%d file_changes=%d slice_commits=%d changesets=%d changeset_snapshots=%d file_index=%d users=%d orgs=%d memberships=%d",
-		stats.Slices, stats.Entries, stats.CommitSnaps, stats.FileContents, stats.Versioned, stats.FileChanges, stats.SliceCommits, stats.Changesets, stats.ChangesetSnaps, stats.FileIndexRows, stats.Users, stats.Organizations, stats.OrgMemberships)
+	log.Printf("Backfill complete: slices=%d entries=%d commit_snapshots=%d manifests=%d versioned_manifests=%d blocks=%d file_changes=%d slice_commits=%d changesets=%d changeset_snapshots=%d file_index=%d users=%d orgs=%d memberships=%d",
+		stats.Slices, stats.Entries, stats.CommitSnaps, stats.FileManifests, stats.Versioned, stats.Blocks, stats.FileChanges, stats.SliceCommits, stats.Changesets, stats.ChangesetSnaps, stats.FileIndexRows, stats.Users, stats.Organizations, stats.OrgMemberships)
 
 	if *drop {
 		if err := dropSnapshot(ctx, pool, *namespace); err != nil {
@@ -224,7 +278,117 @@ func ensureDirs(entries map[string]entryRow, sliceID, filePath string) {
 	}
 }
 
-func backfillNative(ctx context.Context, pool *pgxpool.Pool, snap *storage.LegacyPostgresSnapshot) (*backfillStats, error) {
+func objectKey(namespace string, parts ...string) string {
+	if strings.TrimSpace(namespace) == "" {
+		return strings.Join(parts, ":")
+	}
+	return fmt.Sprintf("%s:%s", strings.TrimSpace(namespace), strings.Join(parts, ":"))
+}
+
+func hashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneLegacyContent(fc *models.FileContent, path string) *models.FileContent {
+	if fc == nil {
+		return nil
+	}
+	content := &models.FileContent{
+		FileID: fc.FileID,
+		Path:   common.CleanRelativePath(path),
+		Size:   fc.Size,
+		Hash:   strings.TrimSpace(fc.Hash),
+	}
+	if content.Path == "" {
+		content.Path = common.CleanRelativePath(fc.Path)
+	}
+	if len(fc.Content) > 0 {
+		content.Content = append([]byte(nil), fc.Content...)
+		content.Size = int64(len(content.Content))
+	}
+	return content
+}
+
+func persistLegacyManifest(
+	ctx context.Context,
+	tx pgx.Tx,
+	objectStore storage.ObjectStore,
+	namespace, sliceID, filePath string,
+	content []byte,
+	desiredHash string,
+	writtenBlocks map[string]struct{},
+	writtenVersioned map[string]struct{},
+) (manifestHash string, blocksWritten int, err error) {
+	filePath = common.CleanRelativePath(filePath)
+	if strings.TrimSpace(sliceID) == "" || filePath == "" {
+		return "", 0, storage.ErrInvalidInput
+	}
+	if content == nil {
+		content = []byte{}
+	}
+
+	manifestHash = strings.TrimSpace(desiredHash)
+	if manifestHash == "" {
+		manifestHash = hashContent(content)
+	}
+
+	blocks, payloads := storage.ChunkFile(content, storage.DefaultFileBlockSize)
+	for blockHash, payload := range payloads {
+		if _, ok := writtenBlocks[blockHash]; ok {
+			continue
+		}
+		key := objectKey(namespace, "blocks", blockHash)
+		if _, err := objectStore.GetObject(ctx, key); err == nil {
+			writtenBlocks[blockHash] = struct{}{}
+			continue
+		} else if err != storage.ErrEntryNotFound {
+			return "", blocksWritten, err
+		}
+		if err := objectStore.PutObject(ctx, key, payload); err != nil {
+			return "", blocksWritten, err
+		}
+		writtenBlocks[blockHash] = struct{}{}
+		blocksWritten++
+	}
+
+	manifest := &models.FileManifest{
+		Path:      filePath,
+		TotalSize: int64(len(content)),
+		Hash:      manifestHash,
+		Blocks:    blocks,
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return "", blocksWritten, err
+	}
+
+	if err := objectStore.PutObject(ctx, objectKey(namespace, "manifests", sliceID, filePath), raw); err != nil {
+		return "", blocksWritten, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		ON CONFLICT (slice_id, path) DO UPDATE SET
+			hash = EXCLUDED.hash,
+			total_size = EXCLUDED.total_size,
+			block_count = EXCLUDED.block_count,
+			updated_at = NOW()
+	`, sliceID, filePath, manifest.Hash, manifest.TotalSize, len(manifest.Blocks)); err != nil {
+		return "", blocksWritten, err
+	}
+
+	if _, ok := writtenVersioned[manifest.Hash]; !ok {
+		if err := objectStore.PutObject(ctx, objectKey(namespace, "versioned_manifests", manifest.Hash), raw); err != nil {
+			return "", blocksWritten, err
+		}
+		writtenVersioned[manifest.Hash] = struct{}{}
+	}
+
+	return manifest.Hash, blocksWritten, nil
+}
+
+func backfillNative(ctx context.Context, pool *pgxpool.Pool, objectStore storage.ObjectStore, namespace string, snap *storage.LegacyPostgresSnapshot) (*backfillStats, error) {
 	stats := &backfillStats{}
 	if snap == nil {
 		return stats, fmt.Errorf("nil snapshot")
@@ -573,35 +737,116 @@ func backfillNative(ctx context.Context, pool *pgxpool.Pool, snap *storage.Legac
 		stats.Entries++
 	}
 
-	// File content metadata
-	for fileID, fc := range snap.FileContents {
-		if fc == nil || fileID == "" {
+	legacyEntriesByID := make(map[string]*models.DirectoryEntry, len(snap.Entries))
+	for _, entry := range snap.Entries {
+		if entry == nil || entry.ID == "" {
 			continue
 		}
-		_, err := tx.Exec(ctx, `
-			INSERT INTO file_contents (file_id, path, size, hash, created_at)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (file_id) DO UPDATE SET path = EXCLUDED.path, size = EXCLUDED.size, hash = EXCLUDED.hash
-		`, fileID, fc.Path, fc.Size, fc.Hash, now)
+		legacyEntriesByID[entry.ID] = entry
+	}
+	headSnapshots := make(map[string]*models.CommitSnapshot, len(snap.SliceMetadata))
+	for sliceID, meta := range snap.SliceMetadata {
+		if meta == nil || strings.TrimSpace(meta.HeadCommitHash) == "" {
+			continue
+		}
+		if snapshot := snap.CommitSnapshots[meta.HeadCommitHash]; snapshot != nil {
+			headSnapshots[sliceID] = snapshot
+		}
+	}
+
+	resolveCurrentContent := func(row entryRow) *models.FileContent {
+		if row.typ != "file" {
+			return nil
+		}
+		if fc := cloneLegacyContent(snap.FileContents[row.id], row.path); fc != nil && len(fc.Content) > 0 {
+			return fc
+		}
+		if fc := cloneLegacyContent(snap.FileContents[row.path], row.path); fc != nil && len(fc.Content) > 0 {
+			return fc
+		}
+		if entry := legacyEntriesByID[row.id]; entry != nil && len(entry.Content) > 0 {
+			return &models.FileContent{
+				FileID:  row.id,
+				Path:    row.path,
+				Content: append([]byte(nil), entry.Content...),
+				Size:    int64(len(entry.Content)),
+				Hash:    strings.TrimSpace(entry.Hash),
+			}
+		}
+		if snapshot := headSnapshots[row.sliceID]; snapshot != nil {
+			if hash := strings.TrimSpace(snapshot.Files[row.path]); hash != "" {
+				if vc := cloneLegacyContent(snap.VersionedContent[hash], row.path); vc != nil && len(vc.Content) > 0 {
+					if vc.Hash == "" {
+						vc.Hash = hash
+					}
+					return vc
+				}
+			}
+		}
+		return nil
+	}
+
+	writtenBlocks := make(map[string]struct{})
+	writtenVersioned := make(map[string]struct{})
+	for _, k := range keys {
+		row := entrySet[k]
+		content := resolveCurrentContent(row)
+		if content == nil {
+			continue
+		}
+		_, blocksWritten, err := persistLegacyManifest(ctx, tx, objectStore, namespace, row.sliceID, row.path, content.Content, content.Hash, writtenBlocks, writtenVersioned)
 		if err != nil {
 			return nil, err
 		}
-		stats.FileContents++
+		stats.FileManifests++
+		stats.Blocks += blocksWritten
 	}
+
 	for hash, vc := range snap.VersionedContent {
-		if vc == nil || hash == "" {
+		hash = strings.TrimSpace(hash)
+		if vc == nil || hash == "" || len(vc.Content) == 0 {
 			continue
 		}
-		_, err := tx.Exec(ctx, `
-			INSERT INTO versioned_content (content_hash, file_id, path, size, created_at)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (content_hash) DO NOTHING
-		`, hash, vc.FileID, vc.Path, vc.Size, now)
+		if _, ok := writtenVersioned[hash]; ok {
+			continue
+		}
+		path := common.CleanRelativePath(vc.Path)
+		if path == "" {
+			path = hash
+		}
+		blocks, payloads := storage.ChunkFile(vc.Content, storage.DefaultFileBlockSize)
+		for blockHash, payload := range payloads {
+			if _, ok := writtenBlocks[blockHash]; ok {
+				continue
+			}
+			key := objectKey(namespace, "blocks", blockHash)
+			if _, err := objectStore.GetObject(ctx, key); err == nil {
+				writtenBlocks[blockHash] = struct{}{}
+				continue
+			} else if err != storage.ErrEntryNotFound {
+				return nil, err
+			}
+			if err := objectStore.PutObject(ctx, key, payload); err != nil {
+				return nil, err
+			}
+			writtenBlocks[blockHash] = struct{}{}
+			stats.Blocks++
+		}
+		raw, err := json.Marshal(&models.FileManifest{
+			Path:      path,
+			TotalSize: int64(len(vc.Content)),
+			Hash:      hash,
+			Blocks:    blocks,
+		})
 		if err != nil {
 			return nil, err
 		}
-		stats.Versioned++
+		if err := objectStore.PutObject(ctx, objectKey(namespace, "versioned_manifests", hash), raw); err != nil {
+			return nil, err
+		}
+		writtenVersioned[hash] = struct{}{}
 	}
+	stats.Versioned = len(writtenVersioned)
 
 	// Commit snapshots
 	for commitHash, cs := range snap.CommitSnapshots {
