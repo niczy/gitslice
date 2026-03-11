@@ -121,6 +121,13 @@ service FilesystemService {
     };
   }
 
+  rpc Batch(BatchRequest) returns (BatchResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs/workspaces/{workspace_id}:batch"
+      body: "*"
+    };
+  }
+
   rpc Glob(GlobRequest) returns (GlobResponse) {
     option (google.api.http) = {
       get: "/v1/fs/workspaces/{workspace_id}:glob"
@@ -444,6 +451,79 @@ message WriteFilesRequest {
 message WriteFilesResponse {
   string workspace_id = 1;
   repeated WriteFileResult files = 2;
+  string commit_hash = 3;
+}
+
+enum BatchOperationType {
+  BATCH_OPERATION_TYPE_UNSPECIFIED = 0;
+  BATCH_OPERATION_TYPE_WRITE = 1;
+  BATCH_OPERATION_TYPE_EDIT = 2;
+  BATCH_OPERATION_TYPE_DELETE = 3;
+  BATCH_OPERATION_TYPE_MOVE = 4;
+  BATCH_OPERATION_TYPE_COPY = 5;
+  BATCH_OPERATION_TYPE_MKDIR = 6;
+}
+
+message BatchWriteOperation {
+  string path = 1;
+  bytes content = 2;
+}
+
+message BatchEditOperation {
+  string path = 1;
+  repeated FileEdit edits = 2;
+  string expected_hash = 3;
+}
+
+message BatchDeleteOperation {
+  string path = 1;
+}
+
+message BatchMoveOperation {
+  string source_path = 1;
+  string destination_path = 2;
+}
+
+message BatchCopyOperation {
+  string source_path = 1;
+  string destination_path = 2;
+}
+
+message BatchMkdirOperation {
+  string path = 1;
+}
+
+message BatchOperation {
+  string id = 1;
+  oneof operation {
+    BatchWriteOperation write = 2;
+    BatchEditOperation edit = 3;
+    BatchDeleteOperation delete = 4;
+    BatchMoveOperation move = 5;
+    BatchCopyOperation copy = 6;
+    BatchMkdirOperation mkdir = 7;
+  }
+}
+
+message BatchRequest {
+  string workspace_id = 1;
+  repeated BatchOperation operations = 2;
+  string message = 3;
+}
+
+message BatchResult {
+  string id = 1;
+  BatchOperationType op_type = 2;
+  string path = 3;
+  string source_path = 4;
+  string destination_path = 5;
+  int64 size = 6;
+  string hash = 7;
+}
+
+message BatchResponse {
+  string workspace_id = 1;
+  repeated BatchResult results = 2;
   string commit_hash = 3;
 }
 

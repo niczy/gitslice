@@ -29,6 +29,8 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		handleFilesystemCat(ctx, cli, authConfig, args[1:])
 	case "write":
 		handleFilesystemWrite(ctx, cli, authConfig, args[1:])
+	case "batch":
+		handleFilesystemBatch(ctx, cli, authConfig, args[1:])
 	case "ls":
 		handleFilesystemListDirectory(ctx, cli, authConfig, args[1:])
 	case "mkdir":

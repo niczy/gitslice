@@ -58,6 +58,12 @@ type preparedFilesystemEdit struct {
 	updated     []byte
 }
 
+type preparedFilesystemWrite struct {
+	path        string
+	displayPath string
+	content     []byte
+}
+
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	return &filesystemServiceServer{
 		storage:               st,
@@ -745,13 +751,7 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 		return nil, status.Error(codes.InvalidArgument, "files is required")
 	}
 
-	type preparedWrite struct {
-		path        string
-		displayPath string
-		content     []byte
-	}
-
-	prepared := make([]preparedWrite, 0, len(req.GetFiles()))
+	prepared := make([]preparedFilesystemWrite, 0, len(req.GetFiles()))
 	seen := make(map[string]struct{}, len(req.GetFiles()))
 	for _, file := range req.GetFiles() {
 		if file == nil {
@@ -770,7 +770,7 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 		}
 
 		seen[filePath] = struct{}{}
-		prepared = append(prepared, preparedWrite{
+		prepared = append(prepared, preparedFilesystemWrite{
 			path:        filePath,
 			displayPath: displayPath,
 			content:     append([]byte(nil), file.GetContent()...),
@@ -803,6 +803,199 @@ func (s *filesystemServiceServer) WriteFiles(ctx context.Context, req *filesyste
 	}
 	response.CommitHash = commitHash
 	return response, nil
+}
+
+func (s *filesystemServiceServer) Batch(ctx context.Context, req *filesystemv1.BatchRequest) (*filesystemv1.BatchResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.GetOperations()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "operations is required")
+	}
+
+	response := &filesystemv1.BatchResponse{
+		WorkspaceId: workspace.ID,
+		Results:     make([]*filesystemv1.BatchResult, 0, len(req.GetOperations())),
+	}
+	modifiedPaths := make([]string, 0, len(req.GetOperations())*2)
+	for index, operation := range req.GetOperations() {
+		if operation == nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("operations[%d] must not be null", index))
+		}
+
+		result, operationPaths, err := s.applyFilesystemBatchOperation(ctx, workspace, username, homeMode, operation)
+		if err != nil {
+			return nil, err
+		}
+		response.Results = append(response.Results, result)
+		modifiedPaths = append(modifiedPaths, operationPaths...)
+	}
+
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		message = fmt.Sprintf("batch %d operations", len(req.GetOperations()))
+	}
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, message, modifiedPaths)
+	if err != nil {
+		return nil, err
+	}
+	response.CommitHash = commitHash
+	return response, nil
+}
+
+func (s *filesystemServiceServer) applyFilesystemBatchOperation(ctx context.Context, workspace *models.Slice, username string, homeMode bool, operation *filesystemv1.BatchOperation) (*filesystemv1.BatchResult, []string, error) {
+	if operation == nil {
+		return nil, nil, status.Error(codes.InvalidArgument, "operation is required")
+	}
+
+	resultID := strings.TrimSpace(operation.GetId())
+	switch spec := operation.Operation.(type) {
+	case *filesystemv1.BatchOperation_Write:
+		filePath, displayPath, err := s.resolveOperationPath(username, homeMode, spec.Write.GetPath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, filePath); err != nil {
+			return nil, nil, err
+		}
+		hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, filePath, append([]byte(nil), spec.Write.GetContent()...))
+		if err != nil {
+			return nil, nil, err
+		}
+		return &filesystemv1.BatchResult{
+			Id:     resultID,
+			OpType: filesystemv1.BatchOperationType_BATCH_OPERATION_TYPE_WRITE,
+			Path:   displayPath,
+			Size:   size,
+			Hash:   hash,
+		}, []string{filePath}, nil
+	case *filesystemv1.BatchOperation_Edit:
+		filePath, displayPath, err := s.resolveOperationPath(username, homeMode, spec.Edit.GetPath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		prepared, err := s.prepareFilesystemEdit(ctx, workspace.ID, filePath, displayPath, spec.Edit.GetExpectedHash(), spec.Edit.GetEdits())
+		if err != nil {
+			return nil, nil, annotateFilesystemEditError(displayPath, err)
+		}
+		hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, prepared.path, prepared.updated)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &filesystemv1.BatchResult{
+			Id:     resultID,
+			OpType: filesystemv1.BatchOperationType_BATCH_OPERATION_TYPE_EDIT,
+			Path:   prepared.displayPath,
+			Size:   size,
+			Hash:   hash,
+		}, []string{prepared.path}, nil
+	case *filesystemv1.BatchOperation_Delete:
+		filePath, displayPath, err := s.resolveOperationPath(username, homeMode, spec.Delete.GetPath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.deleteWorkspaceFile(ctx, workspace.ID, filePath); err != nil {
+			return nil, nil, err
+		}
+		return &filesystemv1.BatchResult{
+			Id:     resultID,
+			OpType: filesystemv1.BatchOperationType_BATCH_OPERATION_TYPE_DELETE,
+			Path:   displayPath,
+		}, []string{filePath}, nil
+	case *filesystemv1.BatchOperation_Move:
+		sourcePath, sourceDisplayPath, err := s.resolveOperationPath(username, homeMode, spec.Move.GetSourcePath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		destinationPath, destinationDisplayPath, err := s.resolveOperationPath(username, homeMode, spec.Move.GetDestinationPath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sourcePath == destinationPath {
+			return nil, nil, status.Error(codes.InvalidArgument, "source_path and destination_path must differ")
+		}
+
+		content, err := s.readWorkspaceFileContent(ctx, workspace.ID, sourcePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, destinationPath); err != nil {
+			return nil, nil, err
+		}
+		hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, destinationPath, append([]byte(nil), content.Content...))
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.deleteWorkspaceFile(ctx, workspace.ID, sourcePath); err != nil {
+			return nil, nil, err
+		}
+		return &filesystemv1.BatchResult{
+			Id:              resultID,
+			OpType:          filesystemv1.BatchOperationType_BATCH_OPERATION_TYPE_MOVE,
+			SourcePath:      sourceDisplayPath,
+			DestinationPath: destinationDisplayPath,
+			Size:            size,
+			Hash:            hash,
+		}, []string{sourcePath, destinationPath}, nil
+	case *filesystemv1.BatchOperation_Copy:
+		sourcePath, sourceDisplayPath, err := s.resolveOperationPath(username, homeMode, spec.Copy.GetSourcePath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		destinationPath, destinationDisplayPath, err := s.resolveOperationPath(username, homeMode, spec.Copy.GetDestinationPath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sourcePath == destinationPath {
+			return nil, nil, status.Error(codes.InvalidArgument, "source_path and destination_path must differ")
+		}
+
+		content, err := s.readWorkspaceFileContent(ctx, workspace.ID, sourcePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.ensureWorkspaceFileTarget(ctx, workspace.ID, destinationPath); err != nil {
+			return nil, nil, err
+		}
+		hash, size, err := s.writeWorkspaceFileContent(ctx, workspace, destinationPath, append([]byte(nil), content.Content...))
+		if err != nil {
+			return nil, nil, err
+		}
+		return &filesystemv1.BatchResult{
+			Id:              resultID,
+			OpType:          filesystemv1.BatchOperationType_BATCH_OPERATION_TYPE_COPY,
+			SourcePath:      sourceDisplayPath,
+			DestinationPath: destinationDisplayPath,
+			Size:            size,
+			Hash:            hash,
+		}, []string{sourcePath, destinationPath}, nil
+	case *filesystemv1.BatchOperation_Mkdir:
+		dirPath, displayPath, err := s.resolveOperationPath(username, homeMode, spec.Mkdir.GetPath(), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(workspace.ID, dirPath),
+			Path:     dirPath,
+			Type:     "directory",
+			ParentID: workspace.ID,
+		}); err != nil {
+			return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to create directory: %v", err))
+		}
+		return &filesystemv1.BatchResult{
+			Id:     resultID,
+			OpType: filesystemv1.BatchOperationType_BATCH_OPERATION_TYPE_MKDIR,
+			Path:   displayPath,
+		}, []string{dirPath}, nil
+	default:
+		return nil, nil, status.Error(codes.InvalidArgument, "operation is required")
+	}
 }
 
 func (s *filesystemServiceServer) Glob(ctx context.Context, req *filesystemv1.GlobRequest) (*filesystemv1.GlobResponse, error) {

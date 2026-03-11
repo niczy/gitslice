@@ -73,6 +73,7 @@ func printFilesystemHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  cat          Print file content from an absolute home path")
 	fmt.Println("  write        Write an absolute home path from stdin or a local file")
+	fmt.Println("  batch        Execute multiple fs mutations from JSON/JSONL in one commit")
 	fmt.Println("  ls           List an absolute home directory")
 	fmt.Println("  mkdir        Create an absolute home directory")
 	fmt.Println("  rm           Delete an absolute home path")

@@ -1131,6 +1131,71 @@ func TestWorkspaceBatchAndPosixOperations(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMixedBatchCommit(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-mixed-batch",
+		Name:        "Mixed Batch Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	resp, err := svc.Batch(ctx, &filesystemv1.BatchRequest{
+		WorkspaceId: "ws-mixed-batch",
+		Message:     "batch test",
+		Operations: []*filesystemv1.BatchOperation{
+			{Id: "mkdir-docs", Operation: &filesystemv1.BatchOperation_Mkdir{Mkdir: &filesystemv1.BatchMkdirOperation{Path: "docs"}}},
+			{Id: "write-readme", Operation: &filesystemv1.BatchOperation_Write{Write: &filesystemv1.BatchWriteOperation{Path: "docs/README.md", Content: []byte("hello\n")}}},
+			{Id: "copy-readme", Operation: &filesystemv1.BatchOperation_Copy{Copy: &filesystemv1.BatchCopyOperation{SourcePath: "docs/README.md", DestinationPath: "docs/COPY.md"}}},
+			{Id: "edit-copy", Operation: &filesystemv1.BatchOperation_Edit{Edit: &filesystemv1.BatchEditOperation{Path: "docs/COPY.md", Edits: []*filesystemv1.FileEdit{{OldText: "hello", NewText: "copied"}}}}},
+			{Id: "move-copy", Operation: &filesystemv1.BatchOperation_Move{Move: &filesystemv1.BatchMoveOperation{SourcePath: "docs/COPY.md", DestinationPath: "docs/FINAL.md"}}},
+			{Id: "delete-readme", Operation: &filesystemv1.BatchOperation_Delete{Delete: &filesystemv1.BatchDeleteOperation{Path: "docs/README.md"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Batch failed: %v", err)
+	}
+	if resp.GetCommitHash() == "" {
+		t.Fatal("expected batch commit hash")
+	}
+	if len(resp.GetResults()) != 6 {
+		t.Fatalf("expected 6 batch results, got %d", len(resp.GetResults()))
+	}
+
+	commits, err := st.ListSliceCommits(ctx, "ws-mixed-batch", 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceCommits failed: %v", err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("expected create + batch commit, got %d", len(commits))
+	}
+
+	finalResp, err := svc.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-mixed-batch",
+		Path:        "docs/FINAL.md",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(final) failed: %v", err)
+	}
+	if got, want := string(finalResp.GetContent()), "copied\n"; got != want {
+		t.Fatalf("final content mismatch: got %q want %q", got, want)
+	}
+
+	existsResp, err := svc.Exists(ctx, &filesystemv1.ExistsRequest{
+		WorkspaceId: "ws-mixed-batch",
+		Path:        "docs/README.md",
+	})
+	if err != nil {
+		t.Fatalf("Exists(original) failed: %v", err)
+	}
+	if existsResp.GetExists() {
+		t.Fatal("expected original README to be deleted")
+	}
+}
+
 func TestWorkspaceSnapshotsAndRestore(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
