@@ -324,7 +324,7 @@ func copyFile(ctx context.Context, st storage.Storage, sourceSliceID, targetSlic
 		if entry.Type != "file" {
 			return false, fmt.Errorf("path %q already exists as %s in slice %s", filePath, entry.Type, targetSliceID)
 		}
-		if _, err := st.GetSliceFileByPath(ctx, targetSliceID, filePath); err == nil {
+		if _, err := storage.ReadSliceFileContent(ctx, st, targetSliceID, filePath); err == nil {
 			return false, nil
 		} else if err != storage.ErrEntryNotFound {
 			return false, err
@@ -333,18 +333,13 @@ func copyFile(ctx context.Context, st storage.Storage, sourceSliceID, targetSlic
 		return false, err
 	}
 
-	sourceFile, err := st.GetSliceFileByPath(ctx, sourceSliceID, filePath)
+	sourceFile, err := storage.ReadSliceFileContent(ctx, st, sourceSliceID, filePath)
 	if err != nil {
 		return false, err
 	}
 
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: append([]byte(nil), sourceFile.Content...),
-		Size:    sourceFile.Size,
-		Hash:    sourceFile.Hash,
-	}); err != nil {
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, targetSliceID, filePath, append([]byte(nil), sourceFile.Content...))
+	if err != nil {
 		return false, err
 	}
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
@@ -353,7 +348,7 @@ func copyFile(ctx context.Context, st storage.Storage, sourceSliceID, targetSlic
 		Type:     "file",
 		ParentID: targetSliceID,
 		Size:     sourceFile.Size,
-		Hash:     sourceFile.Hash,
+		Hash:     manifest.Hash,
 	}); err != nil {
 		return false, err
 	}
@@ -373,21 +368,32 @@ func recordSliceStateCommit(ctx context.Context, st storage.Storage, slice *mode
 		return err
 	}
 
-	files, err := st.GetSliceFiles(ctx, slice.ID)
+	entries, err := collectSliceEntries(ctx, st, slice.ID)
 	if err != nil {
 		return err
-	}
-	snapshotFiles := make(map[string]string, len(files))
-	for _, file := range files {
-		if file == nil || strings.TrimSpace(file.Path) == "" {
-			continue
-		}
-		snapshotFiles[file.Path] = file.Hash
 	}
 
-	paths, err := collectSlicePaths(ctx, st, slice.ID)
-	if err != nil {
-		return err
+	snapshotFiles := make(map[string]string, len(entries))
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		paths = append(paths, entry.Path)
+		if entry.Type != "file" {
+			continue
+		}
+		manifest, err := st.GetFileManifest(ctx, slice.ID, entry.Path)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				continue
+			}
+			return err
+		}
+		if strings.TrimSpace(manifest.Hash) == "" {
+			continue
+		}
+		snapshotFiles[entry.Path] = strings.TrimSpace(manifest.Hash)
 	}
 
 	now := time.Now()
@@ -417,19 +423,19 @@ func recordSliceStateCommit(ctx context.Context, st storage.Storage, slice *mode
 	})
 }
 
-func collectSlicePaths(ctx context.Context, st storage.Storage, sliceID string) ([]string, error) {
+func collectSliceEntries(ctx context.Context, st storage.Storage, sliceID string) ([]*models.DirectoryEntry, error) {
 	rootChildren, err := st.ListEntries(ctx, sliceID, sliceID)
 	if err != nil {
 		return nil, err
 	}
 
-	paths := make([]string, 0)
+	entries := make([]*models.DirectoryEntry, 0, len(rootChildren))
 	queue := make([]string, 0, len(rootChildren))
 	for _, child := range rootChildren {
 		if child == nil || strings.TrimSpace(child.Path) == "" {
 			continue
 		}
-		paths = append(paths, child.Path)
+		entries = append(entries, child)
 		if child.Type == "directory" {
 			queue = append(queue, child.ID)
 		}
@@ -447,11 +453,27 @@ func collectSlicePaths(ctx context.Context, st storage.Storage, sliceID string) 
 			if child == nil || strings.TrimSpace(child.Path) == "" {
 				continue
 			}
-			paths = append(paths, child.Path)
+			entries = append(entries, child)
 			if child.Type == "directory" {
 				queue = append(queue, child.ID)
 			}
 		}
+	}
+	return entries, nil
+}
+
+func collectSlicePaths(ctx context.Context, st storage.Storage, sliceID string) ([]string, error) {
+	entries, err := collectSliceEntries(ctx, st, sliceID)
+	if err != nil {
+		return nil, err
+	}
+
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		paths = append(paths, entry.Path)
 	}
 	return paths, nil
 }

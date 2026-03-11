@@ -59,7 +59,7 @@ func ApplyFromFileTree(ctx context.Context, st storage.Storage) error {
 	if err != nil {
 		return err
 	}
-	file, err := st.GetSliceFileByPath(ctx, rootSlice.ID, ConfigFilePath)
+	file, err := storage.ReadSliceFileContent(ctx, st, rootSlice.ID, ConfigFilePath)
 	if err != nil {
 		if errors.Is(err, storage.ErrEntryNotFound) {
 			return nil

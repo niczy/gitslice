@@ -10,6 +10,15 @@ import (
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 )
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	return manifest.Hash
+}
+
 func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -35,22 +44,14 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 		t.Fatalf("GetRootSlice failed: %v", err)
 	}
 	const filePath = "legacyuser/readme.md"
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: []byte("legacy"),
-		Size:    int64(len("legacy")),
-		Hash:    "legacy-hash",
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	hash := mustWriteSliceManifest(t, ctx, st, rootSlice.ID, filePath, []byte("legacy"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       common.GenerateEntryID(rootSlice.ID, filePath),
 		Path:     filePath,
 		Type:     "file",
 		ParentID: rootSlice.ID,
 		Size:     int64(len("legacy")),
-		Hash:     "legacy-hash",
+		Hash:     hash,
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}

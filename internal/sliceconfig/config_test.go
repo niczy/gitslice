@@ -11,6 +11,15 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 )
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	return manifest.Hash
+}
+
 func TestParseConfig(t *testing.T) {
 	valid := []byte(`environments:
   node20:
@@ -161,14 +170,7 @@ func TestApplyFromFileTree(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  ConfigFilePath,
-		Path:    ConfigFilePath,
-		Content: content,
-		Size:    int64(len(content)),
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, root.ID, ConfigFilePath, content)
 
 	if err := ApplyFromFileTree(ctx, st); err != nil {
 		t.Fatalf("ApplyFromFileTree failed: %v", err)
@@ -182,14 +184,7 @@ func TestApplyFromFileTree(t *testing.T) {
 	}
 
 	badContent := []byte("slices: [")
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  ConfigFilePath,
-		Path:    ConfigFilePath,
-		Content: badContent,
-		Size:    int64(len(badContent)),
-	}); err != nil {
-		t.Fatalf("AddFileContent bad failed: %v", err)
-	}
+	mustWriteSliceManifest(t, ctx, st, root.ID, ConfigFilePath, badContent)
 	if err := ApplyFromFileTree(ctx, st); err == nil {
 		t.Fatalf("expected parse error for malformed config")
 	}

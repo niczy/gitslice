@@ -1529,7 +1529,7 @@ func (s *filesystemServiceServer) readWorkspaceFileContent(ctx context.Context, 
 		return nil, err
 	}
 
-	content, err := s.storage.GetSliceFileByPath(ctx, workspaceID, filePath)
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, workspaceID, filePath)
 	if err != nil {
 		if err == storage.ErrEntryNotFound {
 			return nil, status.Error(codes.NotFound, "file not found")
@@ -2216,7 +2216,7 @@ func (s *filesystemServiceServer) resetWorkspaceToSnapshot(ctx context.Context, 
 		if contentHash == "" {
 			continue
 		}
-		content, err := s.storage.GetFileContentByHash(ctx, contentHash)
+		content, err := storage.ReadVersionedFileContent(ctx, s.storage, contentHash)
 		if err != nil {
 			if err == storage.ErrEntryNotFound {
 				return status.Error(codes.NotFound, fmt.Sprintf("snapshot content missing for %s", filePath))
@@ -2368,7 +2368,7 @@ func (s *filesystemServiceServer) loadFilesystemDiffLines(ctx context.Context, c
 		return []string{}, true
 	}
 
-	content, err := s.storage.GetFileContentByHash(ctx, cleaned)
+	content, err := storage.ReadVersionedFileContent(ctx, s.storage, cleaned)
 	if err != nil || content == nil {
 		return nil, false
 	}
@@ -2980,7 +2980,7 @@ func (s *filesystemServiceServer) collectWorkspaceSnapshotFiles(ctx context.Cont
 		if err != nil && err != storage.ErrEntryNotFound {
 			return nil, err
 		}
-		content, err := s.storage.GetSliceFileByPath(ctx, workspaceID, entry.Path)
+		content, err := storage.ReadSliceFileContent(ctx, s.storage, workspaceID, entry.Path)
 		if err != nil {
 			if err == storage.ErrEntryNotFound {
 				continue
