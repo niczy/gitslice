@@ -42,6 +42,7 @@ __pycache__/
 # Web app build artifacts
 web/node_modules/
 web/dist/
+web/build/
 web/playwright-report/
 web/test-results/
 test-results/

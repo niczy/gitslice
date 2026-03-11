@@ -9,6 +9,9 @@ function normalizeWSURL(rawURL = '') {
     return rawURL;
   }
   if (rawURL.startsWith('/')) {
+    if (typeof window === 'undefined') {
+      return rawURL;
+    }
     const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${scheme}//${window.location.host}${rawURL}`;
   }
@@ -71,7 +74,7 @@ export default function AgentSession({
   realRuntimeEnabled = false,
   onSessionStateChange,
 }) {
-  const [isSessionNavOpen, setIsSessionNavOpen] = useState(() => window.innerWidth > 900);
+  const [isSessionNavOpen, setIsSessionNavOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 900));
   const [inputValue, setInputValue] = useState('');
   const [lines, setLines] = useState([]);
   const [displayedLines, setDisplayedLines] = useState(0);
@@ -232,6 +235,9 @@ export default function AgentSession({
   }, [lines, displayedLines, isProcessing]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
     const handleResize = () => {
       if (window.innerWidth > 900) {
         setIsSessionNavOpen(true);

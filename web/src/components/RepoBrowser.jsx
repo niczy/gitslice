@@ -72,6 +72,9 @@ export default function RepoBrowser({
 }) {
   // Parse initial browser state from the current route on mount.
   const initialBrowserState = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
     const route = parseLocation(window.location);
     return route.page === 'browser' ? route.browserState || null : null;
   }, []);
@@ -88,13 +91,13 @@ export default function RepoBrowser({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileError, setFileError] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 900);
+  const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 900));
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [activeView, setActiveView] = useState('files');
-  const [isCompactHeader, setIsCompactHeader] = useState(() => window.innerWidth <= 920);
+  const [isCompactHeader, setIsCompactHeader] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth <= 920));
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
   const [pendingCreateKind, setPendingCreateKind] = useState('');
   const [pendingCreatePath, setPendingCreatePath] = useState('');
@@ -177,6 +180,9 @@ export default function RepoBrowser({
   }, [breadcrumbs, isCompactHeader]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
     const handleResize = () => {
       setIsCompactHeader(window.innerWidth <= 920);
     };
@@ -194,6 +200,9 @@ export default function RepoBrowser({
 
   useEffect(() => {
     if (!isActionMenuOpen) {
+      return undefined;
+    }
+    if (typeof document === 'undefined') {
       return undefined;
     }
 
@@ -586,6 +595,9 @@ export default function RepoBrowser({
 
   // Push current browser state to navigation history
   const pushBrowserState = useCallback((file) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
     window.history.replaceState(null, '', buildBrowserPath({
       file,
       slice: sliceId,
@@ -608,7 +620,7 @@ export default function RepoBrowser({
     }
 
     // Close sidebar on mobile after selecting a file
-    if (window.innerWidth <= 900) {
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
       setSidebarOpen(false);
     }
 
