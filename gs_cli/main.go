@@ -37,6 +37,7 @@ type CLI struct {
 	adminConn        *grpc.ClientConn
 	fileConn         *grpc.ClientConn
 	filesystemConn   *grpc.ClientConn
+	conns            []*grpc.ClientConn
 	accountClient    accountv1.AccountServiceClient
 	sliceClient      slicev1.SliceServiceClient
 	adminClient      adminv1.AdminServiceClient
@@ -135,38 +136,54 @@ func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, 
 		transportCreds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	}
 
-	accountConn, err := grpc.Dial(accountAddr, grpc.WithTransportCredentials(transportCreds))
+	connsByAddr := make(map[string]*grpc.ClientConn, 5)
+	uniqueConns := make([]*grpc.ClientConn, 0, 5)
+	closeConns := func() {
+		for _, conn := range uniqueConns {
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+	}
+	dial := func(addr string) (*grpc.ClientConn, error) {
+		if conn, ok := connsByAddr[addr]; ok {
+			return conn, nil
+		}
+		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(transportCreds))
+		if err != nil {
+			return nil, err
+		}
+		connsByAddr[addr] = conn
+		uniqueConns = append(uniqueConns, conn)
+		return conn, nil
+	}
+
+	accountConn, err := dial(accountAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to account service: %w", err)
 	}
 
-	sliceConn, err := grpc.Dial(sliceAddr, grpc.WithTransportCredentials(transportCreds))
+	sliceConn, err := dial(sliceAddr)
 	if err != nil {
-		accountConn.Close()
+		closeConns()
 		return nil, fmt.Errorf("failed to connect to slice service: %w", err)
 	}
 
-	adminConn, err := grpc.Dial(adminAddr, grpc.WithTransportCredentials(transportCreds))
+	adminConn, err := dial(adminAddr)
 	if err != nil {
-		accountConn.Close()
-		sliceConn.Close()
+		closeConns()
 		return nil, fmt.Errorf("failed to connect to admin service: %w", err)
 	}
 
-	fileConn, err := grpc.Dial(fileAddr, grpc.WithTransportCredentials(transportCreds))
+	fileConn, err := dial(fileAddr)
 	if err != nil {
-		accountConn.Close()
-		sliceConn.Close()
-		adminConn.Close()
+		closeConns()
 		return nil, fmt.Errorf("failed to connect to file service: %w", err)
 	}
 
-	filesystemConn, err := grpc.Dial(filesystemAddr, grpc.WithTransportCredentials(transportCreds))
+	filesystemConn, err := dial(filesystemAddr)
 	if err != nil {
-		accountConn.Close()
-		sliceConn.Close()
-		adminConn.Close()
-		fileConn.Close()
+		closeConns()
 		return nil, fmt.Errorf("failed to connect to filesystem service: %w", err)
 	}
 
@@ -176,6 +193,7 @@ func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, 
 		adminConn:        adminConn,
 		fileConn:         fileConn,
 		filesystemConn:   filesystemConn,
+		conns:            uniqueConns,
 		accountClient:    accountv1.NewAccountServiceClient(accountConn),
 		sliceClient:      slicev1.NewSliceServiceClient(sliceConn),
 		adminClient:      adminv1.NewAdminServiceClient(adminConn),
@@ -186,19 +204,9 @@ func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, 
 
 // Close closes all gRPC connections.
 func (c *CLI) Close() {
-	if c.accountConn != nil {
-		c.accountConn.Close()
-	}
-	if c.sliceConn != nil {
-		c.sliceConn.Close()
-	}
-	if c.adminConn != nil {
-		c.adminConn.Close()
-	}
-	if c.fileConn != nil {
-		c.fileConn.Close()
-	}
-	if c.filesystemConn != nil {
-		c.filesystemConn.Close()
+	for _, conn := range c.conns {
+		if conn != nil {
+			_ = conn.Close()
+		}
 	}
 }
