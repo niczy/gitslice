@@ -76,10 +76,14 @@ export default function AgentSession({
   const [lines, setLines] = useState([]);
   const [displayedLines, setDisplayedLines] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [connectionState, setConnectionState] = useState(realRuntimeEnabled ? 'connecting' : 'ready');
+  const [connectionDetail, setConnectionDetail] = useState(realRuntimeEnabled ? 'Connecting to runtime…' : 'Ready');
+  const [reconnectCount, setReconnectCount] = useState(0);
   const chatScrollRef = useRef(null);
   const wsRef = useRef(null);
   const lastSeqRef = useRef(0);
   const reconnectTimerRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);
 
   const appendLine = useCallback((line) => {
     if (!line) return;
@@ -108,6 +112,10 @@ export default function AgentSession({
     }
     setLines(session?.terminalLines || []);
     setDisplayedLines(0);
+    setConnectionState('ready');
+    setConnectionDetail('Mock session ready');
+    setReconnectCount(0);
+    reconnectAttemptRef.current = 0;
     return undefined;
   }, [realRuntimeEnabled, session?.id, session?.sessionId, session?.terminalLines]);
 
@@ -119,10 +127,16 @@ export default function AgentSession({
     let disposed = false;
     setLines(session?.terminalLines?.length > 0 ? session.terminalLines : [{ type: 'output', text: 'Connecting to runtime...' }]);
     setDisplayedLines(0);
+    setConnectionState('connecting');
+    setConnectionDetail('Connecting to runtime…');
+    setReconnectCount(0);
+    reconnectAttemptRef.current = 0;
     lastSeqRef.current = 0;
 
-    const connect = async (preferSessionWS) => {
+    const connect = async (preferSessionWS, attempt = 0) => {
       try {
+        setConnectionState(attempt > 0 ? 'reconnecting' : 'connecting');
+        setConnectionDetail(attempt > 0 ? `Reconnecting to runtime (attempt ${attempt + 1})…` : 'Connecting to runtime…');
         let wsInfo = preferSessionWS ? session.ws || null : null;
         if (!wsInfo?.url || !wsInfo?.token) {
           wsInfo = await mintAgentSessionToken(session.sessionId);
@@ -135,6 +149,9 @@ export default function AgentSession({
         wsRef.current = ws;
 
         ws.onopen = () => {
+          setConnectionState('connected');
+          setConnectionDetail('Runtime connected');
+          setReconnectCount(0);
           appendLine({ type: 'success', text: 'Runtime connected.' });
           ws.send(JSON.stringify({
             stream: 'control',
@@ -166,24 +183,35 @@ export default function AgentSession({
           if (!disposed) {
             appendLine({ type: 'output', text: 'Runtime disconnected.' });
             if (!sessionIsTerminal) {
+              setConnectionState('reconnecting');
+              reconnectAttemptRef.current += 1;
+              setReconnectCount(reconnectAttemptRef.current);
+              setConnectionDetail('Runtime disconnected. Retrying…');
               reconnectTimerRef.current = setTimeout(() => {
-                connect(false);
+                connect(false, reconnectAttemptRef.current);
               }, 500);
+            } else {
+              setConnectionState('closed');
+              setConnectionDetail('Runtime closed');
             }
           }
         };
 
         ws.onerror = () => {
+          setConnectionState('error');
+          setConnectionDetail('WebSocket connection failed');
           appendLine({ type: 'error', text: 'websocket connection failed' });
         };
       } catch (error) {
         if (!disposed) {
+          setConnectionState('error');
+          setConnectionDetail(error?.message || 'Failed to connect runtime');
           appendLine({ type: 'error', text: error?.message || 'failed to connect runtime' });
         }
       }
     };
 
-    connect(true);
+    connect(true, 0);
     return () => {
       disposed = true;
       if (reconnectTimerRef.current) {
@@ -276,6 +304,12 @@ export default function AgentSession({
 
       <div className="agent-session-body">
         <div className="agent-chat-panel">
+          {realRuntimeEnabled && (
+            <div className={`agent-connection-banner state-${connectionState}`}>
+              <span className="agent-connection-dot" aria-hidden="true" />
+              <span>{connectionDetail}</span>
+            </div>
+          )}
           <div className="agent-chat-messages" ref={chatScrollRef}>
             {chatMessages.map((message, index) => (
               <div key={`${message.role}-${index}`} className={`chat-row ${message.role === 'user' ? 'chat-row-user' : 'chat-row-assistant'}`}>

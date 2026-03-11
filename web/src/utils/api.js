@@ -16,7 +16,7 @@ export function fetchWithAuth(url, options = {}) {
   if (username) {
     headers.set('Authorization', `User ${username}`);
   }
-  return fetch(url, { ...options, headers });
+  return fetch(url, { ...options, credentials: 'include', headers });
 }
 
 async function readErrorMessage(response, fallback) {

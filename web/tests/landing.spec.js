@@ -9,7 +9,7 @@ test('renders Git Slice landing content and navigation', async ({ page }) => {
   await expect(page.getByTestId('topbar-github-link')).toBeVisible();
   await expect(page.getByTestId('topbar-get-started')).toBeVisible();
 
-  await page.goto('/#/browser');
+  await page.goto('/browser');
   await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
   await page.getByRole('button', { name: /Git Slice/i }).click();

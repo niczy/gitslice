@@ -32,7 +32,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
     const params = new URLSearchParams(window.location.search);
     if (params.get('error')) {
       setOAuthError('OAuth sign-in failed or was cancelled. Try again or use a username.');
-      window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}${window.location.hash}`);
+      window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}`);
     }
   }, []);
 

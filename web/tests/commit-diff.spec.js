@@ -130,7 +130,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/diff/${commitHash}`);
+    await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
 
     const patch = page.getByTestId('diff-file-patch').first();
@@ -168,7 +168,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/diff/${commitHash}`);
+    await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
 
     const diffContent = page.locator('.diff-content');
@@ -226,7 +226,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/diff/${commitHash}`);
+    await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
 
     const fallback = page.getByTestId('diff-file-fallback-content').first();
@@ -275,7 +275,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/diff/${commitHash}`);
+    await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
 
     const binaryBlock = page.getByTestId('diff-file-binary-block').first();
@@ -326,7 +326,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/diff/${commitHash}`);
+    await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
 
     await expect(page.getByTestId('diff-file-binary-block').first()).toContainText('hidden by default');
@@ -385,7 +385,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/diff/${commitHash}`);
+    await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
     await expect(page.getByTestId('diff-patch-lazy-state')).toBeVisible();
     expect(withPatchesRequested).toBe(false);
@@ -475,7 +475,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto(`/#/changesets/${changesetId}`);
+    await page.goto(`/changesets/${changesetId}`);
     await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
 
     const snapshotPicker = page.getByTestId('changeset-snapshot-select');
@@ -693,7 +693,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto('/#/browser');
+    await page.goto('/browser');
     await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
     await page.getByRole('button', { name: /README\.md/i }).click();
     await expect(page.locator('.file-preview')).toContainText('line two');

@@ -2,13 +2,36 @@ import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
 import { Card, CardContent } from './ui/card.jsx';
 
-export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpenRepos }) {
+export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpenRepos, onRefresh }) {
+  const rootSlices = slices.filter((slice) => slice.is_root);
+  const workspaceSlices = slices.filter((slice) => !slice.is_root);
   return (
     <section className="section space-y-4" data-testid="projects-page">
       <div className="section-header">
         <Badge variant="secondary" className="eyebrow">Workspace</Badge>
         <h2>Projects</h2>
-        <p>Track the slice projects currently available in this environment.</p>
+        <p>Track the slice projects currently available in this environment and jump back into active work quickly.</p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card className="border-border/70">
+          <CardContent className="pt-6">
+            <div className="status">Total slices</div>
+            <div className="text-3xl font-semibold">{slices.length}</div>
+          </CardContent>
+        </Card>
+        <Card className="border-border/70">
+          <CardContent className="pt-6">
+            <div className="status">Shared roots</div>
+            <div className="text-3xl font-semibold">{rootSlices.length}</div>
+          </CardContent>
+        </Card>
+        <Card className="border-border/70">
+          <CardContent className="pt-6">
+            <div className="status">Active workspaces</div>
+            <div className="text-3xl font-semibold">{workspaceSlices.length}</div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="border-border/70">
@@ -29,6 +52,10 @@ export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpe
                     <span className="org-name">{slice.name || slice.slice_id}</span>
                     <span className="org-slug">{slice.slice_id}</span>
                   </div>
+                  <div className="org-item-meta">
+                    {slice.is_root ? 'Shared root slice' : 'Workspace slice'}
+                    {slice.environment ? ` • env ${slice.environment}` : ''}
+                  </div>
                 </li>
               ))}
             </ul>
@@ -38,6 +65,7 @@ export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpe
 
       <div className="auth-actions">
         <Button type="button" onClick={onOpenRepos}>Open Repos</Button>
+        <Button type="button" variant="ghost" onClick={onRefresh}>Refresh</Button>
       </div>
     </section>
   );

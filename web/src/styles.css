@@ -7,6 +7,7 @@
   --surface: #ffffff;
   --surface-elevated: #f8fafc;
   --surface-hover: #f1f5f9;
+  --surface-spotlight: #eef6ff;
   --border: #d0d7de;
   --border-strong: #9aa4b2;
   --accent: #0a66d9;
@@ -14,6 +15,9 @@
   --text-primary: #111827;
   --text-secondary: #334155;
   --text-muted: #475569;
+  --success-soft: #dafbe1;
+  --warning-soft: #fff8c5;
+  --danger-soft: #ffebe9;
   --focus-ring: #2563eb;
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -865,6 +869,48 @@ body {
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, #f8fbff 0%, #f3f6fb 100%);
+}
+
+.agent-connection-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 16px 0;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.agent-connection-banner.state-connected {
+  background: var(--success-soft);
+  color: #1a7f37;
+  border-color: rgba(26, 127, 55, 0.18);
+}
+
+.agent-connection-banner.state-connecting,
+.agent-connection-banner.state-reconnecting {
+  background: var(--warning-soft);
+  color: #9a6700;
+  border-color: rgba(154, 103, 0, 0.18);
+}
+
+.agent-connection-banner.state-error,
+.agent-connection-banner.state-closed {
+  background: var(--danger-soft);
+  color: #cf222e;
+  border-color: rgba(207, 34, 46, 0.18);
+}
+
+.agent-connection-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.05);
 }
 
 .session-nav-toggle {
@@ -1879,6 +1925,39 @@ body {
 .tree-action-btn:hover {
   background: var(--surface-hover);
   border-color: var(--border-strong);
+}
+
+.repo-create-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(9, 105, 218, 0.14);
+  background: var(--surface-spotlight);
+}
+
+.repo-create-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.repo-create-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-primary);
+}
+
+.repo-create-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .sidebar-toggle {
