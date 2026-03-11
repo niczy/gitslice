@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path"
 	"sort"
 	"strings"
@@ -284,7 +285,7 @@ func (s *filesystemServiceServer) WriteFile(ctx context.Context, req *filesystem
 		return nil, err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("write %s", filePath), []string{filePath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("write %s", displayPath), []string{filePath})
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +324,7 @@ func (s *filesystemServiceServer) EditFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("edit %s", prepared.path), []string{prepared.path})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("edit %s", prepared.displayPath), []string{prepared.path})
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +423,7 @@ func (s *filesystemServiceServer) DeleteFile(ctx context.Context, req *filesyste
 		return nil, err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("delete %s", filePath), []string{filePath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("delete %s", displayPath), []string{filePath})
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +472,7 @@ func (s *filesystemServiceServer) MoveFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("move %s -> %s", sourcePath, destinationPath), []string{sourcePath, destinationPath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("move %s -> %s", sourceDisplayPath, destinationDisplayPath), []string{sourcePath, destinationPath})
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +520,7 @@ func (s *filesystemServiceServer) CopyFile(ctx context.Context, req *filesystemv
 		return nil, err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("copy %s -> %s", sourcePath, destinationPath), []string{sourcePath, destinationPath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("copy %s -> %s", sourceDisplayPath, destinationDisplayPath), []string{sourcePath, destinationPath})
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +606,7 @@ func (s *filesystemServiceServer) MakeDirectory(ctx context.Context, req *filesy
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create directory: %v", err))
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("mkdir %s", dirPath), []string{dirPath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("mkdir %s", displayPath), []string{dirPath})
 	if err != nil {
 		return nil, err
 	}
@@ -1510,7 +1511,7 @@ func (s *filesystemServiceServer) StreamWrite(stream filesystemv1.FilesystemServ
 		return err
 	}
 
-	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("stream write %s", filePath), []string{filePath})
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, fmt.Sprintf("stream write %s", displayPath), []string{filePath})
 	if err != nil {
 		return err
 	}
@@ -2730,6 +2731,17 @@ func (s *filesystemServiceServer) requireUser(ctx context.Context) (string, erro
 	return username, nil
 }
 
+func (s *filesystemServiceServer) optionalUsername(ctx context.Context) (string, error) {
+	identity, err := authresolver.OptionalGRPCIdentity(ctx, s.storage)
+	if err != nil {
+		return "", err
+	}
+	if identity == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(identity.Username), nil
+}
+
 func (s *filesystemServiceServer) requireWorkspaceViewAccess(ctx context.Context, workspaceID string) (*models.Slice, *models.SliceMetadata, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
@@ -2862,6 +2874,7 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 	}
 
 	files := make(map[string]string)
+	previousFiles := make(map[string]string)
 	if strings.TrimSpace(meta.HeadCommitHash) != "" {
 		parentSnapshot, err := s.storage.GetCommitSnapshot(ctx, meta.HeadCommitHash)
 		if err != nil && err != storage.ErrCommitNotFound {
@@ -2869,7 +2882,13 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		}
 		if parentSnapshot != nil && parentSnapshot.Files != nil {
 			for filePath, fileHash := range parentSnapshot.Files {
-				files[filePath] = fileHash
+				cleanedPath := common.CleanRelativePath(filePath)
+				cleanedHash := strings.TrimSpace(fileHash)
+				if cleanedPath == "" {
+					continue
+				}
+				files[cleanedPath] = cleanedHash
+				previousFiles[cleanedPath] = cleanedHash
 			}
 		}
 	}
@@ -2923,7 +2942,147 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 	}); err != nil {
 		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace metadata: %v", err))
 	}
+	if err := s.recordWorkspaceFileChanges(ctx, workspace, commitHash, meta.HeadCommitHash, message, now, modifiedPaths, previousFiles, files); err != nil {
+		log.Printf("filesystem: failed to index file changes for commit %s in %s: %v", commitHash, workspace.ID, err)
+	}
 	return commitHash, now, nil
+}
+
+type filesystemRenameChange struct {
+	oldPath string
+	newPath string
+	hash    string
+}
+
+func (s *filesystemServiceServer) recordWorkspaceFileChanges(ctx context.Context, workspace *models.Slice, commitHash, parentHash, message string, timestamp time.Time, modifiedPaths []string, previousFiles, currentFiles map[string]string) error {
+	if workspace == nil {
+		return fmt.Errorf("workspace is nil")
+	}
+
+	author, err := s.optionalUsername(ctx)
+	if err != nil {
+		return err
+	}
+	if author == "" {
+		author = "system"
+	}
+
+	renames := detectFilesystemRenames(message, modifiedPaths, previousFiles, currentFiles)
+	handledPaths := make(map[string]struct{}, len(renames)*2)
+	changes := make([]*models.FileChangeRecord, 0, len(previousFiles)+len(currentFiles))
+	for _, rename := range renames {
+		handledPaths[rename.oldPath] = struct{}{}
+		handledPaths[rename.newPath] = struct{}{}
+		changes = append(changes, &models.FileChangeRecord{
+			ID:         fmt.Sprintf("%s-%s", commitHash, rename.newPath),
+			SliceID:    workspace.ID,
+			CommitHash: commitHash,
+			Path:       rename.newPath,
+			OldPath:    rename.oldPath,
+			ChangeType: models.ChangeTypeRename,
+			OldHash:    rename.hash,
+			NewHash:    rename.hash,
+			Author:     author,
+			Message:    message,
+			Timestamp:  timestamp,
+		})
+	}
+
+	pathSet := make(map[string]struct{}, len(previousFiles)+len(currentFiles))
+	for filePath := range previousFiles {
+		pathSet[filePath] = struct{}{}
+	}
+	for filePath := range currentFiles {
+		pathSet[filePath] = struct{}{}
+	}
+
+	paths := make([]string, 0, len(pathSet))
+	for filePath := range pathSet {
+		if _, handled := handledPaths[filePath]; handled {
+			continue
+		}
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+
+	for _, filePath := range paths {
+		oldHash := strings.TrimSpace(previousFiles[filePath])
+		newHash := strings.TrimSpace(currentFiles[filePath])
+		if oldHash == newHash {
+			continue
+		}
+
+		changeType := models.ChangeTypeModify
+		switch {
+		case oldHash == "":
+			changeType = models.ChangeTypeAdd
+		case newHash == "":
+			changeType = models.ChangeTypeDelete
+		}
+
+		_, linesAdded, linesDeleted := s.buildFilesystemDiffPatch(ctx, filePath, oldHash, newHash)
+		changes = append(changes, &models.FileChangeRecord{
+			ID:           fmt.Sprintf("%s-%s", commitHash, filePath),
+			SliceID:      workspace.ID,
+			CommitHash:   commitHash,
+			Path:         filePath,
+			ChangeType:   changeType,
+			OldHash:      oldHash,
+			NewHash:      newHash,
+			LinesAdded:   linesAdded,
+			LinesDeleted: linesDeleted,
+			Author:       author,
+			Message:      message,
+			Timestamp:    timestamp,
+		})
+	}
+
+	if len(changes) == 0 {
+		return nil
+	}
+	return s.storage.AddFileChanges(ctx, changes)
+}
+
+func detectFilesystemRenames(message string, modifiedPaths []string, previousFiles, currentFiles map[string]string) []filesystemRenameChange {
+	if !strings.HasPrefix(strings.TrimSpace(message), "move ") {
+		return nil
+	}
+
+	normalized := normalizePromotionPaths(modifiedPaths)
+	if len(normalized) != 2 {
+		return nil
+	}
+
+	addedPaths := make([]string, 0, 1)
+	deletedPaths := make([]string, 0, 1)
+	for _, filePath := range normalized {
+		oldHash := strings.TrimSpace(previousFiles[filePath])
+		newHash := strings.TrimSpace(currentFiles[filePath])
+		switch {
+		case oldHash != "" && newHash == "":
+			deletedPaths = append(deletedPaths, filePath)
+		case oldHash == "" && newHash != "":
+			addedPaths = append(addedPaths, filePath)
+		}
+	}
+
+	if len(addedPaths) != 1 || len(deletedPaths) != 1 {
+		return nil
+	}
+
+	oldPath := deletedPaths[0]
+	newPath := addedPaths[0]
+	oldHash := strings.TrimSpace(previousFiles[oldPath])
+	newHash := strings.TrimSpace(currentFiles[newPath])
+	if oldHash == "" || oldHash != newHash {
+		return nil
+	}
+
+	return []filesystemRenameChange{{
+		oldPath: oldPath,
+		newPath: newPath,
+		hash:    oldHash,
+	}}
 }
 
 func (s *filesystemServiceServer) collectWorkspaceEntries(ctx context.Context, workspaceID string) ([]*models.DirectoryEntry, error) {

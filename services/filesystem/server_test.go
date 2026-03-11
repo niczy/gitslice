@@ -13,7 +13,9 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
+	fileservice "github.com/niczy/gitslice/services/file"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -203,6 +205,135 @@ func TestWorkspaceFileLifecycle(t *testing.T) {
 	}
 	if workspaces.GetTotal() != 2 {
 		t.Fatalf("expected root + created workspace, got total=%d", workspaces.GetTotal())
+	}
+}
+
+func TestFilesystemMutationsRecordCommitChanges(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	fsSvc := NewService(st)
+	fileSvc := fileservice.NewService(st)
+
+	if _, err := fsSvc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-history",
+		Name:        "History Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	writeResp, err := fsSvc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-history",
+		Path:        "docs/README.md",
+		Content:     []byte("hello v1\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	showAddResp, err := fileSvc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{
+		CommitHash:     writeResp.GetCommitHash(),
+		IncludePatches: true,
+	})
+	if err != nil {
+		t.Fatalf("GetCommitChanges(add) failed: %v", err)
+	}
+	if len(showAddResp.GetChanges()) != 1 {
+		t.Fatalf("expected 1 add change, got %d", len(showAddResp.GetChanges()))
+	}
+	addChange := showAddResp.GetChanges()[0]
+	if addChange.GetChangeType() != filev1.ChangeType_CHANGE_TYPE_ADD {
+		t.Fatalf("expected add change, got %v", addChange.GetChangeType())
+	}
+	if addChange.GetPath() != "docs/README.md" {
+		t.Fatalf("unexpected add path: %q", addChange.GetPath())
+	}
+	if !strings.Contains(addChange.GetPatch(), "+hello v1") {
+		t.Fatalf("expected add patch to include content, got: %q", addChange.GetPatch())
+	}
+
+	editResp, err := fsSvc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-history",
+		Path:        "docs/README.md",
+		Content:     []byte("hello v2\n"),
+	})
+	if err != nil {
+		t.Fatalf("second WriteFile failed: %v", err)
+	}
+
+	showModifyResp, err := fileSvc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{
+		CommitHash:     editResp.GetCommitHash(),
+		IncludePatches: true,
+	})
+	if err != nil {
+		t.Fatalf("GetCommitChanges(modify) failed: %v", err)
+	}
+	if len(showModifyResp.GetChanges()) != 1 {
+		t.Fatalf("expected 1 modify change, got %d", len(showModifyResp.GetChanges()))
+	}
+	modifyChange := showModifyResp.GetChanges()[0]
+	if modifyChange.GetChangeType() != filev1.ChangeType_CHANGE_TYPE_MODIFY {
+		t.Fatalf("expected modify change, got %v", modifyChange.GetChangeType())
+	}
+	if !strings.Contains(modifyChange.GetPatch(), "-hello v1") || !strings.Contains(modifyChange.GetPatch(), "+hello v2") {
+		t.Fatalf("expected modify patch to show v1->v2, got: %q", modifyChange.GetPatch())
+	}
+	if modifyChange.GetLinesAdded() != 1 || modifyChange.GetLinesDeleted() != 1 {
+		t.Fatalf("expected line delta +1/-1, got +%d/-%d", modifyChange.GetLinesAdded(), modifyChange.GetLinesDeleted())
+	}
+}
+
+func TestFilesystemMoveRecordsRenameChange(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	fsSvc := NewService(st)
+	fileSvc := fileservice.NewService(st)
+
+	if _, err := fsSvc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-rename",
+		Name:        "Rename Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := fsSvc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-rename",
+		Path:        "docs/original.txt",
+		Content:     []byte("same content\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	moveResp, err := fsSvc.MoveFile(ctx, &filesystemv1.MoveFileRequest{
+		WorkspaceId:     "ws-rename",
+		SourcePath:      "docs/original.txt",
+		DestinationPath: "docs/renamed.txt",
+	})
+	if err != nil {
+		t.Fatalf("MoveFile failed: %v", err)
+	}
+
+	showResp, err := fileSvc.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{
+		CommitHash: moveResp.GetCommitHash(),
+	})
+	if err != nil {
+		t.Fatalf("GetCommitChanges(rename) failed: %v", err)
+	}
+	if len(showResp.GetChanges()) != 1 {
+		t.Fatalf("expected 1 rename change, got %d", len(showResp.GetChanges()))
+	}
+	rename := showResp.GetChanges()[0]
+	if rename.GetChangeType() != filev1.ChangeType_CHANGE_TYPE_RENAME {
+		t.Fatalf("expected rename change, got %v", rename.GetChangeType())
+	}
+	if rename.GetOldPath() != "docs/original.txt" || rename.GetPath() != "docs/renamed.txt" {
+		t.Fatalf("unexpected rename paths: old=%q new=%q", rename.GetOldPath(), rename.GetPath())
 	}
 }
 

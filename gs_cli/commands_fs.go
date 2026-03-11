@@ -14,6 +14,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/homeslice"
 	accountv1 "github.com/niczy/gitslice/proto/account"
+	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
@@ -48,10 +49,14 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		handleFilesystemSnapshot(ctx, cli, authConfig, args[1:])
 	case "snapshots":
 		handleFilesystemSnapshots(ctx, cli, authConfig, args[1:])
+	case "log":
+		handleFilesystemLog(ctx, cli, authConfig, args[1:])
 	case "restore":
 		handleFilesystemRestore(ctx, cli, authConfig, args[1:])
 	case "diff":
 		handleFilesystemDiff(ctx, cli, authConfig, args[1:])
+	case "show":
+		handleFilesystemShow(ctx, cli, authConfig, args[1:])
 	case "shell":
 		handleFilesystemShell(ctx, cli, authConfig, args[1:])
 	case "upload":
@@ -411,6 +416,40 @@ func handleFilesystemSnapshots(ctx context.Context, cli *CLI, authConfig cliAuth
 	}
 }
 
+func handleFilesystemLog(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	fs := flag.NewFlagSet("fs log", flag.ExitOnError)
+	limit := fs.Int("limit", 20, "Maximum commits to return")
+	fromSnapshot := fs.String("from", "", "Pagination cursor")
+	parseFlagSetInterspersed(fs, args)
+
+	if fs.NArg() != 0 {
+		log.Println("Usage: gs fs log [--limit <n>] [--from <snapshot-id>]")
+		return
+	}
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resp, err := cli.filesystemClient.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
+		WorkspaceId:    workspaceID,
+		Limit:          int32(*limit),
+		FromSnapshotId: strings.TrimSpace(*fromSnapshot),
+	})
+	if err != nil {
+		log.Fatalf("Failed to list filesystem history: %v", err)
+	}
+
+	for _, snapshot := range resp.GetSnapshots() {
+		fmt.Printf("commit %s\n", snapshot.GetSnapshotId())
+		fmt.Printf("Date: %s\n", formatTimestamp(snapshot.GetCreatedAt()))
+		if snapshot.GetParentSnapshotId() != "" {
+			fmt.Printf("Parent: %s\n", snapshot.GetParentSnapshotId())
+		}
+		fmt.Printf("\n    %s\n\n", snapshot.GetMessage())
+	}
+}
+
 func handleFilesystemRestore(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs restore", flag.ExitOnError)
 	message := fs.String("m", "", "Optional restore message")
@@ -491,6 +530,39 @@ func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		if file.GetPatch() != "" {
 			fmt.Println(file.GetPatch())
 		}
+	}
+}
+
+func handleFilesystemShow(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	fs := flag.NewFlagSet("fs show", flag.ExitOnError)
+	patches := fs.Bool("patches", true, "Include unified patches")
+	parseFlagSetInterspersed(fs, args)
+
+	if fs.NArg() != 1 {
+		log.Println("Usage: gs fs show <commit-hash> [--patches=false]")
+		return
+	}
+
+	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	commitHash := strings.TrimSpace(fs.Arg(0))
+	resp, err := cli.fileClient.GetCommitChanges(ctx, &filev1.GetCommitChangesRequest{
+		CommitHash:     commitHash,
+		IncludePatches: *patches,
+	})
+	if err != nil {
+		log.Fatalf("Failed to fetch filesystem commit changes: %v", err)
+	}
+
+	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
+	fmt.Printf("Added: %d Modified: %d Deleted: %d Renamed: %d\n", resp.GetFilesAdded(), resp.GetFilesModified(), resp.GetFilesDeleted(), resp.GetFilesRenamed())
+	fmt.Printf("Changes: %d\n", len(resp.GetChanges()))
+	for _, change := range resp.GetChanges() {
+		remapFilesystemHomeChange(change, workspaceID)
+		printFileChange(change, *patches)
 	}
 }
 
@@ -593,6 +665,16 @@ func filesystemDiffTypeLabel(changeType filesystemv1.DiffChangeType) string {
 		return "DELETE"
 	default:
 		return "CHANGE"
+	}
+}
+
+func remapFilesystemHomeChange(change *filev1.FileChangeRecord, workspaceID string) {
+	if change == nil || strings.TrimSpace(change.GetSliceId()) != strings.TrimSpace(workspaceID) {
+		return
+	}
+	change.Path = homeslice.VisiblePathForStored(change.GetPath())
+	if change.GetOldPath() != "" {
+		change.OldPath = homeslice.VisiblePathForStored(change.GetOldPath())
 	}
 }
 
