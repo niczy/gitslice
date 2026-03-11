@@ -34,7 +34,7 @@ func TestSyncHomeSliceToRootMirrorsSubtree(t *testing.T) {
 		t.Fatalf("sync: %v", err)
 	}
 
-	rootReadme, err := st.GetSliceFileByPath(ctx, root.ID, "alice/docs/readme.md")
+	rootReadme, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/docs/readme.md")
 	if err != nil {
 		t.Fatalf("root readme: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestSyncHomeSliceToRootMirrorsSubtree(t *testing.T) {
 		t.Fatalf("second sync: %v", err)
 	}
 
-	rootReadme, err = st.GetSliceFileByPath(ctx, root.ID, "alice/docs/readme.md")
+	rootReadme, err = storage.ReadSliceFileContent(ctx, st, root.ID, "alice/docs/readme.md")
 	if err != nil {
 		t.Fatalf("updated root readme: %v", err)
 	}

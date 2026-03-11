@@ -130,9 +130,9 @@ func TestBackfillUserHomeSliceCopiesRootFilesOnce(t *testing.T) {
 		t.Fatalf("unexpected backfill result: %#v", result)
 	}
 
-	copied, err := st.GetSliceFileByPath(ctx, "home.legacyuser", filePath)
+	copied, err := storage.ReadSliceFileContent(ctx, st, "home.legacyuser", filePath)
 	if err != nil {
-		t.Fatalf("GetSliceFileByPath failed: %v", err)
+		t.Fatalf("ReadSliceFileContent failed: %v", err)
 	}
 	if string(copied.Content) != "legacy" {
 		t.Fatalf("unexpected copied content: %q", string(copied.Content))

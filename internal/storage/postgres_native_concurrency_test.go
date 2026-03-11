@@ -35,24 +35,41 @@ func TestPostgresNativeStorageFileContentReadWriteIsolation(t *testing.T) {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
 
-	content := &models.FileContent{FileID: "file-1", Path: "src/main.go", Content: []byte("hello"), Size: 5, Hash: "hash-1"}
-	if err := st.AddFileContent(ctx, content); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       "slice-1:src/main.go",
+		Path:     "src/main.go",
+		Type:     "file",
+		ParentID: "slice-1",
+		Size:     5,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
 	}
-	content.Content[0] = 'x'
+	if err := st.AddFileToSlice(ctx, "src/main.go", "slice-1"); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
 
-	files, err := st.GetSliceFiles(ctx, "slice-1")
+	content := []byte("hello")
+	manifest, err := WriteSliceFileManifest(ctx, st, "slice-1", "src/main.go", content)
 	if err != nil {
-		t.Fatalf("GetSliceFiles failed: %v", err)
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	content[0] = 'x'
+
+	files, err := ListSliceFileContents(ctx, st, "slice-1")
+	if err != nil {
+		t.Fatalf("ListSliceFileContents failed: %v", err)
 	}
 	if len(files) != 1 || string(files[0].Content) != "hello" {
 		t.Fatalf("expected stored content to remain hello, got %+v", files)
 	}
+	if files[0].Hash != manifest.Hash {
+		t.Fatalf("expected stored hash %q, got %q", manifest.Hash, files[0].Hash)
+	}
 
 	files[0].Content[0] = 'y'
-	filesAgain, err := st.GetSliceFiles(ctx, "slice-1")
+	filesAgain, err := ListSliceFileContents(ctx, st, "slice-1")
 	if err != nil {
-		t.Fatalf("GetSliceFiles second failed: %v", err)
+		t.Fatalf("ListSliceFileContents second failed: %v", err)
 	}
 	if string(filesAgain[0].Content) != "hello" {
 		t.Fatalf("read mutation should not alias stored content, got %q", string(filesAgain[0].Content))

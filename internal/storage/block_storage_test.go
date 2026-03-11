@@ -186,9 +186,9 @@ func TestStorageBlockManifestRoundTrip(t *testing.T) {
 				t.Fatalf("versioned assembled content mismatch")
 			}
 
-			legacyRead, err := st.GetSliceFileByPath(ctx, sliceID, manifest.Path)
+			legacyRead, err := ReadSliceFileContent(ctx, st, sliceID, manifest.Path)
 			if err != nil {
-				t.Fatalf("GetSliceFileByPath manifest fallback failed: %v", err)
+				t.Fatalf("ReadSliceFileContent failed: %v", err)
 			}
 			if !bytes.Equal(legacyRead.Content, content) {
 				t.Fatalf("legacy path content mismatch")
@@ -202,9 +202,9 @@ func TestStorageBlockManifestRoundTrip(t *testing.T) {
 				t.Fatalf("entry hash mismatch: got=%q want=%q", entry.Hash, manifest.Hash)
 			}
 
-			hashRead, err := st.GetFileContentByHash(ctx, manifest.Hash)
+			hashRead, err := ReadVersionedFileContent(ctx, st, manifest.Hash)
 			if err != nil {
-				t.Fatalf("GetFileContentByHash manifest fallback failed: %v", err)
+				t.Fatalf("ReadVersionedFileContent failed: %v", err)
 			}
 			if !bytes.Equal(hashRead.Content, content) {
 				t.Fatalf("hash content mismatch")

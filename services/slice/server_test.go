@@ -1079,7 +1079,7 @@ func TestMergeRevertChangesetAppliesRevertedContent(t *testing.T) {
 		t.Fatalf("timed out waiting for root promotion queue: %v", err)
 	}
 
-	fileAfterMerge, err := st.GetSliceFileByPath(ctx, slice.ID, filePath)
+	fileAfterMerge, err := storage.ReadSliceFileContent(ctx, st, slice.ID, filePath)
 	if err != nil {
 		t.Fatalf("failed to load file after merge: %v", err)
 	}
@@ -1193,7 +1193,7 @@ func TestMergeRevertChangesetBypassesCrossSliceConflictChecks(t *testing.T) {
 		t.Fatalf("timed out waiting for root promotion queue: %v", err)
 	}
 
-	fileAfterMerge, err := st.GetSliceFileByPath(ctx, ownerSlice.ID, filePath)
+	fileAfterMerge, err := storage.ReadSliceFileContent(ctx, st, ownerSlice.ID, filePath)
 	if err != nil {
 		t.Fatalf("failed to load file after merge: %v", err)
 	}
@@ -1291,7 +1291,7 @@ func TestMergeRevertChangesetBackfillsMissingOldHash(t *testing.T) {
 		t.Fatalf("timed out waiting for root promotion queue: %v", err)
 	}
 
-	fileAfterMerge, err := st.GetSliceFileByPath(ctx, slice.ID, filePath)
+	fileAfterMerge, err := storage.ReadSliceFileContent(ctx, st, slice.ID, filePath)
 	if err != nil {
 		t.Fatalf("failed to load file after merge: %v", err)
 	}

@@ -1006,38 +1006,6 @@ func findSubstring(s, substr string) bool {
 	return false
 }
 
-// GetSliceFiles returns all files for a slice
-func (s *InMemoryStorage) GetSliceFiles(ctx context.Context, sliceID string) ([]*models.FileContent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	slice, exists := s.slices[sliceID]
-	if !exists {
-		return nil, ErrSliceNotFound
-	}
-
-	var files []*models.FileContent
-	for _, fileID := range slice.Files {
-		if content := s.sliceFileContentLocked(sliceID, fileID); content != nil {
-			files = append(files, content)
-		}
-	}
-
-	return files, nil
-}
-
-// AddFileContent adds or updates file content
-func (s *InMemoryStorage) AddFileContent(ctx context.Context, content *models.FileContent) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.fileContents[content.FileID] = content
-	if content.Hash != "" {
-		s.versionedContent[content.Hash] = content
-	}
-	return nil
-}
-
 func (s *InMemoryStorage) PutBlock(ctx context.Context, hash string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1191,36 +1159,6 @@ func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// GetSliceFileByPath retrieves a file content by path for a slice
-func (s *InMemoryStorage) GetSliceFileByPath(ctx context.Context, sliceID, path string) (*models.FileContent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	entryID, ok := s.entriesByPath[sliceID+":"+path]
-	if !ok {
-		return nil, ErrEntryNotFound
-	}
-
-	entry, ok := s.entries[entryID]
-	if !ok {
-		return nil, ErrEntryNotFound
-	}
-	if entry.Type != "file" {
-		out := &models.FileContent{
-			FileID: entry.Path,
-			Path:   entry.Path,
-			Size:   entry.Size,
-			Hash:   strings.TrimSpace(entry.Hash),
-		}
-		if len(entry.Content) > 0 {
-			out.Content = append([]byte(nil), entry.Content...)
-		}
-		return out, nil
-	}
-
-	return s.fileContentForEntryLocked(entry), nil
 }
 
 func sliceIDFromEntryID(entryID string) string {
@@ -1507,12 +1445,6 @@ func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
 	if entry == nil || entry.Type != "file" {
 		return ""
 	}
-	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
-		return strings.TrimSpace(fc.Hash)
-	}
-	if fc, ok := s.fileContents[entry.Path]; ok && fc != nil && strings.TrimSpace(fc.Hash) != "" {
-		return strings.TrimSpace(fc.Hash)
-	}
 	sliceID := inferSliceIDForEntry(entry)
 	if sliceID != "" {
 		if manifest, ok := s.manifests[sliceID+":"+cleanRelativePath(entry.Path)]; ok && manifest != nil && strings.TrimSpace(manifest.Hash) != "" {
@@ -1520,106 +1452,6 @@ func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
 		}
 	}
 	return strings.TrimSpace(entry.Hash)
-}
-
-func (s *InMemoryStorage) sliceFileContentLocked(sliceID, fileID string) *models.FileContent {
-	if entry := s.sliceFileEntryLocked(sliceID, fileID); entry != nil {
-		return s.fileContentForEntryLocked(entry)
-	}
-	if fc, ok := s.fileContents[fileID]; ok && fc != nil {
-		copy := *fc
-		if len(fc.Content) > 0 {
-			copy.Content = append([]byte(nil), fc.Content...)
-		}
-		return &copy
-	}
-	return nil
-}
-
-func (s *InMemoryStorage) sliceFileEntryLocked(sliceID, fileID string) *models.DirectoryEntry {
-	if fileID == "" {
-		return nil
-	}
-	for _, candidate := range []string{fileID, cleanRelativePath(fileID)} {
-		if candidate == "" {
-			continue
-		}
-		entryID, ok := s.entriesByPath[sliceID+":"+candidate]
-		if !ok {
-			continue
-		}
-		if entry, ok := s.entries[entryID]; ok && entry != nil && entry.Type == "file" {
-			return entry
-		}
-	}
-	if entry, ok := s.entries[fileID]; ok && entry != nil && entry.Type == "file" {
-		if entrySlice := inferSliceIDForEntry(entry); entrySlice == "" || entrySlice == sliceID {
-			return entry
-		}
-	}
-	return nil
-}
-
-func (s *InMemoryStorage) fileContentForEntryLocked(entry *models.DirectoryEntry) *models.FileContent {
-	if entry == nil || entry.Type != "file" {
-		return nil
-	}
-
-	out := &models.FileContent{
-		FileID: entry.Path,
-		Path:   entry.Path,
-		Size:   entry.Size,
-		Hash:   strings.TrimSpace(entry.Hash),
-	}
-	usedSliceScopedContent := false
-	if fc, ok := s.fileContents[entry.ID]; ok && fc != nil {
-		if out.Size == 0 {
-			out.Size = fc.Size
-		}
-		if strings.TrimSpace(fc.Hash) != "" {
-			out.Hash = strings.TrimSpace(fc.Hash)
-		}
-		if len(fc.Content) > 0 {
-			out.Content = append([]byte(nil), fc.Content...)
-		}
-		return out
-	}
-	if len(entry.Content) > 0 {
-		out.Content = append([]byte(nil), entry.Content...)
-		usedSliceScopedContent = true
-	}
-	sliceID := inferSliceIDForEntry(entry)
-	if sliceID != "" {
-		if manifest, ok := s.manifests[sliceID+":"+cleanRelativePath(entry.Path)]; ok && manifest != nil {
-			assembled, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
-				payload, ok := s.blocks[hash]
-				if !ok {
-					return nil, ErrEntryNotFound
-				}
-				return append([]byte(nil), payload...), nil
-			})
-			if err == nil {
-				out.Size = manifest.TotalSize
-				out.Hash = strings.TrimSpace(manifest.Hash)
-				out.Content = assembled
-				usedSliceScopedContent = true
-			}
-		}
-	}
-	if !usedSliceScopedContent {
-		if fc, ok := s.fileContents[entry.Path]; ok && fc != nil {
-			if out.Size == 0 {
-				out.Size = fc.Size
-			}
-			if strings.TrimSpace(fc.Hash) != "" {
-				out.Hash = strings.TrimSpace(fc.Hash)
-			}
-			if len(fc.Content) > 0 {
-				out.Content = append([]byte(nil), fc.Content...)
-			}
-		}
-	}
-	return out
 }
 
 // UpdateEntry updates a directory entry
@@ -1820,40 +1652,6 @@ func (s *InMemoryStorage) SaveCommitSnapshot(ctx context.Context, snapshot *mode
 	return nil
 }
 
-// GetFileContentByHash retrieves versioned file content by content hash.
-func (s *InMemoryStorage) GetFileContentByHash(ctx context.Context, contentHash string) (*models.FileContent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	content, exists := s.versionedContent[contentHash]
-	if !exists {
-		manifest, ok := s.versionedManifests[contentHash]
-		if !ok || manifest == nil {
-			return nil, ErrEntryNotFound
-		}
-		assembled, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
-			payload, ok := s.blocks[hash]
-			if !ok {
-				return nil, ErrEntryNotFound
-			}
-			return append([]byte(nil), payload...), nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		return &models.FileContent{
-			FileID:  manifest.Path,
-			Path:    manifest.Path,
-			Content: assembled,
-			Size:    manifest.TotalSize,
-			Hash:    strings.TrimSpace(manifest.Hash),
-		}, nil
-	}
-
-	copyContent := *content
-	return &copyContent, nil
-}
-
 // GetFileAtCommit retrieves a file's content at a specific commit.
 func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path string) (*models.FileContent, error) {
 	s.mu.RLock()
@@ -1870,7 +1668,7 @@ func (s *InMemoryStorage) GetFileAtCommit(ctx context.Context, commitHash, path 
 	}
 	s.mu.RUnlock()
 
-	content, err := s.GetFileContentByHash(ctx, contentHash)
+	content, err := ReadVersionedFileContent(ctx, s, contentHash)
 	if err != nil {
 		return nil, err
 	}

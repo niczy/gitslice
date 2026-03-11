@@ -10,6 +10,24 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 )
 
+func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st Storage, sliceID, filePath string, content []byte) *models.FileManifest {
+	tb.Helper()
+	manifest, err := WriteSliceFileManifest(ctx, st, sliceID, filePath, content)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifest(%s) failed: %v", filePath, err)
+	}
+	return manifest
+}
+
+func mustReadSliceFile(tb testing.TB, ctx context.Context, st Storage, sliceID, filePath string) *models.FileContent {
+	tb.Helper()
+	content, err := ReadSliceFileContent(ctx, st, sliceID, filePath)
+	if err != nil {
+		tb.Fatalf("ReadSliceFileContent(%s) failed: %v", filePath, err)
+	}
+	return content
+}
+
 func storageTestCases(ctx context.Context) []struct {
 	name    string
 	factory func(t *testing.T) Storage
@@ -93,41 +111,22 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{ID: rootEntryID, Path: filePath, Type: "file", ParentID: root.ID, Size: 12}); err != nil {
 		t.Fatalf("AddEntry root failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: []byte("root version"),
-		Size:    int64(len("root version")),
-		Hash:    "root-hash",
-	}); err != nil {
-		t.Fatalf("AddFileContent root failed: %v", err)
-	}
+	rootManifest := mustWriteSliceManifest(t, ctx, st, root.ID, filePath, []byte("root version"))
 	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{ID: homeEntryID, Path: filePath, Type: "file", ParentID: home.ID, Size: 12}); err != nil {
 		t.Fatalf("AddEntry home failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  homeEntryID,
-		Path:    filePath,
-		Content: []byte("home version"),
-		Size:    int64(len("home version")),
-		Hash:    "home-hash",
-	}); err != nil {
-		t.Fatalf("AddFileContent home failed: %v", err)
-	}
-	content, err := st.GetSliceFileByPath(ctx, home.ID, filePath)
-	if err != nil {
-		t.Fatalf("GetSliceFileByPath home failed: %v", err)
-	}
+	homeManifest := mustWriteSliceManifest(t, ctx, st, home.ID, filePath, []byte("home version"))
+	content := mustReadSliceFile(t, ctx, st, home.ID, filePath)
 	if got := string(content.Content); got != "home version" {
 		t.Fatalf("expected home content, got %q", got)
 	}
-	if content.Hash != "home-hash" {
+	if content.Hash != homeManifest.Hash {
 		t.Fatalf("expected home hash, got %q", content.Hash)
 	}
 
-	files, err := st.GetSliceFiles(ctx, home.ID)
+	files, err := ListSliceFileContents(ctx, st, home.ID)
 	if err != nil {
-		t.Fatalf("GetSliceFiles home failed: %v", err)
+		t.Fatalf("ListSliceFileContents home failed: %v", err)
 	}
 	if len(files) != 1 {
 		t.Fatalf("expected one home file, got %#v", files)
@@ -135,7 +134,7 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	if got := string(files[0].Content); got != "home version" {
 		t.Fatalf("expected home file list content, got %q", got)
 	}
-	if files[0].Hash != "home-hash" {
+	if files[0].Hash != homeManifest.Hash {
 		t.Fatalf("expected home file list hash, got %q", files[0].Hash)
 	}
 
@@ -143,7 +142,7 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	if err != nil {
 		t.Fatalf("GetEntry home failed: %v", err)
 	}
-	if entry.Hash != "home-hash" {
+	if entry.Hash != homeManifest.Hash {
 		t.Fatalf("expected home entry hash, got %q", entry.Hash)
 	}
 
@@ -151,7 +150,7 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	if err != nil {
 		t.Fatalf("GetEntryByPath home failed: %v", err)
 	}
-	if byPath.Hash != "home-hash" {
+	if byPath.Hash != homeManifest.Hash {
 		t.Fatalf("expected home path hash, got %q", byPath.Hash)
 	}
 
@@ -162,8 +161,11 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	if len(entries) != 1 {
 		t.Fatalf("expected one root child entry, got %#v", entries)
 	}
-	if entries[0].Hash != "home-hash" {
+	if entries[0].Hash != homeManifest.Hash {
 		t.Fatalf("expected home list hash, got %q", entries[0].Hash)
+	}
+	if rootManifest.Hash == homeManifest.Hash {
+		t.Fatalf("expected distinct root and home manifests for preference test")
 	}
 }
 
@@ -184,47 +186,28 @@ func runManifestPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{ID: homeEntryID, Path: filePath, Type: "file", ParentID: home.ID}); err != nil {
 		t.Fatalf("UpdateEntry home failed: %v", err)
 	}
-	if err := st.AddFileContent(ctx, &models.FileContent{
-		FileID:  filePath,
-		Path:    filePath,
-		Content: []byte("root version"),
-		Size:    int64(len("root version")),
-		Hash:    "root-hash",
-	}); err != nil {
-		t.Fatalf("AddFileContent root failed: %v", err)
+	_ = mustWriteSliceManifest(t, ctx, st, root.ID, filePath, []byte("root version"))
+
+	putManifest := func(content string) *models.FileManifest {
+		return mustWriteSliceManifest(t, ctx, st, home.ID, filePath, []byte(content))
 	}
 
-	putManifest := func(content string) {
-		blocks, payloads := ChunkFile([]byte(content), DefaultFileBlockSize)
-		if err := st.PutBlocks(ctx, payloads); err != nil {
-			t.Fatalf("PutBlocks failed: %v", err)
-		}
-		if err := st.PutFileManifest(ctx, home.ID, filePath, &models.FileManifest{
-			Path:      filePath,
-			TotalSize: int64(len(content)),
-			Hash:      fmt.Sprintf("hash-%s", content),
-			Blocks:    blocks,
-		}); err != nil {
-			t.Fatalf("PutFileManifest failed: %v", err)
-		}
-	}
-
-	putManifest("home version v1")
-	first, err := st.GetSliceFileByPath(ctx, home.ID, filePath)
-	if err != nil {
-		t.Fatalf("GetSliceFileByPath(home first) failed: %v", err)
-	}
+	firstManifest := putManifest("home version v1")
+	first := mustReadSliceFile(t, ctx, st, home.ID, filePath)
 	if got, want := string(first.Content), "home version v1"; got != want {
 		t.Fatalf("expected manifest-backed home content, got %q want %q", got, want)
 	}
-
-	putManifest("home version v2")
-	second, err := st.GetSliceFileByPath(ctx, home.ID, filePath)
-	if err != nil {
-		t.Fatalf("GetSliceFileByPath(home second) failed: %v", err)
+	if first.Hash != firstManifest.Hash {
+		t.Fatalf("expected manifest-backed home hash %q, got %q", firstManifest.Hash, first.Hash)
 	}
+
+	secondManifest := putManifest("home version v2")
+	second := mustReadSliceFile(t, ctx, st, home.ID, filePath)
 	if got, want := string(second.Content), "home version v2"; got != want {
 		t.Fatalf("expected updated manifest-backed home content, got %q want %q", got, want)
+	}
+	if second.Hash != secondManifest.Hash {
+		t.Fatalf("expected updated manifest-backed home hash %q, got %q", secondManifest.Hash, second.Hash)
 	}
 }
 
@@ -549,11 +532,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		Path:    "src/versioned-" + suffix + ".go",
 		Content: []byte("package main"),
 		Size:    int64(len("package main")),
-		Hash:    "hash-versioned-1-" + suffix,
 	}
-	if err := st.AddFileContent(ctx, content); err != nil {
-		t.Fatalf("AddFileContent versioned failed: %v", err)
-	}
+	manifest := mustWriteSliceManifest(t, ctx, st, slice.ID, content.Path, content.Content)
+	content.Hash = manifest.Hash
 	snapshot := &models.CommitSnapshot{
 		CommitHash: "commit-snapshot-1-" + suffix,
 		SliceID:    slice.ID,
@@ -1790,15 +1771,7 @@ func TestPostgresNativeStoragePersistsAcrossRestart(t *testing.T) {
 	if err := rs.AddEntry(ctx, entry); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	if err := rs.AddFileContent(ctx, &models.FileContent{
-		FileID:  entry.Path,
-		Path:    entry.Path,
-		Content: []byte("hi"),
-		Size:    2,
-		Hash:    "hash-main-go",
-	}); err != nil {
-		t.Fatalf("AddFileContent failed: %v", err)
-	}
+	manifest := mustWriteSliceManifest(t, ctx, rs, slice1.ID, entry.Path, []byte("hi"))
 	if err := rs.UpdateGlobalState(ctx, &models.GlobalState{GlobalCommitHash: "gc1", Timestamp: time.Now()}); err != nil {
 		t.Fatalf("UpdateGlobalState failed: %v", err)
 	}
@@ -1845,15 +1818,12 @@ func TestPostgresNativeStoragePersistsAcrossRestart(t *testing.T) {
 	if err != nil || restoredEntry.Path != entry.Path {
 		t.Fatalf("expected entry restored after rebuild: %v", err)
 	}
-	restoredFile, err := rs.GetSliceFileByPath(ctx, slice1.ID, entry.Path)
-	if err != nil {
-		t.Fatalf("expected file content restored after rebuild: %v", err)
-	}
+	restoredFile := mustReadSliceFile(t, ctx, rs, slice1.ID, entry.Path)
 	if got := string(restoredFile.Content); got != "hi" {
 		t.Fatalf("expected restored file content hi, got %q", got)
 	}
-	if restoredFile.Hash != "hash-main-go" {
-		t.Fatalf("expected restored file hash hash-main-go, got %q", restoredFile.Hash)
+	if restoredFile.Hash != manifest.Hash {
+		t.Fatalf("expected restored file hash %q, got %q", manifest.Hash, restoredFile.Hash)
 	}
 	restoredState, err := rs.GetGlobalState(ctx)
 	if err != nil || restoredState.GlobalCommitHash != "gc1" {
