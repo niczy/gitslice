@@ -5,6 +5,7 @@ export default function AppHeader({
   username,
   githubUrl,
   navigate,
+  onOpenRepos,
   onLogout,
   isNavActive,
 }) {
@@ -31,7 +32,7 @@ export default function AppHeader({
               variant={isNavActive('repos') ? 'secondary' : 'ghost'}
               className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
               data-testid="topbar-repos"
-              onClick={() => navigate('browser')}
+              onClick={onOpenRepos}
             >
               Repos
             </Button>
@@ -71,7 +72,7 @@ export default function AppHeader({
               variant={isNavActive('repos') ? 'default' : 'secondary'}
               className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
               data-testid="topbar-repo-browser"
-              onClick={() => navigate('browser')}
+              onClick={onOpenRepos}
             >
               Repo Browser
             </Button>
