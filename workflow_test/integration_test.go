@@ -379,6 +379,15 @@ func extractFilesystemCommitHash(output string) string {
 	return strings.TrimSpace(matches[1])
 }
 
+func extractFilesystemBatchCommitHash(output string) string {
+	re := regexp.MustCompile(`Batch commit: ([^\n]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
 func newSliceClient(t *testing.T) slicev1.SliceServiceClient {
 	t.Helper()
 
@@ -844,6 +853,69 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected remote file to be deleted, got err=%v", err)
+	}
+}
+
+func TestFilesystemCLIBatchWorkflowEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	remoteDir := fmt.Sprintf("/%s/fs-batch-cli-%d", testUsername, time.Now().UnixNano())
+	remoteFinal := remoteDir + "/FINAL.md"
+	localFile := filepath.Join(t.TempDir(), "README.md")
+	if err := os.WriteFile(localFile, []byte("hello from batch\n"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+
+	batchFile := filepath.Join(t.TempDir(), "ops.jsonl")
+	batchSpec := fmt.Sprintf(
+		"{\"op\":\"mkdir\",\"path\":%q}\n{\"op\":\"write\",\"path\":%q,\"from\":%q}\n{\"op\":\"copy\",\"source_path\":%q,\"destination_path\":%q}\n{\"op\":\"edit\",\"path\":%q,\"edits\":[{\"old_text\":\"hello\",\"new_text\":\"batch\"}]}\n{\"op\":\"move\",\"source_path\":%q,\"destination_path\":%q}\n{\"op\":\"delete\",\"path\":%q}\n",
+		remoteDir,
+		remoteDir+"/README.md",
+		localFile,
+		remoteDir+"/README.md",
+		remoteDir+"/COPY.md",
+		remoteDir+"/COPY.md",
+		remoteDir+"/COPY.md",
+		remoteFinal,
+		remoteDir+"/README.md",
+	)
+	if err := os.WriteFile(batchFile, []byte(batchSpec), 0o600); err != nil {
+		t.Fatalf("write batch file: %v", err)
+	}
+
+	output := runCLIOrFail(t, "", "fs", "batch", "-f", batchFile, "-m", "batch workflow")
+	commitHash := extractFilesystemBatchCommitHash(output)
+	if commitHash == "" {
+		t.Fatalf("expected batch commit output, got: %s", output)
+	}
+	if !strings.Contains(output, "Operations: 6") {
+		t.Fatalf("expected batch operation count, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "cat", remoteFinal)
+	if output != "batch from batch\n" {
+		t.Fatalf("unexpected final batch file content: %q", output)
+	}
+
+	client := newFilesystemClient(t)
+	_, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: homeslice.IDForUsername(testUsername),
+		Path:        remoteDir + "/README.md",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected original file to be deleted, got err=%v", err)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "log", "--limit", "2")
+	if !strings.Contains(output, "batch workflow") {
+		t.Fatalf("expected fs log to include batch message, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, "", "fs", "show", commitHash)
+	if !strings.Contains(output, "ADD "+remoteFinal) {
+		t.Fatalf("expected batch commit to show final file add, got: %s", output)
 	}
 }
 
