@@ -15,8 +15,8 @@ const BENEFITS = [
     detail: 'Replace fragile branch choreography with slice IDs that stay readable across local, CI, and review.',
   },
   {
-    title: 'Dev environment + codebase together',
-    detail: 'Attach environment context directly to slice work so every run uses the same code and setup you do.',
+    title: 'Clear review surface',
+    detail: 'Keep commit history, diffs, and slice ownership readable so changes stay easy to review and merge.',
   },
 ];
 
@@ -27,9 +27,9 @@ const WORKFLOW = [
     command: 'gs fork checkout-api ./internal/httpapi --parent root_slice',
   },
   {
-    title: 'Sync environment',
-    copy: 'Bind the same environment assumptions used by your dev tools and CI.',
-    command: 'gs env attach checkout-api --from .devcontainer',
+    title: 'Review changes',
+    copy: 'Inspect commit diffs and changesets before merging, without branch-heavy handoffs.',
+    command: 'gs file commit-changes <commit-hash>',
   },
   {
     title: 'Ship through review',
@@ -46,7 +46,7 @@ export default function OverviewPage({ onBrowseRepo }) {
           <Badge variant="secondary" className="eyebrow border border-border/60">Built for modern delivery workflows</Badge>
           <h1>Ship reliable software faster with API-first slices.</h1>
           <p className="lede">
-            Keep code, environment context, and review history aligned from first commit to merge.
+            Keep code, commit history, and review flow aligned from first commit to merge.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -64,7 +64,7 @@ export default function OverviewPage({ onBrowseRepo }) {
           <Card className="hero-card hero-card--api border-border/70 bg-card/95">
             <CardHeader>
               <Badge variant="outline" className="w-fit">API-first core</Badge>
-              <CardTitle className="text-xl">One platform for code, review, and environment context</CardTitle>
+              <CardTitle className="text-xl">One platform for code, review, and versioned change history</CardTitle>
             </CardHeader>
             <CardContent>
             <pre className="code-block">
