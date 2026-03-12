@@ -8,7 +8,15 @@ import { Input } from './ui/input.jsx';
 // Slice Dropdown Component
 // ---------------------------------------------------------------------------
 
-export default function SliceDropdown({ slices, currentSliceId, onSelectSlice, loading, error, onRefresh, className = '' }) {
+export default function SliceDropdown({
+  slices,
+  currentSliceId,
+  onSelectSlice,
+  loading,
+  error,
+  onRefresh,
+  className = '',
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const dropdownRef = useRef(null);
