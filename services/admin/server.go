@@ -755,8 +755,7 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 		if err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
 		}
-		slices = make([]*models.Slice, 0, len(owned)+1)
-		slices = append(slices, rootSlice)
+		slices = make([]*models.Slice, 0, len(owned))
 		for _, slice := range owned {
 			if slice.IsRoot {
 				continue
