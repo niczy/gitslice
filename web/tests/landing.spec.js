@@ -14,7 +14,7 @@ test('renders Git Slice landing content and navigation', async ({ page }) => {
 
   await page.getByRole('button', { name: /Git Slice/i }).click();
   await expect(page.getByRole('heading', { level: 1, name: /edit remote files directly from the cli/i })).toBeVisible();
-  await expect(page.getByRole('heading', { name: /stay remote by default\. drop local when you need it\./i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /stay remote until local work is actually faster\./i })).toBeVisible();
   await expect(page.getByText(/gs fs write \/\$USER\/app\/hello\.txt --text "hello from gitslice"/i)).toBeVisible();
   await expect(page.getByText(/gs changeset create --message "update readme" --files README\.md/i)).toBeVisible();
   await expect(page.getByText(/gs changeset merge <changeset-id>/i)).toBeVisible();
