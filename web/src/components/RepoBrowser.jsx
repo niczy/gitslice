@@ -126,6 +126,47 @@ export default function RepoBrowser({
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = activeView === 'settings' && canShowSettings;
 
+  const resolveRequestedSliceId = useCallback((requestedSliceId) => {
+    const requested = String(requestedSliceId || '').trim();
+    if (!requested) {
+      return '';
+    }
+
+    const requestedLower = requested.toLowerCase();
+
+    const exactSlice = slices.find((slice) => slice.slice_id === requested);
+    if (exactSlice) {
+      return exactSlice.slice_id;
+    }
+
+    const caseInsensitiveSlice = slices.find((slice) => String(slice.slice_id || '').toLowerCase() === requestedLower);
+    if (caseInsensitiveSlice) {
+      return caseInsensitiveSlice.slice_id;
+    }
+
+    const normalizedHome = requestedLower.startsWith('home.')
+      ? `home.${requestedLower.slice('home.'.length).trim()}`
+      : `home.${requestedLower}`;
+
+    const matchingHomeSlice = slices.find((slice) => String(slice.slice_id || '').toLowerCase() === normalizedHome);
+    if (matchingHomeSlice) {
+      return matchingHomeSlice.slice_id;
+    }
+
+    const usernameHomeSlice = slices.find((slice) =>
+      String(slice.slice_id || '').toLowerCase() === normalizedHome
+      || (
+        String(slice.name || '').trim().toLowerCase() === requestedLower
+        && String(slice.slice_id || '').toLowerCase().startsWith('home.')
+      )
+    );
+    if (usernameHomeSlice) {
+      return usernameHomeSlice.slice_id;
+    }
+
+    return normalizedHome;
+  }, [slices]);
+
   const openFilesView = useCallback(() => {
     setActiveView('files');
   }, []);
@@ -223,14 +264,20 @@ export default function RepoBrowser({
       return;
     }
 
-    const sliceExists = slices.some((s) => s.slice_id === initialBrowserState.slice);
-    if (sliceExists) {
-      if (initialBrowserState.slice !== currentSliceId) {
-        onSliceChange(initialBrowserState.slice);
+    const resolvedSliceId = resolveRequestedSliceId(initialBrowserState.slice);
+    if (!resolvedSliceId) {
+      if (slicesLoading) {
+        return;
       }
       hasAppliedInitialSliceRef.current = true;
+      return;
     }
-  }, [initialBrowserState, slices, currentSliceId, onSliceChange]);
+
+    if (resolvedSliceId !== currentSliceId) {
+      onSliceChange(resolvedSliceId);
+    }
+    hasAppliedInitialSliceRef.current = true;
+  }, [initialBrowserState, resolveRequestedSliceId, currentSliceId, onSliceChange, slicesLoading]);
 
   // Reset tree when slice changes
   useEffect(() => {
@@ -257,7 +304,7 @@ export default function RepoBrowser({
       params.set('slice_version.slice_hash', sliceHash);
     }
     const queryString = params.toString();
-    return `${apiBaseUrl}/v1/slices/${sliceId}/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
+    return `${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
   };
 
   // Build URL for file endpoint based on mode
@@ -270,14 +317,14 @@ export default function RepoBrowser({
       params.set('slice_version.slice_hash', sliceHash);
     }
     const queryString = params.toString();
-    return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
+    return `${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
   };
 
   // Build URL for file history endpoint based on mode
   const buildHistoryUrl = (filePath) => {
     const encodedPath = filePath ? encodePath(filePath) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
-    return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
+    return `${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/files/history${pathSuffix}`;
   };
 
   // Fetch file history from the API
