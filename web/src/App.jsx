@@ -37,7 +37,7 @@ function getPreferredSliceId(slices, username) {
 }
 
 function getHomeSliceId(username) {
-  const trimmedUsername = String(username || '').trim();
+  const trimmedUsername = String(username || '').trim().toLowerCase();
   return trimmedUsername ? `home.${trimmedUsername}` : '';
 }
 
