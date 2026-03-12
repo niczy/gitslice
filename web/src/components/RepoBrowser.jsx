@@ -126,6 +126,31 @@ export default function RepoBrowser({
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = activeView === 'settings' && canShowSettings;
 
+  const resolveRequestedSliceId = useCallback((requestedSliceId) => {
+    const requested = String(requestedSliceId || '').trim();
+    if (!requested) {
+      return '';
+    }
+
+    const candidateIds = [requested];
+    if (requested.startsWith('home.')) {
+      const suffix = requested.slice('home.'.length).trim();
+      if (suffix) {
+        candidateIds.push(`home.${suffix.toLowerCase()}`);
+      }
+    } else {
+      candidateIds.push(`home.${requested.toLowerCase()}`);
+    }
+
+    for (const candidateId of candidateIds) {
+      if (slices.some((slice) => slice.slice_id === candidateId)) {
+        return candidateId;
+      }
+    }
+
+    return '';
+  }, [slices]);
+
   const openFilesView = useCallback(() => {
     setActiveView('files');
   }, []);
@@ -223,14 +248,17 @@ export default function RepoBrowser({
       return;
     }
 
-    const sliceExists = slices.some((s) => s.slice_id === initialBrowserState.slice);
-    if (sliceExists) {
-      if (initialBrowserState.slice !== currentSliceId) {
-        onSliceChange(initialBrowserState.slice);
-      }
+    const resolvedSliceId = resolveRequestedSliceId(initialBrowserState.slice);
+    if (!resolvedSliceId) {
       hasAppliedInitialSliceRef.current = true;
+      return;
     }
-  }, [initialBrowserState, slices, currentSliceId, onSliceChange]);
+
+    if (resolvedSliceId !== currentSliceId) {
+      onSliceChange(resolvedSliceId);
+    }
+    hasAppliedInitialSliceRef.current = true;
+  }, [initialBrowserState, resolveRequestedSliceId, currentSliceId, onSliceChange]);
 
   // Reset tree when slice changes
   useEffect(() => {
