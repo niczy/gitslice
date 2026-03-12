@@ -16,8 +16,8 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByRole('button', { name: /\+ File/i })).toHaveCount(0);
 
     await page.getByTestId('slice-dropdown-trigger').click();
-    await page.getByTestId('slice-dropdown-item').filter({ hasText: /root_slice|root slice/i }).click();
-    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
+    await expect(page.getByTestId('slice-dropdown-item').filter({ hasText: /root_slice|root slice/i })).toHaveCount(0);
+    await page.keyboard.press('Escape');
 
     await page.getByTestId('topbar-settings').click();
     await expect(page.getByTestId('settings-page')).toBeVisible();
