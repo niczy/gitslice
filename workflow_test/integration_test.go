@@ -706,6 +706,9 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
 		t.Fatalf("expected second checkout output, got: %s", output)
 	}
+	if !strings.Contains(output, "Cache hits: 3") {
+		t.Fatalf("expected second checkout to report block cache hits, got: %s", output)
+	}
 
 	checkedOutPath := filepath.Join(checkoutDir2, storedPath)
 	got, err := os.ReadFile(checkedOutPath)

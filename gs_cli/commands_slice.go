@@ -117,8 +117,11 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 			}
 
 			if content == nil {
-				if data, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
+				if data, hits, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
 					content = data
+					if hits > 0 {
+						atomic.AddInt64(&cachedHits, hits)
+					}
 				} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 					log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
 				}
@@ -196,15 +199,15 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func assembleCheckoutFile(cache *CacheManager, fm *slicev1.FileMetadata, blockContents map[string][]byte) ([]byte, error) {
+func assembleCheckoutFile(cache *CacheManager, fm *slicev1.FileMetadata, blockContents map[string][]byte) ([]byte, int64, error) {
 	if fm == nil {
-		return nil, os.ErrNotExist
+		return nil, 0, os.ErrNotExist
 	}
 	if len(fm.GetBlocks()) == 0 {
 		if fm.GetSize() == 0 {
-			return []byte{}, nil
+			return []byte{}, 0, nil
 		}
-		return nil, os.ErrNotExist
+		return nil, 0, os.ErrNotExist
 	}
 
 	manifest := &models.FileManifest{
@@ -224,18 +227,27 @@ func assembleCheckoutFile(cache *CacheManager, fm *slicev1.FileMetadata, blockCo
 	}
 	if len(manifest.Blocks) == 0 {
 		if fm.GetSize() == 0 {
-			return []byte{}, nil
+			return []byte{}, 0, nil
 		}
-		return nil, os.ErrNotExist
+		return nil, 0, os.ErrNotExist
 	}
 
-	return storage.AssembleFile(manifest, func(hash string) ([]byte, error) {
+	var cacheHits int64
+	data, err := storage.AssembleFile(manifest, func(hash string) ([]byte, error) {
 		if data, ok := blockContents[hash]; ok {
 			return data, nil
 		}
 		if cache == nil {
 			return nil, os.ErrNotExist
 		}
-		return cache.ReadObject(hash)
+		data, err := cache.ReadObject(hash)
+		if err == nil {
+			cacheHits++
+		}
+		return data, err
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, cacheHits, nil
 }
