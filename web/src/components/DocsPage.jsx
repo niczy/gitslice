@@ -324,7 +324,7 @@ gs slice checkouts --slice home.$USER`}</code>
                 </div>
                 <pre className="code-block">
                   <code>{`gs cache stats --checkouts
-gs cache clear --stale-checkouts
+gs cache prune
 gs cache clear --objects`}</code>
                 </pre>
               </article>
@@ -332,7 +332,7 @@ gs cache clear --objects`}</code>
             <ul className="docs-bullet-list">
               <li><code>gs slice checkouts</code> reports how many checkouts exist globally and where they live.</li>
               <li><code>gs cache stats</code> shows cached object count, cached bytes, tracked checkouts, and stale records.</li>
-              <li><code>gs cache clear --stale-checkouts</code> removes registry entries for deleted or invalid local worktrees.</li>
+              <li><code>gs cache prune</code> removes registry entries for deleted or invalid local worktrees.</li>
               <li><code>gs cache clear --objects</code> wipes cached objects so you can reclaim disk when needed.</li>
             </ul>
           </section>

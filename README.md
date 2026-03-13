@@ -185,7 +185,7 @@ gs slice checkouts
 gs cache stats --checkouts
 
 # Remove dead checkout records after deleting worktrees manually
-gs cache clear --stale-checkouts
+gs cache prune
 
 # Reclaim disk by deleting cached objects
 gs cache clear --objects
