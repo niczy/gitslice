@@ -255,6 +255,24 @@ func waitForCondition(timeout, interval time.Duration, condition func() (bool, e
 	return errors.New("condition not met before timeout")
 }
 
+func waitForMergedChangesetMessage(ctx context.Context, st storage.Storage, sliceID, needle string, timeout, interval time.Duration) error {
+	return waitForCondition(timeout, interval, func() (bool, error) {
+		changesets, err := st.ListChangesets(ctx, sliceID, nil, 20)
+		if err != nil {
+			return false, err
+		}
+		for _, cs := range changesets {
+			if cs == nil {
+				continue
+			}
+			if cs.Status == models.ChangesetStatusMerged && strings.Contains(cs.Message, needle) {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
 // runCLI executes a CLI command in the current working directory.
 func runCLI(args ...string) (string, error) {
 	return runCLIWithDir("", args...)
@@ -826,21 +844,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected fs show patch output, got: %s", output)
 	}
 
-	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
-		changesets, err := testStorage.ListChangesets(ctx, homeslice.IDForUsername(testUsername), nil, 20)
-		if err != nil {
-			return false, err
-		}
-		for _, cs := range changesets {
-			if cs == nil {
-				continue
-			}
-			if cs.Status == models.ChangesetStatusMerged && strings.Contains(cs.Message, "write "+remoteFile) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}); err != nil {
+	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(testUsername), "write "+remoteFile, 2*time.Second, 50*time.Millisecond); err != nil {
 		t.Fatalf("expected fs publish to create a merged changeset: %v", err)
 	}
 
@@ -876,10 +880,6 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected rm commit output, got: %s", output)
 	}
-	rmCommit := extractFilesystemCommitHash(output)
-	if rmCommit == "" {
-		t.Fatalf("failed to extract rm commit from output: %s", output)
-	}
 
 	client := newFilesystemClient(t)
 	_, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
@@ -890,15 +890,22 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected remote file to be deleted, got err=%v", err)
 	}
 
-	adminClient := newAdminClient(t)
+	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(testUsername), "delete "+remoteFile, 2*time.Second, 25*time.Millisecond); err != nil {
+		t.Fatalf("expected fs delete publish to create a merged changeset: %v", err)
+	}
+
+	rootSlice, err := testStorage.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("get root slice: %v", err)
+	}
 	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
-		resp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
-		if err != nil {
-			return false, err
+		_, err := testStorage.GetEntryByPath(ctx, rootSlice.ID, strings.TrimPrefix(remoteFile, "/"))
+		if err == storage.ErrEntryNotFound {
+			return true, nil
 		}
-		return resp.GlobalCommitHash == rmCommit, nil
+		return false, err
 	}); err != nil {
-		t.Fatalf("expected final fs delete commit %s to reach global state: %v", rmCommit, err)
+		t.Fatalf("expected deleted file %s to be removed from root slice: %v", remoteFile, err)
 	}
 }
 
