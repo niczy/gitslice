@@ -3891,6 +3891,24 @@ body {
     gap: 8px;
   }
 
+  .top-bar-actions {
+    min-width: 0;
+    flex: 1;
+    justify-content: flex-end;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .top-bar-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .top-bar-actions .nav-link {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
   .brand-text {
     display: none;
   }
