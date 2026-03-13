@@ -876,6 +876,10 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected rm commit output, got: %s", output)
 	}
+	rmCommit := extractFilesystemCommitHash(output)
+	if rmCommit == "" {
+		t.Fatalf("failed to extract rm commit from output: %s", output)
+	}
 
 	client := newFilesystemClient(t)
 	_, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
@@ -884,6 +888,17 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected remote file to be deleted, got err=%v", err)
+	}
+
+	adminClient := newAdminClient(t)
+	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
+		resp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+		if err != nil {
+			return false, err
+		}
+		return resp.GlobalCommitHash == rmCommit, nil
+	}); err != nil {
+		t.Fatalf("expected final fs delete commit %s to reach global state: %v", rmCommit, err)
 	}
 }
 
