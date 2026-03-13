@@ -23,13 +23,13 @@ func printHelp() {
 	fmt.Println("  status      Show working directory status")
 	fmt.Println("  log         Show slice commit history")
 	fmt.Println("  root        Show root slice information")
-	fmt.Println("  fork        Create a new slice from a folder")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
 }
 
 func printSliceHelp() {
 	fmt.Println("Usage: gs slice <command> [options]")
 	fmt.Println("\nCommands:")
+	fmt.Println("  create    Create a focused slice from one or more published folders")
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID")
 	fmt.Println("  clone     Alias for checkout")
 	fmt.Println("  checkouts List globally tracked local slice checkouts")

@@ -554,7 +554,7 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 	}
 }
 
-func TestRootSliceAndForkWorkflow(t *testing.T) {
+func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
 	output := runCLIOrFail(t, workdir, "root")
@@ -580,8 +580,8 @@ func TestRootSliceAndForkWorkflow(t *testing.T) {
 		t.Fatalf("Expected merge success, got: %s", output)
 	}
 
-	newSliceID := fmt.Sprintf("slice-fork-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, workdir, "fork", newSliceID, srcFolder, "--parent", "root_slice")
+	newSliceID := fmt.Sprintf("slice-create-%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, workdir, "slice", "create", newSliceID, srcFolder)
 	if !strings.Contains(output, "Created slice: "+newSliceID) {
 		t.Fatalf("Expected slice creation output, got: %s", output)
 	}
@@ -778,7 +778,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	sliceID := fmt.Sprintf("slice-apps-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, workdir, "fork", sliceID, "apps", "--parent", "root_slice")
+	output = runCLIOrFail(t, workdir, "slice", "create", sliceID, "apps")
 	if !strings.Contains(output, "Created slice: "+sliceID) {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}

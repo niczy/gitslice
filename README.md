@@ -327,7 +327,7 @@ gs login status
 gs login your_name
 
 # Or pass a dev username per-command
-gs --user your_name fork my-slice ./some/folder --parent root_slice
+gs --user your_name slice create my-slice ./some/folder
 
 # Remote filesystem commands
 gs --user your_name fs write /your_name/README.md -f ./README.md

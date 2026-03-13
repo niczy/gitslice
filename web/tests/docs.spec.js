@@ -8,7 +8,8 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.getByRole('link', { name: /mental model/i })).toBeVisible();
   await expect(page.getByRole('heading', { name: /understand the system before choosing a workflow/i })).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs fs write \/\$USER\/app\/NOTICE\.txt --text "hotfix shipped remotely"/i }).first()).toBeVisible();
-  await expect(page.locator('code').filter({ hasText: /gs slice checkout ui-refresh/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs slice checkout <slice-id>/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs changeset merge <changeset-id>/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache stats --checkouts/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache prune/i }).first()).toBeVisible();

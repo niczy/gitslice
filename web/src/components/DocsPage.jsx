@@ -46,7 +46,7 @@ const COMMAND_MAP = [
   },
   {
     task: 'Create a focused local worktree',
-    command: 'gs fork ui-refresh apps/web --parent root_slice\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout ui-refresh',
+    command: 'gs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id>',
     note: 'Best for multi-file work, tests, refactors, and editor-heavy tasks.',
   },
   {
@@ -174,9 +174,9 @@ gs fs snapshot -m "notes update"`}</code>
                   <p>Best when the task needs a local editor, tests, or a normal git-shaped tree.</p>
                 </div>
                 <pre className="code-block">
-                  <code>{`gs fork ui-refresh apps/web --parent root_slice
+                  <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout ui-refresh
+gs slice checkout <slice-id>
 git status`}</code>
                 </pre>
               </article>
