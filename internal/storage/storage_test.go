@@ -445,6 +445,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if renamedSlice.Name != "Renamed" {
 		t.Fatalf("expected name %q, got %q", "Renamed", renamedSlice.Name)
 	}
+	if renamedSlice.Slug != "alice/alpha" {
+		t.Fatalf("expected slug to remain stable, got %q", renamedSlice.Slug)
+	}
 	if err := st.UpdateSliceName(ctx, "nonexistent-slice-"+suffix, "X"); err != ErrSliceNotFound {
 		t.Fatalf("expected ErrSliceNotFound, got %v", err)
 	}
@@ -460,6 +463,14 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	_, err = st.GetSliceByName(ctx, "nonexistent-name-"+suffix)
 	if err != ErrSliceNotFound {
 		t.Fatalf("expected ErrSliceNotFound for unknown name, got %v", err)
+	}
+
+	foundBySlug, err := st.GetSliceBySlug(ctx, "alice/alpha")
+	if err != nil {
+		t.Fatalf("GetSliceBySlug failed: %v", err)
+	}
+	if foundBySlug.ID != slice.ID {
+		t.Fatalf("GetSliceBySlug returned wrong slice: %s", foundBySlug.ID)
 	}
 
 	// Entries

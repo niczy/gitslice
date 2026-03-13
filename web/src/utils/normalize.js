@@ -102,6 +102,7 @@ export function normalizeSliceInfo(slice) {
   return {
     ...slice,
     slice_id: slice.slice_id ?? slice.sliceId,
+    slug: slice.slug ?? slice.Slug ?? '',
     file_count: slice.file_count ?? slice.fileCount,
     is_root: slice.is_root ?? slice.isRoot ?? false,
   };

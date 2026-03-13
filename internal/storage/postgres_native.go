@@ -375,10 +375,16 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 		mountsJSON = []byte("[]")
 	}
 
-	_, err := s.tx.Exec(ctx, `
-		INSERT INTO slices (id, name, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at, environment)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12)
-	`, slice.ID, slice.Name, slice.Description, slice.CreatedBy,
+	slug, err := s.allocateSliceSlug(ctx, s.tx, slice)
+	if err != nil {
+		return err
+	}
+	slice.Slug = slug
+
+	_, err = s.tx.Exec(ctx, `
+		INSERT INTO slices (id, name, slug, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at, environment)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13)
+	`, slice.ID, slice.Name, slice.Slug, slice.Description, slice.CreatedBy,
 		slice.ParentSlice, slice.IsRoot, filesJSON, mountsJSON, ownersJSON,
 		slice.CreatedAt, slice.UpdatedAt, slice.Environment)
 	if err != nil {
@@ -418,12 +424,22 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 
 func (s *postgresNativeTxView) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.tx, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
+}
+
+func (s *postgresNativeTxView) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
+}
+
+func (s *postgresNativeTxView) GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE slug = $1 LIMIT 1`, slug)
 }
 
 func (s *postgresNativeTxView) GetRootSlice(ctx context.Context) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.tx, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
 }
 
 func (s *postgresNativeTxView) InitializeRootSlice(ctx context.Context) error {
@@ -882,10 +898,16 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 	}
 	defer tx.Rollback(ctx)
 
+	slug, err := s.allocateSliceSlug(ctx, tx, slice)
+	if err != nil {
+		return err
+	}
+	slice.Slug = slug
+
 	_, err = tx.Exec(ctx, `
-		INSERT INTO slices (id, name, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at, environment)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12)
-	`, slice.ID, slice.Name, slice.Description, slice.CreatedBy,
+		INSERT INTO slices (id, name, slug, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at, environment)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13)
+	`, slice.ID, slice.Name, slice.Slug, slice.Description, slice.CreatedBy,
 		slice.ParentSlice, slice.IsRoot, filesJSON, mountsJSON, ownersJSON,
 		slice.CreatedAt, slice.UpdatedAt, slice.Environment)
 	if err != nil {
@@ -995,13 +1017,13 @@ func (s *PostgresNativeStorage) DeleteSlice(ctx context.Context, sliceID string)
 
 func (s *PostgresNativeStorage) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
 }
 
 func (s *PostgresNativeStorage) ListSlices(ctx context.Context, limit, offset int) ([]*models.Slice, error) {
 	ctx = ensureCtx(ctx)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
+		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
 		FROM slices ORDER BY created_at LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -1021,7 +1043,7 @@ func (s *PostgresNativeStorage) CountSlices(ctx context.Context) (int, error) {
 func (s *PostgresNativeStorage) ListSlicesByOwner(ctx context.Context, owner string, limit, offset int) ([]*models.Slice, error) {
 	ctx = ensureCtx(ctx)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
+		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
 		FROM slices WHERE owners @> $1::jsonb ORDER BY created_at LIMIT $2 OFFSET $3
 	`, fmt.Sprintf(`[%q]`, owner), limit, offset)
 	if err != nil {
@@ -1035,7 +1057,7 @@ func (s *PostgresNativeStorage) SearchSlices(ctx context.Context, query string, 
 	ctx = ensureCtx(ctx)
 	pattern := "%" + query + "%"
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
+		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
 		FROM slices WHERE name ILIKE $1 OR description ILIKE $1 ORDER BY created_at LIMIT $2 OFFSET $3
 	`, pattern, limit, offset)
 	if err != nil {
@@ -1047,7 +1069,7 @@ func (s *PostgresNativeStorage) SearchSlices(ctx context.Context, query string, 
 
 func (s *PostgresNativeStorage) GetRootSlice(ctx context.Context) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
 }
 
 func (s *PostgresNativeStorage) InitializeRootSlice(ctx context.Context) error {
@@ -1150,7 +1172,12 @@ func (s *PostgresNativeStorage) UpdateSliceEnvironment(ctx context.Context, slic
 // GetSliceByName retrieves the first non-root slice matching the given display name.
 func (s *PostgresNativeStorage) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
+}
+
+func (s *PostgresNativeStorage) GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error) {
+	ctx = ensureCtx(ctx)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE slug = $1 LIMIT 1`, slug)
 }
 
 // ============ Metadata Operations ============
@@ -4252,13 +4279,49 @@ type queryable interface {
 	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
 }
 
+func (s *PostgresNativeStorage) sliceSlugExists(ctx context.Context, q queryable, slug string) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM slices WHERE slug = $1)`, slug).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *PostgresNativeStorage) allocateSliceSlug(ctx context.Context, q queryable, slice *models.Slice) (string, error) {
+	if slice == nil {
+		return "", ErrInvalidInput
+	}
+	explicit := strings.TrimSpace(slice.Slug)
+	if explicit != "" {
+		exists, err := s.sliceSlugExists(ctx, q, explicit)
+		if err != nil {
+			return "", err
+		}
+		if exists {
+			return "", ErrSliceAlreadyExists
+		}
+		return explicit, nil
+	}
+
+	for attempt := 1; ; attempt++ {
+		candidate := sliceSlugCandidate(slice, attempt)
+		exists, err := s.sliceSlugExists(ctx, q, candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+}
+
 func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql string, args ...interface{}) (*models.Slice, error) {
 	var sl models.Slice
 	var filesJSON, ownersJSON, mountsJSON []byte
 	var parentID *string
 
 	err := q.QueryRow(ctx, sql, args...).Scan(
-		&sl.ID, &sl.Name, &sl.Description, &sl.CreatedBy, &parentID,
+		&sl.ID, &sl.Name, &sl.Slug, &sl.Description, &sl.CreatedBy, &parentID,
 		&sl.IsRoot, &filesJSON, &mountsJSON, &ownersJSON,
 		&sl.CreatedAt, &sl.UpdatedAt, &sl.Environment,
 	)
@@ -4281,6 +4344,9 @@ func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql 
 	if err := json.Unmarshal(mountsJSON, &sl.FolderMounts); err != nil {
 		sl.FolderMounts = nil
 	}
+	if strings.TrimSpace(sl.Slug) == "" {
+		sl.Slug = defaultSliceSlug(&sl)
+	}
 
 	return &sl, nil
 }
@@ -4292,7 +4358,7 @@ func (s *PostgresNativeStorage) collectSlices(rows pgx.Rows) ([]*models.Slice, e
 		var filesJSON, ownersJSON, mountsJSON []byte
 		var parentID *string
 		if err := rows.Scan(
-			&sl.ID, &sl.Name, &sl.Description, &sl.CreatedBy, &parentID,
+			&sl.ID, &sl.Name, &sl.Slug, &sl.Description, &sl.CreatedBy, &parentID,
 			&sl.IsRoot, &filesJSON, &mountsJSON, &ownersJSON,
 			&sl.CreatedAt, &sl.UpdatedAt, &sl.Environment,
 		); err != nil {
@@ -4309,6 +4375,9 @@ func (s *PostgresNativeStorage) collectSlices(rows pgx.Rows) ([]*models.Slice, e
 		}
 		if err := json.Unmarshal(mountsJSON, &sl.FolderMounts); err != nil {
 			sl.FolderMounts = nil
+		}
+		if strings.TrimSpace(sl.Slug) == "" {
+			sl.Slug = defaultSliceSlug(&sl)
 		}
 		result = append(result, &sl)
 	}

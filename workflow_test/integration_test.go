@@ -383,6 +383,15 @@ func extractCreatedSliceID(output string) string {
 	return strings.TrimSpace(matches[1])
 }
 
+func extractCreatedSliceSlug(output string) string {
+	re := regexp.MustCompile(`Slug: ([^\n]+)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
+}
+
 func extractSnapshotID(output string) string {
 	re := regexp.MustCompile(`Snapshot created: ([^\n]+)`)
 	matches := re.FindStringSubmatch(output)
@@ -786,10 +795,14 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if sliceID == "" {
 		t.Fatalf("failed to extract created slice ID from output: %s", output)
 	}
+	sliceSlug := extractCreatedSliceSlug(output)
+	if sliceSlug == "" {
+		t.Fatalf("failed to extract created slice slug from output: %s", output)
+	}
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceArg)
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}

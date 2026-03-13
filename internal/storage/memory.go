@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -256,6 +257,24 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 
 	if _, exists := s.slices[slice.ID]; exists {
 		return ErrSliceAlreadyExists
+	}
+
+	if strings.TrimSpace(slice.Slug) == "" {
+		for attempt := 1; ; attempt++ {
+			candidate := sliceSlugCandidate(slice, attempt)
+			if candidate == "" {
+				return ErrInvalidInput
+			}
+			if _, err := s.getSliceBySlugLocked(candidate); errors.Is(err, ErrSliceNotFound) {
+				slice.Slug = candidate
+				break
+			}
+		}
+	} else {
+		slice.Slug = strings.TrimSpace(slice.Slug)
+		if _, err := s.getSliceBySlugLocked(slice.Slug); err == nil {
+			return ErrSliceAlreadyExists
+		}
 	}
 
 	now := time.Now()
@@ -711,6 +730,24 @@ func (s *InMemoryStorage) GetSliceByName(ctx context.Context, name string) (*mod
 	return nil, ErrSliceNotFound
 }
 
+func (s *InMemoryStorage) GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.getSliceBySlugLocked(slug)
+}
+
+func (s *InMemoryStorage) getSliceBySlugLocked(slug string) (*models.Slice, error) {
+	for _, slice := range s.slices {
+		if slice.Slug == slug {
+			copy := *slice
+			return &copy, nil
+		}
+	}
+
+	return nil, ErrSliceNotFound
+}
+
 // ListConflicts returns files that are associated with more than one slice.
 func (s *InMemoryStorage) ListConflicts(ctx context.Context) ([]*models.FileConflict, error) {
 	s.mu.RLock()
@@ -1138,6 +1175,7 @@ func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
 	rootSlice := &models.Slice{
 		ID:          "root_slice",
 		Name:        "Root Slice",
+		Slug:        "root",
 		Description: "The root slice containing all files",
 		Files:       []string{},
 		Owners:      []string{"system"},

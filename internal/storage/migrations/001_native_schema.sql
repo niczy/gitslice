@@ -7,6 +7,7 @@
 CREATE TABLE IF NOT EXISTS slices (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
+    slug TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL DEFAULT '',
     parent_id TEXT,
@@ -17,6 +18,8 @@ CREATE TABLE IF NOT EXISTS slices (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_slices_slug ON slices(slug);
 
 CREATE TABLE IF NOT EXISTS slice_metadata (
     slice_id TEXT PRIMARY KEY REFERENCES slices(id),

@@ -76,6 +76,13 @@ service SliceService {
   // Get slice info by display name
   rpc GetSliceByName(GetSliceByNameRequest) returns (GetSliceByNameResponse);
 
+  // Get slice info by stable slug.
+  rpc GetSliceBySlug(GetSliceBySlugRequest) returns (GetSliceBySlugResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/by-slug"
+    };
+  }
+
   // Stream checkout for large slices (server streaming)
   rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
@@ -363,6 +370,7 @@ message CreateSliceFromFolderResponse {
   string status = 2;
   repeated string files = 3;
   string name = 4;
+  string slug = 5;
 }
 
 // Request to rename a slice
@@ -375,6 +383,7 @@ message RenameSliceRequest {
 message RenameSliceResponse {
   string slice_id = 1;
   string name = 2;
+  string slug = 3;
 }
 
 // Request to get a slice by display name
@@ -390,4 +399,19 @@ message GetSliceByNameResponse {
   string parent_slice_id = 4;
   repeated string files = 5;
   string environment = 6;
+  string slug = 7;
+}
+
+message GetSliceBySlugRequest {
+  string slug = 1;
+}
+
+message GetSliceBySlugResponse {
+  string slice_id = 1;
+  string name = 2;
+  string description = 3;
+  string parent_slice_id = 4;
+  repeated string files = 5;
+  string environment = 6;
+  string slug = 7;
 }

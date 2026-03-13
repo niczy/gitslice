@@ -46,7 +46,7 @@ const COMMAND_MAP = [
   },
   {
     task: 'Create a focused local worktree',
-    command: 'gs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id>',
+    command: 'gs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug>',
     note: 'Best for multi-file work, tests, refactors, and editor-heavy tasks.',
   },
   {
@@ -176,7 +176,7 @@ gs fs snapshot -m "notes update"`}</code>
                 <pre className="code-block">
                   <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id>
+gs slice checkout <slice-id-or-slug>
 git status`}</code>
                 </pre>
               </article>

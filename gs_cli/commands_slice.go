@@ -81,18 +81,21 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	fmt.Printf("Created slice: %s (id: %s)\n", resp.Name, resp.SliceId)
+	if resp.GetSlug() != "" {
+		fmt.Printf("Slug: %s\n", resp.GetSlug())
+	}
 	fmt.Printf("Status: %s\n", resp.Status)
 }
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>]")
 		return
 	}
 
-	sliceID, err := normalizeSliceID(args[0])
+	sliceID, err := resolveSliceRef(ctx, cli, args[0])
 	if err != nil {
-		log.Fatalf("Invalid slice ID: %v", err)
+		log.Fatalf("Invalid slice reference: %v", err)
 	}
 
 	// Parse flags

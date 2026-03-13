@@ -275,6 +275,9 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	if resp.Name != "my-slice" {
 		t.Fatalf("expected name %q, got %q", "my-slice", resp.Name)
 	}
+	if resp.Slug != "tester/my-slice" {
+		t.Fatalf("expected slug %q, got %q", "tester/my-slice", resp.Slug)
+	}
 
 	// Verify we can retrieve it
 	slice, err := st.GetSlice(ctx, resp.SliceId)
@@ -283,6 +286,9 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	}
 	if slice.Name != "my-slice" {
 		t.Fatalf("stored name mismatch: %q", slice.Name)
+	}
+	if slice.Slug != "tester/my-slice" {
+		t.Fatalf("stored slug mismatch: %q", slice.Slug)
 	}
 }
 
@@ -341,6 +347,9 @@ func TestRenameSlice(t *testing.T) {
 	if resp.Name != "new-name" {
 		t.Fatalf("expected name %q, got %q", "new-name", resp.Name)
 	}
+	if resp.Slug != "tester/old-name" {
+		t.Fatalf("expected stable slug %q, got %q", "tester/old-name", resp.Slug)
+	}
 
 	// Verify persistence
 	updated, err := st.GetSlice(ctx, "sl-test-rename")
@@ -349,6 +358,9 @@ func TestRenameSlice(t *testing.T) {
 	}
 	if updated.Name != "new-name" {
 		t.Fatalf("stored name not updated: %q", updated.Name)
+	}
+	if updated.Slug != "tester/old-name" {
+		t.Fatalf("stored slug should stay stable, got %q", updated.Slug)
 	}
 }
 
@@ -372,6 +384,32 @@ func TestGetSliceByName(t *testing.T) {
 	}
 	if resp.Name != "my-project" {
 		t.Fatalf("expected name %q, got %q", "my-project", resp.Name)
+	}
+	if resp.Slug != "tester/my-project" {
+		t.Fatalf("expected slug %q, got %q", "tester/my-project", resp.Slug)
+	}
+}
+
+func TestGetSliceBySlug(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "sl-slug-test", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.GetSliceBySlug(ctx, &slicev1.GetSliceBySlugRequest{Slug: "tester/my-project"})
+	if err != nil {
+		t.Fatalf("GetSliceBySlug failed: %v", err)
+	}
+
+	if resp.SliceId != "sl-slug-test" {
+		t.Fatalf("expected ID %q, got %q", "sl-slug-test", resp.SliceId)
+	}
+	if resp.Slug != "tester/my-project" {
+		t.Fatalf("expected slug %q, got %q", "tester/my-project", resp.Slug)
 	}
 }
 

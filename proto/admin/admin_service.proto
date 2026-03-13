@@ -251,6 +251,7 @@ message SliceInfo {
   int32 file_count = 7;
   bool is_root = 8;
   string environment = 9;
+  string slug = 10;
 }
 
 message WatchConflictsRequest {

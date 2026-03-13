@@ -50,7 +50,7 @@ export default function ProjectsPage({ slices, slicesLoading, slicesError, onOpe
                 <li className="org-item" key={slice.slice_id}>
                   <div className="org-item-title">
                     <span className="org-name">{slice.name || slice.slice_id}</span>
-                    <span className="org-slug">{slice.slice_id}</span>
+                    <span className="org-slug">{slice.slug || slice.slice_id}</span>
                   </div>
                   <div className="org-item-meta">
                     {slice.is_root ? 'Shared root slice' : 'Workspace slice'}
