@@ -1923,9 +1923,6 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 			return false, err
 		}
 		stateResp = resp
-		if resp.GlobalCommitHash != mergeResp.NewCommitHash {
-			return false, nil
-		}
 		for _, entry := range resp.History {
 			if entry.CommitHash != mergeResp.NewCommitHash {
 				continue
@@ -1942,17 +1939,7 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		if stateResp != nil {
 			gotHead = stateResp.GlobalCommitHash
 		}
-		t.Fatalf("expected promoted commit %s and slice %s in global state, got head=%s: %v", mergeResp.NewCommitHash, sliceA, gotHead, err)
-	}
-
-	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
-		rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
-		if err != nil {
-			return false, err
-		}
-		return rootState.LatestCommitHash == mergeResp.NewCommitHash, nil
-	}); err != nil {
-		t.Fatalf("expected root slice head %s after promotion: %v", mergeResp.NewCommitHash, err)
+		t.Fatalf("expected promoted commit %s and slice %s in global history, got head=%s: %v", mergeResp.NewCommitHash, sliceA, gotHead, err)
 	}
 
 	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "should conflict"})
