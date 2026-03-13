@@ -826,6 +826,37 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected fs show patch output, got: %s", output)
 	}
 
+	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
+		changesets, err := testStorage.ListChangesets(ctx, homeslice.IDForUsername(testUsername), nil, 20)
+		if err != nil {
+			return false, err
+		}
+		for _, cs := range changesets {
+			if cs == nil {
+				continue
+			}
+			if cs.Status == models.ChangesetStatusMerged && strings.Contains(cs.Message, "write "+remoteFile) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}); err != nil {
+		t.Fatalf("expected fs publish to create a merged changeset: %v", err)
+	}
+
+	checkoutDir := filepath.Join(t.TempDir(), "checkout")
+	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout dir: %v", err)
+	}
+	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", homeslice.IDForUsername(testUsername))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(testUsername)) {
+		t.Fatalf("expected home slice checkout output, got: %s", output)
+	}
+	output = runCLIOrFail(t, checkoutDir, "changeset", "list", "--status", "merged")
+	if !strings.Contains(output, "write "+remoteFile) {
+		t.Fatalf("expected merged publish changeset in list output, got: %s", output)
+	}
+
 	output = runCLIOrFail(t, "", "fs", "diff", snapshotID)
 	if !strings.Contains(output, "README.md") || !strings.Contains(output, "MODIFY") {
 		t.Fatalf("expected diff output for README.md, got: %s", output)
