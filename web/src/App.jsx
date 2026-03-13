@@ -8,6 +8,7 @@ import { useWebSession } from './hooks/useWebSession.js';
 import { useSlicesQuery } from './hooks/useSlices.js';
 
 import OverviewPage from './components/OverviewPage.jsx';
+import DocsPage from './components/DocsPage.jsx';
 import AppHeader from './components/AppHeader.jsx';
 import AppFooter from './components/AppFooter.jsx';
 import AdminPage from './components/AdminPage.jsx';
@@ -59,7 +60,7 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
   const hasExplicitSliceSelectionRef = useRef(false);
 
   const githubUrl = 'https://github.com/niczy/gitslice';
-  const docsUrl = 'https://github.com/niczy/gitslice/blob/main/README.md';
+  const docsUrl = '/docs';
   const statusUrl = `${apiBaseUrl}/health`;
   const supportUrl = 'https://github.com/niczy/gitslice/issues';
 
@@ -267,6 +268,9 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
     if (item === 'login') {
       return activePage === 'login';
     }
+    if (item === 'docs') {
+      return activePage === 'docs';
+    }
     if (item === 'get-started') {
       return activePage === 'landing';
     }
@@ -286,7 +290,13 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
       />
 
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
-        {activePage === 'landing' && <OverviewPage onBrowseRepo={openBrowserHome} />}
+        {activePage === 'landing' && (
+          <OverviewPage
+            onBrowseRepo={openBrowserHome}
+            onOpenDocs={() => navigate('docs')}
+          />
+        )}
+        {activePage === 'docs' && <DocsPage onBrowseRepo={openBrowserHome} />}
         {activePage === 'login' && (
           <LoginPage
             onLogin={doLogin}

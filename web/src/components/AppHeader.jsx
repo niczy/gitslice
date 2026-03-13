@@ -47,6 +47,15 @@ export default function AppHeader({
             </Button>
             <Button
               type="button"
+              variant={isNavActive('docs') ? 'secondary' : 'ghost'}
+              className={`nav-link${isNavActive('docs') ? ' nav-link--active' : ''}`}
+              data-testid="topbar-docs-link"
+              onClick={() => navigate('docs')}
+            >
+              Docs
+            </Button>
+            <Button
+              type="button"
               variant="ghost"
               className="nav-link"
               data-testid="topbar-profile"
@@ -78,22 +87,31 @@ export default function AppHeader({
             </Button>
             <Button
               type="button"
+              variant={isNavActive('docs') ? 'secondary' : 'ghost'}
+              className={`nav-link${isNavActive('docs') ? ' nav-link--active' : ''}`}
+              data-testid="topbar-docs-link"
+              onClick={() => navigate('docs')}
+            >
+              Docs
+            </Button>
+            <Button
+              asChild
+              variant="ghost"
+              className="nav-link"
+              data-testid="topbar-github-link"
+            >
+              <a href={githubUrl} target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+            </Button>
+            <Button
+              type="button"
               variant={isNavActive('login') ? 'secondary' : 'ghost'}
               className={`nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
               data-testid="topbar-login"
               onClick={() => navigate('login')}
             >
               Login
-            </Button>
-            <Button asChild variant="ghost" className="nav-link" data-testid="topbar-docs-link">
-              <a href="https://github.com/agenttools-dev/gitslice#readme" target="_blank" rel="noreferrer">
-                Docs
-              </a>
-            </Button>
-            <Button asChild variant="ghost" className="nav-link" data-testid="topbar-github-link">
-              <a href={githubUrl} target="_blank" rel="noreferrer">
-                GitHub
-              </a>
             </Button>
             <Button
               type="button"

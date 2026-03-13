@@ -2,7 +2,7 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Navigation history and URL reloading', () => {
-  const landingTitle = /edit remote files directly from the cli/i;
+  const landingTitle = /check out a custom slice in seconds/i;
 
   const waitForLanding = async (page) => {
     const landingHeading = page.getByRole('heading', { level: 1, name: landingTitle });
@@ -54,6 +54,12 @@ test.describe('Navigation history and URL reloading', () => {
   test('loading / directly opens the landing page', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByRole('heading', { level: 1, name: landingTitle })).toBeVisible();
+  });
+
+  test('loading /docs directly opens the docs page', async ({ page }) => {
+    await page.goto('/docs');
+    await expect(page.getByRole('heading', { level: 1, name: /one versioned filesystem, two work surfaces\./i })).toBeVisible();
+    await expect(page).toHaveURL(/\/docs$/);
   });
 
   test('legacy hash routes redirect to real paths', async ({ page }) => {
