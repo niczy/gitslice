@@ -1,6 +1,7 @@
 package sliceservice
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"sync"
@@ -62,6 +63,115 @@ func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
 	}
 	if len(resp.GetManifest().GetFileMetadata()) != 1 || resp.GetManifest().GetFileMetadata()[0].GetFileId() != path {
 		t.Fatalf("unexpected manifest: %#v", resp.GetManifest().GetFileMetadata())
+	}
+}
+
+func TestCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-checkout-blocks", Name: "slice-checkout-blocks", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	filePath := "src/main.go"
+	content := append([]byte{}, bytes.Repeat([]byte("A"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("B"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("C"), 97)...)
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, slice.ID, filePath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{
+		SliceId:     slice.ID,
+		KnownHashes: []string{manifest.Blocks[0].Hash},
+	})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+
+	if got, want := len(resp.GetManifest().GetFileMetadata()), 1; got != want {
+		t.Fatalf("expected %d file metadata entries, got %d", want, got)
+	}
+	meta := resp.GetManifest().GetFileMetadata()[0]
+	if got, want := len(meta.GetBlocks()), len(manifest.Blocks); got != want {
+		t.Fatalf("expected %d manifest blocks, got %d", want, got)
+	}
+	if len(resp.GetFiles()) != 0 {
+		t.Fatalf("expected no fallback file payloads, got %d", len(resp.GetFiles()))
+	}
+	if got, want := len(resp.GetBlocks()), len(manifest.Blocks)-1; got != want {
+		t.Fatalf("expected %d returned blocks, got %d", want, got)
+	}
+	for _, block := range resp.GetBlocks() {
+		if block.GetHash() == manifest.Blocks[0].Hash {
+			t.Fatalf("expected known block %s to be omitted", block.GetHash())
+		}
+	}
+}
+
+func TestCheckoutSliceOmitsPayloadWhenFileHashKnown(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-checkout-known-file", Name: "slice-checkout-known-file", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	filePath := "README.md"
+	content := []byte("hello from cached checkout")
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, slice.ID, filePath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{
+		SliceId:     slice.ID,
+		KnownHashes: []string{manifest.Hash},
+	})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+
+	if got, want := len(resp.GetManifest().GetFileMetadata()), 1; got != want {
+		t.Fatalf("expected %d file metadata entries, got %d", want, got)
+	}
+	if len(resp.GetBlocks()) != 0 {
+		t.Fatalf("expected no block payloads, got %d", len(resp.GetBlocks()))
+	}
+	if len(resp.GetFiles()) != 0 {
+		t.Fatalf("expected no fallback file payloads, got %d", len(resp.GetFiles()))
 	}
 }
 

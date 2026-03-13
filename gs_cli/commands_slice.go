@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
+	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -67,19 +69,36 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		CommitHash: *commitHash,
 	}
 
+	cache, err := NewCacheManager()
+	if err != nil {
+		log.Printf("Warning: unable to initialize cache: %v", err)
+	}
+	if cache != nil {
+		knownHashes, err := cache.ListObjectHashes()
+		if err != nil {
+			log.Printf("Warning: unable to list cache objects: %v", err)
+		} else {
+			req.KnownHashes = knownHashes
+		}
+	}
+
 	resp, err := cli.sliceClient.CheckoutSlice(ctx, req)
 	if err != nil {
 		log.Fatalf("Failed to checkout slice: %v", err)
 	}
 
-	cache, err := NewCacheManager()
-	if err != nil {
-		log.Printf("Warning: unable to initialize cache: %v", err)
-	}
-
 	fileContents := make(map[string][]byte)
 	for _, file := range resp.Files {
 		fileContents[file.FileId] = file.Content
+	}
+	blockContents := make(map[string][]byte)
+	for _, block := range resp.Blocks {
+		blockContents[block.Hash] = block.Content
+		if cache != nil && block.Hash != "" {
+			if err := cache.StoreObject(block.Hash, block.Content); err != nil {
+				log.Printf("Failed to update cache block %s: %v", block.Hash, err)
+			}
+		}
 	}
 
 	var cachedHits int64
@@ -94,6 +113,14 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 					atomic.AddInt64(&cachedHits, 1)
 				} else if !errors.Is(err, os.ErrNotExist) {
 					log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
+				}
+			}
+
+			if content == nil {
+				if data, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
+					content = data
+				} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+					log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
 				}
 			}
 
@@ -155,7 +182,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
-	fmt.Printf("Files: %d\n", len(resp.Files))
+	fmt.Printf("Files: %d\n", len(resp.Manifest.FileMetadata))
 
 	if len(resp.Manifest.FileMetadata) > 0 {
 		fmt.Println("\nFiles in slice:")
@@ -167,4 +194,48 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if cache != nil {
 		fmt.Printf("Cache hits: %d\n", atomic.LoadInt64(&cachedHits))
 	}
+}
+
+func assembleCheckoutFile(cache *CacheManager, fm *slicev1.FileMetadata, blockContents map[string][]byte) ([]byte, error) {
+	if fm == nil {
+		return nil, os.ErrNotExist
+	}
+	if len(fm.GetBlocks()) == 0 {
+		if fm.GetSize() == 0 {
+			return []byte{}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	manifest := &models.FileManifest{
+		Path:      fm.GetFileId(),
+		TotalSize: fm.GetSize(),
+		Hash:      fm.GetHash(),
+		Blocks:    make([]models.Block, 0, len(fm.GetBlocks())),
+	}
+	for _, block := range fm.GetBlocks() {
+		if block == nil {
+			continue
+		}
+		manifest.Blocks = append(manifest.Blocks, models.Block{
+			Hash: block.GetHash(),
+			Size: int(block.GetSize()),
+		})
+	}
+	if len(manifest.Blocks) == 0 {
+		if fm.GetSize() == 0 {
+			return []byte{}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	return storage.AssembleFile(manifest, func(hash string) ([]byte, error) {
+		if data, ok := blockContents[hash]; ok {
+			return data, nil
+		}
+		if cache == nil {
+			return nil, os.ErrNotExist
+		}
+		return cache.ReadObject(hash)
+	})
 }

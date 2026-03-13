@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // CacheManager coordinates the client-side global cache for slice objects.
@@ -33,6 +34,10 @@ func newCacheManagerWithRoot(root string) (*CacheManager, error) {
 
 func (c *CacheManager) objectPath(hash string) string {
 	return filepath.Join(c.root, "objects", hash)
+}
+
+func (c *CacheManager) objectsDir() string {
+	return filepath.Join(c.root, "objects")
 }
 
 // HasObject returns true if the cache already contains the blob for the given hash.
@@ -69,4 +74,26 @@ func (c *CacheManager) StoreObject(hash string, data []byte) error {
 	}
 
 	return os.WriteFile(c.objectPath(hash), data, 0o644)
+}
+
+// ListObjectHashes returns all cached object hashes currently stored on disk.
+func (c *CacheManager) ListObjectHashes() ([]string, error) {
+	entries, err := os.ReadDir(c.objectsDir())
+	if err != nil {
+		return nil, err
+	}
+
+	hashes := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "" {
+			continue
+		}
+		hashes = append(hashes, name)
+	}
+	sort.Strings(hashes)
+	return hashes, nil
 }

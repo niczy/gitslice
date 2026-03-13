@@ -3,6 +3,8 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -640,6 +642,75 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 	status := runGitOrFail(t, workdir, "status", "--porcelain")
 	if status != "" {
 		t.Fatalf("expected clean git status after checkout, got %q", status)
+	}
+}
+
+func TestCheckoutReusesCachedBlocks(t *testing.T) {
+	username := fmt.Sprintf("ccu%d", time.Now().UnixNano())
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	runCLIForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	localRoot := filepath.Join(t.TempDir(), "upload")
+	if err := os.MkdirAll(localRoot, 0o755); err != nil {
+		t.Fatalf("mkdir upload root: %v", err)
+	}
+	content := append([]byte{}, bytes.Repeat([]byte("A"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("B"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("C"), 97)...)
+	if err := os.WriteFile(filepath.Join(localRoot, "large.txt"), content, 0o644); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+
+	remoteRoot := fmt.Sprintf("/%s/checkout-cache-%d", username, time.Now().UnixNano())
+	output := runCLIForUser("", "fs", "upload", localRoot, remoteRoot)
+	if !strings.Contains(output, "Uploaded") {
+		t.Fatalf("expected upload output, got: %s", output)
+	}
+
+	checkoutDir := filepath.Join(t.TempDir(), "checkout-1")
+	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout dir: %v", err)
+	}
+	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	sum := sha256.Sum256(content)
+	fileHash := hex.EncodeToString(sum[:])
+	cachePath := filepath.Join(homeDir, ".gitslice", "cache", "objects", fileHash)
+	if err := os.Remove(cachePath); err != nil {
+		t.Fatalf("remove cached file hash %s: %v", fileHash, err)
+	}
+
+	checkoutDir2 := filepath.Join(t.TempDir(), "checkout-2")
+	if err := os.MkdirAll(checkoutDir2, 0o755); err != nil {
+		t.Fatalf("mkdir second checkout dir: %v", err)
+	}
+	output = runCLIForUser(checkoutDir2, "slice", "checkout", homeslice.IDForUsername(username))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
+		t.Fatalf("expected second checkout output, got: %s", output)
+	}
+
+	checkedOutPath := filepath.Join(checkoutDir2, username, strings.TrimPrefix(remoteRoot, "/"+username+"/"), "large.txt")
+	got, err := os.ReadFile(checkedOutPath)
+	if err != nil {
+		t.Fatalf("read checked out file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("checked out content mismatch")
+	}
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("expected reconstructed full file to be cached again: %v", err)
 	}
 }
 

@@ -86,11 +86,13 @@ service SliceService {
 message CheckoutRequest {
   string slice_id = 1;
   string commit_hash = 2;
+  repeated string known_hashes = 3;
 }
 
 message CheckoutResponse {
   SliceManifest manifest = 1;
   repeated FileContent files = 2;
+  repeated BlockContent blocks = 3;
 }
 
 message SliceManifest {
@@ -104,6 +106,7 @@ message FileMetadata {
   int64 size = 3;
   string hash = 4;
   string content_url = 5;
+  repeated FileBlockRef blocks = 6;
 }
 
 message FileContent {
@@ -111,10 +114,21 @@ message FileContent {
   bytes content = 2;
 }
 
+message FileBlockRef {
+  string hash = 1;
+  int64 size = 2;
+}
+
+message BlockContent {
+  string hash = 1;
+  bytes content = 2;
+}
+
 message CheckoutChunk {
   oneof chunk {
     SliceManifest manifest = 1;
     FileContent file = 2;
+    BlockContent block = 3;
   }
 }
 

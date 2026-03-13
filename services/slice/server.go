@@ -167,6 +167,15 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
 	}
 
+	knownHashes := make(map[string]struct{}, len(req.GetKnownHashes()))
+	for _, hash := range req.GetKnownHashes() {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			continue
+		}
+		knownHashes[hash] = struct{}{}
+	}
+
 	var fileMetadata []*slicev1.FileMetadata
 	for _, entry := range entries {
 		if entry == nil || entry.Type != "file" {
@@ -176,6 +185,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		storedPath := entry.Path
 		size := entry.Size
 		hash := strings.TrimSpace(entry.Hash)
+		var manifestBlocks []models.Block
 		if manifest, manifestErr := s.storage.GetFileManifest(ctx, req.SliceId, storedPath); manifestErr == nil && manifest != nil {
 			if size == 0 {
 				size = manifest.TotalSize
@@ -183,8 +193,22 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			if hash == "" {
 				hash = strings.TrimSpace(manifest.Hash)
 			}
+			manifestBlocks = append(manifestBlocks, manifest.Blocks...)
 		} else if manifestErr != nil && manifestErr != storage.ErrEntryNotFound {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load manifest for %s: %v", storedPath, manifestErr))
+		}
+		if hash != "" && (len(manifestBlocks) == 0 || size == 0) {
+			versionedManifest, manifestErr := s.storage.GetVersionedFileManifest(ctx, hash)
+			if manifestErr == nil && versionedManifest != nil {
+				if size == 0 {
+					size = versionedManifest.TotalSize
+				}
+				if len(manifestBlocks) == 0 {
+					manifestBlocks = append(manifestBlocks, versionedManifest.Blocks...)
+				}
+			} else if manifestErr != nil && manifestErr != storage.ErrEntryNotFound {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load versioned manifest for %s: %v", storedPath, manifestErr))
+			}
 		}
 
 		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
@@ -193,6 +217,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			Size:       size,
 			Hash:       hash,
 			ContentUrl: "", // No presigned URL for in-memory storage
+			Blocks:     checkoutProtoBlocks(manifestBlocks),
 		})
 	}
 	sort.Slice(fileMetadata, func(i, j int) bool {
@@ -214,8 +239,45 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 
 	// Convert file contents to proto format.
 	var fileContents []*slicev1.FileContent
+	var blockContents []*slicev1.BlockContent
+	sentBlocks := make(map[string]struct{})
 	for _, meta := range fileMetadata {
 		if meta == nil {
+			continue
+		}
+		if meta.GetHash() != "" {
+			if _, ok := knownHashes[meta.GetHash()]; ok {
+				continue
+			}
+		}
+		if len(meta.GetBlocks()) > 0 {
+			for _, block := range meta.GetBlocks() {
+				if block == nil {
+					continue
+				}
+				blockHash := strings.TrimSpace(block.GetHash())
+				if blockHash == "" {
+					continue
+				}
+				if _, ok := knownHashes[blockHash]; ok {
+					continue
+				}
+				if _, ok := sentBlocks[blockHash]; ok {
+					continue
+				}
+				payload, err := s.storage.GetBlock(ctx, blockHash)
+				if err != nil {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load block %s for %s: %v", blockHash, meta.GetFileId(), err))
+				}
+				blockContents = append(blockContents, &slicev1.BlockContent{
+					Hash:    blockHash,
+					Content: payload,
+				})
+				sentBlocks[blockHash] = struct{}{}
+			}
+			continue
+		}
+		if meta.GetSize() == 0 {
 			continue
 		}
 		file, err := storage.ReadSliceFileContent(ctx, s.storage, req.SliceId, meta.GetFileId())
@@ -239,7 +301,26 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	return &slicev1.CheckoutResponse{
 		Manifest: manifest,
 		Files:    fileContents,
+		Blocks:   blockContents,
 	}, nil
+}
+
+func checkoutProtoBlocks(blocks []models.Block) []*slicev1.FileBlockRef {
+	if len(blocks) == 0 {
+		return nil
+	}
+	protoBlocks := make([]*slicev1.FileBlockRef, 0, len(blocks))
+	for _, block := range blocks {
+		hash := strings.TrimSpace(block.Hash)
+		if hash == "" {
+			continue
+		}
+		protoBlocks = append(protoBlocks, &slicev1.FileBlockRef{
+			Hash: hash,
+			Size: int64(block.Size),
+		})
+	}
+	return protoBlocks
 }
 
 func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.CreateChangesetRequest) (*slicev1.CreateChangesetResponse, error) {
