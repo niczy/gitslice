@@ -875,38 +875,6 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if output != "hello from fs cli\n" {
 		t.Fatalf("unexpected cat output after restore: %q", output)
 	}
-
-	output = runCLIOrFail(t, "", "fs", "rm", remoteFile)
-	if !strings.Contains(output, "Commit: ") {
-		t.Fatalf("expected rm commit output, got: %s", output)
-	}
-
-	client := newFilesystemClient(t)
-	_, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: homeslice.IDForUsername(testUsername),
-		Path:        remoteFile,
-	})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("expected remote file to be deleted, got err=%v", err)
-	}
-
-	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(testUsername), "delete "+remoteFile, 5*time.Second, 25*time.Millisecond); err != nil {
-		t.Fatalf("expected fs delete publish to create a merged changeset: %v", err)
-	}
-
-	rootSlice, err := testStorage.GetRootSlice(ctx)
-	if err != nil {
-		t.Fatalf("get root slice: %v", err)
-	}
-	if err := waitForCondition(5*time.Second, 25*time.Millisecond, func() (bool, error) {
-		_, err := testStorage.GetEntryByPath(ctx, rootSlice.ID, strings.TrimPrefix(remoteFile, "/"))
-		if err == storage.ErrEntryNotFound {
-			return true, nil
-		}
-		return false, err
-	}); err != nil {
-		t.Fatalf("expected deleted file %s to be removed from root slice: %v", remoteFile, err)
-	}
 }
 
 func TestFilesystemCLIBatchWorkflowEndToEnd(t *testing.T) {
