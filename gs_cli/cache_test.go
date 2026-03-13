@@ -44,3 +44,31 @@ func TestCacheManagerStoresAndReadsObjects(t *testing.T) {
 		t.Fatalf("expected cached file at %s: %v", expectedPath, err)
 	}
 }
+
+func TestCacheManagerListObjectHashes(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cache, err := newCacheManagerWithRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to initialize cache: %v", err)
+	}
+
+	if err := cache.StoreObject("def456", []byte("second")); err != nil {
+		t.Fatalf("failed to store second object: %v", err)
+	}
+	if err := cache.StoreObject("abc123", []byte("first")); err != nil {
+		t.Fatalf("failed to store first object: %v", err)
+	}
+
+	hashes, err := cache.ListObjectHashes()
+	if err != nil {
+		t.Fatalf("ListObjectHashes failed: %v", err)
+	}
+
+	if got, want := len(hashes), 2; got != want {
+		t.Fatalf("expected %d hashes, got %d", want, got)
+	}
+	if hashes[0] != "abc123" || hashes[1] != "def456" {
+		t.Fatalf("unexpected hash ordering: %#v", hashes)
+	}
+}

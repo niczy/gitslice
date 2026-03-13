@@ -643,6 +643,83 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 	}
 }
 
+func TestCheckoutReusesCachedBlocks(t *testing.T) {
+	username := fmt.Sprintf("ccu%d", time.Now().UnixNano())
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	runCLIForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	ctx := context.Background()
+	content := append([]byte{}, bytes.Repeat([]byte("A"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("B"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("C"), 97)...)
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, testStorage, username)
+	if err != nil {
+		t.Fatalf("ensure home slice: %v", err)
+	}
+	storedDir := fmt.Sprintf("%s/checkout-cache-%d", username, time.Now().UnixNano())
+	storedPath := storedDir + "/large.txt"
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(homeSlice.ID, storedPath),
+		Path:     storedPath,
+		Type:     "file",
+		ParentID: homeSlice.ID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("add entry: %v", err)
+	}
+	manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, homeSlice.ID, storedPath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, storedPath, homeSlice.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	checkoutDir := filepath.Join(t.TempDir(), "checkout-1")
+	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout dir: %v", err)
+	}
+	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	cachePath := filepath.Join(homeDir, ".gitslice", "cache", "objects", manifest.Hash)
+	if err := os.Remove(cachePath); err != nil {
+		t.Fatalf("remove cached file hash %s: %v", manifest.Hash, err)
+	}
+
+	checkoutDir2 := filepath.Join(t.TempDir(), "checkout-2")
+	if err := os.MkdirAll(checkoutDir2, 0o755); err != nil {
+		t.Fatalf("mkdir second checkout dir: %v", err)
+	}
+	output = runCLIForUser(checkoutDir2, "slice", "checkout", homeslice.IDForUsername(username))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
+		t.Fatalf("expected second checkout output, got: %s", output)
+	}
+
+	checkedOutPath := filepath.Join(checkoutDir2, storedPath)
+	got, err := os.ReadFile(checkedOutPath)
+	if err != nil {
+		t.Fatalf("read checked out file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("checked out content mismatch")
+	}
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("expected reconstructed full file to be cached again: %v", err)
+	}
+}
+
 func TestChangesetCreateRequiresMainBranch(t *testing.T) {
 	workdir := t.TempDir()
 	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
@@ -1245,6 +1322,10 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	output := runCLIOrFail(t, "", "fs", "upload", uploadRoot, remoteProjectRoot)
 	if !strings.Contains(output, "Uploaded 2 files and 3 directories") {
 		t.Fatalf("expected upload summary, got: %s", output)
+	}
+	output = runCLIOrFail(t, "", "fs", "upload", uploadRoot, remoteProjectRoot)
+	if !strings.Contains(output, "Uploaded 2 files and 3 directories") {
+		t.Fatalf("expected repeat upload summary, got: %s", output)
 	}
 
 	client := newFilesystemClient(t)
