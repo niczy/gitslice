@@ -34,6 +34,9 @@ function parseLegacyHash(rawHash) {
   if (hash === 'login') {
     return { page: 'login', commitHash: '', changesetId: '' };
   }
+  if (hash === 'docs') {
+    return { page: 'docs', commitHash: '', changesetId: '' };
+  }
   if (hash === 'profile') {
     return { page: 'profile', commitHash: '', changesetId: '' };
   }
@@ -77,6 +80,9 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
   }
   if (pathname === '/login') {
     return { page: 'login', commitHash: '', changesetId: '' };
+  }
+  if (pathname === '/docs') {
+    return { page: 'docs', commitHash: '', changesetId: '' };
   }
   if (pathname === '/profile') {
     return { page: 'profile', commitHash: '', changesetId: '' };
@@ -138,6 +144,9 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
   }
   if (page === 'login') {
     return '/login';
+  }
+  if (page === 'docs') {
+    return '/docs';
   }
   if (page === 'profile') {
     return '/profile';
