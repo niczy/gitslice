@@ -132,6 +132,128 @@ func (s *sliceServiceServer) collectSliceEntries(ctx context.Context, sliceID st
 	return result, nil
 }
 
+func (s *sliceServiceServer) resolveCheckoutEffectiveCommit(ctx context.Context, slice *models.Slice, resolvedCommit string) string {
+	effectiveCommit := strings.TrimSpace(resolvedCommit)
+	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+		if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
+			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
+		}
+	}
+	return effectiveCommit
+}
+
+func (s *sliceServiceServer) resolveCheckoutFileMetadata(
+	ctx context.Context,
+	slice *models.Slice,
+	sliceID, storedPath, resolvedCommit string,
+) (hash string, size int64, manifestBlocks []models.Block, err error) {
+	if strings.TrimSpace(sliceID) == "" || strings.TrimSpace(storedPath) == "" {
+		return "", 0, nil, storage.ErrEntryNotFound
+	}
+
+	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
+	if effectiveCommit != "" {
+		if snapshot, err := s.storage.GetCommitSnapshot(ctx, effectiveCommit); err == nil && snapshot != nil {
+			hash = strings.TrimSpace(snapshot.Files[storedPath])
+		}
+	}
+
+	resolveFromSlice := func(targetSliceID string) error {
+		if strings.TrimSpace(targetSliceID) == "" {
+			return nil
+		}
+		if manifest, manifestErr := s.storage.GetFileManifest(ctx, targetSliceID, storedPath); manifestErr == nil && manifest != nil {
+			if size == 0 {
+				size = manifest.TotalSize
+			}
+			if hash == "" {
+				hash = strings.TrimSpace(manifest.Hash)
+			}
+			if len(manifestBlocks) == 0 {
+				manifestBlocks = append(manifestBlocks, manifest.Blocks...)
+			}
+		} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
+			return manifestErr
+		}
+
+		entry, entryErr := s.storage.GetEntryByPath(ctx, targetSliceID, storedPath)
+		if entryErr == nil && entry != nil {
+			if size == 0 {
+				size = entry.Size
+			}
+			if hash == "" {
+				hash = strings.TrimSpace(entry.Hash)
+			}
+		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return entryErr
+		}
+
+		if hash != "" && (size == 0 || len(manifestBlocks) == 0) {
+			versionedManifest, manifestErr := s.storage.GetVersionedFileManifest(ctx, hash)
+			if manifestErr == nil && versionedManifest != nil {
+				if size == 0 {
+					size = versionedManifest.TotalSize
+				}
+				if len(manifestBlocks) == 0 {
+					manifestBlocks = append(manifestBlocks, versionedManifest.Blocks...)
+				}
+			} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
+				return manifestErr
+			}
+		}
+
+		return nil
+	}
+
+	if err := resolveFromSlice(sliceID); err != nil {
+		return "", 0, nil, err
+	}
+	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
+		if err := resolveFromSlice(slice.ParentSlice); err != nil {
+			return "", 0, nil, err
+		}
+	}
+
+	return strings.TrimSpace(hash), size, manifestBlocks, nil
+}
+
+func (s *sliceServiceServer) resolveCheckoutFileContent(
+	ctx context.Context,
+	slice *models.Slice,
+	sliceID, storedPath, resolvedCommit string,
+) (*models.FileContent, error) {
+	if strings.TrimSpace(sliceID) == "" || strings.TrimSpace(storedPath) == "" {
+		return nil, storage.ErrEntryNotFound
+	}
+
+	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
+	if effectiveCommit != "" {
+		if content, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && content != nil {
+			return content, nil
+		}
+	}
+
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, sliceID, storedPath)
+	if err == nil && content != nil {
+		return content, nil
+	}
+	if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return nil, err
+	}
+
+	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
+		parentContent, parentErr := storage.ReadSliceFileContent(ctx, s.storage, slice.ParentSlice, storedPath)
+		if parentErr == nil && parentContent != nil {
+			return parentContent, nil
+		}
+		if parentErr != nil && !errors.Is(parentErr, storage.ErrEntryNotFound) {
+			return nil, parentErr
+		}
+	}
+
+	return nil, storage.ErrEntryNotFound
+}
+
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 
@@ -144,6 +266,10 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	metadata, err := s.storage.GetSliceMetadata(ctx, req.SliceId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	resolvedCommit := strings.TrimSpace(req.GetCommitHash())
+	if resolvedCommit == "" || strings.EqualFold(resolvedCommit, "HEAD") {
+		resolvedCommit = strings.TrimSpace(metadata.HeadCommitHash)
 	}
 
 	// Get slice
@@ -183,32 +309,9 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		}
 
 		storedPath := entry.Path
-		size := entry.Size
-		hash := strings.TrimSpace(entry.Hash)
-		var manifestBlocks []models.Block
-		if manifest, manifestErr := s.storage.GetFileManifest(ctx, req.SliceId, storedPath); manifestErr == nil && manifest != nil {
-			if size == 0 {
-				size = manifest.TotalSize
-			}
-			if hash == "" {
-				hash = strings.TrimSpace(manifest.Hash)
-			}
-			manifestBlocks = append(manifestBlocks, manifest.Blocks...)
-		} else if manifestErr != nil && manifestErr != storage.ErrEntryNotFound {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load manifest for %s: %v", storedPath, manifestErr))
-		}
-		if hash != "" && (len(manifestBlocks) == 0 || size == 0) {
-			versionedManifest, manifestErr := s.storage.GetVersionedFileManifest(ctx, hash)
-			if manifestErr == nil && versionedManifest != nil {
-				if size == 0 {
-					size = versionedManifest.TotalSize
-				}
-				if len(manifestBlocks) == 0 {
-					manifestBlocks = append(manifestBlocks, versionedManifest.Blocks...)
-				}
-			} else if manifestErr != nil && manifestErr != storage.ErrEntryNotFound {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load versioned manifest for %s: %v", storedPath, manifestErr))
-			}
+		hash, size, manifestBlocks, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, storedPath, resolvedCommit)
+		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout metadata for %s: %v", storedPath, metaErr))
 		}
 
 		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
@@ -278,9 +381,20 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			continue
 		}
 		if meta.GetSize() == 0 {
+			file, err := s.resolveCheckoutFileContent(ctx, slice, req.SliceId, meta.GetFileId(), resolvedCommit)
+			if err != nil {
+				if errors.Is(err, storage.ErrEntryNotFound) {
+					continue
+				}
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load content for %s: %v", meta.GetFileId(), err))
+			}
+			fileContents = append(fileContents, &slicev1.FileContent{
+				FileId:  file.FileID,
+				Content: file.Content,
+			})
 			continue
 		}
-		file, err := storage.ReadSliceFileContent(ctx, s.storage, req.SliceId, meta.GetFileId())
+		file, err := s.resolveCheckoutFileContent(ctx, slice, req.SliceId, meta.GetFileId(), resolvedCommit)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
 				continue
@@ -2012,6 +2126,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create slice: %v", err))
 	}
+	if err := s.hydrateSliceEntrySizesFromParent(ctx, newSlice, parentSlice, selectedFiles); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to hydrate slice entry metadata: %v", err))
+	}
 
 	return &slicev1.CreateSliceFromFolderResponse{
 		SliceId: sliceID,
@@ -2385,6 +2502,44 @@ func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
 		}
 	}
 	return files
+}
+
+func (s *sliceServiceServer) hydrateSliceEntrySizesFromParent(ctx context.Context, slice, parentSlice *models.Slice, filePaths []string) error {
+	if slice == nil || parentSlice == nil {
+		return nil
+	}
+	for _, rawPath := range normalizeModifiedFiles(filePaths) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		parentEntry, err := s.storage.GetEntryByPath(ctx, parentSlice.ID, filePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				continue
+			}
+			return err
+		}
+		if parentEntry == nil || parentEntry.Type != "file" || parentEntry.Size == 0 {
+			continue
+		}
+		childEntry, err := s.storage.GetEntryByPath(ctx, slice.ID, filePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				continue
+			}
+			return err
+		}
+		if childEntry == nil || childEntry.Type != "file" || childEntry.Size == parentEntry.Size {
+			continue
+		}
+		updated := *childEntry
+		updated.Size = parentEntry.Size
+		if err := s.storage.UpdateEntry(ctx, &updated); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *sliceServiceServer) waitForQueuedPromotions(ctx context.Context) error {
