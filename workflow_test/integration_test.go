@@ -1246,6 +1246,10 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	if !strings.Contains(output, "Uploaded 2 files and 3 directories") {
 		t.Fatalf("expected upload summary, got: %s", output)
 	}
+	output = runCLIOrFail(t, "", "fs", "upload", uploadRoot, remoteProjectRoot)
+	if !strings.Contains(output, "Uploaded 2 files and 3 directories") {
+		t.Fatalf("expected repeat upload summary, got: %s", output)
+	}
 
 	client := newFilesystemClient(t)
 	readmeResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{

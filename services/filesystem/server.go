@@ -64,6 +64,13 @@ type preparedFilesystemWrite struct {
 	content     []byte
 }
 
+type preparedFilesystemUpload struct {
+	path        string
+	displayPath string
+	manifest    *models.FileManifest
+	unchanged   bool
+}
+
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	return &filesystemServiceServer{
 		storage:               st,
@@ -996,6 +1003,283 @@ func (s *filesystemServiceServer) applyFilesystemBatchOperation(ctx context.Cont
 	default:
 		return nil, nil, status.Error(codes.InvalidArgument, "operation is required")
 	}
+}
+
+func (s *filesystemServiceServer) PlanUpload(ctx context.Context, req *filesystemv1.PlanUploadRequest) (*filesystemv1.PlanUploadResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.GetFiles()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "files is required")
+	}
+
+	missingBlocks := make(map[string]int64)
+	checkedBlocks := make(map[string]struct{})
+	skippedPaths := make([]string, 0)
+	for index, spec := range req.GetFiles() {
+		prepared, err := s.prepareFilesystemUpload(ctx, workspace.ID, username, homeMode, index, spec)
+		if err != nil {
+			return nil, err
+		}
+		if prepared.unchanged {
+			skippedPaths = append(skippedPaths, prepared.displayPath)
+			continue
+		}
+
+		versioned, err := s.storage.GetVersionedFileManifest(ctx, prepared.manifest.Hash)
+		switch {
+		case err == nil && versioned != nil:
+			if !filesystemManifestEquivalent(prepared.manifest, versioned) {
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d] manifest does not match stored content hash", index))
+			}
+			continue
+		case err != nil && err != storage.ErrEntryNotFound:
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect versioned manifest: %v", err))
+		}
+
+		for _, block := range prepared.manifest.Blocks {
+			if _, seen := checkedBlocks[block.Hash]; seen {
+				continue
+			}
+			checkedBlocks[block.Hash] = struct{}{}
+			hasBlock, err := s.storage.HasBlock(ctx, block.Hash)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check block presence: %v", err))
+			}
+			if !hasBlock {
+				missingBlocks[block.Hash] = int64(block.Size)
+			}
+		}
+	}
+
+	missingHashes := make([]string, 0, len(missingBlocks))
+	var missingBytes int64
+	for hash, size := range missingBlocks {
+		missingHashes = append(missingHashes, hash)
+		missingBytes += size
+	}
+	sort.Strings(missingHashes)
+	sort.Strings(skippedPaths)
+
+	return &filesystemv1.PlanUploadResponse{
+		WorkspaceId:        workspace.ID,
+		MissingBlockHashes: missingHashes,
+		SkippedPaths:       skippedPaths,
+		FileCount:          int32(len(req.GetFiles())),
+		MissingBlockCount:  int32(len(missingHashes)),
+		MissingBytes:       missingBytes,
+	}, nil
+}
+
+func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *filesystemv1.FinalizeUploadRequest) (*filesystemv1.FinalizeUploadResponse, error) {
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.GetDirectories()) == 0 && len(req.GetFiles()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "directories or files is required")
+	}
+
+	resp := &filesystemv1.FinalizeUploadResponse{WorkspaceId: workspace.ID}
+	modifiedPaths := make([]string, 0, len(req.GetDirectories())+len(req.GetFiles()))
+
+	directorySpecs := make([]string, 0, len(req.GetDirectories()))
+	directorySeen := make(map[string]struct{}, len(req.GetDirectories()))
+	for index, rawDir := range req.GetDirectories() {
+		dirPath, _, err := s.resolveOperationPath(username, homeMode, rawDir, true)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("directories[%d]: %s", index, status.Convert(err).Message()))
+		}
+		if dirPath == "" {
+			continue
+		}
+		if _, seen := directorySeen[dirPath]; seen {
+			continue
+		}
+		directorySeen[dirPath] = struct{}{}
+		directorySpecs = append(directorySpecs, dirPath)
+	}
+	sort.Strings(directorySpecs)
+
+	for _, dirPath := range directorySpecs {
+		entry, err := s.storage.GetEntryByPath(ctx, workspace.ID, dirPath)
+		if err == nil {
+			if entry.Type != "directory" {
+				return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("%s is not a directory", displayOperationPath(dirPath, homeMode)))
+			}
+			continue
+		}
+		if err != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect directory: %v", err))
+		}
+		if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(workspace.ID, dirPath),
+			Path:     dirPath,
+			Type:     "directory",
+			ParentID: workspace.ID,
+		}); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create directory: %v", err))
+		}
+		resp.DirectoriesWritten++
+		modifiedPaths = append(modifiedPaths, dirPath)
+	}
+
+	for index, spec := range req.GetFiles() {
+		prepared, err := s.prepareFilesystemUpload(ctx, workspace.ID, username, homeMode, index, spec)
+		if err != nil {
+			return nil, err
+		}
+		if prepared.unchanged {
+			resp.FilesSkipped++
+			continue
+		}
+
+		canonical, err := s.resolveFilesystemUploadManifest(ctx, prepared.manifest)
+		if err != nil {
+			return nil, annotateFilesystemEditError(prepared.displayPath, err)
+		}
+		if err := s.writeWorkspaceFileManifest(ctx, workspace.ID, canonical); err != nil {
+			return nil, annotateFilesystemEditError(prepared.displayPath, err)
+		}
+		resp.FilesWritten++
+		modifiedPaths = append(modifiedPaths, prepared.path)
+	}
+
+	if len(modifiedPaths) == 0 {
+		return resp, nil
+	}
+
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		message = fmt.Sprintf("upload %d files", resp.GetFilesWritten())
+	}
+	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, message, modifiedPaths)
+	if err != nil {
+		return nil, err
+	}
+	resp.CommitHash = commitHash
+	return resp, nil
+}
+
+func (s *filesystemServiceServer) UploadBlocks(stream filesystemv1.FilesystemService_UploadBlocksServer) error {
+	ctx := stream.Context()
+	username, err := s.requireUser(ctx)
+	if err != nil {
+		return err
+	}
+
+	var (
+		workspaceID    string
+		workspaceReady bool
+		currentMeta    *filesystemv1.UploadBlockMetadata
+		buffer         bytes.Buffer
+		resp           filesystemv1.UploadBlocksResponse
+	)
+
+	flush := func() error {
+		if currentMeta == nil {
+			return nil
+		}
+		if currentMeta.GetHash() == "" {
+			return status.Error(codes.InvalidArgument, "block hash is required")
+		}
+		if currentMeta.GetSize() != int64(buffer.Len()) {
+			return status.Error(codes.InvalidArgument, "block size does not match content")
+		}
+		content := buffer.Bytes()
+		sum := sha256.Sum256(content)
+		if hex.EncodeToString(sum[:]) != strings.TrimSpace(currentMeta.GetHash()) {
+			return status.Error(codes.InvalidArgument, "block hash does not match content")
+		}
+
+		hasBlock, err := s.storage.HasBlock(ctx, currentMeta.GetHash())
+		if err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to check block presence: %v", err))
+		}
+		if hasBlock {
+			resp.BlocksReused++
+			observeFilesystemBlocks(0, 1)
+		} else {
+			if err := s.storage.PutBlock(ctx, currentMeta.GetHash(), append([]byte(nil), content...)); err != nil {
+				return status.Error(codes.Internal, fmt.Sprintf("failed to persist block: %v", err))
+			}
+			resp.BlocksWritten++
+			observeFilesystemBlocks(1, 0)
+		}
+		resp.BlocksReceived++
+		resp.BytesReceived += int64(len(content))
+		buffer.Reset()
+		currentMeta = nil
+		return nil
+	}
+
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return status.Error(codes.Unknown, fmt.Sprintf("failed to receive upload block chunk: %v", err))
+		}
+
+		switch chunk := req.GetChunk().(type) {
+		case *filesystemv1.UploadBlocksRequest_Metadata:
+			if err := flush(); err != nil {
+				return err
+			}
+			meta := chunk.Metadata
+			if meta == nil {
+				return status.Error(codes.InvalidArgument, "upload block metadata is required")
+			}
+			if meta.GetSize() < 0 {
+				return status.Error(codes.InvalidArgument, "upload block size must be >= 0")
+			}
+			resolvedWorkspace, _, _, err := s.resolveOperationWorkspace(ctx, meta.GetWorkspaceId(), username, true)
+			if err != nil {
+				return err
+			}
+			if !workspaceReady {
+				workspaceID = resolvedWorkspace.ID
+				resp.WorkspaceId = workspaceID
+				workspaceReady = true
+			} else if workspaceID != resolvedWorkspace.ID {
+				return status.Error(codes.InvalidArgument, "all uploaded blocks must target the same workspace")
+			}
+			currentMeta = &filesystemv1.UploadBlockMetadata{
+				WorkspaceId: workspaceID,
+				Hash:        strings.TrimSpace(meta.GetHash()),
+				Size:        meta.GetSize(),
+			}
+		case *filesystemv1.UploadBlocksRequest_Content:
+			if currentMeta == nil {
+				return status.Error(codes.InvalidArgument, "upload block metadata must be sent before content")
+			}
+			if _, err := buffer.Write(chunk.Content); err != nil {
+				return status.Error(codes.Internal, fmt.Sprintf("failed to buffer upload block content: %v", err))
+			}
+		default:
+			return status.Error(codes.InvalidArgument, "upload block chunk is required")
+		}
+	}
+
+	if err := flush(); err != nil {
+		return err
+	}
+	if !workspaceReady {
+		return status.Error(codes.InvalidArgument, "upload block metadata is required")
+	}
+	return stream.SendAndClose(&resp)
 }
 
 func (s *filesystemServiceServer) Glob(ctx context.Context, req *filesystemv1.GlobRequest) (*filesystemv1.GlobResponse, error) {
@@ -2083,6 +2367,221 @@ func (s *filesystemServiceServer) ensureWorkspaceFileTarget(ctx context.Context,
 		return nil
 	}
 	return status.Error(codes.Internal, fmt.Sprintf("failed to validate destination path: %v", err))
+}
+
+func (s *filesystemServiceServer) prepareFilesystemUpload(ctx context.Context, workspaceID, username string, homeMode bool, index int, spec *filesystemv1.UploadFileManifest) (*preparedFilesystemUpload, error) {
+	if spec == nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d] must not be null", index))
+	}
+
+	filePath, displayPath, err := s.resolveOperationPath(username, homeMode, spec.GetPath(), true)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d]: %s", index, status.Convert(err).Message()))
+	}
+	if err := s.ensureWorkspaceFileTarget(ctx, workspaceID, filePath); err != nil {
+		return nil, annotateFilesystemEditError(displayPath, err)
+	}
+
+	manifest, err := filesystemManifestFromProto(filePath, spec)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d]: %s", index, err.Error()))
+	}
+
+	currentManifest, err := s.storage.GetFileManifest(ctx, workspaceID, filePath)
+	switch {
+	case err == nil && currentManifest != nil && strings.TrimSpace(currentManifest.Hash) == strings.TrimSpace(manifest.Hash):
+		return &preparedFilesystemUpload{
+			path:        filePath,
+			displayPath: displayPath,
+			manifest:    manifest,
+			unchanged:   true,
+		}, nil
+	case err == nil || err == storage.ErrEntryNotFound:
+		return &preparedFilesystemUpload{
+			path:        filePath,
+			displayPath: displayPath,
+			manifest:    manifest,
+		}, nil
+	default:
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect current file manifest: %v", err))
+	}
+}
+
+func filesystemManifestFromProto(filePath string, spec *filesystemv1.UploadFileManifest) (*models.FileManifest, error) {
+	path := common.CleanRelativePath(filePath)
+	if path == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	manifest := &models.FileManifest{
+		Path:      path,
+		TotalSize: spec.GetSize(),
+		Hash:      strings.TrimSpace(spec.GetHash()),
+		Blocks:    make([]models.Block, 0, len(spec.GetBlocks())),
+	}
+	if err := validateFilesystemUploadManifest(manifest, spec.GetBlocks()); err != nil {
+		return nil, err
+	}
+	for _, block := range spec.GetBlocks() {
+		manifest.Blocks = append(manifest.Blocks, models.Block{
+			Hash: strings.TrimSpace(block.GetHash()),
+			Size: int(block.GetSize()),
+		})
+	}
+	return manifest, nil
+}
+
+func validateFilesystemUploadManifest(manifest *models.FileManifest, refs []*filesystemv1.UploadBlockRef) error {
+	if manifest == nil {
+		return fmt.Errorf("manifest is required")
+	}
+	if manifest.TotalSize < 0 {
+		return fmt.Errorf("size must be >= 0")
+	}
+	if manifest.Hash == "" {
+		return fmt.Errorf("hash is required")
+	}
+	var blockTotal int64
+	for index, ref := range refs {
+		if ref == nil {
+			return fmt.Errorf("blocks[%d] must not be null", index)
+		}
+		hash := strings.TrimSpace(ref.GetHash())
+		if hash == "" {
+			return fmt.Errorf("blocks[%d].hash is required", index)
+		}
+		if ref.GetSize() <= 0 {
+			return fmt.Errorf("blocks[%d].size must be > 0", index)
+		}
+		blockTotal += ref.GetSize()
+	}
+	if manifest.TotalSize == 0 {
+		if len(refs) != 0 {
+			return fmt.Errorf("empty files must not include blocks")
+		}
+		if manifest.Hash != hashContent(nil) {
+			return fmt.Errorf("hash does not match empty file content")
+		}
+		return nil
+	}
+	if len(refs) == 0 {
+		return fmt.Errorf("blocks are required for non-empty files")
+	}
+	if blockTotal != manifest.TotalSize {
+		return fmt.Errorf("block sizes do not match file size")
+	}
+	return nil
+}
+
+func filesystemManifestEquivalent(left, right *models.FileManifest) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if strings.TrimSpace(left.Hash) != strings.TrimSpace(right.Hash) {
+		return false
+	}
+	if left.TotalSize != right.TotalSize {
+		return false
+	}
+	if len(left.Blocks) != len(right.Blocks) {
+		return false
+	}
+	for index := range left.Blocks {
+		if strings.TrimSpace(left.Blocks[index].Hash) != strings.TrimSpace(right.Blocks[index].Hash) {
+			return false
+		}
+		if left.Blocks[index].Size != right.Blocks[index].Size {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneFilesystemManifest(manifest *models.FileManifest) *models.FileManifest {
+	if manifest == nil {
+		return nil
+	}
+	clone := &models.FileManifest{
+		Path:      strings.TrimSpace(manifest.Path),
+		TotalSize: manifest.TotalSize,
+		Hash:      strings.TrimSpace(manifest.Hash),
+	}
+	if len(manifest.Blocks) > 0 {
+		clone.Blocks = make([]models.Block, len(manifest.Blocks))
+		copy(clone.Blocks, manifest.Blocks)
+	}
+	return clone
+}
+
+func (s *filesystemServiceServer) resolveFilesystemUploadManifest(ctx context.Context, manifest *models.FileManifest) (*models.FileManifest, error) {
+	if manifest == nil {
+		return nil, status.Error(codes.InvalidArgument, "manifest is required")
+	}
+
+	versioned, err := s.storage.GetVersionedFileManifest(ctx, manifest.Hash)
+	switch {
+	case err == nil && versioned != nil:
+		if !filesystemManifestEquivalent(manifest, versioned) {
+			return nil, status.Error(codes.InvalidArgument, "manifest does not match stored content hash")
+		}
+		canonical := cloneFilesystemManifest(versioned)
+		canonical.Path = strings.TrimSpace(manifest.Path)
+		return canonical, nil
+	case err != nil && err != storage.ErrEntryNotFound:
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect versioned manifest: %v", err))
+	}
+
+	hasher := sha256.New()
+	var totalSize int64
+	for _, block := range manifest.Blocks {
+		payload, err := s.storage.GetBlock(ctx, block.Hash)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("missing upload block %s", block.Hash))
+			}
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load upload block %s: %v", block.Hash, err))
+		}
+		if len(payload) != block.Size {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("block %s size does not match manifest", block.Hash))
+		}
+		if _, err := hasher.Write(payload); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to hash upload block %s: %v", block.Hash, err))
+		}
+		totalSize += int64(block.Size)
+	}
+	if totalSize != manifest.TotalSize {
+		return nil, status.Error(codes.InvalidArgument, "manifest size does not match uploaded blocks")
+	}
+	computedHash := hex.EncodeToString(hasher.Sum(nil))
+	if computedHash != strings.TrimSpace(manifest.Hash) {
+		return nil, status.Error(codes.InvalidArgument, "manifest hash does not match uploaded blocks")
+	}
+	return cloneFilesystemManifest(manifest), nil
+}
+
+func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context, workspaceID string, manifest *models.FileManifest) error {
+	if manifest == nil {
+		return status.Error(codes.InvalidArgument, "manifest is required")
+	}
+	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(workspaceID, manifest.Path),
+		Path:     manifest.Path,
+		Type:     "file",
+		ParentID: workspaceID,
+		Size:     manifest.TotalSize,
+	}); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to write file entry: %v", err))
+	}
+	if err := s.storage.PutFileManifest(ctx, workspaceID, manifest.Path, manifest); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to persist file manifest: %v", err))
+	}
+	if err := s.storage.PutVersionedFileManifest(ctx, manifest); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to persist versioned file manifest: %v", err))
+	}
+	if err := s.storage.AddFileToSlice(ctx, manifest.Path, workspaceID); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	}
+	observeFilesystemManifest(manifest)
+	return nil
 }
 
 func (s *filesystemServiceServer) writeWorkspaceFileContent(ctx context.Context, workspace *models.Slice, filePath string, content []byte) (string, int64, error) {

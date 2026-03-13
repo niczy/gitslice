@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -10,12 +12,25 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
 const filesystemTransferChunkSize = 64 * 1024
+
+type filesystemUploadFile struct {
+	localPath  string
+	remotePath string
+	manifest   *filesystemv1.UploadFileManifest
+}
+
+type filesystemUploadInventory struct {
+	files       []*filesystemUploadFile
+	directories []string
+}
 
 func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs upload", flag.ExitOnError)
@@ -44,15 +59,46 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		log.Fatal(err)
 	}
 
-	filesUploaded, dirsUploaded, err := uploadFilesystemTree(ctx, cli.filesystemClient, workspaceID, remoteBase, localRoot)
+	inventory, err := buildFilesystemUploadInventory(localRoot, remoteBase)
+	if err != nil {
+		log.Fatalf("Failed to plan upload directory tree: %v", err)
+	}
+
+	planResp, err := cli.filesystemClient.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
+		WorkspaceId: workspaceID,
+		Files:       collectFilesystemUploadManifests(inventory.files),
+	})
+	if err != nil {
+		log.Fatalf("Failed to plan upload directory tree: %v", err)
+	}
+
+	missingBlocks := make(map[string]struct{}, len(planResp.GetMissingBlockHashes()))
+	for _, hash := range planResp.GetMissingBlockHashes() {
+		hash = strings.TrimSpace(hash)
+		if hash != "" {
+			missingBlocks[hash] = struct{}{}
+		}
+	}
+	if _, err := uploadFilesystemMissingBlocks(ctx, cli.filesystemClient, workspaceID, inventory, missingBlocks); err != nil {
+		log.Fatalf("Failed to upload missing file blocks: %v", err)
+	}
+	if len(missingBlocks) != 0 {
+		log.Fatalf("Failed to upload all missing file blocks; %d blocks still missing", len(missingBlocks))
+	}
+
+	_, err = cli.filesystemClient.FinalizeUpload(ctx, &filesystemv1.FinalizeUploadRequest{
+		WorkspaceId: workspaceID,
+		Directories: append([]string(nil), inventory.directories...),
+		Files:       collectFilesystemUploadManifests(inventory.files),
+	})
 	if err != nil {
 		log.Fatalf("Failed to upload directory tree: %v", err)
 	}
 
 	fmt.Printf(
 		"Uploaded %d files and %d directories to %s\n",
-		filesUploaded,
-		dirsUploaded,
+		len(inventory.files),
+		len(inventory.directories),
 		filesystemDisplayPath(remoteBase),
 	)
 }
@@ -135,6 +181,174 @@ func uploadFilesystemTree(
 	}
 
 	return filesUploaded, dirsUploaded, nil
+}
+
+func buildFilesystemUploadInventory(localRoot, remoteBase string) (*filesystemUploadInventory, error) {
+	inventory := &filesystemUploadInventory{
+		files:       make([]*filesystemUploadFile, 0),
+		directories: make([]string, 0),
+	}
+	err := filepath.WalkDir(localRoot, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relativePath, err := filepath.Rel(localRoot, current)
+		if err != nil {
+			return err
+		}
+		if relativePath == "." {
+			return nil
+		}
+
+		remotePath := path.Join(remoteBase, filepath.ToSlash(relativePath))
+		if entry.IsDir() {
+			inventory.directories = append(inventory.directories, remotePath)
+			return nil
+		}
+
+		manifest, err := buildFilesystemUploadManifest(remotePath, current)
+		if err != nil {
+			return err
+		}
+		inventory.files = append(inventory.files, &filesystemUploadFile{
+			localPath:  current,
+			remotePath: remotePath,
+			manifest:   manifest,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(inventory.directories)
+	sort.Slice(inventory.files, func(i, j int) bool {
+		return inventory.files[i].remotePath < inventory.files[j].remotePath
+	})
+	return inventory, nil
+}
+
+func buildFilesystemUploadManifest(remotePath, localPath string) (*filesystemv1.UploadFileManifest, error) {
+	file, err := os.Open(filepath.Clean(localPath))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	manifest := &filesystemv1.UploadFileManifest{
+		Path:   remotePath,
+		Blocks: make([]*filesystemv1.UploadBlockRef, 0),
+	}
+	buffer := make([]byte, storage.DefaultFileBlockSize)
+	for {
+		readBytes, err := file.Read(buffer)
+		if readBytes > 0 {
+			chunk := buffer[:readBytes]
+			if _, err := hasher.Write(chunk); err != nil {
+				return nil, err
+			}
+			blockHash := sha256.Sum256(chunk)
+			manifest.Blocks = append(manifest.Blocks, &filesystemv1.UploadBlockRef{
+				Hash: hex.EncodeToString(blockHash[:]),
+				Size: int64(readBytes),
+			})
+			manifest.Size += int64(readBytes)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	manifest.Hash = hex.EncodeToString(hasher.Sum(nil))
+	return manifest, nil
+}
+
+func collectFilesystemUploadManifests(files []*filesystemUploadFile) []*filesystemv1.UploadFileManifest {
+	manifests := make([]*filesystemv1.UploadFileManifest, 0, len(files))
+	for _, file := range files {
+		if file == nil || file.manifest == nil {
+			continue
+		}
+		manifests = append(manifests, file.manifest)
+	}
+	return manifests
+}
+
+func uploadFilesystemMissingBlocks(
+	ctx context.Context,
+	client filesystemv1.FilesystemServiceClient,
+	workspaceID string,
+	inventory *filesystemUploadInventory,
+	missing map[string]struct{},
+) (*filesystemv1.UploadBlocksResponse, error) {
+	if len(missing) == 0 {
+		return &filesystemv1.UploadBlocksResponse{WorkspaceId: workspaceID}, nil
+	}
+	stream, err := client.UploadBlocks(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sent := make(map[string]struct{}, len(missing))
+	buffer := make([]byte, storage.DefaultFileBlockSize)
+	for _, fileSpec := range inventory.files {
+		if fileSpec == nil {
+			continue
+		}
+		if len(missing) == 0 {
+			break
+		}
+		file, err := os.Open(filepath.Clean(fileSpec.localPath))
+		if err != nil {
+			return nil, err
+		}
+		for {
+			readBytes, err := file.Read(buffer)
+			if readBytes > 0 {
+				chunk := append([]byte(nil), buffer[:readBytes]...)
+				blockHash := sha256.Sum256(chunk)
+				hash := hex.EncodeToString(blockHash[:])
+				if _, needed := missing[hash]; needed {
+					if _, alreadySent := sent[hash]; !alreadySent {
+						if err := stream.Send(&filesystemv1.UploadBlocksRequest{
+							Chunk: &filesystemv1.UploadBlocksRequest_Metadata{
+								Metadata: &filesystemv1.UploadBlockMetadata{
+									WorkspaceId: workspaceID,
+									Hash:        hash,
+									Size:        int64(len(chunk)),
+								},
+							},
+						}); err != nil {
+							_ = file.Close()
+							return nil, err
+						}
+						if err := stream.Send(&filesystemv1.UploadBlocksRequest{
+							Chunk: &filesystemv1.UploadBlocksRequest_Content{Content: chunk},
+						}); err != nil {
+							_ = file.Close()
+							return nil, err
+						}
+						sent[hash] = struct{}{}
+						delete(missing, hash)
+					}
+				}
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				_ = file.Close()
+				return nil, err
+			}
+		}
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
+	}
+
+	return stream.CloseAndRecv()
 }
 
 func downloadFilesystemTree(

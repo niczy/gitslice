@@ -25,13 +25,16 @@ type filesystemMetricsSnapshot struct {
 	DedupRatio         float64
 }
 
-func observeFilesystemManifestWrite(manifest *models.FileManifest, writtenBlocks, reusedBlocks int) {
+func observeFilesystemBlocks(writtenBlocks, reusedBlocks int) {
 	if writtenBlocks > 0 {
 		metricFilesystemBlocksWrittenTotal.Add(int64(writtenBlocks))
 	}
 	if reusedBlocks > 0 {
 		metricFilesystemBlocksReusedTotal.Add(int64(reusedBlocks))
 	}
+}
+
+func observeFilesystemManifest(manifest *models.FileManifest) {
 	metricFilesystemManifestWrites.Add(1)
 	if manifest == nil {
 		return
@@ -41,6 +44,11 @@ func observeFilesystemManifestWrite(manifest *models.FileManifest, writtenBlocks
 		return
 	}
 	metricFilesystemManifestBytesTotal.Add(int64(len(encoded)))
+}
+
+func observeFilesystemManifestWrite(manifest *models.FileManifest, writtenBlocks, reusedBlocks int) {
+	observeFilesystemBlocks(writtenBlocks, reusedBlocks)
+	observeFilesystemManifest(manifest)
 }
 
 func snapshotFilesystemMetrics() filesystemMetricsSnapshot {

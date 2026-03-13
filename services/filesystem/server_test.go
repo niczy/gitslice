@@ -3,6 +3,8 @@ package filesystemservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +31,23 @@ func authContext(username string) context.Context {
 
 func bearerAuthContext(token string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
+}
+
+func uploadManifestForTest(filePath string, content []byte) *filesystemv1.UploadFileManifest {
+	blocks, _ := storage.ChunkFile(content, storage.DefaultFileBlockSize)
+	manifest := &filesystemv1.UploadFileManifest{
+		Path:   filePath,
+		Size:   int64(len(content)),
+		Hash:   hashContent(content),
+		Blocks: make([]*filesystemv1.UploadBlockRef, 0, len(blocks)),
+	}
+	for _, block := range blocks {
+		manifest.Blocks = append(manifest.Blocks, &filesystemv1.UploadBlockRef{
+			Hash: block.Hash,
+			Size: int64(block.Size),
+		})
+	}
+	return manifest
 }
 
 func TestCreateWorkspaceAcceptsBearerSessionToken(t *testing.T) {
@@ -572,6 +591,168 @@ func TestFilesystemBlockMetricsTrackReuse(t *testing.T) {
 	}
 	if after.DedupRatio < 0 || after.DedupRatio > 1 {
 		t.Fatalf("global dedup ratio out of range: %.4f", after.DedupRatio)
+	}
+}
+
+func TestPlanUploadSkipsExistingVersionedBlocks(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-upload-plan",
+		Name:        "Upload Plan",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	content := []byte("reused upload content\n")
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-upload-plan",
+		Path:        "docs/original.txt",
+		Content:     content,
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	unchangedResp, err := svc.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
+		WorkspaceId: "ws-upload-plan",
+		Files: []*filesystemv1.UploadFileManifest{
+			uploadManifestForTest("docs/original.txt", content),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanUpload(unchanged) failed: %v", err)
+	}
+	if len(unchangedResp.GetMissingBlockHashes()) != 0 {
+		t.Fatalf("expected unchanged upload to have no missing blocks, got %v", unchangedResp.GetMissingBlockHashes())
+	}
+	if len(unchangedResp.GetSkippedPaths()) != 1 || unchangedResp.GetSkippedPaths()[0] != "docs/original.txt" {
+		t.Fatalf("expected unchanged path to be skipped, got %v", unchangedResp.GetSkippedPaths())
+	}
+
+	reusedResp, err := svc.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
+		WorkspaceId: "ws-upload-plan",
+		Files: []*filesystemv1.UploadFileManifest{
+			uploadManifestForTest("docs/copied.txt", content),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanUpload(reused) failed: %v", err)
+	}
+	if len(reusedResp.GetMissingBlockHashes()) != 0 {
+		t.Fatalf("expected reused upload to have no missing blocks, got %v", reusedResp.GetMissingBlockHashes())
+	}
+	if len(reusedResp.GetSkippedPaths()) != 0 {
+		t.Fatalf("expected reused upload to write a new path, got skipped=%v", reusedResp.GetSkippedPaths())
+	}
+}
+
+func TestUploadBlocksAndFinalizeUpload(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	client, conn := newFilesystemTestClient(t, st)
+	defer conn.Close()
+
+	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "User tester")
+	if _, err := client.CreateWorkspace(authCtx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-upload-stream",
+		Name:        "Upload Stream",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	content := bytes.Repeat([]byte("upload-block-data-"), 2048)
+	manifest := uploadManifestForTest("docs/big.txt", content)
+
+	planResp, err := client.PlanUpload(authCtx, &filesystemv1.PlanUploadRequest{
+		WorkspaceId: "ws-upload-stream",
+		Files:       []*filesystemv1.UploadFileManifest{manifest},
+	})
+	if err != nil {
+		t.Fatalf("PlanUpload failed: %v", err)
+	}
+	if len(planResp.GetMissingBlockHashes()) == 0 {
+		t.Fatalf("expected missing blocks for new upload")
+	}
+
+	missing := make(map[string]struct{}, len(planResp.GetMissingBlockHashes()))
+	for _, hash := range planResp.GetMissingBlockHashes() {
+		missing[hash] = struct{}{}
+	}
+
+	uploadStream, err := client.UploadBlocks(authCtx)
+	if err != nil {
+		t.Fatalf("UploadBlocks start failed: %v", err)
+	}
+	remaining := make(map[string]struct{}, len(missing))
+	for hash := range missing {
+		remaining[hash] = struct{}{}
+	}
+	for offset := 0; offset < len(content); offset += storage.DefaultFileBlockSize {
+		end := offset + storage.DefaultFileBlockSize
+		if end > len(content) {
+			end = len(content)
+		}
+		chunk := append([]byte(nil), content[offset:end]...)
+		sum := sha256.Sum256(chunk)
+		hash := hex.EncodeToString(sum[:])
+		if _, needed := remaining[hash]; !needed {
+			continue
+		}
+		if err := uploadStream.Send(&filesystemv1.UploadBlocksRequest{
+			Chunk: &filesystemv1.UploadBlocksRequest_Metadata{
+				Metadata: &filesystemv1.UploadBlockMetadata{
+					WorkspaceId: "ws-upload-stream",
+					Hash:        hash,
+					Size:        int64(len(chunk)),
+				},
+			},
+		}); err != nil {
+			t.Fatalf("send upload metadata: %v", err)
+		}
+		if err := uploadStream.Send(&filesystemv1.UploadBlocksRequest{
+			Chunk: &filesystemv1.UploadBlocksRequest_Content{Content: chunk},
+		}); err != nil {
+			t.Fatalf("send upload content: %v", err)
+		}
+		delete(remaining, hash)
+	}
+	uploadResp, err := uploadStream.CloseAndRecv()
+	if err != nil {
+		t.Fatalf("UploadBlocks failed: %v", err)
+	}
+	if uploadResp.GetBlocksWritten() == 0 {
+		t.Fatalf("expected UploadBlocks to persist new blocks, got %#v", uploadResp)
+	}
+
+	finalizeResp, err := client.FinalizeUpload(authCtx, &filesystemv1.FinalizeUploadRequest{
+		WorkspaceId: "ws-upload-stream",
+		Files:       []*filesystemv1.UploadFileManifest{manifest},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeUpload failed: %v", err)
+	}
+	if finalizeResp.GetCommitHash() == "" || finalizeResp.GetFilesWritten() != 1 {
+		t.Fatalf("unexpected FinalizeUpload response: %#v", finalizeResp)
+	}
+
+	readResp, err := client.ReadFile(authCtx, &filesystemv1.ReadFileRequest{
+		WorkspaceId: "ws-upload-stream",
+		Path:        "docs/big.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(readResp.GetContent(), content) {
+		t.Fatalf("uploaded file content mismatch")
 	}
 }
 
