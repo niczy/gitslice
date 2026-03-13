@@ -4,7 +4,7 @@ import { Badge } from './ui/badge.jsx';
 const HERO_PROOF = [
   {
     label: 'Custom slices',
-    value: 'Fork a focused work surface instead of dragging an entire checkout into every task.',
+    value: 'Create a focused work surface instead of dragging an entire checkout into every task.',
   },
   {
     label: 'Quick checkout',
