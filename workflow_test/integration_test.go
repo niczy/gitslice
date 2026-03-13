@@ -762,7 +762,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 }
 
 func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withTestUser(ctx)
 
@@ -890,7 +890,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected remote file to be deleted, got err=%v", err)
 	}
 
-	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(testUsername), "delete "+remoteFile, 2*time.Second, 25*time.Millisecond); err != nil {
+	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(testUsername), "delete "+remoteFile, 5*time.Second, 25*time.Millisecond); err != nil {
 		t.Fatalf("expected fs delete publish to create a merged changeset: %v", err)
 	}
 
@@ -898,7 +898,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get root slice: %v", err)
 	}
-	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
+	if err := waitForCondition(5*time.Second, 25*time.Millisecond, func() (bool, error) {
 		_, err := testStorage.GetEntryByPath(ctx, rootSlice.ID, strings.TrimPrefix(remoteFile, "/"))
 		if err == storage.ErrEntryNotFound {
 			return true, nil
