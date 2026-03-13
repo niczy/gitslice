@@ -32,6 +32,77 @@ func UsernameFromSliceID(sliceID string) string {
 	return strings.TrimPrefix(strings.TrimSpace(sliceID), idPrefix)
 }
 
+func PendingPromotionPaths(ctx context.Context, st storage.Storage, homeSliceID string) ([]string, error) {
+	if st == nil {
+		return nil, fmt.Errorf("storage is nil")
+	}
+	homeSliceID = strings.TrimSpace(homeSliceID)
+	if !IsHomeSliceID(homeSliceID) {
+		return nil, fmt.Errorf("slice %q is not a home slice", homeSliceID)
+	}
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		return nil, err
+	}
+
+	homeSlice, err := st.GetSlice(ctx, homeSliceID)
+	if err != nil {
+		return nil, err
+	}
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	username := resolveHomeSliceUsername(homeSlice)
+	if username == "" {
+		return nil, fmt.Errorf("home slice %q has no associated username", homeSliceID)
+	}
+	rootPath := rootPathForUsername(ctx, st, username)
+	if strings.TrimSpace(rootPath) == "" {
+		return nil, nil
+	}
+
+	homeEntries, err := collectSubtreeEntries(ctx, st, homeSlice.ID, rootPath)
+	if err != nil {
+		return nil, err
+	}
+	rootEntries, err := collectSubtreeEntries(ctx, st, rootSlice.ID, rootPath)
+	if err != nil {
+		return nil, err
+	}
+
+	homeByPath := entriesByPath(homeEntries)
+	rootByPath := entriesByPath(rootEntries)
+	pathSet := make(map[string]struct{}, len(homeByPath)+len(rootByPath))
+	for filePath := range homeByPath {
+		if filePath == rootPath {
+			continue
+		}
+		pathSet[filePath] = struct{}{}
+	}
+	for filePath := range rootByPath {
+		if filePath == rootPath {
+			continue
+		}
+		pathSet[filePath] = struct{}{}
+	}
+
+	paths := make([]string, 0, len(pathSet))
+	for filePath := range pathSet {
+		homeEntry := homeByPath[filePath]
+		rootEntry := rootByPath[filePath]
+		changed, err := promotionPathChanged(ctx, st, homeSlice.ID, rootSlice.ID, homeEntry, rootEntry)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			paths = append(paths, filePath)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
 func SyncHomeSliceToRoot(ctx context.Context, st storage.Storage, homeSliceID string) (*PromotionResult, error) {
 	if st == nil {
 		return nil, fmt.Errorf("storage is nil")
@@ -243,4 +314,53 @@ func rootPathForUsername(ctx context.Context, st storage.Storage, username strin
 		}
 	}
 	return RelativeRootPath(username)
+}
+
+func promotionPathChanged(ctx context.Context, st storage.Storage, homeSliceID, rootSliceID string, homeEntry, rootEntry *models.DirectoryEntry) (bool, error) {
+	switch {
+	case homeEntry == nil && rootEntry == nil:
+		return false, nil
+	case homeEntry == nil || rootEntry == nil:
+		return true, nil
+	case homeEntry.Type != rootEntry.Type:
+		return true, nil
+	case homeEntry.Type != "file":
+		return false, nil
+	}
+
+	homeHash, err := promotionEntryHash(ctx, st, homeSliceID, homeEntry)
+	if err != nil {
+		return false, err
+	}
+	rootHash, err := promotionEntryHash(ctx, st, rootSliceID, rootEntry)
+	if err != nil {
+		return false, err
+	}
+	return homeHash != rootHash, nil
+}
+
+func promotionEntryHash(ctx context.Context, st storage.Storage, sliceID string, entry *models.DirectoryEntry) (string, error) {
+	if entry == nil || entry.Type != "file" {
+		return "", nil
+	}
+
+	manifest, err := st.GetFileManifest(ctx, sliceID, entry.Path)
+	if err == nil && manifest != nil && strings.TrimSpace(manifest.Hash) != "" {
+		return strings.TrimSpace(manifest.Hash), nil
+	}
+	if err != nil && err != storage.ErrEntryNotFound {
+		return "", err
+	}
+
+	content, err := storage.ReadSliceFileContent(ctx, st, sliceID, entry.Path)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	if hash := strings.TrimSpace(content.Hash); hash != "" {
+		return hash, nil
+	}
+	return strings.TrimSpace(entry.Hash), nil
 }

@@ -2,7 +2,6 @@ package filesystemservice
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -11,9 +10,12 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
-	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/rootpromote"
-	"github.com/niczy/gitslice/internal/storage"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
+	sliceservice "github.com/niczy/gitslice/services/slice"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func (s *filesystemServiceServer) enqueueHomeSlicePromotion(ctx context.Context, workspaceID, commitHash string, files []string, commitTime time.Time) error {
@@ -53,62 +55,52 @@ func (s *filesystemServiceServer) promoteHomeSliceBatch(ctx context.Context, bat
 	if len(batch) == 0 {
 		return nil
 	}
-	return rootpromote.WithGlobalLock(func() error {
-		if err := common.EnsureRootSliceInitialized(ctx, s.storage); err != nil {
+	if err := common.EnsureRootSliceInitialized(ctx, s.storage); err != nil {
+		return err
+	}
+
+	sliceSvc := sliceservice.NewInternalService(s.storage)
+	mergedAny := false
+	for _, job := range latestPromotionJobs(batch) {
+		if !homeslice.IsHomeSliceID(job.SliceID) {
+			continue
+		}
+		modifiedPaths, err := homeslice.PendingPromotionPaths(ctx, s.storage, job.SliceID)
+		if err != nil {
+			return fmt.Errorf("failed to compute pending promotion paths for %s: %w", job.SliceID, err)
+		}
+		if len(modifiedPaths) == 0 {
+			continue
+		}
+
+		authCtx, err := promotionAuthContext(ctx, job.SliceID)
+		if err != nil {
 			return err
 		}
-		rootSlice, err := s.storage.GetRootSlice(ctx)
+		createResp, err := sliceSvc.CreateChangeset(authCtx, &slicev1.CreateChangesetRequest{
+			SliceId:        job.SliceID,
+			BaseCommitHash: s.promotionBaseCommitHash(ctx),
+			ModifiedFiles:  modifiedPaths,
+			Message:        s.promotionChangesetMessage(ctx, job),
+		})
 		if err != nil {
-			return fmt.Errorf("failed to load root slice: %w", err)
+			return fmt.Errorf("failed to create promotion changeset for %s: %w", job.SliceID, err)
 		}
 
-		for _, job := range latestPromotionJobs(batch) {
-			if !homeslice.IsHomeSliceID(job.SliceID) {
-				continue
-			}
-			if _, err := homeslice.SyncHomeSliceToRoot(ctx, s.storage, job.SliceID); err != nil {
-				return fmt.Errorf("failed to sync %s into root: %w", job.SliceID, err)
-			}
-		}
-
-		state, err := s.storage.GetGlobalState(ctx)
-		if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
-			return fmt.Errorf("failed to load global state: %w", err)
-		}
-		if state == nil {
-			state = &models.GlobalState{}
-		}
-
-		history := make([]*models.GlobalCommit, 0, len(batch))
-		for i := len(batch) - 1; i >= 0; i-- {
-			job := batch[i]
-			history = append(history, &models.GlobalCommit{
-				CommitHash:     job.CommitHash,
-				Timestamp:      job.CommitTime,
-				MergedSliceIDs: []string{job.SliceID},
-			})
-		}
-		latest := batch[len(batch)-1]
-		state.GlobalCommitHash = latest.CommitHash
-		state.Timestamp = latest.CommitTime
-		state.History = append(history, state.History...)
-		if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
-			return fmt.Errorf("failed to update global state: %w", err)
-		}
-
-		rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
+		mergeResp, err := sliceSvc.MergeChangesetUsingCurrentHead(authCtx, createResp.GetChangesetId())
 		if err != nil {
-			return fmt.Errorf("failed to load root metadata: %w", err)
+			return fmt.Errorf("failed to merge promotion changeset for %s: %w", job.SliceID, err)
 		}
-		rootMetadata.HeadCommitHash = state.GlobalCommitHash
-		rootMetadata.ModifiedFiles = normalizePromotionPaths(latest.Files)
-		rootMetadata.ModifiedFilesCount = len(rootMetadata.ModifiedFiles)
-		rootMetadata.LastModified = state.Timestamp
-		if err := s.storage.UpdateSliceMetadata(ctx, rootSlice.ID, rootMetadata); err != nil {
-			return fmt.Errorf("failed to update root metadata: %w", err)
+		if mergeResp.GetStatus() == slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
+			return status.Errorf(codes.Aborted, "home slice promotion conflicts for %s: %s", job.SliceID, summarizePromotionConflicts(mergeResp.GetConflicts()))
 		}
+		mergedAny = true
+	}
+
+	if !mergedAny {
 		return nil
-	})
+	}
+	return sliceSvc.WaitForQueuedPromotions(ctx)
 }
 
 func latestPromotionJobs(batch []rootpromote.Job) []rootpromote.Job {
@@ -154,4 +146,64 @@ func normalizePromotionPaths(paths []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func promotionAuthContext(ctx context.Context, sliceID string) (context.Context, error) {
+	username := homeslice.UsernameFromSliceID(sliceID)
+	if username == "" {
+		return nil, fmt.Errorf("slice %q is not a home slice", sliceID)
+	}
+	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "User "+username)), nil
+}
+
+func (s *filesystemServiceServer) promotionBaseCommitHash(ctx context.Context) string {
+	state, err := s.storage.GetGlobalState(ctx)
+	if err == nil && state != nil && strings.TrimSpace(state.GlobalCommitHash) != "" {
+		return strings.TrimSpace(state.GlobalCommitHash)
+	}
+	rootSlice, err := s.storage.GetRootSlice(ctx)
+	if err != nil {
+		return ""
+	}
+	meta, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.HeadCommitHash)
+}
+
+func (s *filesystemServiceServer) promotionChangesetMessage(ctx context.Context, job rootpromote.Job) string {
+	commit, err := s.storage.GetCommitByHash(ctx, job.SliceID, job.CommitHash)
+	if err == nil {
+		if message := strings.TrimSpace(commit.Message); message != "" {
+			return message
+		}
+	}
+	if message := strings.TrimSpace(job.CommitHash); message != "" {
+		return "publish " + message
+	}
+	return "publish home slice"
+}
+
+func summarizePromotionConflicts(conflicts []*slicev1.Conflict) string {
+	if len(conflicts) == 0 {
+		return "unknown conflict"
+	}
+	parts := make([]string, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		if conflict == nil {
+			continue
+		}
+		fileID := strings.TrimSpace(conflict.GetFileId())
+		if fileID == "" {
+			fileID = "<unknown>"
+		}
+		targets := append([]string(nil), conflict.GetConflictingSliceIds()...)
+		sort.Strings(targets)
+		parts = append(parts, fmt.Sprintf("%s [%s]", fileID, strings.Join(targets, ", ")))
+	}
+	if len(parts) == 0 {
+		return "unknown conflict"
+	}
+	return strings.Join(parts, "; ")
 }

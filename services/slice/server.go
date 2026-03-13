@@ -18,6 +18,7 @@ import (
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/sliceconfig"
@@ -89,6 +90,11 @@ func NewGRPCServer(st storage.Storage) *grpc.Server {
 
 // NewService constructs the slice service implementation for use without gRPC.
 func NewService(st storage.Storage) slicev1.SliceServiceServer {
+	return newSliceServiceServer(st)
+}
+
+// NewInternalService constructs the concrete slice service for cross-package reuse.
+func NewInternalService(st storage.Storage) *sliceServiceServer {
 	return newSliceServiceServer(st)
 }
 
@@ -443,9 +449,23 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		return nil, err
 	}
 
-	cs, err := s.storage.GetChangeset(ctx, req.ChangesetId)
+	return s.mergeChangeset(ctx, req.GetChangesetId(), username, false)
+}
+
+// MergeChangesetUsingCurrentHead marks a changeset as merged and publishes the
+// slice's existing head commit instead of creating a new no-op merge commit.
+func (s *sliceServiceServer) MergeChangesetUsingCurrentHead(ctx context.Context, changesetID string) (*slicev1.MergeChangesetResponse, error) {
+	username, err := s.requireUsername(ctx)
 	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", req.ChangesetId))
+		return nil, err
+	}
+	return s.mergeChangeset(ctx, changesetID, username, true)
+}
+
+func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool) (*slicev1.MergeChangesetResponse, error) {
+	cs, err := s.storage.GetChangeset(ctx, changesetID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
 	}
 	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
 	if err != nil {
@@ -521,36 +541,55 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 
 	metadata, err := s.storage.GetSliceMetadata(ctx, cs.SliceID)
 	if err == nil {
-		parentHash := metadata.HeadCommitHash
-		metadata.HeadCommitHash = newCommit
-		metadata.ModifiedFiles = modifiedFiles
-		metadata.ModifiedFilesCount = len(modifiedFiles)
+		promotionCommitHash := newCommit
+		promotionCommitTime := now
+		if useCurrentHead {
+			promotionCommitHash = strings.TrimSpace(metadata.HeadCommitHash)
+			if promotionCommitHash == "" {
+				return nil, status.Error(codes.FailedPrecondition, "slice head is empty")
+			}
+			existingCommit, commitErr := s.storage.GetCommitByHash(ctx, cs.SliceID, promotionCommitHash)
+			if commitErr != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice head commit: %v", commitErr))
+			}
+			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
+				promotionCommitTime = existingCommit.Timestamp
+			}
+		} else {
+			parentHash := metadata.HeadCommitHash
+			metadata.HeadCommitHash = newCommit
+			metadata.ModifiedFiles = modifiedFiles
+			metadata.ModifiedFilesCount = len(modifiedFiles)
 
-		if err := s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata); err != nil {
-			log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
+			if err := s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata); err != nil {
+				log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
+			}
+
+			if err := s.storage.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
+				CommitHash: newCommit,
+				ParentHash: parentHash,
+				Timestamp:  now,
+				Message:    cs.Message,
+			}); err != nil {
+				log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
+			}
+
+			// Create commit snapshot for versioned file access
+			if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
+				log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
+			}
+
+			// Record file change history for each modified file
+			if err := s.recordFileChanges(ctx, cs, newCommit, parentHash, now); err != nil {
+				log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
+			}
 		}
 
-		if err := s.storage.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
-			CommitHash: newCommit,
-			ParentHash: parentHash,
-			Timestamp:  now,
-			Message:    cs.Message,
-		}); err != nil {
-			log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
-		}
-
-		// Create commit snapshot for versioned file access
-		if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
-			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
-		}
-
-		// Record file change history for each modified file
-		if err := s.recordFileChanges(ctx, cs, newCommit, parentHash, now); err != nil {
-			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
-		}
-
-		if err := s.enqueueRootPromotion(ctx, cs.SliceID, newCommit, modifiedFiles, now); err != nil {
+		if err := s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
 			log.Printf("failed to enqueue promotion for slice %s: %v", cs.SliceID, err)
+		}
+		if useCurrentHead {
+			newCommit = promotionCommitHash
 		}
 	}
 	if changesetTouchesConfig(modifiedFiles) {
@@ -2086,6 +2125,12 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 			return fmt.Errorf("failed to load root metadata: %w", err)
 		}
 
+		for _, job := range latestHomeSlicePromotionJobs(batch) {
+			if _, err := homeslice.SyncHomeSliceToRoot(ctx, s.storage, job.SliceID); err != nil {
+				return fmt.Errorf("failed to sync %s into root: %w", job.SliceID, err)
+			}
+		}
+
 		files := collectUniquePromotionFiles(batch)
 		for _, fileID := range files {
 			if err := s.storage.AddFileToSlice(ctx, fileID, rootSliceID); err != nil {
@@ -2139,6 +2184,9 @@ func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
 	dedup := make(map[string]struct{})
 	files := make([]string, 0)
 	for _, job := range batch {
+		if homeslice.IsHomeSliceID(job.SliceID) {
+			continue
+		}
 		for _, fileID := range normalizeModifiedFiles(job.Files) {
 			if _, exists := dedup[fileID]; exists {
 				continue
@@ -2152,6 +2200,10 @@ func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
 
 func (s *sliceServiceServer) waitForQueuedPromotions(ctx context.Context) error {
 	return s.rootPromotionQueue().Wait(ctx)
+}
+
+func (s *sliceServiceServer) WaitForQueuedPromotions(ctx context.Context) error {
+	return s.waitForQueuedPromotions(ctx)
 }
 
 func (s *sliceServiceServer) rootPromotionQueue() *rootpromote.Queue {
@@ -2172,6 +2224,30 @@ func (s *sliceServiceServer) rootPromotionQueue() *rootpromote.Queue {
 		return nil
 	})
 	return s.promotionQueue
+}
+
+func latestHomeSlicePromotionJobs(batch []rootpromote.Job) []rootpromote.Job {
+	if len(batch) == 0 {
+		return nil
+	}
+	latestBySlice := make(map[string]rootpromote.Job, len(batch))
+	order := make([]string, 0, len(batch))
+	for _, job := range batch {
+		sliceID := strings.TrimSpace(job.SliceID)
+		if !homeslice.IsHomeSliceID(sliceID) {
+			continue
+		}
+		if _, seen := latestBySlice[sliceID]; !seen {
+			order = append(order, sliceID)
+		}
+		latestBySlice[sliceID] = job
+	}
+	sort.Strings(order)
+	result := make([]rootpromote.Job, 0, len(order))
+	for _, sliceID := range order {
+		result = append(result, latestBySlice[sliceID])
+	}
+	return result
 }
 
 func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error) {

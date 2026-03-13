@@ -66,6 +66,48 @@ func TestSyncHomeSliceToRootMirrorsSubtree(t *testing.T) {
 	}
 }
 
+func TestPendingPromotionPathsReflectsHomeVsRootDiff(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root: %v", err)
+	}
+	home, err := EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("get root: %v", err)
+	}
+
+	writeHomeFile(t, ctx, st, root.ID, "alice/docs/readme.md", "root v1\n")
+	writeHomeFile(t, ctx, st, home.ID, "alice/docs/readme.md", "home v2\n")
+	writeHomeFile(t, ctx, st, home.ID, "alice/src/main.py", "print('hi')\n")
+
+	paths, err := PendingPromotionPaths(ctx, st, home.ID)
+	if err != nil {
+		t.Fatalf("PendingPromotionPaths failed: %v", err)
+	}
+	if got, want := len(paths), 3; got != want {
+		t.Fatalf("expected %d pending paths, got %d (%v)", want, got, paths)
+	}
+	if paths[0] != "alice/docs/readme.md" || paths[1] != "alice/src" || paths[2] != "alice/src/main.py" {
+		t.Fatalf("unexpected pending paths: %v", paths)
+	}
+
+	if _, err := SyncHomeSliceToRoot(ctx, st, home.ID); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	paths, err = PendingPromotionPaths(ctx, st, home.ID)
+	if err != nil {
+		t.Fatalf("PendingPromotionPaths after sync failed: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("expected no pending paths after sync, got %v", paths)
+	}
+}
+
 func writeHomeFile(t *testing.T, ctx context.Context, st storage.Storage, sliceID, filePath, content string) {
 	t.Helper()
 
