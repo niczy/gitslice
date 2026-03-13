@@ -13,7 +13,10 @@ export default function AppHeader({
     <header className="top-bar border-b border-border/80 bg-card/90 backdrop-blur-sm">
       <Button type="button" variant="ghost" className="brand" onClick={() => navigate('landing')}>
         <span className="brand-icon">◆</span>
-        <span className="brand-text">Git Slice</span>
+        <span className="brand-stack">
+          <span className="brand-text">Git Slice</span>
+          <span className="brand-subtext">Cloud FS</span>
+        </span>
       </Button>
       <div className="top-bar-actions">
         {isAuthenticated ? (
@@ -87,7 +90,7 @@ export default function AppHeader({
             </Button>
             <Button asChild variant="ghost" className="nav-link" data-testid="topbar-docs-link">
               <a href="https://github.com/agenttools-dev/gitslice#readme" target="_blank" rel="noreferrer">
-                Docs
+                API
               </a>
             </Button>
             <Button asChild variant="ghost" className="nav-link" data-testid="topbar-github-link">
@@ -102,7 +105,7 @@ export default function AppHeader({
               data-testid="topbar-get-started"
               onClick={() => navigate('landing')}
             >
-              Get Started
+              Open App
             </Button>
           </>
         )}

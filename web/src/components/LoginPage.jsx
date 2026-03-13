@@ -44,9 +44,9 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
   return (
     <section className="section auth-page" data-testid="login-page">
       <div className="section-header">
-        <Badge variant="secondary" className="eyebrow">Accounts</Badge>
-        <h1>Sign in</h1>
-        <p>Use your provider account to continue, or use a username for local/dev workflows.</p>
+        <Badge variant="outline" className="eyebrow landing-cloud-badge">Access</Badge>
+        <h1>Sign in to your cloud slice.</h1>
+        <p>Use OAuth for normal usage. Username login stays available for local and development workflows.</p>
       </div>
 
       <div className="auth-layout grid gap-4 lg:grid-cols-2">
@@ -54,7 +54,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
           <CardHeader>
             <Badge className="auth-priority-badge w-fit">Recommended</Badge>
             <CardTitle className="auth-card-title text-xl">Continue with OAuth</CardTitle>
-            <CardDescription className="auth-card-subtitle">Best for normal usage across devices.</CardDescription>
+            <CardDescription className="auth-card-subtitle">Best for normal usage across devices and browsers.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="auth-trust-text">
@@ -99,7 +99,7 @@ export default function LoginPage({ onLogin, onOAuthLogin, onLoggedIn, onCancel 
             <CardHeader>
               <CardTitle className="auth-card-title text-xl">Username sign-in</CardTitle>
               <CardDescription className="auth-card-subtitle">
-                Fallback path for local testing and CLI-aligned flows. Press Enter to submit or Esc to cancel.
+                Dev-focused fallback for local testing and CLI-aligned flows. Press Enter to submit or Esc to cancel.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
