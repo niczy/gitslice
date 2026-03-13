@@ -288,14 +288,18 @@ func runCLIWithDirInput(workdir, input string, args ...string) (string, error) {
 }
 
 func runCLIWithDirInputEnv(workdir, input string, env map[string]string, args ...string) (string, error) {
-	return runCLIWithDirInputEnvLegacy(workdir, input, env, true, args...)
+	return runCLIWithDirInputEnvLegacyUser(workdir, input, env, true, testUsername, args...)
 }
 
 func runCLIWithDirInputEnvNoLegacyUser(workdir, input string, env map[string]string, args ...string) (string, error) {
-	return runCLIWithDirInputEnvLegacy(workdir, input, env, false, args...)
+	return runCLIWithDirInputEnvLegacyUser(workdir, input, env, false, "", args...)
 }
 
 func runCLIWithDirInputEnvLegacy(workdir, input string, env map[string]string, includeLegacyUser bool, args ...string) (string, error) {
+	return runCLIWithDirInputEnvLegacyUser(workdir, input, env, includeLegacyUser, testUsername, args...)
+}
+
+func runCLIWithDirInputEnvLegacyUser(workdir, input string, env map[string]string, includeLegacyUser bool, legacyUser string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -307,7 +311,7 @@ func runCLIWithDirInputEnvLegacy(workdir, input string, env map[string]string, i
 		"--fs-addr", grpcServiceAddr,
 	}
 	if includeLegacyUser {
-		fullArgs = append(fullArgs, "--user", testUsername)
+		fullArgs = append(fullArgs, "--user", legacyUser)
 	}
 	fullArgs = append(fullArgs, args...)
 	cmd := exec.CommandContext(ctx, cliBinaryPath, fullArgs...)
@@ -764,9 +768,19 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	username := fmt.Sprintf("fs-cli-user-%d", time.Now().UnixNano())
+	ctx = withUsername(ctx, username)
 
-	remoteDir := fmt.Sprintf("/%s/fs-cli-%d", testUsername, time.Now().UnixNano())
+	runCLIForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", nil, true, username, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	remoteDir := fmt.Sprintf("/%s/fs-cli-%d", username, time.Now().UnixNano())
 	remoteFile := remoteDir + "/README.md"
 
 	localFile := filepath.Join(t.TempDir(), "README.md")
@@ -774,38 +788,38 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("write local file: %v", err)
 	}
 
-	output := runCLIOrFail(t, "", "fs", "mkdir", remoteDir)
+	output := runCLIForUser("", "fs", "mkdir", remoteDir)
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected mkdir commit output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "write", remoteFile, "-f", localFile)
+	output = runCLIForUser("", "fs", "write", remoteFile, "-f", localFile)
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected write commit output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
+	output = runCLIForUser("", "fs", "cat", remoteFile)
 	if output != "hello from fs cli\n" {
 		t.Fatalf("unexpected cat output: %q", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "ls", remoteDir)
+	output = runCLIForUser("", "fs", "ls", remoteDir)
 	if !strings.Contains(output, "README.md") {
 		t.Fatalf("expected README.md in listing, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "stat", remoteFile)
+	output = runCLIForUser("", "fs", "stat", remoteFile)
 	if !strings.Contains(output, "Type: file") {
 		t.Fatalf("expected file stat output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "snapshot", "-m", "initial")
+	output = runCLIForUser("", "fs", "snapshot", "-m", "initial")
 	snapshotID := extractSnapshotID(output)
 	if snapshotID == "" {
 		t.Fatalf("failed to extract snapshot id from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "snapshots")
+	output = runCLIForUser("", "fs", "snapshots")
 	if !strings.Contains(output, snapshotID) {
 		t.Fatalf("expected snapshots output to include %s, got: %s", snapshotID, output)
 	}
@@ -814,7 +828,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("rewrite local file: %v", err)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "write", remoteFile, "-f", localFile)
+	output = runCLIForUser("", "fs", "write", remoteFile, "-f", localFile)
 	if !strings.Contains(output, "Commit: ") {
 		t.Fatalf("expected second write commit output, got: %s", output)
 	}
@@ -823,12 +837,12 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("failed to extract fs commit from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
+	output = runCLIForUser("", "fs", "cat", remoteFile)
 	if output != "hello from fs cli v2\n" {
 		t.Fatalf("unexpected cat output after second write: %q", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "log", "--limit", "3")
+	output = runCLIForUser("", "fs", "log", "--limit", "3")
 	if !strings.Contains(output, "commit "+secondWriteCommit) {
 		t.Fatalf("expected fs log to include %s, got: %s", secondWriteCommit, output)
 	}
@@ -836,7 +850,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected fs log to show visible write path, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "show", secondWriteCommit)
+	output = runCLIForUser("", "fs", "show", secondWriteCommit)
 	if !strings.Contains(output, "MODIFY "+remoteFile) {
 		t.Fatalf("expected fs show to include modified visible path, got: %s", output)
 	}
@@ -844,7 +858,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected fs show patch output, got: %s", output)
 	}
 
-	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(testUsername), "write "+remoteFile, 2*time.Second, 50*time.Millisecond); err != nil {
+	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(username), "write "+remoteFile, 2*time.Second, 50*time.Millisecond); err != nil {
 		t.Fatalf("expected fs publish to create a merged changeset: %v", err)
 	}
 
@@ -852,26 +866,26 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
-	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", homeslice.IDForUsername(testUsername))
-	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(testUsername)) {
+	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
 		t.Fatalf("expected home slice checkout output, got: %s", output)
 	}
-	output = runCLIOrFail(t, checkoutDir, "changeset", "list", "--status", "merged")
+	output = runCLIForUser(checkoutDir, "changeset", "list", "--status", "merged")
 	if !strings.Contains(output, "write "+remoteFile) {
 		t.Fatalf("expected merged publish changeset in list output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "diff", snapshotID)
+	output = runCLIForUser("", "fs", "diff", snapshotID)
 	if !strings.Contains(output, "README.md") || !strings.Contains(output, "MODIFY") {
 		t.Fatalf("expected diff output for README.md, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "restore", snapshotID)
+	output = runCLIForUser("", "fs", "restore", snapshotID)
 	if !strings.Contains(output, "Restored to "+snapshotID) {
 		t.Fatalf("expected restore output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "fs", "cat", remoteFile)
+	output = runCLIForUser("", "fs", "cat", remoteFile)
 	if output != "hello from fs cli\n" {
 		t.Fatalf("unexpected cat output after restore: %q", output)
 	}
