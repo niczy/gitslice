@@ -55,6 +55,9 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 		if slice.GetIsRoot() || slice.GetSliceId() == "root_slice" {
 			t.Fatalf("expected root slice to be excluded, got %#v", slice)
 		}
+		if slice.GetSlug() == "" {
+			t.Fatalf("expected slice slug to be populated, got %#v", slice)
+		}
 	}
 }
 
@@ -76,5 +79,8 @@ func TestListSlicesWithoutUserReturnsRootSlice(t *testing.T) {
 	}
 	if !resp.GetSlices()[0].GetIsRoot() || resp.GetSlices()[0].GetSliceId() != "root_slice" {
 		t.Fatalf("expected root slice for anonymous user, got %#v", resp.GetSlices()[0])
+	}
+	if resp.GetSlices()[0].GetSlug() != "root" {
+		t.Fatalf("expected root slug, got %#v", resp.GetSlices()[0])
 	}
 }

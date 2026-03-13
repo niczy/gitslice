@@ -32,17 +32,23 @@ func ApplyConfig(ctx context.Context, st storage.Storage, cfg *SliceConfigFile) 
 		}
 	}
 
-	for sliceName, entry := range cfg.Slices {
+	for sliceRef, entry := range cfg.Slices {
 		envName := strings.TrimSpace(entry.Environment)
 		if envName == "" {
 			continue
 		}
-		slice, err := st.GetSliceByName(ctx, sliceName)
+		slice, err := st.GetSlice(ctx, sliceRef)
 		if err != nil {
-			if errors.Is(err, storage.ErrSliceNotFound) {
-				continue
+			if !errors.Is(err, storage.ErrSliceNotFound) {
+				return err
 			}
-			return err
+			slice, err = st.GetSliceBySlug(ctx, sliceRef)
+			if err != nil {
+				if errors.Is(err, storage.ErrSliceNotFound) {
+					continue
+				}
+				return err
+			}
 		}
 		if slice.Environment != envName {
 			if err := st.UpdateSliceEnvironment(ctx, slice.ID, envName); err != nil {

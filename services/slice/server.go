@@ -2028,6 +2028,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		Status:  "created",
 		Files:   selectedFiles,
 		Name:    sliceName,
+		Slug:    newSlice.Slug,
 	}, nil
 }
 
@@ -2061,6 +2062,7 @@ func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.Renam
 	return &slicev1.RenameSliceResponse{
 		SliceId: req.SliceId,
 		Name:    req.NewName,
+		Slug:    slice.Slug,
 	}, nil
 }
 
@@ -2097,6 +2099,44 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 		ParentSliceId: slice.ParentSlice,
 		Files:         slice.Files,
 		Environment:   slice.Environment,
+		Slug:          slice.Slug,
+	}, nil
+}
+
+func (s *sliceServiceServer) GetSliceBySlug(ctx context.Context, req *slicev1.GetSliceBySlugRequest) (*slicev1.GetSliceBySlugResponse, error) {
+	log.Printf("GetSliceBySlug called: slug=%s", req.Slug)
+
+	if strings.TrimSpace(req.Slug) == "" {
+		return nil, status.Error(codes.InvalidArgument, "slug cannot be empty")
+	}
+
+	slice, err := s.storage.GetSliceBySlug(ctx, strings.TrimSpace(req.Slug))
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found with slug: %s", req.Slug))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to look up slice: %v", err))
+	}
+
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
+	return &slicev1.GetSliceBySlugResponse{
+		SliceId:       slice.ID,
+		Name:          slice.Name,
+		Description:   slice.Description,
+		ParentSliceId: slice.ParentSlice,
+		Files:         slice.Files,
+		Environment:   slice.Environment,
+		Slug:          slice.Slug,
 	}, nil
 }
 

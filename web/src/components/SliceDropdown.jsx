@@ -41,8 +41,9 @@ export default function SliceDropdown({
     if (!query) return slices;
     return slices.filter((slice) => {
       const name = (slice.name || slice.slice_id || '').toLowerCase();
+      const slug = (slice.slug || '').toLowerCase();
       const description = (slice.description || '').toLowerCase();
-      return name.includes(query) || description.includes(query);
+      return name.includes(query) || slug.includes(query) || description.includes(query);
     });
   }, [filter, slices]);
 
@@ -121,7 +122,7 @@ export default function SliceDropdown({
                     {slice.is_root && <Badge variant="outline" className="slice-badge">root</Badge>}
                   </div>
                   <div className="slice-dropdown-item-meta">
-                    <span>{slice.slice_id}</span>
+                    <span>{slice.slug || slice.slice_id}</span>
                     {typeof slice.file_count === 'number' && (
                       <span>{slice.file_count} files</span>
                     )}

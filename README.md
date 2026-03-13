@@ -173,6 +173,8 @@ gs slice checkout home.<username>
 gs changeset list --status merged
 ```
 
+`gs slice create` keeps a free-form display name and also returns a stable slug. `gs slice checkout` accepts either the slice ID or that slug.
+
 ### Local checkout registry and cache
 
 Git Slice tracks local slice checkouts globally under `~/.gitslice`, along with the shared local object cache used by fast repeated checkouts.

@@ -25,7 +25,7 @@ func TestParseConfig(t *testing.T) {
   node20:
     display_name: "Node.js 20"
 slices:
-  auth-service:
+  alice/auth-service:
     environment: node20
 defaults:
   environment: node20
@@ -37,8 +37,8 @@ defaults:
 	if cfg.Environments["node20"].DisplayName != "Node.js 20" {
 		t.Fatalf("unexpected env display name: %#v", cfg.Environments["node20"])
 	}
-	if cfg.Slices["auth-service"].Environment != "node20" {
-		t.Fatalf("unexpected slice env: %#v", cfg.Slices["auth-service"])
+	if cfg.Slices["alice/auth-service"].Environment != "node20" {
+		t.Fatalf("unexpected slice env: %#v", cfg.Slices["alice/auth-service"])
 	}
 	if cfg.Defaults.Environment != "node20" {
 		t.Fatalf("unexpected defaults env: %#v", cfg.Defaults)
@@ -86,8 +86,8 @@ func TestApplyConfig(t *testing.T) {
 			"node20": {DisplayName: "Node.js 20"},
 		},
 		Slices: map[string]SliceEntry{
-			"auth-service":  {Environment: "node20"},
-			"missing-slice": {Environment: "node20"},
+			"alice/auth-service": {Environment: "node20"},
+			"missing-slice":      {Environment: "node20"},
 		},
 	}
 	if err := ApplyConfig(ctx, st, cfg); err != nil {
@@ -160,7 +160,7 @@ func TestApplyFromFileTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRootSlice failed: %v", err)
 	}
-	content := []byte("slices:\n  auth-service:\n    environment: node20\n")
+	content := []byte("slices:\n  alice/auth-service:\n    environment: node20\n")
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       root.ID + ":" + ConfigFilePath,
 		Path:     ConfigFilePath,
