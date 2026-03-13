@@ -124,8 +124,6 @@ func main() {
 		handleConflictCommand(ctx, cli, args[1:])
 	case "root":
 		handleRootSlice(ctx, cli)
-	case "fork":
-		handleForkSlice(ctx, cli, args[1:])
 	case "import":
 		handleImportCommand(ctx, cli, args[1:])
 	case "file":

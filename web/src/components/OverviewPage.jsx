@@ -79,7 +79,7 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
 
         <div className="landing-hero-stack">
           <div className="landing-command-ribbon" aria-hidden="true">
-            <span>fork a slice</span>
+            <span>create a slice</span>
             <span>checkout fast</span>
             <span>merge with changesets</span>
           </div>
@@ -90,9 +90,9 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
               <p>Focused local work without the full-download penalty</p>
             </div>
             <pre className="code-block">
-              <code>{`gs fork ui-refresh apps/web --parent root_slice
+              <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout ui-refresh
+gs slice checkout <slice-id>
 git status`}</code>
             </pre>
           </div>
@@ -140,9 +140,9 @@ gs fs snapshot -m "patch notice"`}</code>
               <p>From custom slice creation to merge</p>
             </div>
             <pre className="code-block">
-              <code>{`gs fork ui-refresh apps/web --parent root_slice
+              <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout ui-refresh
+gs slice checkout <slice-id>
 $EDITOR src/routes/settings.tsx
 gs changeset create --message "refresh settings page" --files src/routes/settings.tsx
 gs changeset merge <changeset-id>`}</code>

@@ -23,6 +23,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	switch args[0] {
+	case "create":
+		handleSliceCreate(ctx, cli, args[1:])
 	case "checkout", "clone":
 		handleSliceCheckout(ctx, cli, args[1:])
 	case "checkouts":
@@ -33,6 +35,53 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		log.Printf("Unknown slice command: %s", args[0])
 		printSliceHelp()
 	}
+}
+
+func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
+	if len(args) < 2 {
+		log.Println("Usage: gs slice create <name> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
+		return
+	}
+
+	sliceName := strings.TrimSpace(args[0])
+	if sliceName == "" {
+		log.Println("Slice name cannot be empty")
+		return
+	}
+
+	folderPaths := parseSliceFolderPaths(args[1])
+
+	fs := flag.NewFlagSet("slice create", flag.ExitOnError)
+	description := fs.String("description", "Focused slice", "Description of the new slice")
+	moreFolders := fs.String("folders", "", "Additional comma-separated folder paths to include in this slice")
+	fs.Parse(args[2:])
+
+	folderPaths = append(folderPaths, parseSliceFolderPaths(*moreFolders)...)
+	if len(folderPaths) == 0 {
+		log.Println("At least one folder path is required")
+		return
+	}
+
+	rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{})
+	if err != nil {
+		log.Fatalf("Failed to resolve published root slice: %v", err)
+	}
+
+	req := &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: rootResp.GetSliceId(),
+		FolderPath:    folderPaths[0],
+		FolderPaths:   folderPaths[1:],
+		Name:          sliceName,
+		Description:   *description,
+	}
+
+	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, req)
+	if err != nil {
+		log.Fatalf("Failed to create slice: %v", err)
+	}
+
+	fmt.Printf("Created slice: %s (id: %s)\n", resp.Name, resp.SliceId)
+	fmt.Printf("Status: %s\n", resp.Status)
 }
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
@@ -256,6 +305,28 @@ func handleSliceCheckouts(args []string) {
 		}
 		fmt.Printf("  Status: %s\n", status)
 	}
+}
+
+func parseSliceFolderPaths(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		cleaned := strings.TrimSpace(part)
+		if cleaned == "" {
+			continue
+		}
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
 }
 
 func assembleCheckoutFile(cache *CacheManager, fm *slicev1.FileMetadata, blockContents map[string][]byte) ([]byte, int64, error) {

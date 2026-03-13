@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -129,55 +128,6 @@ func handleRootSlice(ctx context.Context, cli *CLI) {
 	fmt.Printf("Commit Hash: %s\n", resp.CommitHash)
 }
 
-func handleForkSlice(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 2 {
-		log.Println("Usage: gs fork <name> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
-		return
-	}
-
-	sliceName := args[0]
-	folderPaths := parseForkFolderPaths(args[1])
-
-	fs := flag.NewFlagSet("fork", flag.ExitOnError)
-	parentID := fs.String("parent", "", "Parent slice ID")
-	description := fs.String("description", "Forked slice", "Description of the new slice")
-	moreFolders := fs.String("folders", "", "Additional comma-separated folder paths to include in this slice")
-	fs.Parse(args[2:])
-
-	folderPaths = append(folderPaths, parseForkFolderPaths(*moreFolders)...)
-	if len(folderPaths) == 0 {
-		log.Println("At least one folder path is required")
-		return
-	}
-
-	parentSliceID := *parentID
-	if parentSliceID == "" {
-		cfgSliceID, err := sliceIDFromConfig()
-		if err != nil {
-			log.Printf("Failed to read slice binding: %v", err)
-			log.Println("Please run 'gs init <slice-id>' first or specify parent with --parent")
-			return
-		}
-		parentSliceID = cfgSliceID
-	}
-
-	req := &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: parentSliceID,
-		FolderPath:    folderPaths[0],
-		FolderPaths:   folderPaths[1:],
-		Name:          sliceName,
-		Description:   *description,
-	}
-
-	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to fork slice: %v", err)
-	}
-
-	fmt.Printf("Created slice: %s (id: %s)\n", resp.Name, resp.SliceId)
-	fmt.Printf("Status: %s\n", resp.Status)
-}
-
 func handleRenameSlice(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 2 {
 		log.Println("Usage: gs slice rename <slice-id> <new-name>")
@@ -203,26 +153,4 @@ func handleRenameSlice(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	fmt.Printf("Renamed slice %s to %q\n", resp.SliceId, resp.Name)
-}
-
-func parseForkFolderPaths(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	seen := make(map[string]struct{}, len(parts))
-	for _, part := range parts {
-		cleaned := strings.TrimSpace(part)
-		if cleaned == "" {
-			continue
-		}
-		if _, exists := seen[cleaned]; exists {
-			continue
-		}
-		seen[cleaned] = struct{}{}
-		out = append(out, cleaned)
-	}
-	return out
 }
