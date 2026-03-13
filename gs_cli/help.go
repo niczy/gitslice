@@ -40,6 +40,7 @@ func printCacheHelp() {
 	fmt.Println("Usage: gs cache <command> [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  stats     Show local cache size and tracked checkout summary")
+	fmt.Println("  prune     Remove stale tracked checkout records")
 	fmt.Println("  clear     Remove cached objects and/or tracked checkout records")
 }
 

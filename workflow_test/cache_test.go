@@ -96,9 +96,9 @@ func TestCheckoutRegistryAndCacheCommands(t *testing.T) {
 		t.Fatalf("remove checkout dir: %v", err)
 	}
 
-	output = runCLIForUser("", "cache", "clear", "--stale-checkouts")
-	if !strings.Contains(output, "Removed stale checkout records: 1") {
-		t.Fatalf("expected stale checkout cleanup output, got: %s", output)
+	output = runCLIForUser("", "cache", "prune")
+	if !strings.Contains(output, "Pruned stale checkout records: 1") {
+		t.Fatalf("expected stale checkout prune output, got: %s", output)
 	}
 
 	output = runCLIForUser("", "slice", "checkouts")

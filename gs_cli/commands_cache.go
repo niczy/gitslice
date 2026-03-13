@@ -13,15 +13,20 @@ func handleCacheCommand(args []string) {
 		return
 	}
 
-	cache, err := NewCacheManager()
-	if err != nil {
-		log.Fatalf("Failed to initialize cache manager: %v", err)
-	}
-
 	switch args[0] {
 	case "stats":
+		cache, err := NewCacheManager()
+		if err != nil {
+			log.Fatalf("Failed to initialize cache manager: %v", err)
+		}
 		handleCacheStats(cache, args[1:])
+	case "prune":
+		handleCachePrune(args[1:])
 	case "clear":
+		cache, err := NewCacheManager()
+		if err != nil {
+			log.Fatalf("Failed to initialize cache manager: %v", err)
+		}
 		handleCacheClear(cache, args[1:])
 	default:
 		log.Printf("Unknown cache command: %s", args[0])
@@ -68,6 +73,17 @@ func handleCacheStats(cache *CacheManager, args []string) {
 			fmt.Printf("    Status: %s\n", status)
 		}
 	}
+}
+
+func handleCachePrune(args []string) {
+	fs := flag.NewFlagSet("cache prune", flag.ExitOnError)
+	fs.Parse(args)
+
+	removed, err := pruneStaleCheckoutRecords()
+	if err != nil {
+		log.Fatalf("Failed to prune stale checkout records: %v", err)
+	}
+	fmt.Printf("Pruned stale checkout records: %d\n", removed)
 }
 
 func handleCacheClear(cache *CacheManager, args []string) {
