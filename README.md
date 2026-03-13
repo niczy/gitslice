@@ -154,6 +154,25 @@ CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
 ./gs_cli --help
 ```
 
+### Remote filesystem workflow
+
+`gs fs` operates on your home slice using absolute paths like `/$USER/project/README.md`.
+
+```bash
+gs login <username>
+printf 'hello from cloud fs\n' | gs fs write /<username>/project/README.md
+gs fs cat /<username>/project/README.md
+gs fs snapshot -m "checkpoint"
+```
+
+Each `gs fs` mutation creates a home-slice commit and publishes it through the same slice changeset merge flow used by `gs changeset merge`. If you want the local workflow, check out the same home slice and inspect the merged publish history there:
+
+```bash
+mkdir my-home-slice && cd my-home-slice
+gs slice checkout home.<username>
+gs changeset list --status merged
+```
+
 Enable E2B-backed agent session runtime lifecycle in `core_server`:
 
 ```bash
