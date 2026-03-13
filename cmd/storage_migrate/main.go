@@ -35,6 +35,8 @@ func main() {
 	switch os.Args[1] {
 	case "backfill-native":
 		cmdBackfillNative(os.Args[2:])
+	case "repair-native-content":
+		cmdRepairNativeContent(os.Args[2:])
 	case "verify-native":
 		cmdVerifyNative(os.Args[2:])
 	case "drop-snapshot":
@@ -48,6 +50,7 @@ func main() {
 func usage() {
 	log.Printf("Usage:")
 	log.Printf("  storage_migrate backfill-native --dsn <dsn> --namespace <ns>")
+	log.Printf("  storage_migrate repair-native-content --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate verify-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate drop-snapshot --dsn <dsn> --namespace <ns>")
 }
@@ -142,6 +145,14 @@ type backfillStats struct {
 	OrgMemberships int
 }
 
+type repairStats struct {
+	ManifestsBackfilled   int
+	VersionedBackfilled   int
+	BlocksWritten         int
+	SliceEntrySizesFixed  int
+	ParentEntrySizesFixed int
+}
+
 func cmdBackfillNative(args []string) {
 	fs := flag.NewFlagSet("backfill-native", flag.ExitOnError)
 	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
@@ -184,6 +195,42 @@ func cmdBackfillNative(args []string) {
 		}
 		log.Printf("Dropped snapshot namespace=%s", *namespace)
 	}
+}
+
+func cmdRepairNativeContent(args []string) {
+	fs := flag.NewFlagSet("repair-native-content", flag.ExitOnError)
+	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
+	namespace := fs.String("namespace", "core", "Snapshot namespace (storage_state.namespace)")
+	fs.Parse(args)
+
+	ctx := context.Background()
+	pool := mustPool(ctx, *dsn)
+	defer pool.Close()
+
+	log.Printf("Loading legacy snapshot namespace=%s", *namespace)
+	snap, err := loadLegacySnapshot(ctx, pool, *namespace)
+	if err != nil {
+		log.Fatalf("load snapshot: %v", err)
+	}
+
+	log.Printf("Ensuring native schema is migrated")
+	if err := storage.RunMigrations(ctx, pool); err != nil {
+		log.Fatalf("RunMigrations: %v", err)
+	}
+
+	cfg := config.LoadConfig()
+	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("build object store: %v", err)
+	}
+	defer closeObjectStore()
+
+	stats, err := repairNativeContent(ctx, pool, objectStore, *namespace, snap)
+	if err != nil {
+		log.Fatalf("repair: %v", err)
+	}
+	log.Printf("Repair complete: manifests=%d versioned_manifests=%d blocks=%d slice_entry_sizes=%d parent_entry_sizes=%d",
+		stats.ManifestsBackfilled, stats.VersionedBackfilled, stats.BlocksWritten, stats.SliceEntrySizesFixed, stats.ParentEntrySizesFixed)
 }
 
 func cmdVerifyNative(args []string) {
@@ -310,6 +357,86 @@ func cloneLegacyContent(fc *models.FileContent, path string) *models.FileContent
 	return content
 }
 
+type legacySnapshotIndexes struct {
+	entriesByID    map[string]*models.DirectoryEntry
+	headSnapshots  map[string]*models.CommitSnapshot
+	versionedByKey map[string]*models.FileContent
+}
+
+func buildLegacySnapshotIndexes(snap *storage.LegacyPostgresSnapshot) legacySnapshotIndexes {
+	indexes := legacySnapshotIndexes{
+		entriesByID:    make(map[string]*models.DirectoryEntry, len(snap.Entries)),
+		headSnapshots:  make(map[string]*models.CommitSnapshot, len(snap.SliceMetadata)),
+		versionedByKey: make(map[string]*models.FileContent, len(snap.VersionedContent)),
+	}
+	for _, entry := range snap.Entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		indexes.entriesByID[entry.ID] = entry
+	}
+	for sliceID, meta := range snap.SliceMetadata {
+		if meta == nil || strings.TrimSpace(meta.HeadCommitHash) == "" {
+			continue
+		}
+		if snapshot := snap.CommitSnapshots[meta.HeadCommitHash]; snapshot != nil {
+			indexes.headSnapshots[sliceID] = snapshot
+		}
+	}
+	for hash, content := range snap.VersionedContent {
+		hash = strings.TrimSpace(hash)
+		if hash == "" || content == nil {
+			continue
+		}
+		indexes.versionedByKey[hash] = content
+	}
+	return indexes
+}
+
+func resolveLegacyCurrentContent(row entryRow, snap *storage.LegacyPostgresSnapshot, indexes legacySnapshotIndexes) *models.FileContent {
+	if row.typ != "file" {
+		return nil
+	}
+	if fc := cloneLegacyContent(snap.FileContents[row.id], row.path); fc != nil && len(fc.Content) > 0 {
+		return fc
+	}
+	if fc := cloneLegacyContent(snap.FileContents[entryID(row.sliceID, row.path)], row.path); fc != nil && len(fc.Content) > 0 {
+		return fc
+	}
+	if fc := cloneLegacyContent(snap.FileContents[row.path], row.path); fc != nil && len(fc.Content) > 0 {
+		return fc
+	}
+	if entry := indexes.entriesByID[row.id]; entry != nil && len(entry.Content) > 0 {
+		return &models.FileContent{
+			FileID:  row.id,
+			Path:    row.path,
+			Content: append([]byte(nil), entry.Content...),
+			Size:    int64(len(entry.Content)),
+			Hash:    strings.TrimSpace(entry.Hash),
+		}
+	}
+	if entry := indexes.entriesByID[entryID(row.sliceID, row.path)]; entry != nil && len(entry.Content) > 0 {
+		return &models.FileContent{
+			FileID:  entryID(row.sliceID, row.path),
+			Path:    row.path,
+			Content: append([]byte(nil), entry.Content...),
+			Size:    int64(len(entry.Content)),
+			Hash:    strings.TrimSpace(entry.Hash),
+		}
+	}
+	if snapshot := indexes.headSnapshots[row.sliceID]; snapshot != nil {
+		if hash := strings.TrimSpace(snapshot.Files[row.path]); hash != "" {
+			if vc := cloneLegacyContent(indexes.versionedByKey[hash], row.path); vc != nil && len(vc.Content) > 0 {
+				if vc.Hash == "" {
+					vc.Hash = hash
+				}
+				return vc
+			}
+		}
+	}
+	return nil
+}
+
 func persistLegacyManifest(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -386,6 +513,135 @@ func persistLegacyManifest(
 	}
 
 	return manifest.Hash, blocksWritten, nil
+}
+
+func repairNativeContent(ctx context.Context, pool *pgxpool.Pool, objectStore storage.ObjectStore, namespace string, snap *storage.LegacyPostgresSnapshot) (*repairStats, error) {
+	stats := &repairStats{}
+	if snap == nil {
+		return stats, fmt.Errorf("nil snapshot")
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	indexes := buildLegacySnapshotIndexes(snap)
+	writtenBlocks := make(map[string]struct{})
+	writtenVersioned := make(map[string]struct{})
+
+	rows, err := tx.Query(ctx, `
+		SELECT de.id, de.slice_id, de.path, de.type, de.parent_id, de.size,
+			EXISTS(
+				SELECT 1 FROM file_manifests fm
+				WHERE fm.slice_id = de.slice_id AND fm.path = de.path
+			) AS has_manifest
+		FROM directory_entries de
+		WHERE de.type = 'file'
+		ORDER BY de.slice_id, de.path
+	`)
+	if err != nil {
+		return nil, err
+	}
+
+	type repairRow struct {
+		entryRow
+		hasManifest bool
+	}
+
+	var repairRows []repairRow
+	for rows.Next() {
+		var row repairRow
+		if err := rows.Scan(&row.id, &row.sliceID, &row.path, &row.typ, &row.parentID, &row.size, &row.hasManifest); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		repairRows = append(repairRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	for _, row := range repairRows {
+		if row.hasManifest {
+			continue
+		}
+		content := resolveLegacyCurrentContent(row.entryRow, snap, indexes)
+		if content == nil {
+			continue
+		}
+		if _, blocksWritten, err := persistLegacyManifest(ctx, tx, objectStore, namespace, row.sliceID, row.path, content.Content, content.Hash, writtenBlocks, writtenVersioned); err != nil {
+			return nil, err
+		} else {
+			stats.ManifestsBackfilled++
+			stats.BlocksWritten += blocksWritten
+		}
+	}
+
+	stats.VersionedBackfilled = len(writtenVersioned)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE directory_entries AS de
+		SET size = fm.total_size,
+			updated_at = NOW()
+		FROM file_manifests AS fm
+		WHERE de.slice_id = fm.slice_id
+			AND de.path = fm.path
+			AND de.type = 'file'
+			AND COALESCE(de.size, 0) = 0
+			AND fm.total_size > 0
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.SliceEntrySizesFixed = int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx, `
+		UPDATE directory_entries AS child
+		SET size = pfm.total_size,
+			updated_at = NOW()
+		FROM slices AS s
+		JOIN file_manifests AS pfm
+			ON pfm.slice_id = s.parent_id
+		WHERE child.slice_id = s.id
+			AND child.path = pfm.path
+			AND child.type = 'file'
+			AND COALESCE(child.size, 0) = 0
+			AND COALESCE(s.parent_id, '') <> ''
+			AND pfm.total_size > 0
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.ParentEntrySizesFixed += int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx, `
+		UPDATE directory_entries AS child
+		SET size = parent.size,
+			updated_at = NOW()
+		FROM slices AS s
+		JOIN directory_entries AS parent
+			ON parent.slice_id = s.parent_id
+		WHERE child.slice_id = s.id
+			AND child.path = parent.path
+			AND child.type = 'file'
+			AND parent.type = 'file'
+			AND COALESCE(child.size, 0) = 0
+			AND COALESCE(s.parent_id, '') <> ''
+			AND parent.size > 0
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.ParentEntrySizesFixed += int(tag.RowsAffected())
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return stats, nil
 }
 
 func backfillNative(ctx context.Context, pool *pgxpool.Pool, objectStore storage.ObjectStore, namespace string, snap *storage.LegacyPostgresSnapshot) (*backfillStats, error) {

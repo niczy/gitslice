@@ -44,6 +44,44 @@ func mustWriteVersionedManifest(tb testing.TB, ctx context.Context, st storage.S
 	}
 }
 
+func mustAssembleCheckoutContent(tb testing.TB, resp *slicev1.CheckoutResponse, meta *slicev1.FileMetadata) []byte {
+	tb.Helper()
+	if meta == nil {
+		tb.Fatal("file metadata is nil")
+	}
+	for _, file := range resp.GetFiles() {
+		if file.GetFileId() == meta.GetFileId() {
+			return append([]byte(nil), file.GetContent()...)
+		}
+	}
+	blockPayloads := make(map[string][]byte, len(resp.GetBlocks()))
+	for _, block := range resp.GetBlocks() {
+		blockPayloads[block.GetHash()] = append([]byte(nil), block.GetContent()...)
+	}
+	manifest := &models.FileManifest{
+		Path:      meta.GetFileId(),
+		TotalSize: meta.GetSize(),
+		Hash:      meta.GetHash(),
+	}
+	for _, block := range meta.GetBlocks() {
+		manifest.Blocks = append(manifest.Blocks, models.Block{
+			Hash: block.GetHash(),
+			Size: int(block.GetSize()),
+		})
+	}
+	content, err := storage.AssembleFile(manifest, func(hash string) ([]byte, error) {
+		payload, ok := blockPayloads[hash]
+		if !ok {
+			return nil, storage.ErrEntryNotFound
+		}
+		return payload, nil
+	})
+	if err != nil {
+		tb.Fatalf("failed to assemble checkout content: %v", err)
+	}
+	return content
+}
+
 func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -379,8 +417,23 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 	if got := len(checkoutResp.GetManifest().GetFileMetadata()); got != 1 {
 		t.Fatalf("expected 1 checkout file, got %d", got)
 	}
-	if got, want := checkoutResp.GetManifest().GetFileMetadata()[0].GetPath(), filePath; got != want {
+	meta := checkoutResp.GetManifest().GetFileMetadata()[0]
+	if got, want := meta.GetPath(), filePath; got != want {
 		t.Fatalf("expected checkout path %q, got %q", want, got)
+	}
+	if got, want := meta.GetSize(), int64(len(content)); got != want {
+		t.Fatalf("expected checkout size %d, got %d", want, got)
+	}
+	if got := string(mustAssembleCheckoutContent(t, checkoutResp, meta)); got != string(content) {
+		t.Fatalf("expected checkout content %q, got %q", string(content), got)
+	}
+
+	childEntry, err := st.GetEntryByPath(ctx, createResp.GetSliceId(), filePath)
+	if err != nil {
+		t.Fatalf("GetEntryByPath child failed: %v", err)
+	}
+	if got, want := childEntry.Size, int64(len(content)); got != want {
+		t.Fatalf("expected hydrated child entry size %d, got %d", want, got)
 	}
 }
 
