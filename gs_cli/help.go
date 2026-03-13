@@ -18,6 +18,7 @@ func printHelp() {
 	fmt.Println("  import      Import external repositories")
 	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  fs          Remote home filesystem operations")
+	fmt.Println("  cache       Inspect and clean local checkout/cache state")
 	fmt.Println("  init        Initialize working directory")
 	fmt.Println("  status      Show working directory status")
 	fmt.Println("  log         Show slice commit history")
@@ -31,7 +32,15 @@ func printSliceHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID")
 	fmt.Println("  clone     Alias for checkout")
+	fmt.Println("  checkouts List globally tracked local slice checkouts")
 	fmt.Println("  rename    Rename a slice (update display name)")
+}
+
+func printCacheHelp() {
+	fmt.Println("Usage: gs cache <command> [options]")
+	fmt.Println("\nCommands:")
+	fmt.Println("  stats     Show local cache size and tracked checkout summary")
+	fmt.Println("  clear     Remove cached objects and/or tracked checkout records")
 }
 
 func printChangesetHelp() {

@@ -53,6 +53,15 @@ func main() {
 		return
 	}
 
+	if args[0] == "cache" {
+		handleCacheCommand(args[1:])
+		return
+	}
+	if args[0] == "slice" && len(args) > 1 && args[1] == "checkouts" {
+		handleSliceCheckouts(args[2:])
+		return
+	}
+
 	if *coreServerAddr != "" {
 		*accountServerAddr = *coreServerAddr
 		*sliceServerAddr = *coreServerAddr
@@ -123,6 +132,8 @@ func main() {
 		handleFileCommand(ctx, cli, args[1:])
 	case "fs":
 		handleFilesystemCommand(ctx, cli, authConfig, args[1:])
+	case "cache":
+		handleCacheCommand(args[1:])
 	default:
 		log.Printf("Unknown command: %s", args[0])
 		printHelp()

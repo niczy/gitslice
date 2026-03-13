@@ -173,6 +173,24 @@ gs slice checkout home.<username>
 gs changeset list --status merged
 ```
 
+### Local checkout registry and cache
+
+Git Slice tracks local slice checkouts globally under `~/.gitslice`, along with the shared local object cache used by fast repeated checkouts.
+
+```bash
+# Show globally tracked local checkouts and where they live
+gs slice checkouts
+
+# Show cache size, tracked checkout counts, and stale checkout records
+gs cache stats --checkouts
+
+# Remove dead checkout records after deleting worktrees manually
+gs cache clear --stale-checkouts
+
+# Reclaim disk by deleting cached objects
+gs cache clear --objects
+```
+
 Enable E2B-backed agent session runtime lifecycle in `core_server`:
 
 ```bash

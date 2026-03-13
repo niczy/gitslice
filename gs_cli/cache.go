@@ -7,6 +7,11 @@ import (
 	"sort"
 )
 
+type CacheStats struct {
+	ObjectCount int
+	TotalBytes  int64
+}
+
 // CacheManager coordinates the client-side global cache for slice objects.
 // Cached blobs are stored under ~/.gitslice/cache/objects/<hash>.
 type CacheManager struct {
@@ -38,6 +43,10 @@ func (c *CacheManager) objectPath(hash string) string {
 
 func (c *CacheManager) objectsDir() string {
 	return filepath.Join(c.root, "objects")
+}
+
+func (c *CacheManager) Root() string {
+	return c.root
 }
 
 // HasObject returns true if the cache already contains the blob for the given hash.
@@ -96,4 +105,32 @@ func (c *CacheManager) ListObjectHashes() ([]string, error) {
 	}
 	sort.Strings(hashes)
 	return hashes, nil
+}
+
+func (c *CacheManager) Stats() (CacheStats, error) {
+	entries, err := os.ReadDir(c.objectsDir())
+	if err != nil {
+		return CacheStats{}, err
+	}
+
+	stats := CacheStats{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return CacheStats{}, err
+		}
+		stats.ObjectCount++
+		stats.TotalBytes += info.Size()
+	}
+	return stats, nil
+}
+
+func (c *CacheManager) ClearObjects() error {
+	if err := os.RemoveAll(c.objectsDir()); err != nil {
+		return err
+	}
+	return os.MkdirAll(c.objectsDir(), 0o755)
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -24,6 +25,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	switch args[0] {
 	case "checkout", "clone":
 		handleSliceCheckout(ctx, cli, args[1:])
+	case "checkouts":
+		handleSliceCheckouts(args[1:])
 	case "rename":
 		handleRenameSlice(ctx, cli, args[1:])
 	default:
@@ -196,6 +199,62 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 
 	if cache != nil {
 		fmt.Printf("Cache hits: %d\n", atomic.LoadInt64(&cachedHits))
+	}
+
+	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
+		log.Printf("Warning: failed to register checkout path: %v", err)
+	}
+}
+
+func handleSliceCheckouts(args []string) {
+	fs := flag.NewFlagSet("slice checkouts", flag.ExitOnError)
+	filterSliceID := fs.String("slice", "", "Filter to one slice ID")
+	fs.Parse(args)
+
+	normalizedSliceID := ""
+	if strings.TrimSpace(*filterSliceID) != "" {
+		var err error
+		normalizedSliceID, err = normalizeSliceID(*filterSliceID)
+		if err != nil {
+			log.Fatalf("Invalid slice ID: %v", err)
+		}
+	}
+
+	records, err := listCheckoutRecords()
+	if err != nil {
+		log.Fatalf("Failed to read checkout registry: %v", err)
+	}
+
+	filtered := make([]CheckoutRecord, 0, len(records))
+	for _, record := range records {
+		if normalizedSliceID != "" && record.SliceID != normalizedSliceID {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+
+	fmt.Printf("Tracked checkouts: %d\n", len(filtered))
+	fmt.Printf("Unique slices: %d\n", countUniqueCheckoutSlices(filtered))
+	fmt.Printf("Stale records: %d\n", countStaleCheckoutRecords(filtered))
+	if len(filtered) == 0 {
+		return
+	}
+
+	fmt.Println()
+	for _, record := range filtered {
+		status := "active"
+		if checkoutRecordIsStale(record) {
+			status = "stale"
+		}
+		fmt.Printf("- %s\n", record.SliceID)
+		fmt.Printf("  Path: %s\n", record.Path)
+		if strings.TrimSpace(record.CommitHash) != "" {
+			fmt.Printf("  Commit: %s\n", record.CommitHash)
+		}
+		if strings.TrimSpace(record.UpdatedAt) != "" {
+			fmt.Printf("  Updated: %s\n", record.UpdatedAt)
+		}
+		fmt.Printf("  Status: %s\n", status)
 	}
 }
 

@@ -9,6 +9,7 @@ const DOC_NAV = [
   { id: 'cloud-fs', label: 'Cloud filesystem' },
   { id: 'custom-slices', label: 'Custom slices' },
   { id: 'changesets', label: 'Changesets' },
+  { id: 'local-cache', label: 'Local cache' },
   { id: 'web-app', label: 'Web app' },
   { id: 'auth', label: 'Auth' },
   { id: 'faq', label: 'FAQ' },
@@ -294,6 +295,46 @@ gs changeset merge <changeset-id>`}</code>
               Remote `gs fs` mutations also end up on the same publish model. They create slice history immediately, and
               publication flows through the same merge logic instead of a separate ad hoc sync path.
             </p>
+          </section>
+
+          <section id="local-cache" className="docs-section">
+            <Badge variant="secondary" className="eyebrow">Local cache</Badge>
+            <h2>Track checked-out slices globally and clean local cache state</h2>
+            <p>
+              Git Slice now keeps a global local registry of checked-out slices and their paths under your
+              <code>~/.gitslice</code> state. That makes it possible to answer two practical questions quickly: which
+              slices are checked out on this machine, and how much cached object data is still taking space.
+            </p>
+            <div className="docs-code-grid">
+              <article className="docs-code-card">
+                <div className="docs-code-card-head">
+                  <h3>Inspect global checkout state</h3>
+                  <p>See every tracked checkout path and the slice it belongs to.</p>
+                </div>
+                <pre className="code-block">
+                  <code>{`gs slice checkouts
+gs slice checkouts --slice home.$USER`}</code>
+                </pre>
+              </article>
+
+              <article className="docs-code-card">
+                <div className="docs-code-card-head">
+                  <h3>Inspect and clean cache state</h3>
+                  <p>Measure local cache usage, prune stale checkout records, or clear cached objects.</p>
+                </div>
+                <pre className="code-block">
+                  <code>{`gs cache stats --checkouts
+gs cache clear --stale-checkouts
+gs cache clear --objects`}</code>
+                </pre>
+              </article>
+            </div>
+            <ul className="docs-bullet-list">
+              <li><code>gs slice checkouts</code> reports how many checkouts exist globally and where they live.</li>
+              <li><code>gs cache stats</code> shows cached object count, cached bytes, tracked checkouts, and stale records.</li>
+              <li><code>gs cache clear --stale-checkouts</code> removes registry entries for deleted or invalid local worktrees.</li>
+              <li><code>gs cache clear --objects</code> wipes cached objects so you can reclaim disk when needed.</li>
+            </ul>
           </section>
 
           <section id="web-app" className="docs-section">
