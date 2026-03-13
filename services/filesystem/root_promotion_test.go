@@ -25,12 +25,13 @@ func TestHomeSlicePromotionPublishesAndDeletesFromRoot(t *testing.T) {
 	srv.promotionBatchWindow = 20 * time.Millisecond
 	homeID := homeslice.IDForUsername("tester")
 
-	if _, err := srv.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
+	writeResp, err := srv.WriteFiles(ctx, &filesystemv1.WriteFilesRequest{
 		WorkspaceId: homeID,
 		Files: []*filesystemv1.WriteFileInput{
 			{Path: "/tester/docs/readme.md", Content: []byte("published from home\n")},
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("WriteFiles failed: %v", err)
 	}
 
@@ -50,6 +51,23 @@ func TestHomeSlicePromotionPublishesAndDeletesFromRoot(t *testing.T) {
 	}
 	if got := string(rootFile.Content); got != "published from home\n" {
 		t.Fatalf("unexpected root file content: %q", got)
+	}
+	state, err := st.GetGlobalState(context.Background())
+	if err != nil {
+		t.Fatalf("get global state: %v", err)
+	}
+	if got, want := state.GlobalCommitHash, writeResp.GetCommitHash(); got != want {
+		t.Fatalf("expected global commit hash %q, got %q", want, got)
+	}
+	changesets, err := st.ListChangesets(context.Background(), homeID, nil, 10)
+	if err != nil {
+		t.Fatalf("list changesets: %v", err)
+	}
+	if len(changesets) != 1 {
+		t.Fatalf("expected one implicit promotion changeset, got %d", len(changesets))
+	}
+	if got, want := changesets[0].Status, models.ChangesetStatusMerged; got != want {
+		t.Fatalf("expected merged changeset status %v, got %v", want, got)
 	}
 
 	if _, err := srv.DeleteFile(ctx, &filesystemv1.DeleteFileRequest{
@@ -80,16 +98,19 @@ func TestHomeSlicePromotionBatchesBurstWrites(t *testing.T) {
 	srv := newFilesystemServiceServer(countingStorage)
 	srv.promotionBatchWindow = 100 * time.Millisecond
 	homeID := homeslice.IDForUsername("tester")
+	lastCommitHash := ""
 
 	for i := 0; i < 3; i++ {
 		filePath := fmt.Sprintf("/tester/burst/file-%d.txt", i)
-		if _, err := srv.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		resp, err := srv.WriteFile(ctx, &filesystemv1.WriteFileRequest{
 			WorkspaceId: homeID,
 			Path:        filePath,
 			Content:     []byte(fmt.Sprintf("burst-%d\n", i)),
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("WriteFile(%s) failed: %v", filePath, err)
 		}
+		lastCommitHash = resp.GetCommitHash()
 	}
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -103,6 +124,20 @@ func TestHomeSlicePromotionBatchesBurstWrites(t *testing.T) {
 	}
 	if got := countingStorage.counts["root_metadata"]; got != 1 {
 		t.Fatalf("expected one root metadata write, got %d", got)
+	}
+	state, err := countingStorage.GetGlobalState(context.Background())
+	if err != nil {
+		t.Fatalf("get global state: %v", err)
+	}
+	if got, want := state.GlobalCommitHash, lastCommitHash; got != want {
+		t.Fatalf("expected latest promoted commit %q, got %q", want, got)
+	}
+	changesets, err := countingStorage.ListChangesets(context.Background(), homeID, nil, 10)
+	if err != nil {
+		t.Fatalf("list changesets: %v", err)
+	}
+	if len(changesets) != 1 {
+		t.Fatalf("expected one implicit promotion changeset for the burst, got %d", len(changesets))
 	}
 }
 
