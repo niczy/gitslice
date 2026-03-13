@@ -1983,30 +1983,20 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		return nil, status.Error(codes.PermissionDenied, "not authorized for parent slice")
 	}
 
-	selectedFiles := make([]string, 0)
-	if len(folderPaths) > 0 {
-		selectedSet := make(map[string]struct{})
-		for _, folderPath := range folderPaths {
-			prefix := folderPath + "/"
-			for _, rawFileID := range parentSlice.Files {
-				fileID := common.CleanRelativePath(rawFileID)
-				if fileID == folderPath || strings.HasPrefix(fileID, prefix) {
-					selectedSet[fileID] = struct{}{}
-				}
-			}
-		}
-		for fileID := range selectedSet {
-			selectedFiles = append(selectedFiles, fileID)
-		}
-		sort.Strings(selectedFiles)
+	folderSelections := resolveRequestedFolderSelections(parentSlice, folderPaths)
+
+	parentEntries, err := s.collectSliceEntries(ctx, parentSlice.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enumerate parent slice entries: %v", err))
 	}
+	selectedFiles := collectSliceFilesForFolders(parentSlice, parentEntries, folderSelections)
 
 	newSlice := &models.Slice{
 		ID:           sliceID,
 		Name:         sliceName,
 		Description:  req.Description,
 		Files:        selectedFiles,
-		FolderMounts: buildSliceFolderMounts(folderPaths),
+		FolderMounts: buildSliceFolderMounts(folderSelections),
 		Owners:       []string{username},
 		CreatedBy:    username,
 		ParentSlice:  parentSlice.ID,
@@ -2176,15 +2166,93 @@ func collectRequestedFolderPaths(req *slicev1.CreateSliceFromFolderRequest) ([]s
 	return normalized, nil
 }
 
-func buildSliceFolderMounts(folderPaths []string) []models.SliceFolderMount {
+type sliceFolderSelection struct {
+	displayPath string
+	storedPath  string
+}
+
+func resolveRequestedFolderSelections(parentSlice *models.Slice, folderPaths []string) []sliceFolderSelection {
 	if len(folderPaths) == 0 {
 		return nil
 	}
 
-	mounts := make([]models.SliceFolderMount, 0, len(folderPaths))
-	usedAliases := make(map[string]struct{}, len(folderPaths))
-	for _, sourcePath := range folderPaths {
-		alias := sourcePath
+	selections := make([]sliceFolderSelection, 0, len(folderPaths))
+	seenStored := make(map[string]struct{}, len(folderPaths))
+	for _, displayPath := range folderPaths {
+		storedPath := common.SliceStoredPath(parentSlice, displayPath)
+		if storedPath == "" {
+			continue
+		}
+		if _, exists := seenStored[storedPath]; exists {
+			continue
+		}
+		seenStored[storedPath] = struct{}{}
+		selections = append(selections, sliceFolderSelection{
+			displayPath: displayPath,
+			storedPath:  storedPath,
+		})
+	}
+	return selections
+}
+
+func collectSliceFilesForFolders(parentSlice *models.Slice, entries []*models.DirectoryEntry, selections []sliceFolderSelection) []string {
+	if len(selections) == 0 {
+		return nil
+	}
+
+	selectedSet := make(map[string]struct{})
+	matchesSelection := func(rawPath string) bool {
+		cleaned := common.CleanRelativePath(rawPath)
+		if cleaned == "" {
+			return false
+		}
+		for _, selection := range selections {
+			if cleaned == selection.storedPath {
+				return true
+			}
+			if strings.HasPrefix(cleaned, selection.storedPath+"/") {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, entry := range entries {
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		if matchesSelection(entry.Path) {
+			selectedSet[common.CleanRelativePath(entry.Path)] = struct{}{}
+		}
+	}
+
+	for _, rawPath := range parentSlice.Files {
+		if matchesSelection(rawPath) {
+			selectedSet[common.CleanRelativePath(rawPath)] = struct{}{}
+		}
+	}
+
+	selectedFiles := make([]string, 0, len(selectedSet))
+	for fileID := range selectedSet {
+		if fileID == "" {
+			continue
+		}
+		selectedFiles = append(selectedFiles, fileID)
+	}
+	sort.Strings(selectedFiles)
+	return selectedFiles
+}
+
+func buildSliceFolderMounts(selections []sliceFolderSelection) []models.SliceFolderMount {
+	if len(selections) == 0 {
+		return nil
+	}
+
+	mounts := make([]models.SliceFolderMount, 0, len(selections))
+	usedAliases := make(map[string]struct{}, len(selections))
+	for _, selection := range selections {
+		sourcePath := selection.storedPath
+		alias := selection.displayPath
 		if alias == "" {
 			alias = path.Base(sourcePath)
 		}

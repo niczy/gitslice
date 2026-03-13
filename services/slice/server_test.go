@@ -326,6 +326,64 @@ func TestCreateSliceUsesFolderPathAsDefaultName(t *testing.T) {
 	}
 }
 
+func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "o/genesis/projects/repo/README.md"
+	content := []byte("repo readme")
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       "root_slice:" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: "root_slice",
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, "root_slice", filePath, content)
+
+	rootSlice, err := st.GetSlice(ctx, "root_slice")
+	if err != nil {
+		t.Fatalf("failed to load root slice: %v", err)
+	}
+	if got := len(rootSlice.Files); got != 0 {
+		t.Fatalf("expected prod-like empty root file index, got %d entries", got)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: "root_slice",
+		NewSliceId:    "entry-backed-slice",
+		Name:          "entry-backed-slice",
+		FolderPath:    "o/genesis/projects/repo",
+		Description:   "entry-backed root slice test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSliceFromFolder failed: %v", err)
+	}
+	if got, want := createResp.GetFiles(), []string{filePath}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected selected files %v, got %v", want, got)
+	}
+
+	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{
+		SliceId:    createResp.GetSliceId(),
+		CommitHash: "HEAD",
+	})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	if got := len(checkoutResp.GetManifest().GetFileMetadata()); got != 1 {
+		t.Fatalf("expected 1 checkout file, got %d", got)
+	}
+	if got, want := checkoutResp.GetManifest().GetFileMetadata()[0].GetPath(), filePath; got != want {
+		t.Fatalf("expected checkout path %q, got %q", want, got)
+	}
+}
+
 func TestRenameSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
