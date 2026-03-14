@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -37,6 +38,8 @@ func main() {
 		cmdBackfillNative(os.Args[2:])
 	case "repair-native-content":
 		cmdRepairNativeContent(os.Args[2:])
+	case "prune-broken-entries":
+		cmdPruneBrokenEntries(os.Args[2:])
 	case "verify-native":
 		cmdVerifyNative(os.Args[2:])
 	case "drop-snapshot":
@@ -51,6 +54,7 @@ func usage() {
 	log.Printf("Usage:")
 	log.Printf("  storage_migrate backfill-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate repair-native-content --dsn <dsn> --namespace <ns>")
+	log.Printf("  storage_migrate prune-broken-entries --dsn <dsn> --namespace <ns> [--dry-run]")
 	log.Printf("  storage_migrate verify-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate drop-snapshot --dsn <dsn> --namespace <ns>")
 }
@@ -153,6 +157,17 @@ type repairStats struct {
 	ParentEntrySizesFixed int
 }
 
+type pruneStats struct {
+	Candidates           int
+	BrokenFiles          int
+	AffectedSlices       int
+	FileIndexRowsDeleted int
+	FileEntriesDeleted   int
+	DirectoriesDeleted   int
+	SliceRowsUpdated     int
+	SliceMetadataUpdated int
+}
+
 func cmdBackfillNative(args []string) {
 	fs := flag.NewFlagSet("backfill-native", flag.ExitOnError)
 	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
@@ -231,6 +246,43 @@ func cmdRepairNativeContent(args []string) {
 	}
 	log.Printf("Repair complete: manifests=%d versioned_manifests=%d blocks=%d slice_entry_sizes=%d parent_entry_sizes=%d",
 		stats.ManifestsBackfilled, stats.VersionedBackfilled, stats.BlocksWritten, stats.SliceEntrySizesFixed, stats.ParentEntrySizesFixed)
+}
+
+func cmdPruneBrokenEntries(args []string) {
+	fs := flag.NewFlagSet("prune-broken-entries", flag.ExitOnError)
+	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
+	namespace := fs.String("namespace", "core", "Storage namespace")
+	dryRun := fs.Bool("dry-run", false, "Report broken entries without deleting them")
+	fs.Parse(args)
+
+	ctx := context.Background()
+	pool := mustPool(ctx, *dsn)
+	defer pool.Close()
+
+	log.Printf("Ensuring native schema is migrated")
+	if err := storage.RunMigrations(ctx, pool); err != nil {
+		log.Fatalf("RunMigrations: %v", err)
+	}
+
+	cfg := config.LoadConfig()
+	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("build object store: %v", err)
+	}
+	defer closeObjectStore()
+
+	native, err := storage.NewPostgresNativeStorage(ctx, *dsn, objectStore, *namespace)
+	if err != nil {
+		log.Fatalf("new native storage: %v", err)
+	}
+	defer native.Close()
+
+	stats, err := pruneBrokenEntries(ctx, pool, native, *dryRun)
+	if err != nil {
+		log.Fatalf("prune broken entries: %v", err)
+	}
+	log.Printf("Prune complete: candidates=%d broken_files=%d affected_slices=%d file_index_rows=%d file_entries=%d directories=%d slice_rows=%d slice_metadata_rows=%d dry_run=%t",
+		stats.Candidates, stats.BrokenFiles, stats.AffectedSlices, stats.FileIndexRowsDeleted, stats.FileEntriesDeleted, stats.DirectoriesDeleted, stats.SliceRowsUpdated, stats.SliceMetadataUpdated, *dryRun)
 }
 
 func cmdVerifyNative(args []string) {
@@ -642,6 +694,352 @@ func repairNativeContent(ctx context.Context, pool *pgxpool.Pool, objectStore st
 		return nil, err
 	}
 	return stats, nil
+}
+
+type pruneCandidate struct {
+	entryID string
+	sliceID string
+	path    string
+}
+
+type pruneSliceInfo struct {
+	parentID   string
+	headCommit string
+}
+
+func pruneBrokenEntries(ctx context.Context, pool *pgxpool.Pool, st storage.Storage, dryRun bool) (*pruneStats, error) {
+	stats := &pruneStats{}
+
+	sliceInfo, err := loadPruneSliceInfo(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates, err := loadPruneCandidates(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	stats.Candidates = len(candidates)
+	if len(candidates) == 0 {
+		return stats, nil
+	}
+
+	broken, err := filterBrokenCandidates(ctx, st, sliceInfo, candidates)
+	if err != nil {
+		return nil, err
+	}
+	stats.BrokenFiles = len(broken)
+	if len(broken) == 0 || dryRun {
+		stats.AffectedSlices = countAffectedPruneSlices(broken)
+		return stats, nil
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE prune_broken_entries (
+			entry_id TEXT PRIMARY KEY,
+			slice_id TEXT NOT NULL,
+			path TEXT NOT NULL
+		) ON COMMIT DROP
+	`); err != nil {
+		return nil, err
+	}
+
+	rows := make([][]any, 0, len(broken))
+	for _, row := range broken {
+		rows = append(rows, []any{row.entryID, row.sliceID, row.path})
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"prune_broken_entries"}, []string{"entry_id", "slice_id", "path"}, pgx.CopyFromRows(rows)); err != nil {
+		return nil, err
+	}
+
+	stats.AffectedSlices = countAffectedPruneSlices(broken)
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM file_slice_index f
+		USING prune_broken_entries p
+		WHERE f.file_id = p.entry_id
+			AND f.slice_id = p.slice_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.FileIndexRowsDeleted = int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx, `
+		DELETE FROM directory_entries d
+		USING prune_broken_entries p
+		WHERE d.slice_id = p.slice_id
+			AND d.path = p.path
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.FileEntriesDeleted = int(tag.RowsAffected())
+
+	for {
+		tag, err = tx.Exec(ctx, `
+			DELETE FROM directory_entries d
+			WHERE d.type = 'directory'
+				AND d.path <> ''
+				AND d.slice_id IN (SELECT DISTINCT slice_id FROM prune_broken_entries)
+				AND NOT EXISTS (
+					SELECT 1
+					FROM directory_entries c
+					WHERE c.slice_id = d.slice_id
+						AND c.parent_id = d.id
+				)
+		`)
+		if err != nil {
+			return nil, err
+		}
+		removed := int(tag.RowsAffected())
+		stats.DirectoriesDeleted += removed
+		if removed == 0 {
+			break
+		}
+	}
+
+	tag, err = tx.Exec(ctx, `
+		WITH affected AS (
+			SELECT DISTINCT slice_id FROM prune_broken_entries
+		),
+		agg AS (
+			SELECT a.slice_id,
+				COALESCE(jsonb_agg(to_jsonb(de.path) ORDER BY de.path), '[]'::jsonb) AS files
+			FROM affected a
+			LEFT JOIN directory_entries de
+				ON de.slice_id = a.slice_id
+				AND de.type = 'file'
+			GROUP BY a.slice_id
+		)
+		UPDATE slices s
+		SET files = agg.files,
+			updated_at = NOW()
+		FROM agg
+		WHERE s.id = agg.slice_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.SliceRowsUpdated = int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx, `
+		WITH affected AS (
+			SELECT DISTINCT slice_id FROM prune_broken_entries
+		),
+		filtered AS (
+			SELECT sm.slice_id, value AS path
+			FROM slice_metadata sm
+			JOIN affected a ON a.slice_id = sm.slice_id
+			CROSS JOIN LATERAL jsonb_array_elements_text(sm.modified_files) AS value
+			WHERE EXISTS (
+				SELECT 1
+				FROM directory_entries de
+				WHERE de.slice_id = sm.slice_id
+					AND de.path = value
+			)
+		),
+		agg AS (
+			SELECT a.slice_id,
+				COALESCE(jsonb_agg(to_jsonb(f.path) ORDER BY f.path), '[]'::jsonb) AS modified_files,
+				COUNT(f.path)::INT AS modified_files_count
+			FROM affected a
+			LEFT JOIN filtered f ON f.slice_id = a.slice_id
+			GROUP BY a.slice_id
+		)
+		UPDATE slice_metadata sm
+		SET modified_files = agg.modified_files,
+			modified_files_count = agg.modified_files_count,
+			last_modified = NOW()
+		FROM agg
+		WHERE sm.slice_id = agg.slice_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	stats.SliceMetadataUpdated = int(tag.RowsAffected())
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+func loadPruneSliceInfo(ctx context.Context, pool *pgxpool.Pool) (map[string]pruneSliceInfo, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT s.id, COALESCE(s.parent_id, ''), COALESCE(sm.head_commit_hash, '')
+		FROM slices s
+		LEFT JOIN slice_metadata sm ON sm.slice_id = s.id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := map[string]pruneSliceInfo{}
+	for rows.Next() {
+		var (
+			sliceID string
+			info    pruneSliceInfo
+		)
+		if err := rows.Scan(&sliceID, &info.parentID, &info.headCommit); err != nil {
+			return nil, err
+		}
+		result[sliceID] = info
+	}
+	return result, rows.Err()
+}
+
+func loadPruneCandidates(ctx context.Context, pool *pgxpool.Pool) ([]pruneCandidate, error) {
+	rows, err := pool.Query(ctx, `
+		WITH RECURSIVE ancestors AS (
+			SELECT id AS slice_id, parent_id AS ancestor_id
+			FROM slices
+			WHERE COALESCE(parent_id, '') <> ''
+			UNION ALL
+			SELECT a.slice_id, s.parent_id AS ancestor_id
+			FROM ancestors a
+			JOIN slices s ON s.id = a.ancestor_id
+			WHERE COALESCE(s.parent_id, '') <> ''
+		)
+		SELECT de.id, de.slice_id, de.path
+		FROM directory_entries de
+		WHERE de.type = 'file'
+			AND COALESCE(octet_length(de.content), 0) = 0
+			AND NOT EXISTS (
+				SELECT 1
+				FROM file_manifests fm
+				WHERE fm.slice_id = de.slice_id
+					AND fm.path = de.path
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM ancestors a
+				JOIN file_manifests fm
+					ON fm.slice_id = a.ancestor_id
+					AND fm.path = de.path
+				WHERE a.slice_id = de.slice_id
+			)
+		ORDER BY de.slice_id, de.path
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := []pruneCandidate{}
+	for rows.Next() {
+		var row pruneCandidate
+		if err := rows.Scan(&row.entryID, &row.sliceID, &row.path); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+func filterBrokenCandidates(ctx context.Context, st storage.Storage, sliceInfo map[string]pruneSliceInfo, candidates []pruneCandidate) ([]pruneCandidate, error) {
+	effectiveCommitCache := map[string]string{}
+	snapshotCache := map[string]*models.CommitSnapshot{}
+	versionedManifestCache := map[string]bool{}
+
+	broken := make([]pruneCandidate, 0, len(candidates))
+	for _, row := range candidates {
+		effectiveCommit := resolvePruneEffectiveCommit(row.sliceID, sliceInfo, effectiveCommitCache, map[string]bool{})
+		if effectiveCommit != "" {
+			snapshot, err := getPruneCommitSnapshot(ctx, st, effectiveCommit, snapshotCache)
+			if err != nil {
+				if !errors.Is(err, storage.ErrCommitNotFound) {
+					return nil, err
+				}
+			} else if snapshot != nil {
+				if hash := strings.TrimSpace(snapshot.Files[row.path]); hash != "" {
+					ok, err := pruneHasVersionedManifest(ctx, st, hash, versionedManifestCache)
+					if err != nil {
+						return nil, err
+					}
+					if ok {
+						continue
+					}
+				}
+			}
+		}
+		broken = append(broken, row)
+	}
+	return broken, nil
+}
+
+func getPruneCommitSnapshot(ctx context.Context, st storage.Storage, commitHash string, cache map[string]*models.CommitSnapshot) (*models.CommitSnapshot, error) {
+	if snapshot, ok := cache[commitHash]; ok {
+		return snapshot, nil
+	}
+	snapshot, err := st.GetCommitSnapshot(ctx, commitHash)
+	if err != nil {
+		return nil, err
+	}
+	cache[commitHash] = snapshot
+	return snapshot, nil
+}
+
+func pruneHasVersionedManifest(ctx context.Context, st storage.Storage, hash string, cache map[string]bool) (bool, error) {
+	if ok, exists := cache[hash]; exists {
+		return ok, nil
+	}
+	_, err := st.GetVersionedFileManifest(ctx, hash)
+	if err == nil {
+		cache[hash] = true
+		return true, nil
+	}
+	if errors.Is(err, storage.ErrEntryNotFound) {
+		cache[hash] = false
+		return false, nil
+	}
+	return false, err
+}
+
+func resolvePruneEffectiveCommit(sliceID string, sliceInfo map[string]pruneSliceInfo, cache map[string]string, visiting map[string]bool) string {
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return ""
+	}
+	if commit, ok := cache[sliceID]; ok {
+		return commit
+	}
+	if visiting[sliceID] {
+		return ""
+	}
+	info, ok := sliceInfo[sliceID]
+	if !ok {
+		return ""
+	}
+	visiting[sliceID] = true
+	commit := strings.TrimSpace(info.headCommit)
+	if info.parentID != "" && (commit == "" || strings.HasPrefix(commit, "init-")) {
+		commit = resolvePruneEffectiveCommit(info.parentID, sliceInfo, cache, visiting)
+	}
+	delete(visiting, sliceID)
+	cache[sliceID] = commit
+	return commit
+}
+
+func countAffectedPruneSlices(entries []pruneCandidate) int {
+	if len(entries) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, row := range entries {
+		if strings.TrimSpace(row.sliceID) == "" {
+			continue
+		}
+		seen[row.sliceID] = struct{}{}
+	}
+	return len(seen)
 }
 
 func backfillNative(ctx context.Context, pool *pgxpool.Pool, objectStore storage.ObjectStore, namespace string, snap *storage.LegacyPostgresSnapshot) (*backfillStats, error) {
