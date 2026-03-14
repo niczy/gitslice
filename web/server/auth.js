@@ -6,6 +6,7 @@ import Google from '@auth/core/providers/google';
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
+const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:8080';
 
 function buildUsernameFromProfile(profile) {
   const raw = [
@@ -238,6 +239,24 @@ export async function handleDevLoginRequest(request) {
   const username = String(payload?.username || '').trim();
   if (!USERNAME_PATTERN.test(username)) {
     return Response.json({ error: 'Invalid username' }, { status: 400 });
+  }
+
+  const loginResponse = await fetch(new URL('/v1/auth/login', gatewayTarget), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ username }),
+  });
+  if (!loginResponse.ok) {
+    const bodyText = await loginResponse.text();
+    return new Response(bodyText || JSON.stringify({ error: 'Unable to provision development account' }), {
+      status: loginResponse.status,
+      headers: {
+        'Content-Type': loginResponse.headers.get('content-type') || 'application/json',
+      },
+    });
   }
 
   return new Response(JSON.stringify({

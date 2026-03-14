@@ -336,6 +336,7 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
             <RepoBrowser
               slices={slices}
               currentSliceId={currentSliceId}
+              authUsername={username}
               onSliceChange={handleSliceChange}
               onNavigateToDiff={navigateToDiff}
               refreshHistoryToken={historyRefreshToken}
