@@ -32,4 +32,18 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
     await expect(page.getByTestId('topbar-profile')).toContainText('webtester1');
   });
+
+  test('stale username-style browser slice param resolves to the home slice', async ({ page }) => {
+    await page.goto('/login');
+    await page.getByLabel('Username').fill('webtester2');
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+
+    await page.goto('/browser?slice=webtester2');
+
+    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester2/i);
+    await expect(page.getByText(/Unable to load entries/i)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /📁.*\/webtester2$/i })).toBeVisible();
+  });
 });

@@ -62,6 +62,7 @@ const getPreviewMeta = (filePath, encodedContent) => {
 export default function RepoBrowser({
   slices,
   currentSliceId,
+  authUsername,
   onSliceChange,
   onNavigateToDiff,
   refreshHistoryToken,
@@ -108,23 +109,7 @@ export default function RepoBrowser({
   const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
 
-  const sliceId = currentSliceId;
-  const canLoad = sliceId !== '';
-
-  const currentSlice = useMemo(() => {
-    return slices.find((slice) => slice.slice_id === sliceId) || null;
-  }, [slices, sliceId]);
-
-  const currentSliceLabel = useMemo(() => {
-    return currentSlice?.name || sliceId;
-  }, [currentSlice, sliceId]);
-
-  const currentSliceDisplayName = useMemo(() => {
-    return getSliceDisplayName(currentSliceLabel);
-  }, [currentSliceLabel]);
-
-  const canShowSettings = canLoad && !currentSlice?.is_root;
-  const viewingSettings = activeView === 'settings' && canShowSettings;
+  const rawSliceId = currentSliceId;
 
   const resolveRequestedSliceId = useCallback((requestedSliceId) => {
     const requested = String(requestedSliceId || '').trim();
@@ -150,6 +135,37 @@ export default function RepoBrowser({
 
     return '';
   }, [slices]);
+
+  const sliceId = useMemo(() => {
+    if (!rawSliceId) {
+      return '';
+    }
+    return resolveRequestedSliceId(rawSliceId) || rawSliceId;
+  }, [rawSliceId, resolveRequestedSliceId]);
+
+  useEffect(() => {
+    if (!rawSliceId || sliceId === rawSliceId) {
+      return;
+    }
+    onSliceChange(sliceId);
+  }, [onSliceChange, rawSliceId, sliceId]);
+
+  const canLoad = sliceId !== '' && (sliceId === 'root_slice' || Boolean(String(authUsername || '').trim()));
+
+  const currentSlice = useMemo(() => {
+    return slices.find((slice) => slice.slice_id === sliceId) || null;
+  }, [slices, sliceId]);
+
+  const currentSliceLabel = useMemo(() => {
+    return currentSlice?.name || sliceId;
+  }, [currentSlice, sliceId]);
+
+  const currentSliceDisplayName = useMemo(() => {
+    return getSliceDisplayName(currentSliceLabel);
+  }, [currentSliceLabel]);
+
+  const canShowSettings = canLoad && !currentSlice?.is_root;
+  const viewingSettings = activeView === 'settings' && canShowSettings;
 
   const openFilesView = useCallback(() => {
     setActiveView('files');
@@ -242,6 +258,9 @@ export default function RepoBrowser({
     if (hasAppliedInitialSliceRef.current) {
       return;
     }
+    if (slicesLoading) {
+      return;
+    }
 
     if (!initialBrowserState?.slice) {
       hasAppliedInitialSliceRef.current = true;
@@ -258,7 +277,7 @@ export default function RepoBrowser({
       onSliceChange(resolvedSliceId);
     }
     hasAppliedInitialSliceRef.current = true;
-  }, [initialBrowserState, resolveRequestedSliceId, currentSliceId, onSliceChange]);
+  }, [initialBrowserState, resolveRequestedSliceId, currentSliceId, onSliceChange, slicesLoading]);
 
   // Reset tree when slice changes
   useEffect(() => {
