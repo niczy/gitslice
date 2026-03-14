@@ -732,6 +732,101 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	}
 }
 
+func TestSliceSyncUpdatesCurrentCheckout(t *testing.T) {
+	username := fmt.Sprintf("ssu%d", time.Now().UnixNano())
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	runCLIForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	remoteDir := fmt.Sprintf("/%s/slice-sync-%d", username, time.Now().UnixNano())
+	remoteFile := remoteDir + "/README.md"
+	remoteRemoved := remoteDir + "/stale.txt"
+
+	readmeSource := filepath.Join(t.TempDir(), "README.md")
+	staleSource := filepath.Join(t.TempDir(), "stale.txt")
+	if err := os.WriteFile(readmeSource, []byte("sync v1\n"), 0o600); err != nil {
+		t.Fatalf("write readme source: %v", err)
+	}
+	if err := os.WriteFile(staleSource, []byte("remove me\n"), 0o600); err != nil {
+		t.Fatalf("write stale source: %v", err)
+	}
+
+	runCLIForUser("", "fs", "mkdir", remoteDir)
+	runCLIForUser("", "fs", "write", remoteFile, "-f", readmeSource)
+	runCLIForUser("", "fs", "write", remoteRemoved, "-f", staleSource)
+
+	checkoutDir := filepath.Join(t.TempDir(), "checkout")
+	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout dir: %v", err)
+	}
+	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
+	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	localReadme := filepath.Join(checkoutDir, filepath.FromSlash(strings.TrimPrefix(remoteFile, "/")))
+	localRemoved := filepath.Join(checkoutDir, filepath.FromSlash(strings.TrimPrefix(remoteRemoved, "/")))
+	got, err := os.ReadFile(localReadme)
+	if err != nil {
+		t.Fatalf("read synced readme after checkout: %v", err)
+	}
+	if string(got) != "sync v1\n" {
+		t.Fatalf("unexpected initial checkout content: %q", string(got))
+	}
+	if _, err := os.Stat(localRemoved); err != nil {
+		t.Fatalf("expected stale file to exist before sync: %v", err)
+	}
+	if status := runGitOrFail(t, checkoutDir, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected clean checkout before remote updates, got %q", status)
+	}
+
+	if err := os.WriteFile(readmeSource, []byte("sync v2\n"), 0o600); err != nil {
+		t.Fatalf("rewrite readme source: %v", err)
+	}
+	runCLIForUser("", "fs", "write", remoteFile, "-f", readmeSource)
+	runCLIForUser("", "fs", "rm", remoteRemoved)
+	if status := runGitOrFail(t, checkoutDir, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected clean checkout before sync, got %q", status)
+	}
+
+	output = runCLIForUser(checkoutDir, "slice", "sync")
+	if !strings.Contains(output, "Synced slice: "+homeslice.IDForUsername(username)) {
+		t.Fatalf("expected sync output, got: %s", output)
+	}
+	if !strings.Contains(output, "Status: updated") {
+		t.Fatalf("expected updated sync status, got: %s", output)
+	}
+
+	got, err = os.ReadFile(localReadme)
+	if err != nil {
+		t.Fatalf("read synced readme after sync: %v", err)
+	}
+	if string(got) != "sync v2\n" {
+		t.Fatalf("unexpected synced content: %q", string(got))
+	}
+	if _, err := os.Stat(localRemoved); !os.IsNotExist(err) {
+		t.Fatalf("expected stale file to be removed after sync, err=%v", err)
+	}
+
+	latestMessage := runGitOrFail(t, checkoutDir, "log", "-1", "--pretty=%s")
+	if !strings.Contains(latestMessage, "gitslice sync") {
+		t.Fatalf("expected sync commit message, got %q", latestMessage)
+	}
+
+	output = runCLIForUser(checkoutDir, "slice", "sync")
+	if !strings.Contains(output, "Status: up to date") {
+		t.Fatalf("expected up-to-date sync status, got: %s", output)
+	}
+}
+
 func TestChangesetCreateRequiresMainBranch(t *testing.T) {
 	workdir := t.TempDir()
 	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())

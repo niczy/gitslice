@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -27,6 +28,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceCreate(ctx, cli, args[1:])
 	case "checkout", "clone":
 		handleSliceCheckout(ctx, cli, args[1:])
+	case "sync":
+		handleSliceSync(ctx, cli, args[1:])
 	case "checkouts":
 		handleSliceCheckouts(args[1:])
 	case "rename":
@@ -111,6 +114,11 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatal("Directory is not empty. Please checkout into an empty directory.")
 	}
 
+	resp, cache, err := fetchSliceCheckoutResponse(ctx, cli, sliceID, *commitHash)
+	if err != nil {
+		log.Fatalf("Failed to checkout slice: %v", err)
+	}
+
 	if err := os.MkdirAll(".gs", 0o755); err != nil {
 		log.Fatalf("Failed to create .gs directory: %v", err)
 	}
@@ -118,96 +126,9 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
-	// Call slice service
-	req := &slicev1.CheckoutRequest{
-		SliceId:    sliceID,
-		CommitHash: *commitHash,
-	}
-
-	cache, err := NewCacheManager()
+	cachedHits, err := materializeSliceCheckout(".", resp, cache, false)
 	if err != nil {
-		log.Printf("Warning: unable to initialize cache: %v", err)
-	}
-	if cache != nil {
-		knownHashes, err := cache.ListObjectHashes()
-		if err != nil {
-			log.Printf("Warning: unable to list cache objects: %v", err)
-		} else {
-			req.KnownHashes = knownHashes
-		}
-	}
-
-	resp, err := cli.sliceClient.CheckoutSlice(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to checkout slice: %v", err)
-	}
-
-	fileContents := make(map[string][]byte)
-	for _, file := range resp.Files {
-		fileContents[file.FileId] = file.Content
-	}
-	blockContents := make(map[string][]byte)
-	for _, block := range resp.Blocks {
-		blockContents[block.Hash] = block.Content
-		if cache != nil && block.Hash != "" {
-			if err := cache.StoreObject(block.Hash, block.Content); err != nil {
-				log.Printf("Failed to update cache block %s: %v", block.Hash, err)
-			}
-		}
-	}
-
-	var cachedHits int64
-	workerCount := checkoutWorkerCount(len(resp.Manifest.FileMetadata))
-	if workerCount > 0 {
-		runCheckoutJobs(workerCount, resp.Manifest.FileMetadata, func(fm *slicev1.FileMetadata) {
-			var content []byte
-
-			if cache != nil && fm.Hash != "" {
-				if data, err := cache.ReadObject(fm.Hash); err == nil {
-					content = data
-					atomic.AddInt64(&cachedHits, 1)
-				} else if !errors.Is(err, os.ErrNotExist) {
-					log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
-				}
-			}
-
-			if content == nil {
-				if data, hits, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
-					content = data
-					if hits > 0 {
-						atomic.AddInt64(&cachedHits, hits)
-					}
-				} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-					log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
-				}
-			}
-
-			if content == nil {
-				if data, ok := fileContents[fm.FileId]; ok {
-					content = data
-				}
-			}
-
-			if content == nil {
-				return
-			}
-
-			if cache != nil && fm.Hash != "" {
-				if err := cache.StoreObject(fm.Hash, content); err != nil {
-					log.Printf("Failed to update cache for %s: %v", fm.Path, err)
-				}
-			}
-
-			targetPath := filepath.Join(".", fm.Path)
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				log.Printf("Failed to prepare directories for %s: %v", fm.Path, err)
-				return
-			}
-
-			if err := os.WriteFile(targetPath, content, 0o644); err != nil {
-				log.Printf("Failed to write file %s: %v", fm.Path, err)
-			}
-		})
+		log.Fatalf("Failed to materialize checkout: %v", err)
 	}
 
 	createdRepo, err := ensureGitRepo(".")
@@ -250,11 +171,98 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	if cache != nil {
-		fmt.Printf("Cache hits: %d\n", atomic.LoadInt64(&cachedHits))
+		fmt.Printf("Cache hits: %d\n", cachedHits)
 	}
 
 	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
 		log.Printf("Warning: failed to register checkout path: %v", err)
+	}
+}
+
+func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
+	fs := flag.NewFlagSet("slice sync", flag.ExitOnError)
+	commitHash := fs.String("commit", "HEAD", "Commit hash to sync to")
+	parseFlagSetInterspersed(fs, args)
+	if fs.NArg() != 0 {
+		log.Println("Usage: gs slice sync [--commit <commit-hash>]")
+		return
+	}
+
+	sliceID, err := sliceIDFromConfig()
+	if err != nil {
+		log.Fatalf("Failed to read current slice binding: %v", err)
+	}
+
+	createdRepo, err := ensureGitRepo(".")
+	if err != nil {
+		log.Fatalf("Failed to initialize git repository: %v", err)
+	}
+	if createdRepo {
+		if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
+			log.Fatalf("Failed to switch to main branch: %v", err)
+		}
+	} else if err := requireMainBranch("."); err != nil {
+		log.Fatalf("Cannot sync slice: %v", err)
+	}
+
+	hasCommit, err := gitHasCommit(".")
+	if err != nil {
+		log.Fatalf("Failed to check git history: %v", err)
+	}
+	hasPendingChanges, err := gitHasPendingChanges(".")
+	if err != nil {
+		log.Fatalf("Failed to read git status: %v", err)
+	}
+	if hasPendingChanges {
+		log.Fatal("Cannot sync slice: working tree has local changes. Commit or clean the checkout first.")
+	}
+	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+		log.Fatalf("Failed to update .gitignore: %v", err)
+	}
+
+	resp, cache, err := fetchSliceCheckoutResponse(ctx, cli, sliceID, *commitHash)
+	if err != nil {
+		log.Fatalf("Failed to sync slice: %v", err)
+	}
+	cachedHits, err := materializeSliceCheckout(".", resp, cache, true)
+	if err != nil {
+		log.Fatalf("Failed to materialize synced slice: %v", err)
+	}
+
+	if _, err := runGitCommand(".", "add", "-A"); err != nil {
+		log.Fatalf("Failed to stage synced files: %v", err)
+	}
+	hasPendingChanges, err = gitHasPendingChanges(".")
+	if err != nil {
+		log.Fatalf("Failed to read git status: %v", err)
+	}
+
+	lastCommitMessage := ""
+	if hasCommit {
+		lastCommitMessage, err = gitLatestCommitMessage(".")
+		if err != nil {
+			log.Fatalf("Failed to read latest git commit message: %v", err)
+		}
+	}
+
+	status := "up to date"
+	if createdRepo || !hasCommit || hasPendingChanges || !strings.Contains(lastCommitMessage, resp.Manifest.CommitHash) {
+		if err := createSyncCommit(".", resp.Manifest.CommitHash); err != nil {
+			log.Fatalf("Failed to create sync commit: %v", err)
+		}
+		status = "updated"
+	}
+
+	fmt.Printf("Synced slice: %s\n", sliceID)
+	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
+	fmt.Printf("Files: %d\n", len(resp.Manifest.FileMetadata))
+	fmt.Printf("Status: %s\n", status)
+	if cache != nil {
+		fmt.Printf("Cache hits: %d\n", cachedHits)
+	}
+
+	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
+		log.Printf("Warning: failed to update checkout registry: %v", err)
 	}
 }
 
@@ -330,6 +338,211 @@ func parseSliceFolderPaths(raw string) []string {
 		out = append(out, cleaned)
 	}
 	return out
+}
+
+func fetchSliceCheckoutResponse(ctx context.Context, cli *CLI, sliceID, commitHash string) (*slicev1.CheckoutResponse, *CacheManager, error) {
+	req := &slicev1.CheckoutRequest{
+		SliceId:    sliceID,
+		CommitHash: commitHash,
+	}
+
+	cache, err := NewCacheManager()
+	if err != nil {
+		log.Printf("Warning: unable to initialize cache: %v", err)
+	}
+	if cache != nil {
+		knownHashes, err := cache.ListObjectHashes()
+		if err != nil {
+			log.Printf("Warning: unable to list cache objects: %v", err)
+		} else {
+			req.KnownHashes = knownHashes
+		}
+	}
+
+	resp, err := cli.sliceClient.CheckoutSlice(ctx, req)
+	if err != nil {
+		return nil, cache, err
+	}
+	return resp, cache, nil
+}
+
+func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (int64, error) {
+	if resp == nil || resp.GetManifest() == nil {
+		return 0, fmt.Errorf("missing checkout manifest")
+	}
+
+	fileContents := make(map[string][]byte)
+	explicitFiles := make(map[string]struct{}, len(resp.Files))
+	for _, file := range resp.Files {
+		if file == nil {
+			continue
+		}
+		fileContents[file.FileId] = file.Content
+		explicitFiles[file.FileId] = struct{}{}
+	}
+	blockContents := make(map[string][]byte)
+	for _, block := range resp.Blocks {
+		if block == nil {
+			continue
+		}
+		blockContents[block.Hash] = block.Content
+		if cache != nil && block.Hash != "" {
+			if err := cache.StoreObject(block.Hash, block.Content); err != nil {
+				log.Printf("Failed to update cache block %s: %v", block.Hash, err)
+			}
+		}
+	}
+
+	if pruneTracked {
+		if err := removeStaleTrackedCheckoutFiles(dir, resp.Manifest.FileMetadata); err != nil {
+			return 0, err
+		}
+	}
+
+	var cachedHits int64
+	workerCount := checkoutWorkerCount(len(resp.Manifest.FileMetadata))
+	if workerCount > 0 {
+		runCheckoutJobs(workerCount, resp.Manifest.FileMetadata, func(fm *slicev1.FileMetadata) {
+			if err := writeSliceCheckoutFile(dir, cache, fm, explicitFiles, fileContents, blockContents, &cachedHits); err != nil {
+				log.Printf("Failed to write %s: %v", fm.GetPath(), err)
+			}
+		})
+	}
+
+	if pruneTracked {
+		if err := removeEmptyCheckoutDirs(dir); err != nil {
+			return 0, err
+		}
+	}
+	return atomic.LoadInt64(&cachedHits), nil
+}
+
+func writeSliceCheckoutFile(
+	dir string,
+	cache *CacheManager,
+	fm *slicev1.FileMetadata,
+	explicitFiles map[string]struct{},
+	fileContents map[string][]byte,
+	blockContents map[string][]byte,
+	cachedHits *int64,
+) error {
+	if fm == nil {
+		return nil
+	}
+
+	var content []byte
+	if cache != nil && fm.Hash != "" {
+		if data, err := cache.ReadObject(fm.Hash); err == nil {
+			content = data
+			atomic.AddInt64(cachedHits, 1)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
+		}
+	}
+
+	if content == nil {
+		if data, hits, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
+			content = data
+			if hits > 0 {
+				atomic.AddInt64(cachedHits, hits)
+			}
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
+		}
+	}
+
+	if content == nil {
+		if data, ok := fileContents[fm.FileId]; ok {
+			content = data
+			if data == nil {
+				content = []byte{}
+			}
+		}
+	}
+
+	if content == nil {
+		if _, ok := explicitFiles[fm.FileId]; !ok {
+			return nil
+		}
+		content = []byte{}
+	}
+
+	if cache != nil && fm.Hash != "" {
+		if err := cache.StoreObject(fm.Hash, content); err != nil {
+			log.Printf("Failed to update cache for %s: %v", fm.Path, err)
+		}
+	}
+
+	targetPath := filepath.Join(dir, fm.Path)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(targetPath, content, 0o644)
+}
+
+func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) error {
+	trackedFiles, err := gitTrackedFiles(dir)
+	if err != nil {
+		return err
+	}
+	desired := make(map[string]struct{}, len(fileMetadata))
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		desired[filepath.Clean(meta.GetPath())] = struct{}{}
+	}
+	for _, tracked := range trackedFiles {
+		cleaned := filepath.Clean(tracked)
+		if cleaned == ".gitignore" {
+			continue
+		}
+		if strings.HasPrefix(cleaned, ".gs"+string(os.PathSeparator)) || cleaned == ".gs" {
+			continue
+		}
+		if _, ok := desired[cleaned]; ok {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, cleaned)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeEmptyCheckoutDirs(root string) error {
+	dirs := make([]string, 0)
+	err := filepath.Walk(root, func(current string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		if current == root {
+			return nil
+		}
+		base := filepath.Base(current)
+		if base == ".git" || base == ".gs" {
+			return filepath.SkipDir
+		}
+		dirs = append(dirs, current)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i]) > len(dirs[j])
+	})
+	for _, dir := range dirs {
+		if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if !errors.Is(err, os.ErrExist) && !strings.Contains(err.Error(), "directory not empty") {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func assembleCheckoutFile(cache *CacheManager, fm *slicev1.FileMetadata, blockContents map[string][]byte) ([]byte, int64, error) {

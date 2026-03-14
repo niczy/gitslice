@@ -32,6 +32,7 @@ func printSliceHelp() {
 	fmt.Println("  create    Create a focused slice from one or more published folders")
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug")
 	fmt.Println("  clone     Alias for checkout")
+	fmt.Println("  sync      Sync the current checked out slice in place")
 	fmt.Println("  checkouts List globally tracked local slice checkouts")
 	fmt.Println("  rename    Rename a slice (update display name)")
 }
