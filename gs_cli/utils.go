@@ -196,6 +196,17 @@ func createCheckoutCommit(dir, commitHash string) error {
 	return err
 }
 
+func createSyncCommit(dir, commitHash string) error {
+	message := "gitslice sync"
+	if commitHash != "" {
+		message = fmt.Sprintf("gitslice sync %s", commitHash)
+	}
+
+	_, err := runGitCommand(dir, "-c", "user.name=gitslice", "-c", "user.email=gitslice@local",
+		"commit", "--allow-empty", "-m", message)
+	return err
+}
+
 func gitHasCommit(dir string) (bool, error) {
 	_, err := runGitCommand(dir, "rev-parse", "--verify", "HEAD")
 	if err != nil {
@@ -214,6 +225,30 @@ func gitHasPendingChanges(dir string) (bool, error) {
 		return false, err
 	}
 	return output != "", nil
+}
+
+func gitTrackedFiles(dir string) ([]string, error) {
+	output, err := runGitCommand(dir, "ls-files")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(output) == "" {
+		return nil, nil
+	}
+	lines := strings.Split(output, "\n")
+	files := make([]string, 0, len(lines))
+	for _, line := range lines {
+		cleaned := strings.TrimSpace(line)
+		if cleaned == "" {
+			continue
+		}
+		files = append(files, filepath.Clean(cleaned))
+	}
+	return files, nil
+}
+
+func gitLatestCommitMessage(dir string) (string, error) {
+	return runGitCommand(dir, "log", "-1", "--pretty=%s")
 }
 
 func runGitCommand(dir string, args ...string) (string, error) {
