@@ -46,12 +46,12 @@ const COMMAND_MAP = [
   },
   {
     task: 'Create a focused local worktree',
-    command: 'gs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug>',
+    command: 'gs slice list\ngs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug>',
     note: 'Best for multi-file work, tests, refactors, and editor-heavy tasks.',
   },
   {
     task: 'Publish local work back to the shared tree',
-    command: 'gs changeset create --message "refresh settings page" --files src/routes/settings.tsx\ngs changeset merge <changeset-id>',
+    command: 'gs slice sync\ngs slice publish --message "refresh settings page" --files src/routes/settings.tsx\ngs changeset show',
     note: 'Use this when you are ready to review and publish local slice work.',
   },
 ];
@@ -236,6 +236,10 @@ git status`}</code>
                     <td><code>gs fs upload ./site /$USER/site</code></td>
                   </tr>
                   <tr>
+                    <td>Sync a directory in one command</td>
+                    <td><code>gs fs sync --direction push ./site /$USER/site</code></td>
+                  </tr>
+                  <tr>
                     <td>Batch several mutations</td>
                     <td><code>gs fs batch -f ops.jsonl</code></td>
                   </tr>
@@ -270,11 +274,21 @@ git status`}</code>
               <article className="docs-step">
                 <span>03</span>
                 <div>
-                  <h3>Work normally</h3>
-                  <p>Use your editor, tests, formatter, and `git status` shaped local workflow.</p>
+                  <h3>Sync and publish when ready</h3>
+                  <p>Use <code>gs slice sync</code> to refresh the worktree, <code>gs slice publish</code> to create or update the tracked changeset, and <code>gs changeset show</code> to inspect it.</p>
                 </div>
               </article>
             </div>
+            <pre className="code-block">
+              <code>{`gs slice list
+gs slice create ui-refresh apps/web
+mkdir ui-refresh && cd ui-refresh
+gs slice checkout <slice-id-or-slug>
+gs slice tree
+gs slice sync
+gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset show`}</code>
+            </pre>
           </section>
 
           <section id="changesets" className="docs-section">
@@ -287,9 +301,9 @@ git status`}</code>
             </p>
             <pre className="code-block">
               <code>{`$EDITOR src/routes/settings.tsx
-gs changeset create --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset list
-gs changeset merge <changeset-id>`}</code>
+gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset show
+gs changeset list --status merged`}</code>
             </pre>
             <p className="docs-note">
               Remote `gs fs` mutations also end up on the same publish model. They create slice history immediately, and
@@ -334,6 +348,7 @@ gs cache clear --objects`}</code>
               <li><code>gs cache stats</code> shows cached object count, cached bytes, tracked checkouts, and stale records.</li>
               <li><code>gs cache prune</code> removes registry entries for deleted or invalid local worktrees.</li>
               <li><code>gs cache clear --objects</code> wipes cached objects so you can reclaim disk when needed.</li>
+              <li><code>gs doctor</code> checks auth, current slice binding, global state, cache stats, and checkout health in one command.</li>
             </ul>
           </section>
 

@@ -32,6 +32,27 @@ type filesystemUploadInventory struct {
 	directories []string
 }
 
+func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	fs := flag.NewFlagSet("fs sync", flag.ExitOnError)
+	direction := fs.String("direction", "", "Sync direction: push or pull")
+	parseFlagSetInterspersed(fs, args)
+
+	if fs.NArg() != 2 {
+		log.Println("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path>")
+		log.Println("   or: gs fs sync --direction pull </absolute/path> <local-dir>")
+		return
+	}
+
+	switch strings.ToLower(strings.TrimSpace(*direction)) {
+	case "push":
+		handleFilesystemUpload(ctx, cli, authConfig, []string{fs.Arg(0), fs.Arg(1)})
+	case "pull":
+		handleFilesystemDownload(ctx, cli, authConfig, []string{fs.Arg(0), fs.Arg(1)})
+	default:
+		log.Fatal("fs sync requires --direction push or --direction pull")
+	}
+}
+
 func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	fs := flag.NewFlagSet("fs upload", flag.ExitOnError)
 	parseFlagSetInterspersed(fs, args)

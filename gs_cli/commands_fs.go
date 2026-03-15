@@ -61,6 +61,8 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		handleFilesystemShow(ctx, cli, authConfig, args[1:])
 	case "shell":
 		handleFilesystemShell(ctx, cli, authConfig, args[1:])
+	case "sync":
+		handleFilesystemSync(ctx, cli, authConfig, args[1:])
 	case "upload":
 		handleFilesystemUpload(ctx, cli, authConfig, args[1:])
 	case "download":

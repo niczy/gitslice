@@ -247,6 +247,42 @@ func gitTrackedFiles(dir string) ([]string, error) {
 	return files, nil
 }
 
+func gitChangedFiles(dir string) ([]string, error) {
+	output, err := runGitCommand(dir, "status", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(output) == "" {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{})
+	files := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if len(line) < 4 {
+			continue
+		}
+		pathSpec := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(pathSpec, " -> "); idx >= 0 {
+			pathSpec = strings.TrimSpace(pathSpec[idx+4:])
+		}
+		if pathSpec == "" {
+			continue
+		}
+		cleaned := filepath.Clean(pathSpec)
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		files = append(files, cleaned)
+	}
+	return files, nil
+}
+
 func gitLatestCommitMessage(dir string) (string, error) {
 	return runGitCommand(dir, "log", "-1", "--pretty=%s")
 }

@@ -132,6 +132,8 @@ func main() {
 		handleFilesystemCommand(ctx, cli, authConfig, args[1:])
 	case "cache":
 		handleCacheCommand(args[1:])
+	case "doctor":
+		handleDoctor(ctx, cli, authConfig, args[1:])
 	default:
 		log.Printf("Unknown command: %s", args[0])
 		printHelp()

@@ -908,6 +908,11 @@ func TestSliceSyncUpdatesCurrentCheckout(t *testing.T) {
 	if !strings.Contains(output, "Status: up to date") {
 		t.Fatalf("expected up-to-date sync status, got: %s", output)
 	}
+
+	output = runCLIForSlice(checkoutDir, "slice", "pull")
+	if !strings.Contains(output, "Status: up to date") {
+		t.Fatalf("expected pull alias to report up-to-date status, got: %s", output)
+	}
 }
 
 func TestChangesetCreateRequiresMainBranch(t *testing.T) {

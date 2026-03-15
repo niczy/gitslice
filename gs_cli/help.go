@@ -19,6 +19,7 @@ func printHelp() {
 	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  fs          Remote home filesystem operations")
 	fmt.Println("  cache       Inspect and clean local checkout/cache state")
+	fmt.Println("  doctor      Check auth, slice binding, cache, and service health")
 	fmt.Println("  init        Initialize working directory")
 	fmt.Println("  status      Show working directory status")
 	fmt.Println("  log         Show slice commit history")
@@ -29,11 +30,18 @@ func printHelp() {
 func printSliceHelp() {
 	fmt.Println("Usage: gs slice <command> [options]")
 	fmt.Println("\nCommands:")
+	fmt.Println("  list      List your slices")
 	fmt.Println("  create    Create a focused slice from one or more published folders")
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug")
 	fmt.Println("  clone     Alias for checkout")
+	fmt.Println("  pull      Alias for sync")
 	fmt.Println("  sync      Sync the current checked out slice in place")
+	fmt.Println("  publish   Create/update the tracked changeset and merge it")
+	fmt.Println("  tree      Print a slice file tree")
+	fmt.Println("  list-files Alias for tree")
+	fmt.Println("  diff      Show the local git diff for the current slice checkout")
 	fmt.Println("  checkouts List globally tracked local slice checkouts")
+	fmt.Println("  delete    Delete a custom slice")
 	fmt.Println("  rename    Rename a slice (update display name)")
 }
 
@@ -49,6 +57,7 @@ func printChangesetHelp() {
 	fmt.Println("Usage: gs changeset <command> [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  create    Create a new changeset from local modifications")
+	fmt.Println("  show      Show the tracked or specified changeset")
 	fmt.Println("  review    Review a changeset")
 	fmt.Println("  merge     Merge a changeset into the slice")
 	fmt.Println("  rebase    Rebase a changeset onto the latest slice head")
@@ -100,6 +109,7 @@ func printFilesystemHelp() {
 	fmt.Println("  diff         Show changes since a snapshot")
 	fmt.Println("  show         Show indexed file changes for a commit")
 	fmt.Println("  shell        Open an interactive home-slice shell")
+	fmt.Println("  sync         Sync a local directory to or from an absolute home path")
 	fmt.Println("  upload       Upload a local directory tree to an absolute home path")
 	fmt.Println("  download     Download an absolute home path to a local directory")
 }

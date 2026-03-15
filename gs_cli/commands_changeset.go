@@ -20,6 +20,8 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 	switch args[0] {
 	case "create":
 		handleChangesetCreate(ctx, cli, args[1:])
+	case "show":
+		handleChangesetShow(ctx, cli, args[1:])
 	case "review":
 		handleChangesetReview(ctx, cli, args[1:])
 	case "merge":
@@ -32,6 +34,37 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 		log.Printf("Unknown changeset command: %s", args[0])
 		printChangesetHelp()
 	}
+}
+
+func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
+	fs := flag.NewFlagSet("changeset show", flag.ExitOnError)
+	snapshotVersion := fs.Int("snapshot", 0, "Show a specific snapshot version")
+	includePatches := fs.Bool("patches", false, "Include inline patch text when available")
+	fs.Parse(args)
+
+	if fs.NArg() > 1 {
+		log.Println("Usage: gs changeset show [<changeset-id>] [--snapshot <version>] [--patches]")
+		return
+	}
+
+	changesetID, err := resolveChangesetIDForRead("")
+	if fs.NArg() == 1 {
+		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
+	}
+	if err != nil {
+		log.Printf("Failed to resolve changeset ID: %v", err)
+		return
+	}
+
+	resp, err := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+		ChangesetId:     changesetID,
+		SnapshotVersion: int32(*snapshotVersion),
+	})
+	if err != nil {
+		log.Fatalf("Failed to show changeset: %v", err)
+	}
+
+	printChangesetReview(resp, *includePatches)
 }
 
 func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
@@ -107,22 +140,26 @@ func resolveChangesetIDForCreate(explicit string) (string, bool, error) {
 }
 
 func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		log.Println("Usage: gs changeset review <changeset-id>")
+	changesetID, err := resolveChangesetIDForRead("")
+	switch len(args) {
+	case 0:
+	case 1:
+		changesetID, err = resolveChangesetIDForRead(args[0])
+	default:
+		log.Println("Usage: gs changeset review [<changeset-id>]")
+		return
+	}
+	if err != nil {
+		log.Printf("Failed to resolve changeset ID: %v", err)
 		return
 	}
 
-	req := &slicev1.ReviewChangesetRequest{ChangesetId: args[0]}
-	resp, err := cli.sliceClient.ReviewChangeset(ctx, req)
+	resp, err := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: changesetID})
 	if err != nil {
 		log.Fatalf("Failed to review changeset: %v", err)
 	}
 
-	fmt.Printf("Changeset: %s\n", resp.Changeset.GetChangesetId())
-	fmt.Printf("Status: %s\n", resp.ReviewStatus.String())
-	if resp.Diff != nil {
-		fmt.Printf("Files changed: %d\n", resp.Diff.FilesAdded+resp.Diff.FilesModified+resp.Diff.FilesDeleted)
-	}
+	printChangesetReview(resp, false)
 }
 
 func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
@@ -217,5 +254,81 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Found %d changeset(s) for slice %s\n", len(resp.Changesets), sliceID)
 	for _, cs := range resp.Changesets {
 		fmt.Printf("- %s [%s] %s\n", cs.ChangesetId, cs.Status.String(), cs.Message)
+	}
+}
+
+func resolveChangesetIDForRead(explicit string) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		return explicit, nil
+	}
+	tracked, err := readTrackedChangesetIDFromConfig()
+	if err != nil {
+		return "", err
+	}
+	tracked = strings.TrimSpace(tracked)
+	if tracked == "" {
+		return "", fmt.Errorf("no tracked changeset; pass an explicit changeset ID")
+	}
+	return tracked, nil
+}
+
+func printChangesetReview(resp *slicev1.ReviewChangesetResponse, includePatches bool) {
+	if resp == nil {
+		fmt.Println("No changeset review response")
+		return
+	}
+
+	changeset := resp.GetChangeset()
+	changesetID := ""
+	if changeset != nil {
+		changesetID = changeset.GetChangesetId()
+	}
+	fmt.Printf("Changeset: %s\n", changesetID)
+	fmt.Printf("Status: %s\n", resp.GetReviewStatus().String())
+	if changeset != nil {
+		fmt.Printf("Slice: %s\n", changeset.GetSliceId())
+		if changeset.GetMessage() != "" {
+			fmt.Printf("Message: %s\n", changeset.GetMessage())
+		}
+	}
+	if snapshot := resp.GetSnapshot(); snapshot != nil {
+		fmt.Printf("Snapshot: v%d %s\n", snapshot.GetVersion(), snapshot.GetHash())
+	}
+	if diff := resp.GetDiff(); diff != nil {
+		fmt.Printf(
+			"Files: +%d ~%d -%d\n",
+			diff.GetFilesAdded(),
+			diff.GetFilesModified(),
+			diff.GetFilesDeleted(),
+		)
+		fmt.Printf("Lines: +%d -%d\n", diff.GetLinesAdded(), diff.GetLinesRemoved())
+	}
+	if warnings := resp.GetWarnings(); len(warnings) > 0 {
+		fmt.Println("Warnings:")
+		for _, warning := range warnings {
+			fmt.Printf("- %s\n", warning)
+		}
+	}
+	if len(resp.GetChanges()) == 0 {
+		return
+	}
+
+	fmt.Println("Changes:")
+	for _, change := range resp.GetChanges() {
+		path := change.GetPath()
+		if change.GetOldPath() != "" && change.GetOldPath() != change.GetPath() {
+			path = fmt.Sprintf("%s -> %s", change.GetOldPath(), change.GetPath())
+		}
+		fmt.Printf(
+			"- [%s] %s (+%d -%d)\n",
+			change.GetChangeType().String(),
+			path,
+			change.GetLinesAdded(),
+			change.GetLinesDeleted(),
+		)
+		if includePatches && strings.TrimSpace(change.GetPatch()) != "" {
+			fmt.Println(change.GetPatch())
+		}
 	}
 }

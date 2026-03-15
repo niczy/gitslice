@@ -24,14 +24,24 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	switch args[0] {
+	case "list":
+		handleSliceList(ctx, cli, args[1:])
 	case "create":
 		handleSliceCreate(ctx, cli, args[1:])
 	case "checkout", "clone":
 		handleSliceCheckout(ctx, cli, args[1:])
-	case "sync":
+	case "sync", "pull":
 		handleSliceSync(ctx, cli, args[1:])
+	case "publish":
+		handleSlicePublish(ctx, cli, args[1:])
+	case "tree", "list-files":
+		handleSliceTree(ctx, cli, args[1:])
+	case "diff":
+		handleSliceDiff(args[1:])
 	case "checkouts":
 		handleSliceCheckouts(args[1:])
+	case "delete":
+		handleSliceDelete(ctx, cli, args[1:])
 	case "rename":
 		handleRenameSlice(ctx, cli, args[1:])
 	default:

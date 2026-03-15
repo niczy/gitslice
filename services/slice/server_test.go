@@ -3,16 +3,20 @@ package sliceservice
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 const statusFilterAll = slicev1.ChangesetStatus(-1)
@@ -472,6 +476,87 @@ func TestRenameSlice(t *testing.T) {
 	}
 	if updated.Slug != "tester/old-name" {
 		t.Fatalf("stored slug should stay stable, got %q", updated.Slug)
+	}
+}
+
+func TestDeleteSliceRemovesCustomSlice(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "sl-delete-test", Name: "delete-me", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.DeleteSlice(ctx, &slicev1.DeleteSliceRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("DeleteSlice failed: %v", err)
+	}
+	if resp.GetStatus() != "deleted" {
+		t.Fatalf("expected deleted status, got %q", resp.GetStatus())
+	}
+	if resp.GetSlug() != "tester/delete-me" {
+		t.Fatalf("expected slug %q, got %q", "tester/delete-me", resp.GetSlug())
+	}
+	if _, err := st.GetSlice(ctx, slice.ID); !errors.Is(err, storage.ErrSliceNotFound) {
+		t.Fatalf("expected deleted slice to be gone, got err=%v", err)
+	}
+}
+
+func TestDeleteSliceRejectsHomeSlice(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(context.Background()); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester"); err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	_, err := srv.DeleteSlice(ctx, &slicev1.DeleteSliceRequest{SliceId: homeslice.IDForUsername("tester")})
+	if err == nil {
+		t.Fatal("expected home slice deletion to fail")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected failed precondition, got %v", status.Code(err))
+	}
+}
+
+func TestDeleteSliceRequiresForceForOpenChangesets(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "sl-delete-open", Name: "open-work", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	if err := st.CreateChangeset(ctx, &models.Changeset{
+		ID:             "cs-open",
+		Hash:           "hash-open",
+		SliceID:        slice.ID,
+		BaseCommitHash: "base-1",
+		ModifiedFiles:  []string{"README.md"},
+		Status:         models.ChangesetStatusPending,
+		Author:         "tester",
+		Message:        "pending",
+		CreatedAt:      time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	srv := NewService(st)
+	_, err := srv.DeleteSlice(ctx, &slicev1.DeleteSliceRequest{SliceId: slice.ID})
+	if err == nil {
+		t.Fatal("expected delete without force to fail")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected failed precondition, got %v", status.Code(err))
+	}
+
+	if _, err := srv.DeleteSlice(ctx, &slicev1.DeleteSliceRequest{SliceId: slice.ID, Force: true}); err != nil {
+		t.Fatalf("forced DeleteSlice failed: %v", err)
 	}
 }
 

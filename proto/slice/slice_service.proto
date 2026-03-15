@@ -73,6 +73,13 @@ service SliceService {
   // Rename a slice (update display name)
   rpc RenameSlice(RenameSliceRequest) returns (RenameSliceResponse);
 
+  // Delete a custom slice.
+  rpc DeleteSlice(DeleteSliceRequest) returns (DeleteSliceResponse) {
+    option (google.api.http) = {
+      delete: "/v1/slices/{slice_id}"
+    };
+  }
+
   // Get slice info by display name
   rpc GetSliceByName(GetSliceByNameRequest) returns (GetSliceByNameResponse);
 
@@ -384,6 +391,19 @@ message RenameSliceResponse {
   string slice_id = 1;
   string name = 2;
   string slug = 3;
+}
+
+// Request to delete a custom slice.
+message DeleteSliceRequest {
+  string slice_id = 1;
+  bool force = 2;
+}
+
+// Response for slice deletion.
+message DeleteSliceResponse {
+  string slice_id = 1;
+  string slug = 2;
+  string status = 3;
 }
 
 // Request to get a slice by display name
