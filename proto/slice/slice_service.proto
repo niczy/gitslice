@@ -121,6 +121,8 @@ message FileMetadata {
   string hash = 4;
   string content_url = 5;
   repeated FileBlockRef blocks = 6;
+  bool executable = 7;
+  string symlink_target = 8;
 }
 
 message FileContent {

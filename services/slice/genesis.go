@@ -103,19 +103,42 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 
 		slicePath := common.NormalizeSlicePath(fp)
 		fullPath := filepath.Join(repoRoot, fp)
-		content, err := os.ReadFile(fullPath)
+		info, err := os.Lstat(fullPath)
 		if err != nil {
-			log.Printf("Warning: failed to read file %s: %v", fp, err)
+			log.Printf("Warning: failed to stat file %s: %v", fp, err)
 			continue
+		}
+		var (
+			content       []byte
+			executable    bool
+			symlinkTarget string
+		)
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(fullPath)
+			if err != nil {
+				log.Printf("Warning: failed to read symlink %s: %v", fp, err)
+				continue
+			}
+			symlinkTarget = target
+			content = []byte(target)
+		} else {
+			content, err = os.ReadFile(fullPath)
+			if err != nil {
+				log.Printf("Warning: failed to read file %s: %v", fp, err)
+				continue
+			}
+			executable = info.Mode()&0o111 != 0
 		}
 
 		fileEntry := &models.DirectoryEntry{
-			ID:       common.GenerateEntryID(sliceID, slicePath),
-			Path:     slicePath,
-			Type:     "file",
-			ParentID: sliceID,
-			Content:  content,
-			Size:     int64(len(content)),
+			ID:            common.GenerateEntryID(sliceID, slicePath),
+			Path:          slicePath,
+			Type:          "file",
+			ParentID:      sliceID,
+			Content:       content,
+			Size:          int64(len(content)),
+			Executable:    executable,
+			SymlinkTarget: symlinkTarget,
 		}
 		if err := s.storage.AddEntry(ctx, fileEntry); err != nil {
 			log.Printf("Warning: failed to add file entry %s: %v", slicePath, err)
@@ -125,7 +148,7 @@ func (s *sliceServiceServer) PopulateGenesisFromGit(ctx context.Context) error {
 			log.Printf("Warning: failed to add file %s to root slice: %v", slicePath, err)
 			continue
 		}
-		if _, err := storage.WriteSliceFileManifest(ctx, s.storage, sliceID, slicePath, content); err != nil {
+		if _, err := storage.WriteSliceFileManifestWithMetadata(ctx, s.storage, sliceID, slicePath, content, executable, symlinkTarget); err != nil {
 			log.Printf("Warning: failed to store content for %s: %v", slicePath, err)
 			continue
 		}

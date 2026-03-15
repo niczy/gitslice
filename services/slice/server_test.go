@@ -30,6 +30,15 @@ func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Stora
 	return manifest.Hash
 }
 
+func mustWriteSliceManifestWithMetadata(tb testing.TB, ctx context.Context, st storage.Storage, sliceID, filePath string, content []byte, executable bool, symlinkTarget string) string {
+	tb.Helper()
+	manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, st, sliceID, filePath, content, executable, symlinkTarget)
+	if err != nil {
+		tb.Fatalf("WriteSliceFileManifestWithMetadata failed: %v", err)
+	}
+	return manifest.Hash
+}
+
 func mustWriteVersionedManifest(tb testing.TB, ctx context.Context, st storage.Storage, filePath, hash string, content []byte) {
 	tb.Helper()
 	blocks, payloads := storage.ChunkFile(content, storage.DefaultFileBlockSize)
@@ -214,6 +223,71 @@ func TestCheckoutSliceOmitsPayloadWhenFileHashKnown(t *testing.T) {
 	}
 	if len(resp.GetFiles()) != 0 {
 		t.Fatalf("expected no fallback file payloads, got %d", len(resp.GetFiles()))
+	}
+}
+
+func TestCheckoutSliceIncludesFileMetadata(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-checkout-metadata", Name: "slice-checkout-metadata", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	scriptPath := "bin/run.sh"
+	scriptContent := []byte("#!/bin/sh\necho hi\n")
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:         slice.ID + ":" + scriptPath,
+		Path:       scriptPath,
+		Type:       "file",
+		ParentID:   slice.ID,
+		Size:       int64(len(scriptContent)),
+		Executable: true,
+	}); err != nil {
+		t.Fatalf("AddEntry script failed: %v", err)
+	}
+	mustWriteSliceManifestWithMetadata(t, ctx, st, slice.ID, scriptPath, scriptContent, true, "")
+	if err := st.AddFileToSlice(ctx, scriptPath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice script failed: %v", err)
+	}
+
+	linkPath := "bin/current"
+	linkTarget := "bin/run.sh"
+	linkContent := []byte(linkTarget)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:            slice.ID + ":" + linkPath,
+		Path:          linkPath,
+		Type:          "file",
+		ParentID:      slice.ID,
+		Size:          int64(len(linkContent)),
+		SymlinkTarget: linkTarget,
+	}); err != nil {
+		t.Fatalf("AddEntry symlink failed: %v", err)
+	}
+	mustWriteSliceManifestWithMetadata(t, ctx, st, slice.ID, linkPath, linkContent, false, linkTarget)
+	if err := st.AddFileToSlice(ctx, linkPath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice symlink failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+
+	byPath := map[string]*slicev1.FileMetadata{}
+	for _, meta := range resp.GetManifest().GetFileMetadata() {
+		byPath[meta.GetPath()] = meta
+	}
+	if !byPath[scriptPath].GetExecutable() {
+		t.Fatalf("expected executable metadata for %s", scriptPath)
+	}
+	if got := byPath[linkPath].GetSymlinkTarget(); got != linkTarget {
+		t.Fatalf("expected symlink target %q, got %q", linkTarget, got)
+	}
+	if got := string(mustAssembleCheckoutContent(t, resp, byPath[linkPath])); got != linkTarget {
+		t.Fatalf("expected symlink content %q, got %q", linkTarget, got)
 	}
 }
 

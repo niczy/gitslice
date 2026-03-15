@@ -626,14 +626,16 @@ func (s *postgresNativeTxView) AddEntry(ctx context.Context, entry *models.Direc
 	}
 
 	_, err := s.tx.Exec(ctx, `
-		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
-		VALUES ($1, $2, $3, $4, $5, NULL, $6)
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size, is_executable, symlink_target)
+		VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8)
 		ON CONFLICT (slice_id, path) DO UPDATE SET
 			type = EXCLUDED.type,
 			parent_id = EXCLUDED.parent_id,
 			size = EXCLUDED.size,
+			is_executable = EXCLUDED.is_executable,
+			symlink_target = EXCLUDED.symlink_target,
 			updated_at = NOW()
-	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size)
+	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget)
 	return err
 }
 
@@ -665,9 +667,9 @@ func (s *postgresNativeTxView) UpdateEntry(ctx context.Context, entry *models.Di
 	}
 
 	tag, err := s.tx.Exec(ctx, `
-		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, updated_at = NOW()
-		WHERE id = $5
-	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.ID)
+		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, is_executable = $5, symlink_target = $6, updated_at = NOW()
+		WHERE id = $7
+	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget, entry.ID)
 	if err != nil {
 		return err
 	}
@@ -2026,14 +2028,16 @@ func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.Dire
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
-		VALUES ($1, $2, $3, $4, $5, NULL, $6)
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size, is_executable, symlink_target)
+		VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8)
 		ON CONFLICT (slice_id, path) DO UPDATE SET
 			type = EXCLUDED.type,
 			parent_id = EXCLUDED.parent_id,
 			size = EXCLUDED.size,
+			is_executable = EXCLUDED.is_executable,
+			symlink_target = EXCLUDED.symlink_target,
 			updated_at = NOW()
-	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size)
+	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget)
 	if err != nil {
 		return err
 	}
@@ -2045,7 +2049,7 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 
 	var e models.DirectoryEntry
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, path, type, parent_id, content, size,
+		SELECT id, path, type, parent_id, content, size, is_executable, symlink_target,
 			COALESCE((
 				SELECT fm.hash
 				FROM file_manifests fm
@@ -2054,7 +2058,7 @@ func (s *PostgresNativeStorage) GetEntry(ctx context.Context, entryID string) (*
 			), '')
 		FROM directory_entries
 		WHERE id = $1
-	`, entryID).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Hash)
+	`, entryID).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Executable, &e.SymlinkTarget, &e.Hash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -2069,7 +2073,7 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 
 	var e models.DirectoryEntry
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, path, type, parent_id, content, size,
+		SELECT id, path, type, parent_id, content, size, is_executable, symlink_target,
 			COALESCE((
 				SELECT fm.hash
 				FROM file_manifests fm
@@ -2078,7 +2082,7 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 			), '')
 		FROM directory_entries
 		WHERE slice_id = $1 AND path = $2
-	`, sliceID, path).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Hash)
+	`, sliceID, path).Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Executable, &e.SymlinkTarget, &e.Hash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -2092,7 +2096,7 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 	ctx = ensureCtx(ctx)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, path, type, parent_id, content, size,
+		SELECT id, path, type, parent_id, content, size, is_executable, symlink_target,
 			COALESCE((
 				SELECT fm.hash
 				FROM file_manifests fm
@@ -2111,7 +2115,7 @@ func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parent
 	var result []*models.DirectoryEntry
 	for rows.Next() {
 		var e models.DirectoryEntry
-		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Hash); err != nil {
+		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Executable, &e.SymlinkTarget, &e.Hash); err != nil {
 			return nil, err
 		}
 		result = append(result, &e)
@@ -2151,9 +2155,9 @@ func (s *PostgresNativeStorage) UpdateEntry(ctx context.Context, entry *models.D
 	}
 
 	tag, err := tx.Exec(ctx, `
-		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, updated_at = NOW()
-		WHERE id = $5
-	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.ID)
+		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, is_executable = $5, symlink_target = $6, updated_at = NOW()
+		WHERE id = $7
+	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget, entry.ID)
 	if err != nil {
 		return err
 	}

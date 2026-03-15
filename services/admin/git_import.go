@@ -2,8 +2,6 @@ package adminservice
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -233,9 +231,23 @@ func parseDiffEntries(out []byte) (entries []gitDiffEntry, warnings []string) {
 	return entries, warnings
 }
 
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+func gitPathMode(ctx context.Context, repoDir, commitHash, repoRel string) (string, error) {
+	out, err := gitCombinedOutput(ctx, repoDir, "ls-tree", commitHash, "--", repoRel)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return "", fmt.Errorf("path %q not found in %s", repoRel, commitHash)
+	}
+	if tab := strings.IndexByte(line, '\t'); tab >= 0 {
+		line = line[:tab]
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return "", fmt.Errorf("unexpected ls-tree output for %s:%s", commitHash, repoRel)
+	}
+	return strings.TrimSpace(fields[0]), nil
 }
 
 func ensureDirectoryEntry(ctx context.Context, st storage.Storage, sliceID, dirPath string) error {
@@ -293,41 +305,52 @@ func ensureParentDirectories(ctx context.Context, st storage.Storage, sliceID, f
 	return common.GenerateEntryID(sliceID, dirPath), nil
 }
 
-func upsertFile(ctx context.Context, st storage.Storage, sliceID string, mountedPath string, content []byte, contentHash string) error {
+func upsertFile(
+	ctx context.Context,
+	st storage.Storage,
+	sliceID string,
+	mountedPath string,
+	content []byte,
+	contentHash string,
+	executable bool,
+	symlinkTarget string,
+) (string, error) {
 	parentID, err := ensureParentDirectories(ctx, st, sliceID, mountedPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	entry := &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(sliceID, mountedPath),
-		Path:     mountedPath,
-		Type:     "file",
-		ParentID: parentID,
-		Size:     int64(len(content)),
+		ID:            common.GenerateEntryID(sliceID, mountedPath),
+		Path:          mountedPath,
+		Type:          "file",
+		ParentID:      parentID,
+		Size:          int64(len(content)),
+		Executable:    executable,
+		SymlinkTarget: symlinkTarget,
 	}
 	if err := st.AddEntry(ctx, entry); err != nil {
 		if errors.Is(err, storage.ErrEntryExists) {
 			if err := st.UpdateEntry(ctx, entry); err != nil {
-				return err
+				return "", err
 			}
 		} else {
-			return err
+			return "", err
 		}
 	}
 
 	if err := st.AddFileToSlice(ctx, mountedPath, sliceID); err != nil {
-		return err
+		return "", err
 	}
 
-	manifest, err := storage.WriteSliceFileManifest(ctx, st, sliceID, mountedPath, content)
+	manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, st, sliceID, mountedPath, content, executable, symlinkTarget)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if got := strings.TrimSpace(manifest.Hash); got != strings.TrimSpace(contentHash) {
-		return fmt.Errorf("manifest hash mismatch for %s", mountedPath)
+		return "", fmt.Errorf("manifest hash mismatch for %s", mountedPath)
 	}
-	return nil
+	return strings.TrimSpace(manifest.Hash), nil
 }
 
 func saveCommitSnapshot(ctx context.Context, st storage.Storage, sliceID string, commitHash string, commitTime time.Time, fileHashes map[string]string) error {
@@ -502,10 +525,20 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 							addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", repoRel, commitHash, err))
 							continue
 						}
+						mode, err := gitPathMode(ctx, repoDir, commitHash, repoRel)
+						if err != nil {
+							addWarning(fmt.Sprintf("skip missing tree entry %q in %s: %v", repoRel, commitHash, err))
+							continue
+						}
+						executable := mode == "100755"
+						symlinkTarget := ""
+						if mode == "120000" {
+							symlinkTarget = string(content)
+						}
 
 						oldHash := beforeHashes[mountedPath]
-						newHash := sha256Hex(content)
-						if err := upsertFile(ctx, st, sliceID, mountedPath, content, newHash); err != nil {
+						newHash := storage.HashFileManifestContent(content, executable, symlinkTarget)
+						if newHash, err = upsertFile(ctx, st, sliceID, mountedPath, content, newHash, executable, symlinkTarget); err != nil {
 							return err
 						}
 						currentFileHashes[mountedPath] = newHash
@@ -580,8 +613,18 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 							addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", newRel, commitHash, err))
 							continue
 						}
-						newHash := sha256Hex(content)
-						if err := upsertFile(ctx, st, sliceID, newMounted, content, newHash); err != nil {
+						mode, err := gitPathMode(ctx, repoDir, commitHash, newRel)
+						if err != nil {
+							addWarning(fmt.Sprintf("skip missing tree entry %q in %s: %v", newRel, commitHash, err))
+							continue
+						}
+						executable := mode == "100755"
+						symlinkTarget := ""
+						if mode == "120000" {
+							symlinkTarget = string(content)
+						}
+						newHash := storage.HashFileManifestContent(content, executable, symlinkTarget)
+						if newHash, err = upsertFile(ctx, st, sliceID, newMounted, content, newHash, executable, symlinkTarget); err != nil {
 							return err
 						}
 						currentFileHashes[newMounted] = newHash
@@ -762,10 +805,20 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 					addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", repoRel, commitHash, err))
 					continue
 				}
+				mode, err := gitPathMode(ctx, repoDir, commitHash, repoRel)
+				if err != nil {
+					addWarning(fmt.Sprintf("skip missing tree entry %q in %s: %v", repoRel, commitHash, err))
+					continue
+				}
+				executable := mode == "100755"
+				symlinkTarget := ""
+				if mode == "120000" {
+					symlinkTarget = string(content)
+				}
 
 				oldHash := beforeHashes[mountedPath]
-				newHash := sha256Hex(content)
-				if err := upsertFile(ctx, st, sliceID, mountedPath, content, newHash); err != nil {
+				newHash := storage.HashFileManifestContent(content, executable, symlinkTarget)
+				if newHash, err = upsertFile(ctx, st, sliceID, mountedPath, content, newHash, executable, symlinkTarget); err != nil {
 					return nil, err
 				}
 				currentFileHashes[mountedPath] = newHash
@@ -840,8 +893,18 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 					addWarning(fmt.Sprintf("skip missing blob %q in %s: %v", newRel, commitHash, err))
 					continue
 				}
-				newHash := sha256Hex(content)
-				if err := upsertFile(ctx, st, sliceID, newMounted, content, newHash); err != nil {
+				mode, err := gitPathMode(ctx, repoDir, commitHash, newRel)
+				if err != nil {
+					addWarning(fmt.Sprintf("skip missing tree entry %q in %s: %v", newRel, commitHash, err))
+					continue
+				}
+				executable := mode == "100755"
+				symlinkTarget := ""
+				if mode == "120000" {
+					symlinkTarget = string(content)
+				}
+				newHash := storage.HashFileManifestContent(content, executable, symlinkTarget)
+				if newHash, err = upsertFile(ctx, st, sliceID, newMounted, content, newHash, executable, symlinkTarget); err != nil {
 					return nil, err
 				}
 				currentFileHashes[newMounted] = newHash

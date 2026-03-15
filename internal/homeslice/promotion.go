@@ -244,17 +244,27 @@ func SyncHomeSliceToRoot(ctx context.Context, st storage.Storage, homeSliceID st
 		if hash == "" {
 			hash = entry.Hash
 		}
-		manifest, err := storage.WriteSliceFileManifest(ctx, st, rootSlice.ID, entry.Path, append([]byte(nil), content.Content...))
+		manifest, err := storage.WriteSliceFileManifestWithMetadata(
+			ctx,
+			st,
+			rootSlice.ID,
+			entry.Path,
+			append([]byte(nil), content.Content...),
+			entry.Executable,
+			entry.SymlinkTarget,
+		)
 		if err != nil {
 			return nil, err
 		}
 		if err := st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:       common.GenerateEntryID(rootSlice.ID, entry.Path),
-			Path:     entry.Path,
-			Type:     "file",
-			ParentID: rootSlice.ID,
-			Size:     content.Size,
-			Hash:     manifest.Hash,
+			ID:            common.GenerateEntryID(rootSlice.ID, entry.Path),
+			Path:          entry.Path,
+			Type:          "file",
+			ParentID:      rootSlice.ID,
+			Size:          content.Size,
+			Hash:          manifest.Hash,
+			Executable:    entry.Executable,
+			SymlinkTarget: entry.SymlinkTarget,
 		}); err != nil {
 			return nil, err
 		}

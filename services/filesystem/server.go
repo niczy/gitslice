@@ -2413,10 +2413,12 @@ func filesystemManifestFromProto(filePath string, spec *filesystemv1.UploadFileM
 		return nil, fmt.Errorf("path is required")
 	}
 	manifest := &models.FileManifest{
-		Path:      path,
-		TotalSize: spec.GetSize(),
-		Hash:      strings.TrimSpace(spec.GetHash()),
-		Blocks:    make([]models.Block, 0, len(spec.GetBlocks())),
+		Path:          path,
+		TotalSize:     spec.GetSize(),
+		Hash:          strings.TrimSpace(spec.GetHash()),
+		Blocks:        make([]models.Block, 0, len(spec.GetBlocks())),
+		Executable:    false,
+		SymlinkTarget: "",
 	}
 	if err := validateFilesystemUploadManifest(manifest, spec.GetBlocks()); err != nil {
 		return nil, err
@@ -2482,6 +2484,12 @@ func filesystemManifestEquivalent(left, right *models.FileManifest) bool {
 	if left.TotalSize != right.TotalSize {
 		return false
 	}
+	if left.Executable != right.Executable {
+		return false
+	}
+	if left.SymlinkTarget != right.SymlinkTarget {
+		return false
+	}
 	if len(left.Blocks) != len(right.Blocks) {
 		return false
 	}
@@ -2501,9 +2509,11 @@ func cloneFilesystemManifest(manifest *models.FileManifest) *models.FileManifest
 		return nil
 	}
 	clone := &models.FileManifest{
-		Path:      strings.TrimSpace(manifest.Path),
-		TotalSize: manifest.TotalSize,
-		Hash:      strings.TrimSpace(manifest.Hash),
+		Path:          strings.TrimSpace(manifest.Path),
+		TotalSize:     manifest.TotalSize,
+		Hash:          strings.TrimSpace(manifest.Hash),
+		Executable:    manifest.Executable,
+		SymlinkTarget: manifest.SymlinkTarget,
 	}
 	if len(manifest.Blocks) > 0 {
 		clone.Blocks = make([]models.Block, len(manifest.Blocks))
@@ -2563,11 +2573,13 @@ func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context
 		return status.Error(codes.InvalidArgument, "manifest is required")
 	}
 	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(workspaceID, manifest.Path),
-		Path:     manifest.Path,
-		Type:     "file",
-		ParentID: workspaceID,
-		Size:     manifest.TotalSize,
+		ID:            common.GenerateEntryID(workspaceID, manifest.Path),
+		Path:          manifest.Path,
+		Type:          "file",
+		ParentID:      workspaceID,
+		Size:          manifest.TotalSize,
+		Executable:    manifest.Executable,
+		SymlinkTarget: manifest.SymlinkTarget,
 	}); err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to write file entry: %v", err))
 	}
