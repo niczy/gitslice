@@ -46,6 +46,15 @@ export async function fetchEnvironments() {
   return payload?.environments || [];
 }
 
+export async function fetchRepoBindings() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/repos/bindings`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load repo bindings'));
+  }
+  const payload = await response.json();
+  return payload?.bindings || [];
+}
+
 export async function getSliceEnvironment(sliceId) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/environment`);
   if (!response.ok) {

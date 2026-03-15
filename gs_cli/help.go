@@ -16,6 +16,7 @@ func printHelp() {
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
 	fmt.Println("  import      Import external repositories")
+	fmt.Println("  repo        Bind remote repositories into your home slice")
 	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  fs          Remote home filesystem operations")
 	fmt.Println("  cache       Inspect and clean local checkout/cache state")
@@ -76,6 +77,17 @@ func printImportHelp() {
 	fmt.Println("Usage: gs import <command> [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  git        Import a git repository (local path or remote URL) commit-by-commit into the root slice")
+}
+
+func printRepoHelp() {
+	fmt.Println("Usage: gs repo <command> [options]")
+	fmt.Println("\nCommands:")
+	fmt.Println("  import   Import a remote repository into an absolute home path and create a binding")
+	fmt.Println("  list     List your remote repo bindings")
+	fmt.Println("  status   Show the binding configured for an absolute home path")
+	fmt.Println("  pull     Pull the latest remote snapshot into the bound home path")
+	fmt.Println("  push     Push the bound home path back to the tracked remote branch")
+	fmt.Println("  unlink   Remove the binding from an absolute home path")
 }
 
 func printFileHelp() {

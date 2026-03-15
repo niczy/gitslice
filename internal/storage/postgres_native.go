@@ -284,6 +284,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			organization_invites,
 			organization_members,
 			organizations,
+			repo_bindings,
 			auth_sessions,
 			users,
 			file_changes,

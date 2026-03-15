@@ -7,6 +7,7 @@ const DOC_NAV = [
   { id: 'quick-start', label: 'Quick start' },
   { id: 'command-map', label: 'Command map' },
   { id: 'cloud-fs', label: 'Cloud filesystem' },
+  { id: 'repo-bindings', label: 'Repo bindings' },
   { id: 'custom-slices', label: 'Custom slices' },
   { id: 'changesets', label: 'Changesets' },
   { id: 'local-cache', label: 'Local cache' },
@@ -48,6 +49,11 @@ const COMMAND_MAP = [
     task: 'Create a focused local worktree',
     command: 'gs slice list\ngs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug>',
     note: 'Best for multi-file work, tests, refactors, and editor-heavy tasks.',
+  },
+  {
+    task: 'Bind a GitHub repo into a home-slice directory',
+    command: 'gs repo import https://github.com/org/repo.git /$USER/vendor/repo --push-enabled\ngs repo pull /$USER/vendor/repo\ngs repo push /$USER/vendor/repo --message "sync upstream fixes"',
+    note: 'Best when you want one directory to stay connected to an upstream repo while still using normal `gs fs` edits.',
   },
   {
     task: 'Publish local work back to the shared tree',
@@ -132,6 +138,7 @@ gs login`}</code>
             </p>
             <ul className="docs-bullet-list">
               <li>Cloud reads, writes, snapshots, diffs, upload, download, and batch operations through <code>gs fs</code>.</li>
+              <li>Repo bindings that import a GitHub repo into a home-slice path and optionally let you pull and push it later.</li>
               <li>Focused slice creation and fast <code>gs slice checkout</code> for editor-heavy work.</li>
               <li>Explicit publish and merge through <code>gs changeset create</code> and <code>gs changeset merge</code>.</li>
               <li>Repo browser, history, commit diffs, and slice navigation in the web app.</li>
@@ -246,6 +253,29 @@ git status`}</code>
                 </tbody>
               </table>
             </div>
+          </section>
+
+          <section id="repo-bindings" className="docs-section">
+            <Badge variant="secondary" className="eyebrow">Repo bindings</Badge>
+            <h2>Bind a GitHub repo to one directory in your home slice</h2>
+            <p>
+              Use <code>gs repo</code> when one absolute path in your home slice should track an upstream repository.
+              Import a repo into a directory, pull future remote updates into that bound path, and optionally push your
+              edits back upstream later.
+            </p>
+            <pre className="code-block">
+              <code>{`gs repo import https://github.com/org/repo.git /$USER/vendor/repo --push-enabled
+gs repo status /$USER/vendor/repo
+gs repo pull /$USER/vendor/repo
+gs repo push /$USER/vendor/repo --message "sync upstream fixes"
+gs repo unlink /$USER/vendor/repo`}</code>
+            </pre>
+            <ul className="docs-bullet-list">
+              <li><code>gs repo import</code> snapshots the remote repo into one bound directory and records the binding.</li>
+              <li><code>gs repo pull</code> refreshes the bound directory from upstream and records a normal home-slice commit.</li>
+              <li><code>gs repo push</code> exports the bound directory back to the remote repo when push is enabled.</li>
+              <li>The Settings page lists your current bindings so you can see path, branch, push mode, and last sync state.</li>
+            </ul>
           </section>
 
           <section id="custom-slices" className="docs-section">
