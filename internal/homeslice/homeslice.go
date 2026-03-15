@@ -337,18 +337,32 @@ func copyFile(ctx context.Context, st storage.Storage, sourceSliceID, targetSlic
 	if err != nil {
 		return false, err
 	}
+	sourceEntry, err := st.GetEntryByPath(ctx, sourceSliceID, filePath)
+	if err != nil {
+		return false, err
+	}
 
-	manifest, err := storage.WriteSliceFileManifest(ctx, st, targetSliceID, filePath, append([]byte(nil), sourceFile.Content...))
+	manifest, err := storage.WriteSliceFileManifestWithMetadata(
+		ctx,
+		st,
+		targetSliceID,
+		filePath,
+		append([]byte(nil), sourceFile.Content...),
+		sourceEntry.Executable,
+		sourceEntry.SymlinkTarget,
+	)
 	if err != nil {
 		return false, err
 	}
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID(targetSliceID, filePath),
-		Path:     filePath,
-		Type:     "file",
-		ParentID: targetSliceID,
-		Size:     sourceFile.Size,
-		Hash:     manifest.Hash,
+		ID:            common.GenerateEntryID(targetSliceID, filePath),
+		Path:          filePath,
+		Type:          "file",
+		ParentID:      targetSliceID,
+		Size:          sourceFile.Size,
+		Hash:          manifest.Hash,
+		Executable:    sourceEntry.Executable,
+		SymlinkTarget: sourceEntry.SymlinkTarget,
 	}); err != nil {
 		return false, err
 	}

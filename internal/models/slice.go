@@ -46,11 +46,13 @@ type FileContent struct {
 
 // DirectoryEntry represents a file or directory entry
 type DirectoryEntry struct {
-	ID       string `json:"id"`
-	Path     string `json:"path"`
-	Type     string `json:"type"` // "file" or "directory"
-	ParentID string `json:"parent_id"`
-	Content  []byte `json:"content,omitempty"`
-	Size     int64  `json:"size"`
-	Hash     string `json:"hash,omitempty"`
+	ID            string `json:"id"`
+	Path          string `json:"path"`
+	Type          string `json:"type"` // "file" or "directory"
+	ParentID      string `json:"parent_id"`
+	Content       []byte `json:"content,omitempty"`
+	Size          int64  `json:"size"`
+	Hash          string `json:"hash,omitempty"`
+	Executable    bool   `json:"executable,omitempty"`
+	SymlinkTarget string `json:"symlink_target,omitempty"`
 }

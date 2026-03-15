@@ -1406,13 +1406,15 @@ func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryE
 	}
 
 	s.upsertEntryLocked(sliceID, &models.DirectoryEntry{
-		ID:       id,
-		Path:     p,
-		Type:     typ,
-		ParentID: parentIDForPath(sliceID, p),
-		Content:  entry.Content,
-		Size:     entry.Size,
-		Hash:     entry.Hash,
+		ID:            id,
+		Path:          p,
+		Type:          typ,
+		ParentID:      parentIDForPath(sliceID, p),
+		Content:       entry.Content,
+		Size:          entry.Size,
+		Hash:          entry.Hash,
+		Executable:    entry.Executable,
+		SymlinkTarget: entry.SymlinkTarget,
 	})
 
 	return nil

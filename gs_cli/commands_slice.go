@@ -487,7 +487,17 @@ func writeSliceCheckoutFile(
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(targetPath, content, 0o644)
+	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if fm.GetSymlinkTarget() != "" {
+		return os.Symlink(fm.GetSymlinkTarget(), targetPath)
+	}
+	mode := os.FileMode(0o644)
+	if fm.GetExecutable() {
+		mode = 0o755
+	}
+	return os.WriteFile(targetPath, content, mode)
 }
 
 func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) error {

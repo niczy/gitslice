@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"sort"
 	"strings"
@@ -96,12 +97,25 @@ func ListSliceFileContents(ctx context.Context, st Storage, sliceID string) ([]*
 // slice-local and versioned manifests. Entry/index maintenance remains the
 // responsibility of the caller.
 func WriteSliceFileManifest(ctx context.Context, st Storage, sliceID, filePath string, content []byte) (*models.FileManifest, error) {
+	return WriteSliceFileManifestWithMetadata(ctx, st, sliceID, filePath, content, false, "")
+}
+
+func WriteSliceFileManifestWithMetadata(
+	ctx context.Context,
+	st Storage,
+	sliceID, filePath string,
+	content []byte,
+	executable bool,
+	symlinkTarget string,
+) (*models.FileManifest, error) {
 	path := strings.TrimSpace(filePath)
 	manifest := &models.FileManifest{
-		Path:      path,
-		TotalSize: int64(len(content)),
-		Hash:      hashFileContent(content),
-		Blocks:    nil,
+		Path:          path,
+		TotalSize:     int64(len(content)),
+		Hash:          HashFileManifestContent(content, executable, symlinkTarget),
+		Blocks:        nil,
+		Executable:    executable,
+		SymlinkTarget: symlinkTarget,
 	}
 	blocks, payloads := ChunkFile(content, DefaultFileBlockSize)
 	manifest.Blocks = blocks
@@ -136,4 +150,24 @@ func WriteSliceFileManifest(ctx context.Context, st Storage, sliceID, filePath s
 func hashFileContent(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+func HashFileManifestContent(content []byte, executable bool, symlinkTarget string) string {
+	if !executable && symlinkTarget == "" {
+		return hashFileContent(content)
+	}
+
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte("gitslice-manifest-meta-v1\x00"))
+	if executable {
+		_, _ = hasher.Write([]byte{1})
+	} else {
+		_, _ = hasher.Write([]byte{0})
+	}
+	lengthBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(lengthBuf, uint64(len(symlinkTarget)))
+	_, _ = hasher.Write(lengthBuf)
+	_, _ = hasher.Write([]byte(symlinkTarget))
+	_, _ = hasher.Write(content)
+	return hex.EncodeToString(hasher.Sum(nil))
 }

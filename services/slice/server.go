@@ -146,9 +146,9 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 	ctx context.Context,
 	slice *models.Slice,
 	sliceID, storedPath, resolvedCommit string,
-) (hash string, size int64, manifestBlocks []models.Block, err error) {
+) (hash string, size int64, manifestBlocks []models.Block, executable bool, symlinkTarget string, err error) {
 	if strings.TrimSpace(sliceID) == "" || strings.TrimSpace(storedPath) == "" {
-		return "", 0, nil, storage.ErrEntryNotFound
+		return "", 0, nil, false, "", storage.ErrEntryNotFound
 	}
 
 	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
@@ -172,6 +172,12 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 			if len(manifestBlocks) == 0 {
 				manifestBlocks = append(manifestBlocks, manifest.Blocks...)
 			}
+			if !executable {
+				executable = manifest.Executable
+			}
+			if symlinkTarget == "" {
+				symlinkTarget = manifest.SymlinkTarget
+			}
 		} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
 			return manifestErr
 		}
@@ -183,6 +189,12 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 			}
 			if hash == "" {
 				hash = strings.TrimSpace(entry.Hash)
+			}
+			if !executable {
+				executable = entry.Executable
+			}
+			if symlinkTarget == "" {
+				symlinkTarget = entry.SymlinkTarget
 			}
 		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
 			return entryErr
@@ -197,6 +209,12 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 				if len(manifestBlocks) == 0 {
 					manifestBlocks = append(manifestBlocks, versionedManifest.Blocks...)
 				}
+				if !executable {
+					executable = versionedManifest.Executable
+				}
+				if symlinkTarget == "" {
+					symlinkTarget = versionedManifest.SymlinkTarget
+				}
 			} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
 				return manifestErr
 			}
@@ -206,15 +224,15 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 	}
 
 	if err := resolveFromSlice(sliceID); err != nil {
-		return "", 0, nil, err
+		return "", 0, nil, false, "", err
 	}
 	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
 		if err := resolveFromSlice(slice.ParentSlice); err != nil {
-			return "", 0, nil, err
+			return "", 0, nil, false, "", err
 		}
 	}
 
-	return strings.TrimSpace(hash), size, manifestBlocks, nil
+	return strings.TrimSpace(hash), size, manifestBlocks, executable, symlinkTarget, nil
 }
 
 func (s *sliceServiceServer) resolveCheckoutFileContent(
@@ -309,18 +327,20 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		}
 
 		storedPath := entry.Path
-		hash, size, manifestBlocks, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, storedPath, resolvedCommit)
+		hash, size, manifestBlocks, executable, symlinkTarget, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, storedPath, resolvedCommit)
 		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout metadata for %s: %v", storedPath, metaErr))
 		}
 
 		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
-			FileId:     storedPath,
-			Path:       common.SliceDisplayPath(slice, storedPath),
-			Size:       size,
-			Hash:       hash,
-			ContentUrl: "", // No presigned URL for in-memory storage
-			Blocks:     checkoutProtoBlocks(manifestBlocks),
+			FileId:        storedPath,
+			Path:          common.SliceDisplayPath(slice, storedPath),
+			Size:          size,
+			Hash:          hash,
+			ContentUrl:    "", // No presigned URL for in-memory storage
+			Blocks:        checkoutProtoBlocks(manifestBlocks),
+			Executable:    executable,
+			SymlinkTarget: symlinkTarget,
 		})
 	}
 	sort.Slice(fileMetadata, func(i, j int) bool {
@@ -2126,7 +2146,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create slice: %v", err))
 	}
-	if err := s.hydrateSliceEntrySizesFromParent(ctx, newSlice, parentSlice, selectedFiles); err != nil {
+	if err := s.hydrateSliceEntryMetadataFromParent(ctx, newSlice, parentSlice, selectedFiles); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to hydrate slice entry metadata: %v", err))
 	}
 
@@ -2563,7 +2583,7 @@ func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
 	return files
 }
 
-func (s *sliceServiceServer) hydrateSliceEntrySizesFromParent(ctx context.Context, slice, parentSlice *models.Slice, filePaths []string) error {
+func (s *sliceServiceServer) hydrateSliceEntryMetadataFromParent(ctx context.Context, slice, parentSlice *models.Slice, filePaths []string) error {
 	if slice == nil || parentSlice == nil {
 		return nil
 	}
@@ -2579,7 +2599,7 @@ func (s *sliceServiceServer) hydrateSliceEntrySizesFromParent(ctx context.Contex
 			}
 			return err
 		}
-		if parentEntry == nil || parentEntry.Type != "file" || parentEntry.Size == 0 {
+		if parentEntry == nil || parentEntry.Type != "file" {
 			continue
 		}
 		childEntry, err := s.storage.GetEntryByPath(ctx, slice.ID, filePath)
@@ -2589,11 +2609,18 @@ func (s *sliceServiceServer) hydrateSliceEntrySizesFromParent(ctx context.Contex
 			}
 			return err
 		}
-		if childEntry == nil || childEntry.Type != "file" || childEntry.Size == parentEntry.Size {
+		if childEntry == nil || childEntry.Type != "file" {
+			continue
+		}
+		if childEntry.Size == parentEntry.Size &&
+			childEntry.Executable == parentEntry.Executable &&
+			childEntry.SymlinkTarget == parentEntry.SymlinkTarget {
 			continue
 		}
 		updated := *childEntry
 		updated.Size = parentEntry.Size
+		updated.Executable = parentEntry.Executable
+		updated.SymlinkTarget = parentEntry.SymlinkTarget
 		if err := s.storage.UpdateEntry(ctx, &updated); err != nil {
 			return err
 		}

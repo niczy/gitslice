@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS directory_entries (
     parent_id TEXT NOT NULL DEFAULT '',
     content BYTEA,
     size BIGINT NOT NULL DEFAULT 0,
+    is_executable BOOLEAN NOT NULL DEFAULT FALSE,
+    symlink_target TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
