@@ -140,6 +140,34 @@ func removeCheckoutRecord(path string) (bool, error) {
 	return true, writeCheckoutRegistry(registry)
 }
 
+func removeCheckoutRecordsForSlice(sliceID string) (int, error) {
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return 0, nil
+	}
+
+	registry, err := readCheckoutRegistry()
+	if err != nil {
+		return 0, err
+	}
+
+	filtered := make([]CheckoutRecord, 0, len(registry.Entries))
+	removed := 0
+	for _, entry := range registry.Entries {
+		if strings.TrimSpace(entry.SliceID) == sliceID {
+			removed++
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	registry.Entries = filtered
+	sortCheckoutRecords(registry.Entries)
+	return removed, writeCheckoutRegistry(registry)
+}
+
 func clearCheckoutRegistry() error {
 	path, err := checkoutRegistryPath()
 	if err != nil {

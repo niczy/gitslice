@@ -175,6 +175,26 @@ gs changeset list --status merged
 
 `gs slice create` keeps a free-form display name and also returns a stable slug. `gs slice checkout` accepts either the slice ID or that slug.
 
+For the normal local workflow, list your slices, check one out, sync it in place, and publish through the tracked changeset:
+
+```bash
+gs slice list
+gs slice checkout <slice-id-or-slug>
+gs slice sync
+gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
+```
+
+Useful day-to-day helpers:
+
+```bash
+gs slice tree
+gs slice diff --name-only
+gs changeset show
+gs doctor
+gs fs sync --direction push ./site /$USER/site
+gs fs sync --direction pull /$USER/site ./site-copy
+```
+
 ### Local checkout registry and cache
 
 Git Slice tracks local slice checkouts globally under `~/.gitslice`, along with the shared local object cache used by fast repeated checkouts.

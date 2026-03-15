@@ -10,7 +10,8 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.locator('code').filter({ hasText: /gs fs write \/\$USER\/app\/NOTICE\.txt --text "hotfix shipped remotely"/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice checkout <slice-id-or-slug>/i }).first()).toBeVisible();
-  await expect(page.locator('code').filter({ hasText: /gs changeset merge <changeset-id>/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs slice publish --message "refresh settings page" --files src\/routes\/settings\.tsx/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs changeset show/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache stats --checkouts/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache prune/i }).first()).toBeVisible();
   await expect(page.getByText(/uploads and checkouts exchange manifests first and then transfer only missing blocks/i)).toBeVisible();

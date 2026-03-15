@@ -2173,6 +2173,65 @@ func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.Renam
 	}, nil
 }
 
+func (s *sliceServiceServer) DeleteSlice(ctx context.Context, req *slicev1.DeleteSliceRequest) (*slicev1.DeleteSliceResponse, error) {
+	log.Printf("DeleteSlice called: slice_id=%s force=%t", req.GetSliceId(), req.GetForce())
+
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := common.ValidateSliceID(req.GetSliceId()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
+
+	slice, err := s.storage.GetSlice(ctx, req.GetSliceId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.GetSliceId()))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	if slice.IsRoot {
+		return nil, status.Error(codes.FailedPrecondition, "root slice cannot be deleted")
+	}
+	if strings.HasPrefix(slice.ID, "home.") {
+		return nil, status.Error(codes.FailedPrecondition, "home slices cannot be deleted")
+	}
+
+	changesets, err := s.storage.ListChangesets(ctx, slice.ID, nil, 1024)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice changesets: %v", err))
+	}
+	if !req.GetForce() {
+		pendingCount := 0
+		for _, cs := range changesets {
+			if cs == nil {
+				continue
+			}
+			if cs.Status == models.ChangesetStatusPending || cs.Status == models.ChangesetStatusApproved {
+				pendingCount++
+			}
+		}
+		if pendingCount > 0 {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("slice has %d open changeset(s); rerun with force to delete", pendingCount))
+		}
+	}
+
+	if err := s.storage.DeleteSlice(ctx, slice.ID); err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", slice.ID))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete slice: %v", err))
+	}
+
+	return &slicev1.DeleteSliceResponse{
+		SliceId: slice.ID,
+		Slug:    slice.Slug,
+		Status:  "deleted",
+	}, nil
+}
+
 func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.GetSliceByNameRequest) (*slicev1.GetSliceByNameResponse, error) {
 	log.Printf("GetSliceByName called: name=%s", req.Name)
 
