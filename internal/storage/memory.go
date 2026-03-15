@@ -67,6 +67,9 @@ type InMemoryStorage struct {
 	// Accounts / Orgs
 	users                            map[string]*models.User                          // username -> user
 	userByEmail                      map[string]string                                // lower(email) -> username
+	repoBindings                     map[string]*models.RepoBinding                   // bindingID -> binding
+	repoBindingsByPath               map[string]string                                // sliceID:path -> bindingID
+	repoBindingsByOwner              map[string]map[string]bool                       // username -> bindingID -> true
 	authSessions                     map[string]*models.AuthSession                   // sessionID -> auth session
 	authSessionByToken               map[string]string                                // token -> sessionID
 	authSessionByRefreshToken        map[string]string                                // refresh token -> sessionID
@@ -121,6 +124,9 @@ func NewInMemoryStorage() *InMemoryStorage {
 		fileChangesByDir:                 make(map[string][]string),
 		users:                            make(map[string]*models.User),
 		userByEmail:                      make(map[string]string),
+		repoBindings:                     make(map[string]*models.RepoBinding),
+		repoBindingsByPath:               make(map[string]string),
+		repoBindingsByOwner:              make(map[string]map[string]bool),
 		authSessions:                     make(map[string]*models.AuthSession),
 		authSessionByToken:               make(map[string]string),
 		authSessionByRefreshToken:        make(map[string]string),
@@ -187,6 +193,9 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.fileChangesByDir = fresh.fileChangesByDir
 	s.users = fresh.users
 	s.userByEmail = fresh.userByEmail
+	s.repoBindings = fresh.repoBindings
+	s.repoBindingsByPath = fresh.repoBindingsByPath
+	s.repoBindingsByOwner = fresh.repoBindingsByOwner
 	s.authSessions = fresh.authSessions
 	s.authSessionByToken = fresh.authSessionByToken
 	s.authSessionByRefreshToken = fresh.authSessionByRefreshToken

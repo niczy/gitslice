@@ -10,6 +10,7 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.locator('code').filter({ hasText: /gs fs write \/\$USER\/app\/NOTICE\.txt --text "hotfix shipped remotely"/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice checkout <slice-id-or-slug>/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs repo import https:\/\/github\.com\/org\/repo\.git \/\$USER\/vendor\/repo --push-enabled/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice publish --message "refresh settings page" --files src\/routes\/settings\.tsx/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs changeset show/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache stats --checkouts/i }).first()).toBeVisible();

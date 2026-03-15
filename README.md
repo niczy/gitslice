@@ -191,6 +191,9 @@ gs slice tree
 gs slice diff --name-only
 gs changeset show
 gs doctor
+gs repo import https://github.com/org/repo.git /$USER/vendor/repo --push-enabled
+gs repo pull /$USER/vendor/repo
+gs repo push /$USER/vendor/repo --message "sync upstream fixes"
 gs fs sync --direction push ./site /$USER/site
 gs fs sync --direction pull /$USER/site ./site-copy
 ```

@@ -126,6 +126,8 @@ func main() {
 		handleRootSlice(ctx, cli)
 	case "import":
 		handleImportCommand(ctx, cli, args[1:])
+	case "repo":
+		handleRepoCommand(ctx, cli, args[1:])
 	case "file":
 		handleFileCommand(ctx, cli, args[1:])
 	case "fs":
