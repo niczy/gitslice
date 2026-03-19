@@ -465,6 +465,10 @@ To restore PM2 apps on reboot (user crontab approach):
 
 For CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
 
+The origin Nginx config keeps long-lived gRPC calls open for up to `30m`, which
+is required for large repo imports and similarly heavy CLI operations to survive
+the public edge without a `504 Gateway Timeout`.
+
 Cloudflare must proxy `api.agenttools.dev` in gRPC mode and use an HTTPS origin mode such as `Full (strict)`. Plain HTTP origin mode and h2c on port `80` are not compatible with Cloudflare gRPC proxying.
 
 Apply config:
