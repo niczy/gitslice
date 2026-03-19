@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -93,6 +95,56 @@ func mustAssembleCheckoutContent(tb testing.TB, resp *slicev1.CheckoutResponse, 
 		tb.Fatalf("failed to assemble checkout content: %v", err)
 	}
 	return content
+}
+
+type checkoutStreamRecorder struct {
+	ctx    context.Context
+	chunks []*slicev1.CheckoutChunk
+}
+
+func (r *checkoutStreamRecorder) Context() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
+}
+
+func (r *checkoutStreamRecorder) Send(chunk *slicev1.CheckoutChunk) error {
+	r.chunks = append(r.chunks, chunk)
+	return nil
+}
+
+func (r *checkoutStreamRecorder) SetHeader(metadata.MD) error  { return nil }
+func (r *checkoutStreamRecorder) SendHeader(metadata.MD) error { return nil }
+func (r *checkoutStreamRecorder) SetTrailer(metadata.MD)       {}
+func (r *checkoutStreamRecorder) SendMsg(any) error            { return nil }
+func (r *checkoutStreamRecorder) RecvMsg(any) error            { return nil }
+
+var _ slicev1.SliceService_StreamCheckoutSliceServer = (*checkoutStreamRecorder)(nil)
+var _ grpc.ServerStream = (*checkoutStreamRecorder)(nil)
+
+func collectCheckoutStreamResponse(tb testing.TB, recorder *checkoutStreamRecorder) *slicev1.CheckoutResponse {
+	tb.Helper()
+	resp := &slicev1.CheckoutResponse{
+		Manifest: &slicev1.SliceManifest{},
+	}
+	for _, chunk := range recorder.chunks {
+		switch payload := chunk.GetChunk().(type) {
+		case *slicev1.CheckoutChunk_Manifest:
+			if payload.Manifest == nil {
+				continue
+			}
+			if resp.Manifest.CommitHash == "" {
+				resp.Manifest.CommitHash = payload.Manifest.GetCommitHash()
+			}
+			resp.Manifest.FileMetadata = append(resp.Manifest.FileMetadata, payload.Manifest.GetFileMetadata()...)
+		case *slicev1.CheckoutChunk_File:
+			resp.Files = append(resp.Files, payload.File)
+		case *slicev1.CheckoutChunk_Block:
+			resp.Blocks = append(resp.Blocks, payload.Block)
+		}
+	}
+	return resp
 }
 
 func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
@@ -288,6 +340,123 @@ func TestCheckoutSliceIncludesFileMetadata(t *testing.T) {
 	}
 	if got := string(mustAssembleCheckoutContent(t, resp, byPath[linkPath])); got != linkTarget {
 		t.Fatalf("expected symlink content %q, got %q", linkTarget, got)
+	}
+}
+
+func TestStreamCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-stream-checkout-blocks", Name: "slice-stream-checkout-blocks", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	filePath := "src/main.go"
+	content := append([]byte{}, bytes.Repeat([]byte("A"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("B"), storage.DefaultFileBlockSize)...)
+	content = append(content, bytes.Repeat([]byte("C"), 97)...)
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, slice.ID, filePath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	recorder := &checkoutStreamRecorder{ctx: ctx}
+	srv := newSliceServiceServer(st)
+	if err := srv.StreamCheckoutSlice(&slicev1.CheckoutRequest{
+		SliceId:     slice.ID,
+		KnownHashes: []string{manifest.Blocks[0].Hash},
+	}, recorder); err != nil {
+		t.Fatalf("StreamCheckoutSlice failed: %v", err)
+	}
+
+	resp := collectCheckoutStreamResponse(t, recorder)
+	if got, want := len(resp.GetManifest().GetFileMetadata()), 1; got != want {
+		t.Fatalf("expected %d file metadata entries, got %d", want, got)
+	}
+	meta := resp.GetManifest().GetFileMetadata()[0]
+	if got, want := len(meta.GetBlocks()), len(manifest.Blocks); got != want {
+		t.Fatalf("expected %d manifest blocks, got %d", want, got)
+	}
+	if len(resp.GetFiles()) != 0 {
+		t.Fatalf("expected no fallback file payloads, got %d", len(resp.GetFiles()))
+	}
+	if got, want := len(resp.GetBlocks()), len(manifest.Blocks)-1; got != want {
+		t.Fatalf("expected %d returned blocks, got %d", want, got)
+	}
+	for _, block := range resp.GetBlocks() {
+		if block.GetHash() == manifest.Blocks[0].Hash {
+			t.Fatalf("expected known block %s to be omitted", block.GetHash())
+		}
+	}
+}
+
+func TestStreamCheckoutSliceSplitsManifestIntoChunks(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-stream-manifest-chunks", Name: "slice-stream-manifest-chunks", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	const fileCount = checkoutManifestChunkSize + 7
+	for i := 0; i < fileCount; i++ {
+		filePath := fmt.Sprintf("src/file-%03d.txt", i)
+		content := []byte(filePath)
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       slice.ID + ":" + filePath,
+			Path:     filePath,
+			Type:     "file",
+			ParentID: slice.ID,
+			Size:     int64(len(content)),
+		}); err != nil {
+			t.Fatalf("AddEntry failed: %v", err)
+		}
+		mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+		if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+			t.Fatalf("AddFileToSlice failed: %v", err)
+		}
+	}
+
+	recorder := &checkoutStreamRecorder{ctx: ctx}
+	srv := newSliceServiceServer(st)
+	if err := srv.StreamCheckoutSlice(&slicev1.CheckoutRequest{SliceId: slice.ID}, recorder); err != nil {
+		t.Fatalf("StreamCheckoutSlice failed: %v", err)
+	}
+
+	manifestChunks := 0
+	totalMetadata := 0
+	for _, chunk := range recorder.chunks {
+		manifest, ok := chunk.GetChunk().(*slicev1.CheckoutChunk_Manifest)
+		if !ok || manifest.Manifest == nil {
+			continue
+		}
+		manifestChunks++
+		totalMetadata += len(manifest.Manifest.GetFileMetadata())
+		if got := len(manifest.Manifest.GetFileMetadata()); got > checkoutManifestChunkSize {
+			t.Fatalf("expected at most %d metadata entries per chunk, got %d", checkoutManifestChunkSize, got)
+		}
+	}
+	if manifestChunks < 2 {
+		t.Fatalf("expected multiple manifest chunks, got %d", manifestChunks)
+	}
+	if totalMetadata != fileCount {
+		t.Fatalf("expected %d metadata entries across chunks, got %d", fileCount, totalMetadata)
 	}
 }
 
