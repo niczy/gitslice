@@ -66,6 +66,7 @@ const (
 	defaultPromotionBatchMaxSize = rootpromote.DefaultBatchMaxSize
 	revertChangesetHashPrefix    = "revert~"
 	revertAllChangesToken        = "*"
+	checkoutManifestChunkSize    = 256
 )
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
@@ -272,43 +273,43 @@ func (s *sliceServiceServer) resolveCheckoutFileContent(
 	return nil, storage.ErrEntryNotFound
 }
 
-func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
+func (s *sliceServiceServer) prepareCheckout(
+	ctx context.Context,
+	req *slicev1.CheckoutRequest,
+) (*models.SliceMetadata, *models.Slice, string, []*slicev1.FileMetadata, map[string]struct{}, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 
-	// Validate slice ID
 	if err := common.ValidateSliceID(req.SliceId); err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+		return nil, nil, "", nil, nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
 	}
 
-	// Get slice metadata
 	metadata, err := s.storage.GetSliceMetadata(ctx, req.SliceId)
 	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		return nil, nil, "", nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
 	resolvedCommit := strings.TrimSpace(req.GetCommitHash())
 	if resolvedCommit == "" || strings.EqualFold(resolvedCommit, "HEAD") {
 		resolvedCommit = strings.TrimSpace(metadata.HeadCommitHash)
 	}
 
-	// Get slice
 	slice, err := s.storage.GetSlice(ctx, req.SliceId)
 	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		return nil, nil, "", nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
 	username, err := s.optionalUsername(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", nil, nil, err
 	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		if username == "" {
-			return nil, status.Error(codes.Unauthenticated, "login required")
+			return nil, nil, "", nil, nil, status.Error(codes.Unauthenticated, "login required")
 		}
-		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+		return nil, nil, "", nil, nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	entries, err := s.collectSliceEntries(ctx, req.SliceId)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
+		return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
 	}
 
 	knownHashes := make(map[string]struct{}, len(req.GetKnownHashes()))
@@ -320,7 +321,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		knownHashes[hash] = struct{}{}
 	}
 
-	var fileMetadata []*slicev1.FileMetadata
+	fileMetadata := make([]*slicev1.FileMetadata, 0, len(entries))
 	for _, entry := range entries {
 		if entry == nil || entry.Type != "file" {
 			continue
@@ -329,7 +330,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		storedPath := entry.Path
 		hash, size, manifestBlocks, executable, symlinkTarget, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, storedPath, resolvedCommit)
 		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout metadata for %s: %v", storedPath, metaErr))
+			return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout metadata for %s: %v", storedPath, metaErr))
 		}
 
 		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
@@ -337,7 +338,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			Path:          common.SliceDisplayPath(slice, storedPath),
 			Size:          size,
 			Hash:          hash,
-			ContentUrl:    "", // No presigned URL for in-memory storage
+			ContentUrl:    "",
 			Blocks:        checkoutProtoBlocks(manifestBlocks),
 			Executable:    executable,
 			SymlinkTarget: symlinkTarget,
@@ -347,7 +348,6 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		return fileMetadata[i].GetPath() < fileMetadata[j].GetPath()
 	})
 
-	// If no files in storage, create metadata from slice definition
 	if len(fileMetadata) == 0 {
 		for _, fileID := range slice.Files {
 			fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
@@ -358,6 +358,15 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 				ContentUrl: "",
 			})
 		}
+	}
+
+	return metadata, slice, resolvedCommit, fileMetadata, knownHashes, nil
+}
+
+func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
+	metadata, slice, resolvedCommit, fileMetadata, knownHashes, err := s.prepareCheckout(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	// Convert file contents to proto format.
@@ -437,6 +446,105 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		Files:    fileContents,
 		Blocks:   blockContents,
 	}, nil
+}
+
+func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, stream slicev1.SliceService_StreamCheckoutSliceServer) error {
+	metadata, slice, resolvedCommit, fileMetadata, knownHashes, err := s.prepareCheckout(stream.Context(), req)
+	if err != nil {
+		return err
+	}
+
+	if len(fileMetadata) == 0 {
+		if err := stream.Send(&slicev1.CheckoutChunk{
+			Chunk: &slicev1.CheckoutChunk_Manifest{
+				Manifest: &slicev1.SliceManifest{CommitHash: metadata.HeadCommitHash},
+			},
+		}); err != nil {
+			return err
+		}
+	} else {
+		for start := 0; start < len(fileMetadata); start += checkoutManifestChunkSize {
+			end := start + checkoutManifestChunkSize
+			if end > len(fileMetadata) {
+				end = len(fileMetadata)
+			}
+			if err := stream.Send(&slicev1.CheckoutChunk{
+				Chunk: &slicev1.CheckoutChunk_Manifest{
+					Manifest: &slicev1.SliceManifest{
+						CommitHash:   metadata.HeadCommitHash,
+						FileMetadata: fileMetadata[start:end],
+					},
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	sentBlocks := make(map[string]struct{})
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		if meta.GetHash() != "" {
+			if _, ok := knownHashes[meta.GetHash()]; ok {
+				continue
+			}
+		}
+		if len(meta.GetBlocks()) > 0 {
+			for _, block := range meta.GetBlocks() {
+				if block == nil {
+					continue
+				}
+				blockHash := strings.TrimSpace(block.GetHash())
+				if blockHash == "" {
+					continue
+				}
+				if _, ok := knownHashes[blockHash]; ok {
+					continue
+				}
+				if _, ok := sentBlocks[blockHash]; ok {
+					continue
+				}
+				payload, err := s.storage.GetBlock(stream.Context(), blockHash)
+				if err != nil {
+					return status.Error(codes.Internal, fmt.Sprintf("failed to load block %s for %s: %v", blockHash, meta.GetFileId(), err))
+				}
+				if err := stream.Send(&slicev1.CheckoutChunk{
+					Chunk: &slicev1.CheckoutChunk_Block{
+						Block: &slicev1.BlockContent{
+							Hash:    blockHash,
+							Content: payload,
+						},
+					},
+				}); err != nil {
+					return err
+				}
+				sentBlocks[blockHash] = struct{}{}
+			}
+			continue
+		}
+
+		file, err := s.resolveCheckoutFileContent(stream.Context(), slice, req.SliceId, meta.GetFileId(), resolvedCommit)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				continue
+			}
+			return status.Error(codes.Internal, fmt.Sprintf("failed to load content for %s: %v", meta.GetFileId(), err))
+		}
+		if err := stream.Send(&slicev1.CheckoutChunk{
+			Chunk: &slicev1.CheckoutChunk_File{
+				File: &slicev1.FileContent{
+					FileId:  file.FileID,
+					Content: file.Content,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func checkoutProtoBlocks(blocks []models.Block) []*slicev1.FileBlockRef {
