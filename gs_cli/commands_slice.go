@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
@@ -369,11 +372,90 @@ func fetchSliceCheckoutResponse(ctx context.Context, cli *CLI, sliceID, commitHa
 		}
 	}
 
-	resp, err := cli.sliceClient.CheckoutSlice(ctx, req)
+	resp, err := fetchSliceCheckoutResponseStream(ctx, cli, req, cache)
+	if err == nil {
+		return resp, cache, nil
+	}
+	if status.Code(err) != codes.Unimplemented {
+		return nil, cache, err
+	}
+
+	resp, err = cli.sliceClient.CheckoutSlice(ctx, req)
 	if err != nil {
 		return nil, cache, err
 	}
 	return resp, cache, nil
+}
+
+func fetchSliceCheckoutResponseStream(
+	ctx context.Context,
+	cli *CLI,
+	req *slicev1.CheckoutRequest,
+	cache *CacheManager,
+) (*slicev1.CheckoutResponse, error) {
+	stream, err := cli.sliceClient.StreamCheckoutSlice(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &slicev1.CheckoutResponse{
+		Manifest: &slicev1.SliceManifest{},
+	}
+	hashByFileID := make(map[string]string)
+
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch payload := chunk.GetChunk().(type) {
+		case *slicev1.CheckoutChunk_Manifest:
+			if payload.Manifest == nil {
+				continue
+			}
+			if resp.Manifest.GetCommitHash() == "" {
+				resp.Manifest.CommitHash = payload.Manifest.GetCommitHash()
+			}
+			resp.Manifest.FileMetadata = append(resp.Manifest.FileMetadata, payload.Manifest.GetFileMetadata()...)
+			for _, meta := range payload.Manifest.GetFileMetadata() {
+				if meta == nil {
+					continue
+				}
+				hashByFileID[meta.GetFileId()] = strings.TrimSpace(meta.GetHash())
+			}
+		case *slicev1.CheckoutChunk_Block:
+			if payload.Block == nil {
+				continue
+			}
+			if cache != nil && strings.TrimSpace(payload.Block.GetHash()) != "" {
+				if err := cache.StoreObject(payload.Block.GetHash(), payload.Block.GetContent()); err == nil {
+					continue
+				} else {
+					log.Printf("Failed to write cached block %s: %v", payload.Block.GetHash(), err)
+				}
+			}
+			resp.Blocks = append(resp.Blocks, payload.Block)
+		case *slicev1.CheckoutChunk_File:
+			if payload.File == nil {
+				continue
+			}
+			if cache != nil {
+				if hash := strings.TrimSpace(hashByFileID[payload.File.GetFileId()]); hash != "" {
+					if err := cache.StoreObject(hash, payload.File.GetContent()); err == nil {
+						continue
+					} else {
+						log.Printf("Failed to write cached file %s: %v", payload.File.GetFileId(), err)
+					}
+				}
+			}
+			resp.Files = append(resp.Files, payload.File)
+		}
+	}
+
+	return resp, nil
 }
 
 func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (int64, error) {
