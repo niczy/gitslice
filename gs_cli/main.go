@@ -30,6 +30,11 @@ var (
 	userFlag          = flag.String("user", "", "Legacy username auth for dev use (overrides GS_USERNAME and ~/.gitslice/user after bearer auth sources)")
 )
 
+const (
+	grpcMaxCallRecvBytes = 64 << 20
+	grpcMaxCallSendBytes = 64 << 20
+)
+
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
 type CLI struct {
 	accountConn      *grpc.ClientConn
@@ -162,7 +167,14 @@ func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, 
 		if conn, ok := connsByAddr[addr]; ok {
 			return conn, nil
 		}
-		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(transportCreds))
+		conn, err := grpc.Dial(
+			addr,
+			grpc.WithTransportCredentials(transportCreds),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(grpcMaxCallRecvBytes),
+				grpc.MaxCallSendMsgSize(grpcMaxCallSendBytes),
+			),
+		)
 		if err != nil {
 			return nil, err
 		}
