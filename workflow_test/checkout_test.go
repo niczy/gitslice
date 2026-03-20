@@ -22,6 +22,9 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
+	if strings.Contains(output, "Files in slice:") {
+		t.Fatalf("expected default checkout output to omit per-file listing, got: %s", output)
+	}
 }
 
 func TestCheckoutSliceNotFound(t *testing.T) {
@@ -70,6 +73,50 @@ func TestStreamCheckoutSlice(t *testing.T) {
 	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
+	}
+}
+
+func TestCheckoutSlicePrintsFilesWhenRequested(t *testing.T) {
+	if testStorage == nil {
+		t.Fatalf("test storage is not initialized")
+	}
+
+	ctx := withTestUser(context.Background())
+	workdir := t.TempDir()
+	sliceID := "checkout-files-flag"
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+	filePath := "pkg/readme.txt"
+	content := []byte("hello\n")
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("add entry: %v", err)
+	}
+	if _, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+		t.Fatalf("add file to slice: %v", err)
+	}
+	sliceArg := sliceIDArg(sliceID)
+
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg, "--files")
+	if !strings.Contains(output, "Files in slice:") {
+		t.Fatalf("expected verbose checkout output with --files, got: %s", output)
+	}
+	if !strings.Contains(output, "pkg/readme.txt") {
+		t.Fatalf("expected file listing in verbose checkout output, got: %s", output)
 	}
 }
 
