@@ -460,6 +460,35 @@ func TestStreamCheckoutSliceSplitsManifestIntoChunks(t *testing.T) {
 	}
 }
 
+func TestCheckoutProfileSummary(t *testing.T) {
+	profile := newCheckoutProfile("stream", "slice-123", "HEAD", 42)
+	profile.markPrepared(256, 150*time.Millisecond)
+	profile.addManifestChunk(128)
+	profile.addManifestChunk(128)
+	profile.addBlockPayload(1024)
+	profile.addBlockPayload(2048)
+	profile.addFilePayload(512)
+	profile.finish(250 * time.Millisecond)
+
+	summary := profile.summary()
+	for _, want := range []string{
+		"mode=stream",
+		"slice_id=slice-123",
+		"requested_commit=HEAD",
+		"known_hashes=42",
+		"files=256",
+		"manifest_chunks=2",
+		"block_payloads=2",
+		"block_bytes=3072",
+		"file_payloads=1",
+		"file_payload_bytes=512",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected summary to contain %q, got %q", want, summary)
+		}
+	}
+}
+
 func TestListChangesetsFiltersByStatus(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
