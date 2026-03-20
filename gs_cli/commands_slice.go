@@ -531,15 +531,24 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 		}
 		changedPaths = append(changedPaths, removedPaths...)
 	}
-	if err := prepareCheckoutDirectories(dir, resp.Manifest.FileMetadata); err != nil {
+	removedConflicts, err := prepareCheckoutDirectories(dir, resp.Manifest.FileMetadata)
+	if err != nil {
 		return nil, err
 	}
+	changedPaths = append(changedPaths, removedConflicts...)
+	directoryMarkers := checkoutDirectoryMarkers(resp.Manifest.FileMetadata)
 
 	var cachedHits int64
 	var changedPathsMu sync.Mutex
 	workerCount := checkoutWorkerCount(len(resp.Manifest.FileMetadata))
 	if workerCount > 0 {
 		runCheckoutJobs(workerCount, resp.Manifest.FileMetadata, func(fm *slicev1.FileMetadata) {
+			if fm == nil {
+				return
+			}
+			if _, ok := directoryMarkers[filepath.Clean(fm.GetPath())]; ok {
+				return
+			}
 			writtenPath, err := writeSliceCheckoutFile(dir, cache, fm, explicitFiles, fileContents, blockContents, &cachedHits)
 			if err != nil {
 				log.Printf("Failed to write %s: %v", fm.GetPath(), err)
@@ -613,12 +622,18 @@ func newStreamedCheckoutMaterializer(
 		}
 		materializer.changedPaths = append(materializer.changedPaths, removedPaths...)
 	}
-	if err := prepareCheckoutDirectories(dir, manifest.FileMetadata); err != nil {
+	removedConflicts, err := prepareCheckoutDirectories(dir, manifest.FileMetadata)
+	if err != nil {
 		return nil, err
 	}
+	materializer.changedPaths = append(materializer.changedPaths, removedConflicts...)
+	directoryMarkers := checkoutDirectoryMarkers(manifest.FileMetadata)
 
 	for _, fm := range manifest.FileMetadata {
 		if fm == nil {
+			continue
+		}
+		if _, ok := directoryMarkers[filepath.Clean(fm.GetPath())]; ok {
 			continue
 		}
 		if writtenPath, wrote, err := tryWriteSliceCheckoutFileFromCache(dir, cache, fm, nil, &materializer.cachedHits); err != nil {
@@ -874,9 +889,9 @@ func tryWriteSliceCheckoutFileFromCache(
 	return fm.GetPath(), true, os.WriteFile(targetPath, content, mode)
 }
 
-func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadata) error {
+func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {
 	if len(fileMetadata) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	dirs := make(map[string]struct{}, len(fileMetadata))
@@ -892,7 +907,7 @@ func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadat
 	}
 
 	if len(dirs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	ordered := make([]string, 0, len(dirs))
@@ -900,12 +915,55 @@ func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadat
 		ordered = append(ordered, dir)
 	}
 	sort.Strings(ordered)
+	removedConflicts := make([]string, 0)
 	for _, dir := range ordered {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
+		removed, err := ensureCheckoutDirectory(root, dir)
+		if err != nil {
+			return nil, err
+		}
+		removedConflicts = append(removedConflicts, removed...)
+	}
+	sort.Strings(removedConflicts)
+	return uniqueCheckoutPaths(removedConflicts), nil
+}
+
+func ensureCheckoutDirectory(root, targetDir string) ([]string, error) {
+	rel, err := filepath.Rel(root, targetDir)
+	if err != nil {
+		return nil, err
+	}
+	if rel == "." {
+		return nil, nil
+	}
+
+	current := root
+	removed := make([]string, 0)
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if strings.TrimSpace(part) == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.IsDir() {
+				continue
+			}
+			if err := os.RemoveAll(current); err != nil {
+				return nil, err
+			}
+			relCurrent, relErr := filepath.Rel(root, current)
+			if relErr != nil {
+				return nil, relErr
+			}
+			removed = append(removed, relCurrent)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		if err := os.Mkdir(current, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return nil, err
 		}
 	}
-	return nil
+	return removed, nil
 }
 
 func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {
@@ -915,11 +973,16 @@ func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMet
 	}
 	removed := make([]string, 0)
 	desired := make(map[string]struct{}, len(fileMetadata))
+	directoryMarkers := checkoutDirectoryMarkers(fileMetadata)
 	for _, meta := range fileMetadata {
 		if meta == nil {
 			continue
 		}
-		desired[filepath.Clean(meta.GetPath())] = struct{}{}
+		cleaned := filepath.Clean(meta.GetPath())
+		if _, ok := directoryMarkers[cleaned]; ok {
+			continue
+		}
+		desired[cleaned] = struct{}{}
 	}
 	for _, tracked := range trackedFiles {
 		cleaned := filepath.Clean(tracked)
@@ -939,6 +1002,40 @@ func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMet
 	}
 	sort.Strings(removed)
 	return removed, nil
+}
+
+func checkoutDirectoryMarkers(fileMetadata []*slicev1.FileMetadata) map[string]struct{} {
+	if len(fileMetadata) == 0 {
+		return nil
+	}
+
+	paths := make(map[string]struct{}, len(fileMetadata))
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		cleaned := filepath.Clean(strings.TrimSpace(meta.GetPath()))
+		if cleaned == "" || cleaned == "." {
+			continue
+		}
+		paths[cleaned] = struct{}{}
+	}
+
+	markers := make(map[string]struct{})
+	for path := range paths {
+		dir := filepath.Dir(path)
+		for dir != "." && dir != "/" && dir != "" {
+			if _, ok := paths[dir]; ok {
+				markers[dir] = struct{}{}
+			}
+			next := filepath.Dir(dir)
+			if next == dir {
+				break
+			}
+			dir = next
+		}
+	}
+	return markers
 }
 
 func uniqueCheckoutPaths(paths []string) []string {
