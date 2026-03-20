@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -140,7 +141,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
-	cachedHits, err := materializeSliceCheckout(".", resp, cache, false)
+	materialized, err := materializeSliceCheckout(".", resp, cache, false)
 	if err != nil {
 		log.Fatalf("Failed to materialize checkout: %v", err)
 	}
@@ -149,24 +150,21 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to initialize git repository: %v", err)
 	}
-	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+	gitignoreChanged, err := ensureGitignoreEntry(".", ".gs/")
+	if err != nil {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
 	if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
 		log.Fatalf("Failed to switch to main branch: %v", err)
 	}
-	hasCommit, err := gitHasCommit(".")
-	if err != nil {
-		log.Fatalf("Failed to check git history: %v", err)
+	stagePaths := append([]string(nil), materialized.ChangedPaths...)
+	if gitignoreChanged {
+		stagePaths = append(stagePaths, ".gitignore")
 	}
-	if _, err := runGitCommand(".", "add", "-A"); err != nil {
+	if err := gitStagePaths(".", stagePaths); err != nil {
 		log.Fatalf("Failed to stage checkout files: %v", err)
 	}
-	hasPendingChanges, err := gitHasPendingChanges(".")
-	if err != nil {
-		log.Fatalf("Failed to read git status: %v", err)
-	}
-	if createdRepo || !hasCommit || hasPendingChanges {
+	if createdRepo || len(stagePaths) > 0 {
 		if err := createCheckoutCommit(".", resp.Manifest.CommitHash); err != nil {
 			log.Fatalf("Failed to create checkout commit: %v", err)
 		}
@@ -185,7 +183,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	if cache != nil {
-		fmt.Printf("Cache hits: %d\n", cachedHits)
+		fmt.Printf("Cache hits: %d\n", materialized.CacheHits)
 	}
 
 	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
@@ -230,7 +228,8 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if hasPendingChanges {
 		log.Fatal("Cannot sync slice: working tree has local changes. Commit or clean the checkout first.")
 	}
-	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+	gitignoreChanged, err := ensureGitignoreEntry(".", ".gs/")
+	if err != nil {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
 
@@ -238,17 +237,24 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
-	cachedHits, err := materializeSliceCheckout(".", resp, cache, true)
+	materialized, err := materializeSliceCheckout(".", resp, cache, true)
 	if err != nil {
 		log.Fatalf("Failed to materialize synced slice: %v", err)
 	}
 
-	if _, err := runGitCommand(".", "add", "-A"); err != nil {
+	stagePaths := append([]string(nil), materialized.ChangedPaths...)
+	if gitignoreChanged {
+		stagePaths = append(stagePaths, ".gitignore")
+	}
+	if err := gitStagePaths(".", stagePaths); err != nil {
 		log.Fatalf("Failed to stage synced files: %v", err)
 	}
-	hasPendingChanges, err = gitHasPendingChanges(".")
-	if err != nil {
-		log.Fatalf("Failed to read git status: %v", err)
+	hasPendingChanges = len(stagePaths) > 0
+	if hasCommit && hasPendingChanges {
+		hasPendingChanges, err = gitHasStagedChanges(".")
+		if err != nil {
+			log.Fatalf("Failed to inspect staged changes: %v", err)
+		}
 	}
 
 	lastCommitMessage := ""
@@ -272,7 +278,7 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Files: %d\n", len(resp.Manifest.FileMetadata))
 	fmt.Printf("Status: %s\n", status)
 	if cache != nil {
-		fmt.Printf("Cache hits: %d\n", cachedHits)
+		fmt.Printf("Cache hits: %d\n", materialized.CacheHits)
 	}
 
 	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
@@ -459,9 +465,14 @@ func fetchSliceCheckoutResponseStream(
 	return resp, nil
 }
 
-func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (int64, error) {
+type checkoutMaterialization struct {
+	CacheHits    int64
+	ChangedPaths []string
+}
+
+func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (*checkoutMaterialization, error) {
 	if resp == nil || resp.GetManifest() == nil {
-		return 0, fmt.Errorf("missing checkout manifest")
+		return nil, fmt.Errorf("missing checkout manifest")
 	}
 
 	fileContents := make(map[string][]byte)
@@ -486,28 +497,43 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 		}
 	}
 
+	var changedPaths []string
 	if pruneTracked {
-		if err := removeStaleTrackedCheckoutFiles(dir, resp.Manifest.FileMetadata); err != nil {
-			return 0, err
+		removedPaths, err := removeStaleTrackedCheckoutFiles(dir, resp.Manifest.FileMetadata)
+		if err != nil {
+			return nil, err
 		}
+		changedPaths = append(changedPaths, removedPaths...)
 	}
 
 	var cachedHits int64
+	var changedPathsMu sync.Mutex
 	workerCount := checkoutWorkerCount(len(resp.Manifest.FileMetadata))
 	if workerCount > 0 {
 		runCheckoutJobs(workerCount, resp.Manifest.FileMetadata, func(fm *slicev1.FileMetadata) {
-			if err := writeSliceCheckoutFile(dir, cache, fm, explicitFiles, fileContents, blockContents, &cachedHits); err != nil {
+			writtenPath, err := writeSliceCheckoutFile(dir, cache, fm, explicitFiles, fileContents, blockContents, &cachedHits)
+			if err != nil {
 				log.Printf("Failed to write %s: %v", fm.GetPath(), err)
+				return
+			}
+			if writtenPath != "" {
+				changedPathsMu.Lock()
+				changedPaths = append(changedPaths, writtenPath)
+				changedPathsMu.Unlock()
 			}
 		})
 	}
 
 	if pruneTracked {
 		if err := removeEmptyCheckoutDirs(dir); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
-	return atomic.LoadInt64(&cachedHits), nil
+	sort.Strings(changedPaths)
+	return &checkoutMaterialization{
+		CacheHits:    atomic.LoadInt64(&cachedHits),
+		ChangedPaths: uniqueCheckoutPaths(changedPaths),
+	}, nil
 }
 
 func writeSliceCheckoutFile(
@@ -518,9 +544,9 @@ func writeSliceCheckoutFile(
 	fileContents map[string][]byte,
 	blockContents map[string][]byte,
 	cachedHits *int64,
-) error {
+) (string, error) {
 	if fm == nil {
-		return nil
+		return "", nil
 	}
 
 	var content []byte
@@ -555,7 +581,7 @@ func writeSliceCheckoutFile(
 
 	if content == nil {
 		if _, ok := explicitFiles[fm.FileId]; !ok {
-			return nil
+			return "", nil
 		}
 		content = []byte{}
 	}
@@ -568,26 +594,27 @@ func writeSliceCheckoutFile(
 
 	targetPath := filepath.Join(dir, fm.Path)
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return "", err
 	}
 	if fm.GetSymlinkTarget() != "" {
-		return os.Symlink(fm.GetSymlinkTarget(), targetPath)
+		return fm.GetPath(), os.Symlink(fm.GetSymlinkTarget(), targetPath)
 	}
 	mode := os.FileMode(0o644)
 	if fm.GetExecutable() {
 		mode = 0o755
 	}
-	return os.WriteFile(targetPath, content, mode)
+	return fm.GetPath(), os.WriteFile(targetPath, content, mode)
 }
 
-func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) error {
+func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {
 	trackedFiles, err := gitTrackedFiles(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	removed := make([]string, 0)
 	desired := make(map[string]struct{}, len(fileMetadata))
 	for _, meta := range fileMetadata {
 		if meta == nil {
@@ -607,10 +634,32 @@ func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMet
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, cleaned)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+			return nil, err
 		}
+		removed = append(removed, cleaned)
 	}
-	return nil
+	sort.Strings(removed)
+	return removed, nil
+}
+
+func uniqueCheckoutPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := paths[:0]
+	var prev string
+	for _, path := range paths {
+		cleaned := filepath.Clean(strings.TrimSpace(path))
+		if cleaned == "" {
+			continue
+		}
+		if len(out) > 0 && cleaned == prev {
+			continue
+		}
+		out = append(out, cleaned)
+		prev = cleaned
+	}
+	return out
 }
 
 func removeEmptyCheckoutDirs(root string) error {

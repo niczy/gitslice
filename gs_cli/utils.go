@@ -129,41 +129,44 @@ func ensureGitRepo(dir string) (bool, error) {
 	return true, nil
 }
 
-func ensureGitignoreEntry(dir, entry string) error {
+func ensureGitignoreEntry(dir, entry string) (bool, error) {
 	path := filepath.Join(dir, ".gitignore")
 	content, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return false, err
 	}
 
 	normalizedEntry := strings.TrimSpace(entry)
 	if normalizedEntry == "" {
-		return nil
+		return false, nil
 	}
 
 	if len(content) > 0 {
 		lines := strings.Split(string(content), "\n")
 		for _, line := range lines {
 			if strings.TrimSpace(line) == normalizedEntry {
-				return nil
+				return false, nil
 			}
 		}
 	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close()
 
 	if len(content) > 0 && !strings.HasSuffix(string(content), "\n") {
 		if _, err := f.WriteString("\n"); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	_, err = f.WriteString(normalizedEntry + "\n")
-	return err
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func gitCurrentBranch(dir string) (string, error) {
@@ -220,11 +223,27 @@ func gitHasCommit(dir string) (bool, error) {
 }
 
 func gitHasPendingChanges(dir string) (bool, error) {
-	output, err := runGitCommand(dir, "status", "--porcelain")
+	hasWorktreeChanges, err := gitCommandReportsChanges(dir, "diff", "--quiet", "--ignore-submodules", "--")
 	if err != nil {
 		return false, err
 	}
-	return output != "", nil
+	if hasWorktreeChanges {
+		return true, nil
+	}
+
+	hasStagedChanges, err := gitHasStagedChanges(dir)
+	if err != nil {
+		return false, err
+	}
+	if hasStagedChanges {
+		return true, nil
+	}
+
+	output, err := runGitCommand(dir, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(output) != "", nil
 }
 
 func gitTrackedFiles(dir string) ([]string, error) {
@@ -287,6 +306,30 @@ func gitLatestCommitMessage(dir string) (string, error) {
 	return runGitCommand(dir, "log", "-1", "--pretty=%s")
 }
 
+func gitHasStagedChanges(dir string) (bool, error) {
+	return gitCommandReportsChanges(dir, "diff", "--cached", "--quiet", "--ignore-submodules", "--")
+}
+
+func gitStagePaths(dir string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	const maxPathsPerBatch = 256
+	for start := 0; start < len(paths); start += maxPathsPerBatch {
+		end := start + maxPathsPerBatch
+		if end > len(paths) {
+			end = len(paths)
+		}
+		args := []string{"add", "-A", "--"}
+		args = append(args, paths[start:end]...)
+		if _, err := runGitCommand(dir, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func runGitCommand(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -303,6 +346,28 @@ func runGitCommand(dir string, args ...string) (string, error) {
 		return trimmed, fmt.Errorf("git %s failed: %w", strings.Join(args, " "), err)
 	}
 	return trimmed, nil
+}
+
+func gitCommandReportsChanges(dir string, args ...string) (bool, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	err := cmd.Run()
+	if err == nil {
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.ExitCode() == 1 {
+			return true, nil
+		}
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return false, fmt.Errorf("git is required but was not found in PATH")
+	}
+	return false, fmt.Errorf("git %s failed: %w", strings.Join(args, " "), err)
 }
 
 // stringFlag tracks whether a string flag was explicitly set
