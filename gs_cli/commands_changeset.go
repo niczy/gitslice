@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -68,10 +69,6 @@ func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
-	if err := requireMainBranch("."); err != nil {
-		log.Fatalf("Cannot create changeset: %v", err)
-	}
-
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
@@ -91,6 +88,13 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		modifiedFiles = splitAndTrim(*files, ",")
 	}
 	modifiedFiles = append(modifiedFiles, fs.Args()...)
+	modifiedFiles, _, err = resolveWorkingTreeModifiedFiles(".", modifiedFiles)
+	if err != nil {
+		log.Fatalf("Cannot create changeset: %v", err)
+	}
+	if len(modifiedFiles) == 0 {
+		log.Fatal("No modified files specified and working tree is clean")
+	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
 	if err != nil {
@@ -121,6 +125,56 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
 	}
 	fmt.Printf("Status: %s\n", resp.Status.String())
+}
+
+func resolveWorkingTreeModifiedFiles(dir string, explicit []string) ([]string, bool, error) {
+	modifiedFiles := normalizeLocalModifiedFiles(explicit)
+	checkoutState, gitEnabled, err := detectCheckoutMode(dir)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if gitEnabled {
+		if err := requireMainBranch(dir); err != nil {
+			return nil, true, err
+		}
+		if len(modifiedFiles) == 0 {
+			modifiedFiles, err = gitChangedFiles(dir)
+			if err != nil {
+				return nil, true, err
+			}
+		}
+		return modifiedFiles, true, nil
+	}
+
+	if len(modifiedFiles) == 0 {
+		modifiedFiles, err = detectNoGitModifiedFiles(dir, checkoutState)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return modifiedFiles, false, nil
+}
+
+func normalizeLocalModifiedFiles(files []string) []string {
+	if len(files) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(files))
+	out := make([]string, 0, len(files))
+	for _, raw := range files {
+		cleaned := filepath.Clean(strings.TrimSpace(raw))
+		if cleaned == "" || cleaned == "." {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func resolveChangesetIDForCreate(explicit string) (string, bool, error) {

@@ -9,6 +9,32 @@ import (
 	"time"
 )
 
+func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) string {
+	t.Helper()
+
+	rootWorkdir := t.TempDir()
+	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
+
+	filePath := folderPath + "/README.md"
+	output := runCLIOrFail(t, rootWorkdir, "changeset", "create", "--message", "seed focused folder", "--files", filePath)
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("failed to extract root changeset ID from output: %s", output)
+	}
+	output = runCLIOrFail(t, rootWorkdir, "changeset", "merge", changesetID)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected root merge success, got: %s", output)
+	}
+
+	sliceName := fmt.Sprintf("focused-slice-%d", time.Now().UnixNano())
+	output = runCLIOrFail(t, rootWorkdir, "slice", "create", sliceName, folderPath)
+	sliceID := extractCreatedSliceID(output)
+	if sliceID == "" {
+		t.Fatalf("expected created slice ID, got: %s", output)
+	}
+	return sliceID
+}
+
 func TestSliceWorkflowCommands(t *testing.T) {
 	rootWorkdir := t.TempDir()
 	rootSliceArg := sliceIDArg("root_slice")
@@ -108,6 +134,72 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	output = runCLIOrFail(t, workdir, "changeset", "list", "--status", "merged")
 	if !strings.Contains(output, changesetID) {
 		t.Fatalf("expected merged changeset in list output, got: %s", output)
+	}
+}
+
+func TestChangesetCreateWorksWithoutGitCheckout(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-create-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+
+	checkoutDir := t.TempDir()
+	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
+	}
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	original, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read tracked file: %v", err)
+	}
+	if err := os.WriteFile(targetPath, append([]byte("// no-git changeset create\n"), original...), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "changeset", "create", "--message", "no-git create")
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("expected changeset ID, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "changeset", "show")
+	if !strings.Contains(output, "Changeset: "+changesetID) || !strings.Contains(output, "Files: +1 ~0 -0") {
+		t.Fatalf("expected changeset show to include modified file, got: %s", output)
+	}
+}
+
+func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-publish-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+
+	checkoutDir := t.TempDir()
+	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
+	}
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	original, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read tracked file: %v", err)
+	}
+	if err := os.WriteFile(targetPath, append([]byte("// no-git slice publish\n"), original...), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "publish", "--review-only", "--message", "no-git publish")
+	changesetID := extractChangesetID(output)
+	if changesetID == "" {
+		t.Fatalf("expected changeset ID from publish output, got: %s", output)
+	}
+	if !strings.Contains(output, "Changeset: "+changesetID) || !strings.Contains(output, "Files: +1 ~0 -0") {
+		t.Fatalf("expected publish review output to include modified file, got: %s", output)
 	}
 }
 
