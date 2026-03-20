@@ -40,7 +40,7 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	}
 
 	checkoutDir := t.TempDir()
-	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug)
+	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug, "--git")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}

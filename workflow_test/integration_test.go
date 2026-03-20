@@ -627,7 +627,7 @@ func TestCheckoutInitializesGitRepo(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg, "--git")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("Expected checkout output, got: %s", output)
 	}
@@ -850,7 +850,7 @@ func TestSliceSyncUpdatesCurrentCheckout(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
-	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceID)
+	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceID, "--git")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -1042,12 +1042,12 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 	})
 
 	checkoutDir := t.TempDir()
-	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--no-git")
+	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
-		t.Fatalf("expected no git repo for --no-git checkout, err=%v", err)
+		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".gs", "checkout_state.json")); err != nil {
 		t.Fatalf("expected checkout state file, err=%v", err)
@@ -1157,7 +1157,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files", "--git")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}

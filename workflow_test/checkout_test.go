@@ -25,6 +25,9 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	if strings.Contains(output, "Files in slice:") {
 		t.Fatalf("expected default checkout output to omit per-file listing, got: %s", output)
 	}
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
+	}
 }
 
 func TestCheckoutSliceNotFound(t *testing.T) {

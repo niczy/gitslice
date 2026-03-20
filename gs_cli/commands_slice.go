@@ -106,7 +106,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--no-git]")
+		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--git]")
 		return
 	}
 
@@ -119,8 +119,13 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
-	noGit := fs.Bool("no-git", false, "Materialize files without initializing git metadata")
+	gitEnabled := fs.Bool("git", false, "Initialize local git metadata for the checkout")
+	noGit := fs.Bool("no-git", false, "Deprecated alias for the default no-git checkout mode")
 	fs.Parse(args[1:])
+	if *gitEnabled && *noGit {
+		log.Fatal("Cannot use --git and --no-git together")
+	}
+	effectiveGit := *gitEnabled
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -142,7 +147,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
-	if !*noGit {
+	if effectiveGit {
 		createdRepo, err := ensureGitRepo(".")
 		if err != nil {
 			log.Fatalf("Failed to initialize git repository: %v", err)
@@ -168,7 +173,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	if err := writeCheckoutState(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, !*noGit)); err != nil {
+	if err := writeCheckoutState(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, effectiveGit)); err != nil {
 		log.Fatalf("Failed to write checkout state: %v", err)
 	}
 
@@ -196,11 +201,15 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice sync", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to sync to")
-	noGit := fs.Bool("no-git", false, "Sync without using a local git repository")
+	gitEnabled := fs.Bool("git", false, "Sync using a local git repository")
+	noGit := fs.Bool("no-git", false, "Deprecated alias for syncing a no-git checkout")
 	parseFlagSetInterspersed(fs, args)
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice sync [--commit <commit-hash>] [--no-git]")
+		log.Println("Usage: gs slice sync [--commit <commit-hash>] [--git]")
 		return
+	}
+	if *gitEnabled && *noGit {
+		log.Fatal("Cannot use --git and --no-git together")
 	}
 
 	sliceID, err := sliceIDFromConfig()
@@ -213,13 +222,30 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to read checkout state: %v", err)
 	}
 
-	effectiveNoGit := *noGit
-	if checkoutState != nil && !checkoutState.GitEnabled {
-		effectiveNoGit = true
+	hasGitDir := false
+	if info, statErr := os.Stat(".git"); statErr == nil && info.IsDir() {
+		hasGitDir = true
 	}
-	if *noGit && checkoutState != nil && checkoutState.GitEnabled {
-		log.Fatal("Cannot sync a git-backed checkout with --no-git")
+
+	effectiveGit := false
+	switch {
+	case checkoutState != nil:
+		effectiveGit = checkoutState.GitEnabled
+		if *gitEnabled && !effectiveGit {
+			log.Fatal("Cannot sync a no-git checkout with --git. Create a new checkout with --git instead.")
+		}
+		if *noGit && effectiveGit {
+			log.Fatal("Cannot sync a git-backed checkout with --no-git")
+		}
+	case *gitEnabled:
+		effectiveGit = true
+	case *noGit:
+		effectiveGit = false
+	default:
+		// Preserve behavior for older checkouts that predate checkout_state.json.
+		effectiveGit = hasGitDir
 	}
+	effectiveNoGit := !effectiveGit
 
 	var createdRepo bool
 	var hasCommit bool
