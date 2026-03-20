@@ -33,7 +33,7 @@ func printSliceHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  list      List your slices")
 	fmt.Println("  create    Create a focused slice from one or more published folders")
-	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug")
+	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug (--files for verbose listing)")
 	fmt.Println("  clone     Alias for checkout")
 	fmt.Println("  pull      Alias for sync")
 	fmt.Println("  sync      Sync the current checked out slice in place")

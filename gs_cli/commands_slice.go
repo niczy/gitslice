@@ -105,7 +105,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>]")
+		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files]")
 		return
 	}
 
@@ -117,6 +117,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	// Parse flags
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
+	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
 	fs.Parse(args[1:])
 
 	entries, err := os.ReadDir(".")
@@ -176,7 +177,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
 	fmt.Printf("Files: %d\n", len(resp.Manifest.FileMetadata))
 
-	if len(resp.Manifest.FileMetadata) > 0 {
+	if *showFiles && len(resp.Manifest.FileMetadata) > 0 {
 		fmt.Println("\nFiles in slice:")
 		for _, fm := range resp.Manifest.FileMetadata {
 			fmt.Printf("  - %s (%d bytes)\n", fm.Path, fm.Size)

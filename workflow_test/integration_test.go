@@ -985,7 +985,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug)
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -1010,7 +1010,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceArg)
+	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceArg, "--files")
 	if !strings.Contains(output, "Commit: "+sliceCommit) {
 		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
 	}
@@ -1022,7 +1022,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		rootCheckoutDir := t.TempDir()
 		var err error
-		output, err = runCLIWithDir(rootCheckoutDir, "slice", "checkout", rootCheckoutArg)
+		output, err = runCLIWithDir(rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--files")
 		if err != nil {
 			return false, nil
 		}
