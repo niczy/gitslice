@@ -129,7 +129,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatal("Directory is not empty. Please checkout into an empty directory.")
 	}
 
-	resp, cache, err := fetchSliceCheckoutResponse(ctx, cli, sliceID, *commitHash)
+	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", false)
 	if err != nil {
 		log.Fatalf("Failed to checkout slice: %v", err)
 	}
@@ -139,11 +139,6 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	}
 	if err := writeSliceIDConfig(sliceID); err != nil {
 		log.Fatalf("Failed to write config file: %v", err)
-	}
-
-	materialized, err := materializeSliceCheckout(".", resp, cache, false)
-	if err != nil {
-		log.Fatalf("Failed to materialize checkout: %v", err)
 	}
 
 	createdRepo, err := ensureGitRepo(".")
@@ -157,7 +152,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
 		log.Fatalf("Failed to switch to main branch: %v", err)
 	}
-	stagePaths := append([]string(nil), materialized.ChangedPaths...)
+	stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
 	if gitignoreChanged {
 		stagePaths = append(stagePaths, ".gitignore")
 	}
@@ -165,28 +160,28 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to stage checkout files: %v", err)
 	}
 	if createdRepo || len(stagePaths) > 0 {
-		if err := createCheckoutCommit(".", resp.Manifest.CommitHash); err != nil {
+		if err := createCheckoutCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
 			log.Fatalf("Failed to create checkout commit: %v", err)
 		}
 	}
 
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
-	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
-	fmt.Printf("Files: %d\n", len(resp.Manifest.FileMetadata))
+	fmt.Printf("Commit: %s\n", checkoutResult.Manifest.CommitHash)
+	fmt.Printf("Files: %d\n", len(checkoutResult.Manifest.FileMetadata))
 
-	if *showFiles && len(resp.Manifest.FileMetadata) > 0 {
+	if *showFiles && len(checkoutResult.Manifest.FileMetadata) > 0 {
 		fmt.Println("\nFiles in slice:")
-		for _, fm := range resp.Manifest.FileMetadata {
+		for _, fm := range checkoutResult.Manifest.FileMetadata {
 			fmt.Printf("  - %s (%d bytes)\n", fm.Path, fm.Size)
 		}
 	}
 
-	if cache != nil {
-		fmt.Printf("Cache hits: %d\n", materialized.CacheHits)
+	if checkoutResult.Cache != nil {
+		fmt.Printf("Cache hits: %d\n", checkoutResult.Materialized.CacheHits)
 	}
 
-	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
+	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
 		log.Printf("Warning: failed to register checkout path: %v", err)
 	}
 }
@@ -233,16 +228,12 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
 
-	resp, cache, err := fetchSliceCheckoutResponse(ctx, cli, sliceID, *commitHash)
+	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", true)
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
-	materialized, err := materializeSliceCheckout(".", resp, cache, true)
-	if err != nil {
-		log.Fatalf("Failed to materialize synced slice: %v", err)
-	}
 
-	stagePaths := append([]string(nil), materialized.ChangedPaths...)
+	stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
 	if gitignoreChanged {
 		stagePaths = append(stagePaths, ".gitignore")
 	}
@@ -266,22 +257,22 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	status := "up to date"
-	if createdRepo || !hasCommit || hasPendingChanges || !strings.Contains(lastCommitMessage, resp.Manifest.CommitHash) {
-		if err := createSyncCommit(".", resp.Manifest.CommitHash); err != nil {
+	if createdRepo || !hasCommit || hasPendingChanges || !strings.Contains(lastCommitMessage, checkoutResult.Manifest.CommitHash) {
+		if err := createSyncCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
 			log.Fatalf("Failed to create sync commit: %v", err)
 		}
 		status = "updated"
 	}
 
 	fmt.Printf("Synced slice: %s\n", sliceID)
-	fmt.Printf("Commit: %s\n", resp.Manifest.CommitHash)
-	fmt.Printf("Files: %d\n", len(resp.Manifest.FileMetadata))
+	fmt.Printf("Commit: %s\n", checkoutResult.Manifest.CommitHash)
+	fmt.Printf("Files: %d\n", len(checkoutResult.Manifest.FileMetadata))
 	fmt.Printf("Status: %s\n", status)
-	if cache != nil {
-		fmt.Printf("Cache hits: %d\n", materialized.CacheHits)
+	if checkoutResult.Cache != nil {
+		fmt.Printf("Cache hits: %d\n", checkoutResult.Materialized.CacheHits)
 	}
 
-	if err := registerCheckout(".", sliceID, resp.Manifest.CommitHash); err != nil {
+	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
 		log.Printf("Warning: failed to update checkout registry: %v", err)
 	}
 }
@@ -360,7 +351,12 @@ func parseSliceFolderPaths(raw string) []string {
 	return out
 }
 
-func fetchSliceCheckoutResponse(ctx context.Context, cli *CLI, sliceID, commitHash string) (*slicev1.CheckoutResponse, *CacheManager, error) {
+func fetchAndMaterializeSliceCheckout(
+	ctx context.Context,
+	cli *CLI,
+	sliceID, commitHash, dir string,
+	pruneTracked bool,
+) (*checkoutFetchResult, error) {
 	req := &slicev1.CheckoutRequest{
 		SliceId:    sliceID,
 		CommitHash: commitHash,
@@ -379,36 +375,65 @@ func fetchSliceCheckoutResponse(ctx context.Context, cli *CLI, sliceID, commitHa
 		}
 	}
 
-	resp, err := fetchSliceCheckoutResponseStream(ctx, cli, req, cache)
+	manifest, materialized, err := materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked)
 	if err == nil {
-		return resp, cache, nil
+		return &checkoutFetchResult{
+			Manifest:     manifest,
+			Materialized: materialized,
+			Cache:        cache,
+		}, nil
 	}
 	if status.Code(err) != codes.Unimplemented {
-		return nil, cache, err
+		return nil, err
 	}
 
-	resp, err = cli.sliceClient.CheckoutSlice(ctx, req)
+	resp, err := cli.sliceClient.CheckoutSlice(ctx, req)
 	if err != nil {
-		return nil, cache, err
+		return nil, err
 	}
-	return resp, cache, nil
+	materialized, err = materializeSliceCheckout(dir, resp, cache, pruneTracked)
+	if err != nil {
+		return nil, err
+	}
+	return &checkoutFetchResult{
+		Manifest:     resp.GetManifest(),
+		Materialized: materialized,
+		Cache:        cache,
+	}, nil
 }
 
-func fetchSliceCheckoutResponseStream(
+func materializeSliceCheckoutStream(
 	ctx context.Context,
 	cli *CLI,
 	req *slicev1.CheckoutRequest,
 	cache *CacheManager,
-) (*slicev1.CheckoutResponse, error) {
+	dir string,
+	pruneTracked bool,
+) (*slicev1.SliceManifest, *checkoutMaterialization, error) {
 	stream, err := cli.sliceClient.StreamCheckoutSlice(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	resp := &slicev1.CheckoutResponse{
-		Manifest: &slicev1.SliceManifest{},
+	manifest := &slicev1.SliceManifest{}
+	knownHashes := make(map[string]struct{}, len(req.GetKnownHashes()))
+	for _, hash := range req.GetKnownHashes() {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			continue
+		}
+		knownHashes[hash] = struct{}{}
 	}
-	hashByFileID := make(map[string]string)
+
+	var materializer *streamedCheckoutMaterializer
+	prepareMaterializer := func() error {
+		if materializer != nil {
+			return nil
+		}
+		var prepErr error
+		materializer, prepErr = newStreamedCheckoutMaterializer(dir, manifest, cache, pruneTracked, knownHashes)
+		return prepErr
+	}
 
 	for {
 		chunk, err := stream.Recv()
@@ -416,58 +441,59 @@ func fetchSliceCheckoutResponseStream(
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		switch payload := chunk.GetChunk().(type) {
 		case *slicev1.CheckoutChunk_Manifest:
 			if payload.Manifest == nil {
 				continue
 			}
-			if resp.Manifest.GetCommitHash() == "" {
-				resp.Manifest.CommitHash = payload.Manifest.GetCommitHash()
+			if manifest.GetCommitHash() == "" {
+				manifest.CommitHash = payload.Manifest.GetCommitHash()
 			}
-			resp.Manifest.FileMetadata = append(resp.Manifest.FileMetadata, payload.Manifest.GetFileMetadata()...)
-			for _, meta := range payload.Manifest.GetFileMetadata() {
-				if meta == nil {
-					continue
-				}
-				hashByFileID[meta.GetFileId()] = strings.TrimSpace(meta.GetHash())
-			}
+			manifest.FileMetadata = append(manifest.FileMetadata, payload.Manifest.GetFileMetadata()...)
 		case *slicev1.CheckoutChunk_Block:
 			if payload.Block == nil {
 				continue
 			}
-			if cache != nil && strings.TrimSpace(payload.Block.GetHash()) != "" {
-				if err := cache.StoreObject(payload.Block.GetHash(), payload.Block.GetContent()); err == nil {
-					continue
-				} else {
-					log.Printf("Failed to write cached block %s: %v", payload.Block.GetHash(), err)
-				}
+			if err := prepareMaterializer(); err != nil {
+				return nil, nil, err
 			}
-			resp.Blocks = append(resp.Blocks, payload.Block)
+			if err := materializer.handleBlock(payload.Block); err != nil {
+				return nil, nil, err
+			}
 		case *slicev1.CheckoutChunk_File:
 			if payload.File == nil {
 				continue
 			}
-			if cache != nil {
-				if hash := strings.TrimSpace(hashByFileID[payload.File.GetFileId()]); hash != "" {
-					if err := cache.StoreObject(hash, payload.File.GetContent()); err == nil {
-						continue
-					} else {
-						log.Printf("Failed to write cached file %s: %v", payload.File.GetFileId(), err)
-					}
-				}
+			if err := prepareMaterializer(); err != nil {
+				return nil, nil, err
 			}
-			resp.Files = append(resp.Files, payload.File)
+			if err := materializer.handleFile(payload.File); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 
-	return resp, nil
+	if err := prepareMaterializer(); err != nil {
+		return nil, nil, err
+	}
+	materialized, err := materializer.finish()
+	if err != nil {
+		return nil, nil, err
+	}
+	return manifest, materialized, nil
 }
 
 type checkoutMaterialization struct {
 	CacheHits    int64
 	ChangedPaths []string
+}
+
+type checkoutFetchResult struct {
+	Manifest     *slicev1.SliceManifest
+	Materialized *checkoutMaterialization
+	Cache        *CacheManager
 }
 
 func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (*checkoutMaterialization, error) {
@@ -539,6 +565,198 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 	}, nil
 }
 
+type streamedPendingFile struct {
+	meta               *slicev1.FileMetadata
+	missingBlockHashes []string
+	remainingBlocks    int
+}
+
+type streamedCheckoutMaterializer struct {
+	dir            string
+	cache          *CacheManager
+	manifest       *slicev1.SliceManifest
+	blockContents  map[string][]byte
+	blockWaiters   map[string][]*streamedPendingFile
+	blockRefCounts map[string]int
+	pendingFiles   map[string]*streamedPendingFile
+	directFiles    map[string]*slicev1.FileMetadata
+	changedPaths   []string
+	cachedHits     int64
+}
+
+func newStreamedCheckoutMaterializer(
+	dir string,
+	manifest *slicev1.SliceManifest,
+	cache *CacheManager,
+	pruneTracked bool,
+	knownHashes map[string]struct{},
+) (*streamedCheckoutMaterializer, error) {
+	if manifest == nil {
+		return nil, fmt.Errorf("missing checkout manifest")
+	}
+
+	materializer := &streamedCheckoutMaterializer{
+		dir:            dir,
+		cache:          cache,
+		manifest:       manifest,
+		blockContents:  make(map[string][]byte),
+		blockWaiters:   make(map[string][]*streamedPendingFile),
+		blockRefCounts: make(map[string]int),
+		pendingFiles:   make(map[string]*streamedPendingFile),
+		directFiles:    make(map[string]*slicev1.FileMetadata),
+	}
+
+	if pruneTracked {
+		removedPaths, err := removeStaleTrackedCheckoutFiles(dir, manifest.FileMetadata)
+		if err != nil {
+			return nil, err
+		}
+		materializer.changedPaths = append(materializer.changedPaths, removedPaths...)
+	}
+	if err := prepareCheckoutDirectories(dir, manifest.FileMetadata); err != nil {
+		return nil, err
+	}
+
+	for _, fm := range manifest.FileMetadata {
+		if fm == nil {
+			continue
+		}
+		if writtenPath, wrote, err := tryWriteSliceCheckoutFileFromCache(dir, cache, fm, nil, &materializer.cachedHits); err != nil {
+			return nil, err
+		} else if wrote {
+			materializer.changedPaths = append(materializer.changedPaths, writtenPath)
+			continue
+		}
+		if len(fm.GetBlocks()) == 0 {
+			materializer.directFiles[fm.GetFileId()] = fm
+			continue
+		}
+		pending := &streamedPendingFile{
+			meta: fm,
+		}
+		for _, block := range fm.GetBlocks() {
+			if block == nil {
+				continue
+			}
+			hash := strings.TrimSpace(block.GetHash())
+			if hash == "" {
+				continue
+			}
+			if _, ok := knownHashes[hash]; ok {
+				continue
+			}
+			pending.missingBlockHashes = append(pending.missingBlockHashes, hash)
+			pending.remainingBlocks++
+			materializer.blockWaiters[hash] = append(materializer.blockWaiters[hash], pending)
+			materializer.blockRefCounts[hash]++
+		}
+		if pending.remainingBlocks == 0 {
+			if writtenPath, err := writeSliceCheckoutFile(dir, cache, fm, nil, nil, materializer.blockContents, &materializer.cachedHits); err != nil {
+				return nil, err
+			} else if writtenPath != "" {
+				materializer.changedPaths = append(materializer.changedPaths, writtenPath)
+				continue
+			}
+			return nil, fmt.Errorf("failed to materialize %s from local cache", fm.GetPath())
+		}
+		materializer.pendingFiles[fm.GetFileId()] = pending
+	}
+
+	return materializer, nil
+}
+
+func (m *streamedCheckoutMaterializer) handleBlock(block *slicev1.BlockContent) error {
+	if block == nil {
+		return nil
+	}
+	hash := strings.TrimSpace(block.GetHash())
+	if hash == "" {
+		return nil
+	}
+	if m.cache != nil {
+		if err := m.cache.StoreObject(hash, block.GetContent()); err != nil {
+			log.Printf("Failed to update cache block %s: %v", hash, err)
+		}
+	}
+	m.blockContents[hash] = block.GetContent()
+
+	waiters := m.blockWaiters[hash]
+	for _, pending := range waiters {
+		pending.remainingBlocks--
+		if pending.remainingBlocks > 0 {
+			continue
+		}
+		writtenPath, err := writeSliceCheckoutFile(m.dir, m.cache, pending.meta, nil, nil, m.blockContents, &m.cachedHits)
+		if err != nil {
+			return err
+		}
+		if writtenPath == "" {
+			return fmt.Errorf("failed to materialize %s after receiving all checkout blocks", pending.meta.GetPath())
+		}
+		m.changedPaths = append(m.changedPaths, writtenPath)
+		delete(m.pendingFiles, pending.meta.GetFileId())
+		for _, blockHash := range pending.missingBlockHashes {
+			if remaining := m.blockRefCounts[blockHash] - 1; remaining <= 0 {
+				delete(m.blockRefCounts, blockHash)
+				delete(m.blockContents, blockHash)
+				delete(m.blockWaiters, blockHash)
+			} else {
+				m.blockRefCounts[blockHash] = remaining
+			}
+		}
+	}
+	return nil
+}
+
+func (m *streamedCheckoutMaterializer) handleFile(file *slicev1.FileContent) error {
+	if file == nil {
+		return nil
+	}
+	meta, ok := m.directFiles[file.GetFileId()]
+	if !ok {
+		return nil
+	}
+	fileContents := map[string][]byte{file.GetFileId(): file.GetContent()}
+	explicitFiles := map[string]struct{}{file.GetFileId(): {}}
+	writtenPath, err := writeSliceCheckoutFile(m.dir, m.cache, meta, explicitFiles, fileContents, nil, &m.cachedHits)
+	if err != nil {
+		return err
+	}
+	if writtenPath == "" {
+		return fmt.Errorf("failed to materialize streamed file %s", meta.GetPath())
+	}
+	m.changedPaths = append(m.changedPaths, writtenPath)
+	delete(m.directFiles, file.GetFileId())
+	return nil
+}
+
+func (m *streamedCheckoutMaterializer) finish() (*checkoutMaterialization, error) {
+	if len(m.pendingFiles) > 0 {
+		pending := make([]string, 0, len(m.pendingFiles))
+		for _, file := range m.pendingFiles {
+			pending = append(pending, file.meta.GetPath())
+		}
+		sort.Strings(pending)
+		return nil, fmt.Errorf("checkout stream ended before receiving blocks for %s", strings.Join(pending, ", "))
+	}
+	if len(m.directFiles) > 0 {
+		pending := make([]string, 0, len(m.directFiles))
+		for _, meta := range m.directFiles {
+			pending = append(pending, meta.GetPath())
+		}
+		sort.Strings(pending)
+		return nil, fmt.Errorf("checkout stream ended before receiving files for %s", strings.Join(pending, ", "))
+	}
+	if err := removeEmptyCheckoutDirs(m.dir); err != nil {
+		return nil, err
+	}
+	sort.Strings(m.changedPaths)
+	return &checkoutMaterialization{
+		CacheHits:    m.cachedHits,
+		ChangedPaths: uniqueCheckoutPaths(m.changedPaths),
+	}, nil
+}
+
 func writeSliceCheckoutFile(
 	dir string,
 	cache *CacheManager,
@@ -552,38 +770,13 @@ func writeSliceCheckoutFile(
 		return "", nil
 	}
 
-	targetPath := filepath.Join(dir, fm.Path)
-	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if writtenPath, wrote, err := tryWriteSliceCheckoutFileFromCache(dir, cache, fm, blockContents, cachedHits); err != nil {
 		return "", err
-	}
-	if fm.GetSymlinkTarget() != "" {
-		return fm.GetPath(), os.Symlink(fm.GetSymlinkTarget(), targetPath)
-	}
-
-	mode := os.FileMode(0o644)
-	if fm.GetExecutable() {
-		mode = 0o755
-	}
-
-	if cache != nil && fm.Hash != "" {
-		if err := cache.CopyObjectToFile(fm.Hash, targetPath, mode); err == nil {
-			atomic.AddInt64(cachedHits, 1)
-			return fm.GetPath(), nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("Failed to copy cached object for %s: %v", fm.Path, err)
-		}
+	} else if wrote {
+		return writtenPath, nil
 	}
 
 	var content []byte
-	if data, hits, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
-		content = data
-		if hits > 0 {
-			atomic.AddInt64(cachedHits, hits)
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
-	}
-
 	if content == nil {
 		if data, ok := fileContents[fm.FileId]; ok {
 			content = data
@@ -606,7 +799,79 @@ func writeSliceCheckoutFile(
 		}
 	}
 
+	targetPath := filepath.Join(dir, fm.Path)
+	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	mode := os.FileMode(0o644)
+	if fm.GetExecutable() {
+		mode = 0o755
+	}
 	return fm.GetPath(), os.WriteFile(targetPath, content, mode)
+}
+
+func tryWriteSliceCheckoutFileFromCache(
+	dir string,
+	cache *CacheManager,
+	fm *slicev1.FileMetadata,
+	blockContents map[string][]byte,
+	cachedHits *int64,
+) (string, bool, error) {
+	if fm == nil {
+		return "", false, nil
+	}
+
+	targetPath := filepath.Join(dir, fm.Path)
+	if fm.GetSymlinkTarget() != "" {
+		if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", false, err
+		}
+		return fm.GetPath(), true, os.Symlink(fm.GetSymlinkTarget(), targetPath)
+	}
+
+	mode := os.FileMode(0o644)
+	if fm.GetExecutable() {
+		mode = 0o755
+	}
+
+	if cache != nil && fm.Hash != "" {
+		if info, err := os.Lstat(targetPath); err == nil {
+			if info.IsDir() {
+				if err := os.RemoveAll(targetPath); err != nil {
+					return "", false, err
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false, err
+		}
+		if err := cache.CopyObjectToFile(fm.Hash, targetPath, mode); err == nil {
+			atomic.AddInt64(cachedHits, 1)
+			return fm.GetPath(), true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Failed to copy cached object for %s: %v", fm.Path, err)
+		}
+	}
+
+	content, hits, err := assembleCheckoutFile(cache, fm, blockContents)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
+		return "", false, nil
+	}
+	if hits > 0 {
+		atomic.AddInt64(cachedHits, hits)
+	}
+	if cache != nil && fm.Hash != "" {
+		if err := cache.StoreObject(fm.Hash, content); err != nil {
+			log.Printf("Failed to update cache for %s: %v", fm.Path, err)
+		}
+	}
+	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+	return fm.GetPath(), true, os.WriteFile(targetPath, content, mode)
 }
 
 func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadata) error {
