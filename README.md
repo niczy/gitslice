@@ -174,7 +174,7 @@ gs changeset list --status merged
 ```
 
 `gs slice create` keeps a free-form display name and also returns a stable slug. `gs slice checkout` accepts either the slice ID or that slug.
-Plain `gs slice checkout` is the fast default and skips local git metadata. Add `--git` when you want local git status/diff and the full slice publish workflow from that checkout.
+Plain `gs slice checkout` is the fast default and skips local git metadata. Add `--git` when you want local git status/diff and a git-native local workflow.
 
 For the normal local workflow, list your slices, check one out, sync it in place, and publish through the tracked changeset:
 

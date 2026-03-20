@@ -56,10 +56,6 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
-	if err := requireMainBranch("."); err != nil {
-		log.Fatalf("Cannot publish slice: %v", err)
-	}
-
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
 		log.Printf("Failed to read slice binding: %v", err)
@@ -81,14 +77,12 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		modifiedFiles = append(modifiedFiles, splitAndTrim(*files, ",")...)
 	}
 	modifiedFiles = append(modifiedFiles, fs.Args()...)
-	if len(modifiedFiles) == 0 {
-		modifiedFiles, err = gitChangedFiles(".")
-		if err != nil {
-			log.Fatalf("Failed to detect changed files: %v", err)
-		}
+	modifiedFiles, _, err = resolveWorkingTreeModifiedFiles(".", modifiedFiles)
+	if err != nil {
+		log.Fatalf("Cannot publish slice: %v", err)
 	}
 	if len(modifiedFiles) == 0 {
-		log.Fatal("No modified files specified and git working tree is clean")
+		log.Fatal("No modified files specified and working tree is clean")
 	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)

@@ -37,7 +37,7 @@ const CHECKOUT_STEPS = [
 const CHECKOUT_FACTS = [
   'Fast no-git checkout by default',
   'Custom slice per feature or folder',
-  'Add --git when you want local git status, diff, and publish',
+  'Add --git when you want local git status and diff',
 ];
 
 const CLOUD_EDIT_FACTS = [

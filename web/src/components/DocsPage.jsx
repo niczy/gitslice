@@ -48,7 +48,7 @@ const COMMAND_MAP = [
   {
     task: 'Create a focused local worktree',
     command: 'gs slice list\ngs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug> --git',
-    note: 'Use plain checkout for the fastest materialization. Add --git when you want local git status, diff, and publish.',
+    note: 'Use plain checkout for the fastest materialization. Add --git when you want local git status and diff.',
   },
   {
     task: 'Bind a GitHub repo into a home-slice directory',
@@ -285,7 +285,7 @@ gs repo unlink /$USER/vendor/repo`}</code>
             <p>
               A custom slice is the local-work path. Create one around the folder or surface you care about, then
               check it out. Plain <code>gs slice checkout</code> skips git metadata for speed. Add <code>--git</code>
-              when you want local git status, diff, and publish commands. The client asks for manifests first and
+              when you want local git status and diff. The client asks for manifests first and
               downloads only blocks missing from local cache, so repeat checkouts stay fast.
             </p>
             <div className="docs-step-list">
