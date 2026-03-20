@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -127,6 +128,23 @@ func TestStorageBlockManifestRoundTrip(t *testing.T) {
 				}
 				if !bytes.Equal(got, body) {
 					t.Fatalf("GetBlock mismatch for %s", hash)
+				}
+			}
+			orderedHashes := make([]string, 0, len(payloads))
+			for hash := range payloads {
+				orderedHashes = append(orderedHashes, hash)
+			}
+			sort.Strings(orderedHashes)
+			batched, err := st.GetBlocks(ctx, orderedHashes)
+			if err != nil {
+				t.Fatalf("GetBlocks failed: %v", err)
+			}
+			if got, want := len(batched), len(payloads); got != want {
+				t.Fatalf("expected %d batched blocks, got %d", want, got)
+			}
+			for _, hash := range orderedHashes {
+				if !bytes.Equal(batched[hash], payloads[hash]) {
+					t.Fatalf("GetBlocks mismatch for %s", hash)
 				}
 			}
 

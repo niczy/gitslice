@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -698,6 +700,10 @@ func (s *postgresNativeTxView) PutBlock(ctx context.Context, hash string, data [
 
 func (s *postgresNativeTxView) GetBlock(ctx context.Context, hash string) ([]byte, error) {
 	return s.PostgresNativeStorage.GetBlock(ctx, hash)
+}
+
+func (s *postgresNativeTxView) GetBlocks(ctx context.Context, hashes []string) (map[string][]byte, error) {
+	return s.PostgresNativeStorage.GetBlocks(ctx, hashes)
 }
 
 func (s *postgresNativeTxView) HasBlock(ctx context.Context, hash string) (bool, error) {
@@ -1859,6 +1865,63 @@ func (s *PostgresNativeStorage) GetBlock(ctx context.Context, hash string) ([]by
 	return s.objectStore.GetObject(ctx, s.objKey("blocks", hash))
 }
 
+func (s *PostgresNativeStorage) GetBlocks(ctx context.Context, hashes []string) (map[string][]byte, error) {
+	ctx = ensureCtx(ctx)
+	if len(hashes) == 0 {
+		return map[string][]byte{}, nil
+	}
+
+	unique := make([]string, 0, len(hashes))
+	seen := make(map[string]struct{}, len(hashes))
+	for _, rawHash := range hashes {
+		hash := strings.TrimSpace(rawHash)
+		if hash == "" {
+			return nil, ErrInvalidInput
+		}
+		if _, exists := seen[hash]; exists {
+			continue
+		}
+		seen[hash] = struct{}{}
+		unique = append(unique, hash)
+	}
+
+	type result struct {
+		hash string
+		data []byte
+		err  error
+	}
+
+	workerCount := checkoutBlockFetchWorkerCount(len(unique))
+	jobs := make(chan string)
+	results := make(chan result, len(unique))
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for hash := range jobs {
+				data, err := s.objectStore.GetObject(ctx, s.objKey("blocks", hash))
+				results <- result{hash: hash, data: data, err: err}
+			}
+		}()
+	}
+	for _, hash := range unique {
+		jobs <- hash
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	blocks := make(map[string][]byte, len(unique))
+	for result := range results {
+		if result.err != nil {
+			return nil, result.err
+		}
+		blocks[result.hash] = result.data
+	}
+	return blocks, nil
+}
+
 func (s *PostgresNativeStorage) HasBlock(ctx context.Context, hash string) (bool, error) {
 	ctx = ensureCtx(ctx)
 	hash = strings.TrimSpace(hash)
@@ -1883,6 +1946,23 @@ func (s *PostgresNativeStorage) PutBlocks(ctx context.Context, blocks map[string
 		}
 	}
 	return nil
+}
+
+func checkoutBlockFetchWorkerCount(jobs int) int {
+	if jobs <= 0 {
+		return 0
+	}
+	workers := runtime.GOMAXPROCS(0) * 4
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > 32 {
+		workers = 32
+	}
+	if jobs < workers {
+		return jobs
+	}
+	return workers
 }
 
 func (s *PostgresNativeStorage) PutFileManifest(ctx context.Context, sliceID, filePath string, manifest *models.FileManifest) error {

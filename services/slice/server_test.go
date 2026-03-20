@@ -127,9 +127,25 @@ type countingCheckoutStorage struct {
 	storage.Storage
 
 	mu                        sync.Mutex
+	getBlockCalls             int
+	getBlocksCalls            int
 	getCommitSnapshotCalls    int
 	getFileManifestCalls      int
 	getVersionedManifestCalls int
+}
+
+func (s *countingCheckoutStorage) GetBlock(ctx context.Context, hash string) ([]byte, error) {
+	s.mu.Lock()
+	s.getBlockCalls++
+	s.mu.Unlock()
+	return s.Storage.GetBlock(ctx, hash)
+}
+
+func (s *countingCheckoutStorage) GetBlocks(ctx context.Context, hashes []string) (map[string][]byte, error) {
+	s.mu.Lock()
+	s.getBlocksCalls++
+	s.mu.Unlock()
+	return s.Storage.GetBlocks(ctx, hashes)
 }
 
 func (s *countingCheckoutStorage) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
@@ -375,7 +391,8 @@ func TestCheckoutSliceIncludesFileMetadata(t *testing.T) {
 
 func TestStreamCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
-	st := storage.NewInMemoryStorage()
+	base := storage.NewInMemoryStorage()
+	st := &countingCheckoutStorage{Storage: base}
 
 	slice := &models.Slice{ID: "slice-stream-checkout-blocks", Name: "slice-stream-checkout-blocks", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
@@ -432,6 +449,12 @@ func TestStreamCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
 		if block.GetHash() == manifest.Blocks[0].Hash {
 			t.Fatalf("expected known block %s to be omitted", block.GetHash())
 		}
+	}
+	if got := st.getBlocksCalls; got != 1 {
+		t.Fatalf("expected one batched block fetch, got %d", got)
+	}
+	if got := st.getBlockCalls; got != 0 {
+		t.Fatalf("expected no per-block fetches, got %d", got)
 	}
 }
 

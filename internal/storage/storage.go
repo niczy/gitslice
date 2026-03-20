@@ -86,6 +86,7 @@ type Storage interface {
 	// Block-backed file content storage
 	PutBlock(ctx context.Context, hash string, data []byte) error
 	GetBlock(ctx context.Context, hash string) ([]byte, error)
+	GetBlocks(ctx context.Context, hashes []string) (map[string][]byte, error)
 	HasBlock(ctx context.Context, hash string) (bool, error)
 	PutBlocks(ctx context.Context, blocks map[string][]byte) error
 	PutFileManifest(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error
