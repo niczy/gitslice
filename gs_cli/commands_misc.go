@@ -73,7 +73,7 @@ func handleInit(ctx context.Context, cli *CLI, args []string) {
 	if _, err := ensureGitRepo("."); err != nil {
 		log.Fatalf("Failed to initialize git repository: %v", err)
 	}
-	if err := ensureGitignoreEntry(".", ".gs/"); err != nil {
+	if _, err := ensureGitignoreEntry(".", ".gs/"); err != nil {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
 
