@@ -1157,7 +1157,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files", "--git")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
