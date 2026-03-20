@@ -8,7 +8,7 @@ const HERO_PROOF = [
   },
   {
     label: 'Quick checkout',
-    value: 'Pull the manifest first, then download only the blocks your machine is missing.',
+    value: 'Plain checkout skips git by default and downloads only the blocks your machine is missing.',
   },
   {
     label: 'Cloud edit',
@@ -35,9 +35,9 @@ const CHECKOUT_STEPS = [
 ];
 
 const CHECKOUT_FACTS = [
-  'Git-compatible local worktree',
+  'Fast no-git checkout by default',
   'Custom slice per feature or folder',
-  'Changeset merge when you are ready to publish',
+  'Add --git when you want local git status, diff, and publish',
 ];
 
 const CLOUD_EDIT_FACTS = [
@@ -56,8 +56,9 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
           </Badge>
           <h1>Check out a custom slice in seconds.</h1>
           <p className="lede">
-            Create a focused slice, pull only the missing blocks, and work in a git-compatible tree immediately.
-            When the task is smaller than a local checkout, edit the same versioned files directly with <code>gs fs</code>.
+            Create a focused slice, pull only the missing blocks, and materialize the tree immediately.
+            When you want the local git workflow, add <code>--git</code>. When the task is smaller than a local checkout,
+            edit the same versioned files directly with <code>gs fs</code>.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -92,8 +93,7 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
             <pre className="code-block">
               <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id-or-slug>
-git status`}</code>
+gs slice checkout <slice-id-or-slug>`}</code>
             </pre>
           </div>
 
@@ -137,12 +137,12 @@ gs fs snapshot -m "patch notice"`}</code>
           <div className="landing-story-code">
             <div className="landing-story-code-head">
               <Badge variant="outline" className="w-fit">Full path</Badge>
-              <p>From custom slice creation to merge</p>
+              <p>From custom slice creation to git-backed publish</p>
             </div>
             <pre className="code-block">
               <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id-or-slug>
+gs slice checkout <slice-id-or-slug> --git
 $EDITOR src/routes/settings.tsx
 gs changeset create --message "refresh settings page" --files src/routes/settings.tsx
 gs changeset merge <changeset-id>`}</code>
