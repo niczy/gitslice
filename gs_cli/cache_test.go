@@ -111,3 +111,42 @@ func TestCacheManagerStatsAndClearObjects(t *testing.T) {
 		t.Fatalf("expected empty cache after clear, got %+v", stats)
 	}
 }
+
+func TestCacheManagerCopyObjectToFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cache, err := newCacheManagerWithRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to initialize cache: %v", err)
+	}
+
+	hash := "abc123"
+	data := []byte("copied from cache")
+	if err := cache.StoreObject(hash, data); err != nil {
+		t.Fatalf("failed to store object: %v", err)
+	}
+
+	targetPath := filepath.Join(tmpDir, "checkout", "bin", "tool.sh")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	if err := cache.CopyObjectToFile(hash, targetPath, 0o755); err != nil {
+		t.Fatalf("CopyObjectToFile failed: %v", err)
+	}
+
+	written, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(written) != string(data) {
+		t.Fatalf("copied content mismatch: got %q want %q", string(written), string(data))
+	}
+
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat copied file: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("expected copied file mode 0755, got %o", info.Mode().Perm())
+	}
+}

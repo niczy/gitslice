@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,6 +75,48 @@ func (c *CacheManager) ReadObject(hash string) ([]byte, error) {
 	}
 
 	return os.ReadFile(c.objectPath(hash))
+}
+
+// CopyObjectToFile streams a cached blob into the target path without loading the
+// full object into userspace memory.
+func (c *CacheManager) CopyObjectToFile(hash, targetPath string, mode os.FileMode) error {
+	if hash == "" {
+		return errors.New("missing hash for cache copy")
+	}
+
+	source, err := os.Open(c.objectPath(hash))
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(targetPath), ".gitslice-cache-copy-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	cleanupTmp := true
+	defer func() {
+		_ = tmpFile.Close()
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := io.Copy(tmpFile, source); err != nil {
+		return err
+	}
+	if err := tmpFile.Chmod(mode); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return err
+	}
+	cleanupTmp = false
+	return nil
 }
 
 // StoreObject writes a blob to the cache under its hash.

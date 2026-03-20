@@ -505,6 +505,9 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 		}
 		changedPaths = append(changedPaths, removedPaths...)
 	}
+	if err := prepareCheckoutDirectories(dir, resp.Manifest.FileMetadata); err != nil {
+		return nil, err
+	}
 
 	var cachedHits int64
 	var changedPathsMu sync.Mutex
@@ -549,25 +552,36 @@ func writeSliceCheckoutFile(
 		return "", nil
 	}
 
-	var content []byte
+	targetPath := filepath.Join(dir, fm.Path)
+	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if fm.GetSymlinkTarget() != "" {
+		return fm.GetPath(), os.Symlink(fm.GetSymlinkTarget(), targetPath)
+	}
+
+	mode := os.FileMode(0o644)
+	if fm.GetExecutable() {
+		mode = 0o755
+	}
+
 	if cache != nil && fm.Hash != "" {
-		if data, err := cache.ReadObject(fm.Hash); err == nil {
-			content = data
+		if err := cache.CopyObjectToFile(fm.Hash, targetPath, mode); err == nil {
 			atomic.AddInt64(cachedHits, 1)
+			return fm.GetPath(), nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("Failed to read cached object for %s: %v", fm.Path, err)
+			log.Printf("Failed to copy cached object for %s: %v", fm.Path, err)
 		}
 	}
 
-	if content == nil {
-		if data, hits, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
-			content = data
-			if hits > 0 {
-				atomic.AddInt64(cachedHits, hits)
-			}
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
+	var content []byte
+	if data, hits, err := assembleCheckoutFile(cache, fm, blockContents); err == nil {
+		content = data
+		if hits > 0 {
+			atomic.AddInt64(cachedHits, hits)
 		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("Failed to assemble %s from cached blocks: %v", fm.Path, err)
 	}
 
 	if content == nil {
@@ -592,21 +606,41 @@ func writeSliceCheckoutFile(
 		}
 	}
 
-	targetPath := filepath.Join(dir, fm.Path)
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.RemoveAll(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	if fm.GetSymlinkTarget() != "" {
-		return fm.GetPath(), os.Symlink(fm.GetSymlinkTarget(), targetPath)
-	}
-	mode := os.FileMode(0o644)
-	if fm.GetExecutable() {
-		mode = 0o755
-	}
 	return fm.GetPath(), os.WriteFile(targetPath, content, mode)
+}
+
+func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadata) error {
+	if len(fileMetadata) == 0 {
+		return nil
+	}
+
+	dirs := make(map[string]struct{}, len(fileMetadata))
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		targetDir := filepath.Dir(filepath.Join(root, meta.GetPath()))
+		if targetDir == "." || targetDir == root {
+			continue
+		}
+		dirs[targetDir] = struct{}{}
+	}
+
+	if len(dirs) == 0 {
+		return nil
+	}
+
+	ordered := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		ordered = append(ordered, dir)
+	}
+	sort.Strings(ordered)
+	for _, dir := range ordered {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {
