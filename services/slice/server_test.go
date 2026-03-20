@@ -123,6 +123,36 @@ func (r *checkoutStreamRecorder) RecvMsg(any) error            { return nil }
 var _ slicev1.SliceService_StreamCheckoutSliceServer = (*checkoutStreamRecorder)(nil)
 var _ grpc.ServerStream = (*checkoutStreamRecorder)(nil)
 
+type countingCheckoutStorage struct {
+	storage.Storage
+
+	mu                        sync.Mutex
+	getCommitSnapshotCalls    int
+	getFileManifestCalls      int
+	getVersionedManifestCalls int
+}
+
+func (s *countingCheckoutStorage) GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error) {
+	s.mu.Lock()
+	s.getCommitSnapshotCalls++
+	s.mu.Unlock()
+	return s.Storage.GetCommitSnapshot(ctx, commitHash)
+}
+
+func (s *countingCheckoutStorage) GetFileManifest(ctx context.Context, sliceID, path string) (*models.FileManifest, error) {
+	s.mu.Lock()
+	s.getFileManifestCalls++
+	s.mu.Unlock()
+	return s.Storage.GetFileManifest(ctx, sliceID, path)
+}
+
+func (s *countingCheckoutStorage) GetVersionedFileManifest(ctx context.Context, hash string) (*models.FileManifest, error) {
+	s.mu.Lock()
+	s.getVersionedManifestCalls++
+	s.mu.Unlock()
+	return s.Storage.GetVersionedFileManifest(ctx, hash)
+}
+
 func collectCheckoutStreamResponse(tb testing.TB, recorder *checkoutStreamRecorder) *slicev1.CheckoutResponse {
 	tb.Helper()
 	resp := &slicev1.CheckoutResponse{
@@ -486,6 +516,101 @@ func TestCheckoutProfileSummary(t *testing.T) {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("expected summary to contain %q, got %q", want, summary)
 		}
+	}
+}
+
+func TestCheckoutSliceLoadsCommitSnapshotOnce(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	st := &countingCheckoutStorage{Storage: base}
+	srv := newSliceServiceServer(st)
+
+	slice := &models.Slice{ID: "slice-checkout-snapshot", Name: "slice-checkout-snapshot", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	for _, filePath := range []string{"app/a.txt", "app/b.txt", "app/c.txt"} {
+		mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("content:"+filePath))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       slice.ID + ":" + filePath,
+			Path:     filePath,
+			Type:     "file",
+			ParentID: slice.ID,
+			Size:     int64(len("content:" + filePath)),
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+	}
+
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, &models.SliceMetadata{
+		SliceID:        slice.ID,
+		HeadCommitHash: "commit-snapshot-once",
+		LastModified:   time.Now(),
+	}); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: "commit-snapshot-once",
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			"app/a.txt": "hash-a",
+			"app/b.txt": "hash-b",
+			"app/c.txt": "hash-c",
+		},
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	if _, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: slice.ID}); err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	if got := st.getCommitSnapshotCalls; got != 1 {
+		t.Fatalf("expected exactly one commit snapshot lookup, got %d", got)
+	}
+}
+
+func TestCheckoutSliceSkipsManifestFetchWhenFileHashKnown(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	st := &countingCheckoutStorage{Storage: base}
+	srv := newSliceServiceServer(st)
+
+	slice := &models.Slice{ID: "slice-checkout-known-metadata", Name: "slice-checkout-known-metadata", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	filePath := "pkg/main.go"
+	content := []byte("package main\n")
+	hash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+		Hash:     hash,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{
+		SliceId:     slice.ID,
+		KnownHashes: []string{hash},
+	})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	if got := len(resp.GetManifest().GetFileMetadata()); got != 1 {
+		t.Fatalf("expected 1 metadata entry, got %d", got)
+	}
+	if got := len(resp.GetManifest().GetFileMetadata()[0].GetBlocks()); got != 0 {
+		t.Fatalf("expected no block refs when full file hash is already known, got %d", got)
+	}
+	if got := st.getFileManifestCalls; got != 0 {
+		t.Fatalf("expected no slice manifest lookups, got %d", got)
+	}
+	if got := st.getVersionedManifestCalls; got != 0 {
+		t.Fatalf("expected no versioned manifest lookups, got %d", got)
 	}
 }
 

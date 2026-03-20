@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"path"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -146,89 +147,106 @@ func (s *sliceServiceServer) resolveCheckoutEffectiveCommit(ctx context.Context,
 func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 	ctx context.Context,
 	slice *models.Slice,
-	sliceID, storedPath, resolvedCommit string,
+	sliceID string,
+	entry *models.DirectoryEntry,
+	snapshotHash string,
+	loadBlocks bool,
 ) (hash string, size int64, manifestBlocks []models.Block, executable bool, symlinkTarget string, err error) {
-	if strings.TrimSpace(sliceID) == "" || strings.TrimSpace(storedPath) == "" {
+	if strings.TrimSpace(sliceID) == "" || entry == nil || strings.TrimSpace(entry.Path) == "" {
 		return "", 0, nil, false, "", storage.ErrEntryNotFound
 	}
 
-	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
-	if effectiveCommit != "" {
-		if snapshot, err := s.storage.GetCommitSnapshot(ctx, effectiveCommit); err == nil && snapshot != nil {
-			hash = strings.TrimSpace(snapshot.Files[storedPath])
+	storedPath := strings.TrimSpace(entry.Path)
+	hash = strings.TrimSpace(snapshotHash)
+	if hash == "" {
+		hash = strings.TrimSpace(entry.Hash)
+	}
+
+	size = entry.Size
+	executable = entry.Executable
+	symlinkTarget = entry.SymlinkTarget
+
+	if (size == 0 || hash == "" || symlinkTarget == "") && slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
+		parentEntry, entryErr := s.storage.GetEntryByPath(ctx, slice.ParentSlice, storedPath)
+		if entryErr == nil && parentEntry != nil {
+			if size == 0 {
+				size = parentEntry.Size
+			}
+			if hash == "" {
+				hash = strings.TrimSpace(parentEntry.Hash)
+			}
+			if !executable {
+				executable = parentEntry.Executable
+			}
+			if symlinkTarget == "" {
+				symlinkTarget = parentEntry.SymlinkTarget
+			}
+		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return "", 0, nil, false, "", entryErr
 		}
 	}
 
-	resolveFromSlice := func(targetSliceID string) error {
+	if !loadBlocks {
+		return strings.TrimSpace(hash), size, nil, executable, symlinkTarget, nil
+	}
+
+	if hash != "" {
+		versionedManifest, manifestErr := s.storage.GetVersionedFileManifest(ctx, hash)
+		if manifestErr == nil && versionedManifest != nil {
+			if size == 0 {
+				size = versionedManifest.TotalSize
+			}
+			manifestBlocks = append(manifestBlocks, versionedManifest.Blocks...)
+			if !executable {
+				executable = versionedManifest.Executable
+			}
+			if symlinkTarget == "" {
+				symlinkTarget = versionedManifest.SymlinkTarget
+			}
+			return strings.TrimSpace(hash), size, manifestBlocks, executable, symlinkTarget, nil
+		}
+		if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
+			return "", 0, nil, false, "", manifestErr
+		}
+	}
+
+	resolveFromSliceManifest := func(targetSliceID string) error {
 		if strings.TrimSpace(targetSliceID) == "" {
 			return nil
 		}
-		if manifest, manifestErr := s.storage.GetFileManifest(ctx, targetSliceID, storedPath); manifestErr == nil && manifest != nil {
-			if size == 0 {
-				size = manifest.TotalSize
+		manifest, manifestErr := s.storage.GetFileManifest(ctx, targetSliceID, storedPath)
+		if manifestErr != nil {
+			if errors.Is(manifestErr, storage.ErrEntryNotFound) {
+				return nil
 			}
-			if hash == "" {
-				hash = strings.TrimSpace(manifest.Hash)
-			}
-			if len(manifestBlocks) == 0 {
-				manifestBlocks = append(manifestBlocks, manifest.Blocks...)
-			}
-			if !executable {
-				executable = manifest.Executable
-			}
-			if symlinkTarget == "" {
-				symlinkTarget = manifest.SymlinkTarget
-			}
-		} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
 			return manifestErr
 		}
-
-		entry, entryErr := s.storage.GetEntryByPath(ctx, targetSliceID, storedPath)
-		if entryErr == nil && entry != nil {
-			if size == 0 {
-				size = entry.Size
-			}
-			if hash == "" {
-				hash = strings.TrimSpace(entry.Hash)
-			}
-			if !executable {
-				executable = entry.Executable
-			}
-			if symlinkTarget == "" {
-				symlinkTarget = entry.SymlinkTarget
-			}
-		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
-			return entryErr
+		if manifest == nil {
+			return nil
 		}
-
-		if hash != "" && (size == 0 || len(manifestBlocks) == 0) {
-			versionedManifest, manifestErr := s.storage.GetVersionedFileManifest(ctx, hash)
-			if manifestErr == nil && versionedManifest != nil {
-				if size == 0 {
-					size = versionedManifest.TotalSize
-				}
-				if len(manifestBlocks) == 0 {
-					manifestBlocks = append(manifestBlocks, versionedManifest.Blocks...)
-				}
-				if !executable {
-					executable = versionedManifest.Executable
-				}
-				if symlinkTarget == "" {
-					symlinkTarget = versionedManifest.SymlinkTarget
-				}
-			} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
-				return manifestErr
-			}
+		if size == 0 {
+			size = manifest.TotalSize
 		}
-
+		if hash == "" {
+			hash = strings.TrimSpace(manifest.Hash)
+		}
+		if len(manifestBlocks) == 0 {
+			manifestBlocks = append(manifestBlocks, manifest.Blocks...)
+		}
+		if !executable {
+			executable = manifest.Executable
+		}
+		if symlinkTarget == "" {
+			symlinkTarget = manifest.SymlinkTarget
+		}
 		return nil
 	}
 
-	if err := resolveFromSlice(sliceID); err != nil {
+	if err := resolveFromSliceManifest(sliceID); err != nil {
 		return "", 0, nil, false, "", err
 	}
-	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
-		if err := resolveFromSlice(slice.ParentSlice); err != nil {
+	if len(manifestBlocks) == 0 && slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
+		if err := resolveFromSliceManifest(slice.ParentSlice); err != nil {
 			return "", 0, nil, false, "", err
 		}
 	}
@@ -296,6 +314,17 @@ func (s *sliceServiceServer) prepareCheckout(
 	if err != nil {
 		return nil, nil, "", nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
 	}
+	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
+	snapshotFiles := map[string]string(nil)
+	if effectiveCommit != "" {
+		snapshot, snapshotErr := s.storage.GetCommitSnapshot(ctx, effectiveCommit)
+		if snapshotErr != nil && !errors.Is(snapshotErr, storage.ErrCommitNotFound) {
+			return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout snapshot for %s: %v", effectiveCommit, snapshotErr))
+		}
+		if snapshot != nil {
+			snapshotFiles = snapshot.Files
+		}
+	}
 	username, err := s.optionalUsername(ctx)
 	if err != nil {
 		return nil, nil, "", nil, nil, err
@@ -321,29 +350,83 @@ func (s *sliceServiceServer) prepareCheckout(
 		knownHashes[hash] = struct{}{}
 	}
 
-	fileMetadata := make([]*slicev1.FileMetadata, 0, len(entries))
+	fileEntries := make([]*models.DirectoryEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry == nil || entry.Type != "file" {
 			continue
 		}
-
-		storedPath := entry.Path
-		hash, size, manifestBlocks, executable, symlinkTarget, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, storedPath, resolvedCommit)
-		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
-			return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout metadata for %s: %v", storedPath, metaErr))
-		}
-
-		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
-			FileId:        storedPath,
-			Path:          common.SliceDisplayPath(slice, storedPath),
-			Size:          size,
-			Hash:          hash,
-			ContentUrl:    "",
-			Blocks:        checkoutProtoBlocks(manifestBlocks),
-			Executable:    executable,
-			SymlinkTarget: symlinkTarget,
-		})
+		fileEntries = append(fileEntries, entry)
 	}
+
+	fileMetadata := make([]*slicev1.FileMetadata, len(fileEntries))
+	var firstErr error
+	var firstErrMu sync.Mutex
+	workerCount := checkoutMetadataWorkerCount(len(fileEntries))
+	if workerCount > 0 {
+		jobCh := make(chan int)
+		var wg sync.WaitGroup
+		for i := 0; i < workerCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for idx := range jobCh {
+					if ctx.Err() != nil {
+						return
+					}
+					entry := fileEntries[idx]
+					storedPath := strings.TrimSpace(entry.Path)
+					resolvedHash := strings.TrimSpace(entry.Hash)
+					if snapshotFiles != nil {
+						if snapshotHash := strings.TrimSpace(snapshotFiles[storedPath]); snapshotHash != "" {
+							resolvedHash = snapshotHash
+						}
+					}
+					loadBlocks := true
+					if resolvedHash != "" {
+						if _, ok := knownHashes[resolvedHash]; ok {
+							loadBlocks = false
+						}
+					}
+					hash, size, manifestBlocks, executable, symlinkTarget, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, entry, resolvedHash, loadBlocks)
+					if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
+						firstErrMu.Lock()
+						if firstErr == nil {
+							firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to load checkout metadata for %s: %v", storedPath, metaErr))
+						}
+						firstErrMu.Unlock()
+						return
+					}
+					fileMetadata[idx] = &slicev1.FileMetadata{
+						FileId:        storedPath,
+						Path:          common.SliceDisplayPath(slice, storedPath),
+						Size:          size,
+						Hash:          hash,
+						ContentUrl:    "",
+						Blocks:        checkoutProtoBlocks(manifestBlocks),
+						Executable:    executable,
+						SymlinkTarget: symlinkTarget,
+					}
+				}
+			}()
+		}
+		for idx := range fileEntries {
+			firstErrMu.Lock()
+			hasErr := firstErr != nil
+			firstErrMu.Unlock()
+			if hasErr {
+				break
+			}
+			jobCh <- idx
+		}
+		close(jobCh)
+		wg.Wait()
+	}
+	firstErrMu.Lock()
+	if firstErr != nil {
+		defer firstErrMu.Unlock()
+		return nil, nil, "", nil, nil, firstErr
+	}
+	firstErrMu.Unlock()
 	sort.Slice(fileMetadata, func(i, j int) bool {
 		return fileMetadata[i].GetPath() < fileMetadata[j].GetPath()
 	})
@@ -361,6 +444,23 @@ func (s *sliceServiceServer) prepareCheckout(
 	}
 
 	return metadata, slice, resolvedCommit, fileMetadata, knownHashes, nil
+}
+
+func checkoutMetadataWorkerCount(jobs int) int {
+	if jobs <= 0 {
+		return 0
+	}
+	workers := runtime.GOMAXPROCS(0) * 4
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > 32 {
+		workers = 32
+	}
+	if jobs < workers {
+		return jobs
+	}
+	return workers
 }
 
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
