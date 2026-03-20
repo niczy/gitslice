@@ -321,7 +321,7 @@ func gitStagePaths(dir string, paths []string) error {
 		if end > len(paths) {
 			end = len(paths)
 		}
-		args := []string{"add", "-A", "--"}
+		args := []string{"add", "-A", "-f", "--"}
 		args = append(args, paths[start:end]...)
 		if _, err := runGitCommand(dir, args...); err != nil {
 			return err
