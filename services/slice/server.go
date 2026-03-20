@@ -364,12 +364,21 @@ func (s *sliceServiceServer) prepareCheckout(
 }
 
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
+	profile := newCheckoutProfile("unary", req.GetSliceId(), req.GetCommitHash(), len(req.GetKnownHashes()))
+	var err error
+	defer func() {
+		profile.logResult(err)
+	}()
+
+	prepareStartedAt := time.Now()
 	metadata, slice, resolvedCommit, fileMetadata, knownHashes, err := s.prepareCheckout(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	profile.markPrepared(len(fileMetadata), time.Since(prepareStartedAt))
 
 	// Convert file contents to proto format.
+	payloadStartedAt := time.Now()
 	var fileContents []*slicev1.FileContent
 	var blockContents []*slicev1.BlockContent
 	sentBlocks := make(map[string]struct{})
@@ -405,6 +414,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 					Hash:    blockHash,
 					Content: payload,
 				})
+				profile.addBlockPayload(len(payload))
 				sentBlocks[blockHash] = struct{}{}
 			}
 			continue
@@ -421,6 +431,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 				FileId:  file.FileID,
 				Content: file.Content,
 			})
+			profile.addFilePayload(len(file.Content))
 			continue
 		}
 		file, err := s.resolveCheckoutFileContent(ctx, slice, req.SliceId, meta.GetFileId(), resolvedCommit)
@@ -434,12 +445,15 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			FileId:  file.FileID,
 			Content: file.Content,
 		})
+		profile.addFilePayload(len(file.Content))
 	}
 
 	manifest := &slicev1.SliceManifest{
 		CommitHash:   metadata.HeadCommitHash,
 		FileMetadata: fileMetadata,
 	}
+	profile.addManifestChunk(len(fileMetadata))
+	profile.finish(time.Since(payloadStartedAt))
 
 	return &slicev1.CheckoutResponse{
 		Manifest: manifest,
@@ -448,13 +462,22 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	}, nil
 }
 
-func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, stream slicev1.SliceService_StreamCheckoutSliceServer) error {
+func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, stream slicev1.SliceService_StreamCheckoutSliceServer) (err error) {
+	profile := newCheckoutProfile("stream", req.GetSliceId(), req.GetCommitHash(), len(req.GetKnownHashes()))
+	defer func() {
+		profile.logResult(err)
+	}()
+
+	prepareStartedAt := time.Now()
 	metadata, slice, resolvedCommit, fileMetadata, knownHashes, err := s.prepareCheckout(stream.Context(), req)
 	if err != nil {
 		return err
 	}
+	profile.markPrepared(len(fileMetadata), time.Since(prepareStartedAt))
+	payloadStartedAt := time.Now()
 
 	if len(fileMetadata) == 0 {
+		profile.addManifestChunk(0)
 		if err := stream.Send(&slicev1.CheckoutChunk{
 			Chunk: &slicev1.CheckoutChunk_Manifest{
 				Manifest: &slicev1.SliceManifest{CommitHash: metadata.HeadCommitHash},
@@ -468,6 +491,7 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 			if end > len(fileMetadata) {
 				end = len(fileMetadata)
 			}
+			profile.addManifestChunk(end - start)
 			if err := stream.Send(&slicev1.CheckoutChunk{
 				Chunk: &slicev1.CheckoutChunk_Manifest{
 					Manifest: &slicev1.SliceManifest{
@@ -520,6 +544,7 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 				}); err != nil {
 					return err
 				}
+				profile.addBlockPayload(len(payload))
 				sentBlocks[blockHash] = struct{}{}
 			}
 			continue
@@ -542,8 +567,10 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 		}); err != nil {
 			return err
 		}
+		profile.addFilePayload(len(file.Content))
 	}
 
+	profile.finish(time.Since(payloadStartedAt))
 	return nil
 }
 
