@@ -106,7 +106,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files]")
+		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--no-git]")
 		return
 	}
 
@@ -119,6 +119,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
+	noGit := fs.Bool("no-git", false, "Materialize files without initializing git metadata")
 	fs.Parse(args[1:])
 
 	entries, err := os.ReadDir(".")
@@ -141,28 +142,34 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
-	createdRepo, err := ensureGitRepo(".")
-	if err != nil {
-		log.Fatalf("Failed to initialize git repository: %v", err)
-	}
-	gitignoreChanged, err := ensureGitignoreEntry(".", ".gs/")
-	if err != nil {
-		log.Fatalf("Failed to update .gitignore: %v", err)
-	}
-	if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
-		log.Fatalf("Failed to switch to main branch: %v", err)
-	}
-	stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
-	if gitignoreChanged {
-		stagePaths = append(stagePaths, ".gitignore")
-	}
-	if err := gitStagePaths(".", stagePaths); err != nil {
-		log.Fatalf("Failed to stage checkout files: %v", err)
-	}
-	if createdRepo || len(stagePaths) > 0 {
-		if err := createCheckoutCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
-			log.Fatalf("Failed to create checkout commit: %v", err)
+	if !*noGit {
+		createdRepo, err := ensureGitRepo(".")
+		if err != nil {
+			log.Fatalf("Failed to initialize git repository: %v", err)
 		}
+		gitignoreChanged, err := ensureGitignoreEntry(".", ".gs/")
+		if err != nil {
+			log.Fatalf("Failed to update .gitignore: %v", err)
+		}
+		if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
+			log.Fatalf("Failed to switch to main branch: %v", err)
+		}
+		stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
+		if gitignoreChanged {
+			stagePaths = append(stagePaths, ".gitignore")
+		}
+		if err := gitStagePaths(".", stagePaths); err != nil {
+			log.Fatalf("Failed to stage checkout files: %v", err)
+		}
+		if createdRepo || len(stagePaths) > 0 {
+			if err := createCheckoutCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
+				log.Fatalf("Failed to create checkout commit: %v", err)
+			}
+		}
+	}
+
+	if err := writeCheckoutState(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, !*noGit)); err != nil {
+		log.Fatalf("Failed to write checkout state: %v", err)
 	}
 
 	// Display checkout results
@@ -189,9 +196,10 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice sync", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to sync to")
+	noGit := fs.Bool("no-git", false, "Sync without using a local git repository")
 	parseFlagSetInterspersed(fs, args)
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice sync [--commit <commit-hash>]")
+		log.Println("Usage: gs slice sync [--commit <commit-hash>] [--no-git]")
 		return
 	}
 
@@ -200,68 +208,94 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to read current slice binding: %v", err)
 	}
 
-	createdRepo, err := ensureGitRepo(".")
+	checkoutState, err := readCheckoutState(".")
 	if err != nil {
-		log.Fatalf("Failed to initialize git repository: %v", err)
-	}
-	if createdRepo {
-		if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
-			log.Fatalf("Failed to switch to main branch: %v", err)
-		}
-	} else if err := requireMainBranch("."); err != nil {
-		log.Fatalf("Cannot sync slice: %v", err)
+		log.Fatalf("Failed to read checkout state: %v", err)
 	}
 
-	hasCommit, err := gitHasCommit(".")
-	if err != nil {
-		log.Fatalf("Failed to check git history: %v", err)
+	effectiveNoGit := *noGit
+	if checkoutState != nil && !checkoutState.GitEnabled {
+		effectiveNoGit = true
 	}
-	hasPendingChanges, err := gitHasPendingChanges(".")
-	if err != nil {
-		log.Fatalf("Failed to read git status: %v", err)
+	if *noGit && checkoutState != nil && checkoutState.GitEnabled {
+		log.Fatal("Cannot sync a git-backed checkout with --no-git")
 	}
-	if hasPendingChanges {
-		log.Fatal("Cannot sync slice: working tree has local changes. Commit or clean the checkout first.")
-	}
-	gitignoreChanged, err := ensureGitignoreEntry(".", ".gs/")
-	if err != nil {
-		log.Fatalf("Failed to update .gitignore: %v", err)
+
+	var createdRepo bool
+	var hasCommit bool
+	var hasPendingChanges bool
+	var gitignoreChanged bool
+	if effectiveNoGit {
+		if err := verifyCheckoutStateClean(".", checkoutState); err != nil {
+			log.Fatalf("Cannot sync slice: %v", err)
+		}
+	} else {
+		createdRepo, err = ensureGitRepo(".")
+		if err != nil {
+			log.Fatalf("Failed to initialize git repository: %v", err)
+		}
+		if createdRepo {
+			if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
+				log.Fatalf("Failed to switch to main branch: %v", err)
+			}
+		} else if err := requireMainBranch("."); err != nil {
+			log.Fatalf("Cannot sync slice: %v", err)
+		}
+
+		hasCommit, err = gitHasCommit(".")
+		if err != nil {
+			log.Fatalf("Failed to check git history: %v", err)
+		}
+		hasPendingChanges, err = gitHasPendingChanges(".")
+		if err != nil {
+			log.Fatalf("Failed to read git status: %v", err)
+		}
+		if hasPendingChanges {
+			log.Fatal("Cannot sync slice: working tree has local changes. Commit or clean the checkout first.")
+		}
+		gitignoreChanged, err = ensureGitignoreEntry(".", ".gs/")
+		if err != nil {
+			log.Fatalf("Failed to update .gitignore: %v", err)
+		}
 	}
 
 	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", true)
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
-
-	stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
-	if gitignoreChanged {
-		stagePaths = append(stagePaths, ".gitignore")
-	}
-	if err := gitStagePaths(".", stagePaths); err != nil {
-		log.Fatalf("Failed to stage synced files: %v", err)
-	}
-	hasPendingChanges = len(stagePaths) > 0
-	if hasCommit && hasPendingChanges {
-		hasPendingChanges, err = gitHasStagedChanges(".")
-		if err != nil {
-			log.Fatalf("Failed to inspect staged changes: %v", err)
-		}
-	}
-
-	lastCommitMessage := ""
-	if hasCommit {
-		lastCommitMessage, err = gitLatestCommitMessage(".")
-		if err != nil {
-			log.Fatalf("Failed to read latest git commit message: %v", err)
-		}
-	}
+	nextCheckoutState := checkoutStateFromManifest(sliceID, checkoutResult.Manifest, !effectiveNoGit)
 
 	status := "up to date"
-	if createdRepo || !hasCommit || hasPendingChanges || !strings.Contains(lastCommitMessage, checkoutResult.Manifest.CommitHash) {
-		if err := createSyncCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
-			log.Fatalf("Failed to create sync commit: %v", err)
+	if effectiveNoGit {
+		if !checkoutStatesEqualContent(checkoutState, nextCheckoutState) {
+			status = "updated"
 		}
-		status = "updated"
+	} else {
+		stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
+		if gitignoreChanged {
+			stagePaths = append(stagePaths, ".gitignore")
+		}
+		if err := gitStagePaths(".", stagePaths); err != nil {
+			log.Fatalf("Failed to stage synced files: %v", err)
+		}
+		hasPendingChanges = len(stagePaths) > 0
+		if hasCommit && hasPendingChanges {
+			hasPendingChanges, err = gitHasStagedChanges(".")
+			if err != nil {
+				log.Fatalf("Failed to inspect staged changes: %v", err)
+			}
+		}
+
+		if createdRepo || !hasCommit || hasPendingChanges {
+			if err := createSyncCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
+				log.Fatalf("Failed to create sync commit: %v", err)
+			}
+			status = "updated"
+		}
+	}
+
+	if err := writeCheckoutState(".", nextCheckoutState); err != nil {
+		log.Fatalf("Failed to write checkout state: %v", err)
 	}
 
 	fmt.Printf("Synced slice: %s\n", sliceID)
@@ -580,7 +614,11 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 
 	var changedPaths []string
 	if pruneTracked {
-		removedPaths, err := removeStaleTrackedCheckoutFiles(dir, resp.Manifest.FileMetadata)
+		trackedPaths, err := trackedCheckoutPathsForPrune(dir)
+		if err != nil {
+			return nil, err
+		}
+		removedPaths, err := removeStaleTrackedCheckoutFiles(dir, trackedPaths, resp.Manifest.FileMetadata)
 		if err != nil {
 			return nil, err
 		}
@@ -673,7 +711,11 @@ func newStreamedCheckoutMaterializer(
 	}
 
 	if pruneTracked {
-		removedPaths, err := removeStaleTrackedCheckoutFiles(dir, manifest.FileMetadata)
+		trackedPaths, err := trackedCheckoutPathsForPrune(dir)
+		if err != nil {
+			return nil, err
+		}
+		removedPaths, err := removeStaleTrackedCheckoutFiles(dir, trackedPaths, manifest.FileMetadata)
 		if err != nil {
 			return nil, err
 		}
@@ -686,6 +728,7 @@ func newStreamedCheckoutMaterializer(
 	materializer.changedPaths = append(materializer.changedPaths, removedConflicts...)
 	directoryMarkers := checkoutDirectoryMarkers(manifest.FileMetadata)
 
+	workItems := make([]*slicev1.FileMetadata, 0, len(manifest.FileMetadata))
 	for _, fm := range manifest.FileMetadata {
 		if fm == nil {
 			continue
@@ -693,24 +736,51 @@ func newStreamedCheckoutMaterializer(
 		if _, ok := directoryMarkers[filepath.Clean(fm.GetPath())]; ok {
 			continue
 		}
-		if writtenPath, wrote, err := tryWriteSliceCheckoutFileFromCache(dir, cache, fm, nil, &materializer.cachedHits); err != nil {
-			return nil, err
-		} else if wrote {
-			materializer.changedPaths = append(materializer.changedPaths, writtenPath)
-			continue
+		workItems = append(workItems, fm)
+	}
+
+	var initMu sync.Mutex
+	var initErr error
+	var initErrOnce sync.Once
+	var initFailed int32
+	setInitErr := func(err error) {
+		if err == nil {
+			return
 		}
+		initErrOnce.Do(func() {
+			initErr = err
+			atomic.StoreInt32(&initFailed, 1)
+		})
+	}
+
+	runCheckoutJobs(checkoutWorkerCount(len(workItems)), workItems, func(fm *slicev1.FileMetadata) {
+		if atomic.LoadInt32(&initFailed) != 0 {
+			return
+		}
+
+		if writtenPath, wrote, err := tryWriteSliceCheckoutFileFromCache(dir, cache, fm, nil, &materializer.cachedHits); err != nil {
+			setInitErr(err)
+			return
+		} else if wrote {
+			initMu.Lock()
+			materializer.changedPaths = append(materializer.changedPaths, writtenPath)
+			initMu.Unlock()
+			return
+		}
+
 		if len(fm.GetBlocks()) == 0 {
+			initMu.Lock()
 			if hash := strings.TrimSpace(fm.GetHash()); hash != "" {
 				if _, ok := knownHashes[hash]; ok {
 					materializer.missingKnown[hash] = struct{}{}
 				}
 			}
 			materializer.directFiles[fm.GetFileId()] = fm
-			continue
+			initMu.Unlock()
+			return
 		}
-		pending := &streamedPendingFile{
-			meta: fm,
-		}
+
+		pending := &streamedPendingFile{meta: fm}
 		for _, block := range fm.GetBlocks() {
 			if block == nil {
 				continue
@@ -724,16 +794,18 @@ func newStreamedCheckoutMaterializer(
 			}
 			pending.missingBlockHashes = append(pending.missingBlockHashes, hash)
 			pending.remainingBlocks++
-			materializer.blockWaiters[hash] = append(materializer.blockWaiters[hash], pending)
-			materializer.blockRefCounts[hash]++
 		}
 		if pending.remainingBlocks == 0 {
 			if writtenPath, err := writeSliceCheckoutFile(dir, cache, fm, nil, nil, materializer.blockContents, &materializer.cachedHits); err != nil {
-				return nil, err
+				setInitErr(err)
+				return
 			} else if writtenPath != "" {
+				initMu.Lock()
 				materializer.changedPaths = append(materializer.changedPaths, writtenPath)
-				continue
+				initMu.Unlock()
+				return
 			}
+			initMu.Lock()
 			if hash := strings.TrimSpace(fm.GetHash()); hash != "" {
 				if _, ok := knownHashes[hash]; ok {
 					materializer.missingKnown[hash] = struct{}{}
@@ -751,9 +823,21 @@ func newStreamedCheckoutMaterializer(
 					materializer.missingKnown[hash] = struct{}{}
 				}
 			}
-			return nil, fmt.Errorf("failed to materialize %s from local cache", fm.GetPath())
+			initMu.Unlock()
+			setInitErr(fmt.Errorf("failed to materialize %s from local cache", fm.GetPath()))
+			return
 		}
+
+		initMu.Lock()
 		materializer.pendingFiles[fm.GetFileId()] = pending
+		for _, blockHash := range pending.missingBlockHashes {
+			materializer.blockWaiters[blockHash] = append(materializer.blockWaiters[blockHash], pending)
+			materializer.blockRefCounts[blockHash]++
+		}
+		initMu.Unlock()
+	})
+	if initErr != nil {
+		return nil, initErr
 	}
 
 	return materializer, nil
@@ -1053,11 +1137,7 @@ func ensureCheckoutDirectory(root, targetDir string) ([]string, error) {
 	return removed, nil
 }
 
-func removeStaleTrackedCheckoutFiles(dir string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {
-	trackedFiles, err := gitTrackedFiles(dir)
-	if err != nil {
-		return nil, err
-	}
+func removeStaleTrackedCheckoutFiles(dir string, trackedFiles []string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {
 	removed := make([]string, 0)
 	desired := make(map[string]struct{}, len(fileMetadata))
 	directoryMarkers := checkoutDirectoryMarkers(fileMetadata)

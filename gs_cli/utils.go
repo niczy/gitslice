@@ -12,6 +12,7 @@ import (
 
 const (
 	sliceConfigPath            = ".gs/config"
+	checkoutStatePath          = ".gs/checkout_state.json"
 	trackedChangesetConfigPath = ".gs/changeset_id"
 )
 

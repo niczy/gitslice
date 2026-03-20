@@ -200,8 +200,13 @@ func (c *CacheManager) CopyObjectToFile(hash, targetPath string, mode os.FileMod
 		}
 	}()
 
-	if _, err := io.Copy(tmpFile, source); err != nil {
-		return err
+	if err := tryCloneCacheObject(tmpFile, source); err != nil {
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := io.Copy(tmpFile, source); err != nil {
+			return err
+		}
 	}
 	if err := tmpFile.Chmod(mode); err != nil {
 		return err
