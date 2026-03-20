@@ -463,6 +463,43 @@ func checkoutMetadataWorkerCount(jobs int) int {
 	return workers
 }
 
+func collectMissingCheckoutBlockHashes(fileMetadata []*slicev1.FileMetadata, knownHashes map[string]struct{}) []string {
+	if len(fileMetadata) == 0 {
+		return nil
+	}
+
+	hashes := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		if meta.GetHash() != "" {
+			if _, ok := knownHashes[meta.GetHash()]; ok {
+				continue
+			}
+		}
+		for _, block := range meta.GetBlocks() {
+			if block == nil {
+				continue
+			}
+			blockHash := strings.TrimSpace(block.GetHash())
+			if blockHash == "" {
+				continue
+			}
+			if _, ok := knownHashes[blockHash]; ok {
+				continue
+			}
+			if _, ok := seen[blockHash]; ok {
+				continue
+			}
+			seen[blockHash] = struct{}{}
+			hashes = append(hashes, blockHash)
+		}
+	}
+	return hashes
+}
+
 func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.CheckoutRequest) (*slicev1.CheckoutResponse, error) {
 	profile := newCheckoutProfile("unary", req.GetSliceId(), req.GetCommitHash(), len(req.GetKnownHashes()))
 	var err error
@@ -481,43 +518,32 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	payloadStartedAt := time.Now()
 	var fileContents []*slicev1.FileContent
 	var blockContents []*slicev1.BlockContent
-	sentBlocks := make(map[string]struct{})
+	blockHashes := collectMissingCheckoutBlockHashes(fileMetadata, knownHashes)
+	if len(blockHashes) > 0 {
+		blockPayloads, err := s.storage.GetBlocks(ctx, blockHashes)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout blocks: %v", err))
+		}
+		for _, blockHash := range blockHashes {
+			payload, ok := blockPayloads[blockHash]
+			if !ok {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("missing checkout block payload for %s", blockHash))
+			}
+			blockContents = append(blockContents, &slicev1.BlockContent{
+				Hash:    blockHash,
+				Content: payload,
+			})
+			profile.addBlockPayload(len(payload))
+		}
+	}
 	for _, meta := range fileMetadata {
-		if meta == nil {
+		if meta == nil || len(meta.GetBlocks()) > 0 {
 			continue
 		}
 		if meta.GetHash() != "" {
 			if _, ok := knownHashes[meta.GetHash()]; ok {
 				continue
 			}
-		}
-		if len(meta.GetBlocks()) > 0 {
-			for _, block := range meta.GetBlocks() {
-				if block == nil {
-					continue
-				}
-				blockHash := strings.TrimSpace(block.GetHash())
-				if blockHash == "" {
-					continue
-				}
-				if _, ok := knownHashes[blockHash]; ok {
-					continue
-				}
-				if _, ok := sentBlocks[blockHash]; ok {
-					continue
-				}
-				payload, err := s.storage.GetBlock(ctx, blockHash)
-				if err != nil {
-					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load block %s for %s: %v", blockHash, meta.GetFileId(), err))
-				}
-				blockContents = append(blockContents, &slicev1.BlockContent{
-					Hash:    blockHash,
-					Content: payload,
-				})
-				profile.addBlockPayload(len(payload))
-				sentBlocks[blockHash] = struct{}{}
-			}
-			continue
 		}
 		if meta.GetSize() == 0 {
 			file, err := s.resolveCheckoutFileContent(ctx, slice, req.SliceId, meta.GetFileId(), resolvedCommit)
@@ -605,9 +631,32 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 		}
 	}
 
-	sentBlocks := make(map[string]struct{})
+	blockHashes := collectMissingCheckoutBlockHashes(fileMetadata, knownHashes)
+	if len(blockHashes) > 0 {
+		blockPayloads, err := s.storage.GetBlocks(stream.Context(), blockHashes)
+		if err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to load checkout blocks: %v", err))
+		}
+		for _, blockHash := range blockHashes {
+			payload, ok := blockPayloads[blockHash]
+			if !ok {
+				return status.Error(codes.Internal, fmt.Sprintf("missing checkout block payload for %s", blockHash))
+			}
+			if err := stream.Send(&slicev1.CheckoutChunk{
+				Chunk: &slicev1.CheckoutChunk_Block{
+					Block: &slicev1.BlockContent{
+						Hash:    blockHash,
+						Content: payload,
+					},
+				},
+			}); err != nil {
+				return err
+			}
+			profile.addBlockPayload(len(payload))
+		}
+	}
 	for _, meta := range fileMetadata {
-		if meta == nil {
+		if meta == nil || len(meta.GetBlocks()) > 0 {
 			continue
 		}
 		if meta.GetHash() != "" {
@@ -615,41 +664,6 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 				continue
 			}
 		}
-		if len(meta.GetBlocks()) > 0 {
-			for _, block := range meta.GetBlocks() {
-				if block == nil {
-					continue
-				}
-				blockHash := strings.TrimSpace(block.GetHash())
-				if blockHash == "" {
-					continue
-				}
-				if _, ok := knownHashes[blockHash]; ok {
-					continue
-				}
-				if _, ok := sentBlocks[blockHash]; ok {
-					continue
-				}
-				payload, err := s.storage.GetBlock(stream.Context(), blockHash)
-				if err != nil {
-					return status.Error(codes.Internal, fmt.Sprintf("failed to load block %s for %s: %v", blockHash, meta.GetFileId(), err))
-				}
-				if err := stream.Send(&slicev1.CheckoutChunk{
-					Chunk: &slicev1.CheckoutChunk_Block{
-						Block: &slicev1.BlockContent{
-							Hash:    blockHash,
-							Content: payload,
-						},
-					},
-				}); err != nil {
-					return err
-				}
-				profile.addBlockPayload(len(payload))
-				sentBlocks[blockHash] = struct{}{}
-			}
-			continue
-		}
-
 		file, err := s.resolveCheckoutFileContent(stream.Context(), slice, req.SliceId, meta.GetFileId(), resolvedCommit)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {

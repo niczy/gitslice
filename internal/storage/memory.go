@@ -1074,6 +1074,28 @@ func (s *InMemoryStorage) GetBlock(ctx context.Context, hash string) ([]byte, er
 	return append([]byte(nil), data...), nil
 }
 
+func (s *InMemoryStorage) GetBlocks(ctx context.Context, hashes []string) (map[string][]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	blocks := make(map[string][]byte, len(hashes))
+	for _, rawHash := range hashes {
+		hash := strings.TrimSpace(rawHash)
+		if hash == "" {
+			return nil, ErrInvalidInput
+		}
+		if _, exists := blocks[hash]; exists {
+			continue
+		}
+		data, ok := s.blocks[hash]
+		if !ok {
+			return nil, ErrEntryNotFound
+		}
+		blocks[hash] = append([]byte(nil), data...)
+	}
+	return blocks, nil
+}
+
 func (s *InMemoryStorage) HasBlock(ctx context.Context, hash string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
