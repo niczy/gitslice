@@ -376,7 +376,23 @@ func fetchAndMaterializeSliceCheckout(
 	}
 
 	manifest, materialized, err := materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked)
+	var staleCacheErr *staleCheckoutCacheError
+	if err != nil && cache != nil && errors.As(err, &staleCacheErr) && len(staleCacheErr.Hashes) > 0 {
+		if dropErr := cache.DropObjects(staleCacheErr.Hashes); dropErr != nil {
+			log.Printf("Warning: unable to drop stale cache hashes: %v", dropErr)
+		}
+		if persistErr := cache.PersistIndex(); persistErr != nil {
+			log.Printf("Warning: unable to persist cache index: %v", persistErr)
+		}
+		req.KnownHashes = filterCheckoutKnownHashes(req.KnownHashes, staleCacheErr.Hashes)
+		manifest, materialized, err = materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked)
+	}
 	if err == nil {
+		if cache != nil {
+			if persistErr := cache.PersistIndex(); persistErr != nil {
+				log.Printf("Warning: unable to persist cache index: %v", persistErr)
+			}
+		}
 		return &checkoutFetchResult{
 			Manifest:     manifest,
 			Materialized: materialized,
@@ -395,11 +411,42 @@ func fetchAndMaterializeSliceCheckout(
 	if err != nil {
 		return nil, err
 	}
+	if cache != nil {
+		if persistErr := cache.PersistIndex(); persistErr != nil {
+			log.Printf("Warning: unable to persist cache index: %v", persistErr)
+		}
+	}
 	return &checkoutFetchResult{
 		Manifest:     resp.GetManifest(),
 		Materialized: materialized,
 		Cache:        cache,
 	}, nil
+}
+
+func filterCheckoutKnownHashes(knownHashes, dropHashes []string) []string {
+	if len(knownHashes) == 0 || len(dropHashes) == 0 {
+		return knownHashes
+	}
+	drop := make(map[string]struct{}, len(dropHashes))
+	for _, hash := range dropHashes {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			continue
+		}
+		drop[hash] = struct{}{}
+	}
+	filtered := make([]string, 0, len(knownHashes))
+	for _, hash := range knownHashes {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			continue
+		}
+		if _, ok := drop[hash]; ok {
+			continue
+		}
+		filtered = append(filtered, hash)
+	}
+	return filtered
 }
 
 func materializeSliceCheckoutStream(
@@ -494,6 +541,14 @@ type checkoutFetchResult struct {
 	Manifest     *slicev1.SliceManifest
 	Materialized *checkoutMaterialization
 	Cache        *CacheManager
+}
+
+type staleCheckoutCacheError struct {
+	Hashes []string
+}
+
+func (e *staleCheckoutCacheError) Error() string {
+	return fmt.Sprintf("stale checkout cache index: %d missing objects", len(e.Hashes))
 }
 
 func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (*checkoutMaterialization, error) {
@@ -591,6 +646,7 @@ type streamedCheckoutMaterializer struct {
 	directFiles    map[string]*slicev1.FileMetadata
 	changedPaths   []string
 	cachedHits     int64
+	missingKnown   map[string]struct{}
 }
 
 func newStreamedCheckoutMaterializer(
@@ -613,6 +669,7 @@ func newStreamedCheckoutMaterializer(
 		blockRefCounts: make(map[string]int),
 		pendingFiles:   make(map[string]*streamedPendingFile),
 		directFiles:    make(map[string]*slicev1.FileMetadata),
+		missingKnown:   make(map[string]struct{}),
 	}
 
 	if pruneTracked {
@@ -643,6 +700,11 @@ func newStreamedCheckoutMaterializer(
 			continue
 		}
 		if len(fm.GetBlocks()) == 0 {
+			if hash := strings.TrimSpace(fm.GetHash()); hash != "" {
+				if _, ok := knownHashes[hash]; ok {
+					materializer.missingKnown[hash] = struct{}{}
+				}
+			}
 			materializer.directFiles[fm.GetFileId()] = fm
 			continue
 		}
@@ -671,6 +733,23 @@ func newStreamedCheckoutMaterializer(
 			} else if writtenPath != "" {
 				materializer.changedPaths = append(materializer.changedPaths, writtenPath)
 				continue
+			}
+			if hash := strings.TrimSpace(fm.GetHash()); hash != "" {
+				if _, ok := knownHashes[hash]; ok {
+					materializer.missingKnown[hash] = struct{}{}
+				}
+			}
+			for _, block := range fm.GetBlocks() {
+				if block == nil {
+					continue
+				}
+				hash := strings.TrimSpace(block.GetHash())
+				if hash == "" {
+					continue
+				}
+				if _, ok := knownHashes[hash]; ok {
+					materializer.missingKnown[hash] = struct{}{}
+				}
 			}
 			return nil, fmt.Errorf("failed to materialize %s from local cache", fm.GetPath())
 		}
@@ -746,6 +825,14 @@ func (m *streamedCheckoutMaterializer) handleFile(file *slicev1.FileContent) err
 }
 
 func (m *streamedCheckoutMaterializer) finish() (*checkoutMaterialization, error) {
+	if len(m.missingKnown) > 0 {
+		hashes := make([]string, 0, len(m.missingKnown))
+		for hash := range m.missingKnown {
+			hashes = append(hashes, hash)
+		}
+		sort.Strings(hashes)
+		return nil, &staleCheckoutCacheError{Hashes: hashes}
+	}
 	if len(m.pendingFiles) > 0 {
 		pending := make([]string, 0, len(m.pendingFiles))
 		for _, file := range m.pendingFiles {
