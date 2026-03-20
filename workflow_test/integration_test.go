@@ -904,6 +904,19 @@ func TestSliceSyncUpdatesCurrentCheckout(t *testing.T) {
 		t.Fatalf("expected sync commit message, got %q", latestMessage)
 	}
 
+	commitCountBeforeNoop := runGitOrFail(t, checkoutDir, "rev-list", "--count", "HEAD")
+	setSliceHead("sync-commit-3", "sync-commit-2", map[string]string{
+		readmePath: readmeV2Hash,
+	})
+	output = runCLIForSlice(checkoutDir, "slice", "sync")
+	if !strings.Contains(output, "Status: up to date") {
+		t.Fatalf("expected up-to-date sync status for unchanged tree, got: %s", output)
+	}
+	commitCountAfterNoop := runGitOrFail(t, checkoutDir, "rev-list", "--count", "HEAD")
+	if commitCountAfterNoop != commitCountBeforeNoop {
+		t.Fatalf("expected no new git commit for unchanged tree, got before=%s after=%s", commitCountBeforeNoop, commitCountAfterNoop)
+	}
+
 	output = runCLIForSlice(checkoutDir, "slice", "sync")
 	if !strings.Contains(output, "Status: up to date") {
 		t.Fatalf("expected up-to-date sync status, got: %s", output)
@@ -912,6 +925,165 @@ func TestSliceSyncUpdatesCurrentCheckout(t *testing.T) {
 	output = runCLIForSlice(checkoutDir, "slice", "pull")
 	if !strings.Contains(output, "Status: up to date") {
 		t.Fatalf("expected pull alias to report up-to-date status, got: %s", output)
+	}
+}
+
+func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
+	ctx := context.Background()
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	runCLIForSlice := func(workdir string, args ...string) string {
+		t.Helper()
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, testUsername, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	sliceID := fmt.Sprintf("slice-sync-nogit-%d", time.Now().UnixNano())
+	createSliceFromRoot(t, sliceID, "")
+
+	writeSliceFile := func(filePath string, content []byte) string {
+		t.Helper()
+		entry, err := testStorage.GetEntryByPath(ctx, sliceID, filePath)
+		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			t.Fatalf("get entry %s: %v", filePath, err)
+		}
+		if entry == nil {
+			if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+				ID:       common.GenerateEntryID(sliceID, filePath),
+				Path:     filePath,
+				Type:     "file",
+				ParentID: sliceID,
+				Size:     int64(len(content)),
+			}); err != nil {
+				t.Fatalf("add entry %s: %v", filePath, err)
+			}
+		} else {
+			entry.Size = int64(len(content))
+			if err := testStorage.UpdateEntry(ctx, entry); err != nil {
+				t.Fatalf("update entry %s: %v", filePath, err)
+			}
+		}
+		manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content)
+		if err != nil {
+			t.Fatalf("write manifest %s: %v", filePath, err)
+		}
+		if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+			t.Fatalf("add file to slice %s: %v", filePath, err)
+		}
+		return manifest.Hash
+	}
+
+	removeSliceFile := func(filePath string) {
+		t.Helper()
+		entry, err := testStorage.GetEntryByPath(ctx, sliceID, filePath)
+		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			t.Fatalf("get entry for delete %s: %v", filePath, err)
+		}
+		if entry != nil {
+			if err := testStorage.DeleteEntry(ctx, entry.ID); err != nil {
+				t.Fatalf("DeleteEntry(%s) failed: %v", filePath, err)
+			}
+		}
+		if err := testStorage.DeleteFileManifest(ctx, sliceID, filePath); err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			t.Fatalf("DeleteFileManifest(%s) failed: %v", filePath, err)
+		}
+		if err := testStorage.RemoveFileFromSlice(ctx, filePath, sliceID); err != nil {
+			t.Fatalf("remove file from slice %s: %v", filePath, err)
+		}
+	}
+
+	setSliceHead := func(commitHash, parentHash string, files map[string]string) {
+		t.Helper()
+		now := time.Now()
+		if err := testStorage.AddSliceCommit(ctx, sliceID, &models.Commit{
+			CommitHash: commitHash,
+			ParentHash: parentHash,
+			Timestamp:  now,
+			Message:    "test commit " + commitHash,
+		}); err != nil {
+			t.Fatalf("AddSliceCommit(%s) failed: %v", commitHash, err)
+		}
+		if err := testStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+			CommitHash: commitHash,
+			SliceID:    sliceID,
+			Files:      files,
+			Timestamp:  now,
+		}); err != nil {
+			t.Fatalf("SaveCommitSnapshot(%s) failed: %v", commitHash, err)
+		}
+		metadata, err := testStorage.GetSliceMetadata(ctx, sliceID)
+		if err != nil {
+			t.Fatalf("GetSliceMetadata(%s) failed: %v", sliceID, err)
+		}
+		metadata.HeadCommitHash = commitHash
+		metadata.LastModified = now
+		metadata.ModifiedFiles = make([]string, 0, len(files))
+		for filePath := range files {
+			metadata.ModifiedFiles = append(metadata.ModifiedFiles, filePath)
+		}
+		sort.Strings(metadata.ModifiedFiles)
+		metadata.ModifiedFilesCount = len(metadata.ModifiedFiles)
+		if err := testStorage.UpdateSliceMetadata(ctx, sliceID, metadata); err != nil {
+			t.Fatalf("UpdateSliceMetadata(%s) failed: %v", sliceID, err)
+		}
+	}
+
+	readmePath := "docs/readme.md"
+	removedPath := "docs/stale.txt"
+	readmeV1Hash := writeSliceFile(readmePath, []byte("nogit v1\n"))
+	staleHash := writeSliceFile(removedPath, []byte("remove me\n"))
+	setSliceHead("nogit-commit-1", "", map[string]string{
+		readmePath:  readmeV1Hash,
+		removedPath: staleHash,
+	})
+
+	checkoutDir := t.TempDir()
+	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--no-git")
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected no git repo for --no-git checkout, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".gs", "checkout_state.json")); err != nil {
+		t.Fatalf("expected checkout state file, err=%v", err)
+	}
+
+	readmeV2Hash := writeSliceFile(readmePath, []byte("nogit v2\n"))
+	removeSliceFile(removedPath)
+	setSliceHead("nogit-commit-2", "nogit-commit-1", map[string]string{
+		readmePath: readmeV2Hash,
+	})
+
+	output = runCLIForSlice(checkoutDir, "slice", "sync")
+	if !strings.Contains(output, "Synced slice: "+sliceID) {
+		t.Fatalf("expected sync output, got: %s", output)
+	}
+	if !strings.Contains(output, "Status: updated") {
+		t.Fatalf("expected updated sync status, got: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected sync to keep checkout in no-git mode, err=%v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(checkoutDir, readmePath))
+	if err != nil {
+		t.Fatalf("read no-git synced file: %v", err)
+	}
+	if string(got) != "nogit v2\n" {
+		t.Fatalf("unexpected no-git sync content: %q", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, removedPath)); !os.IsNotExist(err) {
+		t.Fatalf("expected stale file removal for no-git sync, err=%v", err)
+	}
+
+	output = runCLIForSlice(checkoutDir, "slice", "sync")
+	if !strings.Contains(output, "Status: up to date") {
+		t.Fatalf("expected no-git sync to report up-to-date on repeat, got: %s", output)
 	}
 }
 
