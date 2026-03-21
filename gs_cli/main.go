@@ -120,7 +120,7 @@ func main() {
 	case "changeset":
 		handleChangesetCommand(ctx, cli, args[1:])
 	case "status":
-		handleStatus(ctx, cli)
+		handleStatus(ctx, cli, args[1:])
 	case "init":
 		handleInit(ctx, cli, args[1:])
 	case "log":

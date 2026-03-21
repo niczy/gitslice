@@ -88,6 +88,14 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	if !strings.Contains(output, trackedFiles[0]) {
 		t.Fatalf("expected slice diff to include %s, got: %s", trackedFiles[0], output)
 	}
+	output = runCLIOrFail(t, checkoutDir, "slice", "status")
+	if !strings.Contains(output, "Mode: git") || !strings.Contains(output, "Working tree: dirty") || !strings.Contains(output, "Changes: +0 ~1 -0") {
+		t.Fatalf("expected slice status to show git dirty state, got: %s", output)
+	}
+	output = runCLIOrFail(t, checkoutDir, "status")
+	if !strings.Contains(output, "Mode: git") || !strings.Contains(output, "Slice: "+sliceID) {
+		t.Fatalf("expected top-level status alias to show slice status, got: %s", output)
+	}
 
 	output = runCLIOrFail(t, checkoutDir, "doctor")
 	if !strings.Contains(output, "Auth:") || !strings.Contains(output, "Checkout:") {
@@ -192,13 +200,22 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 	if err := os.WriteFile(targetPath, append([]byte("// no-git slice publish\n"), original...), 0o644); err != nil {
 		t.Fatalf("write tracked file: %v", err)
 	}
+	newPath := filepath.Join(checkoutDir, folderPath, "NEW.txt")
+	if err := os.WriteFile(newPath, []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "status")
+	if !strings.Contains(output, "Mode: no-git") || !strings.Contains(output, "Working tree: dirty") || !strings.Contains(output, "Changes: +1 ~1 -0") {
+		t.Fatalf("expected no-git slice status to show local changes, got: %s", output)
+	}
 
 	output = runCLIOrFail(t, checkoutDir, "slice", "publish", "--review-only", "--message", "no-git publish")
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("expected changeset ID from publish output, got: %s", output)
 	}
-	if !strings.Contains(output, "Changeset: "+changesetID) || !strings.Contains(output, "Files: +1 ~0 -0") {
+	if !strings.Contains(output, "Changeset: "+changesetID) || !strings.Contains(output, "Status: READY_FOR_MERGE") {
 		t.Fatalf("expected publish review output to include modified file, got: %s", output)
 	}
 }

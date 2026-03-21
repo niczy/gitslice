@@ -38,6 +38,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceSync(ctx, cli, args[1:])
 	case "publish":
 		handleSlicePublish(ctx, cli, args[1:])
+	case "status":
+		handleSliceStatus(ctx, cli, args[1:])
 	case "tree", "list-files":
 		handleSliceTree(ctx, cli, args[1:])
 	case "diff":
