@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -14,10 +15,13 @@ import (
 )
 
 type checkoutTrackedFile struct {
-	Path          string `json:"path"`
-	Hash          string `json:"hash,omitempty"`
-	Executable    bool   `json:"executable,omitempty"`
-	SymlinkTarget string `json:"symlink_target,omitempty"`
+	Path                 string `json:"path"`
+	Hash                 string `json:"hash,omitempty"`
+	Executable           bool   `json:"executable,omitempty"`
+	SymlinkTarget        string `json:"symlink_target,omitempty"`
+	Size                 int64  `json:"size,omitempty"`
+	ModifiedTimeUnixNano int64  `json:"modified_time_unix_nano,omitempty"`
+	ChangeTimeUnixNano   int64  `json:"change_time_unix_nano,omitempty"`
 }
 
 type localCheckoutState struct {
@@ -129,31 +133,17 @@ func verifyCheckoutStateClean(dir string, state *localCheckoutState) error {
 			break
 		}
 		fullPath := filepath.Join(dir, file.Path)
-		if file.SymlinkTarget != "" {
-			target, err := os.Readlink(fullPath)
-			if err != nil || target != file.SymlinkTarget {
-				mismatches = append(mismatches, file.Path)
-			}
-			continue
-		}
-
 		info, err := os.Lstat(fullPath)
 		if err != nil || info.IsDir() {
 			mismatches = append(mismatches, file.Path)
 			continue
 		}
-		executable := info.Mode().Perm()&0o111 != 0
-		if executable != file.Executable {
-			mismatches = append(mismatches, file.Path)
-			continue
-		}
-		content, err := os.ReadFile(fullPath)
+		matches, err := checkoutTrackedFileMatches(fullPath, info, file)
 		if err != nil {
 			mismatches = append(mismatches, file.Path)
 			continue
 		}
-		hash := storage.HashFileManifestContent(content, executable, "")
-		if strings.TrimSpace(hash) != strings.TrimSpace(file.Hash) {
+		if !matches {
 			mismatches = append(mismatches, file.Path)
 		}
 	}
@@ -172,7 +162,10 @@ func checkoutStatesEqualContent(a, b *localCheckoutState) bool {
 		return false
 	}
 	for i := range a.Files {
-		if a.Files[i] != b.Files[i] {
+		if a.Files[i].Path != b.Files[i].Path ||
+			a.Files[i].Hash != b.Files[i].Hash ||
+			a.Files[i].Executable != b.Files[i].Executable ||
+			a.Files[i].SymlinkTarget != b.Files[i].SymlinkTarget {
 			return false
 		}
 	}
@@ -203,11 +196,6 @@ func detectNoGitModifiedFiles(dir string, state *localCheckoutState) ([]string, 
 		return nil, fmt.Errorf("no checkout state available; pass --files or re-checkout the slice")
 	}
 
-	currentFiles, err := scanCheckoutFiles(dir)
-	if err != nil {
-		return nil, err
-	}
-
 	originalFiles := make(map[string]checkoutTrackedFile, len(state.Files))
 	for _, file := range state.Files {
 		cleaned := filepath.Clean(strings.TrimSpace(file.Path))
@@ -215,78 +203,78 @@ func detectNoGitModifiedFiles(dir string, state *localCheckoutState) ([]string, 
 			continue
 		}
 		originalFiles[cleaned] = checkoutTrackedFile{
-			Path:          cleaned,
-			Hash:          strings.TrimSpace(file.Hash),
-			Executable:    file.Executable,
-			SymlinkTarget: file.SymlinkTarget,
+			Path:                 cleaned,
+			Hash:                 strings.TrimSpace(file.Hash),
+			Executable:           file.Executable,
+			SymlinkTarget:        file.SymlinkTarget,
+			Size:                 file.Size,
+			ModifiedTimeUnixNano: file.ModifiedTimeUnixNano,
+			ChangeTimeUnixNano:   file.ChangeTimeUnixNano,
 		}
 	}
-
 	changed := make([]string, 0)
-	seen := make(map[string]struct{})
-	for path, current := range currentFiles {
-		original, ok := originalFiles[path]
-		if !ok || original != current {
+	for path, original := range originalFiles {
+		fullPath := filepath.Join(dir, path)
+		info, err := os.Lstat(fullPath)
+		if errors.Is(err, os.ErrNotExist) {
 			changed = append(changed, path)
-			seen[path] = struct{}{}
-		}
-	}
-	for path := range originalFiles {
-		if _, ok := currentFiles[path]; ok {
 			continue
 		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		changed = append(changed, path)
-	}
-	sort.Strings(changed)
-	return changed, nil
-}
-
-func scanCheckoutFiles(dir string) (map[string]checkoutTrackedFile, error) {
-	files := make(map[string]checkoutTrackedFile)
-	err := filepath.Walk(dir, func(current string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-
-		rel, err := filepath.Rel(dir, current)
 		if err != nil {
-			return err
-		}
-		cleaned := filepath.Clean(rel)
-		if cleaned == "." {
-			return nil
-		}
-
-		if cleaned == ".git" || cleaned == ".gs" {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasPrefix(cleaned, ".git"+string(os.PathSeparator)) || strings.HasPrefix(cleaned, ".gs"+string(os.PathSeparator)) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+			return nil, err
 		}
 		if info.IsDir() {
-			return nil
+			changed = append(changed, path)
+			continue
 		}
-
-		record, err := currentCheckoutFileRecord(current, cleaned)
+		matches, err := checkoutTrackedFileMatches(fullPath, info, original)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		files[cleaned] = record
-		return nil
-	})
+		if !matches {
+			changed = append(changed, path)
+		}
+	}
+
+	newFiles, err := scanCheckoutForNewFiles(dir, "", originalFiles)
 	if err != nil {
 		return nil, err
 	}
-	return files, nil
+	changed = append(changed, newFiles...)
+	sort.Strings(changed)
+	return uniqueCheckoutPaths(changed), nil
+}
+
+func enrichCheckoutStateWithLocalMetadata(dir string, state *localCheckoutState) (*localCheckoutState, error) {
+	if state == nil {
+		return nil, nil
+	}
+
+	enriched := &localCheckoutState{
+		SliceID:    state.SliceID,
+		CommitHash: state.CommitHash,
+		GitEnabled: state.GitEnabled,
+		Files:      make([]checkoutTrackedFile, 0, len(state.Files)),
+	}
+	for _, file := range state.Files {
+		record := file
+		if file.SymlinkTarget != "" {
+			enriched.Files = append(enriched.Files, record)
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(dir, file.Path))
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("expected file at %s, found directory", file.Path)
+		}
+		record.Size = info.Size()
+		record.ModifiedTimeUnixNano = info.ModTime().UnixNano()
+		record.ChangeTimeUnixNano = fileChangeTimeUnixNano(info)
+		enriched.Files = append(enriched.Files, record)
+	}
+	return enriched, nil
 }
 
 func currentCheckoutFileRecord(fullPath, relPath string) (checkoutTrackedFile, error) {
@@ -313,6 +301,117 @@ func currentCheckoutFileRecord(fullPath, relPath string) (checkoutTrackedFile, e
 		return checkoutTrackedFile{}, err
 	}
 	record.Executable = executable
+	record.Size = info.Size()
+	record.ModifiedTimeUnixNano = info.ModTime().UnixNano()
+	record.ChangeTimeUnixNano = fileChangeTimeUnixNano(info)
 	record.Hash = storage.HashFileManifestContent(content, executable, "")
 	return record, nil
+}
+
+func checkoutTrackedFileMatches(fullPath string, info os.FileInfo, original checkoutTrackedFile) (bool, error) {
+	if info.Mode()&os.ModeSymlink != 0 {
+		if strings.TrimSpace(original.SymlinkTarget) == "" {
+			return false, nil
+		}
+		target, err := os.Readlink(fullPath)
+		if err != nil {
+			return false, err
+		}
+		return target == original.SymlinkTarget, nil
+	}
+
+	if strings.TrimSpace(original.SymlinkTarget) != "" || info.IsDir() {
+		return false, nil
+	}
+
+	executable := info.Mode().Perm()&0o111 != 0
+	if executable != original.Executable {
+		return false, nil
+	}
+	if original.ModifiedTimeUnixNano != 0 &&
+		info.Size() == original.Size &&
+		info.ModTime().UnixNano() == original.ModifiedTimeUnixNano &&
+		(original.ChangeTimeUnixNano == 0 || fileChangeTimeUnixNano(info) == original.ChangeTimeUnixNano) {
+		return true, nil
+	}
+
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return false, err
+	}
+	hash := storage.HashFileManifestContent(content, executable, "")
+	return strings.TrimSpace(hash) == strings.TrimSpace(original.Hash), nil
+}
+
+func scanCheckoutForNewFiles(dir, relDir string, originalFiles map[string]checkoutTrackedFile) ([]string, error) {
+	fullDir := dir
+	if relDir != "" {
+		fullDir = filepath.Join(dir, relDir)
+	}
+
+	entries, err := os.ReadDir(fullDir)
+	if err != nil {
+		return nil, err
+	}
+
+	newFiles := make([]string, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".git" || name == ".gs" {
+			continue
+		}
+
+		relPath := name
+		if relDir != "" {
+			relPath = filepath.Join(relDir, name)
+		}
+		cleaned := filepath.Clean(relPath)
+
+		if entry.IsDir() {
+			childNewFiles, err := scanCheckoutForNewFiles(dir, cleaned, originalFiles)
+			if err != nil {
+				return nil, err
+			}
+			newFiles = append(newFiles, childNewFiles...)
+			continue
+		}
+		if _, ok := originalFiles[cleaned]; ok {
+			continue
+		}
+		newFiles = append(newFiles, cleaned)
+	}
+
+	return newFiles, nil
+}
+
+func fileChangeTimeUnixNano(info os.FileInfo) int64 {
+	if info == nil || info.Sys() == nil {
+		return 0
+	}
+
+	value := reflect.ValueOf(info.Sys())
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return 0
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return 0
+	}
+
+	for _, fieldName := range []string{"Ctim", "Ctimespec"} {
+		field := value.FieldByName(fieldName)
+		if !field.IsValid() || field.Kind() != reflect.Struct {
+			continue
+		}
+		secField := field.FieldByName("Sec")
+		nsecField := field.FieldByName("Nsec")
+		if !secField.IsValid() || !nsecField.IsValid() {
+			continue
+		}
+		return secField.Int()*1_000_000_000 + nsecField.Int()
+	}
+
+	return 0
 }

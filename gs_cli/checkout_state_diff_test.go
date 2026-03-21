@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/niczy/gitslice/internal/storage"
 )
@@ -79,6 +80,131 @@ func TestDetectNoGitModifiedFiles(t *testing.T) {
 	}
 
 	want := []string{"README.md", "bin/current", "docs/stale.txt", "new.txt"}
+	if !reflect.DeepEqual(modified, want) {
+		t.Fatalf("unexpected modified files:\n got %#v\nwant %#v", modified, want)
+	}
+}
+
+func TestDetectNoGitModifiedFilesTouchedButUnchanged(t *testing.T) {
+	workdir := t.TempDir()
+	fullPath := filepath.Join(workdir, "README.md")
+	content := []byte("same\n")
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	state := &localCheckoutState{
+		SliceID:    "slice-test",
+		CommitHash: "commit-1",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "README.md",
+				Hash:                 storage.HashFileManifestContent(content, false, ""),
+				Size:                 info.Size(),
+				ModifiedTimeUnixNano: info.ModTime().UnixNano(),
+				ChangeTimeUnixNano:   fileChangeTimeUnixNano(info),
+			},
+		},
+	}
+	if err := writeCheckoutState(workdir, state); err != nil {
+		t.Fatalf("write checkout state: %v", err)
+	}
+
+	touchedAt := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(fullPath, touchedAt, touchedAt); err != nil {
+		t.Fatalf("touch file: %v", err)
+	}
+
+	modified, err := detectNoGitModifiedFiles(workdir, state)
+	if err != nil {
+		t.Fatalf("detect modified files: %v", err)
+	}
+	if len(modified) != 0 {
+		t.Fatalf("expected no modified files after touching unchanged content, got %#v", modified)
+	}
+}
+
+func TestCheckoutStatesEqualContentIgnoresLocalMetadata(t *testing.T) {
+	a := &localCheckoutState{
+		SliceID: "slice-test",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "README.md",
+				Hash:                 "hash-1",
+				Size:                 12,
+				ModifiedTimeUnixNano: 10,
+			},
+		},
+	}
+	b := &localCheckoutState{
+		SliceID: "slice-test",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "README.md",
+				Hash:                 "hash-1",
+				Size:                 99,
+				ModifiedTimeUnixNano: 999,
+			},
+		},
+	}
+
+	if !checkoutStatesEqualContent(a, b) {
+		t.Fatal("expected checkoutStatesEqualContent to ignore local file metadata")
+	}
+}
+
+func TestDetectNoGitModifiedFilesScansTrackedFilesInsideUnchangedDirectories(t *testing.T) {
+	workdir := t.TempDir()
+	docsDir := filepath.Join(workdir, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+
+	targetPath := filepath.Join(docsDir, "guide.md")
+	originalContent := []byte("v1\n")
+	if err := os.WriteFile(targetPath, originalContent, 0o644); err != nil {
+		t.Fatalf("write guide: %v", err)
+	}
+
+	fileInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		t.Fatalf("stat guide: %v", err)
+	}
+	state := &localCheckoutState{
+		SliceID:    "slice-test",
+		CommitHash: "commit-1",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "docs/guide.md",
+				Hash:                 storage.HashFileManifestContent(originalContent, false, ""),
+				Size:                 fileInfo.Size(),
+				ModifiedTimeUnixNano: fileInfo.ModTime().UnixNano(),
+				ChangeTimeUnixNano:   fileChangeTimeUnixNano(fileInfo),
+			},
+		},
+	}
+	if err := writeCheckoutState(workdir, state); err != nil {
+		t.Fatalf("write checkout state: %v", err)
+	}
+
+	if err := os.WriteFile(targetPath, []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("rewrite guide: %v", err)
+	}
+	touchedAt := fileInfo.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(targetPath, touchedAt, touchedAt); err != nil {
+		t.Fatalf("touch guide: %v", err)
+	}
+
+	modified, err := detectNoGitModifiedFiles(workdir, state)
+	if err != nil {
+		t.Fatalf("detect modified files: %v", err)
+	}
+
+	want := []string{"docs/guide.md"}
 	if !reflect.DeepEqual(modified, want) {
 		t.Fatalf("unexpected modified files:\n got %#v\nwant %#v", modified, want)
 	}
