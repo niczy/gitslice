@@ -181,6 +181,7 @@ For the normal local workflow, list your slices, check one out, sync it in place
 ```bash
 gs slice list
 gs slice checkout <slice-id-or-slug> --git
+gs slice status
 gs slice sync
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
 ```

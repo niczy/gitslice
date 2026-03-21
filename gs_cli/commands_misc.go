@@ -10,33 +10,8 @@ import (
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
-func handleStatus(ctx context.Context, cli *CLI) {
-	// Check if in a gitslice directory
-	if _, err := os.Stat(".gs"); os.IsNotExist(err) {
-		log.Println("Not in a gitslice directory. Run 'gs init <slice-id>' to initialize.")
-		return
-	}
-
-	sliceID, err := sliceIDFromConfig()
-	if err != nil {
-		log.Printf("Failed to read .gs/config: %v", err)
-		return
-	}
-
-	req := &slicev1.StateRequest{
-		SliceId: sliceID,
-	}
-
-	resp, err := cli.sliceClient.GetSliceState(ctx, req)
-	if err != nil {
-		log.Fatalf("Failed to get slice state: %v", err)
-	}
-
-	fmt.Printf("Slice: %s\n", sliceID)
-	fmt.Printf("Head: %s\n", resp.LatestCommitHash)
-	fmt.Printf("Modified files: %d\n", len(resp.ModifiedFiles))
-	fmt.Printf("Last modified: %s\n", formatTimestamp(resp.LastModified))
-	fmt.Printf("Working directory: Clean\n")
+func handleStatus(ctx context.Context, cli *CLI, args []string) {
+	handleSliceStatus(ctx, cli, args)
 }
 
 func handleInit(ctx context.Context, cli *CLI, args []string) {
