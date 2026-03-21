@@ -173,7 +173,11 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	if err := writeCheckoutState(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, effectiveGit)); err != nil {
+	nextCheckoutState, err := enrichCheckoutStateWithLocalMetadata(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, effectiveGit))
+	if err != nil {
+		log.Fatalf("Failed to capture checkout state: %v", err)
+	}
+	if err := writeCheckoutState(".", nextCheckoutState); err != nil {
 		log.Fatalf("Failed to write checkout state: %v", err)
 	}
 
@@ -289,7 +293,10 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
-	nextCheckoutState := checkoutStateFromManifest(sliceID, checkoutResult.Manifest, !effectiveNoGit)
+	nextCheckoutState, err := enrichCheckoutStateWithLocalMetadata(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, !effectiveNoGit))
+	if err != nil {
+		log.Fatalf("Failed to capture checkout state: %v", err)
+	}
 
 	status := "up to date"
 	if effectiveNoGit {
