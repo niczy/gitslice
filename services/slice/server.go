@@ -926,7 +926,7 @@ func (s *sliceServiceServer) MergeChangesetUsingCurrentHead(ctx context.Context,
 	return s.mergeChangeset(ctx, changesetID, username, true)
 }
 
-func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool) (*slicev1.MergeChangesetResponse, error) {
+func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool) (_ *slicev1.MergeChangesetResponse, retErr error) {
 	cs, err := s.storage.GetChangeset(ctx, changesetID)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
@@ -941,6 +941,11 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 
 	modifiedFiles := normalizeModifiedFiles(cs.ModifiedFiles)
 	cs.ModifiedFiles = modifiedFiles
+	profile := newMergeProfile(cs.ID, cs.SliceID, len(modifiedFiles))
+	defer func() {
+		profile.finish()
+		profile.logResult(retErr)
+	}()
 
 	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, modifiedFiles); err != nil {
 		if errors.Is(err, storage.ErrLockHeld) {
@@ -951,12 +956,14 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, modifiedFiles)
 
 	if !isRevertChangesetHash(cs.Hash) {
+		conflictStartedAt := time.Now()
 		var conflicts []*slicev1.Conflict
+		activeSlicesByFile, err := getActiveSlicesForFiles(ctx, s.storage, modifiedFiles)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
+		}
 		for _, fileID := range modifiedFiles {
-			slices, err := s.storage.GetActiveSlicesForFile(ctx, fileID)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
-			}
+			slices := activeSlicesByFile[fileID]
 
 			var conflictingSlices []string
 			for _, sliceID := range slices {
@@ -969,6 +976,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 				conflicts = append(conflicts, &slicev1.Conflict{FileId: fileID, ConflictingSliceIds: conflictingSlices})
 			}
 		}
+		profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
 
 		if len(conflicts) > 0 {
 			return &slicev1.MergeChangesetResponse{
@@ -980,18 +988,11 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 	}
 
+	revertStartedAt := time.Now()
 	appliedRevertChanges, err := s.applyRevertChangesetContent(ctx, cs)
+	profile.markRevertApply(time.Since(revertStartedAt))
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply revert changeset content: %v", err))
-	}
-	if len(appliedRevertChanges) == 0 {
-		for _, fileID := range modifiedFiles {
-			// Conflicts were already checked under lock above. At this point either
-			// no owner exists or this slice is already the sole owner.
-			if err := s.storage.AddFileToSlice(ctx, fileID, cs.SliceID); err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to mark file ownership: %v", err))
-			}
-		}
 	}
 
 	newCommit := fmt.Sprintf("commit-%d", time.Now().UnixNano())
@@ -999,56 +1000,79 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	now := time.Now()
 	cs.MergedAt = &now
 
-	if err := s.storage.UpdateChangeset(ctx, cs); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
-	}
+	var promotionCommitHash string
+	var promotionCommitTime time.Time
+	finalizeStartedAt := time.Now()
+	if err := withMergeStorage(ctx, s.storage, func(st storage.Storage) error {
+		if len(appliedRevertChanges) == 0 {
+			// Conflicts were already checked under lock above. At this point either
+			// no owner exists or this slice is already the sole owner.
+			if err := addFilesToSlice(ctx, st, modifiedFiles, cs.SliceID); err != nil {
+				return fmt.Errorf("failed to mark file ownership: %w", err)
+			}
+		}
+		if err := st.UpdateChangeset(ctx, cs); err != nil {
+			return fmt.Errorf("failed to update changeset: %w", err)
+		}
 
-	metadata, err := s.storage.GetSliceMetadata(ctx, cs.SliceID)
-	if err == nil {
-		promotionCommitHash := newCommit
-		promotionCommitTime := now
+		metadata, err := st.GetSliceMetadata(ctx, cs.SliceID)
+		if err != nil {
+			return nil
+		}
+
+		promotionCommitHash = newCommit
+		promotionCommitTime = now
 		if useCurrentHead {
 			promotionCommitHash = strings.TrimSpace(metadata.HeadCommitHash)
 			if promotionCommitHash == "" {
-				return nil, status.Error(codes.FailedPrecondition, "slice head is empty")
+				return status.Error(codes.FailedPrecondition, "slice head is empty")
 			}
-			existingCommit, commitErr := s.storage.GetCommitByHash(ctx, cs.SliceID, promotionCommitHash)
+			existingCommit, commitErr := st.GetCommitByHash(ctx, cs.SliceID, promotionCommitHash)
 			if commitErr != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice head commit: %v", commitErr))
+				return status.Error(codes.Internal, fmt.Sprintf("failed to load slice head commit: %v", commitErr))
 			}
 			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
 				promotionCommitTime = existingCommit.Timestamp
 			}
-		} else {
-			parentHash := metadata.HeadCommitHash
-			metadata.HeadCommitHash = newCommit
-			metadata.ModifiedFiles = modifiedFiles
-			metadata.ModifiedFilesCount = len(modifiedFiles)
-
-			if err := s.storage.UpdateSliceMetadata(ctx, cs.SliceID, metadata); err != nil {
-				log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
-			}
-
-			if err := s.storage.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
-				CommitHash: newCommit,
-				ParentHash: parentHash,
-				Timestamp:  now,
-				Message:    cs.Message,
-			}); err != nil {
-				log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
-			}
-
-			// Create commit snapshot for versioned file access
-			if err := s.createCommitSnapshot(ctx, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
-				log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
-			}
-
-			// Record file change history for each modified file
-			if err := s.recordFileChanges(ctx, cs, newCommit, parentHash, now); err != nil {
-				log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
-			}
+			return nil
 		}
 
+		parentHash := metadata.HeadCommitHash
+		metadata.HeadCommitHash = newCommit
+		metadata.ModifiedFiles = modifiedFiles
+		metadata.ModifiedFilesCount = len(modifiedFiles)
+
+		if err := st.UpdateSliceMetadata(ctx, cs.SliceID, metadata); err != nil {
+			log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
+		}
+
+		if err := st.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
+			CommitHash: newCommit,
+			ParentHash: parentHash,
+			Timestamp:  now,
+			Message:    cs.Message,
+		}); err != nil {
+			log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
+		}
+
+		if err := s.createCommitSnapshotWithStorage(ctx, st, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
+			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
+		}
+		if err := s.recordFileChangesWithStorage(ctx, st, cs, newCommit, parentHash, now); err != nil {
+			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
+		}
+		return nil
+	}); err != nil {
+		profile.markFinalize(time.Since(finalizeStartedAt))
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	profile.markFinalize(time.Since(finalizeStartedAt))
+
+	promotionStartedAt := time.Now()
+	if promotionCommitHash != "" {
 		if err := s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
 			log.Printf("failed to enqueue promotion for slice %s: %v", cs.SliceID, err)
 		}
@@ -1056,11 +1080,15 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			newCommit = promotionCommitHash
 		}
 	}
+	profile.markPromotion(time.Since(promotionStartedAt))
+
+	configStartedAt := time.Now()
 	if changesetTouchesConfig(modifiedFiles) {
 		if err := sliceconfig.ApplyFromFileTree(ctx, s.storage); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to sync %s: %v", sliceconfig.ConfigFilePath, err))
 		}
 	}
+	profile.markConfig(time.Since(configStartedAt))
 
 	return &slicev1.MergeChangesetResponse{
 		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
@@ -1734,11 +1762,15 @@ func isUsableContentHash(filePath, hash string) bool {
 }
 
 func (s *sliceServiceServer) findPreviousKnownFileHash(ctx context.Context, sliceID, filePath, fromCommit string) string {
+	return s.findPreviousKnownFileHashWithStorage(ctx, s.storage, sliceID, filePath, fromCommit)
+}
+
+func (s *sliceServiceServer) findPreviousKnownFileHashWithStorage(ctx context.Context, st storage.Storage, sliceID, filePath, fromCommit string) string {
 	cleanedPath := cleanDiffPath(filePath)
 	if cleanedPath == "" {
 		return ""
 	}
-	history, err := s.storage.GetFileHistory(ctx, strings.TrimSpace(sliceID), cleanedPath, 64, strings.TrimSpace(fromCommit))
+	history, err := st.GetFileHistory(ctx, strings.TrimSpace(sliceID), cleanedPath, 64, strings.TrimSpace(fromCommit))
 	if err != nil {
 		return ""
 	}
@@ -2964,12 +2996,14 @@ func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error)
 }
 
 // createCommitSnapshot creates a snapshot of the current file state for a commit.
-func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, commitHash, parentHash string, modifiedFiles []string, timestamp time.Time) error {
+func (s *sliceServiceServer) createCommitSnapshotWithStorage(ctx context.Context, st storage.Storage, sliceID, commitHash, parentHash string, modifiedFiles []string, timestamp time.Time) error {
 	files := make(map[string]string)
+	parentSnapshotLoaded := false
 
 	if strings.TrimSpace(parentHash) != "" {
-		parentSnapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
+		parentSnapshot, err := st.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
 		if err == nil && parentSnapshot != nil {
+			parentSnapshotLoaded = true
 			for filePath, contentHash := range parentSnapshot.Files {
 				cleanedPath := cleanDiffPath(filePath)
 				cleanedHash := strings.TrimSpace(contentHash)
@@ -2980,44 +3014,34 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 			}
 		}
 	}
-	if len(files) == 0 {
-		slice, err := s.storage.GetSlice(ctx, sliceID)
+	if !parentSnapshotLoaded {
+		slice, err := st.GetSlice(ctx, sliceID)
 		if err != nil {
 			return fmt.Errorf("failed to load slice for snapshot: %w", err)
 		}
-		for _, rawPath := range normalizeModifiedFiles(slice.Files) {
-			filePath := cleanDiffPath(rawPath)
-			if filePath == "" {
-				continue
-			}
-			manifest, err := s.storage.GetFileManifest(ctx, sliceID, filePath)
-			if err != nil {
-				continue
-			}
-			hash := strings.TrimSpace(manifest.Hash)
-			if hash == "" {
+		existingHashes, err := getFileManifestHashes(ctx, st, sliceID, normalizeModifiedFiles(slice.Files))
+		if err != nil {
+			return fmt.Errorf("failed to load slice manifests for snapshot: %w", err)
+		}
+		for filePath, hash := range existingHashes {
+			if !isUsableContentHash(filePath, hash) {
 				continue
 			}
 			files[filePath] = hash
 		}
 	}
 
+	currentHashes, err := getFileManifestHashes(ctx, st, sliceID, normalizeModifiedFiles(modifiedFiles))
+	if err != nil {
+		return fmt.Errorf("failed to load changed file manifests for snapshot: %w", err)
+	}
 	for _, rawPath := range normalizeModifiedFiles(modifiedFiles) {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
 			continue
 		}
 
-		manifest, err := s.storage.GetFileManifest(ctx, sliceID, filePath)
-		if err != nil {
-			if errors.Is(err, storage.ErrEntryNotFound) {
-				delete(files, filePath)
-				continue
-			}
-			return fmt.Errorf("failed to load file %s for snapshot: %w", filePath, err)
-		}
-
-		hash := strings.TrimSpace(manifest.Hash)
+		hash := strings.TrimSpace(currentHashes[filePath])
 		if hash == "" {
 			delete(files, filePath)
 			continue
@@ -3032,15 +3056,17 @@ func (s *sliceServiceServer) createCommitSnapshot(ctx context.Context, sliceID, 
 		Timestamp:  timestamp,
 	}
 
-	return s.storage.SaveCommitSnapshot(ctx, snapshot)
+	return st.SaveCommitSnapshot(ctx, snapshot)
 }
 
 // recordFileChanges creates FileChangeRecord entries for each file in the changeset.
-func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.Changeset, commitHash string, parentHash string, timestamp time.Time) error {
+func (s *sliceServiceServer) recordFileChangesWithStorage(ctx context.Context, st storage.Storage, cs *models.Changeset, commitHash string, parentHash string, timestamp time.Time) error {
 	previousHashes := make(map[string]string)
+	parentSnapshotLoaded := false
 	if strings.TrimSpace(parentHash) != "" {
-		snapshot, err := s.storage.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
+		snapshot, err := st.GetCommitSnapshot(ctx, strings.TrimSpace(parentHash))
 		if err == nil && snapshot != nil {
+			parentSnapshotLoaded = true
 			for filePath, contentHash := range snapshot.Files {
 				cleanedPath := cleanDiffPath(filePath)
 				cleanedHash := strings.TrimSpace(contentHash)
@@ -3052,8 +3078,18 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 		}
 	}
 
+	currentPaths := normalizeModifiedFiles(cs.ModifiedFiles)
+	currentEntries, err := getExistingEntriesByPaths(ctx, st, cs.SliceID, currentPaths)
+	if err != nil {
+		return fmt.Errorf("failed to load file entries for change history: %w", err)
+	}
+	currentHashes, err := getFileManifestHashes(ctx, st, cs.SliceID, currentPaths)
+	if err != nil {
+		return fmt.Errorf("failed to load file manifests for change history: %w", err)
+	}
+
 	var changes []*models.FileChangeRecord
-	for _, rawPath := range normalizeModifiedFiles(cs.ModifiedFiles) {
+	for _, rawPath := range currentPaths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
 			continue
@@ -3063,35 +3099,23 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 		newHash := ""
 		linesAdded := 0
 		linesDeleted := 0
-		hasCurrentEntry := false
-		if oldHash == "" {
-			oldHash = s.findPreviousKnownFileHash(ctx, cs.SliceID, filePath, "")
+		hasCurrentEntry := currentEntries[filePath]
+		if oldHash == "" && !parentSnapshotLoaded {
+			oldHash = s.findPreviousKnownFileHashWithStorage(ctx, st, cs.SliceID, filePath, "")
 		}
-
-		if entry, entryErr := s.storage.GetEntryByPath(ctx, cs.SliceID, filePath); entryErr == nil && entry != nil {
-			hasCurrentEntry = true
-		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
-			return fmt.Errorf("failed to load file entry %s for change history: %w", filePath, entryErr)
-		}
-
-		manifest, err := s.storage.GetFileManifest(ctx, cs.SliceID, filePath)
-		if err == nil && manifest != nil {
-			newHash = strings.TrimSpace(manifest.Hash)
-		} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
-			return fmt.Errorf("failed to load file %s for change history: %w", filePath, err)
-		}
+		newHash = strings.TrimSpace(currentHashes[filePath])
 
 		changeType := models.ChangeTypeModify
 		switch {
 		case oldHash == "" && (newHash != "" || hasCurrentEntry):
 			changeType = models.ChangeTypeAdd
-			fileContent, readErr := storage.ReadSliceFileContent(ctx, s.storage, cs.SliceID, filePath)
+			fileContent, readErr := storage.ReadVersionedFileContent(ctx, st, newHash)
 			if readErr == nil && fileContent != nil && len(fileContent.Content) > 0 {
 				linesAdded = countTextLines(fileContent.Content)
 			}
 		case oldHash != "" && newHash == "" && !hasCurrentEntry:
 			changeType = models.ChangeTypeDelete
-			if previousContent, hashErr := storage.ReadVersionedFileContent(ctx, s.storage, oldHash); hashErr == nil && previousContent != nil {
+			if previousContent, hashErr := storage.ReadVersionedFileContent(ctx, st, oldHash); hashErr == nil && previousContent != nil {
 				linesDeleted = countTextLines(previousContent.Content)
 			}
 		case oldHash != "" && (newHash != "" || hasCurrentEntry):
@@ -3117,7 +3141,7 @@ func (s *sliceServiceServer) recordFileChanges(ctx context.Context, cs *models.C
 	if len(changes) == 0 {
 		return nil
 	}
-	return s.storage.AddFileChanges(ctx, changes)
+	return st.AddFileChanges(ctx, changes)
 }
 
 func effectiveContentHash(filePath string, content *models.FileContent) string {

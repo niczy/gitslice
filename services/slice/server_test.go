@@ -542,6 +542,33 @@ func TestCheckoutProfileSummary(t *testing.T) {
 	}
 }
 
+func TestMergeProfileSummary(t *testing.T) {
+	profile := newMergeProfile("cs-123", "slice-123", 256)
+	profile.markConflictCheck(3, 120*time.Millisecond)
+	profile.markRevertApply(15 * time.Millisecond)
+	profile.markFinalize(230 * time.Millisecond)
+	profile.markPromotion(40 * time.Millisecond)
+	profile.markConfig(5 * time.Millisecond)
+	profile.finish()
+
+	summary := profile.summary()
+	for _, want := range []string{
+		"changeset_id=cs-123",
+		"slice_id=slice-123",
+		"modified_files=256",
+		"conflicts=3",
+		"conflict_ms=120",
+		"revert_ms=15",
+		"finalize_ms=230",
+		"promotion_ms=40",
+		"config_ms=5",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected summary to contain %q, got %q", want, summary)
+		}
+	}
+}
+
 func TestCheckoutSliceLoadsCommitSnapshotOnce(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()

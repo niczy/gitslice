@@ -649,6 +649,34 @@ func (s *InMemoryStorage) GetActiveSlicesForFile(ctx context.Context, fileID str
 	return sliceIDs, nil
 }
 
+func (s *InMemoryStorage) GetActiveSlicesForFiles(ctx context.Context, fileIDs []string) (map[string][]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make(map[string][]string, len(fileIDs))
+	for _, fileID := range fileIDs {
+		cleaned := strings.TrimSpace(fileID)
+		if cleaned == "" {
+			continue
+		}
+		sliceIDs := make([]string, 0, len(s.fileIndex[cleaned]))
+		for sliceID := range s.fileIndex[cleaned] {
+			sliceIDs = append(sliceIDs, sliceID)
+		}
+		result[cleaned] = sliceIDs
+	}
+	return result, nil
+}
+
+func (s *InMemoryStorage) AddFilesToSlice(ctx context.Context, fileIDs []string, sliceID string) error {
+	for _, fileID := range fileIDs {
+		if err := s.AddFileToSlice(ctx, fileID, sliceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RemoveFileFromSlice removes a file from the index for a slice
 func (s *InMemoryStorage) RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error {
 	s.mu.Lock()
@@ -1142,6 +1170,24 @@ func (s *InMemoryStorage) GetFileManifest(ctx context.Context, sliceID, path str
 	return cloneManifest(manifest), nil
 }
 
+func (s *InMemoryStorage) GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make(map[string]string, len(paths))
+	cleanedSliceID := strings.TrimSpace(sliceID)
+	for _, filePath := range paths {
+		cleanedPath := cleanRelativePath(filePath)
+		if cleanedPath == "" {
+			continue
+		}
+		if manifest, ok := s.manifests[cleanedSliceID+":"+cleanedPath]; ok && manifest != nil {
+			result[cleanedPath] = strings.TrimSpace(manifest.Hash)
+		}
+	}
+	return result, nil
+}
+
 func (s *InMemoryStorage) DeleteFileManifest(ctx context.Context, sliceID, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1484,6 +1530,23 @@ func (s *InMemoryStorage) GetEntryByPath(ctx context.Context, sliceID, path stri
 	copy := *entry
 	copy.Hash = s.entryHashLocked(entry)
 	return &copy, nil
+}
+
+func (s *InMemoryStorage) GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make(map[string]bool, len(paths))
+	cleanedSliceID := strings.TrimSpace(sliceID)
+	for _, filePath := range paths {
+		cleanedPath := cleanRelativePath(filePath)
+		if cleanedPath == "" {
+			continue
+		}
+		_, ok := s.entriesByPath[cleanedSliceID+":"+cleanedPath]
+		result[cleanedPath] = ok
+	}
+	return result, nil
 }
 
 // ListEntries retrieves all entries for a slice with a given parent ID
