@@ -84,6 +84,94 @@ func computeDirSet(paths []string) map[string]bool {
 	return dirs
 }
 
+func normalizeFileIndexIDs(fileIDs []string) []string {
+	out := make([]string, 0, len(fileIDs))
+	seen := make(map[string]struct{}, len(fileIDs))
+	for _, fileID := range fileIDs {
+		cleaned := strings.TrimSpace(fileID)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func normalizeRelativePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, filePath := range paths {
+		cleaned := cleanRelativePath(filePath)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func mergeRootSliceFileIDs(filesJSON []byte, fileIDs []string) ([]byte, error) {
+	var files []string
+	if err := json.Unmarshal(filesJSON, &files); err != nil {
+		files = []string{}
+	}
+	seen := make(map[string]struct{}, len(files)+len(fileIDs))
+	out := make([]string, 0, len(files)+len(fileIDs))
+	for _, existing := range files {
+		cleaned := strings.TrimSpace(existing)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	for _, fileID := range normalizeFileIndexIDs(fileIDs) {
+		if _, ok := seen[fileID]; ok {
+			continue
+		}
+		seen[fileID] = struct{}{}
+		out = append(out, fileID)
+	}
+	sort.Strings(out)
+	return json.Marshal(out)
+}
+
+func fileChangeCopyRows(changes []*models.FileChangeRecord) [][]any {
+	rows := make([][]any, 0, len(changes))
+	for _, change := range changes {
+		if change == nil || strings.TrimSpace(change.ID) == "" {
+			continue
+		}
+		rows = append(rows, []any{
+			change.ID,
+			change.SliceID,
+			change.CommitHash,
+			change.Path,
+			change.OldPath,
+			string(change.ChangeType),
+			change.OldHash,
+			change.NewHash,
+			change.LinesAdded,
+			change.LinesDeleted,
+			change.Author,
+			change.Message,
+			change.Timestamp,
+		})
+	}
+	return rows
+}
+
 func (s *PostgresNativeStorage) materializeDirectoryTreeTx(ctx context.Context, tx pgx.Tx, sliceID string, rawFiles []string, includeFiles bool) error {
 	paths := collectMaterializedPaths(rawFiles)
 	dirs := computeDirSet(paths)
@@ -568,6 +656,72 @@ func (s *postgresNativeTxView) AddFileToSlice(ctx context.Context, fileID, slice
 	return err
 }
 
+func (s *postgresNativeTxView) AddFilesToSlice(ctx context.Context, fileIDs []string, sliceID string) error {
+	ctx = ensureCtx(ctx)
+	cleanedIDs := normalizeFileIndexIDs(fileIDs)
+	if len(cleanedIDs) == 0 {
+		return nil
+	}
+
+	var isRoot bool
+	var filesJSON []byte
+	err := s.tx.QueryRow(ctx, `SELECT is_root, files FROM slices WHERE id = $1`, sliceID).Scan(&isRoot, &filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+	if isRoot {
+		merged, err := mergeRootSliceFileIDs(filesJSON, cleanedIDs)
+		if err != nil {
+			return err
+		}
+		_, err = s.tx.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, merged, sliceID)
+		return err
+	}
+
+	_, err = s.tx.Exec(ctx, `
+		INSERT INTO file_slice_index (file_id, slice_id)
+		SELECT file_id, $2
+		FROM unnest($1::text[]) AS file_id
+		ON CONFLICT DO NOTHING
+	`, cleanedIDs, sliceID)
+	return err
+}
+
+func (s *postgresNativeTxView) GetActiveSlicesForFiles(ctx context.Context, fileIDs []string) (map[string][]string, error) {
+	ctx = ensureCtx(ctx)
+	cleanedIDs := normalizeFileIndexIDs(fileIDs)
+	result := make(map[string][]string, len(cleanedIDs))
+	if len(cleanedIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := s.tx.Query(ctx, `
+		SELECT file_id, slice_id
+		FROM file_slice_index
+		WHERE file_id = ANY($1)
+		ORDER BY file_id, slice_id
+	`, cleanedIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for _, fileID := range cleanedIDs {
+		result[fileID] = []string{}
+	}
+	for rows.Next() {
+		var fileID, mappedSliceID string
+		if err := rows.Scan(&fileID, &mappedSliceID); err != nil {
+			return nil, err
+		}
+		result[fileID] = append(result[fileID], mappedSliceID)
+	}
+	return result, rows.Err()
+}
+
 func (s *postgresNativeTxView) RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error {
 	ctx = ensureCtx(ctx)
 	var isRoot bool
@@ -745,6 +899,34 @@ func (s *postgresNativeTxView) GetFileManifest(ctx context.Context, sliceID, fil
 	return s.PostgresNativeStorage.GetFileManifest(ctx, sliceID, filePath)
 }
 
+func (s *postgresNativeTxView) GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error) {
+	ctx = ensureCtx(ctx)
+	cleanedPaths := normalizeRelativePaths(paths)
+	result := make(map[string]string, len(cleanedPaths))
+	if len(cleanedPaths) == 0 {
+		return result, nil
+	}
+
+	rows, err := s.tx.Query(ctx, `
+		SELECT path, hash
+		FROM file_manifests
+		WHERE slice_id = $1 AND path = ANY($2)
+	`, strings.TrimSpace(sliceID), cleanedPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var filePath, hash string
+		if err := rows.Scan(&filePath, &hash); err != nil {
+			return nil, err
+		}
+		result[filePath] = strings.TrimSpace(hash)
+	}
+	return result, rows.Err()
+}
+
 func (s *postgresNativeTxView) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
 	ctx = ensureCtx(ctx)
 	sliceID = strings.TrimSpace(sliceID)
@@ -807,6 +989,37 @@ func (s *postgresNativeTxView) SaveCommitSnapshot(ctx context.Context, snapshot 
 	return err
 }
 
+func (s *postgresNativeTxView) GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error) {
+	ctx = ensureCtx(ctx)
+	cleanedPaths := normalizeRelativePaths(paths)
+	result := make(map[string]bool, len(cleanedPaths))
+	if len(cleanedPaths) == 0 {
+		return result, nil
+	}
+
+	rows, err := s.tx.Query(ctx, `
+		SELECT path
+		FROM directory_entries
+		WHERE slice_id = $1 AND path = ANY($2)
+	`, strings.TrimSpace(sliceID), cleanedPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for _, filePath := range cleanedPaths {
+		result[filePath] = false
+	}
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			return nil, err
+		}
+		result[filePath] = true
+	}
+	return result, rows.Err()
+}
+
 func (s *postgresNativeTxView) GetGlobalState(ctx context.Context) (*models.GlobalState, error) {
 	ctx = ensureCtx(ctx)
 	var gs models.GlobalState
@@ -859,21 +1072,17 @@ func (s *postgresNativeTxView) AddFileChanges(ctx context.Context, changes []*mo
 	if len(changes) == 0 {
 		return nil
 	}
-	for _, change := range changes {
-		if change == nil || change.ID == "" {
-			continue
-		}
-		_, err := s.tx.Exec(ctx, `
-			INSERT INTO file_changes (id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-			ON CONFLICT (id) DO NOTHING
-		`, change.ID, change.SliceID, change.CommitHash, change.Path, change.OldPath, string(change.ChangeType),
-			change.OldHash, change.NewHash, change.LinesAdded, change.LinesDeleted, change.Author, change.Message, change.Timestamp)
-		if err != nil {
-			return err
-		}
+	rows := fileChangeCopyRows(changes)
+	if len(rows) == 0 {
+		return nil
 	}
-	return nil
+	_, err := s.tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"file_changes"},
+		[]string{"id", "slice_id", "commit_hash", "path", "old_path", "change_type", "old_hash", "new_hash", "lines_added", "lines_deleted", "author", "message", "committed_at"},
+		pgx.CopyFromRows(rows),
+	)
+	return err
 }
 
 // ============ Slice Operations ============
@@ -1374,6 +1583,40 @@ func (s *PostgresNativeStorage) AddFileToSlice(ctx context.Context, fileID, slic
 	return err
 }
 
+func (s *PostgresNativeStorage) AddFilesToSlice(ctx context.Context, fileIDs []string, sliceID string) error {
+	ctx = ensureCtx(ctx)
+	cleanedIDs := normalizeFileIndexIDs(fileIDs)
+	if len(cleanedIDs) == 0 {
+		return nil
+	}
+
+	var isRoot bool
+	var filesJSON []byte
+	err := s.pool.QueryRow(ctx, `SELECT is_root, files FROM slices WHERE id = $1`, sliceID).Scan(&isRoot, &filesJSON)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+	if isRoot {
+		merged, err := mergeRootSliceFileIDs(filesJSON, cleanedIDs)
+		if err != nil {
+			return err
+		}
+		_, err = s.pool.Exec(ctx, `UPDATE slices SET files = $1, updated_at = NOW() WHERE id = $2`, merged, sliceID)
+		return err
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO file_slice_index (file_id, slice_id)
+		SELECT file_id, $2
+		FROM unnest($1::text[]) AS file_id
+		ON CONFLICT DO NOTHING
+	`, cleanedIDs, sliceID)
+	return err
+}
+
 func (s *PostgresNativeStorage) GetActiveSlicesForFile(ctx context.Context, fileID string) ([]string, error) {
 	ctx = ensureCtx(ctx)
 
@@ -1395,6 +1638,38 @@ func (s *PostgresNativeStorage) GetActiveSlicesForFile(ctx context.Context, file
 		sliceIDs = []string{}
 	}
 	return sliceIDs, rows.Err()
+}
+
+func (s *PostgresNativeStorage) GetActiveSlicesForFiles(ctx context.Context, fileIDs []string) (map[string][]string, error) {
+	ctx = ensureCtx(ctx)
+	cleanedIDs := normalizeFileIndexIDs(fileIDs)
+	result := make(map[string][]string, len(cleanedIDs))
+	if len(cleanedIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT file_id, slice_id
+		FROM file_slice_index
+		WHERE file_id = ANY($1)
+		ORDER BY file_id, slice_id
+	`, cleanedIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for _, fileID := range cleanedIDs {
+		result[fileID] = []string{}
+	}
+	for rows.Next() {
+		var fileID, mappedSliceID string
+		if err := rows.Scan(&fileID, &mappedSliceID); err != nil {
+			return nil, err
+		}
+		result[fileID] = append(result[fileID], mappedSliceID)
+	}
+	return result, rows.Err()
 }
 
 func (s *PostgresNativeStorage) RemoveFileFromSlice(ctx context.Context, fileID, sliceID string) error {
@@ -2015,6 +2290,34 @@ func (s *PostgresNativeStorage) GetFileManifest(ctx context.Context, sliceID, fi
 	return cloneManifest(&manifest), nil
 }
 
+func (s *PostgresNativeStorage) GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error) {
+	ctx = ensureCtx(ctx)
+	cleanedPaths := normalizeRelativePaths(paths)
+	result := make(map[string]string, len(cleanedPaths))
+	if len(cleanedPaths) == 0 {
+		return result, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT path, hash
+		FROM file_manifests
+		WHERE slice_id = $1 AND path = ANY($2)
+	`, strings.TrimSpace(sliceID), cleanedPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var filePath, hash string
+		if err := rows.Scan(&filePath, &hash); err != nil {
+			return nil, err
+		}
+		result[filePath] = strings.TrimSpace(hash)
+	}
+	return result, rows.Err()
+}
+
 func (s *PostgresNativeStorage) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
 	ctx = ensureCtx(ctx)
 	sliceID = strings.TrimSpace(sliceID)
@@ -2171,6 +2474,37 @@ func (s *PostgresNativeStorage) GetEntryByPath(ctx context.Context, sliceID, pat
 		return nil, err
 	}
 	return &e, nil
+}
+
+func (s *PostgresNativeStorage) GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error) {
+	ctx = ensureCtx(ctx)
+	cleanedPaths := normalizeRelativePaths(paths)
+	result := make(map[string]bool, len(cleanedPaths))
+	if len(cleanedPaths) == 0 {
+		return result, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT path
+		FROM directory_entries
+		WHERE slice_id = $1 AND path = ANY($2)
+	`, strings.TrimSpace(sliceID), cleanedPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for _, filePath := range cleanedPaths {
+		result[filePath] = false
+	}
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			return nil, err
+		}
+		result[filePath] = true
+	}
+	return result, rows.Err()
 }
 
 func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error) {
@@ -2430,12 +2764,17 @@ func (s *PostgresNativeStorage) AddFileChange(ctx context.Context, change *model
 
 func (s *PostgresNativeStorage) AddFileChanges(ctx context.Context, changes []*models.FileChangeRecord) error {
 	ctx = ensureCtx(ctx)
-	for _, change := range changes {
-		if err := s.AddFileChange(ctx, change); err != nil {
-			return err
-		}
+	rows := fileChangeCopyRows(changes)
+	if len(rows) == 0 {
+		return nil
 	}
-	return nil
+	_, err := s.pool.CopyFrom(
+		ctx,
+		pgx.Identifier{"file_changes"},
+		[]string{"id", "slice_id", "commit_hash", "path", "old_path", "change_type", "old_hash", "new_hash", "lines_added", "lines_deleted", "author", "message", "committed_at"},
+		pgx.CopyFromRows(rows),
+	)
+	return err
 }
 
 func (s *PostgresNativeStorage) GetFileHistory(ctx context.Context, sliceID, path string, limit int, fromCommit string) ([]*models.FileChangeRecord, error) {
