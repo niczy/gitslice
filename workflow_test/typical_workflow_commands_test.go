@@ -1,13 +1,47 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type dirtyTrackerState struct {
+	PID int `json:"pid"`
+}
+
+func stopDirtyTrackerForTest(t *testing.T, checkoutDir string) {
+	t.Helper()
+
+	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatalf("read dirty tracker state: %v", err)
+	}
+
+	var state dirtyTrackerState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode dirty tracker state: %v", err)
+	}
+	if state.PID <= 0 {
+		return
+	}
+	if err := syscall.Kill(state.PID, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		t.Fatalf("stop dirty tracker pid %d: %v", state.PID, err)
+	}
+	_ = waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
+		err := syscall.Kill(state.PID, 0)
+		return err == syscall.ESRCH, nil
+	})
+}
 
 func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) string {
 	t.Helper()
@@ -314,6 +348,9 @@ func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
 	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
 
 	checkoutDir := t.TempDir()
+	t.Cleanup(func() {
+		stopDirtyTrackerForTest(t, checkoutDir)
+	})
 	output, err := runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "checkout", sliceIDArg(sliceID))
 	if err != nil {
 		t.Fatalf("checkout with dirty tracker failed: %v\nOutput:\n%s", err, output)
