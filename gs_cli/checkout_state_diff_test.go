@@ -10,12 +10,30 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 )
 
+func addTestDirectoryRecords(t *testing.T, workdir string, index *localCheckoutIndex, dirs ...string) {
+	t.Helper()
+	seen := make(map[string]struct{}, len(dirs))
+	for _, dir := range dirs {
+		normalized := normalizeTrackedDirectoryPath(dir)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		record, _, err := currentCheckoutDirectorySnapshot(workdir, normalized)
+		if err != nil {
+			t.Fatalf("snapshot dir %q: %v", normalized, err)
+		}
+		index.Directories = append(index.Directories, record)
+	}
+}
+
 func TestDetectNoGitModifiedFiles(t *testing.T) {
 	workdir := t.TempDir()
 
 	scriptContent := []byte("#!/bin/sh\necho ok\n")
 	linkTarget := "bin/tool.sh"
-	state := &localCheckoutState{
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
 		SliceID:    "slice-test",
 		CommitHash: "commit-1",
 		Files: []checkoutTrackedFile{
@@ -39,10 +57,6 @@ func TestDetectNoGitModifiedFiles(t *testing.T) {
 			},
 		},
 	}
-	if err := writeCheckoutState(workdir, state); err != nil {
-		t.Fatalf("write checkout state: %v", err)
-	}
-
 	if err := os.MkdirAll(filepath.Join(workdir, "bin"), 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
 	}
@@ -58,9 +72,6 @@ func TestDetectNoGitModifiedFiles(t *testing.T) {
 	if err := os.Symlink("bin/other.sh", filepath.Join(workdir, "bin", "current")); err != nil {
 		t.Fatalf("write symlink: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "new.txt"), []byte("new\n"), 0o644); err != nil {
-		t.Fatalf("write new file: %v", err)
-	}
 	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
 		t.Fatalf("mkdir .gs: %v", err)
 	}
@@ -74,7 +85,15 @@ func TestDetectNoGitModifiedFiles(t *testing.T) {
 		t.Fatalf("write .git ignored: %v", err)
 	}
 
-	modified, err := detectNoGitModifiedFiles(workdir, state)
+	addTestDirectoryRecords(t, workdir, index, "", "bin", "docs")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	modified, err := detectNoGitModifiedFiles(workdir, index)
 	if err != nil {
 		t.Fatalf("detect modified files: %v", err)
 	}
@@ -97,7 +116,8 @@ func TestDetectNoGitModifiedFilesTouchedButUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat file: %v", err)
 	}
-	state := &localCheckoutState{
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
 		SliceID:    "slice-test",
 		CommitHash: "commit-1",
 		Files: []checkoutTrackedFile{
@@ -110,8 +130,9 @@ func TestDetectNoGitModifiedFilesTouchedButUnchanged(t *testing.T) {
 			},
 		},
 	}
-	if err := writeCheckoutState(workdir, state); err != nil {
-		t.Fatalf("write checkout state: %v", err)
+	addTestDirectoryRecords(t, workdir, index, "")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
 	}
 
 	touchedAt := info.ModTime().Add(2 * time.Second)
@@ -119,7 +140,7 @@ func TestDetectNoGitModifiedFilesTouchedButUnchanged(t *testing.T) {
 		t.Fatalf("touch file: %v", err)
 	}
 
-	modified, err := detectNoGitModifiedFiles(workdir, state)
+	modified, err := detectNoGitModifiedFiles(workdir, index)
 	if err != nil {
 		t.Fatalf("detect modified files: %v", err)
 	}
@@ -128,8 +149,8 @@ func TestDetectNoGitModifiedFilesTouchedButUnchanged(t *testing.T) {
 	}
 }
 
-func TestCheckoutStatesEqualContentIgnoresLocalMetadata(t *testing.T) {
-	a := &localCheckoutState{
+func TestCheckoutIndicesEqualContentIgnoresLocalMetadata(t *testing.T) {
+	a := &localCheckoutIndex{
 		SliceID: "slice-test",
 		Files: []checkoutTrackedFile{
 			{
@@ -140,7 +161,7 @@ func TestCheckoutStatesEqualContentIgnoresLocalMetadata(t *testing.T) {
 			},
 		},
 	}
-	b := &localCheckoutState{
+	b := &localCheckoutIndex{
 		SliceID: "slice-test",
 		Files: []checkoutTrackedFile{
 			{
@@ -152,8 +173,8 @@ func TestCheckoutStatesEqualContentIgnoresLocalMetadata(t *testing.T) {
 		},
 	}
 
-	if !checkoutStatesEqualContent(a, b) {
-		t.Fatal("expected checkoutStatesEqualContent to ignore local file metadata")
+	if !checkoutIndicesEqualContent(a, b) {
+		t.Fatal("expected checkoutIndicesEqualContent to ignore local file metadata")
 	}
 }
 
@@ -174,7 +195,8 @@ func TestDetectNoGitModifiedFilesScansTrackedFilesInsideUnchangedDirectories(t *
 	if err != nil {
 		t.Fatalf("stat guide: %v", err)
 	}
-	state := &localCheckoutState{
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
 		SliceID:    "slice-test",
 		CommitHash: "commit-1",
 		Files: []checkoutTrackedFile{
@@ -187,8 +209,9 @@ func TestDetectNoGitModifiedFilesScansTrackedFilesInsideUnchangedDirectories(t *
 			},
 		},
 	}
-	if err := writeCheckoutState(workdir, state); err != nil {
-		t.Fatalf("write checkout state: %v", err)
+	addTestDirectoryRecords(t, workdir, index, "", "docs")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
 	}
 
 	if err := os.WriteFile(targetPath, []byte("v2\n"), 0o644); err != nil {
@@ -199,7 +222,7 @@ func TestDetectNoGitModifiedFilesScansTrackedFilesInsideUnchangedDirectories(t *
 		t.Fatalf("touch guide: %v", err)
 	}
 
-	modified, err := detectNoGitModifiedFiles(workdir, state)
+	modified, err := detectNoGitModifiedFiles(workdir, index)
 	if err != nil {
 		t.Fatalf("detect modified files: %v", err)
 	}

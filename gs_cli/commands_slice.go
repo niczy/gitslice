@@ -175,12 +175,12 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	nextCheckoutState, err := enrichCheckoutStateWithLocalMetadata(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, effectiveGit))
+	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest, effectiveGit)
 	if err != nil {
-		log.Fatalf("Failed to capture checkout state: %v", err)
+		log.Fatalf("Failed to build checkout index: %v", err)
 	}
-	if err := writeCheckoutState(".", nextCheckoutState); err != nil {
-		log.Fatalf("Failed to write checkout state: %v", err)
+	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
+		log.Fatalf("Failed to write checkout index: %v", err)
 	}
 
 	// Display checkout results
@@ -223,33 +223,24 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to read current slice binding: %v", err)
 	}
 
-	checkoutState, err := readCheckoutState(".")
+	checkoutIndex, err := readCheckoutIndex(".")
 	if err != nil {
-		log.Fatalf("Failed to read checkout state: %v", err)
+		log.Fatalf("Failed to read checkout index: %v", err)
 	}
-
-	hasGitDir := false
-	if info, statErr := os.Stat(".git"); statErr == nil && info.IsDir() {
-		hasGitDir = true
+	if checkoutIndex == nil {
+		log.Fatal("Cannot sync slice: checkout metadata missing. Run gs slice checkout again.")
 	}
 
 	effectiveGit := false
 	switch {
-	case checkoutState != nil:
-		effectiveGit = checkoutState.GitEnabled
+	case checkoutIndex != nil:
+		effectiveGit = checkoutIndex.GitEnabled
 		if *gitEnabled && !effectiveGit {
 			log.Fatal("Cannot sync a no-git checkout with --git. Create a new checkout with --git instead.")
 		}
 		if *noGit && effectiveGit {
 			log.Fatal("Cannot sync a git-backed checkout with --no-git")
 		}
-	case *gitEnabled:
-		effectiveGit = true
-	case *noGit:
-		effectiveGit = false
-	default:
-		// Preserve behavior for older checkouts that predate checkout_state.json.
-		effectiveGit = hasGitDir
 	}
 	effectiveNoGit := !effectiveGit
 
@@ -258,7 +249,7 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	var hasPendingChanges bool
 	var gitignoreChanged bool
 	if effectiveNoGit {
-		if err := verifyCheckoutStateClean(".", checkoutState); err != nil {
+		if err := verifyCheckoutIndexClean(".", checkoutIndex); err != nil {
 			log.Fatalf("Cannot sync slice: %v", err)
 		}
 	} else {
@@ -295,14 +286,14 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
-	nextCheckoutState, err := enrichCheckoutStateWithLocalMetadata(".", checkoutStateFromManifest(sliceID, checkoutResult.Manifest, !effectiveNoGit))
+	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest, !effectiveNoGit)
 	if err != nil {
-		log.Fatalf("Failed to capture checkout state: %v", err)
+		log.Fatalf("Failed to build checkout index: %v", err)
 	}
 
 	status := "up to date"
 	if effectiveNoGit {
-		if !checkoutStatesEqualContent(checkoutState, nextCheckoutState) {
+		if !checkoutIndicesEqualContent(checkoutIndex, nextCheckoutIndex) {
 			status = "updated"
 		}
 	} else {
@@ -329,8 +320,8 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	if err := writeCheckoutState(".", nextCheckoutState); err != nil {
-		log.Fatalf("Failed to write checkout state: %v", err)
+	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
+		log.Fatalf("Failed to write checkout index: %v", err)
 	}
 
 	fmt.Printf("Synced slice: %s\n", sliceID)

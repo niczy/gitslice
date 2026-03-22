@@ -1049,8 +1049,8 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(checkoutDir, ".gs", "checkout_state.json")); err != nil {
-		t.Fatalf("expected checkout state file, err=%v", err)
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".gs", "index")); err != nil {
+		t.Fatalf("expected checkout index file, err=%v", err)
 	}
 
 	readmeV2Hash := writeSliceFile(readmePath, []byte("nogit v2\n"))
