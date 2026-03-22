@@ -308,6 +308,81 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 	}
 }
 
+func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-tracker-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
+
+	checkoutDir := t.TempDir()
+	output, err := runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "checkout", sliceIDArg(sliceID))
+	if err != nil {
+		t.Fatalf("checkout with dirty tracker failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
+	pathsPath := filepath.Join(checkoutDir, ".gs", "dirty_paths.json")
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(statePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return strings.Contains(string(raw), `"status":"active"`), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never became active: %v", err)
+	}
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	if err := os.WriteFile(targetPath, []byte("updated locally\n"), 0o644); err != nil {
+		t.Fatalf("rewrite tracked file: %v", err)
+	}
+	newPath := filepath.Join(checkoutDir, folderPath, "NEW.txt")
+	if err := os.WriteFile(newPath, []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(pathsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		content := string(raw)
+		return strings.Contains(content, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) &&
+			strings.Contains(content, filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never recorded local changes: %v", err)
+	}
+
+	output, err = runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "restore")
+	if err != nil {
+		t.Fatalf("restore with dirty tracker failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Restored tracked files: 1") || !strings.Contains(output, "Removed new paths: 1") {
+		t.Fatalf("expected restore output, got: %s", output)
+	}
+
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(pathsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return strings.TrimSpace(string(raw)) == "[]", nil
+	}); err != nil {
+		t.Fatalf("dirty tracker did not clear after restore: %v", err)
+	}
+}
+
 func TestFilesystemSyncCommand(t *testing.T) {
 	username := fmt.Sprintf("fssync%d", time.Now().UnixNano())
 	homeDir := t.TempDir()

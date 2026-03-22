@@ -184,6 +184,11 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
 		log.Fatalf("Failed to write checkout index: %v", err)
 	}
+	if !effectiveGit {
+		if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
+			log.Printf("Warning: failed to start dirty tracker: %v", err)
+		}
+	}
 
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
@@ -253,6 +258,9 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if effectiveNoGit {
 		if err := verifyCheckoutIndexClean(".", checkoutIndex); err != nil {
 			log.Fatalf("Cannot sync slice: %v", err)
+		}
+		if err := stopDirtyTracker("."); err != nil {
+			log.Printf("Warning: failed to stop dirty tracker before sync: %v", err)
 		}
 	} else {
 		createdRepo, err = ensureGitRepo(".")
@@ -324,6 +332,11 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
 		log.Fatalf("Failed to write checkout index: %v", err)
+	}
+	if effectiveNoGit {
+		if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
+			log.Printf("Warning: failed to restart dirty tracker: %v", err)
+		}
 	}
 
 	fmt.Printf("Synced slice: %s\n", sliceID)
