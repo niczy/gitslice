@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -40,7 +41,7 @@ func TestMaterializeSliceCheckoutHonorsMetadata(t *testing.T) {
 		},
 	}
 
-	if _, err := materializeSliceCheckout(workdir, respV1, nil, false); err != nil {
+	if _, err := materializeSliceCheckout(workdir, respV1, nil, false, nil); err != nil {
 		t.Fatalf("materialize v1 failed: %v", err)
 	}
 
@@ -86,7 +87,7 @@ func TestMaterializeSliceCheckoutHonorsMetadata(t *testing.T) {
 		},
 	}
 
-	if _, err := materializeSliceCheckout(workdir, respV2, nil, false); err != nil {
+	if _, err := materializeSliceCheckout(workdir, respV2, nil, false, nil); err != nil {
 		t.Fatalf("materialize v2 failed: %v", err)
 	}
 
@@ -106,5 +107,59 @@ func TestMaterializeSliceCheckoutHonorsMetadata(t *testing.T) {
 		t.Fatalf("readlink v2: %v", err)
 	} else if got != linkV2 {
 		t.Fatalf("expected updated link target %q, got %q", linkV2, got)
+	}
+}
+
+func TestMaterializeSliceCheckoutSkipsUnchangedTrackedFiles(t *testing.T) {
+	workdir := t.TempDir()
+	content := []byte("same\n")
+	resp := &slicev1.CheckoutResponse{
+		Manifest: &slicev1.SliceManifest{
+			CommitHash: "commit-1",
+			FileMetadata: []*slicev1.FileMetadata{
+				{
+					FileId: "README.md",
+					Path:   "README.md",
+					Size:   int64(len(content)),
+					Hash:   storage.HashFileManifestContent(content, false, ""),
+				},
+			},
+		},
+		Files: []*slicev1.FileContent{
+			{FileId: "README.md", Content: content},
+		},
+	}
+
+	if _, err := materializeSliceCheckout(workdir, resp, nil, false, nil); err != nil {
+		t.Fatalf("initial materialize failed: %v", err)
+	}
+
+	index, err := buildCheckoutIndex(workdir, "slice-test", resp.GetManifest(), false)
+	if err != nil {
+		t.Fatalf("build checkout index: %v", err)
+	}
+
+	targetPath := filepath.Join(workdir, "README.md")
+	infoBefore, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat before: %v", err)
+	}
+	modBefore := infoBefore.ModTime()
+	time.Sleep(10 * time.Millisecond)
+
+	result, err := materializeSliceCheckout(workdir, resp, nil, false, index)
+	if err != nil {
+		t.Fatalf("second materialize failed: %v", err)
+	}
+	if len(result.ChangedPaths) != 0 {
+		t.Fatalf("expected no changed paths on identical sync, got %#v", result.ChangedPaths)
+	}
+
+	infoAfter, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !infoAfter.ModTime().Equal(modBefore) {
+		t.Fatalf("expected unchanged file to keep original modtime, got %v want %v", infoAfter.ModTime(), modBefore)
 	}
 }

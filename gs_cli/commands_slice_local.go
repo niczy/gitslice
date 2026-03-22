@@ -39,6 +39,7 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 	cached := fs.Bool("cached", false, "Show staged changes")
 	statOnly := fs.Bool("stat", false, "Show diffstat only")
 	nameOnly := fs.Bool("name-only", false, "Show changed file names only")
+	summaryOnly := fs.Bool("summary", false, "Show only the change summary and matching paths")
 	fs.Parse(args)
 
 	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
@@ -46,7 +47,7 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to read checkout mode: %v", err)
 	}
 	if gitEnabled {
-		handleGitSliceDiff(*cached, *statOnly, *nameOnly, fs.Args())
+		handleGitSliceDiff(*cached, *statOnly, *nameOnly, *summaryOnly, fs.Args())
 		return
 	}
 	if *cached {
@@ -67,6 +68,10 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 		for _, entry := range entries {
 			fmt.Println(entry.Path)
 		}
+		return
+	}
+	if *summaryOnly {
+		printWorkingTreeSummary(entries)
 		return
 	}
 
@@ -90,6 +95,7 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice restore", flag.ExitOnError)
 	all := fs.Bool("all", false, "Restore all local changes in the current checkout")
+	dryRun := fs.Bool("dry-run", false, "Show what would be restored or removed without changing files")
 	fs.Parse(args)
 
 	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
@@ -128,13 +134,30 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 		fmt.Println("Working tree already matches the recorded checkout state.")
 		return
 	}
+	lookup := newCheckoutIndexLookup(checkoutIndex)
+	if *dryRun {
+		restoredTracked := 0
+		removedNew := 0
+		fmt.Println("Planned restore:")
+		for _, entry := range entries {
+			if _, ok := lookup.files[entry.Path]; ok {
+				restoredTracked++
+				fmt.Printf("  restore %s\n", entry.Path)
+				continue
+			}
+			removedNew++
+			fmt.Printf("  remove %s\n", entry.Path)
+		}
+		fmt.Printf("Would restore tracked files: %d\n", restoredTracked)
+		fmt.Printf("Would remove new paths: %d\n", removedNew)
+		return
+	}
 
 	cache, cacheErr := NewCacheManager()
 	if cacheErr != nil {
 		log.Printf("Warning: unable to initialize cache: %v", cacheErr)
 		cache = nil
 	}
-	lookup := newCheckoutIndexLookup(checkoutIndex)
 	restoredTracked := 0
 	removedNew := 0
 	for _, entry := range entries {
@@ -163,7 +186,22 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Removed new paths: %d\n", removedNew)
 }
 
-func handleGitSliceDiff(cached, statOnly, nameOnly bool, pathArgs []string) {
+func handleGitSliceDiff(cached, statOnly, nameOnly, summaryOnly bool, pathArgs []string) {
+	if summaryOnly {
+		entries, err := collectGitWorkingTreeStatus(".")
+		if err != nil {
+			log.Fatalf("Failed to diff slice checkout: %v", err)
+		}
+		entries = filterWorkingTreeStatusEntries(entries)
+		entries = filterWorkingTreeStatusByPaths(entries, pathArgs)
+		if len(entries) == 0 {
+			fmt.Println("(no diff)")
+			return
+		}
+		printWorkingTreeSummary(entries)
+		return
+	}
+
 	gitArgs := []string{"diff"}
 	if cached {
 		gitArgs = append(gitArgs, "--cached")
@@ -508,6 +546,15 @@ func printLocalSliceDiffStat(diffs []localSliceDiff) {
 			line = fmt.Sprintf("%s [%s]", line, strings.Join(diff.MetadataNotes, ", "))
 		}
 		fmt.Println(line)
+	}
+}
+
+func printWorkingTreeSummary(entries []workingTreeStatusEntry) {
+	added, modified, deleted := summarizeWorkingTreeStatus(entries)
+	fmt.Printf("Changes: +%d ~%d -%d\n", added, modified, deleted)
+	fmt.Println("Paths:")
+	for _, entry := range entries {
+		fmt.Printf("  %s %s\n", entry.Status, entry.Path)
 	}
 }
 

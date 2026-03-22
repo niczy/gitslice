@@ -139,7 +139,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatal("Directory is not empty. Please checkout into an empty directory.")
 	}
 
-	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", false)
+	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", false, nil)
 	if err != nil {
 		log.Fatalf("Failed to checkout slice: %v", err)
 	}
@@ -284,7 +284,7 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", true)
+	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", true, checkoutIndex)
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
@@ -418,6 +418,7 @@ func fetchAndMaterializeSliceCheckout(
 	cli *CLI,
 	sliceID, commitHash, dir string,
 	pruneTracked bool,
+	previousIndex *localCheckoutIndex,
 ) (*checkoutFetchResult, error) {
 	req := &slicev1.CheckoutRequest{
 		SliceId:    sliceID,
@@ -437,7 +438,7 @@ func fetchAndMaterializeSliceCheckout(
 		}
 	}
 
-	manifest, materialized, err := materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked)
+	manifest, materialized, err := materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked, previousIndex)
 	var staleCacheErr *staleCheckoutCacheError
 	if err != nil && cache != nil && errors.As(err, &staleCacheErr) && len(staleCacheErr.Hashes) > 0 {
 		if dropErr := cache.DropObjects(staleCacheErr.Hashes); dropErr != nil {
@@ -447,7 +448,7 @@ func fetchAndMaterializeSliceCheckout(
 			log.Printf("Warning: unable to persist cache index: %v", persistErr)
 		}
 		req.KnownHashes = filterCheckoutKnownHashes(req.KnownHashes, staleCacheErr.Hashes)
-		manifest, materialized, err = materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked)
+		manifest, materialized, err = materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked, previousIndex)
 	}
 	if err == nil {
 		if cache != nil {
@@ -469,7 +470,7 @@ func fetchAndMaterializeSliceCheckout(
 	if err != nil {
 		return nil, err
 	}
-	materialized, err = materializeSliceCheckout(dir, resp, cache, pruneTracked)
+	materialized, err = materializeSliceCheckout(dir, resp, cache, pruneTracked, previousIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -518,6 +519,7 @@ func materializeSliceCheckoutStream(
 	cache *CacheManager,
 	dir string,
 	pruneTracked bool,
+	previousIndex *localCheckoutIndex,
 ) (*slicev1.SliceManifest, *checkoutMaterialization, error) {
 	stream, err := cli.sliceClient.StreamCheckoutSlice(ctx, req)
 	if err != nil {
@@ -540,7 +542,7 @@ func materializeSliceCheckoutStream(
 			return nil
 		}
 		var prepErr error
-		materializer, prepErr = newStreamedCheckoutMaterializer(dir, manifest, cache, pruneTracked, knownHashes)
+		materializer, prepErr = newStreamedCheckoutMaterializer(dir, manifest, cache, pruneTracked, knownHashes, previousIndex)
 		return prepErr
 	}
 
@@ -613,7 +615,7 @@ func (e *staleCheckoutCacheError) Error() string {
 	return fmt.Sprintf("stale checkout cache index: %d missing objects", len(e.Hashes))
 }
 
-func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool) (*checkoutMaterialization, error) {
+func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache *CacheManager, pruneTracked bool, previousIndex *localCheckoutIndex) (*checkoutMaterialization, error) {
 	if resp == nil || resp.GetManifest() == nil {
 		return nil, fmt.Errorf("missing checkout manifest")
 	}
@@ -658,6 +660,7 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 	}
 	changedPaths = append(changedPaths, removedConflicts...)
 	directoryMarkers := checkoutDirectoryMarkers(resp.Manifest.FileMetadata)
+	previousLookup := newCheckoutMaterializationLookup(previousIndex)
 
 	var cachedHits int64
 	var changedPathsMu sync.Mutex
@@ -668,6 +671,12 @@ func materializeSliceCheckout(dir string, resp *slicev1.CheckoutResponse, cache 
 				return
 			}
 			if _, ok := directoryMarkers[filepath.Clean(fm.GetPath())]; ok {
+				return
+			}
+			if reuse, err := canReuseExistingCheckoutFile(dir, previousLookup, fm); err != nil {
+				log.Printf("Failed to inspect existing checkout file %s: %v", fm.GetPath(), err)
+				return
+			} else if reuse {
 				return
 			}
 			writtenPath, err := writeSliceCheckoutFile(dir, cache, fm, explicitFiles, fileContents, blockContents, &cachedHits)
@@ -705,6 +714,7 @@ type streamedCheckoutMaterializer struct {
 	dir            string
 	cache          *CacheManager
 	manifest       *slicev1.SliceManifest
+	previousLookup *checkoutIndexLookup
 	blockContents  map[string][]byte
 	blockWaiters   map[string][]*streamedPendingFile
 	blockRefCounts map[string]int
@@ -721,6 +731,7 @@ func newStreamedCheckoutMaterializer(
 	cache *CacheManager,
 	pruneTracked bool,
 	knownHashes map[string]struct{},
+	previousIndex *localCheckoutIndex,
 ) (*streamedCheckoutMaterializer, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("missing checkout manifest")
@@ -730,6 +741,7 @@ func newStreamedCheckoutMaterializer(
 		dir:            dir,
 		cache:          cache,
 		manifest:       manifest,
+		previousLookup: newCheckoutMaterializationLookup(previousIndex),
 		blockContents:  make(map[string][]byte),
 		blockWaiters:   make(map[string][]*streamedPendingFile),
 		blockRefCounts: make(map[string]int),
@@ -783,6 +795,13 @@ func newStreamedCheckoutMaterializer(
 
 	runCheckoutJobs(checkoutWorkerCount(len(workItems)), workItems, func(fm *slicev1.FileMetadata) {
 		if atomic.LoadInt32(&initFailed) != 0 {
+			return
+		}
+
+		if reuse, err := canReuseExistingCheckoutFile(dir, materializer.previousLookup, fm); err != nil {
+			setInitErr(err)
+			return
+		} else if reuse {
 			return
 		}
 
@@ -1093,6 +1112,59 @@ assembleFromContent:
 		return "", false, err
 	}
 	return fm.GetPath(), true, os.WriteFile(targetPath, content, mode)
+}
+
+func newCheckoutMaterializationLookup(index *localCheckoutIndex) *checkoutIndexLookup {
+	if index == nil {
+		return nil
+	}
+	return newCheckoutIndexLookup(index)
+}
+
+func canReuseExistingCheckoutFile(dir string, previousLookup *checkoutIndexLookup, fm *slicev1.FileMetadata) (bool, error) {
+	if previousLookup == nil || fm == nil {
+		return false, nil
+	}
+
+	cleanedPath := filepath.Clean(strings.TrimSpace(fm.GetPath()))
+	if cleanedPath == "" || cleanedPath == "." {
+		return false, nil
+	}
+	tracked, ok := previousLookup.files[cleanedPath]
+	if !ok {
+		return false, nil
+	}
+	if tracked.Executable != fm.GetExecutable() || strings.TrimSpace(tracked.SymlinkTarget) != strings.TrimSpace(fm.GetSymlinkTarget()) {
+		return false, nil
+	}
+
+	resolvedHash := checkoutFileContentHash(fm, nil)
+	if resolvedHash == "" || strings.TrimSpace(tracked.Hash) == "" || strings.TrimSpace(tracked.Hash) != resolvedHash {
+		return false, nil
+	}
+
+	targetPath := filepath.Join(dir, cleanedPath)
+	info, err := os.Lstat(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(tracked.SymlinkTarget) != "" {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return false, nil
+		}
+		target, err := os.Readlink(targetPath)
+		if err != nil {
+			return false, err
+		}
+		return target == tracked.SymlinkTarget, nil
+	}
+	if info.IsDir() {
+		return false, nil
+	}
+	return checkoutTrackedFileMatches(targetPath, info, tracked)
 }
 
 func checkoutFileContentHash(fm *slicev1.FileMetadata, content []byte) string {

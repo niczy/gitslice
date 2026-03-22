@@ -236,29 +236,9 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 	}
 
 	lookup := newCheckoutIndexLookup(index)
-
-	entries := make([]workingTreeStatusEntry, 0)
-	for path, original := range lookup.files {
-		fullPath := filepath.Join(dir, path)
-		info, err := os.Lstat(fullPath)
-		if os.IsNotExist(err) {
-			entries = append(entries, workingTreeStatusEntry{Path: path, Status: "D"})
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if info.IsDir() {
-			entries = append(entries, workingTreeStatusEntry{Path: path, Status: "M"})
-			continue
-		}
-		matches, err := checkoutTrackedFileMatches(fullPath, info, original)
-		if err != nil {
-			return nil, err
-		}
-		if !matches {
-			entries = append(entries, workingTreeStatusEntry{Path: path, Status: "M"})
-		}
+	entries, err := collectNoGitTrackedStatus(dir, lookup)
+	if err != nil {
+		return nil, err
 	}
 
 	newFiles, err := scanCheckoutForNewFiles(dir, "", lookup)

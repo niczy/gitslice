@@ -255,6 +255,13 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 		t.Fatalf("expected no-git diff --name-only to include tracked delete and new file, got: %s", output)
 	}
 
+	output = runCLIOrFail(t, checkoutDir, "slice", "diff", "--summary")
+	if !strings.Contains(output, "Changes: +1 ~1 -0") ||
+		!strings.Contains(output, "M "+filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
+		!strings.Contains(output, "A "+filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
+		t.Fatalf("expected no-git diff --summary output, got: %s", output)
+	}
+
 	output = runCLIOrFail(t, checkoutDir, "slice", "diff")
 	if !strings.Contains(output, "M "+filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
 		!strings.Contains(output, "A "+filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
@@ -265,6 +272,15 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 		!strings.Contains(output, "--- /dev/null") ||
 		!strings.Contains(output, "+++ b/"+filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
 		t.Fatalf("expected no-git diff to include unified patches, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "restore", "--dry-run")
+	if !strings.Contains(output, "Planned restore:") ||
+		!strings.Contains(output, "restore "+filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
+		!strings.Contains(output, "remove "+filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) ||
+		!strings.Contains(output, "Would restore tracked files: 1") ||
+		!strings.Contains(output, "Would remove new paths: 1") {
+		t.Fatalf("expected no-git restore --dry-run output, got: %s", output)
 	}
 
 	output = runCLIOrFail(t, checkoutDir, "slice", "restore")
