@@ -20,7 +20,8 @@ test('renders Git Slice landing content and navigation', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /make local work the main path when the task deserves a real checkout\./i })).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice checkout <slice-id-or-slug>/i }).first()).toBeVisible();
-  await expect(page.getByText(/gs changeset create --message "refresh settings page" --files src\/routes\/settings\.tsx/i)).toBeVisible();
+  await expect(page.getByText(/gs slice diff/i)).toBeVisible();
+  await expect(page.getByText(/gs slice publish --message "refresh settings page" --files src\/routes\/settings\.tsx/i)).toBeVisible();
   await expect(page.getByText(/gs fs write \/\$USER\/app\/NOTICE\.txt --text "hotfix shipped remotely"/i)).toBeVisible();
-  await expect(page.getByText(/gs changeset merge <changeset-id>/i)).toBeVisible();
+  await expect(page.getByText(/plain checkout now covers local status, diff, restore, sync, and publish on its own/i)).toBeVisible();
 });

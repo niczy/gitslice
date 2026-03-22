@@ -182,39 +182,6 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleSliceDiff(args []string) {
-	fs := flag.NewFlagSet("slice diff", flag.ExitOnError)
-	cached := fs.Bool("cached", false, "Show staged changes")
-	statOnly := fs.Bool("stat", false, "Show diffstat only")
-	nameOnly := fs.Bool("name-only", false, "Show changed file names only")
-	fs.Parse(args)
-
-	gitArgs := []string{"diff"}
-	if *cached {
-		gitArgs = append(gitArgs, "--cached")
-	}
-	if *statOnly {
-		gitArgs = append(gitArgs, "--stat")
-	}
-	if *nameOnly {
-		gitArgs = append(gitArgs, "--name-only")
-	}
-	if fs.NArg() > 0 {
-		gitArgs = append(gitArgs, "--")
-		gitArgs = append(gitArgs, fs.Args()...)
-	}
-
-	output, err := runGitCommand(".", gitArgs...)
-	if err != nil {
-		log.Fatalf("Failed to diff slice checkout: %v", err)
-	}
-	if strings.TrimSpace(output) == "" {
-		fmt.Println("(no diff)")
-		return
-	}
-	fmt.Println(output)
-}
-
 func handleSliceDelete(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice delete", flag.ExitOnError)
 	force := fs.Bool("force", false, "Delete even if the slice still has open changesets")

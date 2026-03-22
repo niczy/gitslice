@@ -47,8 +47,8 @@ const COMMAND_MAP = [
   },
   {
     task: 'Create a focused local worktree',
-    command: 'gs slice list\ngs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug> --git',
-    note: 'Use plain checkout for the fastest materialization. Add --git when you want local git status and diff.',
+    command: 'gs slice list\ngs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug>\ngs slice diff',
+    note: 'Plain checkout is now the primary local workflow. Add --git only when you explicitly want a local repo.',
   },
   {
     task: 'Bind a GitHub repo into a home-slice directory',
@@ -90,8 +90,8 @@ export default function DocsPage({ onBrowseRepo }) {
           <h1>One versioned filesystem, two work surfaces.</h1>
           <p className="lede">
             Use <code>gs fs</code> for direct cloud edits in your home slice. Use custom slices when you want a fast
-            local checkout, and add <code>--git</code> when you want the full editor workflow and explicit changeset
-            merges back to the published tree.
+            local checkout. Plain checkout now covers local status, diff, restore, sync, and publish on its own. Add
+            <code>--git</code> only when you explicitly want a local repo.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -179,13 +179,14 @@ gs fs snapshot -m "notes update"`}</code>
               <article className="docs-code-card">
                 <div className="docs-code-card-head">
                   <h3>Custom slice checkout</h3>
-                  <p>Best when the task needs a local editor or tests. Plain checkout is fastest; add <code>--git</code> when you want git-native workflow.</p>
+                  <p>Best when the task needs a local editor or tests. Plain checkout is the default local workflow; add <code>--git</code> only for an actual local repo.</p>
                 </div>
                 <pre className="code-block">
                   <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id-or-slug> --git
-git status`}</code>
+gs slice checkout <slice-id-or-slug>
+gs slice status
+gs slice diff`}</code>
                 </pre>
               </article>
             </div>
@@ -284,8 +285,9 @@ gs repo unlink /$USER/vendor/repo`}</code>
             <h2>Check out a focused slice instead of dragging a whole tree everywhere</h2>
             <p>
               A custom slice is the local-work path. Create one around the folder or surface you care about, then
-              check it out. Plain <code>gs slice checkout</code> skips git metadata for speed. Add <code>--git</code>
-              when you want local git status and diff. The client asks for manifests first and
+              check it out. Plain <code>gs slice checkout</code> is now the primary local path. It skips git metadata
+              for speed, keeps a local index under <code>.gs</code>, and supports local status, diff, restore, sync,
+              and publish directly. Add <code>--git</code> only when you want a local repo. The client asks for manifests first and
               downloads only blocks missing from local cache, so repeat checkouts stay fast.
             </p>
             <div className="docs-step-list">
@@ -300,14 +302,14 @@ gs repo unlink /$USER/vendor/repo`}</code>
                 <span>02</span>
                 <div>
                   <h3>Check it out locally</h3>
-                  <p>Git Slice reconstructs the worktree from manifests plus cached and downloaded blocks, with optional git metadata on top.</p>
+                  <p>Git Slice reconstructs the worktree from manifests plus cached and downloaded blocks, then tracks the checkout through `.gs/index`.</p>
                 </div>
               </article>
               <article className="docs-step">
                 <span>03</span>
                 <div>
                   <h3>Sync and publish when ready</h3>
-                  <p>Use <code>gs slice sync</code> to refresh the worktree, <code>gs slice publish</code> to create or update the tracked changeset, and <code>gs changeset show</code> to inspect it.</p>
+                  <p>Use <code>gs slice diff</code> and <code>gs slice restore</code> for local review, <code>gs slice sync</code> to refresh the worktree, and <code>gs slice publish</code> to create or update the tracked changeset.</p>
                 </div>
               </article>
             </div>
@@ -315,8 +317,10 @@ gs repo unlink /$USER/vendor/repo`}</code>
               <code>{`gs slice list
 gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id-or-slug> --git
+gs slice checkout <slice-id-or-slug>
 gs slice tree
+gs slice diff
+gs slice restore
 gs slice sync
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
 gs changeset show`}</code>

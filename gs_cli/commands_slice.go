@@ -43,7 +43,9 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	case "tree", "list-files":
 		handleSliceTree(ctx, cli, args[1:])
 	case "diff":
-		handleSliceDiff(args[1:])
+		handleSliceDiff(ctx, cli, args[1:])
+	case "restore":
+		handleSliceRestore(ctx, cli, args[1:])
 	case "checkouts":
 		handleSliceCheckouts(args[1:])
 	case "delete":
@@ -1005,8 +1007,9 @@ func writeSliceCheckoutFile(
 		content = []byte{}
 	}
 
-	if cache != nil && fm.Hash != "" {
-		if err := cache.StoreObject(fm.Hash, content); err != nil {
+	resolvedHash := checkoutFileContentHash(fm, content)
+	if cache != nil && resolvedHash != "" {
+		if err := cache.StoreObject(resolvedHash, content); err != nil {
 			log.Printf("Failed to update cache for %s: %v", fm.Path, err)
 		}
 	}
@@ -1046,7 +1049,11 @@ func tryWriteSliceCheckoutFileFromCache(
 		mode = 0o755
 	}
 
-	if cache != nil && fm.Hash != "" {
+	if cache != nil {
+		resolvedHash := checkoutFileContentHash(fm, nil)
+		if resolvedHash == "" {
+			goto assembleFromContent
+		}
 		if info, err := os.Lstat(targetPath); err == nil {
 			if info.IsDir() {
 				if err := os.RemoveAll(targetPath); err != nil {
@@ -1056,7 +1063,7 @@ func tryWriteSliceCheckoutFileFromCache(
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return "", false, err
 		}
-		if err := cache.CopyObjectToFile(fm.Hash, targetPath, mode); err == nil {
+		if err := cache.CopyObjectToFile(resolvedHash, targetPath, mode); err == nil {
 			atomic.AddInt64(cachedHits, 1)
 			return fm.GetPath(), true, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -1064,6 +1071,7 @@ func tryWriteSliceCheckoutFileFromCache(
 		}
 	}
 
+assembleFromContent:
 	content, hits, err := assembleCheckoutFile(cache, fm, blockContents)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1075,8 +1083,9 @@ func tryWriteSliceCheckoutFileFromCache(
 	if hits > 0 {
 		atomic.AddInt64(cachedHits, hits)
 	}
-	if cache != nil && fm.Hash != "" {
-		if err := cache.StoreObject(fm.Hash, content); err != nil {
+	resolvedHash := checkoutFileContentHash(fm, content)
+	if cache != nil && resolvedHash != "" {
+		if err := cache.StoreObject(resolvedHash, content); err != nil {
 			log.Printf("Failed to update cache for %s: %v", fm.Path, err)
 		}
 	}
@@ -1084,6 +1093,22 @@ func tryWriteSliceCheckoutFileFromCache(
 		return "", false, err
 	}
 	return fm.GetPath(), true, os.WriteFile(targetPath, content, mode)
+}
+
+func checkoutFileContentHash(fm *slicev1.FileMetadata, content []byte) string {
+	if fm == nil {
+		return ""
+	}
+	if hash := strings.TrimSpace(fm.GetHash()); hash != "" {
+		return hash
+	}
+	if fm.GetSymlinkTarget() != "" {
+		return storage.HashFileManifestContent([]byte(fm.GetSymlinkTarget()), false, fm.GetSymlinkTarget())
+	}
+	if content == nil {
+		return ""
+	}
+	return storage.HashFileManifestContent(content, fm.GetExecutable(), "")
 }
 
 func prepareCheckoutDirectories(root string, fileMetadata []*slicev1.FileMetadata) ([]string, error) {

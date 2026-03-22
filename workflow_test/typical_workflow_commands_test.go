@@ -230,6 +230,68 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 	}
 }
 
+func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-restore-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+
+	checkoutDir := t.TempDir()
+	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	if err := os.WriteFile(targetPath, []byte("updated locally\n"), 0o644); err != nil {
+		t.Fatalf("rewrite tracked file: %v", err)
+	}
+	newPath := filepath.Join(checkoutDir, folderPath, "NEW.txt")
+	if err := os.WriteFile(newPath, []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "diff", "--name-only")
+	if !strings.Contains(output, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
+		!strings.Contains(output, filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
+		t.Fatalf("expected no-git diff --name-only to include tracked delete and new file, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "diff")
+	if !strings.Contains(output, "M "+filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
+		!strings.Contains(output, "A "+filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
+		t.Fatalf("expected no-git diff to include modify/add entries, got: %s", output)
+	}
+	if !strings.Contains(output, "--- a/"+filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
+		!strings.Contains(output, "+++ b/"+filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
+		!strings.Contains(output, "--- /dev/null") ||
+		!strings.Contains(output, "+++ b/"+filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
+		t.Fatalf("expected no-git diff to include unified patches, got: %s", output)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "restore")
+	if !strings.Contains(output, "Restored tracked files: 1") || !strings.Contains(output, "Removed new paths: 1") {
+		t.Fatalf("expected no-git restore output, got: %s", output)
+	}
+
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("expected tracked file to be restored, err=%v", err)
+	}
+	restoredContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read restored tracked file: %v", err)
+	}
+	if string(restoredContent) != "" {
+		t.Fatalf("expected tracked file to revert to original empty content, got %q", string(restoredContent))
+	}
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Fatalf("expected new file to be removed, err=%v", err)
+	}
+
+	output = runCLIOrFail(t, checkoutDir, "slice", "status")
+	if !strings.Contains(output, "Working tree: clean") || !strings.Contains(output, "Changes: +0 ~0 -0") {
+		t.Fatalf("expected restored no-git checkout to be clean, got: %s", output)
+	}
+}
+
 func TestFilesystemSyncCommand(t *testing.T) {
 	username := fmt.Sprintf("fssync%d", time.Now().UnixNano())
 	homeDir := t.TempDir()
