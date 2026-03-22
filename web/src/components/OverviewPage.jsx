@@ -37,7 +37,7 @@ const CHECKOUT_STEPS = [
 const CHECKOUT_FACTS = [
   'Fast no-git checkout by default',
   'Custom slice per feature or folder',
-  'Add --git when you want local git status and diff',
+  'Add --git only if you explicitly want a local repo',
 ];
 
 const CLOUD_EDIT_FACTS = [
@@ -57,7 +57,8 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
           <h1>Check out a custom slice in seconds.</h1>
           <p className="lede">
             Create a focused slice, pull only the missing blocks, and materialize the tree immediately.
-            When you want the local git workflow, add <code>--git</code>. When the task is smaller than a local checkout,
+            Plain checkout now covers local status, diff, restore, sync, and publish on its own. Add <code>--git</code> only
+            when you specifically want a local repo. When the task is smaller than a local checkout,
             edit the same versioned files directly with <code>gs fs</code>.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
@@ -137,15 +138,15 @@ gs fs snapshot -m "patch notice"`}</code>
           <div className="landing-story-code">
             <div className="landing-story-code-head">
               <Badge variant="outline" className="w-fit">Full path</Badge>
-              <p>From custom slice creation to git-backed publish</p>
+              <p>From custom slice creation to no-git publish</p>
             </div>
             <pre className="code-block">
               <code>{`gs slice create ui-refresh apps/web
 mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id-or-slug> --git
+gs slice checkout <slice-id-or-slug>
 $EDITOR src/routes/settings.tsx
-gs changeset create --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset merge <changeset-id>`}</code>
+gs slice diff
+gs slice publish --message "refresh settings page" --files src/routes/settings.tsx`}</code>
             </pre>
             <ul className="landing-inline-facts">
               {CHECKOUT_FACTS.map((fact) => (

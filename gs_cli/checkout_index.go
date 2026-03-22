@@ -239,6 +239,17 @@ func buildCheckoutIndex(dir, sliceID string, manifest *slicev1.SliceManifest, gi
 			Executable:    meta.GetExecutable(),
 			SymlinkTarget: meta.GetSymlinkTarget(),
 		}
+		if record.Hash == "" {
+			if record.SymlinkTarget != "" {
+				record.Hash = storage.HashFileManifestContent([]byte(record.SymlinkTarget), false, record.SymlinkTarget)
+			} else {
+				content, err := os.ReadFile(fullPath)
+				if err != nil {
+					return nil, err
+				}
+				record.Hash = storage.HashFileManifestContent(content, record.Executable, "")
+			}
+		}
 		populateTrackedFileLocalMetadata(&record, info)
 		index.Files = append(index.Files, record)
 		addParentDirectoryPaths(cleanedPath, directoryPaths)

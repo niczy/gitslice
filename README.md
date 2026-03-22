@@ -174,15 +174,17 @@ gs changeset list --status merged
 ```
 
 `gs slice create` keeps a free-form display name and also returns a stable slug. `gs slice checkout` accepts either the slice ID or that slug.
-Plain `gs slice checkout` is the fast default and skips local git metadata. Add `--git` when you want local git status/diff and a git-native local workflow.
+Plain `gs slice checkout` is the primary path. It is fast, skips local git metadata, and now supports local status, diff, restore, sync, and publish directly from the recorded `.gs/index`. Add `--git` only when you explicitly want a local repo.
 
-For the normal local workflow, list your slices, check one out, sync it in place, and publish through the tracked changeset:
+For the normal local workflow, list your slices, check one out, inspect local changes, and publish through the tracked changeset:
 
 ```bash
 gs slice list
-gs slice checkout <slice-id-or-slug> --git
+gs slice checkout <slice-id-or-slug>
 gs slice status
 gs slice status --remote
+gs slice diff
+gs slice restore
 gs slice sync
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
 ```
