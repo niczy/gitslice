@@ -152,6 +152,9 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 		fmt.Printf("Would remove new paths: %d\n", removedNew)
 		return
 	}
+	if err := stopDirtyTracker("."); err != nil {
+		log.Printf("Warning: failed to stop dirty tracker before restore: %v", err)
+	}
 
 	cache, cacheErr := NewCacheManager()
 	if cacheErr != nil {
@@ -181,6 +184,9 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 		if err := cache.PersistIndex(); err != nil {
 			log.Printf("Warning: failed to persist cache index: %v", err)
 		}
+	}
+	if err := resetDirtyTracker(".", checkoutIndex); err != nil {
+		log.Printf("Warning: failed to restart dirty tracker: %v", err)
 	}
 	fmt.Printf("Restored tracked files: %d\n", restoredTracked)
 	fmt.Printf("Removed new paths: %d\n", removedNew)

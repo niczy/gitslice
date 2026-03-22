@@ -236,6 +236,15 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 	}
 
 	lookup := newCheckoutIndexLookup(index)
+	if candidates, ok, err := collectDirtyTrackerCandidates(dir, index); err == nil && ok {
+		entries, remaining, err := collectNoGitWorkingTreeStatusFromCandidates(dir, lookup, candidates)
+		if err == nil {
+			_ = writeDirtyTrackerPaths(dir, remaining)
+			sortWorkingTreeStatus(entries)
+			return entries, nil
+		}
+	}
+
 	entries, err := collectNoGitTrackedStatus(dir, lookup)
 	if err != nil {
 		return nil, err
@@ -249,6 +258,7 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 		entries = append(entries, workingTreeStatusEntry{Path: path, Status: "A"})
 	}
 
+	_ = writeDirtyTrackerPaths(dir, collectWorkingTreeStatusPaths(entries))
 	sortWorkingTreeStatus(entries)
 	return entries, nil
 }
@@ -292,4 +302,20 @@ func filterWorkingTreeStatusEntries(entries []workingTreeStatusEntry) []workingT
 		})
 	}
 	return filtered
+}
+
+func collectWorkingTreeStatusPaths(entries []workingTreeStatusEntry) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		cleaned := filepath.Clean(strings.TrimSpace(entry.Path))
+		if cleaned == "." || cleaned == "" {
+			continue
+		}
+		paths = append(paths, cleaned)
+	}
+	sort.Strings(paths)
+	return uniqueCheckoutPaths(paths)
 }

@@ -62,6 +62,10 @@ func main() {
 		handleCacheCommand(args[1:])
 		return
 	}
+	if args[0] == "__watch-checkout" {
+		handleCheckoutWatcher(args[1:])
+		return
+	}
 	if args[0] == "slice" && len(args) > 1 && args[1] == "checkouts" {
 		handleSliceCheckouts(args[2:])
 		return

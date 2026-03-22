@@ -1,13 +1,47 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type dirtyTrackerState struct {
+	PID int `json:"pid"`
+}
+
+func stopDirtyTrackerForTest(t *testing.T, checkoutDir string) {
+	t.Helper()
+
+	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatalf("read dirty tracker state: %v", err)
+	}
+
+	var state dirtyTrackerState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode dirty tracker state: %v", err)
+	}
+	if state.PID <= 0 {
+		return
+	}
+	if err := syscall.Kill(state.PID, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		t.Fatalf("stop dirty tracker pid %d: %v", state.PID, err)
+	}
+	_ = waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
+		err := syscall.Kill(state.PID, 0)
+		return err == syscall.ESRCH, nil
+	})
+}
 
 func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) string {
 	t.Helper()
@@ -305,6 +339,84 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 	output = runCLIOrFail(t, checkoutDir, "slice", "status")
 	if !strings.Contains(output, "Working tree: clean") || !strings.Contains(output, "Changes: +0 ~0 -0") {
 		t.Fatalf("expected restored no-git checkout to be clean, got: %s", output)
+	}
+}
+
+func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-tracker-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
+
+	checkoutDir := t.TempDir()
+	t.Cleanup(func() {
+		stopDirtyTrackerForTest(t, checkoutDir)
+	})
+	output, err := runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "checkout", sliceIDArg(sliceID))
+	if err != nil {
+		t.Fatalf("checkout with dirty tracker failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
+	pathsPath := filepath.Join(checkoutDir, ".gs", "dirty_paths.json")
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(statePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return strings.Contains(string(raw), `"status":"active"`), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never became active: %v", err)
+	}
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	if err := os.WriteFile(targetPath, []byte("updated locally\n"), 0o644); err != nil {
+		t.Fatalf("rewrite tracked file: %v", err)
+	}
+	newPath := filepath.Join(checkoutDir, folderPath, "NEW.txt")
+	if err := os.WriteFile(newPath, []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(pathsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		content := string(raw)
+		return strings.Contains(content, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) &&
+			strings.Contains(content, filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never recorded local changes: %v", err)
+	}
+
+	output, err = runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "restore")
+	if err != nil {
+		t.Fatalf("restore with dirty tracker failed: %v\nOutput:\n%s", err, output)
+	}
+	if !strings.Contains(output, "Restored tracked files: 1") || !strings.Contains(output, "Removed new paths: 1") {
+		t.Fatalf("expected restore output, got: %s", output)
+	}
+
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(pathsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return strings.TrimSpace(string(raw)) == "[]", nil
+	}); err != nil {
+		t.Fatalf("dirty tracker did not clear after restore: %v", err)
 	}
 }
 

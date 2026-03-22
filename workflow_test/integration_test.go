@@ -322,11 +322,15 @@ func runCLIWithDirInputEnvLegacyUser(workdir, input string, env map[string]strin
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
-	if env != nil {
-		cmd.Env = os.Environ()
-		for key, value := range env {
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
+	cmd.Env = os.Environ()
+	if env == nil {
+		env = map[string]string{}
+	}
+	if _, ok := env["GS_DISABLE_DIRTY_TRACKER"]; !ok {
+		env["GS_DISABLE_DIRTY_TRACKER"] = "1"
+	}
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
 	}
 
 	output, err := cmd.CombinedOutput()
