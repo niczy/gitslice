@@ -142,10 +142,8 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		fmt.Printf("New commit: %s\n", mergeResp.GetNewCommitHash())
 	}
 	if len(mergeResp.GetConflicts()) > 0 {
-		fmt.Println("Conflicts detected:")
-		for _, conflict := range mergeResp.GetConflicts() {
-			fmt.Printf("- %s (%s)\n", conflict.GetFileId(), strings.Join(conflict.GetConflictingSliceIds(), ", "))
-		}
+		printMergeConflicts(mergeResp.GetConflicts())
+		printSliceConflictGuidance()
 	}
 }
 

@@ -183,7 +183,9 @@ gs slice list
 gs slice checkout <slice-id-or-slug>
 gs slice status
 gs slice status --remote
+gs slice diff --summary
 gs slice diff
+gs slice restore --dry-run
 gs slice restore
 gs slice sync
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx

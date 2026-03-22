@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -359,6 +360,70 @@ func detectNoGitModifiedFiles(dir string, index *localCheckoutIndex) ([]string, 
 	return uniqueCheckoutPaths(changed), nil
 }
 
+func collectNoGitTrackedStatus(dir string, lookup *checkoutIndexLookup) ([]workingTreeStatusEntry, error) {
+	if lookup == nil || len(lookup.files) == 0 {
+		return nil, nil
+	}
+
+	paths := make([]string, 0, len(lookup.files))
+	for path := range lookup.files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	entries := make([]workingTreeStatusEntry, 0)
+	var entriesMu sync.Mutex
+	var firstErr error
+	var errOnce sync.Once
+	setErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errOnce.Do(func() {
+			firstErr = err
+		})
+	}
+
+	runCheckoutJobs(checkoutWorkerCount(len(paths)), paths, func(path string) {
+		original := lookup.files[path]
+		fullPath := filepath.Join(dir, path)
+		info, err := os.Lstat(fullPath)
+		if os.IsNotExist(err) {
+			entriesMu.Lock()
+			entries = append(entries, workingTreeStatusEntry{Path: path, Status: "D"})
+			entriesMu.Unlock()
+			return
+		}
+		if err != nil {
+			setErr(err)
+			return
+		}
+		if info.IsDir() {
+			entriesMu.Lock()
+			entries = append(entries, workingTreeStatusEntry{Path: path, Status: "M"})
+			entriesMu.Unlock()
+			return
+		}
+		matches, err := checkoutTrackedFileMatches(fullPath, info, original)
+		if err != nil {
+			setErr(err)
+			return
+		}
+		if matches {
+			return
+		}
+		entriesMu.Lock()
+		entries = append(entries, workingTreeStatusEntry{Path: path, Status: "M"})
+		entriesMu.Unlock()
+	})
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	sortWorkingTreeStatus(entries)
+	return entries, nil
+}
+
 type checkoutIndexLookup struct {
 	files            map[string]checkoutTrackedFile
 	directories      map[string]checkoutTrackedDirectory
@@ -501,8 +566,10 @@ func scanCheckoutForNewFiles(dir, relDir string, lookup *checkoutIndexLookup) ([
 
 	childDirs := lookup.trackedChildDirs[normalizedDir]
 	if currentDir.ChildCount == originalDir.ChildCount &&
-		currentDir.ChildNameFingerprint == originalDir.ChildNameFingerprint &&
-		len(childDirs) > 0 {
+		currentDir.ChildNameFingerprint == originalDir.ChildNameFingerprint {
+		if len(childDirs) == 0 {
+			return nil, nil
+		}
 		newFiles := make([]string, 0)
 		for _, childDir := range childDirs {
 			childNewFiles, err := scanCheckoutForNewFiles(dir, childDir, lookup)

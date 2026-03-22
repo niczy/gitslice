@@ -237,10 +237,8 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("New commit: %s\n", resp.NewCommitHash)
 
 	if resp.Status == slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
-		fmt.Println("Conflicts detected:")
-		for _, conflict := range resp.Conflicts {
-			fmt.Printf("- %s (slices: %s)\n", conflict.FileId, strings.Join(conflict.ConflictingSliceIds, ", "))
-		}
+		printMergeConflicts(resp.GetConflicts())
+		printSliceConflictGuidance()
 	}
 }
 
@@ -325,6 +323,21 @@ func resolveChangesetIDForRead(explicit string) (string, error) {
 		return "", fmt.Errorf("no tracked changeset; pass an explicit changeset ID")
 	}
 	return tracked, nil
+}
+
+func printMergeConflicts(conflicts []*slicev1.Conflict) {
+	if len(conflicts) == 0 {
+		return
+	}
+	fmt.Println("Conflicts detected:")
+	for _, conflict := range conflicts {
+		fmt.Printf("- %s (slices: %s)\n", conflict.GetFileId(), strings.Join(conflict.GetConflictingSliceIds(), ", "))
+	}
+}
+
+func printSliceConflictGuidance() {
+	fmt.Println("Hint: sync to the latest slice head, review your local changes, then publish again.")
+	fmt.Println("      Suggested flow: gs slice sync && gs slice diff && gs slice publish")
 }
 
 func printChangesetReview(resp *slicev1.ReviewChangesetResponse, includePatches bool) {
