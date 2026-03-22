@@ -129,7 +129,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 
 func resolveWorkingTreeModifiedFiles(dir string, explicit []string) ([]string, bool, error) {
 	modifiedFiles := normalizeLocalModifiedFiles(explicit)
-	checkoutState, gitEnabled, err := detectCheckoutMode(dir)
+	checkoutIndex, gitEnabled, err := detectCheckoutMode(dir)
 	if err != nil {
 		return nil, false, err
 	}
@@ -148,7 +148,7 @@ func resolveWorkingTreeModifiedFiles(dir string, explicit []string) ([]string, b
 	}
 
 	if len(modifiedFiles) == 0 {
-		modifiedFiles, err = detectNoGitModifiedFiles(dir, checkoutState)
+		modifiedFiles, err = detectNoGitModifiedFiles(dir, checkoutIndex)
 		if err != nil {
 			return nil, false, err
 		}

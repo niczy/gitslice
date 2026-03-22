@@ -44,12 +44,12 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to get slice state: %v", err)
 	}
 
-	checkoutState, gitEnabled, err := detectCheckoutMode(".")
+	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
 	if err != nil {
 		log.Fatalf("Failed to read checkout mode: %v", err)
 	}
 
-	statusEntries, err := collectWorkingTreeStatus(".", checkoutState, gitEnabled)
+	statusEntries, err := collectWorkingTreeStatus(".", checkoutIndex, gitEnabled)
 	if err != nil {
 		log.Fatalf("Failed to inspect working tree: %v", err)
 	}
@@ -81,8 +81,8 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	localCommitHash := ""
-	if checkoutState != nil {
-		localCommitHash = strings.TrimSpace(checkoutState.CommitHash)
+	if checkoutIndex != nil {
+		localCommitHash = strings.TrimSpace(checkoutIndex.CommitHash)
 	}
 	remoteHead := strings.TrimSpace(stateResp.GetLatestCommitHash())
 	behindRemote := localCommitHash != "" && remoteHead != "" && localCommitHash != remoteHead
@@ -147,11 +147,11 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func collectWorkingTreeStatus(dir string, checkoutState *localCheckoutState, gitEnabled bool) ([]workingTreeStatusEntry, error) {
+func collectWorkingTreeStatus(dir string, checkoutIndex *localCheckoutIndex, gitEnabled bool) ([]workingTreeStatusEntry, error) {
 	if gitEnabled {
 		return collectGitWorkingTreeStatus(dir)
 	}
-	return collectNoGitWorkingTreeStatus(dir, checkoutState)
+	return collectNoGitWorkingTreeStatus(dir, checkoutIndex)
 }
 
 func collectGitWorkingTreeStatus(dir string) ([]workingTreeStatusEntry, error) {
@@ -217,27 +217,12 @@ func gitPorcelainCodeToStatus(code string) string {
 	}
 }
 
-func collectNoGitWorkingTreeStatus(dir string, state *localCheckoutState) ([]workingTreeStatusEntry, error) {
-	if state == nil {
-		return nil, fmt.Errorf("no checkout state available; re-checkout the slice")
+func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]workingTreeStatusEntry, error) {
+	if index == nil {
+		return nil, fmt.Errorf("checkout metadata missing; re-checkout the slice")
 	}
 
-	originalFiles := make(map[string]checkoutTrackedFile, len(state.Files))
-	for _, file := range state.Files {
-		cleaned := filepath.Clean(strings.TrimSpace(file.Path))
-		if cleaned == "" || cleaned == "." {
-			continue
-		}
-		originalFiles[cleaned] = checkoutTrackedFile{
-			Path:                 cleaned,
-			Hash:                 strings.TrimSpace(file.Hash),
-			Executable:           file.Executable,
-			SymlinkTarget:        file.SymlinkTarget,
-			Size:                 file.Size,
-			ModifiedTimeUnixNano: file.ModifiedTimeUnixNano,
-			ChangeTimeUnixNano:   file.ChangeTimeUnixNano,
-		}
-	}
+	originalFiles, originalDirs := checkoutIndexMaps(index)
 
 	entries := make([]workingTreeStatusEntry, 0)
 	for path, original := range originalFiles {
@@ -263,7 +248,7 @@ func collectNoGitWorkingTreeStatus(dir string, state *localCheckoutState) ([]wor
 		}
 	}
 
-	newFiles, err := scanCheckoutForNewFiles(dir, "", originalFiles)
+	newFiles, err := scanCheckoutForNewFiles(dir, "", originalFiles, originalDirs)
 	if err != nil {
 		return nil, err
 	}

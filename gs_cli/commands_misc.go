@@ -51,6 +51,14 @@ func handleInit(ctx context.Context, cli *CLI, args []string) {
 	if _, err := ensureGitignoreEntry(".", ".gs/"); err != nil {
 		log.Fatalf("Failed to update .gitignore: %v", err)
 	}
+	if err := writeCheckoutIndex(".", &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    sliceID,
+		CommitHash: "",
+		GitEnabled: true,
+	}); err != nil {
+		log.Fatalf("Failed to write checkout index: %v", err)
+	}
 
 	fmt.Printf("Initialized empty gitslice repository for slice: %s\n", sliceID)
 }
