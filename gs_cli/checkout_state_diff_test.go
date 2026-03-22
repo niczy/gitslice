@@ -232,3 +232,122 @@ func TestDetectNoGitModifiedFilesScansTrackedFilesInsideUnchangedDirectories(t *
 		t.Fatalf("unexpected modified files:\n got %#v\nwant %#v", modified, want)
 	}
 }
+
+func TestDetectNoGitModifiedFilesFindsNestedNewFilesUnderStableTrackedAncestors(t *testing.T) {
+	workdir := t.TempDir()
+	srcDir := filepath.Join(workdir, "apps", "web", "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+
+	mainPath := filepath.Join(srcDir, "main.ts")
+	mainContent := []byte("console.log('ready')\n")
+	if err := os.WriteFile(mainPath, mainContent, 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+
+	mainInfo, err := os.Lstat(mainPath)
+	if err != nil {
+		t.Fatalf("stat main: %v", err)
+	}
+
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "slice-test",
+		CommitHash: "commit-1",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "apps/web/src/main.ts",
+				Hash:                 storage.HashFileManifestContent(mainContent, false, ""),
+				Size:                 mainInfo.Size(),
+				ModifiedTimeUnixNano: mainInfo.ModTime().UnixNano(),
+				ChangeTimeUnixNano:   fileChangeTimeUnixNano(mainInfo),
+			},
+		},
+	}
+	addTestDirectoryRecords(t, workdir, index, "", "apps", "apps/web", "apps/web/src")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(srcDir, "new.ts"), []byte("export {}\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	modified, err := detectNoGitModifiedFiles(workdir, index)
+	if err != nil {
+		t.Fatalf("detect modified files: %v", err)
+	}
+
+	want := []string{"apps/web/src/new.ts"}
+	if !reflect.DeepEqual(modified, want) {
+		t.Fatalf("unexpected modified files:\n got %#v\nwant %#v", modified, want)
+	}
+}
+
+func TestCheckoutIndexBinaryRoundTrip(t *testing.T) {
+	workdir := t.TempDir()
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "slice-test",
+		CommitHash: "commit-42",
+		GitEnabled: true,
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "README.md",
+				Hash:                 "hash-readme",
+				Executable:           false,
+				SymlinkTarget:        "",
+				Size:                 12,
+				ModifiedTimeUnixNano: 101,
+				ChangeTimeUnixNano:   202,
+				Device:               303,
+				Inode:                404,
+			},
+			{
+				Path:                 "bin/tool",
+				Hash:                 "hash-tool",
+				Executable:           true,
+				SymlinkTarget:        "",
+				Size:                 99,
+				ModifiedTimeUnixNano: 505,
+				ChangeTimeUnixNano:   606,
+				Device:               707,
+				Inode:                808,
+			},
+		},
+		Directories: []checkoutTrackedDirectory{
+			{
+				Path:                 "",
+				ModifiedTimeUnixNano: 11,
+				ChangeTimeUnixNano:   22,
+				Device:               33,
+				Inode:                44,
+				ChildCount:           2,
+				ChildNameFingerprint: 55,
+			},
+			{
+				Path:                 "bin",
+				ModifiedTimeUnixNano: 66,
+				ChangeTimeUnixNano:   77,
+				Device:               88,
+				Inode:                99,
+				ChildCount:           1,
+				ChildNameFingerprint: 111,
+			},
+		},
+	}
+
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+
+	roundTrip, err := readCheckoutIndex(workdir)
+	if err != nil {
+		t.Fatalf("read checkout index: %v", err)
+	}
+
+	if !reflect.DeepEqual(roundTrip, index) {
+		t.Fatalf("unexpected round-trip index:\n got %#v\nwant %#v", roundTrip, index)
+	}
+}

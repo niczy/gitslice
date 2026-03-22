@@ -89,8 +89,15 @@ func TestSliceWorkflowCommands(t *testing.T) {
 		t.Fatalf("expected slice diff to include %s, got: %s", trackedFiles[0], output)
 	}
 	output = runCLIOrFail(t, checkoutDir, "slice", "status")
-	if !strings.Contains(output, "Mode: git") || !strings.Contains(output, "Working tree: dirty") || !strings.Contains(output, "Changes: +0 ~1 -0") {
+	if !strings.Contains(output, "Mode: git") ||
+		!strings.Contains(output, "Working tree: dirty") ||
+		!strings.Contains(output, "Changes: +0 ~1 -0") ||
+		!strings.Contains(output, "Remote head: skipped (use --remote)") {
 		t.Fatalf("expected slice status to show git dirty state, got: %s", output)
+	}
+	output = runCLIOrFail(t, checkoutDir, "slice", "status", "--remote")
+	if !strings.Contains(output, "Remote head: ") || !strings.Contains(output, "Sync: ") || strings.Contains(output, "skipped (use --remote)") {
+		t.Fatalf("expected slice status --remote to include remote metadata, got: %s", output)
 	}
 	output = runCLIOrFail(t, checkoutDir, "status")
 	if !strings.Contains(output, "Mode: git") || !strings.Contains(output, "Slice: "+sliceID) {
@@ -206,7 +213,10 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 	}
 
 	output = runCLIOrFail(t, checkoutDir, "slice", "status")
-	if !strings.Contains(output, "Mode: no-git") || !strings.Contains(output, "Working tree: dirty") || !strings.Contains(output, "Changes: +1 ~1 -0") {
+	if !strings.Contains(output, "Mode: no-git") ||
+		!strings.Contains(output, "Working tree: dirty") ||
+		!strings.Contains(output, "Changes: +1 ~1 -0") ||
+		!strings.Contains(output, "Remote head: skipped (use --remote)") {
 		t.Fatalf("expected no-git slice status to show local changes, got: %s", output)
 	}
 

@@ -24,9 +24,10 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice status", flag.ExitOnError)
 	all := fs.Bool("all", false, "Show all changed paths")
 	limit := fs.Int("limit", defaultSliceStatusPathLimit, "Maximum changed paths to print")
+	remote := fs.Bool("remote", false, "Fetch remote head and tracked changeset status")
 	fs.Parse(args)
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice status [--all] [--limit <n>]")
+		log.Println("Usage: gs slice status [--all] [--limit <n>] [--remote]")
 		return
 	}
 	if *limit < 0 {
@@ -37,11 +38,6 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		log.Printf("Failed to read current slice binding: %v", err)
 		return
-	}
-
-	stateResp, err := cli.sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
-	if err != nil {
-		log.Fatalf("Failed to get slice state: %v", err)
 	}
 
 	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
@@ -69,7 +65,7 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	}
 	trackedChangesetID = strings.TrimSpace(trackedChangesetID)
 	trackedChangesetStatus := ""
-	if trackedChangesetID != "" {
+	if *remote && trackedChangesetID != "" {
 		reviewResp, reviewErr := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
 			ChangesetId: trackedChangesetID,
 		})
@@ -84,8 +80,16 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	if checkoutIndex != nil {
 		localCommitHash = strings.TrimSpace(checkoutIndex.CommitHash)
 	}
-	remoteHead := strings.TrimSpace(stateResp.GetLatestCommitHash())
-	behindRemote := localCommitHash != "" && remoteHead != "" && localCommitHash != remoteHead
+	remoteHead := ""
+	behindRemote := false
+	if *remote {
+		stateResp, err := cli.sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
+		if err != nil {
+			log.Fatalf("Failed to get slice state: %v", err)
+		}
+		remoteHead = strings.TrimSpace(stateResp.GetLatestCommitHash())
+		behindRemote = localCommitHash != "" && remoteHead != "" && localCommitHash != remoteHead
+	}
 
 	added, modified, deleted := summarizeWorkingTreeStatus(statusEntries)
 	mode := "no-git"
@@ -107,20 +111,29 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	} else {
 		fmt.Println("Checkout base: unknown")
 	}
-	fmt.Printf("Remote head: %s\n", remoteHead)
-	switch {
-	case localCommitHash == "":
-		fmt.Println("Sync: unknown (no checkout base recorded)")
-	case behindRemote:
-		fmt.Println("Sync: behind remote head")
-	default:
-		fmt.Println("Sync: current with remote head")
+	if *remote {
+		fmt.Printf("Remote head: %s\n", remoteHead)
+		switch {
+		case localCommitHash == "":
+			fmt.Println("Sync: unknown (no checkout base recorded)")
+		case behindRemote:
+			fmt.Println("Sync: behind remote head")
+		default:
+			fmt.Println("Sync: current with remote head")
+		}
+	} else {
+		fmt.Println("Remote head: skipped (use --remote)")
+		fmt.Println("Sync: skipped (use --remote)")
 	}
 	if trackedChangesetID == "" {
 		fmt.Println("Tracked changeset: none")
 	} else {
 		fmt.Printf("Tracked changeset: %s\n", trackedChangesetID)
-		fmt.Printf("Tracked changeset status: %s\n", trackedChangesetStatus)
+		if *remote {
+			fmt.Printf("Tracked changeset status: %s\n", trackedChangesetStatus)
+		} else {
+			fmt.Println("Tracked changeset status: skipped (use --remote)")
+		}
 	}
 	fmt.Printf("Working tree: %s\n", workingTreeState)
 	fmt.Printf("Changes: +%d ~%d -%d\n", added, modified, deleted)
@@ -222,10 +235,10 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 		return nil, fmt.Errorf("checkout metadata missing; re-checkout the slice")
 	}
 
-	originalFiles, originalDirs := checkoutIndexMaps(index)
+	lookup := newCheckoutIndexLookup(index)
 
 	entries := make([]workingTreeStatusEntry, 0)
-	for path, original := range originalFiles {
+	for path, original := range lookup.files {
 		fullPath := filepath.Join(dir, path)
 		info, err := os.Lstat(fullPath)
 		if os.IsNotExist(err) {
@@ -248,7 +261,7 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 		}
 	}
 
-	newFiles, err := scanCheckoutForNewFiles(dir, "", originalFiles, originalDirs)
+	newFiles, err := scanCheckoutForNewFiles(dir, "", lookup)
 	if err != nil {
 		return nil, err
 	}

@@ -35,7 +35,7 @@ func printSliceHelp() {
 	fmt.Println("  create    Create a focused slice from one or more published folders")
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug (--files, --git)")
 	fmt.Println("  clone     Alias for checkout")
-	fmt.Println("  status    Show the current slice checkout status")
+	fmt.Println("  status    Show the current slice checkout status (local by default; add --remote for remote head)")
 	fmt.Println("  pull      Alias for sync")
 	fmt.Println("  sync      Sync the current checked out slice in place (follows checkout mode; use --git to force git mode on legacy checkouts)")
 	fmt.Println("  publish   Create/update the tracked changeset and merge it")
