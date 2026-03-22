@@ -2,10 +2,11 @@ package main
 
 import (
 	"bufio"
-	"encoding/gob"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,8 +18,8 @@ import (
 )
 
 const (
-	checkoutIndexMagic   = "GSINDEX1"
-	checkoutIndexVersion = 1
+	checkoutIndexMagic   = "GSIDX002"
+	checkoutIndexVersion = 2
 )
 
 type checkoutTrackedFile struct {
@@ -66,22 +67,66 @@ func readCheckoutIndex(dir string) (*localCheckoutIndex, error) {
 	}
 	defer file.Close()
 
+	reader := bufio.NewReader(file)
 	header := make([]byte, len(checkoutIndexMagic))
-	if _, err := ioReadFull(file, header); err != nil {
+	if _, err := io.ReadFull(reader, header); err != nil {
 		return nil, err
 	}
 	if string(header) != checkoutIndexMagic {
-		return nil, fmt.Errorf("invalid checkout index header")
+		return nil, fmt.Errorf("checkout metadata missing or outdated; run gs slice checkout again")
 	}
 
-	var index localCheckoutIndex
-	if err := gob.NewDecoder(bufio.NewReader(file)).Decode(&index); err != nil {
+	version, err := readCheckoutIndexUint32(reader)
+	if err != nil {
 		return nil, err
 	}
-	if index.Version != checkoutIndexVersion {
-		return nil, fmt.Errorf("unsupported checkout index version %d", index.Version)
+	if version != checkoutIndexVersion {
+		return nil, fmt.Errorf("checkout metadata missing or outdated; run gs slice checkout again")
 	}
-	return &index, nil
+
+	index := &localCheckoutIndex{
+		Version: version,
+	}
+	index.SliceID, err = readCheckoutIndexString(reader)
+	if err != nil {
+		return nil, err
+	}
+	index.CommitHash, err = readCheckoutIndexString(reader)
+	if err != nil {
+		return nil, err
+	}
+	index.GitEnabled, err = readCheckoutIndexBool(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	fileCount, err := readCheckoutIndexUint32(reader)
+	if err != nil {
+		return nil, err
+	}
+	index.Files = make([]checkoutTrackedFile, 0, fileCount)
+	for i := uint32(0); i < fileCount; i++ {
+		record, err := readCheckoutTrackedFileRecord(reader)
+		if err != nil {
+			return nil, err
+		}
+		index.Files = append(index.Files, record)
+	}
+
+	dirCount, err := readCheckoutIndexUint32(reader)
+	if err != nil {
+		return nil, err
+	}
+	index.Directories = make([]checkoutTrackedDirectory, 0, dirCount)
+	for i := uint32(0); i < dirCount; i++ {
+		record, err := readCheckoutTrackedDirectoryRecord(reader)
+		if err != nil {
+			return nil, err
+		}
+		index.Directories = append(index.Directories, record)
+	}
+
+	return index, nil
 }
 
 func writeCheckoutIndex(dir string, index *localCheckoutIndex) error {
@@ -112,8 +157,33 @@ func writeCheckoutIndex(dir string, index *localCheckoutIndex) error {
 	if _, err := writer.WriteString(checkoutIndexMagic); err != nil {
 		return err
 	}
-	if err := gob.NewEncoder(writer).Encode(index); err != nil {
+	if err := writeCheckoutIndexUint32(writer, index.Version); err != nil {
 		return err
+	}
+	if err := writeCheckoutIndexString(writer, index.SliceID); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexString(writer, index.CommitHash); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexBool(writer, index.GitEnabled); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexUint32(writer, uint32(len(index.Files))); err != nil {
+		return err
+	}
+	for _, record := range index.Files {
+		if err := writeCheckoutTrackedFileRecord(writer, record); err != nil {
+			return err
+		}
+	}
+	if err := writeCheckoutIndexUint32(writer, uint32(len(index.Directories))); err != nil {
+		return err
+	}
+	for _, record := range index.Directories {
+		if err := writeCheckoutTrackedDirectoryRecord(writer, record); err != nil {
+			return err
+		}
 	}
 	if err := writer.Flush(); err != nil {
 		return err
@@ -266,42 +336,43 @@ func detectCheckoutMode(dir string) (*localCheckoutIndex, bool, error) {
 }
 
 func detectNoGitModifiedFiles(dir string, index *localCheckoutIndex) ([]string, error) {
-	if index == nil {
-		return nil, fmt.Errorf("checkout metadata missing; run gs slice checkout again")
-	}
-
-	originalFiles, originalDirs := checkoutIndexMaps(index)
-	changed := make([]string, 0)
-	for path, original := range originalFiles {
-		fullPath := filepath.Join(dir, path)
-		info, err := os.Lstat(fullPath)
-		if errors.Is(err, os.ErrNotExist) {
-			changed = append(changed, path)
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if info.IsDir() {
-			changed = append(changed, path)
-			continue
-		}
-		matches, err := checkoutTrackedFileMatches(fullPath, info, original)
-		if err != nil {
-			return nil, err
-		}
-		if !matches {
-			changed = append(changed, path)
-		}
-	}
-
-	newFiles, err := scanCheckoutForNewFiles(dir, "", originalFiles, originalDirs)
+	entries, err := collectNoGitWorkingTreeStatus(dir, index)
 	if err != nil {
 		return nil, err
 	}
-	changed = append(changed, newFiles...)
+	changed := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		changed = append(changed, entry.Path)
+	}
 	sort.Strings(changed)
 	return uniqueCheckoutPaths(changed), nil
+}
+
+type checkoutIndexLookup struct {
+	files            map[string]checkoutTrackedFile
+	directories      map[string]checkoutTrackedDirectory
+	trackedChildDirs map[string][]string
+}
+
+func newCheckoutIndexLookup(index *localCheckoutIndex) *checkoutIndexLookup {
+	files, dirs := checkoutIndexMaps(index)
+	lookup := &checkoutIndexLookup{
+		files:            files,
+		directories:      dirs,
+		trackedChildDirs: make(map[string][]string, len(dirs)),
+	}
+	for path := range dirs {
+		if path == "" {
+			continue
+		}
+		parent := normalizeTrackedDirectoryPath(filepath.Dir(path))
+		lookup.trackedChildDirs[parent] = append(lookup.trackedChildDirs[parent], path)
+	}
+	for parent, childDirs := range lookup.trackedChildDirs {
+		sort.Strings(childDirs)
+		lookup.trackedChildDirs[parent] = childDirs
+	}
+	return lookup
 }
 
 func checkoutIndexMaps(index *localCheckoutIndex) (map[string]checkoutTrackedFile, map[string]checkoutTrackedDirectory) {
@@ -379,14 +450,20 @@ func checkoutTrackedFileMatches(fullPath string, info os.FileInfo, original chec
 	return strings.TrimSpace(hash) == strings.TrimSpace(original.Hash), nil
 }
 
-func scanCheckoutForNewFiles(
-	dir, relDir string,
-	originalFiles map[string]checkoutTrackedFile,
-	originalDirs map[string]checkoutTrackedDirectory,
-) ([]string, error) {
+func scanCheckoutForNewFiles(dir, relDir string, lookup *checkoutIndexLookup) ([]string, error) {
+	if lookup == nil {
+		return nil, nil
+	}
+
+	normalizedDir := normalizeTrackedDirectoryPath(relDir)
+	originalDir, ok := lookup.directories[normalizedDir]
+	if !ok {
+		return collectAllFiles(dir, normalizedDir)
+	}
+
 	fullDir := dir
-	if relDir != "" {
-		fullDir = filepath.Join(dir, relDir)
+	if normalizedDir != "" {
+		fullDir = filepath.Join(dir, normalizedDir)
 	}
 
 	info, err := os.Lstat(fullDir)
@@ -400,16 +477,30 @@ func scanCheckoutForNewFiles(
 		if relDir == "" {
 			return nil, nil
 		}
-		if _, ok := originalFiles[filepath.Clean(relDir)]; ok {
+		if _, ok := lookup.files[filepath.Clean(relDir)]; ok {
 			return nil, nil
 		}
 		return []string{filepath.Clean(relDir)}, nil
 	}
 
-	normalizedDir := normalizeTrackedDirectoryPath(relDir)
-	entries, err := os.ReadDir(fullDir)
+	currentDir, entries, err := currentCheckoutDirectorySnapshot(dir, normalizedDir)
 	if err != nil {
 		return nil, err
+	}
+
+	childDirs := lookup.trackedChildDirs[normalizedDir]
+	if currentDir.ChildCount == originalDir.ChildCount &&
+		currentDir.ChildNameFingerprint == originalDir.ChildNameFingerprint &&
+		len(childDirs) > 0 {
+		newFiles := make([]string, 0)
+		for _, childDir := range childDirs {
+			childNewFiles, err := scanCheckoutForNewFiles(dir, childDir, lookup)
+			if err != nil {
+				return nil, err
+			}
+			newFiles = append(newFiles, childNewFiles...)
+		}
+		return newFiles, nil
 	}
 
 	newFiles := make([]string, 0)
@@ -425,7 +516,7 @@ func scanCheckoutForNewFiles(
 		cleaned := filepath.Clean(relPath)
 
 		if entry.IsDir() {
-			if _, ok := originalDirs[normalizeTrackedDirectoryPath(cleaned)]; !ok {
+			if _, ok := lookup.directories[normalizeTrackedDirectoryPath(cleaned)]; !ok {
 				childNewFiles, err := collectAllFiles(dir, cleaned)
 				if err != nil {
 					return nil, err
@@ -433,7 +524,7 @@ func scanCheckoutForNewFiles(
 				newFiles = append(newFiles, childNewFiles...)
 				continue
 			}
-			childNewFiles, err := scanCheckoutForNewFiles(dir, cleaned, originalFiles, originalDirs)
+			childNewFiles, err := scanCheckoutForNewFiles(dir, cleaned, lookup)
 			if err != nil {
 				return nil, err
 			}
@@ -441,7 +532,7 @@ func scanCheckoutForNewFiles(
 			continue
 		}
 
-		if _, ok := originalFiles[cleaned]; ok {
+		if _, ok := lookup.files[cleaned]; ok {
 			continue
 		}
 		newFiles = append(newFiles, cleaned)
@@ -626,14 +717,207 @@ func valueToUint64(value reflect.Value) uint64 {
 	}
 }
 
-func ioReadFull(file *os.File, buf []byte) (int, error) {
-	read := 0
-	for read < len(buf) {
-		n, err := file.Read(buf[read:])
-		read += n
-		if err != nil {
-			return read, err
-		}
+func writeCheckoutIndexUint32(writer *bufio.Writer, value uint32) error {
+	return binary.Write(writer, binary.LittleEndian, value)
+}
+
+func readCheckoutIndexUint32(reader *bufio.Reader) (uint32, error) {
+	var value uint32
+	if err := binary.Read(reader, binary.LittleEndian, &value); err != nil {
+		return 0, err
 	}
-	return read, nil
+	return value, nil
+}
+
+func writeCheckoutIndexUint64(writer *bufio.Writer, value uint64) error {
+	return binary.Write(writer, binary.LittleEndian, value)
+}
+
+func readCheckoutIndexUint64(reader *bufio.Reader) (uint64, error) {
+	var value uint64
+	if err := binary.Read(reader, binary.LittleEndian, &value); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func writeCheckoutIndexInt64(writer *bufio.Writer, value int64) error {
+	return binary.Write(writer, binary.LittleEndian, value)
+}
+
+func readCheckoutIndexInt64(reader *bufio.Reader) (int64, error) {
+	var value int64
+	if err := binary.Read(reader, binary.LittleEndian, &value); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func writeCheckoutIndexBool(writer *bufio.Writer, value bool) error {
+	var encoded byte
+	if value {
+		encoded = 1
+	}
+	return writer.WriteByte(encoded)
+}
+
+func readCheckoutIndexBool(reader *bufio.Reader) (bool, error) {
+	encoded, err := reader.ReadByte()
+	if err != nil {
+		return false, err
+	}
+	return encoded != 0, nil
+}
+
+func writeCheckoutIndexString(writer *bufio.Writer, value string) error {
+	if err := writeCheckoutIndexUint32(writer, uint32(len(value))); err != nil {
+		return err
+	}
+	if value == "" {
+		return nil
+	}
+	_, err := writer.WriteString(value)
+	return err
+}
+
+func readCheckoutIndexString(reader *bufio.Reader) (string, error) {
+	size, err := readCheckoutIndexUint32(reader)
+	if err != nil {
+		return "", err
+	}
+	if size == 0 {
+		return "", nil
+	}
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return "", err
+	}
+	return string(buf), nil
+}
+
+func writeCheckoutTrackedFileRecord(writer *bufio.Writer, record checkoutTrackedFile) error {
+	if err := writeCheckoutIndexString(writer, record.Path); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexString(writer, record.Hash); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexBool(writer, record.Executable); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexString(writer, record.SymlinkTarget); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexInt64(writer, record.Size); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexInt64(writer, record.ModifiedTimeUnixNano); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexInt64(writer, record.ChangeTimeUnixNano); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexUint64(writer, record.Device); err != nil {
+		return err
+	}
+	return writeCheckoutIndexUint64(writer, record.Inode)
+}
+
+func readCheckoutTrackedFileRecord(reader *bufio.Reader) (checkoutTrackedFile, error) {
+	var record checkoutTrackedFile
+	var err error
+	record.Path, err = readCheckoutIndexString(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.Hash, err = readCheckoutIndexString(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.Executable, err = readCheckoutIndexBool(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.SymlinkTarget, err = readCheckoutIndexString(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.Size, err = readCheckoutIndexInt64(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.ModifiedTimeUnixNano, err = readCheckoutIndexInt64(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.ChangeTimeUnixNano, err = readCheckoutIndexInt64(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.Device, err = readCheckoutIndexUint64(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	record.Inode, err = readCheckoutIndexUint64(reader)
+	if err != nil {
+		return checkoutTrackedFile{}, err
+	}
+	return record, nil
+}
+
+func writeCheckoutTrackedDirectoryRecord(writer *bufio.Writer, record checkoutTrackedDirectory) error {
+	if err := writeCheckoutIndexString(writer, record.Path); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexInt64(writer, record.ModifiedTimeUnixNano); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexInt64(writer, record.ChangeTimeUnixNano); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexUint64(writer, record.Device); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexUint64(writer, record.Inode); err != nil {
+		return err
+	}
+	if err := writeCheckoutIndexUint32(writer, uint32(record.ChildCount)); err != nil {
+		return err
+	}
+	return writeCheckoutIndexUint64(writer, record.ChildNameFingerprint)
+}
+
+func readCheckoutTrackedDirectoryRecord(reader *bufio.Reader) (checkoutTrackedDirectory, error) {
+	var record checkoutTrackedDirectory
+	var err error
+	record.Path, err = readCheckoutIndexString(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	record.ModifiedTimeUnixNano, err = readCheckoutIndexInt64(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	record.ChangeTimeUnixNano, err = readCheckoutIndexInt64(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	record.Device, err = readCheckoutIndexUint64(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	record.Inode, err = readCheckoutIndexUint64(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	childCount, err := readCheckoutIndexUint32(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	record.ChildCount = int(childCount)
+	record.ChildNameFingerprint, err = readCheckoutIndexUint64(reader)
+	if err != nil {
+		return checkoutTrackedDirectory{}, err
+	}
+	return record, nil
 }
