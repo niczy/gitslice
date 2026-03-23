@@ -1499,6 +1499,71 @@ func TestMergeChangesetRejectsStaleBase(t *testing.T) {
 	}
 }
 
+func TestMergeChangesetIgnoresNormalizedCrossSliceFileState(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	sliceA := &models.Slice{ID: "slice-merge-a", Name: "slice-merge-a", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	sliceB := &models.Slice{ID: "slice-merge-b", Name: "slice-merge-b", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+
+	filePath := "README.md"
+	for _, setup := range []struct {
+		sliceID string
+		content string
+	}{
+		{sliceA.ID, "shared\n"},
+		{sliceB.ID, "different\n"},
+	} {
+		manifest, err := storage.WriteSliceFileManifest(ctx, st, setup.sliceID, filePath, []byte(setup.content))
+		if err != nil {
+			t.Fatalf("failed to write manifest for %s: %v", setup.sliceID, err)
+		}
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       setup.sliceID + ":" + filePath,
+			Path:     filePath,
+			Type:     "file",
+			ParentID: setup.sliceID,
+			Size:     manifest.TotalSize,
+			Hash:     manifest.Hash,
+		}); err != nil {
+			t.Fatalf("failed to add entry for %s: %v", setup.sliceID, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, setup.sliceID); err != nil {
+			t.Fatalf("failed to index file for %s: %v", setup.sliceID, err)
+		}
+	}
+
+	if _, err := storage.NormalizeConflictToPreferred(ctx, st, filePath, sliceA.ID); err != nil {
+		t.Fatalf("failed to normalize conflicting slices: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "cs-normalized-merge",
+		SliceID:       sliceA.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success once conflicting slices are normalized, got %v", resp.GetStatus())
+	}
+}
+
 func TestRebaseChangesetUsesCurrentSliceHead(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
