@@ -101,3 +101,161 @@ type sliceDeleteJSON struct {
 	SliceID string `json:"slice_id"`
 	Status  string `json:"status"`
 }
+
+type repoBindingJSON struct {
+	Path                 string `json:"path"`
+	RepoURL              string `json:"repo_url"`
+	Branch               string `json:"branch"`
+	PushEnabled          bool   `json:"push_enabled"`
+	LastImportedCommit   string `json:"last_imported_commit"`
+	LastPushedCommit     string `json:"last_pushed_commit"`
+	LastSeenRemoteCommit string `json:"last_seen_remote_commit"`
+}
+
+type repoImportJSON struct {
+	Binding      repoBindingJSON `json:"binding"`
+	CommitHash   string          `json:"commit_hash"`
+	RemoteCommit string          `json:"remote_commit"`
+	FileCount    int32           `json:"file_count"`
+}
+
+type repoListJSON struct {
+	Total    int               `json:"total"`
+	Bindings []repoBindingJSON `json:"bindings"`
+}
+
+type repoStatusJSON struct {
+	Found   bool             `json:"found"`
+	Binding *repoBindingJSON `json:"binding"`
+}
+
+type repoPullJSON struct {
+	Binding      repoBindingJSON `json:"binding"`
+	CommitHash   string          `json:"commit_hash"`
+	RemoteCommit string          `json:"remote_commit"`
+	FileCount    int32           `json:"file_count"`
+	Updated      bool            `json:"updated"`
+}
+
+type repoPushJSON struct {
+	Binding      repoBindingJSON `json:"binding"`
+	RemoteCommit string          `json:"remote_commit"`
+	Pushed       bool            `json:"pushed"`
+}
+
+type repoUnlinkJSON struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
+}
+
+type cacheStatsJSON struct {
+	CacheRoot            string `json:"cache_root"`
+	CachedObjects        int    `json:"cached_objects"`
+	CachedBytes          int64  `json:"cached_bytes"`
+	TrackedCheckouts     int    `json:"tracked_checkouts"`
+	UniqueSlices         int    `json:"unique_slices"`
+	StaleCheckoutRecords int    `json:"stale_checkout_records"`
+	Checkouts            []struct {
+		Path       string `json:"path"`
+		SliceID    string `json:"slice_id"`
+		CommitHash string `json:"commit_hash"`
+		Status     string `json:"status"`
+	} `json:"checkouts"`
+}
+
+type cachePruneJSON struct {
+	Removed int `json:"removed"`
+}
+
+type cacheClearJSON struct {
+	RemovedCachedObjects        int    `json:"removed_cached_objects"`
+	RemovedCachedBytes          int64  `json:"removed_cached_bytes"`
+	RemovedStaleCheckoutRecords int    `json:"removed_stale_checkout_records"`
+	RemovedCheckoutRecords      int    `json:"removed_checkout_records"`
+	ClearedPath                 string `json:"cleared_path"`
+	ClearedPathFound            bool   `json:"cleared_path_found"`
+}
+
+type doctorJSON struct {
+	Auth struct {
+		Source            string `json:"source"`
+		Username          string `json:"username"`
+		StoredCredentials bool   `json:"stored_credentials"`
+	} `json:"auth"`
+	Services struct {
+		Admin struct {
+			OK       bool   `json:"ok"`
+			Username string `json:"username"`
+			Error    string `json:"error"`
+		} `json:"admin"`
+		Slice struct {
+			OK          bool   `json:"ok"`
+			RootSliceID string `json:"root_slice_id"`
+			Head        string `json:"head"`
+			Error       string `json:"error"`
+		} `json:"slice"`
+		GlobalState struct {
+			OK    bool   `json:"ok"`
+			Head  string `json:"head"`
+			Error string `json:"error"`
+		} `json:"global_state"`
+		Filesystem struct {
+			OK          bool   `json:"ok"`
+			HomeSliceID string `json:"home_slice_id"`
+			Error       string `json:"error"`
+		} `json:"filesystem"`
+	} `json:"services"`
+	Cache struct {
+		Root                 string `json:"root"`
+		ObjectCount          int    `json:"object_count"`
+		TotalBytes           int64  `json:"total_bytes"`
+		TrackedCheckouts     int    `json:"tracked_checkouts"`
+		UniqueSlices         int    `json:"unique_slices"`
+		StaleCheckoutRecords int    `json:"stale_checkout_records"`
+		Error                string `json:"error"`
+	} `json:"cache"`
+	Checkout struct {
+		Present              bool   `json:"present"`
+		Error                string `json:"error"`
+		SliceID              string `json:"slice_id"`
+		Mode                 string `json:"mode"`
+		CheckoutBase         string `json:"checkout_base"`
+		RemoteHead           string `json:"remote_head"`
+		ModifiedFiles        int    `json:"modified_files"`
+		WorkingTree          string `json:"working_tree"`
+		Registered           bool   `json:"registered"`
+		RegisteredCommitHash string `json:"registered_commit_hash"`
+		Changes              struct {
+			Added    int `json:"added"`
+			Modified int `json:"modified"`
+			Deleted  int `json:"deleted"`
+		} `json:"changes"`
+	} `json:"checkout"`
+}
+
+type conflictListJSON struct {
+	SliceID   string `json:"slice_id"`
+	Total     int    `json:"total"`
+	Conflicts []struct {
+		FileID              string   `json:"file_id"`
+		ConflictingSliceIDs []string `json:"conflicting_slice_ids"`
+		Severity            string   `json:"severity"`
+	} `json:"conflicts"`
+}
+
+type conflictResolveJSON struct {
+	Conflict struct {
+		FileID              string   `json:"file_id"`
+		ConflictingSliceIDs []string `json:"conflicting_slice_ids"`
+		Severity            string   `json:"severity"`
+	} `json:"conflict"`
+}
+
+type conflictShowJSON struct {
+	Found    bool `json:"found"`
+	Conflict *struct {
+		FileID              string   `json:"file_id"`
+		ConflictingSliceIDs []string `json:"conflicting_slice_ids"`
+		Severity            string   `json:"severity"`
+	} `json:"conflict"`
+}

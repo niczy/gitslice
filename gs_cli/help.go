@@ -50,6 +50,7 @@ func printSliceHelp() {
 
 func printCacheHelp() {
 	fmt.Println("Usage: gs cache <command> [options]")
+	fmt.Println("Most cache commands support --json.")
 	fmt.Println("\nCommands:")
 	fmt.Println("  stats     Show local cache size and tracked checkout summary")
 	fmt.Println("  prune     Remove stale tracked checkout records")
@@ -69,6 +70,7 @@ func printChangesetHelp() {
 
 func printConflictHelp() {
 	fmt.Println("Usage: gs conflict <command> [options]")
+	fmt.Println("Most conflict commands support --json.")
 	fmt.Println("\nCommands:")
 	fmt.Println("  list       List conflicts for the current or specified slice")
 	fmt.Println("  resolve    Resolve a conflict in favor of a slice")
@@ -83,6 +85,7 @@ func printImportHelp() {
 
 func printRepoHelp() {
 	fmt.Println("Usage: gs repo <command> [options]")
+	fmt.Println("Most repo commands support --json.")
 	fmt.Println("\nCommands:")
 	fmt.Println("  import   Import a remote repository into an absolute home path and create a binding")
 	fmt.Println("  list     List your remote repo bindings")
@@ -104,6 +107,7 @@ func printFileHelp() {
 
 func printFilesystemHelp() {
 	fmt.Println("Usage: gs fs <command> [options]")
+	fmt.Println("Use gs fs batch with JSON/JSONL for machine-driven bulk edits.")
 	fmt.Println("\nCommands:")
 	fmt.Println("  cat          Print file content from an absolute home path")
 	fmt.Println("  write        Write an absolute home path from stdin or a local file")

@@ -35,9 +35,12 @@ func handleCacheCommand(args []string) {
 }
 
 func handleCacheStats(cache *CacheManager, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("cache stats", flag.ExitOnError)
 	showCheckouts := fs.Bool("checkouts", false, "Include tracked checkout locations")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	stats, err := cache.Stats()
 	if err != nil {
@@ -46,6 +49,34 @@ func handleCacheStats(cache *CacheManager, args []string) {
 	records, err := listCheckoutRecords()
 	if err != nil {
 		log.Fatalf("Failed to read checkout registry: %v", err)
+	}
+	if jsonEnabled {
+		out := jsonCacheStatsOutput{
+			CacheRoot:            cache.Root(),
+			CachedObjects:        stats.ObjectCount,
+			CachedBytes:          stats.TotalBytes,
+			TrackedCheckouts:     len(records),
+			UniqueSlices:         countUniqueCheckoutSlices(records),
+			StaleCheckoutRecords: countStaleCheckoutRecords(records),
+		}
+		if *showCheckouts && len(records) > 0 {
+			out.Checkouts = make([]jsonCacheCheckoutRecord, 0, len(records))
+			for _, record := range records {
+				status := "active"
+				if checkoutRecordIsStale(record) {
+					status = "stale"
+				}
+				out.Checkouts = append(out.Checkouts, jsonCacheCheckoutRecord{
+					Path:       record.Path,
+					SliceID:    record.SliceID,
+					CommitHash: record.CommitHash,
+					UpdatedAt:  record.UpdatedAt,
+					Status:     status,
+				})
+			}
+		}
+		writeJSONOutput(out)
+		return
 	}
 
 	fmt.Printf("Cache root: %s\n", cache.Root())
@@ -76,24 +107,34 @@ func handleCacheStats(cache *CacheManager, args []string) {
 }
 
 func handleCachePrune(args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("cache prune", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	removed, err := pruneStaleCheckoutRecords()
 	if err != nil {
 		log.Fatalf("Failed to prune stale checkout records: %v", err)
 	}
+	if jsonEnabled {
+		writeJSONOutput(jsonCachePruneOutput{Removed: removed})
+		return
+	}
 	fmt.Printf("Pruned stale checkout records: %d\n", removed)
 }
 
 func handleCacheClear(cache *CacheManager, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("cache clear", flag.ExitOnError)
 	clearObjects := fs.Bool("objects", false, "Delete all cached objects")
 	clearStale := fs.Bool("stale-checkouts", false, "Remove stale checkout registry entries")
 	clearCheckouts := fs.Bool("checkouts", false, "Remove all tracked checkout entries")
 	clearPath := fs.String("path", "", "Remove the tracked checkout entry for this path")
 	clearAll := fs.Bool("all", false, "Delete all cached objects and all tracked checkout entries")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if *clearAll {
 		*clearObjects = true
@@ -103,6 +144,7 @@ func handleCacheClear(cache *CacheManager, args []string) {
 		log.Println("Usage: gs cache clear [--objects] [--stale-checkouts] [--checkouts] [--path <dir>] [--all]")
 		return
 	}
+	out := jsonCacheClearOutput{}
 
 	if *clearObjects {
 		stats, err := cache.Stats()
@@ -112,8 +154,12 @@ func handleCacheClear(cache *CacheManager, args []string) {
 		if err := cache.ClearObjects(); err != nil {
 			log.Fatalf("Failed to clear cached objects: %v", err)
 		}
-		fmt.Printf("Removed cached objects: %d\n", stats.ObjectCount)
-		fmt.Printf("Removed cached bytes: %d\n", stats.TotalBytes)
+		out.RemovedCachedObjects = stats.ObjectCount
+		out.RemovedCachedBytes = stats.TotalBytes
+		if !jsonEnabled {
+			fmt.Printf("Removed cached objects: %d\n", stats.ObjectCount)
+			fmt.Printf("Removed cached bytes: %d\n", stats.TotalBytes)
+		}
 	}
 
 	if *clearStale {
@@ -121,7 +167,10 @@ func handleCacheClear(cache *CacheManager, args []string) {
 		if err != nil {
 			log.Fatalf("Failed to prune stale checkout records: %v", err)
 		}
-		fmt.Printf("Removed stale checkout records: %d\n", removed)
+		out.RemovedStaleCheckoutRecords = removed
+		if !jsonEnabled {
+			fmt.Printf("Removed stale checkout records: %d\n", removed)
+		}
 	}
 
 	if strings.TrimSpace(*clearPath) != "" {
@@ -129,9 +178,11 @@ func handleCacheClear(cache *CacheManager, args []string) {
 		if err != nil {
 			log.Fatalf("Failed to remove checkout record: %v", err)
 		}
-		if removed {
+		out.ClearedPath = strings.TrimSpace(*clearPath)
+		out.ClearedPathFound = removed
+		if !jsonEnabled && removed {
 			fmt.Printf("Removed tracked checkout: %s\n", strings.TrimSpace(*clearPath))
-		} else {
+		} else if !jsonEnabled {
 			fmt.Printf("No tracked checkout found for: %s\n", strings.TrimSpace(*clearPath))
 		}
 	}
@@ -144,6 +195,13 @@ func handleCacheClear(cache *CacheManager, args []string) {
 		if err := clearCheckoutRegistry(); err != nil {
 			log.Fatalf("Failed to clear checkout registry: %v", err)
 		}
-		fmt.Printf("Removed tracked checkout records: %d\n", len(records))
+		out.RemovedCheckoutRecords = len(records)
+		if !jsonEnabled {
+			fmt.Printf("Removed tracked checkout records: %d\n", len(records))
+		}
+	}
+	if jsonEnabled {
+		writeJSONOutput(out)
+		return
 	}
 }

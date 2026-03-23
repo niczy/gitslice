@@ -154,9 +154,16 @@ func TestSliceWorkflowCommands(t *testing.T) {
 		t.Fatalf("expected top-level status alias to show slice status, got: %+v", topStatusResp)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "doctor")
-	if !strings.Contains(output, "Auth:") || !strings.Contains(output, "Checkout:") {
-		t.Fatalf("expected doctor output sections, got: %s", output)
+	doctorResp := runCLIJSONOrFail[doctorJSON](t, checkoutDir, "doctor")
+	if doctorResp.Auth.Username == "" ||
+		!doctorResp.Services.Admin.OK ||
+		!doctorResp.Services.Slice.OK ||
+		!doctorResp.Services.GlobalState.OK ||
+		!doctorResp.Services.Filesystem.OK ||
+		!doctorResp.Checkout.Present ||
+		doctorResp.Checkout.SliceID != sliceID ||
+		doctorResp.Checkout.Mode != "no-git" {
+		t.Fatalf("expected doctor JSON output sections, got: %+v", doctorResp)
 	}
 
 	deleteResp := runCLIJSONOrFail[sliceDeleteJSON](t, "", "slice", "delete", sliceSlug)

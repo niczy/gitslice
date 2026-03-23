@@ -86,24 +86,29 @@ func TestCheckoutRegistryAndCacheCommands(t *testing.T) {
 		t.Fatalf("expected checkout path in registry output, got: %s", output)
 	}
 
-	output = runCLIForUser("", "cache", "stats", "--checkouts")
-	if !strings.Contains(output, "Tracked checkouts: 1") {
-		t.Fatalf("expected tracked checkout count in cache stats, got: %s", output)
+	statsOutput := runCLIForUser("", "cache", "stats", "--checkouts", "--json")
+	var statsResp cacheStatsJSON
+	if err := json.Unmarshal([]byte(statsOutput), &statsResp); err != nil {
+		t.Fatalf("decode cache stats JSON: %v\nOutput:\n%s", err, statsOutput)
 	}
-	if !strings.Contains(output, "Unique slices: 1") {
-		t.Fatalf("expected unique slice count in cache stats, got: %s", output)
+	if statsResp.TrackedCheckouts != 1 || statsResp.UniqueSlices != 1 || statsResp.CachedObjects == 0 {
+		t.Fatalf("expected cache object summary, got: %+v", statsResp)
 	}
-	if !strings.Contains(output, "Cached objects:") {
-		t.Fatalf("expected cache object summary, got: %s", output)
+	if len(statsResp.Checkouts) != 1 || statsResp.Checkouts[0].SliceID != homeslice.IDForUsername(username) {
+		t.Fatalf("expected checkout listing in cache stats, got: %+v", statsResp)
 	}
 
 	if err := os.RemoveAll(checkoutDir); err != nil {
 		t.Fatalf("remove checkout dir: %v", err)
 	}
 
-	output = runCLIForUser("", "cache", "prune")
-	if !strings.Contains(output, "Pruned stale checkout records: 1") {
-		t.Fatalf("expected stale checkout prune output, got: %s", output)
+	pruneOutput := runCLIForUser("", "cache", "prune", "--json")
+	var pruneResp cachePruneJSON
+	if err := json.Unmarshal([]byte(pruneOutput), &pruneResp); err != nil {
+		t.Fatalf("decode cache prune JSON: %v\nOutput:\n%s", err, pruneOutput)
+	}
+	if pruneResp.Removed != 1 {
+		t.Fatalf("expected stale checkout prune output, got: %+v", pruneResp)
 	}
 
 	output = runCLIForUser("", "slice", "checkouts")
@@ -111,13 +116,20 @@ func TestCheckoutRegistryAndCacheCommands(t *testing.T) {
 		t.Fatalf("expected empty checkout registry after stale cleanup, got: %s", output)
 	}
 
-	output = runCLIForUser("", "cache", "clear", "--objects")
-	if !strings.Contains(output, "Removed cached objects:") {
-		t.Fatalf("expected object cleanup output, got: %s", output)
+	clearOutput := runCLIForUser("", "cache", "clear", "--objects", "--json")
+	var clearResp cacheClearJSON
+	if err := json.Unmarshal([]byte(clearOutput), &clearResp); err != nil {
+		t.Fatalf("decode cache clear JSON: %v\nOutput:\n%s", err, clearOutput)
+	}
+	if clearResp.RemovedCachedObjects == 0 {
+		t.Fatalf("expected object cleanup output, got: %+v", clearResp)
 	}
 
-	output = runCLIForUser("", "cache", "stats")
-	if !strings.Contains(output, "Cached objects: 0") {
-		t.Fatalf("expected empty cache after clear, got: %s", output)
+	statsOutput = runCLIForUser("", "cache", "stats", "--json")
+	if err := json.Unmarshal([]byte(statsOutput), &statsResp); err != nil {
+		t.Fatalf("decode cache stats JSON: %v\nOutput:\n%s", err, statsOutput)
+	}
+	if statsResp.CachedObjects != 0 {
+		t.Fatalf("expected empty cache after clear, got: %+v", statsResp)
 	}
 }
