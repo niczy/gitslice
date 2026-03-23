@@ -427,6 +427,117 @@ func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
 	}
 }
 
+func TestNoGitStatusAndChangesetCreateWorkWithDirtyTracker(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-tracker-create-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
+
+	checkoutDir := t.TempDir()
+	t.Cleanup(func() {
+		stopDirtyTrackerForTest(t, checkoutDir)
+	})
+	output := runCLIWithEnvOrFail(t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
+	pathsPath := filepath.Join(checkoutDir, ".gs", "dirty_paths.json")
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(statePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return strings.Contains(string(raw), `"status":"active"`), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never became active: %v", err)
+	}
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	if err := os.WriteFile(targetPath, []byte("updated locally\n"), 0o644); err != nil {
+		t.Fatalf("rewrite tracked file: %v", err)
+	}
+	newPath := filepath.Join(checkoutDir, folderPath, "NEW.txt")
+	if err := os.WriteFile(newPath, []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(pathsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		content := string(raw)
+		return strings.Contains(content, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) &&
+			strings.Contains(content, filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never recorded local changes: %v", err)
+	}
+
+	statusResp := runCLIJSONWithEnvOrFail[sliceStatusJSON](t, checkoutDir, env, "slice", "status")
+	if statusResp.Mode != "no-git" ||
+		statusResp.WorkingTree != "dirty" ||
+		statusResp.Changes.Added != 1 ||
+		statusResp.Changes.Modified != 1 ||
+		statusResp.Changes.Deleted != 0 {
+		t.Fatalf("expected dirty tracker status to reflect changes, got: %+v", statusResp)
+	}
+
+	createResp := runCLIJSONWithEnvOrFail[changesetCreateJSON](t, checkoutDir, env, "changeset", "create", "--message", "dirty tracker create")
+	if createResp.ChangesetID == "" {
+		t.Fatalf("expected changeset create output, got: %+v", createResp)
+	}
+
+	showResp := runCLIJSONWithEnvOrFail[changesetReviewJSON](t, checkoutDir, env, "changeset", "show")
+	if showResp.ChangesetID != createResp.ChangesetID || showResp.Diff.FilesDeleted != 0 || showResp.Diff.FilesAdded+showResp.Diff.FilesModified != 2 {
+		t.Fatalf("expected dirty tracker review output, got: %+v", showResp)
+	}
+}
+
+func TestNoGitStatusFallsBackWhenDirtyTrackerStops(t *testing.T) {
+	folderPath := fmt.Sprintf("apps/nogit-tracker-fallback-%d", time.Now().UnixNano())
+	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
+	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
+
+	checkoutDir := t.TempDir()
+	output := runCLIWithEnvOrFail(t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	if !strings.Contains(output, "Checked out slice: "+sliceID) {
+		t.Fatalf("expected checkout output, got: %s", output)
+	}
+
+	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
+	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() (bool, error) {
+		raw, err := os.ReadFile(statePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return strings.Contains(string(raw), `"status":"active"`), nil
+	}); err != nil {
+		t.Fatalf("dirty tracker never became active: %v", err)
+	}
+
+	stopDirtyTrackerForTest(t, checkoutDir)
+
+	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
+	if err := os.WriteFile(targetPath, []byte("updated after tracker stopped\n"), 0o644); err != nil {
+		t.Fatalf("rewrite tracked file: %v", err)
+	}
+
+	statusResp := runCLIJSONWithEnvOrFail[sliceStatusJSON](t, checkoutDir, env, "slice", "status")
+	if statusResp.WorkingTree != "dirty" || statusResp.Changes.Modified != 1 {
+		t.Fatalf("expected fallback status to detect modified file, got: %+v", statusResp)
+	}
+}
+
 func TestFilesystemSyncCommand(t *testing.T) {
 	username := fmt.Sprintf("fssync%d", time.Now().UnixNano())
 	homeDir := t.TempDir()
