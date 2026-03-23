@@ -27,6 +27,7 @@ type sliceStatusJSON struct {
 	Mode               string `json:"mode"`
 	WorkingTree        string `json:"working_tree"`
 	SyncStatus         string `json:"sync_status"`
+	PathCount          int    `json:"path_count"`
 	TrackedChangesetID string `json:"tracked_changeset_id"`
 	RemoteQueried      bool   `json:"remote_queried"`
 	RemoteHead         string `json:"remote_head"`
