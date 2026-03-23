@@ -36,6 +36,29 @@ func runCLIJSONOrFail[T any](t *testing.T, workdir string, args ...string) T {
 	return decoded
 }
 
+func runCLIWithEnvOrFail(t *testing.T, workdir string, env map[string]string, args ...string) string {
+	t.Helper()
+
+	output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", workflowProcessEnv(t, env), true, workflowUsername(t), args...)
+	if err != nil {
+		t.Fatalf("CLI command failed: %v\nOutput:\n%s\n%s", err, output, workflowFailureDiagnostics(t, workdir, args...))
+	}
+	return output
+}
+
+func runCLIJSONWithEnvOrFail[T any](t *testing.T, workdir string, env map[string]string, args ...string) T {
+	t.Helper()
+
+	jsonArgs := appendJSONFlag(args)
+	output := runCLIWithEnvOrFail(t, workdir, env, jsonArgs...)
+
+	var decoded T
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("failed to decode JSON output for %v: %v\nOutput:\n%s", jsonArgs, err, output)
+	}
+	return decoded
+}
+
 func appendJSONFlag(args []string) []string {
 	if len(args) == 0 {
 		return nil
