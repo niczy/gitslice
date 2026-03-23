@@ -353,12 +353,117 @@ func runGitOrFail(t *testing.T, workdir string, args ...string) string {
 func runCLIOrFail(t *testing.T, workdir string, args ...string) string {
 	t.Helper()
 
-	output, err := runCLIWithDir(workdir, args...)
+	output, err := runCLIWithDirForTest(t, workdir, args...)
 	if err != nil {
-		t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		t.Fatalf("CLI command failed: %v\nOutput:\n%s\n%s", err, output, workflowFailureDiagnostics(t, workdir, args...))
 	}
 
 	return output
+}
+
+func runCLIWithDirForTest(t *testing.T, workdir string, args ...string) (string, error) {
+	t.Helper()
+	return runCLIWithDirInputEnvLegacyUser(workdir, "", workflowProcessEnv(t, nil), true, workflowUsername(t), args...)
+}
+
+func workflowFailureDiagnostics(t *testing.T, workdir string, args ...string) string {
+	t.Helper()
+
+	env := workflowEnvForTest(t)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Diagnostics:\n")
+	fmt.Fprintf(&b, "  Test user: %s\n", env.Username)
+	fmt.Fprintf(&b, "  Home: %s\n", env.HomeDir)
+	if workdir == "" {
+		fmt.Fprintf(&b, "  Workdir: (process cwd)\n")
+	} else {
+		fmt.Fprintf(&b, "  Workdir: %s\n", workdir)
+	}
+	if len(args) > 0 {
+		fmt.Fprintf(&b, "  Args: %s\n", strings.Join(args, " "))
+	}
+	appendDiagnosticSnapshot(&b, "Workdir snapshot", workdir)
+	if workdir != "" {
+		appendDiagnosticFile(&b, "dirty_state.json", filepath.Join(workdir, ".gs", "dirty_state.json"))
+		appendDiagnosticFile(&b, "dirty_paths.json", filepath.Join(workdir, ".gs", "dirty_paths.json"))
+		appendDiagnosticFile(&b, "dirty_watcher.log", filepath.Join(workdir, ".gs", "dirty_watcher.log"))
+	}
+	appendDiagnosticSnapshot(&b, "Home .gitslice snapshot", filepath.Join(env.HomeDir, ".gitslice"))
+	return b.String()
+}
+
+func appendDiagnosticSnapshot(b *strings.Builder, label, root string) {
+	if root == "" {
+		return
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(b, "  %s: missing\n", label)
+			return
+		}
+		fmt.Fprintf(b, "  %s: stat failed: %v\n", label, err)
+		return
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(b, "  %s: %s (%d bytes)\n", label, root, info.Size())
+		return
+	}
+	fmt.Fprintf(b, "  %s:\n", label)
+	count := 0
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			fmt.Fprintf(b, "    ! %s (%v)\n", path, err)
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		if rel == "." {
+			return nil
+		}
+		depth := strings.Count(rel, string(os.PathSeparator))
+		if depth > 3 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if count >= 40 {
+			fmt.Fprintf(b, "    ...\n")
+			return errors.New("limit reached")
+		}
+		suffix := ""
+		if d.IsDir() {
+			suffix = "/"
+		} else if info, statErr := d.Info(); statErr == nil {
+			suffix = fmt.Sprintf(" (%d bytes)", info.Size())
+		}
+		fmt.Fprintf(b, "    - %s%s\n", filepath.ToSlash(rel), suffix)
+		count++
+		return nil
+	})
+}
+
+func appendDiagnosticFile(b *strings.Builder, label, path string) {
+	if path == "" {
+		return
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(b, "  %s: read failed: %v\n", label, err)
+		}
+		return
+	}
+	if len(content) > 2048 {
+		content = content[:2048]
+	}
+	fmt.Fprintf(b, "  %s:\n%s\n", label, string(content))
 }
 
 func extractChangesetID(output string) string {
@@ -730,7 +835,7 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 
 	runCLIForSlice := func(workdir string, args ...string) string {
 		t.Helper()
-		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, testUsername, args...)
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, workflowUsername(t), args...)
 		if err != nil {
 			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
 		}
@@ -966,7 +1071,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		rootCheckoutDir := t.TempDir()
 		var err error
-		output, err = runCLIWithDir(rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--files")
+		output, err = runCLIWithDirForTest(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--files")
 		if err != nil {
 			return false, nil
 		}
@@ -1114,9 +1219,10 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 func TestFilesystemCLIBatchWorkflowEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
+	username := workflowUsername(t)
 
-	remoteDir := fmt.Sprintf("/%s/fs-batch-cli-%d", testUsername, time.Now().UnixNano())
+	remoteDir := fmt.Sprintf("/%s/fs-batch-cli-%d", username, time.Now().UnixNano())
 	remoteFinal := remoteDir + "/FINAL.md"
 	localFile := filepath.Join(t.TempDir(), "README.md")
 	if err := os.WriteFile(localFile, []byte("hello from batch\n"), 0o600); err != nil {
@@ -1156,7 +1262,7 @@ func TestFilesystemCLIBatchWorkflowEndToEnd(t *testing.T) {
 
 	client := newFilesystemClient(t)
 	_, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: homeslice.IDForUsername(testUsername),
+		WorkspaceId: homeslice.IDForUsername(username),
 		Path:        remoteDir + "/README.md",
 	})
 	if status.Code(err) != codes.NotFound {
@@ -1395,9 +1501,10 @@ curl -sf -X POST "$GS_DEVICE_APPROVE_BASE/v1/auth/device/approve" \
 func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
+	username := workflowUsername(t)
 
-	remoteRoot := fmt.Sprintf("/%s/fs-shell-%d", testUsername, time.Now().UnixNano())
+	remoteRoot := fmt.Sprintf("/%s/fs-shell-%d", username, time.Now().UnixNano())
 
 	script := strings.Join([]string{
 		"mkdir src",
@@ -1411,7 +1518,7 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 		"exit",
 	}, "\n") + "\n"
 
-	output, err := runCLIWithDirInput("", script, "fs", "shell", remoteRoot)
+	output, err := runCLIWithDirInputEnvLegacyUser("", script, workflowProcessEnv(t, nil), true, username, "fs", "shell", remoteRoot)
 	if err != nil {
 		t.Fatalf("shell command failed: %v\nOutput:\n%s", err, output)
 	}
@@ -1430,7 +1537,7 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 
 	client := newFilesystemClient(t)
 	readResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: homeslice.IDForUsername(testUsername),
+		WorkspaceId: homeslice.IDForUsername(username),
 		Path:        remoteRoot + "/src/main.py",
 	})
 	if err != nil {
@@ -1444,9 +1551,10 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
+	username := workflowUsername(t)
 
-	remoteProjectRoot := fmt.Sprintf("/%s/fs-transfer-%d/project", testUsername, time.Now().UnixNano())
+	remoteProjectRoot := fmt.Sprintf("/%s/fs-transfer-%d/project", username, time.Now().UnixNano())
 
 	uploadRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(uploadRoot, "src"), 0o755); err != nil {
@@ -1473,7 +1581,7 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 
 	client := newFilesystemClient(t)
 	readmeResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: homeslice.IDForUsername(testUsername),
+		WorkspaceId: homeslice.IDForUsername(username),
 		Path:        remoteProjectRoot + "/README.md",
 	})
 	if err != nil {
@@ -1484,7 +1592,7 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	}
 
 	mainResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{
-		WorkspaceId: homeslice.IDForUsername(testUsername),
+		WorkspaceId: homeslice.IDForUsername(username),
 		Path:        remoteProjectRoot + "/src/main.py",
 	})
 	if err != nil {
@@ -1495,7 +1603,7 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	}
 
 	emptyDirResp, err := client.Stat(ctx, &filesystemv1.StatRequest{
-		WorkspaceId: homeslice.IDForUsername(testUsername),
+		WorkspaceId: homeslice.IDForUsername(username),
 		Path:        remoteProjectRoot + "/docs/empty",
 	})
 	if err != nil {
@@ -1657,7 +1765,7 @@ func TestGenesisCreatesFileChangeRecords(t *testing.T) {
 func TestFileBrowserIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	if testStorage == nil {
 		t.Fatalf("expected test storage to be initialized")
@@ -1674,8 +1782,8 @@ func TestFileBrowserIntegration(t *testing.T) {
 		ID:        sliceID,
 		Name:      "Browser",
 		Files:     files,
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -1835,7 +1943,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	st := storage.NewInMemoryStorage()
 	if err := st.InitializeRootSlice(nil); err != nil {
@@ -1858,10 +1966,10 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 	sliceA := fmt.Sprintf("batch-merge-a-%d", time.Now().UnixNano())
 	sliceB := fmt.Sprintf("batch-merge-b-%d", time.Now().UnixNano())
 
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "Batch A", Files: []string{"file-a"}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "Batch A", Files: []string{"file-a"}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create slice A: %v", err)
 	}
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "Batch B", Files: []string{"file-b"}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "Batch B", Files: []string{"file-b"}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
@@ -1924,7 +2032,7 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	sliceClient := newSliceClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	historyResp, err := sliceClient.GetSliceCommits(ctx, &slicev1.CommitHistoryRequest{SliceId: sliceID, Limit: 5})
 	if err != nil {
@@ -1951,7 +2059,7 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 	adminClient := newAdminClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	resolveAllConflicts(ctx, t, adminClient)
 
@@ -2005,7 +2113,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	objectStore := storage.NewInMemoryObjectStore()
 	namespace := fmt.Sprintf("restart-e2e-%d", time.Now().UnixNano())
@@ -2034,7 +2142,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 
 	sliceID := fmt.Sprintf("restart-slice-%d", time.Now().UnixNano())
 	fileID := fmt.Sprintf("persist-%d.txt", time.Now().UnixNano())
-	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: "Persist", Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := st.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: "Persist", Files: []string{fileID}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 
@@ -2098,7 +2206,7 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	adminClient := newAdminClient(t)
 	sliceClient := newSliceClient(t)
@@ -2107,10 +2215,10 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 	sliceA := fmt.Sprintf("lock-a-%d", time.Now().UnixNano())
 	sliceB := fmt.Sprintf("lock-b-%d", time.Now().UnixNano())
 
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "LockA", Files: []string{sharedFile}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: "LockA", Files: []string{sharedFile}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create slice A: %v", err)
 	}
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "LockB", Files: []string{sharedFile}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: "LockB", Files: []string{sharedFile}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
@@ -2198,7 +2306,7 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	adminClient := newAdminClient(t)
 	sliceClient := newSliceClient(t)
@@ -2218,7 +2326,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		sliceID := fmt.Sprintf("concurrency-slice-%d-%d", i, time.Now().UnixNano())
 		slices = append(slices, sliceID)
 
-		if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+		if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: fmt.Sprintf("Concurrent-%d", i), Files: []string{file}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 			t.Fatalf("failed to create slice %d: %v", i, err)
 		}
 
@@ -2351,7 +2459,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 func TestChangesetMergeRequiresCurrentBaseCommit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	sliceClient := newSliceClient(t)
 
@@ -2359,8 +2467,8 @@ func TestChangesetMergeRequiresCurrentBaseCommit(t *testing.T) {
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      "StaleBase",
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -2413,15 +2521,15 @@ func TestChangesetMergeRequiresCurrentBaseCommit(t *testing.T) {
 func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	sliceID := fmt.Sprintf("agent-ws-%d", time.Now().UnixNano())
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      "Agent WS",
 		Files:     []string{},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -2520,15 +2628,15 @@ func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	sliceID := fmt.Sprintf("agent-token-%d", time.Now().UnixNano())
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      "Agent Token",
 		Files:     []string{},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -2559,15 +2667,15 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	sliceID := fmt.Sprintf("agent-claude-%d", time.Now().UnixNano())
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      "Agent Claude",
 		Files:     []string{},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -2623,15 +2731,15 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	sliceID := fmt.Sprintf("agent-env-missing-%d", time.Now().UnixNano())
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      "Agent Missing Env",
 		Files:     []string{},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -2643,7 +2751,7 @@ func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Authorization", "User "+workflowUsername(t))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2659,7 +2767,7 @@ func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
 func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	if err := testStorage.CreateEnvironment(ctx, &models.Environment{
 		Name:              "integration-codex-only",
@@ -2669,7 +2777,7 @@ func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 		Region:            "us-west-2",
 		DefaultAgentType:  "codex",
 		AllowedAgentTypes: []string{"codex"},
-		CreatedBy:         testUsername,
+		CreatedBy:         workflowUsername(t),
 	}); err != nil && err != storage.ErrEntryExists {
 		t.Fatalf("failed to create codex-only environment: %v", err)
 	}
@@ -2679,8 +2787,8 @@ func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 		ID:        sliceID,
 		Name:      "Agent Disallowed Type",
 		Files:     []string{},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -2692,7 +2800,7 @@ func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Authorization", "User "+workflowUsername(t))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2720,7 +2828,7 @@ func createAgentSessionViaHTTP(t *testing.T, sliceID, environment, agentType str
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Authorization", "User "+workflowUsername(t))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2745,14 +2853,14 @@ func createAgentSessionViaHTTP(t *testing.T, sliceID, environment, agentType str
 
 func ensureIntegrationEnvironment(t *testing.T, name string) {
 	t.Helper()
-	ctx := withTestUser(context.Background())
+	ctx := withWorkflowUser(t, context.Background())
 	err := testStorage.CreateEnvironment(ctx, &models.Environment{
 		Name:        name,
 		DisplayName: "Integration Environment",
 		Provider:    "e2b",
 		ProviderID:  "tmpl-integration",
 		Region:      "us-west-2",
-		CreatedBy:   testUsername,
+		CreatedBy:   workflowUsername(t),
 	})
 	if err != nil && err != storage.ErrEntryExists {
 		t.Fatalf("failed to create integration environment: %v", err)
@@ -2762,7 +2870,7 @@ func ensureIntegrationEnvironment(t *testing.T, name string) {
 func mintAgentTokenViaHTTP(t *testing.T, sessionID string) string {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions/"+sessionID+"/token", nil)
-	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Authorization", "User "+workflowUsername(t))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("token request failed: %v", err)
@@ -2788,7 +2896,7 @@ func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) {
 	t.Helper()
 	raw, _ := json.Marshal(map[string]string{"reason": reason})
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions/"+sessionID+"/stop", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Authorization", "User "+workflowUsername(t))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2806,7 +2914,7 @@ func waitForAgentSessionState(t *testing.T, sessionID string, want string, timeo
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodGet, gatewayServiceURL+"/v1/agent-sessions/"+sessionID, nil)
-		req.Header.Set("Authorization", "User "+testUsername)
+		req.Header.Set("Authorization", "User "+workflowUsername(t))
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			var out struct {

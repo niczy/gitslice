@@ -17,7 +17,7 @@ func TestFileHistoryRPCIntegration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	// Create a unique slice for this test
 	sliceID := fmt.Sprintf("slice-history-rpc-%d", time.Now().UnixNano())
@@ -25,8 +25,8 @@ func TestFileHistoryRPCIntegration(t *testing.T) {
 		ID:        sliceID,
 		Name:      "History RPC Test",
 		Files:     []string{"src/main.go", "src/utils/helper.go", "docs/readme.md"},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}

@@ -12,7 +12,7 @@ import (
 func assertUnsupportedCommand(t *testing.T, args ...string) {
 	t.Helper()
 
-	output, err := runCLI(args...)
+	output, err := runCLIWithDirForTest(t, "", args...)
 	if err != nil {
 		return
 	}

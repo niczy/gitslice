@@ -18,7 +18,7 @@ func createSliceFromRoot(t *testing.T, sliceID, folderPath string) {
 	client := newSliceClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	_, err := client.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: "root_slice",
