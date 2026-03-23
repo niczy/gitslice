@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,4 +75,117 @@ func TestPostgresNativeStorageFileContentReadWriteIsolation(t *testing.T) {
 	if string(fileAgain.Content) != "hello" {
 		t.Fatalf("read mutation should not alias stored content, got %q", string(fileAgain.Content))
 	}
+}
+
+func TestPostgresNativeStorageConcurrentFileLockOneFails(t *testing.T) {
+	ctx := context.Background()
+	st := newPostgresNativeStorageForIsolationTest(t)
+
+	sliceA := &models.Slice{ID: "slice-lock-a", Name: "A", Owners: []string{"alice"}, CreatedBy: "alice"}
+	sliceB := &models.Slice{ID: "slice-lock-b", Name: "B", Owners: []string{"bob"}, CreatedBy: "bob"}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("CreateSlice A failed: %v", err)
+	}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("CreateSlice B failed: %v", err)
+	}
+
+	type lockAttempt struct {
+		sliceID string
+		fileIDs []string
+		err     error
+	}
+
+	start := make(chan struct{})
+	results := make(chan lockAttempt, 2)
+	var wg sync.WaitGroup
+	lock := func(sliceID string, fileIDs []string) {
+		defer wg.Done()
+		<-start
+		err := st.LockSliceAndFiles(ctx, sliceID, fileIDs)
+		results <- lockAttempt{sliceID: sliceID, fileIDs: fileIDs, err: err}
+	}
+
+	wg.Add(2)
+	go lock(sliceA.ID, []string{"shared.txt"})
+	go lock(sliceB.ID, []string{"shared.txt"})
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var success *lockAttempt
+	lockHeldCount := 0
+	for result := range results {
+		switch result.err {
+		case nil:
+			copyResult := result
+			success = &copyResult
+		case ErrLockHeld:
+			lockHeldCount++
+		default:
+			t.Fatalf("unexpected lock result for %s: %v", result.sliceID, result.err)
+		}
+	}
+	if success == nil {
+		t.Fatal("expected one concurrent file lock attempt to succeed")
+	}
+	if lockHeldCount != 1 {
+		t.Fatalf("expected exactly one ErrLockHeld result, got %d", lockHeldCount)
+	}
+
+	st.UnlockSliceAndFiles(ctx, success.sliceID, success.fileIDs)
+}
+
+func TestPostgresNativeStorageConcurrentSliceLockOneFails(t *testing.T) {
+	ctx := context.Background()
+	st := newPostgresNativeStorageForIsolationTest(t)
+
+	slice := &models.Slice{ID: "slice-lock-single", Name: "Single", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	type lockAttempt struct {
+		fileIDs []string
+		err     error
+	}
+
+	start := make(chan struct{})
+	results := make(chan lockAttempt, 2)
+	var wg sync.WaitGroup
+	lock := func(fileIDs []string) {
+		defer wg.Done()
+		<-start
+		err := st.LockSliceAndFiles(ctx, slice.ID, fileIDs)
+		results <- lockAttempt{fileIDs: fileIDs, err: err}
+	}
+
+	wg.Add(2)
+	go lock([]string{"a.txt"})
+	go lock([]string{"b.txt"})
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var success *lockAttempt
+	lockHeldCount := 0
+	for result := range results {
+		switch result.err {
+		case nil:
+			copyResult := result
+			success = &copyResult
+		case ErrLockHeld:
+			lockHeldCount++
+		default:
+			t.Fatalf("unexpected same-slice lock result: %v", result.err)
+		}
+	}
+	if success == nil {
+		t.Fatal("expected one concurrent same-slice lock attempt to succeed")
+	}
+	if lockHeldCount != 1 {
+		t.Fatalf("expected exactly one ErrLockHeld result for same-slice race, got %d", lockHeldCount)
+	}
+
+	st.UnlockSliceAndFiles(ctx, slice.ID, success.fileIDs)
 }

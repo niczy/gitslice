@@ -134,6 +134,45 @@ type countingCheckoutStorage struct {
 	getVersionedManifestCalls int
 }
 
+type blockingLockStorage struct {
+	storage.Storage
+
+	firstLockAcquired chan struct{}
+	releaseFirstLock  chan struct{}
+	lockOnce          sync.Once
+}
+
+func newBlockingLockStorage(base storage.Storage) *blockingLockStorage {
+	return &blockingLockStorage{
+		Storage:           base,
+		firstLockAcquired: make(chan struct{}),
+		releaseFirstLock:  make(chan struct{}),
+	}
+}
+
+func (s *blockingLockStorage) LockSliceAndFiles(ctx context.Context, sliceID string, fileIDs []string) error {
+	if err := s.Storage.LockSliceAndFiles(ctx, sliceID, fileIDs); err != nil {
+		return err
+	}
+
+	shouldBlock := false
+	s.lockOnce.Do(func() {
+		shouldBlock = true
+		close(s.firstLockAcquired)
+	})
+	if !shouldBlock {
+		return nil
+	}
+
+	select {
+	case <-s.releaseFirstLock:
+		return nil
+	case <-ctx.Done():
+		s.Storage.UnlockSliceAndFiles(context.Background(), sliceID, fileIDs)
+		return ctx.Err()
+	}
+}
+
 func (s *countingCheckoutStorage) GetBlock(ctx context.Context, hash string) ([]byte, error) {
 	s.mu.Lock()
 	s.getBlockCalls++
@@ -1265,6 +1304,131 @@ func TestMergeChangesetReturnsAbortedWhenSliceAlreadyLocked(t *testing.T) {
 	}
 	if got := status.Code(err); got != codes.Aborted {
 		t.Fatalf("expected Aborted, got %v (%v)", got, err)
+	}
+}
+
+func TestMergeChangesetConcurrentSameSliceOneAborts(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-concurrent", Name: "slice-concurrent", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	cs1 := &models.Changeset{
+		ID:            "cs-concurrent-1",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{"a.txt"},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	cs2 := &models.Changeset{
+		ID:            "cs-concurrent-2",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{"b.txt"},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, cs1); err != nil {
+		t.Fatalf("failed to create changeset 1: %v", err)
+	}
+	if err := base.CreateChangeset(ctx, cs2); err != nil {
+		t.Fatalf("failed to create changeset 2: %v", err)
+	}
+
+	blocking := newBlockingLockStorage(base)
+	srv := newSliceServiceServer(blocking)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs1.ID})
+		resultCh <- err
+	}()
+
+	select {
+	case <-blocking.firstLockAcquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first merge to acquire slice lock")
+	}
+
+	_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs2.ID})
+	if err == nil {
+		t.Fatal("expected second concurrent merge to fail")
+	}
+	if got := status.Code(err); got != codes.Aborted {
+		t.Fatalf("expected Aborted for second merge, got %v (%v)", got, err)
+	}
+
+	close(blocking.releaseFirstLock)
+	if err := <-resultCh; err != nil {
+		t.Fatalf("expected first merge to succeed after releasing lock, got %v", err)
+	}
+}
+
+func TestMergeChangesetConcurrentOverlappingFilesOneAborts(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+
+	const sharedFile = "shared.txt"
+	sliceA := &models.Slice{ID: "slice-overlap-a", Name: "slice-overlap-a", Files: []string{sharedFile}, Owners: []string{"tester"}, CreatedBy: "tester"}
+	sliceB := &models.Slice{ID: "slice-overlap-b", Name: "slice-overlap-b", Files: []string{sharedFile}, Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if err := base.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+	if _, err := base.ResolveConflict(ctx, sharedFile, sliceA.ID); err != nil {
+		t.Fatalf("failed to resolve initial ownership to slice A: %v", err)
+	}
+
+	csA := &models.Changeset{
+		ID:            "cs-overlap-a",
+		SliceID:       sliceA.ID,
+		ModifiedFiles: []string{sharedFile},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	csB := &models.Changeset{
+		ID:            "cs-overlap-b",
+		SliceID:       sliceB.ID,
+		ModifiedFiles: []string{sharedFile},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, csA); err != nil {
+		t.Fatalf("failed to create changeset A: %v", err)
+	}
+	if err := base.CreateChangeset(ctx, csB); err != nil {
+		t.Fatalf("failed to create changeset B: %v", err)
+	}
+
+	blocking := newBlockingLockStorage(base)
+	srv := newSliceServiceServer(blocking)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: csA.ID})
+		resultCh <- err
+	}()
+
+	select {
+	case <-blocking.firstLockAcquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for overlapping merge to acquire file lock")
+	}
+
+	_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: csB.ID})
+	if err == nil {
+		t.Fatal("expected overlapping concurrent merge to fail")
+	}
+	if got := status.Code(err); got != codes.Aborted {
+		t.Fatalf("expected Aborted for overlapping merge, got %v (%v)", got, err)
+	}
+
+	close(blocking.releaseFirstLock)
+	if err := <-resultCh; err != nil {
+		t.Fatalf("expected first overlapping merge to succeed after releasing lock, got %v", err)
 	}
 }
 
