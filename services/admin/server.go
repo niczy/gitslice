@@ -476,7 +476,7 @@ func (s *adminServiceServer) BatchMerge(ctx context.Context, req *adminv1.BatchM
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root slice: %v", err))
 	}
 
-	conflicts, err := s.storage.ListConflicts(ctx)
+	conflicts, err := storage.ListDivergentConflicts(ctx, s.storage)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list conflicts: %v", err))
 	}
@@ -605,7 +605,7 @@ func (s *adminServiceServer) GetConflicts(ctx context.Context, req *adminv1.Conf
 		return nil, err
 	}
 
-	conflicts, err := s.storage.ListConflicts(ctx)
+	conflicts, err := storage.ListDivergentConflicts(ctx, s.storage)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list conflicts: %v", err))
 	}
@@ -647,10 +647,13 @@ func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.R
 		return nil, status.Error(codes.InvalidArgument, "file_id is required")
 	}
 
-	conflict, err := s.storage.ResolveConflict(ctx, req.FileId, req.PreferredSliceId)
+	conflict, err := storage.NormalizeConflictToPreferred(ctx, s.storage, req.FileId, req.PreferredSliceId)
 	if err != nil {
 		if errors.Is(err, storage.ErrInvalidInput) {
 			return nil, status.Error(codes.InvalidArgument, "preferred_slice_id must reference one of the conflicting slices")
+		}
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, status.Error(codes.FailedPrecondition, "preferred slice is missing materialized file content")
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve conflict: %v", err))
 	}
@@ -866,7 +869,7 @@ func (s *adminServiceServer) WatchConflicts(req *adminv1.WatchConflictsRequest, 
 		return err
 	}
 
-	conflicts, err := s.storage.ListConflicts(stream.Context())
+	conflicts, err := storage.ListDivergentConflicts(stream.Context(), s.storage)
 	if err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to list conflicts: %v", err))
 	}

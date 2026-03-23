@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/storage"
 )
 
 // TestConflictList tests showing all conflicts for current working directory
@@ -234,6 +235,29 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: sliceB, Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
 		t.Fatalf("failed to create conflicting slice: %v", err)
 	}
+
+	writeConflictFile := func(sliceID, content string) {
+		t.Helper()
+		manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, fileID, []byte(content))
+		if err != nil {
+			t.Fatalf("failed to write slice file manifest for %s: %v", sliceID, err)
+		}
+		if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       sliceID + ":" + fileID,
+			Path:     fileID,
+			Type:     "file",
+			ParentID: sliceID,
+			Size:     manifest.TotalSize,
+			Hash:     manifest.Hash,
+		}); err != nil {
+			t.Fatalf("failed to add conflict entry for %s: %v", sliceID, err)
+		}
+		if err := testStorage.AddFileToSlice(ctx, fileID, sliceID); err != nil {
+			t.Fatalf("failed to add conflict file index for %s: %v", sliceID, err)
+		}
+	}
+	writeConflictFile(sliceA, "slice-a\n")
+	writeConflictFile(sliceB, "slice-b\n")
 
 	workdir := t.TempDir()
 	sliceArg := sliceIDArg(sliceA)

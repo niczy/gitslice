@@ -2166,6 +2166,22 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("expected promoted commit %s and slice %s in global history, got head=%s: %v", mergeResp.NewCommitHash, sliceA, gotHead, err)
 	}
 
+	// Materialize a divergent local file state in slice B after ownership has
+	// been resolved to slice A. This keeps the test exercising real
+	// content-aware conflict detection instead of the legacy ownership-only
+	// fallback path.
+	bManifestHash := mustWriteSliceManifest(t, ctx, testStorage, sliceB, sharedFile, []byte("slice-b divergent content"))
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceB, sharedFile),
+		Path:     sharedFile,
+		Type:     "file",
+		ParentID: sliceB,
+		Hash:     bManifestHash,
+		Size:     int64(len("slice-b divergent content")),
+	}); err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("failed to add divergent entry for slice B: %v", err)
+	}
+
 	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "should conflict"})
 	if err != nil {
 		t.Fatalf("failed to create conflicting changeset: %v", err)

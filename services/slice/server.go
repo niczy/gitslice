@@ -991,12 +991,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 		for _, fileID := range modifiedFiles {
 			slices := activeSlicesByFile[fileID]
-
-			var conflictingSlices []string
-			for _, sliceID := range slices {
-				if sliceID != cs.SliceID {
-					conflictingSlices = append(conflictingSlices, sliceID)
-				}
+			conflictingSlices, err := storage.DivergentSlicesForPreferred(ctx, s.storage, fileID, cs.SliceID, slices)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to compare conflicting slice state for %s: %v", fileID, err))
 			}
 
 			if len(conflictingSlices) > 0 {
