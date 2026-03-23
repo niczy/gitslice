@@ -90,8 +90,9 @@ type slicePublishJSON struct {
 			FilesDeleted  int32 `json:"files_deleted"`
 		} `json:"diff"`
 	} `json:"review"`
-	ReviewOnly bool `json:"review_only"`
-	Merge      *struct {
+	ReviewOnly     bool `json:"review_only"`
+	ReusedExisting bool `json:"reused_existing"`
+	Merge          *struct {
 		Status string `json:"status"`
 	} `json:"merge"`
 }

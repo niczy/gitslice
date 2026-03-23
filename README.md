@@ -191,6 +191,8 @@ gs slice sync
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
 ```
 
+If the working tree is already clean but a tracked changeset exists, `gs slice publish` reuses that tracked changeset for review or merge instead of failing.
+
 Useful day-to-day helpers:
 
 ```bash
