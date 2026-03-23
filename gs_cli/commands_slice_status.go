@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,41 +20,41 @@ type workingTreeStatusEntry struct {
 
 func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("slice status", flag.ExitOnError)
+	fs := newCommandFlagSet("slice status")
 	all := fs.Bool("all", false, "Show all changed paths")
 	limit := fs.Int("limit", defaultSliceStatusPathLimit, "Maximum changed paths to print")
 	remote := fs.Bool("remote", false, "Fetch remote head and tracked changeset status")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice status [--all] [--limit <n>] [--remote] [--json]")
+		commandUsage("Usage: gs slice status [--all] [--limit <n>] [--remote] [--json]")
 		return
 	}
 	if *limit < 0 {
-		log.Fatal("Limit must be >= 0")
+		commandFatal("INVALID_ARGUMENT", "Limit must be >= 0", false, "")
 	}
 
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
-		log.Printf("Failed to read current slice binding: %v", err)
+		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read current slice binding: %v", err)
 		return
 	}
 
 	checkoutIndex, err := detectCheckoutMode(".")
 	if err != nil {
-		log.Fatalf("Failed to read checkout mode: %v", err)
+		commandFatalf("CHECKOUT_METADATA_MISSING", false, "gs slice checkout <slice-id>", "Failed to read checkout mode: %v", err)
 	}
 
 	statusEntries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
 	if err != nil {
-		log.Fatalf("Failed to inspect working tree: %v", err)
+		commandFatalf("STATUS_FAILED", false, "", "Failed to inspect working tree: %v", err)
 	}
 	statusEntries = filterWorkingTreeStatusEntries(statusEntries)
 
 	trackedChangesetID, err := readTrackedChangesetIDFromConfig()
 	if err != nil {
-		log.Fatalf("Failed to read tracked changeset ID: %v", err)
+		commandFatalf("STATUS_FAILED", false, "", "Failed to read tracked changeset ID: %v", err)
 	}
 	trackedChangesetID = strings.TrimSpace(trackedChangesetID)
 	trackedChangesetStatus := ""
@@ -80,7 +78,7 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	if *remote {
 		stateResp, err := cli.sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID})
 		if err != nil {
-			log.Fatalf("Failed to get slice state: %v", err)
+			commandFatalf("STATUS_REMOTE_FAILED", true, "gs slice status", "Failed to get slice state: %v", err)
 		}
 		remoteHead = strings.TrimSpace(stateResp.GetLatestCommitHash())
 		behindRemote = localCommitHash != "" && remoteHead != "" && localCommitHash != remoteHead

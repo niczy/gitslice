@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -35,20 +34,20 @@ type localSliceDiff struct {
 }
 
 func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("slice diff", flag.ExitOnError)
+	fs := newCommandFlagSet("slice diff")
 	statOnly := fs.Bool("stat", false, "Show diffstat only")
 	nameOnly := fs.Bool("name-only", false, "Show changed file names only")
 	summaryOnly := fs.Bool("summary", false, "Show only the change summary and matching paths")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 
 	checkoutIndex, err := detectCheckoutMode(".")
 	if err != nil {
-		log.Fatalf("Failed to read checkout mode: %v", err)
+		commandFatalf("CHECKOUT_METADATA_MISSING", false, "gs slice checkout <slice-id>", "Failed to read checkout mode: %v", err)
 	}
 
 	entries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
 	if err != nil {
-		log.Fatalf("Failed to diff no-git checkout: %v", err)
+		commandFatalf("DIFF_FAILED", false, "", "Failed to diff no-git checkout: %v", err)
 	}
 	entries = filterWorkingTreeStatusEntries(entries)
 	entries = filterWorkingTreeStatusByPaths(entries, fs.Args())
@@ -75,7 +74,7 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 
 	diffs, err := buildLocalSliceDiffs(ctx, cli, checkoutIndex, cache, entries)
 	if err != nil {
-		log.Fatalf("Failed to build local diff: %v", err)
+		commandFatalf("DIFF_FAILED", false, "", "Failed to build local diff: %v", err)
 	}
 	if *statOnly {
 		printLocalSliceDiffStat(diffs)
@@ -85,18 +84,18 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("slice restore", flag.ExitOnError)
+	fs := newCommandFlagSet("slice restore")
 	dryRun := fs.Bool("dry-run", false, "Show what would be restored or removed without changing files")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 
 	checkoutIndex, err := detectCheckoutMode(".")
 	if err != nil {
-		log.Fatalf("Failed to read checkout mode: %v", err)
+		commandFatalf("CHECKOUT_METADATA_MISSING", false, "gs slice checkout <slice-id>", "Failed to read checkout mode: %v", err)
 	}
 
 	entries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
 	if err != nil {
-		log.Fatalf("Failed to inspect no-git checkout: %v", err)
+		commandFatalf("RESTORE_FAILED", false, "", "Failed to inspect no-git checkout: %v", err)
 	}
 	entries = filterWorkingTreeStatusEntries(entries)
 	if len(fs.Args()) > 0 {
@@ -139,18 +138,18 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 		tracked, ok := lookup.files[entry.Path]
 		if !ok {
 			if err := os.RemoveAll(filepath.Join(".", entry.Path)); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Fatalf("Failed to remove new path %s: %v", entry.Path, err)
+				commandFatalf("RESTORE_FAILED", false, "", "Failed to remove new path %s: %v", entry.Path, err)
 			}
 			removedNew++
 			continue
 		}
 		if err := restoreTrackedCheckoutFile(ctx, cli, checkoutIndex, cache, tracked); err != nil {
-			log.Fatalf("Failed to restore %s: %v", entry.Path, err)
+			commandFatalf("RESTORE_FAILED", false, "", "Failed to restore %s: %v", entry.Path, err)
 		}
 		restoredTracked++
 	}
 	if err := removeEmptyCheckoutDirs("."); err != nil {
-		log.Fatalf("Failed to clean up empty directories: %v", err)
+		commandFatalf("RESTORE_FAILED", false, "", "Failed to clean up empty directories: %v", err)
 	}
 	if cache != nil {
 		if err := cache.PersistIndex(); err != nil {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -38,17 +37,18 @@ func handleRepoCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoImport(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("repo import", flag.ExitOnError)
+	fs := newCommandFlagSet("repo import")
 	branch := fs.String("branch", "", "Remote branch to import (default: remote default branch)")
 	force := fs.Bool("force", false, "Overwrite an existing directory or binding at the target path")
 	pushEnabled := fs.Bool("push-enabled", false, "Allow future gs repo push operations for this binding")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token for private repo import")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 2 {
-		log.Fatalf("Usage: gs repo import <repo-url> </absolute/path>")
+		commandUsage("Usage: gs repo import <repo-url> </absolute/path>")
+		return
 	}
 
 	resp, err := cli.filesystemClient.ImportRepo(ctx, &filesystemv1.ImportRepoRequest{
@@ -60,7 +60,7 @@ func handleRepoImport(ctx context.Context, cli *CLI, args []string) {
 		GithubToken:    strings.TrimSpace(*githubToken),
 	})
 	if err != nil {
-		log.Fatalf("Import failed: %v", err)
+		commandFatalf("REPO_IMPORT_FAILED", false, "", "Import failed: %v", err)
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonRepoImportOutput{
@@ -83,14 +83,14 @@ func handleRepoImport(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoList(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("repo list", flag.ExitOnError)
+	fs := newCommandFlagSet("repo list")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	resp, err := cli.filesystemClient.ListRepoBindings(ctx, &filesystemv1.ListRepoBindingsRequest{})
 	if err != nil {
-		log.Fatalf("List failed: %v", err)
+		commandFatalf("REPO_LIST_FAILED", true, "", "List failed: %v", err)
 	}
 	if jsonEnabled {
 		out := jsonRepoListOutput{
@@ -114,17 +114,18 @@ func handleRepoList(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoStatus(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("repo status", flag.ExitOnError)
+	fs := newCommandFlagSet("repo status")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		log.Fatalf("Usage: gs repo status </absolute/path>")
+		commandUsage("Usage: gs repo status </absolute/path>")
+		return
 	}
 	path := strings.TrimSpace(fs.Arg(0))
 	resp, err := cli.filesystemClient.ListRepoBindings(ctx, &filesystemv1.ListRepoBindingsRequest{})
 	if err != nil {
-		log.Fatalf("Status failed: %v", err)
+		commandFatalf("REPO_STATUS_FAILED", true, "", "Status failed: %v", err)
 	}
 	for _, binding := range resp.GetBindings() {
 		if binding.GetPath() != path {
@@ -151,19 +152,20 @@ func handleRepoStatus(ctx context.Context, cli *CLI, args []string) {
 		writeJSONOutput(jsonRepoStatusOutput{Found: false})
 		return
 	}
-	log.Fatalf("No repo binding found for %s", path)
+	commandFatal("REPO_BINDING_NOT_FOUND", fmt.Sprintf("No repo binding found for %s", path), false, "gs repo list --json")
 }
 
 func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("repo pull", flag.ExitOnError)
+	fs := newCommandFlagSet("repo pull")
 	force := fs.Bool("force", true, "Overwrite the bound directory with the remote snapshot")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token for private repo pull")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		log.Fatalf("Usage: gs repo pull </absolute/path>")
+		commandUsage("Usage: gs repo pull </absolute/path>")
+		return
 	}
 
 	resp, err := cli.filesystemClient.PullRepoBinding(ctx, &filesystemv1.PullRepoBindingRequest{
@@ -172,7 +174,7 @@ func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 		GithubToken:    strings.TrimSpace(*githubToken),
 	})
 	if err != nil {
-		log.Fatalf("Pull failed: %v", err)
+		commandFatalf("REPO_PULL_FAILED", true, "", "Pull failed: %v", err)
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonRepoPullOutput{
@@ -195,14 +197,15 @@ func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoPush(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("repo push", flag.ExitOnError)
+	fs := newCommandFlagSet("repo push")
 	message := fs.String("message", "", "Commit message for the remote push")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token used to push to the remote")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		log.Fatalf("Usage: gs repo push </absolute/path>")
+		commandUsage("Usage: gs repo push </absolute/path>")
+		return
 	}
 
 	resp, err := cli.filesystemClient.PushRepoBinding(ctx, &filesystemv1.PushRepoBindingRequest{
@@ -211,7 +214,7 @@ func handleRepoPush(ctx context.Context, cli *CLI, args []string) {
 		GithubToken: strings.TrimSpace(*githubToken),
 	})
 	if err != nil {
-		log.Fatalf("Push failed: %v", err)
+		commandFatalf("REPO_PUSH_FAILED", true, "", "Push failed: %v", err)
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonRepoPushOutput{
@@ -230,17 +233,18 @@ func handleRepoPush(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoUnlink(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("repo unlink", flag.ExitOnError)
+	fs := newCommandFlagSet("repo unlink")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		log.Fatalf("Usage: gs repo unlink </absolute/path>")
+		commandUsage("Usage: gs repo unlink </absolute/path>")
+		return
 	}
 
 	resp, err := cli.filesystemClient.DeleteRepoBinding(ctx, &filesystemv1.DeleteRepoBindingRequest{Path: fs.Arg(0)})
 	if err != nil {
-		log.Fatalf("Unlink failed: %v", err)
+		commandFatalf("REPO_UNLINK_FAILED", true, "", "Unlink failed: %v", err)
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonRepoUnlinkOutput{

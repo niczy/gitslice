@@ -57,6 +57,7 @@ func main() {
 		printHelp()
 		return
 	}
+	configureCLIOutputMode(args)
 
 	if args[0] == "cache" {
 		handleCacheCommand(args[1:])
@@ -81,14 +82,14 @@ func main() {
 
 	cli, err := NewCLI(*accountServerAddr, *sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
 	if err != nil {
-		log.Fatalf("Failed to initialize CLI: %v", err)
+		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
 	}
 	defer cli.Close()
 
 	if args[0] == "login" {
 		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
 		if err != nil && len(args) == 1 {
-			log.Fatalf("Failed to resolve current auth: %v", err)
+			commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
@@ -98,7 +99,7 @@ func main() {
 	if args[0] == "logout" {
 		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
 		if err != nil {
-			log.Fatalf("Failed to resolve current auth: %v", err)
+			commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -110,11 +111,11 @@ func main() {
 	defer cancel()
 	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
 	if err != nil {
-		log.Fatalf("Failed to resolve auth: %v", err)
+		commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve auth: %v", err)
 	}
 	authConfig, err = ensureCLIAuthReady(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatalf("Failed to refresh stored auth: %v", err)
+		commandFatalf("AUTH_REFRESH_FAILED", true, "", "Failed to refresh stored auth: %v", err)
 	}
 	ctx = withCLIAuth(ctx, authConfig)
 

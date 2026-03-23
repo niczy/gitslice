@@ -259,3 +259,10 @@ type conflictShowJSON struct {
 		Severity            string   `json:"severity"`
 	} `json:"conflict"`
 }
+
+type cliErrorJSON struct {
+	ErrorCode       string `json:"error_code"`
+	Message         string `json:"message"`
+	Retryable       bool   `json:"retryable"`
+	SuggestedAction string `json:"suggested_action"`
+}

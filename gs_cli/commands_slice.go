@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -61,34 +60,34 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 2 {
-		log.Println("Usage: gs slice create <name> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
+		commandUsage("Usage: gs slice create <name> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
 		return
 	}
 
 	sliceName := strings.TrimSpace(args[0])
 	if sliceName == "" {
-		log.Println("Slice name cannot be empty")
+		commandUsage("Slice name cannot be empty")
 		return
 	}
 
 	folderPaths := parseSliceFolderPaths(args[1])
 
-	fs := flag.NewFlagSet("slice create", flag.ExitOnError)
+	fs := newCommandFlagSet("slice create")
 	description := fs.String("description", "Focused slice", "Description of the new slice")
 	moreFolders := fs.String("folders", "", "Additional comma-separated folder paths to include in this slice")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args[2:])
+	parseCommandFlags(fs, args[2:])
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	folderPaths = append(folderPaths, parseSliceFolderPaths(*moreFolders)...)
 	if len(folderPaths) == 0 {
-		log.Println("At least one folder path is required")
+		commandUsage("At least one folder path is required")
 		return
 	}
 
 	rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{})
 	if err != nil {
-		log.Fatalf("Failed to resolve published root slice: %v", err)
+		commandFatalf("SLICE_CREATE_FAILED", true, "", "Failed to resolve published root slice: %v", err)
 	}
 
 	req := &slicev1.CreateSliceFromFolderRequest{
@@ -101,7 +100,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to create slice: %v", err)
+		commandFatalf("SLICE_CREATE_FAILED", true, "", "Failed to create slice: %v", err)
 	}
 
 	if jsonEnabled {
@@ -125,49 +124,49 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--json]")
+		commandUsage("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--json]")
 		return
 	}
 
 	sliceID, err := resolveSliceRef(ctx, cli, args[0])
 	if err != nil {
-		log.Fatalf("Invalid slice reference: %v", err)
+		commandFatalf("INVALID_SLICE_REFERENCE", false, "gs slice list --json", "Invalid slice reference: %v", err)
 	}
 
 	// Parse flags
-	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
+	fs := newCommandFlagSet("slice checkout")
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args[1:])
+	parseCommandFlags(fs, args[1:])
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
-		log.Fatalf("Failed to read directory: %v", err)
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to read directory: %v", err)
 	}
 	if len(entries) > 0 {
-		log.Fatal("Directory is not empty. Please checkout into an empty directory.")
+		commandFatal("DIRECTORY_NOT_EMPTY", "Directory is not empty. Please checkout into an empty directory.", false, "")
 	}
 
 	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", false, nil)
 	if err != nil {
-		log.Fatalf("Failed to checkout slice: %v", err)
+		commandFatalf("SLICE_CHECKOUT_FAILED", true, "", "Failed to checkout slice: %v", err)
 	}
 
 	if err := os.MkdirAll(".gs", 0o755); err != nil {
-		log.Fatalf("Failed to create .gs directory: %v", err)
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to create .gs directory: %v", err)
 	}
 	if err := writeSliceIDConfig(sliceID); err != nil {
-		log.Fatalf("Failed to write config file: %v", err)
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write config file: %v", err)
 	}
 
 	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest)
 	if err != nil {
-		log.Fatalf("Failed to build checkout index: %v", err)
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
-		log.Fatalf("Failed to write checkout index: %v", err)
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write checkout index: %v", err)
 	}
 	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to start dirty tracker: %v", err)
@@ -200,30 +199,30 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("slice sync", flag.ExitOnError)
+	fs := newCommandFlagSet("slice sync")
 	commitHash := fs.String("commit", "HEAD", "Commit hash to sync to")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice sync [--commit <commit-hash>] [--json]")
+		commandUsage("Usage: gs slice sync [--commit <commit-hash>] [--json]")
 		return
 	}
 
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
-		log.Fatalf("Failed to read current slice binding: %v", err)
+		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read current slice binding: %v", err)
 	}
 
 	checkoutIndex, err := readCheckoutIndex(".")
 	if err != nil {
-		log.Fatalf("Failed to read checkout index: %v", err)
+		commandFatalf("CHECKOUT_METADATA_MISSING", false, "gs slice checkout <slice-id>", "Failed to read checkout index: %v", err)
 	}
 	if checkoutIndex == nil {
-		log.Fatal("Cannot sync slice: checkout metadata missing. Run gs slice checkout again.")
+		commandFatal("CHECKOUT_METADATA_MISSING", "Cannot sync slice: checkout metadata missing. Run gs slice checkout again.", false, "gs slice checkout <slice-id>")
 	}
 	if err := verifyCheckoutIndexClean(".", checkoutIndex); err != nil {
-		log.Fatalf("Cannot sync slice: %v", err)
+		commandFatalf("WORKING_TREE_DIRTY", false, "gs slice diff", "Cannot sync slice: %v", err)
 	}
 	if err := stopDirtyTracker("."); err != nil {
 		log.Printf("Warning: failed to stop dirty tracker before sync: %v", err)
@@ -231,11 +230,11 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 
 	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", true, checkoutIndex)
 	if err != nil {
-		log.Fatalf("Failed to sync slice: %v", err)
+		commandFatalf("SLICE_SYNC_FAILED", true, "", "Failed to sync slice: %v", err)
 	}
 	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest)
 	if err != nil {
-		log.Fatalf("Failed to build checkout index: %v", err)
+		commandFatalf("SLICE_SYNC_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
 
 	status := "up to date"
@@ -244,7 +243,7 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
-		log.Fatalf("Failed to write checkout index: %v", err)
+		commandFatalf("SLICE_SYNC_FAILED", false, "", "Failed to write checkout index: %v", err)
 	}
 	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to restart dirty tracker: %v", err)
@@ -268,22 +267,22 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceCheckouts(args []string) {
-	fs := flag.NewFlagSet("slice checkouts", flag.ExitOnError)
+	fs := newCommandFlagSet("slice checkouts")
 	filterSliceID := fs.String("slice", "", "Filter to one slice ID")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 
 	normalizedSliceID := ""
 	if strings.TrimSpace(*filterSliceID) != "" {
 		var err error
 		normalizedSliceID, err = normalizeSliceID(*filterSliceID)
 		if err != nil {
-			log.Fatalf("Invalid slice ID: %v", err)
+			commandFatalf("INVALID_SLICE_REFERENCE", false, "gs slice list --json", "Invalid slice ID: %v", err)
 		}
 	}
 
 	records, err := listCheckoutRecords()
 	if err != nil {
-		log.Fatalf("Failed to read checkout registry: %v", err)
+		commandFatalf("CHECKOUT_REGISTRY_FAILED", false, "", "Failed to read checkout registry: %v", err)
 	}
 
 	filtered := make([]CheckoutRecord, 0, len(records))

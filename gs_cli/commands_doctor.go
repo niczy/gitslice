@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 
@@ -14,12 +12,12 @@ import (
 
 func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	fs := newCommandFlagSet("doctor")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs doctor")
+		commandUsage("Usage: gs doctor")
 		return
 	}
 
