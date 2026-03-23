@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -39,15 +38,15 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("changeset show", flag.ExitOnError)
+	fs := newCommandFlagSet("changeset show")
 	snapshotVersion := fs.Int("snapshot", 0, "Show a specific snapshot version")
 	includePatches := fs.Bool("patches", false, "Include inline patch text when available")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs changeset show [<changeset-id>] [--snapshot <version>] [--patches] [--json]")
+		commandUsage("Usage: gs changeset show [<changeset-id>] [--snapshot <version>] [--patches] [--json]")
 		return
 	}
 
@@ -56,7 +55,7 @@ func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
 		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
 	}
 	if err != nil {
-		log.Printf("Failed to resolve changeset ID: %v", err)
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
 		return
 	}
 
@@ -65,7 +64,7 @@ func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
 		SnapshotVersion: int32(*snapshotVersion),
 	})
 	if err != nil {
-		log.Fatalf("Failed to show changeset: %v", err)
+		commandFatalf("CHANGESET_SHOW_FAILED", true, "", "Failed to show changeset: %v", err)
 	}
 
 	if jsonEnabled {
@@ -78,19 +77,19 @@ func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
 func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
-		log.Printf("Failed to read slice binding: %v", err)
+		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read slice binding: %v", err)
 		return
 	}
 
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("changeset create", flag.ExitOnError)
+	fs := newCommandFlagSet("changeset create")
 	message := fs.String("message", "", "Changeset message")
 	base := fs.String("base", "", "Base commit hash")
 	files := fs.String("files", "", "Comma-separated file list")
 	author := fs.String("author", "user", "Author of the changeset")
 	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	modifiedFiles := []string{}
@@ -100,15 +99,15 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	modifiedFiles = append(modifiedFiles, fs.Args()...)
 	modifiedFiles, _, err = resolveWorkingTreeModifiedFiles(".", modifiedFiles)
 	if err != nil {
-		log.Fatalf("Cannot create changeset: %v", err)
+		commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice diff", "Cannot create changeset: %v", err)
 	}
 	if len(modifiedFiles) == 0 {
-		log.Fatal("No modified files specified and working tree is clean")
+		commandFatal("NO_LOCAL_CHANGES", "No modified files specified and working tree is clean", false, "Edit files or pass --files explicitly")
 	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
 	if err != nil {
-		log.Printf("Failed to resolve tracked changeset ID: %v", err)
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve tracked changeset ID: %v", err)
 		return
 	}
 
@@ -123,7 +122,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.sliceClient.CreateChangeset(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to create changeset: %v", err)
+		commandFatalf("CHANGESET_CREATE_FAILED", true, "", "Failed to create changeset: %v", err)
 	}
 	if err := writeTrackedChangesetIDConfig(resp.GetChangesetId()); err != nil {
 		log.Printf("Warning: failed to track changeset ID locally: %v", err)
@@ -197,9 +196,9 @@ func resolveChangesetIDForCreate(explicit string) (string, bool, error) {
 
 func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("changeset review", flag.ExitOnError)
+	fs := newCommandFlagSet("changeset review")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	changesetID, err := resolveChangesetIDForRead("")
@@ -208,17 +207,17 @@ func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
 	case 1:
 		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
 	default:
-		log.Println("Usage: gs changeset review [<changeset-id>] [--json]")
+		commandUsage("Usage: gs changeset review [<changeset-id>] [--json]")
 		return
 	}
 	if err != nil {
-		log.Printf("Failed to resolve changeset ID: %v", err)
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
 		return
 	}
 
 	resp, err := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: changesetID})
 	if err != nil {
-		log.Fatalf("Failed to review changeset: %v", err)
+		commandFatalf("CHANGESET_REVIEW_FAILED", true, "", "Failed to review changeset: %v", err)
 	}
 
 	if jsonEnabled {
@@ -230,20 +229,20 @@ func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
 
 func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("changeset merge", flag.ExitOnError)
+	fs := newCommandFlagSet("changeset merge")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() < 1 {
-		log.Println("Usage: gs changeset merge <changeset-id> [--json]")
+		commandUsage("Usage: gs changeset merge <changeset-id> [--json]")
 		return
 	}
 
 	req := &slicev1.MergeChangesetRequest{ChangesetId: fs.Arg(0)}
 	resp, err := cli.sliceClient.MergeChangeset(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to merge changeset: %v", err)
+		commandFatalf("CHANGESET_MERGE_FAILED", true, "gs slice sync", "Failed to merge changeset: %v", err)
 	}
 	if resp.GetStatus() == slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		if err := clearTrackedChangesetIDIfMatches(req.ChangesetId); err != nil {
@@ -260,14 +259,14 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 
 func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs changeset rebase <changeset-id>")
+		commandUsage("Usage: gs changeset rebase <changeset-id>")
 		return
 	}
 
 	req := &slicev1.RebaseChangesetRequest{ChangesetId: args[0]}
 	resp, err := cli.sliceClient.RebaseChangeset(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to rebase changeset: %v", err)
+		commandFatalf("CHANGESET_REBASE_FAILED", true, "", "Failed to rebase changeset: %v", err)
 	}
 
 	fmt.Printf("Rebase status: %s\n", resp.Status.String())
@@ -277,17 +276,17 @@ func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {
 func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
-		log.Printf("Failed to read slice binding: %v", err)
+		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read slice binding: %v", err)
 		return
 	}
 
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("changeset list", flag.ExitOnError)
+	fs := newCommandFlagSet("changeset list")
 	limit := fs.Int("limit", 20, "Maximum results")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	status := &stringFlag{}
 	fs.Var(status, "status", "Filter by status (pending, approved, rejected, merged)")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	statusFilter := slicev1.ChangesetStatus(-1)
@@ -302,7 +301,7 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 		case "pending":
 			statusFilter = slicev1.ChangesetStatus_PENDING
 		default:
-			log.Printf("Unknown status filter: %s", status.value)
+			commandFatalf("INVALID_ARGUMENT", false, "", "Unknown status filter: %s", status.value)
 			return
 		}
 	}
@@ -315,7 +314,7 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.sliceClient.ListChangesets(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to list changesets: %v", err)
+		commandFatalf("CHANGESET_LIST_FAILED", true, "", "Failed to list changesets: %v", err)
 	}
 
 	sort.Slice(resp.Changesets, func(i, j int) bool {

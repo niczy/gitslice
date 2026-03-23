@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"strings"
@@ -31,12 +30,12 @@ func handleConflictCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("conflict list", flag.ExitOnError)
+	fs := newCommandFlagSet("conflict list")
 	sliceFlag := fs.String("slice", "", "Slice ID to inspect for conflicts")
 	detailed := fs.Bool("detailed", false, "Show detailed conflict information")
 	severity := fs.Bool("severity", false, "Show severity level")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	sliceID := *sliceFlag
@@ -53,7 +52,7 @@ func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.adminClient.GetConflicts(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to list conflicts: %v", err)
+		commandFatalf("CONFLICT_LIST_FAILED", true, "", "Failed to list conflicts: %v", err)
 	}
 	if jsonEnabled {
 		out := jsonConflictListOutput{
@@ -96,16 +95,16 @@ func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 
 func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("conflict resolve", flag.ExitOnError)
+	fs := newCommandFlagSet("conflict resolve")
 	theirs := fs.String("theirs", "", "Resolve in favor of provided slice ID")
 	ours := fs.Bool("ours", false, "Resolve in favor of current slice")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	remaining := fs.Args()
 	if len(remaining) < 1 {
-		log.Println("Usage: gs conflict resolve [--ours|--theirs <slice-id>] <file>")
+		commandUsage("Usage: gs conflict resolve [--ours|--theirs <slice-id>] <file>")
 		return
 	}
 
@@ -115,7 +114,7 @@ func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 		if *ours {
 			cfgSlice, err := sliceIDFromConfig()
 			if err != nil {
-				log.Fatalf("Failed to read slice binding: %v", err)
+				commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read slice binding: %v", err)
 			}
 			preferredSlice = cfgSlice
 		}
@@ -124,7 +123,7 @@ func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 	req := &adminv1.ResolveConflictRequest{FileId: fileID, PreferredSliceId: preferredSlice}
 	resp, err := cli.adminClient.ResolveConflict(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to resolve conflict: %v", err)
+		commandFatalf("CONFLICT_RESOLVE_FAILED", true, "", "Failed to resolve conflict: %v", err)
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonConflictResolveOutput{
@@ -139,12 +138,12 @@ func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 
 func handleConflictShow(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("conflict show", flag.ExitOnError)
+	fs := newCommandFlagSet("conflict show")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() < 1 {
-		log.Println("Usage: gs conflict show <file>")
+		commandUsage("Usage: gs conflict show <file>")
 		return
 	}
 
@@ -152,7 +151,7 @@ func handleConflictShow(ctx context.Context, cli *CLI, args []string) {
 	req := &adminv1.ConflictsRequest{}
 	resp, err := cli.adminClient.GetConflicts(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to fetch conflicts: %v", err)
+		commandFatalf("CONFLICT_SHOW_FAILED", true, "", "Failed to fetch conflicts: %v", err)
 	}
 
 	for _, conflict := range resp.Conflicts {

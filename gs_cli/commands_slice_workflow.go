@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"sort"
@@ -15,19 +14,19 @@ import (
 
 func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("slice list", flag.ExitOnError)
+	fs := newCommandFlagSet("slice list")
 	limit := fs.Int("limit", 100, "Maximum slices to list")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice list [--limit <n>] [--json]")
+		commandUsage("Usage: gs slice list [--limit <n>] [--json]")
 		return
 	}
 
 	resp, err := cli.adminClient.ListSlices(ctx, &adminv1.ListSlicesRequest{Limit: int32(*limit)})
 	if err != nil {
-		log.Fatalf("Failed to list slices: %v", err)
+		commandFatalf("SLICE_LIST_FAILED", true, "", "Failed to list slices: %v", err)
 	}
 
 	slices := append([]*adminv1.SliceInfo(nil), resp.GetSlices()...)
@@ -73,12 +72,12 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
-		log.Printf("Failed to read slice binding: %v", err)
+		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read slice binding: %v", err)
 		return
 	}
 
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("slice publish", flag.ExitOnError)
+	fs := newCommandFlagSet("slice publish")
 	message := fs.String("message", "", "Changeset message")
 	base := fs.String("base", "", "Base commit hash")
 	files := fs.String("files", "", "Comma-separated file list")
@@ -87,7 +86,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging")
 	noMerge := fs.Bool("no-merge", false, "Alias for --review-only")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	modifiedFiles := []string{}
@@ -97,15 +96,15 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	modifiedFiles = append(modifiedFiles, fs.Args()...)
 	modifiedFiles, _, err = resolveWorkingTreeModifiedFiles(".", modifiedFiles)
 	if err != nil {
-		log.Fatalf("Cannot publish slice: %v", err)
+		commandFatalf("SLICE_PUBLISH_FAILED", false, "gs slice diff", "Cannot publish slice: %v", err)
 	}
 	if len(modifiedFiles) == 0 {
-		log.Fatal("No modified files specified and working tree is clean")
+		commandFatal("NO_LOCAL_CHANGES", "No modified files specified and working tree is clean", false, "Edit files or pass --files explicitly")
 	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
 	if err != nil {
-		log.Printf("Failed to resolve tracked changeset ID: %v", err)
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve tracked changeset ID: %v", err)
 		return
 	}
 
@@ -118,7 +117,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		ChangesetId:    resolvedChangesetID,
 	})
 	if err != nil {
-		log.Fatalf("Failed to create changeset: %v", err)
+		commandFatalf("CHANGESET_CREATE_FAILED", true, "", "Failed to create changeset: %v", err)
 	}
 	if err := writeTrackedChangesetIDConfig(createResp.GetChangesetId()); err != nil {
 		log.Printf("Warning: failed to track changeset ID locally: %v", err)
@@ -128,7 +127,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		ChangesetId: createResp.GetChangesetId(),
 	})
 	if err != nil {
-		log.Fatalf("Failed to review changeset: %v", err)
+		commandFatalf("CHANGESET_REVIEW_FAILED", true, "", "Failed to review changeset: %v", err)
 	}
 	if *reviewOnly || *noMerge {
 		if jsonEnabled {
@@ -153,7 +152,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		ChangesetId: createResp.GetChangesetId(),
 	})
 	if err != nil {
-		log.Fatalf("Failed to merge changeset: %v", err)
+		commandFatalf("CHANGESET_MERGE_FAILED", true, "gs slice sync", "Failed to merge changeset: %v", err)
 	}
 	if mergeResp.GetStatus() == slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		if err := clearTrackedChangesetIDIfMatches(createResp.GetChangesetId()); err != nil {
@@ -182,13 +181,13 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("slice tree", flag.ExitOnError)
+	fs := newCommandFlagSet("slice tree")
 	sliceFlag := fs.String("slice", "", "Slice ID or slug (defaults to the current checkout)")
 	commitFlag := fs.String("commit", "", "Commit hash")
 	depth := fs.Int("depth", 0, "Maximum recursion depth (0 = unlimited)")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs slice tree [path] [--slice <slice-id-or-slug>] [--commit <hash>] [--depth <n>]")
+		commandUsage("Usage: gs slice tree [path] [--slice <slice-id-or-slug>] [--commit <hash>] [--depth <n>]")
 		return
 	}
 
@@ -199,7 +198,7 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 
 	sliceID, err := resolveSliceRefOrCurrent(ctx, cli, *sliceFlag)
 	if err != nil {
-		log.Fatalf("Failed to resolve slice: %v", err)
+		commandFatalf("INVALID_SLICE_REFERENCE", false, "gs slice list --json", "Failed to resolve slice: %v", err)
 	}
 
 	fmt.Printf("Slice: %s\n", sliceID)
@@ -210,25 +209,25 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	if err := printSliceTree(ctx, cli, sliceID, strings.TrimSpace(*commitFlag), rootPath, "", 1, *depth); err != nil {
-		log.Fatalf("Failed to print slice tree: %v", err)
+		commandFatalf("SLICE_TREE_FAILED", true, "", "Failed to print slice tree: %v", err)
 	}
 }
 
 func handleSliceDelete(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("slice delete", flag.ExitOnError)
+	fs := newCommandFlagSet("slice delete")
 	force := fs.Bool("force", false, "Delete even if the slice still has open changesets")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs slice delete <slice-id-or-slug> [--force] [--json]")
+		commandUsage("Usage: gs slice delete <slice-id-or-slug> [--force] [--json]")
 		return
 	}
 
 	sliceID, err := resolveSliceRef(ctx, cli, fs.Arg(0))
 	if err != nil {
-		log.Fatalf("Invalid slice reference: %v", err)
+		commandFatalf("INVALID_SLICE_REFERENCE", false, "gs slice list --json", "Invalid slice reference: %v", err)
 	}
 
 	resp, err := cli.sliceClient.DeleteSlice(ctx, &slicev1.DeleteSliceRequest{
@@ -236,7 +235,7 @@ func handleSliceDelete(ctx context.Context, cli *CLI, args []string) {
 		Force:   *force,
 	})
 	if err != nil {
-		log.Fatalf("Failed to delete slice: %v", err)
+		commandFatalf("SLICE_DELETE_FAILED", true, "", "Failed to delete slice: %v", err)
 	}
 
 	removed, err := removeCheckoutRecordsForSlice(sliceID)

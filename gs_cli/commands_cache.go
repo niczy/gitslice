@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"strings"
@@ -17,7 +16,7 @@ func handleCacheCommand(args []string) {
 	case "stats":
 		cache, err := NewCacheManager()
 		if err != nil {
-			log.Fatalf("Failed to initialize cache manager: %v", err)
+			commandFatalf("CACHE_INIT_FAILED", false, "", "Failed to initialize cache manager: %v", err)
 		}
 		handleCacheStats(cache, args[1:])
 	case "prune":
@@ -25,7 +24,7 @@ func handleCacheCommand(args []string) {
 	case "clear":
 		cache, err := NewCacheManager()
 		if err != nil {
-			log.Fatalf("Failed to initialize cache manager: %v", err)
+			commandFatalf("CACHE_INIT_FAILED", false, "", "Failed to initialize cache manager: %v", err)
 		}
 		handleCacheClear(cache, args[1:])
 	default:
@@ -36,19 +35,19 @@ func handleCacheCommand(args []string) {
 
 func handleCacheStats(cache *CacheManager, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("cache stats", flag.ExitOnError)
+	fs := newCommandFlagSet("cache stats")
 	showCheckouts := fs.Bool("checkouts", false, "Include tracked checkout locations")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	stats, err := cache.Stats()
 	if err != nil {
-		log.Fatalf("Failed to read cache stats: %v", err)
+		commandFatalf("CACHE_STATS_FAILED", false, "", "Failed to read cache stats: %v", err)
 	}
 	records, err := listCheckoutRecords()
 	if err != nil {
-		log.Fatalf("Failed to read checkout registry: %v", err)
+		commandFatalf("CACHE_STATS_FAILED", false, "", "Failed to read checkout registry: %v", err)
 	}
 	if jsonEnabled {
 		out := jsonCacheStatsOutput{
@@ -108,14 +107,14 @@ func handleCacheStats(cache *CacheManager, args []string) {
 
 func handleCachePrune(args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("cache prune", flag.ExitOnError)
+	fs := newCommandFlagSet("cache prune")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	removed, err := pruneStaleCheckoutRecords()
 	if err != nil {
-		log.Fatalf("Failed to prune stale checkout records: %v", err)
+		commandFatalf("CACHE_PRUNE_FAILED", false, "", "Failed to prune stale checkout records: %v", err)
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonCachePruneOutput{Removed: removed})
@@ -126,14 +125,14 @@ func handleCachePrune(args []string) {
 
 func handleCacheClear(cache *CacheManager, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := flag.NewFlagSet("cache clear", flag.ExitOnError)
+	fs := newCommandFlagSet("cache clear")
 	clearObjects := fs.Bool("objects", false, "Delete all cached objects")
 	clearStale := fs.Bool("stale-checkouts", false, "Remove stale checkout registry entries")
 	clearCheckouts := fs.Bool("checkouts", false, "Remove all tracked checkout entries")
 	clearPath := fs.String("path", "", "Remove the tracked checkout entry for this path")
 	clearAll := fs.Bool("all", false, "Delete all cached objects and all tracked checkout entries")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	fs.Parse(args)
+	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if *clearAll {
@@ -149,10 +148,10 @@ func handleCacheClear(cache *CacheManager, args []string) {
 	if *clearObjects {
 		stats, err := cache.Stats()
 		if err != nil {
-			log.Fatalf("Failed to inspect cache before clearing: %v", err)
+			commandFatalf("CACHE_CLEAR_FAILED", false, "", "Failed to inspect cache before clearing: %v", err)
 		}
 		if err := cache.ClearObjects(); err != nil {
-			log.Fatalf("Failed to clear cached objects: %v", err)
+			commandFatalf("CACHE_CLEAR_FAILED", false, "", "Failed to clear cached objects: %v", err)
 		}
 		out.RemovedCachedObjects = stats.ObjectCount
 		out.RemovedCachedBytes = stats.TotalBytes
@@ -165,7 +164,7 @@ func handleCacheClear(cache *CacheManager, args []string) {
 	if *clearStale {
 		removed, err := pruneStaleCheckoutRecords()
 		if err != nil {
-			log.Fatalf("Failed to prune stale checkout records: %v", err)
+			commandFatalf("CACHE_CLEAR_FAILED", false, "", "Failed to prune stale checkout records: %v", err)
 		}
 		out.RemovedStaleCheckoutRecords = removed
 		if !jsonEnabled {
@@ -176,7 +175,7 @@ func handleCacheClear(cache *CacheManager, args []string) {
 	if strings.TrimSpace(*clearPath) != "" {
 		removed, err := removeCheckoutRecord(*clearPath)
 		if err != nil {
-			log.Fatalf("Failed to remove checkout record: %v", err)
+			commandFatalf("CACHE_CLEAR_FAILED", false, "", "Failed to remove checkout record: %v", err)
 		}
 		out.ClearedPath = strings.TrimSpace(*clearPath)
 		out.ClearedPathFound = removed
@@ -190,10 +189,10 @@ func handleCacheClear(cache *CacheManager, args []string) {
 	if *clearCheckouts {
 		records, err := listCheckoutRecords()
 		if err != nil {
-			log.Fatalf("Failed to inspect checkout registry: %v", err)
+			commandFatalf("CACHE_CLEAR_FAILED", false, "", "Failed to inspect checkout registry: %v", err)
 		}
 		if err := clearCheckoutRegistry(); err != nil {
-			log.Fatalf("Failed to clear checkout registry: %v", err)
+			commandFatalf("CACHE_CLEAR_FAILED", false, "", "Failed to clear checkout registry: %v", err)
 		}
 		out.RemovedCheckoutRecords = len(records)
 		if !jsonEnabled {
