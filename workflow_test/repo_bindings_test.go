@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,9 +93,13 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout: %v", err)
 	}
-	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
-	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
-		t.Fatalf("expected home slice checkout output, got: %s", output)
+	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	var checkoutResp sliceCheckoutJSON
+	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
+		t.Fatalf("decode checkout JSON: %v\nOutput:\n%s", err, output)
+	}
+	if checkoutResp.SliceID != homeslice.IDForUsername(username) {
+		t.Fatalf("expected home slice checkout output, got: %+v", checkoutResp)
 	}
 
 	scriptInfo, err := os.Lstat(filepath.Join(checkoutDir, username, "repos", filepath.Base(boundPath), "bin", "tool.sh"))

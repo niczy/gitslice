@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -18,12 +17,12 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	if resp.SliceID != sliceID || resp.FileCount != 0 {
+		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
-	if strings.Contains(output, "Files in slice:") {
-		t.Fatalf("expected default checkout output to omit per-file listing, got: %s", output)
+	if len(resp.Files) != 0 {
+		t.Fatalf("expected default checkout JSON to omit per-file listing, got: %+v", resp)
 	}
 	if _, err := os.Stat(filepath.Join(workdir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
@@ -47,9 +46,9 @@ func TestCheckoutSliceWithCommitHash(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg, "--commit", "HEAD")
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--commit", "HEAD")
+	if resp.SliceID != sliceID || resp.Commit == "" {
+		t.Fatalf("expected checkout JSON output with commit, got: %+v", resp)
 	}
 }
 
@@ -60,9 +59,9 @@ func TestCheckoutEmptySlice(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	if resp.SliceID != sliceID || resp.FileCount != 0 {
+		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
 }
 
@@ -73,9 +72,9 @@ func TestStreamCheckoutSlice(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	if resp.SliceID != sliceID || resp.FileCount != 0 {
+		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
 }
 
@@ -114,12 +113,12 @@ func TestCheckoutSlicePrintsFilesWhenRequested(t *testing.T) {
 	}
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg, "--files")
-	if !strings.Contains(output, "Files in slice:") {
-		t.Fatalf("expected verbose checkout output with --files, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--files")
+	if resp.SliceID != sliceID || resp.FileCount != 1 || len(resp.Files) != 1 {
+		t.Fatalf("expected verbose checkout JSON output, got: %+v", resp)
 	}
-	if !strings.Contains(output, "pkg/readme.txt") {
-		t.Fatalf("expected file listing in verbose checkout output, got: %s", output)
+	if resp.Files[0].Path != "pkg/readme.txt" || resp.Files[0].Size != int64(len(content)) {
+		t.Fatalf("expected file listing in verbose checkout output, got: %+v", resp)
 	}
 }
 
@@ -178,9 +177,9 @@ func TestCheckoutSliceHonorsFileMetadata(t *testing.T) {
 	}
 
 	workdir := t.TempDir()
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--files")
+	if resp.SliceID != sliceID || resp.FileCount != 2 || len(resp.Files) != 2 {
+		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
 
 	scriptInfo, err := os.Stat(filepath.Join(workdir, scriptPath))

@@ -736,9 +736,9 @@ func TestCheckoutWritesNoGitMetadata(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("Expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	if resp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", resp)
 	}
 	if _, err := os.Stat(filepath.Join(workdir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected checkout to skip git metadata, err=%v", err)
@@ -793,9 +793,13 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
-	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
-	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	var checkoutResp sliceCheckoutJSON
+	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
+		t.Fatalf("decode first checkout JSON: %v\nOutput:\n%s", err, output)
+	}
+	if checkoutResp.SliceID != homeslice.IDForUsername(username) {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
 	cachePath := filepath.Join(homeDir, ".gitslice", "cache", "objects", manifest.Hash)
@@ -807,12 +811,15 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir2, 0o755); err != nil {
 		t.Fatalf("mkdir second checkout dir: %v", err)
 	}
-	output = runCLIForUser(checkoutDir2, "slice", "checkout", homeslice.IDForUsername(username))
-	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
-		t.Fatalf("expected second checkout output, got: %s", output)
+	output = runCLIForUser(checkoutDir2, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
+		t.Fatalf("decode second checkout JSON: %v\nOutput:\n%s", err, output)
 	}
-	if !strings.Contains(output, "Cache hits: 3") {
-		t.Fatalf("expected second checkout to report block cache hits, got: %s", output)
+	if checkoutResp.SliceID != homeslice.IDForUsername(username) {
+		t.Fatalf("expected second checkout output, got: %+v", checkoutResp)
+	}
+	if checkoutResp.CacheHits != 3 {
+		t.Fatalf("expected second checkout to report block cache hits, got: %+v", checkoutResp)
 	}
 
 	checkedOutPath := filepath.Join(checkoutDir2, storedPath)
@@ -832,15 +839,6 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 	ctx := context.Background()
 	homeDir := t.TempDir()
 	env := map[string]string{"HOME": homeDir}
-
-	runCLIForSlice := func(workdir string, args ...string) string {
-		t.Helper()
-		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, workflowUsername(t), args...)
-		if err != nil {
-			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
-		}
-		return output
-	}
 
 	sliceID := fmt.Sprintf("slice-sync-nogit-%d", time.Now().UnixNano())
 	createSliceFromRoot(t, sliceID, "")
@@ -942,9 +940,9 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 	})
 
 	checkoutDir := t.TempDir()
-	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
@@ -959,12 +957,9 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 		readmePath: readmeV2Hash,
 	})
 
-	output = runCLIForSlice(checkoutDir, "slice", "sync")
-	if !strings.Contains(output, "Synced slice: "+sliceID) {
-		t.Fatalf("expected sync output, got: %s", output)
-	}
-	if !strings.Contains(output, "Status: updated") {
-		t.Fatalf("expected updated sync status, got: %s", output)
+	syncResp := runCLIJSONWithEnvOrFail[sliceSyncJSON](t, checkoutDir, env, "slice", "sync")
+	if syncResp.SliceID != sliceID || syncResp.Status != "updated" {
+		t.Fatalf("expected updated sync output, got: %+v", syncResp)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected sync to keep checkout in no-git mode, err=%v", err)
@@ -981,9 +976,9 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 		t.Fatalf("expected stale file removal for no-git sync, err=%v", err)
 	}
 
-	output = runCLIForSlice(checkoutDir, "slice", "sync")
-	if !strings.Contains(output, "Status: up to date") {
-		t.Fatalf("expected no-git sync to report up-to-date on repeat, got: %s", output)
+	repeatSyncResp := runCLIJSONWithEnvOrFail[sliceSyncJSON](t, checkoutDir, env, "slice", "sync")
+	if repeatSyncResp.Status != "up to date" {
+		t.Fatalf("expected no-git sync to report up-to-date on repeat, got: %+v", repeatSyncResp)
 	}
 }
 
@@ -1034,12 +1029,19 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
+	if checkoutResp.SliceID != sliceID || len(checkoutResp.Files) == 0 {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
-	if !strings.Contains(output, "apps (0 bytes)") {
-		t.Fatalf("expected apps folder in checkout output, got: %s", output)
+	foundApps := false
+	for _, file := range checkoutResp.Files {
+		if file.Path == "apps" && file.Size == 0 {
+			foundApps = true
+			break
+		}
+	}
+	if !foundApps {
+		t.Fatalf("expected apps folder in checkout output, got: %+v", checkoutResp)
 	}
 
 	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", "apps/readme.md")
@@ -1059,31 +1061,52 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, updatedSliceWorkdir, "slice", "checkout", sliceArg, "--files")
-	if !strings.Contains(output, "Commit: "+sliceCommit) {
-		t.Fatalf("expected latest slice commit in checkout, got: %s", output)
+	checkoutResp = runCLIJSONOrFail[sliceCheckoutJSON](t, updatedSliceWorkdir, "slice", "checkout", sliceArg, "--files")
+	if checkoutResp.Commit != sliceCommit {
+		t.Fatalf("expected latest slice commit in checkout, got: %+v", checkoutResp)
 	}
-	if !strings.Contains(output, "apps (0 bytes)") {
-		t.Fatalf("expected apps folder in slice checkout, got: %s", output)
+	foundApps = false
+	for _, file := range checkoutResp.Files {
+		if file.Path == "apps" && file.Size == 0 {
+			foundApps = true
+			break
+		}
+	}
+	if !foundApps {
+		t.Fatalf("expected apps folder in slice checkout, got: %+v", checkoutResp)
 	}
 
 	rootCheckoutArg := sliceIDArg("root_slice")
+	var rootCheckoutResp sliceCheckoutJSON
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		rootCheckoutDir := t.TempDir()
 		var err error
-		output, err = runCLIWithDirForTest(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--files")
+		output, err = runCLIWithDirForTest(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--files", "--json")
 		if err != nil {
 			return false, nil
 		}
-		return strings.Contains(output, "Commit: "+sliceCommit), nil
+		if err := json.Unmarshal([]byte(output), &rootCheckoutResp); err != nil {
+			return false, err
+		}
+		return rootCheckoutResp.Commit == sliceCommit, nil
 	}); err != nil {
 		t.Fatalf("expected root slice to promote latest commit (%s): %v\nOutput:\n%s", sliceCommit, err, output)
 	}
-	if !strings.Contains(output, "Commit: "+sliceCommit) {
-		t.Fatalf("expected root slice to promote latest commit, got: %s", output)
+	if rootCheckoutResp.Commit != sliceCommit {
+		t.Fatalf("expected root slice to promote latest commit, got: %+v", rootCheckoutResp)
 	}
-	if !strings.Contains(output, "apps (0 bytes)") || !strings.Contains(output, "services (0 bytes)") || !strings.Contains(output, "docs (0 bytes)") {
-		t.Fatalf("expected root folders in root checkout output, got: %s", output)
+	rootFoldersFound := map[string]bool{
+		"apps":     false,
+		"services": false,
+		"docs":     false,
+	}
+	for _, file := range rootCheckoutResp.Files {
+		if _, ok := rootFoldersFound[file.Path]; ok && file.Size == 0 {
+			rootFoldersFound[file.Path] = true
+		}
+	}
+	if !rootFoldersFound["apps"] || !rootFoldersFound["services"] || !rootFoldersFound["docs"] {
+		t.Fatalf("expected root folders in root checkout output, got: %+v", rootCheckoutResp)
 	}
 	if rootCommit == sliceCommit {
 		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
@@ -1191,9 +1214,13 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
-	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
-	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
-		t.Fatalf("expected home slice checkout output, got: %s", output)
+	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	var homeCheckoutResp sliceCheckoutJSON
+	if err := json.Unmarshal([]byte(output), &homeCheckoutResp); err != nil {
+		t.Fatalf("decode home checkout JSON: %v\nOutput:\n%s", err, output)
+	}
+	if homeCheckoutResp.SliceID != homeslice.IDForUsername(username) {
+		t.Fatalf("expected home slice checkout output, got: %+v", homeCheckoutResp)
 	}
 	output = runCLIForUser(checkoutDir, "changeset", "list", "--status", "merged")
 	if !strings.Contains(output, "write "+remoteFile) {

@@ -50,6 +50,13 @@ func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) stri
 	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
 
 	filePath := folderPath + "/README.md"
+	localPath := filepath.Join(rootWorkdir, filepath.FromSlash(filePath))
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		t.Fatalf("mkdir focused folder seed path: %v", err)
+	}
+	if err := os.WriteFile(localPath, []byte("seed focused folder\n"), 0o644); err != nil {
+		t.Fatalf("write focused folder seed file: %v", err)
+	}
 	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", "seed focused folder", "--files", filePath)
 	if createResp.ChangesetID == "" {
 		t.Fatalf("expected root changeset ID")
@@ -74,6 +81,13 @@ func TestSliceWorkflowCommands(t *testing.T) {
 
 	folderPath := fmt.Sprintf("apps/workflow-%d", time.Now().UnixNano())
 	filePath := folderPath + "/README.md"
+	localPath := filepath.Join(rootWorkdir, filepath.FromSlash(filePath))
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow seed path: %v", err)
+	}
+	if err := os.WriteFile(localPath, []byte("seed workflow folder\n"), 0o644); err != nil {
+		t.Fatalf("write workflow seed file: %v", err)
+	}
 	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", "seed workflow folder", "--files", filePath)
 	if createResp.ChangesetID == "" {
 		t.Fatalf("failed to create changeset")
@@ -104,12 +118,12 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	}
 
 	checkoutDir := t.TempDir()
-	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceSlug)
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "slice", "tree")
+	output := runCLIOrFail(t, checkoutDir, "slice", "tree")
 	if !strings.Contains(output, "README.md") {
 		t.Fatalf("expected slice tree output to include README.md, got: %s", output)
 	}
@@ -199,9 +213,9 @@ func TestChangesetCreateWorksWithoutGitCheckout(t *testing.T) {
 	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
 
 	checkoutDir := t.TempDir()
-	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
@@ -232,9 +246,9 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
 
 	checkoutDir := t.TempDir()
-	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 	if _, err := os.Stat(filepath.Join(checkoutDir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("expected default checkout to skip git metadata, err=%v", err)
@@ -276,9 +290,9 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
 
 	checkoutDir := t.TempDir()
-	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
 	targetPath := filepath.Join(checkoutDir, folderPath, "README.md")
@@ -290,7 +304,7 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 		t.Fatalf("write new file: %v", err)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "slice", "diff", "--name-only")
+	output := runCLIOrFail(t, checkoutDir, "slice", "diff", "--name-only")
 	if !strings.Contains(output, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) ||
 		!strings.Contains(output, filepath.ToSlash(filepath.Join(folderPath, "NEW.txt"))) {
 		t.Fatalf("expected no-git diff --name-only to include tracked delete and new file, got: %s", output)
@@ -358,12 +372,16 @@ func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	output, err := runCLIWithDirInputEnvLegacyUser(checkoutDir, "", workflowProcessEnv(t, env), true, workflowUsername(t), "slice", "checkout", sliceIDArg(sliceID))
+	output, err := runCLIWithDirInputEnvLegacyUser(checkoutDir, "", workflowProcessEnv(t, env), true, workflowUsername(t), "slice", "checkout", sliceIDArg(sliceID), "--json")
 	if err != nil {
 		t.Fatalf("checkout with dirty tracker failed: %v\nOutput:\n%s", err, output)
 	}
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	var checkoutResp sliceCheckoutJSON
+	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
+		t.Fatalf("decode checkout JSON: %v\nOutput:\n%s", err, output)
+	}
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
 	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
@@ -436,9 +454,9 @@ func TestNoGitStatusAndChangesetCreateWorkWithDirtyTracker(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	output := runCLIWithEnvOrFail(t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
 	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
@@ -506,9 +524,9 @@ func TestNoGitStatusFallsBackWhenDirtyTrackerStops(t *testing.T) {
 	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
 
 	checkoutDir := t.TempDir()
-	output := runCLIWithEnvOrFail(t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	if checkoutResp.SliceID != sliceID {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
 	statePath := filepath.Join(checkoutDir, ".gs", "dirty_state.json")
