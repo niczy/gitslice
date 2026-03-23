@@ -21,13 +21,16 @@ type workingTreeStatusEntry struct {
 }
 
 func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("slice status", flag.ExitOnError)
 	all := fs.Bool("all", false, "Show all changed paths")
 	limit := fs.Int("limit", defaultSliceStatusPathLimit, "Maximum changed paths to print")
 	remote := fs.Bool("remote", false, "Fetch remote head and tracked changeset status")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice status [--all] [--limit <n>] [--remote]")
+		log.Println("Usage: gs slice status [--all] [--limit <n>] [--remote] [--json]")
 		return
 	}
 	if *limit < 0 {
@@ -89,6 +92,59 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 		workingTreeState = "dirty"
 	}
 
+	displayLimit := *limit
+	if *all {
+		displayLimit = 0
+	}
+	printed := statusEntries
+	truncated := false
+	if displayLimit > 0 && len(statusEntries) > displayLimit {
+		printed = statusEntries[:displayLimit]
+		truncated = true
+	}
+
+	if jsonEnabled {
+		out := jsonSliceStatusOutput{
+			SliceID:                sliceID,
+			Mode:                   "no-git",
+			CheckoutBase:           localCommitHash,
+			RemoteQueried:          *remote,
+			RemoteHead:             remoteHead,
+			TrackedChangesetID:     trackedChangesetID,
+			TrackedChangesetStatus: trackedChangesetStatus,
+			WorkingTree:            workingTreeState,
+			Changes: jsonWorkingTreeSummary{
+				Added:    added,
+				Modified: modified,
+				Deleted:  deleted,
+			},
+			PathCount: len(statusEntries),
+			Truncated: truncated,
+			Paths:     make([]jsonWorkingTreePath, 0, len(printed)),
+		}
+		switch {
+		case !*remote:
+			out.SyncStatus = "skipped"
+			if trackedChangesetID != "" {
+				out.TrackedChangesetStatus = "skipped"
+			}
+		case localCommitHash == "":
+			out.SyncStatus = "unknown"
+		case behindRemote:
+			out.SyncStatus = "behind_remote_head"
+		default:
+			out.SyncStatus = "current"
+		}
+		for _, entry := range printed {
+			out.Paths = append(out.Paths, jsonWorkingTreePath{
+				Path:   entry.Path,
+				Status: entry.Status,
+			})
+		}
+		writeJSONOutput(out)
+		return
+	}
+
 	fmt.Printf("Slice: %s\n", sliceID)
 	fmt.Println("Mode: no-git")
 	if localCommitHash != "" {
@@ -125,15 +181,6 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 
 	if len(statusEntries) == 0 {
 		return
-	}
-
-	displayLimit := *limit
-	if *all {
-		displayLimit = 0
-	}
-	printed := statusEntries
-	if displayLimit > 0 && len(statusEntries) > displayLimit {
-		printed = statusEntries[:displayLimit]
 	}
 
 	fmt.Println("Paths:")

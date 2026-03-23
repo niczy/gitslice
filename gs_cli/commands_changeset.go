@@ -38,13 +38,16 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("changeset show", flag.ExitOnError)
 	snapshotVersion := fs.Int("snapshot", 0, "Show a specific snapshot version")
 	includePatches := fs.Bool("patches", false, "Include inline patch text when available")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs changeset show [<changeset-id>] [--snapshot <version>] [--patches]")
+		log.Println("Usage: gs changeset show [<changeset-id>] [--snapshot <version>] [--patches] [--json]")
 		return
 	}
 
@@ -65,6 +68,10 @@ func handleChangesetShow(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to show changeset: %v", err)
 	}
 
+	if jsonEnabled {
+		writeJSONOutput(buildChangesetReviewOutput(resp, *includePatches))
+		return
+	}
 	printChangesetReview(resp, *includePatches)
 }
 
@@ -75,13 +82,16 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("changeset create", flag.ExitOnError)
 	message := fs.String("message", "", "Changeset message")
 	base := fs.String("base", "", "Base commit hash")
 	files := fs.String("files", "", "Comma-separated file list")
 	author := fs.String("author", "user", "Author of the changeset")
 	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	modifiedFiles := []string{}
 	if *files != "" {
@@ -117,6 +127,11 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	}
 	if err := writeTrackedChangesetIDConfig(resp.GetChangesetId()); err != nil {
 		log.Printf("Warning: failed to track changeset ID locally: %v", err)
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(buildChangesetCreateOutput(resp, isUpdate, sliceID, modifiedFiles))
+		return
 	}
 
 	if isUpdate {
@@ -181,13 +196,19 @@ func resolveChangesetIDForCreate(explicit string) (string, bool, error) {
 }
 
 func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := flag.NewFlagSet("changeset review", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
+
 	changesetID, err := resolveChangesetIDForRead("")
-	switch len(args) {
+	switch fs.NArg() {
 	case 0:
 	case 1:
-		changesetID, err = resolveChangesetIDForRead(args[0])
+		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
 	default:
-		log.Println("Usage: gs changeset review [<changeset-id>]")
+		log.Println("Usage: gs changeset review [<changeset-id>] [--json]")
 		return
 	}
 	if err != nil {
@@ -200,16 +221,26 @@ func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to review changeset: %v", err)
 	}
 
+	if jsonEnabled {
+		writeJSONOutput(buildChangesetReviewOutput(resp, false))
+		return
+	}
 	printChangesetReview(resp, false)
 }
 
 func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		log.Println("Usage: gs changeset merge <changeset-id>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := flag.NewFlagSet("changeset merge", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
+
+	if fs.NArg() < 1 {
+		log.Println("Usage: gs changeset merge <changeset-id> [--json]")
 		return
 	}
 
-	req := &slicev1.MergeChangesetRequest{ChangesetId: args[0]}
+	req := &slicev1.MergeChangesetRequest{ChangesetId: fs.Arg(0)}
 	resp, err := cli.sliceClient.MergeChangeset(ctx, req)
 	if err != nil {
 		log.Fatalf("Failed to merge changeset: %v", err)
@@ -220,6 +251,10 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
+	if jsonEnabled {
+		writeJSONOutput(buildMergeOutput(resp))
+		return
+	}
 	printMergeResult(resp)
 }
 
@@ -246,11 +281,14 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("changeset list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "Maximum results")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	status := &stringFlag{}
 	fs.Var(status, "status", "Filter by status (pending, approved, rejected, merged)")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	statusFilter := slicev1.ChangesetStatus(-1)
 	if status.set {
@@ -283,6 +321,24 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 	sort.Slice(resp.Changesets, func(i, j int) bool {
 		return resp.Changesets[i].CreatedAt > resp.Changesets[j].CreatedAt
 	})
+
+	if jsonEnabled {
+		out := jsonChangesetListOutput{
+			SliceID:    sliceID,
+			Total:      len(resp.Changesets),
+			Changesets: make([]jsonChangesetListItem, 0, len(resp.Changesets)),
+		}
+		for _, cs := range resp.Changesets {
+			out.Changesets = append(out.Changesets, jsonChangesetListItem{
+				ChangesetID: cs.GetChangesetId(),
+				Status:      cs.GetStatus().String(),
+				Message:     cs.GetMessage(),
+				CreatedAt:   cs.GetCreatedAt(),
+			})
+		}
+		writeJSONOutput(out)
+		return
+	}
 
 	fmt.Printf("Found %d changeset(s) for slice %s\n", len(resp.Changesets), sliceID)
 	for _, cs := range resp.Changesets {
