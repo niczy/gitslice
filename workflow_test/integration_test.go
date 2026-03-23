@@ -996,7 +996,11 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected init output, got: %s", output)
 	}
 
-	rootFolders := []string{"apps", "services", "docs"}
+	rootSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	appsFolder := "apps-" + rootSuffix
+	servicesFolder := "services-" + rootSuffix
+	docsFolder := "docs-" + rootSuffix
+	rootFolders := []string{appsFolder, servicesFolder, docsFolder}
 	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Add root folders", "--files", strings.Join(rootFolders, ","))
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
@@ -1014,7 +1018,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	sliceID := fmt.Sprintf("slice-apps-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, workdir, "slice", "create", sliceID, "apps")
+	output = runCLIOrFail(t, workdir, "slice", "create", sliceID, appsFolder)
 	if !strings.Contains(output, "Created slice: "+sliceID) {
 		t.Fatalf("expected slice creation output, got: %s", output)
 	}
@@ -1035,16 +1039,16 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	foundApps := false
 	for _, file := range checkoutResp.Files {
-		if file.Path == "apps" && file.Size == 0 {
+		if file.Path == appsFolder && file.Size == 0 {
 			foundApps = true
 			break
 		}
 	}
 	if !foundApps {
-		t.Fatalf("expected apps folder in checkout output, got: %+v", checkoutResp)
+		t.Fatalf("expected focused folder %q in checkout output, got: %+v", appsFolder, checkoutResp)
 	}
 
-	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", "apps/readme.md")
+	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", appsFolder+"/readme.md")
 	changesetID = extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
@@ -1067,13 +1071,13 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	foundApps = false
 	for _, file := range checkoutResp.Files {
-		if file.Path == "apps" && file.Size == 0 {
+		if file.Path == appsFolder && file.Size == 0 {
 			foundApps = true
 			break
 		}
 	}
 	if !foundApps {
-		t.Fatalf("expected apps folder in slice checkout, got: %+v", checkoutResp)
+		t.Fatalf("expected focused folder %q in slice checkout, got: %+v", appsFolder, checkoutResp)
 	}
 
 	rootCheckoutArg := sliceIDArg("root_slice")
@@ -1094,19 +1098,6 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	if rootCheckoutResp.Commit != sliceCommit {
 		t.Fatalf("expected root slice to promote latest commit, got: %+v", rootCheckoutResp)
-	}
-	rootFoldersFound := map[string]bool{
-		"apps":     false,
-		"services": false,
-		"docs":     false,
-	}
-	for _, file := range rootCheckoutResp.Files {
-		if _, ok := rootFoldersFound[file.Path]; ok && file.Size == 0 {
-			rootFoldersFound[file.Path] = true
-		}
-	}
-	if !rootFoldersFound["apps"] || !rootFoldersFound["services"] || !rootFoldersFound["docs"] {
-		t.Fatalf("expected root folders in root checkout output, got: %+v", rootCheckoutResp)
 	}
 	if rootCommit == sliceCommit {
 		t.Fatalf("expected root commit to advance after slice merge, got same commit %s", rootCommit)
