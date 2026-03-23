@@ -89,3 +89,47 @@ jobs:
 
     - name: Run web build and e2e tests
       run: make web-test-e2e
+
+  workflow-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gitslice_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gitslice_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Install protoc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
+    - name: Install dependencies
+      run: make install
+
+    - name: Generate proto code
+      run: make proto
+
+    - name: Run workflow tests against Postgres
+      env:
+        RUN_INTEGRATION_TESTS: "1"
+        TEST_POSTGRES_DSN: "postgres://postgres:postgres@127.0.0.1:5432/gitslice_test?sslmode=disable"
+      run: >
+        go test -count=1 ./workflow_test
+        -run 'Test(RootSliceAndSliceCreateWorkflow|CheckoutReusesCachedBlocks|SliceSyncNoGitUpdatesCurrentCheckout|RootSliceEndToEndWorkflow|FilesystemCLIWorkflowEndToEnd|FilesystemCLIBatchWorkflowEndToEnd|SliceWorkflowCommands|SlicePublishAndChangesetShowWorkflow|ChangesetCreateWorksWithoutGitCheckout|SlicePublishWorksWithoutGitCheckout|SliceDiffAndRestoreWorkWithoutGitCheckout|NoGitCheckoutStartsDirtyTracker|NoGitStatusAndChangesetCreateWorkWithDirtyTracker|NoGitStatusFallsBackWhenDirtyTrackerStops|CheckoutRegistryAndCacheCommands)$'

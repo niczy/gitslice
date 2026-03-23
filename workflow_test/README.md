@@ -35,6 +35,8 @@ Run against Postgres:
 RUN_INTEGRATION_TESTS=1 TEST_POSTGRES_DSN=postgres://... go test -count=1 ./workflow_test
 ```
 
+GitHub Actions runs the package in the main `Build and Test` job, and a dedicated `workflow-postgres` job runs the stable core CLI workflow subset against Postgres-backed storage.
+
 Run the repo-wide Go suite including workflow tests:
 
 ```bash
