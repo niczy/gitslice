@@ -204,6 +204,7 @@ message ReviewChangesetResponse {
   repeated string warnings = 4;
   repeated file.v1.FileChangeRecord changes = 5;
   ChangesetSnapshotInfo snapshot = 6;
+  repeated ReviewIssue issues = 7;
 }
 
 message ListChangesetSnapshotsRequest {
@@ -244,17 +245,28 @@ message MergeChangesetResponse {
   string new_commit_hash = 2;
   string changeset_id = 3;
   repeated Conflict conflicts = 4;
+  string message = 5;
 }
 
 enum MergeStatus {
   MERGE_STATUS_SUCCESS = 0;
   MERGE_STATUS_CONFLICT = 1;
   MERGE_STATUS_ERROR = 2;
+  MERGE_STATUS_LOCKED = 3;
+  MERGE_STATUS_STALE_BASE = 4;
 }
 
 message Conflict {
   string file_id = 1;
   repeated string conflicting_slice_ids = 2;
+  ConflictType type = 3;
+  string message = 4;
+}
+
+enum ConflictType {
+  CONFLICT_TYPE_UNSPECIFIED = 0;
+  CONFLICT_TYPE_CONTENT = 1;
+  CONFLICT_TYPE_OWNERSHIP = 2;
 }
 
 message RebaseChangesetRequest {
@@ -325,6 +337,20 @@ enum ReviewStatus {
   READY_FOR_MERGE = 0;
   NEEDS_REBASE = 1;
   HAS_CONFLICTS = 2;
+}
+
+enum ReviewIssueType {
+  REVIEW_ISSUE_TYPE_UNSPECIFIED = 0;
+  REVIEW_ISSUE_TYPE_STALE_BASE = 1;
+  REVIEW_ISSUE_TYPE_CONTENT_CONFLICT = 2;
+  REVIEW_ISSUE_TYPE_OWNERSHIP_CONFLICT = 3;
+}
+
+message ReviewIssue {
+  ReviewIssueType type = 1;
+  string file_id = 2;
+  repeated string conflicting_slice_ids = 3;
+  string message = 4;
 }
 
 message CommitHistoryRequest {

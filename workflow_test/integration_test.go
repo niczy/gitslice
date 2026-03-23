@@ -2393,9 +2393,12 @@ func TestChangesetMergeRequiresCurrentBaseCommit(t *testing.T) {
 		t.Fatalf("expected NEEDS_REBASE, got %v", reviewResp.GetReviewStatus())
 	}
 
-	_, err = sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: createResp.GetChangesetId()})
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition for stale-base merge, got %v", err)
+	mergeResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("expected structured stale-base merge response, got %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("expected STALE_BASE status for stale-base merge, got %v", mergeResp.GetStatus())
 	}
 
 	rebaseResp, err := sliceClient.RebaseChangeset(ctx, &slicev1.RebaseChangesetRequest{ChangesetId: createResp.GetChangesetId()})

@@ -1298,12 +1298,15 @@ func TestMergeChangesetReturnsAbortedWhenSliceAlreadyLocked(t *testing.T) {
 	defer st.UnlockSliceAndFiles(ctx, slice.ID, []string{"other.txt"})
 
 	srv := newSliceServiceServer(st)
-	_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
-	if err == nil {
-		t.Fatal("expected MergeChangeset to fail when slice is already locked")
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("expected structured lock response, got error: %v", err)
 	}
-	if got := status.Code(err); got != codes.Aborted {
-		t.Fatalf("expected Aborted, got %v (%v)", got, err)
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_LOCKED {
+		t.Fatalf("expected LOCKED status, got %v", resp.GetStatus())
+	}
+	if !strings.Contains(resp.GetMessage(), "locked") {
+		t.Fatalf("expected lock message, got %q", resp.GetMessage())
 	}
 }
 
@@ -1339,10 +1342,14 @@ func TestMergeChangesetConcurrentSameSliceOneAborts(t *testing.T) {
 	blocking := newBlockingLockStorage(base)
 	srv := newSliceServiceServer(blocking)
 
-	resultCh := make(chan error, 1)
+	type mergeResult struct {
+		resp *slicev1.MergeChangesetResponse
+		err  error
+	}
+	resultCh := make(chan mergeResult, 1)
 	go func() {
-		_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs1.ID})
-		resultCh <- err
+		resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs1.ID})
+		resultCh <- mergeResult{resp: resp, err: err}
 	}()
 
 	select {
@@ -1351,17 +1358,21 @@ func TestMergeChangesetConcurrentSameSliceOneAborts(t *testing.T) {
 		t.Fatal("timed out waiting for first merge to acquire slice lock")
 	}
 
-	_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs2.ID})
-	if err == nil {
-		t.Fatal("expected second concurrent merge to fail")
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs2.ID})
+	if err != nil {
+		t.Fatalf("expected structured lock response for second merge, got error: %v", err)
 	}
-	if got := status.Code(err); got != codes.Aborted {
-		t.Fatalf("expected Aborted for second merge, got %v (%v)", got, err)
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_LOCKED {
+		t.Fatalf("expected LOCKED status for second merge, got %v", resp.GetStatus())
 	}
 
 	close(blocking.releaseFirstLock)
-	if err := <-resultCh; err != nil {
-		t.Fatalf("expected first merge to succeed after releasing lock, got %v", err)
+	first := <-resultCh
+	if first.err != nil {
+		t.Fatalf("expected first merge to succeed after releasing lock, got %v", first.err)
+	}
+	if first.resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected first merge success, got %v", first.resp.GetStatus())
 	}
 }
 
@@ -1406,10 +1417,14 @@ func TestMergeChangesetConcurrentOverlappingFilesOneAborts(t *testing.T) {
 	blocking := newBlockingLockStorage(base)
 	srv := newSliceServiceServer(blocking)
 
-	resultCh := make(chan error, 1)
+	type mergeResult struct {
+		resp *slicev1.MergeChangesetResponse
+		err  error
+	}
+	resultCh := make(chan mergeResult, 1)
 	go func() {
-		_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: csA.ID})
-		resultCh <- err
+		resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: csA.ID})
+		resultCh <- mergeResult{resp: resp, err: err}
 	}()
 
 	select {
@@ -1418,17 +1433,21 @@ func TestMergeChangesetConcurrentOverlappingFilesOneAborts(t *testing.T) {
 		t.Fatal("timed out waiting for overlapping merge to acquire file lock")
 	}
 
-	_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: csB.ID})
-	if err == nil {
-		t.Fatal("expected overlapping concurrent merge to fail")
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: csB.ID})
+	if err != nil {
+		t.Fatalf("expected structured lock response for overlapping merge, got error: %v", err)
 	}
-	if got := status.Code(err); got != codes.Aborted {
-		t.Fatalf("expected Aborted for overlapping merge, got %v (%v)", got, err)
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_LOCKED {
+		t.Fatalf("expected LOCKED status for overlapping merge, got %v", resp.GetStatus())
 	}
 
 	close(blocking.releaseFirstLock)
-	if err := <-resultCh; err != nil {
-		t.Fatalf("expected first overlapping merge to succeed after releasing lock, got %v", err)
+	first := <-resultCh
+	if first.err != nil {
+		t.Fatalf("expected first overlapping merge to succeed after releasing lock, got %v", first.err)
+	}
+	if first.resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected first overlapping merge success, got %v", first.resp.GetStatus())
 	}
 }
 
@@ -1622,6 +1641,9 @@ func TestReviewChangesetMarksStaleBaseAsNeedsRebase(t *testing.T) {
 	if len(resp.GetWarnings()) == 0 || !strings.Contains(resp.GetWarnings()[0], "stale") {
 		t.Fatalf("expected stale-base warning, got %#v", resp.GetWarnings())
 	}
+	if len(resp.GetIssues()) == 0 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE {
+		t.Fatalf("expected stale-base issue, got %#v", resp.GetIssues())
+	}
 }
 
 func TestMergeChangesetRejectsStaleBase(t *testing.T) {
@@ -1654,12 +1676,131 @@ func TestMergeChangesetRejectsStaleBase(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(st)
-	_, err = srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
-	if err == nil {
-		t.Fatal("expected MergeChangeset to reject stale base")
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("expected structured stale-base response, got error: %v", err)
 	}
-	if got := status.Code(err); got != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %v (%v)", got, err)
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("expected STALE_BASE status, got %v", resp.GetStatus())
+	}
+	if !strings.Contains(resp.GetMessage(), "stale") {
+		t.Fatalf("expected stale-base message, got %q", resp.GetMessage())
+	}
+}
+
+func TestReviewChangesetReportsContentConflictIssue(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	sliceA := &models.Slice{ID: "slice-review-conflict-a", Name: "slice-review-conflict-a", Owners: []string{"tester"}, CreatedBy: "tester"}
+	sliceB := &models.Slice{ID: "slice-review-conflict-b", Name: "slice-review-conflict-b", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+
+	filePath := "README.md"
+	for _, setup := range []struct {
+		sliceID string
+		content string
+	}{
+		{sliceA.ID, "alpha\n"},
+		{sliceB.ID, "beta\n"},
+	} {
+		hash := mustWriteSliceManifest(t, ctx, st, setup.sliceID, filePath, []byte(setup.content))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       fmt.Sprintf("%s:%s", setup.sliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: setup.sliceID,
+			Hash:     hash,
+			Size:     int64(len(setup.content)),
+		}); err != nil {
+			t.Fatalf("failed to add entry for %s: %v", setup.sliceID, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, setup.sliceID); err != nil {
+			t.Fatalf("failed to add file to %s: %v", setup.sliceID, err)
+		}
+	}
+
+	cs := &models.Changeset{
+		ID:            "cs-review-content-conflict",
+		SliceID:       sliceA.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if resp.GetReviewStatus() != slicev1.ReviewStatus_HAS_CONFLICTS {
+		t.Fatalf("expected HAS_CONFLICTS, got %v", resp.GetReviewStatus())
+	}
+	if len(resp.GetIssues()) == 0 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_CONTENT_CONFLICT {
+		t.Fatalf("expected content-conflict issue, got %#v", resp.GetIssues())
+	}
+}
+
+func TestReviewChangesetReportsOwnershipIssueWithoutBlockingMerge(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	sliceA := &models.Slice{ID: "slice-review-ownership-a", Name: "slice-review-ownership-a", Owners: []string{"tester"}, CreatedBy: "tester"}
+	sliceB := &models.Slice{ID: "slice-review-ownership-b", Name: "slice-review-ownership-b", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+
+	filePath := "README.md"
+	for _, sliceID := range []string{sliceA.ID, sliceB.ID} {
+		hash := mustWriteSliceManifest(t, ctx, st, sliceID, filePath, []byte("shared\n"))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       fmt.Sprintf("%s:%s", sliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: sliceID,
+			Hash:     hash,
+			Size:     int64(len("shared\n")),
+		}); err != nil {
+			t.Fatalf("failed to add entry for %s: %v", sliceID, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+			t.Fatalf("failed to add file to %s: %v", sliceID, err)
+		}
+	}
+
+	cs := &models.Changeset{
+		ID:            "cs-review-ownership",
+		SliceID:       sliceA.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if resp.GetReviewStatus() != slicev1.ReviewStatus_READY_FOR_MERGE {
+		t.Fatalf("expected READY_FOR_MERGE, got %v", resp.GetReviewStatus())
+	}
+	if len(resp.GetIssues()) == 0 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_OWNERSHIP_CONFLICT {
+		t.Fatalf("expected ownership issue, got %#v", resp.GetIssues())
 	}
 }
 
