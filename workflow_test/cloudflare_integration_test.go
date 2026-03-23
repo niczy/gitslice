@@ -27,7 +27,7 @@ const (
 func TestAgentSessionCloudflareRuntimeBridgeIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	ctx = withTestUser(ctx)
+	ctx = withWorkflowUser(t, ctx)
 
 	fakeControl := newFakeCloudflareControlPlane()
 	server := httptest.NewServer(fakeControl)
@@ -55,7 +55,7 @@ func TestAgentSessionCloudflareRuntimeBridgeIntegration(t *testing.T) {
 			"container_class": "sandbox",
 			"instance_type":   "basic",
 		},
-		CreatedBy: testUsername,
+		CreatedBy: workflowUsername(t),
 	})
 	if err != nil {
 		t.Fatalf("CreateEnvironment failed: %v", err)
@@ -66,8 +66,8 @@ func TestAgentSessionCloudflareRuntimeBridgeIntegration(t *testing.T) {
 		ID:        sliceID,
 		Name:      "Agent Cloudflare",
 		Files:     []string{},
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -129,7 +129,7 @@ func createAgentSessionWithEnvironmentViaHTTP(t *testing.T, sliceID, environment
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "User "+testUsername)
+	req.Header.Set("Authorization", "User "+workflowUsername(t))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

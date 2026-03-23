@@ -34,7 +34,7 @@ func TestCheckoutSliceNotFound(t *testing.T) {
 	workdir := t.TempDir()
 	sliceArg := sliceIDArg("nonexistent-slice")
 
-	_, err := runCLIWithDir(workdir, "slice", "checkout", sliceArg)
+	_, err := runCLIWithDirForTest(t, workdir, "slice", "checkout", sliceArg)
 	if err == nil {
 		t.Fatalf("expected checkout to fail for missing slice")
 	}
@@ -84,14 +84,14 @@ func TestCheckoutSlicePrintsFilesWhenRequested(t *testing.T) {
 		t.Fatalf("test storage is not initialized")
 	}
 
-	ctx := withTestUser(context.Background())
+	ctx := withWorkflowUser(t, context.Background())
 	workdir := t.TempDir()
 	sliceID := "checkout-files-flag"
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      sliceID,
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("create slice: %v", err)
 	}
@@ -128,13 +128,13 @@ func TestCheckoutSliceHonorsFileMetadata(t *testing.T) {
 		t.Fatalf("test storage is not initialized")
 	}
 
-	ctx := withTestUser(context.Background())
+	ctx := withWorkflowUser(t, context.Background())
 	sliceID := "checkout-metadata-slice"
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
 		ID:        sliceID,
 		Name:      sliceID,
-		Owners:    []string{testUsername},
-		CreatedBy: testUsername,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
 	}); err != nil {
 		t.Fatalf("create slice: %v", err)
 	}

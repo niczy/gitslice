@@ -228,11 +228,12 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = withWorkflowUser(t, ctx)
 
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: sliceA, Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceA, Name: sliceA, Files: []string{fileID}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create base slice: %v", err)
 	}
-	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: sliceB, Files: []string{fileID}, Owners: []string{testUsername}, CreatedBy: testUsername}); err != nil {
+	if err := testStorage.CreateSlice(ctx, &models.Slice{ID: sliceB, Name: sliceB, Files: []string{fileID}, Owners: []string{workflowUsername(t)}, CreatedBy: workflowUsername(t)}); err != nil {
 		t.Fatalf("failed to create conflicting slice: %v", err)
 	}
 
@@ -261,7 +262,7 @@ func createConflictSetupWithSlices(t *testing.T) (string, string, string, string
 
 	workdir := t.TempDir()
 	sliceArg := sliceIDArg(sliceA)
-	if _, err := runCLIWithDir(workdir, "init", sliceArg); err != nil {
+	if _, err := runCLIWithDirForTest(t, workdir, "init", sliceArg); err != nil {
 		t.Fatalf("failed to init working dir: %v", err)
 	}
 

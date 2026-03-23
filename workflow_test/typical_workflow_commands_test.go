@@ -347,7 +347,7 @@ func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	output, err := runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "checkout", sliceIDArg(sliceID))
+	output, err := runCLIWithDirInputEnvLegacyUser(checkoutDir, "", workflowProcessEnv(t, env), true, workflowUsername(t), "slice", "checkout", sliceIDArg(sliceID))
 	if err != nil {
 		t.Fatalf("checkout with dirty tracker failed: %v\nOutput:\n%s", err, output)
 	}
@@ -394,7 +394,7 @@ func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
 		t.Fatalf("dirty tracker never recorded local changes: %v", err)
 	}
 
-	output, err = runCLIWithDirInputEnv(checkoutDir, "", env, "slice", "restore")
+	output, err = runCLIWithDirInputEnvLegacyUser(checkoutDir, "", workflowProcessEnv(t, env), true, workflowUsername(t), "slice", "restore")
 	if err != nil {
 		t.Fatalf("restore with dirty tracker failed: %v\nOutput:\n%s", err, output)
 	}
