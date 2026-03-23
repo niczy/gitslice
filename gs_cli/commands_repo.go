@@ -17,6 +17,8 @@ func handleRepoCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	switch args[0] {
+	case "ensure":
+		handleRepoEnsure(ctx, cli, args[1:])
 	case "import":
 		handleRepoImport(ctx, cli, args[1:])
 	case "list":

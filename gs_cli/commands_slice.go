@@ -29,6 +29,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	switch args[0] {
 	case "list":
 		handleSliceList(ctx, cli, args[1:])
+	case "ensure":
+		handleSliceEnsure(ctx, cli, args[1:])
 	case "create":
 		handleSliceCreate(ctx, cli, args[1:])
 	case "checkout", "clone":

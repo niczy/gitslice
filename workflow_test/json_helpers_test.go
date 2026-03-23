@@ -14,6 +14,13 @@ type sliceCreateJSON struct {
 	Slug    string `json:"slug"`
 }
 
+type sliceEnsureJSON struct {
+	Created bool   `json:"created"`
+	SliceID string `json:"slice_id"`
+	Slug    string `json:"slug"`
+	Status  string `json:"status"`
+}
+
 type sliceCheckoutJSON struct {
 	SliceID   string `json:"slice_id"`
 	Commit    string `json:"commit"`
@@ -113,6 +120,15 @@ type repoBindingJSON struct {
 }
 
 type repoImportJSON struct {
+	Binding      repoBindingJSON `json:"binding"`
+	CommitHash   string          `json:"commit_hash"`
+	RemoteCommit string          `json:"remote_commit"`
+	FileCount    int32           `json:"file_count"`
+}
+
+type repoEnsureJSON struct {
+	Created      bool            `json:"created"`
+	Updated      bool            `json:"updated"`
 	Binding      repoBindingJSON `json:"binding"`
 	CommitHash   string          `json:"commit_hash"`
 	RemoteCommit string          `json:"remote_commit"`
@@ -265,4 +281,40 @@ type cliErrorJSON struct {
 	Message         string `json:"message"`
 	Retryable       bool   `json:"retryable"`
 	SuggestedAction string `json:"suggested_action"`
+}
+
+type contextJSON struct {
+	CurrentDir  string `json:"current_dir"`
+	HomeSliceID string `json:"home_slice_id"`
+	Auth        struct {
+		Source            string `json:"source"`
+		Username          string `json:"username"`
+		StoredCredentials bool   `json:"stored_credentials"`
+	} `json:"auth"`
+	Checkout struct {
+		Present      bool   `json:"present"`
+		Error        string `json:"error"`
+		SliceID      string `json:"slice_id"`
+		Mode         string `json:"mode"`
+		CheckoutBase string `json:"checkout_base"`
+		RemoteHead   string `json:"remote_head"`
+		SyncStatus   string `json:"sync_status"`
+		WorkingTree  string `json:"working_tree"`
+		Changes      struct {
+			Added    int `json:"added"`
+			Modified int `json:"modified"`
+			Deleted  int `json:"deleted"`
+		} `json:"changes"`
+	} `json:"checkout"`
+	TrackedChange struct {
+		Present      bool   `json:"present"`
+		ChangesetID  string `json:"changeset_id"`
+		ReviewStatus string `json:"review_status"`
+		Error        string `json:"error"`
+	} `json:"tracked_changeset"`
+	RepoBindings []struct {
+		Path        string `json:"path"`
+		RepoURL     string `json:"repo_url"`
+		PushEnabled bool   `json:"push_enabled"`
+	} `json:"repo_bindings"`
 }

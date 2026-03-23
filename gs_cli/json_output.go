@@ -98,6 +98,15 @@ type jsonSliceCreateOutput struct {
 	Status      string `json:"status"`
 }
 
+type jsonSliceEnsureOutput struct {
+	Created     bool   `json:"created"`
+	Name        string `json:"name"`
+	SliceID     string `json:"slice_id"`
+	Slug        string `json:"slug,omitempty"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status"`
+}
+
 type jsonSliceCheckoutFile struct {
 	Path          string `json:"path"`
 	Size          int64  `json:"size"`
@@ -212,6 +221,15 @@ type jsonRepoUnlinkOutput struct {
 	Status string `json:"status"`
 }
 
+type jsonRepoEnsureOutput struct {
+	Created      bool            `json:"created"`
+	Updated      bool            `json:"updated"`
+	Binding      jsonRepoBinding `json:"binding"`
+	CommitHash   string          `json:"commit_hash,omitempty"`
+	RemoteCommit string          `json:"remote_commit,omitempty"`
+	FileCount    int32           `json:"file_count,omitempty"`
+}
+
 type jsonCacheCheckoutRecord struct {
 	Path       string `json:"path"`
 	SliceID    string `json:"slice_id"`
@@ -294,6 +312,34 @@ type jsonDoctorOutput struct {
 	Services jsonDoctorServicesOutput `json:"services"`
 	Cache    jsonDoctorCacheOutput    `json:"cache"`
 	Checkout jsonDoctorCheckoutOutput `json:"checkout"`
+}
+
+type jsonContextCheckoutOutput struct {
+	Present      bool                   `json:"present"`
+	Error        string                 `json:"error,omitempty"`
+	SliceID      string                 `json:"slice_id,omitempty"`
+	Mode         string                 `json:"mode,omitempty"`
+	CheckoutBase string                 `json:"checkout_base,omitempty"`
+	RemoteHead   string                 `json:"remote_head,omitempty"`
+	SyncStatus   string                 `json:"sync_status,omitempty"`
+	WorkingTree  string                 `json:"working_tree,omitempty"`
+	Changes      jsonWorkingTreeSummary `json:"changes,omitempty"`
+}
+
+type jsonContextChangesetOutput struct {
+	Present      bool   `json:"present"`
+	ChangesetID  string `json:"changeset_id,omitempty"`
+	ReviewStatus string `json:"review_status,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+type jsonContextOutput struct {
+	CurrentDir    string                     `json:"current_dir"`
+	Auth          jsonDoctorAuthOutput       `json:"auth"`
+	HomeSliceID   string                     `json:"home_slice_id,omitempty"`
+	Checkout      jsonContextCheckoutOutput  `json:"checkout"`
+	TrackedChange jsonContextChangesetOutput `json:"tracked_changeset"`
+	RepoBindings  []jsonRepoBinding          `json:"repo_bindings,omitempty"`
 }
 
 type jsonConflictInfo struct {
