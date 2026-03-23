@@ -186,9 +186,14 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	_ = runCLIOrFail(t, workdir, "init", sliceIDArg(sliceID))
 
-	publishPreview := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish", "--review-only", "--message", "publish workflow", "--files", "publish.txt")
+	publishFile := filepath.Join(workdir, "publish.txt")
+	if err := os.WriteFile(publishFile, []byte("publish workflow\n"), 0o644); err != nil {
+		t.Fatalf("write publish workflow file: %v", err)
+	}
+
+	publishPreview := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish", "--review-only", "--message", "publish workflow")
 	changesetID := publishPreview.Changeset.ChangesetID
-	if changesetID == "" || !publishPreview.ReviewOnly || publishPreview.Review.ChangesetID != changesetID {
+	if changesetID == "" || !publishPreview.ReviewOnly || publishPreview.Review.ChangesetID != changesetID || publishPreview.ReusedExisting {
 		t.Fatalf("expected review output in publish command, got: %+v", publishPreview)
 	}
 
@@ -197,8 +202,14 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 		t.Fatalf("expected tracked changeset show output, got: %+v", showResp)
 	}
 
-	publishResp := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish", "--files", "publish.txt")
-	if publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
+	restoreOutput := runCLIOrFail(t, workdir, "slice", "restore")
+	if !strings.Contains(restoreOutput, "Restore complete.") &&
+		!strings.Contains(restoreOutput, "Removed new paths: 1") {
+		t.Fatalf("expected restore output before clean publish, got: %s", restoreOutput)
+	}
+
+	publishResp := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish")
+	if !publishResp.ReusedExisting || publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
 		t.Fatalf("expected publish merge success, got: %+v", publishResp)
 	}
 

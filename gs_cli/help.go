@@ -40,7 +40,7 @@ func printSliceHelp() {
 	fmt.Println("  status    Show the current slice checkout status (local by default; add --remote for remote head)")
 	fmt.Println("  pull      Alias for sync")
 	fmt.Println("  sync      Sync the current checked out slice in place")
-	fmt.Println("  publish   Create/update the tracked changeset and merge it")
+	fmt.Println("  publish   Create/update or reuse the tracked changeset and merge it")
 	fmt.Println("  tree      Print a slice file tree")
 	fmt.Println("  list-files Alias for tree")
 	fmt.Println("  diff      Show local changes for the current slice checkout (--summary, --stat, --name-only)")

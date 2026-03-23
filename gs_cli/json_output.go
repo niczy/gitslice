@@ -165,10 +165,11 @@ type jsonSliceDeleteOutput struct {
 }
 
 type jsonSlicePublishOutput struct {
-	Changeset  jsonChangesetCreateOutput `json:"changeset"`
-	Review     jsonChangesetReviewOutput `json:"review"`
-	ReviewOnly bool                      `json:"review_only"`
-	Merge      *jsonMergeOutput          `json:"merge,omitempty"`
+	Changeset      jsonChangesetCreateOutput `json:"changeset"`
+	Review         jsonChangesetReviewOutput `json:"review"`
+	ReviewOnly     bool                      `json:"review_only"`
+	ReusedExisting bool                      `json:"reused_existing,omitempty"`
+	Merge          *jsonMergeOutput          `json:"merge,omitempty"`
 }
 
 type jsonRepoBinding struct {
@@ -395,6 +396,20 @@ func buildChangesetCreateOutput(resp *slicev1.CreateChangesetResponse, updated b
 		Updated:       updated,
 		SliceID:       sliceID,
 		ModifiedFiles: append([]string(nil), modifiedFiles...),
+	}
+}
+
+func buildChangesetOutputFromInfo(info *slicev1.ChangesetInfo) jsonChangesetCreateOutput {
+	if info == nil {
+		return jsonChangesetCreateOutput{}
+	}
+	return jsonChangesetCreateOutput{
+		ChangesetID:   info.GetChangesetId(),
+		ChangesetHash: info.GetChangesetHash(),
+		Status:        info.GetStatus().String(),
+		Updated:       true,
+		SliceID:       info.GetSliceId(),
+		ModifiedFiles: append([]string(nil), info.GetModifiedFiles()...),
 	}
 }
 

@@ -89,6 +89,12 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
+	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
+	if err != nil {
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve tracked changeset ID: %v", err)
+		return
+	}
+
 	modifiedFiles := []string{}
 	if *files != "" {
 		modifiedFiles = append(modifiedFiles, splitAndTrim(*files, ",")...)
@@ -98,84 +104,102 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("SLICE_PUBLISH_FAILED", false, "gs slice diff", "Cannot publish slice: %v", err)
 	}
-	if len(modifiedFiles) == 0 {
+	if len(modifiedFiles) == 0 && resolvedChangesetID == "" {
 		commandFatal("NO_LOCAL_CHANGES", "No modified files specified and working tree is clean", false, "Edit files or pass --files explicitly")
 	}
 
-	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
-	if err != nil {
-		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve tracked changeset ID: %v", err)
-		return
+	reusedExisting := false
+	var changesetOutput jsonChangesetCreateOutput
+	var reviewResp *slicev1.ReviewChangesetResponse
+	targetChangesetID := resolvedChangesetID
+
+	if len(modifiedFiles) == 0 {
+		reusedExisting = true
+		reviewResp, err = cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+			ChangesetId: targetChangesetID,
+		})
+		if err != nil {
+			commandFatalf("CHANGESET_REVIEW_FAILED", true, "", "Failed to review changeset: %v", err)
+		}
+		changesetOutput = buildChangesetOutputFromInfo(reviewResp.GetChangeset())
+	} else {
+		createResp, createErr := cli.sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+			SliceId:        sliceID,
+			BaseCommitHash: strings.TrimSpace(*base),
+			ModifiedFiles:  modifiedFiles,
+			Author:         strings.TrimSpace(*author),
+			Message:        strings.TrimSpace(*message),
+			ChangesetId:    resolvedChangesetID,
+		})
+		if createErr != nil {
+			commandFatalf("CHANGESET_CREATE_FAILED", true, "", "Failed to create changeset: %v", createErr)
+		}
+		targetChangesetID = createResp.GetChangesetId()
+		if err := writeTrackedChangesetIDConfig(targetChangesetID); err != nil {
+			log.Printf("Warning: failed to track changeset ID locally: %v", err)
+		}
+		reviewResp, err = cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+			ChangesetId: targetChangesetID,
+		})
+		if err != nil {
+			commandFatalf("CHANGESET_REVIEW_FAILED", true, "", "Failed to review changeset: %v", err)
+		}
+		changesetOutput = buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles)
 	}
 
-	createResp, err := cli.sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
-		SliceId:        sliceID,
-		BaseCommitHash: strings.TrimSpace(*base),
-		ModifiedFiles:  modifiedFiles,
-		Author:         strings.TrimSpace(*author),
-		Message:        strings.TrimSpace(*message),
-		ChangesetId:    resolvedChangesetID,
-	})
-	if err != nil {
-		commandFatalf("CHANGESET_CREATE_FAILED", true, "", "Failed to create changeset: %v", err)
-	}
-	if err := writeTrackedChangesetIDConfig(createResp.GetChangesetId()); err != nil {
-		log.Printf("Warning: failed to track changeset ID locally: %v", err)
-	}
-
-	reviewResp, err := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
-		ChangesetId: createResp.GetChangesetId(),
-	})
-	if err != nil {
-		commandFatalf("CHANGESET_REVIEW_FAILED", true, "", "Failed to review changeset: %v", err)
-	}
 	if *reviewOnly || *noMerge {
 		if jsonEnabled {
 			writeJSONOutput(jsonSlicePublishOutput{
-				Changeset:  buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles),
-				Review:     buildChangesetReviewOutput(reviewResp, false),
-				ReviewOnly: true,
+				Changeset:      changesetOutput,
+				Review:         buildChangesetReviewOutput(reviewResp, false),
+				ReviewOnly:     true,
+				ReusedExisting: reusedExisting,
 			})
 			return
 		}
-		if isUpdate {
-			fmt.Printf("Updated changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+		if reusedExisting {
+			fmt.Printf("Reusing tracked changeset %s (hash: %s)\n", changesetOutput.ChangesetID, changesetOutput.ChangesetHash)
+		} else if isUpdate {
+			fmt.Printf("Updated changeset %s (hash: %s)\n", changesetOutput.ChangesetID, changesetOutput.ChangesetHash)
 		} else {
-			fmt.Printf("Created changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+			fmt.Printf("Created changeset %s (hash: %s)\n", changesetOutput.ChangesetID, changesetOutput.ChangesetHash)
 		}
-		fmt.Printf("Status: %s\n", createResp.GetStatus().String())
+		fmt.Printf("Status: %s\n", changesetOutput.Status)
 		printChangesetReview(reviewResp, false)
 		return
 	}
 
 	mergeResp, err := cli.sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{
-		ChangesetId: createResp.GetChangesetId(),
+		ChangesetId: targetChangesetID,
 	})
 	if err != nil {
 		commandFatalf("CHANGESET_MERGE_FAILED", true, "gs slice sync", "Failed to merge changeset: %v", err)
 	}
 	if mergeResp.GetStatus() == slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
-		if err := clearTrackedChangesetIDIfMatches(createResp.GetChangesetId()); err != nil {
+		if err := clearTrackedChangesetIDIfMatches(targetChangesetID); err != nil {
 			log.Printf("Warning: failed to clear tracked changeset ID: %v", err)
 		}
 	}
 
 	if jsonEnabled {
 		writeJSONOutput(jsonSlicePublishOutput{
-			Changeset:  buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles),
-			Review:     buildChangesetReviewOutput(reviewResp, false),
-			ReviewOnly: false,
-			Merge:      buildMergeOutput(mergeResp),
+			Changeset:      changesetOutput,
+			Review:         buildChangesetReviewOutput(reviewResp, false),
+			ReviewOnly:     false,
+			ReusedExisting: reusedExisting,
+			Merge:          buildMergeOutput(mergeResp),
 		})
 		return
 	}
 
-	if isUpdate {
-		fmt.Printf("Updated changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+	if reusedExisting {
+		fmt.Printf("Reusing tracked changeset %s (hash: %s)\n", changesetOutput.ChangesetID, changesetOutput.ChangesetHash)
+	} else if isUpdate {
+		fmt.Printf("Updated changeset %s (hash: %s)\n", changesetOutput.ChangesetID, changesetOutput.ChangesetHash)
 	} else {
-		fmt.Printf("Created changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+		fmt.Printf("Created changeset %s (hash: %s)\n", changesetOutput.ChangesetID, changesetOutput.ChangesetHash)
 	}
-	fmt.Printf("Status: %s\n", createResp.GetStatus().String())
+	fmt.Printf("Status: %s\n", changesetOutput.Status)
 	printChangesetReview(reviewResp, false)
 	printMergeResult(mergeResp)
 }
