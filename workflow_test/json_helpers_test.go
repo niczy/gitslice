@@ -14,6 +14,27 @@ type sliceCreateJSON struct {
 	Slug    string `json:"slug"`
 }
 
+type sliceCheckoutJSON struct {
+	SliceID   string `json:"slice_id"`
+	Commit    string `json:"commit"`
+	FileCount int    `json:"file_count"`
+	CacheHits int64  `json:"cache_hits"`
+	Files     []struct {
+		Path          string `json:"path"`
+		Size          int64  `json:"size"`
+		Executable    bool   `json:"executable"`
+		SymlinkTarget string `json:"symlink_target"`
+	} `json:"files"`
+}
+
+type sliceSyncJSON struct {
+	SliceID   string `json:"slice_id"`
+	Commit    string `json:"commit"`
+	FileCount int    `json:"file_count"`
+	Status    string `json:"status"`
+	CacheHits int64  `json:"cache_hits"`
+}
+
 type sliceListJSON struct {
 	Total  int `json:"total"`
 	Slices []struct {

@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,9 +66,13 @@ func TestCheckoutRegistryAndCacheCommands(t *testing.T) {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
 
-	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username))
-	if !strings.Contains(output, "Checked out slice: "+homeslice.IDForUsername(username)) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	var checkoutResp sliceCheckoutJSON
+	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
+		t.Fatalf("decode checkout JSON: %v\nOutput:\n%s", err, output)
+	}
+	if checkoutResp.SliceID != homeslice.IDForUsername(username) {
+		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
 
 	output = runCLIForUser("", "slice", "checkouts")

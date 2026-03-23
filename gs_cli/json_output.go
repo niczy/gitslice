@@ -97,6 +97,29 @@ type jsonSliceCreateOutput struct {
 	Status      string `json:"status"`
 }
 
+type jsonSliceCheckoutFile struct {
+	Path          string `json:"path"`
+	Size          int64  `json:"size"`
+	Executable    bool   `json:"executable,omitempty"`
+	SymlinkTarget string `json:"symlink_target,omitempty"`
+}
+
+type jsonSliceCheckoutOutput struct {
+	SliceID   string                  `json:"slice_id"`
+	Commit    string                  `json:"commit"`
+	FileCount int                     `json:"file_count"`
+	CacheHits int64                   `json:"cache_hits"`
+	Files     []jsonSliceCheckoutFile `json:"files,omitempty"`
+}
+
+type jsonSliceSyncOutput struct {
+	SliceID   string `json:"slice_id"`
+	Commit    string `json:"commit"`
+	FileCount int    `json:"file_count"`
+	Status    string `json:"status"`
+	CacheHits int64  `json:"cache_hits"`
+}
+
 type jsonWorkingTreeSummary struct {
 	Added    int `json:"added"`
 	Modified int `json:"modified"`
@@ -267,4 +290,46 @@ func buildSliceInfoOutput(slice *adminv1.SliceInfo) jsonSliceInfo {
 		FileCount:   slice.GetFileCount(),
 		UpdatedAt:   slice.GetUpdatedAt(),
 	}
+}
+
+func buildSliceCheckoutOutput(sliceID string, result *checkoutFetchResult, includeFiles bool) jsonSliceCheckoutOutput {
+	output := jsonSliceCheckoutOutput{
+		SliceID: sliceID,
+	}
+	if result == nil {
+		return output
+	}
+	if result.Manifest != nil {
+		output.Commit = result.Manifest.GetCommitHash()
+		output.FileCount = len(result.Manifest.GetFileMetadata())
+		if includeFiles && len(result.Manifest.GetFileMetadata()) > 0 {
+			output.Files = make([]jsonSliceCheckoutFile, 0, len(result.Manifest.GetFileMetadata()))
+			for _, file := range result.Manifest.GetFileMetadata() {
+				output.Files = append(output.Files, jsonSliceCheckoutFile{
+					Path:          file.GetPath(),
+					Size:          file.GetSize(),
+					Executable:    file.GetExecutable(),
+					SymlinkTarget: file.GetSymlinkTarget(),
+				})
+			}
+		}
+	}
+	output.CacheHits = result.Materialized.CacheHits
+	return output
+}
+
+func buildSliceSyncOutput(sliceID, syncStatus string, result *checkoutFetchResult) jsonSliceSyncOutput {
+	output := jsonSliceSyncOutput{
+		SliceID: sliceID,
+		Status:  syncStatus,
+	}
+	if result == nil {
+		return output
+	}
+	if result.Manifest != nil {
+		output.Commit = result.Manifest.GetCommitHash()
+		output.FileCount = len(result.Manifest.GetFileMetadata())
+	}
+	output.CacheHits = result.Materialized.CacheHits
+	return output
 }

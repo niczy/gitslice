@@ -14,9 +14,9 @@ func TestSliceCheckoutByID(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	if resp.SliceID != sliceID {
+		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
 }
 

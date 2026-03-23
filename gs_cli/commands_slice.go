@@ -123,8 +123,9 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files]")
+		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--json]")
 		return
 	}
 
@@ -137,7 +138,9 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args[1:])
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -169,6 +172,14 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to start dirty tracker: %v", err)
 	}
+	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
+		log.Printf("Warning: failed to register checkout path: %v", err)
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(buildSliceCheckoutOutput(sliceID, checkoutResult, *showFiles))
+		return
+	}
 
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
@@ -185,18 +196,17 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if checkoutResult.Cache != nil {
 		fmt.Printf("Cache hits: %d\n", checkoutResult.Materialized.CacheHits)
 	}
-
-	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
-		log.Printf("Warning: failed to register checkout path: %v", err)
-	}
 }
 
 func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("slice sync", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to sync to")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice sync [--commit <commit-hash>]")
+		log.Println("Usage: gs slice sync [--commit <commit-hash>] [--json]")
 		return
 	}
 
@@ -239,6 +249,14 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to restart dirty tracker: %v", err)
 	}
+	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
+		log.Printf("Warning: failed to update checkout registry: %v", err)
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(buildSliceSyncOutput(sliceID, status, checkoutResult))
+		return
+	}
 
 	fmt.Printf("Synced slice: %s\n", sliceID)
 	fmt.Printf("Commit: %s\n", checkoutResult.Manifest.CommitHash)
@@ -246,10 +264,6 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Status: %s\n", status)
 	if checkoutResult.Cache != nil {
 		fmt.Printf("Cache hits: %d\n", checkoutResult.Materialized.CacheHits)
-	}
-
-	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
-		log.Printf("Warning: failed to update checkout registry: %v", err)
 	}
 }
 
