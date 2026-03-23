@@ -220,13 +220,7 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	fmt.Printf("Merge status: %s\n", resp.Status.String())
-	fmt.Printf("New commit: %s\n", resp.NewCommitHash)
-
-	if resp.Status == slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
-		printMergeConflicts(resp.GetConflicts())
-		printSliceConflictGuidance()
-	}
+	printMergeResult(resp)
 }
 
 func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {
@@ -318,13 +312,50 @@ func printMergeConflicts(conflicts []*slicev1.Conflict) {
 	}
 	fmt.Println("Conflicts detected:")
 	for _, conflict := range conflicts {
-		fmt.Printf("- %s (slices: %s)\n", conflict.GetFileId(), strings.Join(conflict.GetConflictingSliceIds(), ", "))
+		typeLabel := strings.TrimPrefix(conflict.GetType().String(), "CONFLICT_TYPE_")
+		if typeLabel == "UNSPECIFIED" {
+			typeLabel = ""
+		}
+		if typeLabel != "" {
+			fmt.Printf("- %s [%s] (slices: %s)\n", conflict.GetFileId(), typeLabel, strings.Join(conflict.GetConflictingSliceIds(), ", "))
+		} else {
+			fmt.Printf("- %s (slices: %s)\n", conflict.GetFileId(), strings.Join(conflict.GetConflictingSliceIds(), ", "))
+		}
+		if message := strings.TrimSpace(conflict.GetMessage()); message != "" {
+			fmt.Printf("  %s\n", message)
+		}
 	}
 }
 
 func printSliceConflictGuidance() {
 	fmt.Println("Hint: sync to the latest slice head, review your local changes, then publish again.")
 	fmt.Println("      Suggested flow: gs slice sync && gs slice diff && gs slice publish")
+}
+
+func printMergeResult(resp *slicev1.MergeChangesetResponse) {
+	if resp == nil {
+		fmt.Println("Merge status: unknown")
+		return
+	}
+
+	fmt.Printf("Merge status: %s\n", resp.GetStatus().String())
+	if resp.GetNewCommitHash() != "" {
+		fmt.Printf("New commit: %s\n", resp.GetNewCommitHash())
+	}
+	if message := strings.TrimSpace(resp.GetMessage()); message != "" {
+		fmt.Printf("Message: %s\n", message)
+	}
+
+	switch resp.GetStatus() {
+	case slicev1.MergeStatus_MERGE_STATUS_CONFLICT:
+		printMergeConflicts(resp.GetConflicts())
+		printSliceConflictGuidance()
+	case slicev1.MergeStatus_MERGE_STATUS_STALE_BASE:
+		fmt.Println("Hint: rebase the changeset onto the latest slice head, then merge again.")
+		fmt.Printf("      Suggested flow: gs changeset rebase %s && gs changeset merge %s\n", resp.GetChangesetId(), resp.GetChangesetId())
+	case slicev1.MergeStatus_MERGE_STATUS_LOCKED:
+		fmt.Println("Hint: another merge is already operating on this slice or file set. Retry shortly.")
+	}
 }
 
 func printChangesetReview(resp *slicev1.ReviewChangesetResponse, includePatches bool) {
@@ -362,6 +393,23 @@ func printChangesetReview(resp *slicev1.ReviewChangesetResponse, includePatches 
 		fmt.Println("Warnings:")
 		for _, warning := range warnings {
 			fmt.Printf("- %s\n", warning)
+		}
+	}
+	if issues := resp.GetIssues(); len(issues) > 0 {
+		fmt.Println("Issues:")
+		for _, issue := range issues {
+			label := strings.TrimPrefix(issue.GetType().String(), "REVIEW_ISSUE_TYPE_")
+			switch {
+			case issue.GetFileId() != "" && len(issue.GetConflictingSliceIds()) > 0:
+				fmt.Printf("- [%s] %s (slices: %s)\n", label, issue.GetFileId(), strings.Join(issue.GetConflictingSliceIds(), ", "))
+			case issue.GetFileId() != "":
+				fmt.Printf("- [%s] %s\n", label, issue.GetFileId())
+			default:
+				fmt.Printf("- [%s]\n", label)
+			}
+			if message := strings.TrimSpace(issue.GetMessage()); message != "" {
+				fmt.Printf("  %s\n", message)
+			}
 		}
 	}
 	if len(resp.GetChanges()) == 0 {

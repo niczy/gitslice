@@ -137,14 +137,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	fmt.Printf("Merge status: %s\n", mergeResp.GetStatus().String())
-	if mergeResp.GetNewCommitHash() != "" {
-		fmt.Printf("New commit: %s\n", mergeResp.GetNewCommitHash())
-	}
-	if len(mergeResp.GetConflicts()) > 0 {
-		printMergeConflicts(mergeResp.GetConflicts())
-		printSliceConflictGuidance()
-	}
+	printMergeResult(mergeResp)
 }
 
 func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
