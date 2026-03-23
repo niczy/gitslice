@@ -17,8 +17,9 @@ type sliceFileState struct {
 }
 
 type sliceFilePayload struct {
-	state   sliceFileState
-	content []byte
+	state        sliceFileState
+	content      []byte
+	contentKnown bool
 }
 
 func ListDivergentConflicts(ctx context.Context, st Storage) ([]*models.FileConflict, error) {
@@ -101,8 +102,8 @@ func NormalizeConflictToPreferred(ctx context.Context, st Storage, fileID, prefe
 	if err != nil {
 		return nil, err
 	}
-	if !preferredPayload.state.exists {
-		return nil, ErrEntryNotFound
+	if !preferredPayload.state.exists || !preferredPayload.contentKnown {
+		return st.ResolveConflict(ctx, fileID, preferredSliceID)
 	}
 
 	for _, sliceID := range sliceIDs {
@@ -139,15 +140,23 @@ func normalizeConflictSliceIDs(sliceIDs []string) []string {
 }
 
 func loadSliceFileState(ctx context.Context, st Storage, sliceID, fileID string) (sliceFileState, error) {
+	sliceID = strings.TrimSpace(sliceID)
+	fileID = strings.TrimSpace(fileID)
+
+	slice, err := st.GetSlice(ctx, sliceID)
+	if err != nil && err != ErrSliceNotFound {
+		return sliceFileState{}, err
+	}
+
 	entry, err := st.GetEntryByPath(ctx, strings.TrimSpace(sliceID), strings.TrimSpace(fileID))
 	if err != nil {
 		if err == ErrEntryNotFound {
-			return sliceFileState{}, nil
+			return loadSliceFileStateFromParent(ctx, st, slice, fileID)
 		}
 		return sliceFileState{}, err
 	}
 	if entry == nil || entry.Type != "file" {
-		return sliceFileState{}, nil
+		return loadSliceFileStateFromParent(ctx, st, slice, fileID)
 	}
 
 	state := sliceFileState{
@@ -160,7 +169,7 @@ func loadSliceFileState(ctx context.Context, st Storage, sliceID, fileID string)
 	manifest, err := st.GetFileManifest(ctx, strings.TrimSpace(sliceID), strings.TrimSpace(fileID))
 	if err != nil {
 		if err == ErrEntryNotFound {
-			return state, nil
+			return mergeParentState(ctx, st, slice, fileID, state)
 		}
 		return sliceFileState{}, err
 	}
@@ -172,10 +181,18 @@ func loadSliceFileState(ctx context.Context, st Storage, sliceID, fileID string)
 		state.symlinkTarget = strings.TrimSpace(manifest.SymlinkTarget)
 	}
 
-	return state, nil
+	return mergeParentState(ctx, st, slice, fileID, state)
 }
 
 func loadSliceFilePayload(ctx context.Context, st Storage, sliceID, fileID string) (sliceFilePayload, error) {
+	sliceID = strings.TrimSpace(sliceID)
+	fileID = strings.TrimSpace(fileID)
+
+	slice, err := st.GetSlice(ctx, sliceID)
+	if err != nil && err != ErrSliceNotFound {
+		return sliceFilePayload{}, err
+	}
+
 	state, err := loadSliceFileState(ctx, st, sliceID, fileID)
 	if err != nil {
 		return sliceFilePayload{}, err
@@ -185,14 +202,46 @@ func loadSliceFilePayload(ctx context.Context, st Storage, sliceID, fileID strin
 	}
 
 	content, err := ReadSliceFileContent(ctx, st, sliceID, fileID)
-	if err != nil {
+	if err == nil {
+		return sliceFilePayload{
+			state:        state,
+			content:      append([]byte(nil), content.Content...),
+			contentKnown: true,
+		}, nil
+	}
+	if err != ErrEntryNotFound {
 		return sliceFilePayload{}, err
 	}
 
-	return sliceFilePayload{
-		state:   state,
-		content: append([]byte(nil), content.Content...),
-	}, nil
+	if hash := strings.TrimSpace(state.hash); hash != "" {
+		content, err = ReadVersionedFileContent(ctx, st, hash)
+		if err == nil {
+			return sliceFilePayload{
+				state:        state,
+				content:      append([]byte(nil), content.Content...),
+				contentKnown: true,
+			}, nil
+		}
+		if err != ErrEntryNotFound {
+			return sliceFilePayload{}, err
+		}
+	}
+
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && slice.ParentSlice != sliceID {
+		content, err = ReadSliceFileContent(ctx, st, slice.ParentSlice, fileID)
+		if err == nil {
+			return sliceFilePayload{
+				state:        state,
+				content:      append([]byte(nil), content.Content...),
+				contentKnown: true,
+			}, nil
+		}
+		if err != ErrEntryNotFound {
+			return sliceFilePayload{}, err
+		}
+	}
+
+	return sliceFilePayload{state: state}, nil
 }
 
 func writeSliceFilePayload(ctx context.Context, st Storage, sliceID, fileID string, payload sliceFilePayload) error {
@@ -236,4 +285,38 @@ func writeSliceFilePayload(ctx context.Context, st Storage, sliceID, fileID stri
 	}
 
 	return st.AddFileToSlice(ctx, fileID, sliceID)
+}
+
+func loadSliceFileStateFromParent(ctx context.Context, st Storage, slice *models.Slice, fileID string) (sliceFileState, error) {
+	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || slice.ParentSlice == slice.ID {
+		return sliceFileState{}, nil
+	}
+	return loadSliceFileState(ctx, st, slice.ParentSlice, fileID)
+}
+
+func mergeParentState(ctx context.Context, st Storage, slice *models.Slice, fileID string, state sliceFileState) (sliceFileState, error) {
+	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || slice.ParentSlice == slice.ID {
+		return state, nil
+	}
+
+	parentState, err := loadSliceFileState(ctx, st, slice.ParentSlice, fileID)
+	if err != nil {
+		return sliceFileState{}, err
+	}
+	if !parentState.exists {
+		return state, nil
+	}
+	if !state.exists {
+		return parentState, nil
+	}
+	if state.hash == "" {
+		state.hash = parentState.hash
+	}
+	if !state.executable {
+		state.executable = parentState.executable
+	}
+	if state.symlinkTarget == "" {
+		state.symlinkTarget = parentState.symlinkTarget
+	}
+	return state, nil
 }
