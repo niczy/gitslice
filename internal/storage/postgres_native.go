@@ -1777,6 +1777,9 @@ func (s *PostgresNativeStorage) ResolveConflict(ctx context.Context, fileID, pre
 				break
 			}
 		}
+		if keepSlice == "" {
+			return nil, ErrInvalidInput
+		}
 	}
 	if keepSlice == "" && len(sliceIDs) > 0 {
 		sort.Strings(sliceIDs)
@@ -1830,22 +1833,28 @@ func (s *PostgresNativeStorage) LockSliceAndFiles(ctx context.Context, sliceID s
 	}
 
 	// Acquire slice lock.
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO slice_locks (slice_id) VALUES ($1)
 		ON CONFLICT (slice_id) DO NOTHING
 	`, sliceID)
 	if err != nil {
 		return err
 	}
+	if tag.RowsAffected() == 0 {
+		return ErrLockHeld
+	}
 
 	// Acquire file locks.
 	for _, fileID := range fileIDs {
-		_, err = tx.Exec(ctx, `
+		tag, err = tx.Exec(ctx, `
 			INSERT INTO file_locks (file_id, owner_slice_id) VALUES ($1, $2)
-			ON CONFLICT (file_id) DO UPDATE SET owner_slice_id = $2
+			ON CONFLICT (file_id) DO NOTHING
 		`, fileID, sliceID)
 		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrLockHeld
 		}
 	}
 

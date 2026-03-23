@@ -649,6 +649,9 @@ func (s *adminServiceServer) ResolveConflict(ctx context.Context, req *adminv1.R
 
 	conflict, err := s.storage.ResolveConflict(ctx, req.FileId, req.PreferredSliceId)
 	if err != nil {
+		if errors.Is(err, storage.ErrInvalidInput) {
+			return nil, status.Error(codes.InvalidArgument, "preferred_slice_id must reference one of the conflicting slices")
+		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve conflict: %v", err))
 	}
 
