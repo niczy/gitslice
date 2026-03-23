@@ -36,22 +36,14 @@ type localSliceDiff struct {
 
 func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice diff", flag.ExitOnError)
-	cached := fs.Bool("cached", false, "Show staged changes")
 	statOnly := fs.Bool("stat", false, "Show diffstat only")
 	nameOnly := fs.Bool("name-only", false, "Show changed file names only")
 	summaryOnly := fs.Bool("summary", false, "Show only the change summary and matching paths")
 	fs.Parse(args)
 
-	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
+	checkoutIndex, err := detectCheckoutMode(".")
 	if err != nil {
 		log.Fatalf("Failed to read checkout mode: %v", err)
-	}
-	if gitEnabled {
-		handleGitSliceDiff(*cached, *statOnly, *nameOnly, *summaryOnly, fs.Args())
-		return
-	}
-	if *cached {
-		log.Fatal("No-git checkouts do not have a staged index. Use gs slice diff without --cached.")
 	}
 
 	entries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
@@ -94,32 +86,12 @@ func handleSliceDiff(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice restore", flag.ExitOnError)
-	all := fs.Bool("all", false, "Restore all local changes in the current checkout")
 	dryRun := fs.Bool("dry-run", false, "Show what would be restored or removed without changing files")
 	fs.Parse(args)
 
-	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
+	checkoutIndex, err := detectCheckoutMode(".")
 	if err != nil {
 		log.Fatalf("Failed to read checkout mode: %v", err)
-	}
-
-	if gitEnabled {
-		restorePaths := normalizeLocalModifiedFiles(fs.Args())
-		if len(restorePaths) == 0 {
-			restorePaths = []string{"."}
-		}
-		if _, err := runGitCommand(".", append([]string{"restore", "--source=HEAD", "--worktree", "--"}, restorePaths...)...); err != nil {
-			log.Fatalf("Failed to restore git checkout files: %v", err)
-		}
-		if _, err := runGitCommand(".", append([]string{"clean", "-fd", "--"}, restorePaths...)...); err != nil {
-			log.Fatalf("Failed to remove untracked files from git checkout: %v", err)
-		}
-		if len(fs.Args()) == 0 && !*all {
-			fmt.Println("Restored local changes in the current git checkout.")
-		} else {
-			fmt.Printf("Restored %d git path selections.\n", len(restorePaths))
-		}
-		return
 	}
 
 	entries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
@@ -190,48 +162,6 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 	}
 	fmt.Printf("Restored tracked files: %d\n", restoredTracked)
 	fmt.Printf("Removed new paths: %d\n", removedNew)
-}
-
-func handleGitSliceDiff(cached, statOnly, nameOnly, summaryOnly bool, pathArgs []string) {
-	if summaryOnly {
-		entries, err := collectGitWorkingTreeStatus(".")
-		if err != nil {
-			log.Fatalf("Failed to diff slice checkout: %v", err)
-		}
-		entries = filterWorkingTreeStatusEntries(entries)
-		entries = filterWorkingTreeStatusByPaths(entries, pathArgs)
-		if len(entries) == 0 {
-			fmt.Println("(no diff)")
-			return
-		}
-		printWorkingTreeSummary(entries)
-		return
-	}
-
-	gitArgs := []string{"diff"}
-	if cached {
-		gitArgs = append(gitArgs, "--cached")
-	}
-	if statOnly {
-		gitArgs = append(gitArgs, "--stat")
-	}
-	if nameOnly {
-		gitArgs = append(gitArgs, "--name-only")
-	}
-	if len(pathArgs) > 0 {
-		gitArgs = append(gitArgs, "--")
-		gitArgs = append(gitArgs, pathArgs...)
-	}
-
-	output, err := runGitCommand(".", gitArgs...)
-	if err != nil {
-		log.Fatalf("Failed to diff slice checkout: %v", err)
-	}
-	if strings.TrimSpace(output) == "" {
-		fmt.Println("(no diff)")
-		return
-	}
-	fmt.Println(output)
 }
 
 func buildLocalSliceDiffs(

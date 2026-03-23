@@ -110,7 +110,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
-		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--git]")
+		log.Println("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files]")
 		return
 	}
 
@@ -123,13 +123,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice checkout", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
 	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
-	gitEnabled := fs.Bool("git", false, "Initialize local git metadata for the checkout")
-	noGit := fs.Bool("no-git", false, "Deprecated alias for the default no-git checkout mode")
 	fs.Parse(args[1:])
-	if *gitEnabled && *noGit {
-		log.Fatal("Cannot use --git and --no-git together")
-	}
-	effectiveGit := *gitEnabled
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -151,43 +145,15 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		log.Fatalf("Failed to write config file: %v", err)
 	}
 
-	if effectiveGit {
-		createdRepo, err := ensureGitRepo(".")
-		if err != nil {
-			log.Fatalf("Failed to initialize git repository: %v", err)
-		}
-		gitignoreChanged, err := ensureGitignoreEntry(".", ".gs/")
-		if err != nil {
-			log.Fatalf("Failed to update .gitignore: %v", err)
-		}
-		if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
-			log.Fatalf("Failed to switch to main branch: %v", err)
-		}
-		stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
-		if gitignoreChanged {
-			stagePaths = append(stagePaths, ".gitignore")
-		}
-		if err := gitStagePaths(".", stagePaths); err != nil {
-			log.Fatalf("Failed to stage checkout files: %v", err)
-		}
-		if createdRepo || len(stagePaths) > 0 {
-			if err := createCheckoutCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
-				log.Fatalf("Failed to create checkout commit: %v", err)
-			}
-		}
-	}
-
-	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest, effectiveGit)
+	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest)
 	if err != nil {
 		log.Fatalf("Failed to build checkout index: %v", err)
 	}
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
 		log.Fatalf("Failed to write checkout index: %v", err)
 	}
-	if !effectiveGit {
-		if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
-			log.Printf("Warning: failed to start dirty tracker: %v", err)
-		}
+	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
+		log.Printf("Warning: failed to start dirty tracker: %v", err)
 	}
 
 	// Display checkout results
@@ -214,15 +180,10 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice sync", flag.ExitOnError)
 	commitHash := fs.String("commit", "HEAD", "Commit hash to sync to")
-	gitEnabled := fs.Bool("git", false, "Sync using a local git repository")
-	noGit := fs.Bool("no-git", false, "Deprecated alias for syncing a no-git checkout")
-	parseFlagSetInterspersed(fs, args)
+	fs.Parse(args)
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice sync [--commit <commit-hash>] [--git]")
+		log.Println("Usage: gs slice sync [--commit <commit-hash>]")
 		return
-	}
-	if *gitEnabled && *noGit {
-		log.Fatal("Cannot use --git and --no-git together")
 	}
 
 	sliceID, err := sliceIDFromConfig()
@@ -237,106 +198,32 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if checkoutIndex == nil {
 		log.Fatal("Cannot sync slice: checkout metadata missing. Run gs slice checkout again.")
 	}
-
-	effectiveGit := false
-	switch {
-	case checkoutIndex != nil:
-		effectiveGit = checkoutIndex.GitEnabled
-		if *gitEnabled && !effectiveGit {
-			log.Fatal("Cannot sync a no-git checkout with --git. Create a new checkout with --git instead.")
-		}
-		if *noGit && effectiveGit {
-			log.Fatal("Cannot sync a git-backed checkout with --no-git")
-		}
+	if err := verifyCheckoutIndexClean(".", checkoutIndex); err != nil {
+		log.Fatalf("Cannot sync slice: %v", err)
 	}
-	effectiveNoGit := !effectiveGit
-
-	var createdRepo bool
-	var hasCommit bool
-	var hasPendingChanges bool
-	var gitignoreChanged bool
-	if effectiveNoGit {
-		if err := verifyCheckoutIndexClean(".", checkoutIndex); err != nil {
-			log.Fatalf("Cannot sync slice: %v", err)
-		}
-		if err := stopDirtyTracker("."); err != nil {
-			log.Printf("Warning: failed to stop dirty tracker before sync: %v", err)
-		}
-	} else {
-		createdRepo, err = ensureGitRepo(".")
-		if err != nil {
-			log.Fatalf("Failed to initialize git repository: %v", err)
-		}
-		if createdRepo {
-			if _, err := runGitCommand(".", "checkout", "-B", "main"); err != nil {
-				log.Fatalf("Failed to switch to main branch: %v", err)
-			}
-		} else if err := requireMainBranch("."); err != nil {
-			log.Fatalf("Cannot sync slice: %v", err)
-		}
-
-		hasCommit, err = gitHasCommit(".")
-		if err != nil {
-			log.Fatalf("Failed to check git history: %v", err)
-		}
-		hasPendingChanges, err = gitHasPendingChanges(".")
-		if err != nil {
-			log.Fatalf("Failed to read git status: %v", err)
-		}
-		if hasPendingChanges {
-			log.Fatal("Cannot sync slice: working tree has local changes. Commit or clean the checkout first.")
-		}
-		gitignoreChanged, err = ensureGitignoreEntry(".", ".gs/")
-		if err != nil {
-			log.Fatalf("Failed to update .gitignore: %v", err)
-		}
+	if err := stopDirtyTracker("."); err != nil {
+		log.Printf("Warning: failed to stop dirty tracker before sync: %v", err)
 	}
 
 	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", true, checkoutIndex)
 	if err != nil {
 		log.Fatalf("Failed to sync slice: %v", err)
 	}
-	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest, !effectiveNoGit)
+	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest)
 	if err != nil {
 		log.Fatalf("Failed to build checkout index: %v", err)
 	}
 
 	status := "up to date"
-	if effectiveNoGit {
-		if !checkoutIndicesEqualContent(checkoutIndex, nextCheckoutIndex) {
-			status = "updated"
-		}
-	} else {
-		stagePaths := append([]string(nil), checkoutResult.Materialized.ChangedPaths...)
-		if gitignoreChanged {
-			stagePaths = append(stagePaths, ".gitignore")
-		}
-		if err := gitStagePaths(".", stagePaths); err != nil {
-			log.Fatalf("Failed to stage synced files: %v", err)
-		}
-		hasPendingChanges = len(stagePaths) > 0
-		if hasCommit && hasPendingChanges {
-			hasPendingChanges, err = gitHasStagedChanges(".")
-			if err != nil {
-				log.Fatalf("Failed to inspect staged changes: %v", err)
-			}
-		}
-
-		if createdRepo || !hasCommit || hasPendingChanges {
-			if err := createSyncCommit(".", checkoutResult.Manifest.CommitHash); err != nil {
-				log.Fatalf("Failed to create sync commit: %v", err)
-			}
-			status = "updated"
-		}
+	if !checkoutIndicesEqualContent(checkoutIndex, nextCheckoutIndex) {
+		status = "updated"
 	}
 
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
 		log.Fatalf("Failed to write checkout index: %v", err)
 	}
-	if effectiveNoGit {
-		if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
-			log.Printf("Warning: failed to restart dirty tracker: %v", err)
-		}
+	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
+		log.Printf("Warning: failed to restart dirty tracker: %v", err)
 	}
 
 	fmt.Printf("Synced slice: %s\n", sliceID)

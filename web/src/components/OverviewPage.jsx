@@ -37,7 +37,7 @@ const CHECKOUT_STEPS = [
 const CHECKOUT_FACTS = [
   'Fast no-git checkout by default',
   'Custom slice per feature or folder',
-  'Add --git only if you explicitly want a local repo',
+  'No local git mode to manage',
 ];
 
 const CLOUD_EDIT_FACTS = [
@@ -57,8 +57,8 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
           <h1>Check out a custom slice in seconds.</h1>
           <p className="lede">
             Create a focused slice, pull only the missing blocks, and materialize the tree immediately.
-            Plain checkout now covers local status, diff, restore, sync, and publish on its own. Add <code>--git</code> only
-            when you specifically want a local repo. When the task is smaller than a local checkout,
+            Plain checkout now covers local status, diff, restore, sync, and publish on its own. There is no separate local
+            git mode to manage. When the task is smaller than a local checkout,
             edit the same versioned files directly with <code>gs fs</code>.
           </p>
           <div className="cta-row flex flex-wrap gap-3">

@@ -161,7 +161,7 @@ func writeDirtyTrackerPaths(dir string, paths []string) error {
 }
 
 func resetDirtyTracker(dir string, index *localCheckoutIndex) error {
-	if dirtyTrackerDisabled() || index == nil || index.GitEnabled {
+	if dirtyTrackerDisabled() || index == nil {
 		return nil
 	}
 	absDir, err := filepath.Abs(dir)
@@ -239,7 +239,7 @@ func dirtyTrackerProcessAlive(pid int) bool {
 }
 
 func collectDirtyTrackerCandidates(dir string, index *localCheckoutIndex) ([]string, bool, error) {
-	if dirtyTrackerDisabled() || index == nil || index.GitEnabled {
+	if dirtyTrackerDisabled() || index == nil {
 		return nil, false, nil
 	}
 	state, err := readDirtyTrackerState(dir)

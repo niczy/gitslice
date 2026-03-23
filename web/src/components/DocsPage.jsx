@@ -48,7 +48,7 @@ const COMMAND_MAP = [
   {
     task: 'Create a focused local worktree',
     command: 'gs slice list\ngs slice create ui-refresh apps/web\nmkdir ui-refresh && cd ui-refresh\ngs slice checkout <slice-id-or-slug>\ngs slice diff',
-    note: 'Plain checkout is now the primary local workflow. Add --git only when you explicitly want a local repo.',
+    note: 'Plain checkout is the local workflow. Status, diff, restore, sync, and publish all work without local git metadata.',
   },
   {
     task: 'Bind a GitHub repo into a home-slice directory',
@@ -91,7 +91,7 @@ export default function DocsPage({ onBrowseRepo }) {
           <p className="lede">
             Use <code>gs fs</code> for direct cloud edits in your home slice. Use custom slices when you want a fast
             local checkout. Plain checkout now covers local status, diff, restore, sync, and publish on its own. Add
-            <code>--git</code> only when you explicitly want a local repo.
+            local git metadata at all.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -179,7 +179,7 @@ gs fs snapshot -m "notes update"`}</code>
               <article className="docs-code-card">
                 <div className="docs-code-card-head">
                   <h3>Custom slice checkout</h3>
-                  <p>Best when the task needs a local editor or tests. Plain checkout is the default local workflow; add <code>--git</code> only for an actual local repo.</p>
+                  <p>Best when the task needs a local editor or tests. Plain checkout is the local workflow, with no separate git mode to manage.</p>
                 </div>
                 <pre className="code-block">
                   <code>{`gs slice create ui-refresh apps/web
@@ -287,7 +287,7 @@ gs repo unlink /$USER/vendor/repo`}</code>
               A custom slice is the local-work path. Create one around the folder or surface you care about, then
               check it out. Plain <code>gs slice checkout</code> is now the primary local path. It skips git metadata
               for speed, keeps a local index under <code>.gs</code>, and supports local status, diff, restore, sync,
-              and publish directly. Add <code>--git</code> only when you want a local repo. The client asks for manifests first and
+              and publish directly. The client asks for manifests first and
               downloads only blocks missing from local cache, so repeat checkouts stay fast.
             </p>
             <div className="docs-step-list">

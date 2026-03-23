@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -78,6 +77,16 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		return
 	}
 	fmt.Printf("  Slice: %s\n", sliceID)
+	fmt.Println("  Mode: no-git")
+
+	checkoutIndex, err := readCheckoutIndex(".")
+	if err != nil {
+		fmt.Printf("  Checkout metadata: error (%v)\n", err)
+	} else if checkoutIndex == nil {
+		fmt.Println("  Checkout metadata: missing")
+	} else if strings.TrimSpace(checkoutIndex.CommitHash) != "" {
+		fmt.Printf("  Checkout base: %s\n", strings.TrimSpace(checkoutIndex.CommitHash))
+	}
 
 	if stateResp, err := cli.sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID}); err != nil {
 		fmt.Printf("  Remote state: error (%v)\n", err)
@@ -85,22 +94,19 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		fmt.Printf("  Remote head: %s\n", stateResp.GetLatestCommitHash())
 		fmt.Printf("  Modified files: %d\n", len(stateResp.GetModifiedFiles()))
 	}
-
-	if _, err := os.Stat(".git"); err != nil {
-		fmt.Printf("  Git: missing (%v)\n", err)
-		return
-	}
-	if branch, err := gitCurrentBranch("."); err != nil {
-		fmt.Printf("  Git branch: error (%v)\n", err)
-	} else {
-		fmt.Printf("  Git branch: %s\n", branch)
-	}
-	if pending, err := gitHasPendingChanges("."); err != nil {
-		fmt.Printf("  Git status: error (%v)\n", err)
-	} else if pending {
-		fmt.Println("  Git status: dirty")
-	} else {
-		fmt.Println("  Git status: clean")
+	if checkoutIndex != nil {
+		entries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
+		if err != nil {
+			fmt.Printf("  Working tree: error (%v)\n", err)
+		} else {
+			entries = filterWorkingTreeStatusEntries(entries)
+			added, modified, deleted := summarizeWorkingTreeStatus(entries)
+			state := "clean"
+			if len(entries) > 0 {
+				state = "dirty"
+			}
+			fmt.Printf("  Working tree: %s (+%d ~%d -%d)\n", state, added, modified, deleted)
+		}
 	}
 
 	absCwd, err := filepath.Abs(".")
