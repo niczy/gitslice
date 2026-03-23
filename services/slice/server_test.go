@@ -1418,6 +1418,142 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	}
 }
 
+func TestReviewChangesetMarksStaleBaseAsNeedsRebase(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-stale-review", Name: "slice-stale-review", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("failed to load slice metadata: %v", err)
+	}
+	meta.HeadCommitHash = "head-current"
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("failed to update slice metadata: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "cs-stale-review",
+		SliceID:        slice.ID,
+		BaseCommitHash: "head-old",
+		ModifiedFiles:  []string{"README.md"},
+		Status:         models.ChangesetStatusPending,
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if resp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_REBASE {
+		t.Fatalf("expected NEEDS_REBASE, got %v", resp.GetReviewStatus())
+	}
+	if len(resp.GetWarnings()) == 0 || !strings.Contains(resp.GetWarnings()[0], "stale") {
+		t.Fatalf("expected stale-base warning, got %#v", resp.GetWarnings())
+	}
+}
+
+func TestMergeChangesetRejectsStaleBase(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-stale-merge", Name: "slice-stale-merge", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("failed to load slice metadata: %v", err)
+	}
+	meta.HeadCommitHash = "head-current"
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("failed to update slice metadata: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "cs-stale-merge",
+		SliceID:        slice.ID,
+		BaseCommitHash: "head-old",
+		ModifiedFiles:  []string{"README.md"},
+		Status:         models.ChangesetStatusPending,
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	_, err = srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err == nil {
+		t.Fatal("expected MergeChangeset to reject stale base")
+	}
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v (%v)", got, err)
+	}
+}
+
+func TestRebaseChangesetUsesCurrentSliceHead(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-rebase-head", Name: "slice-rebase-head", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("failed to load slice metadata: %v", err)
+	}
+	meta.HeadCommitHash = "head-current"
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("failed to update slice metadata: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "cs-rebase-head",
+		SliceID:        slice.ID,
+		BaseCommitHash: "head-old",
+		ModifiedFiles:  []string{"README.md"},
+		Status:         models.ChangesetStatusPending,
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := NewService(st)
+	resp, err := srv.RebaseChangeset(ctx, &slicev1.RebaseChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("RebaseChangeset failed: %v", err)
+	}
+	if resp.GetNewBaseCommitHash() != "head-current" {
+		t.Fatalf("expected new base to be current head, got %q", resp.GetNewBaseCommitHash())
+	}
+
+	updated, err := st.GetChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("failed to reload changeset: %v", err)
+	}
+	if updated.BaseCommitHash != "head-current" {
+		t.Fatalf("expected changeset base to update to current head, got %q", updated.BaseCommitHash)
+	}
+
+	snapshots, err := st.ListChangesetSnapshots(ctx, cs.ID, 10)
+	if err != nil {
+		t.Fatalf("failed to list changeset snapshots: %v", err)
+	}
+	if len(snapshots) == 0 || snapshots[0].BaseCommitHash != "head-current" {
+		t.Fatalf("expected latest snapshot base to be current head, got %#v", snapshots)
+	}
+}
+
 func TestCreateChangesetAppendCreatesSnapshotVersions(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

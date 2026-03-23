@@ -2332,6 +2332,65 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 	}
 }
 
+func TestChangesetMergeRequiresCurrentBaseCommit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withTestUser(ctx)
+
+	sliceClient := newSliceClient(t)
+
+	sliceID := fmt.Sprintf("stale-base-%d", time.Now().UnixNano())
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "StaleBase",
+		Owners:    []string{testUsername},
+		CreatedBy: testUsername,
+	}); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	meta, err := testStorage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		t.Fatalf("failed to get slice metadata: %v", err)
+	}
+	meta.HeadCommitHash = "head-current"
+	if err := testStorage.UpdateSliceMetadata(ctx, sliceID, meta); err != nil {
+		t.Fatalf("failed to update slice metadata: %v", err)
+	}
+
+	createResp, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        sliceID,
+		BaseCommitHash: "head-old",
+		ModifiedFiles:  []string{"README.md"},
+		Author:         "tester",
+		Message:        "stale base",
+	})
+	if err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	reviewResp, err := sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("failed to review changeset: %v", err)
+	}
+	if reviewResp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_REBASE {
+		t.Fatalf("expected NEEDS_REBASE, got %v", reviewResp.GetReviewStatus())
+	}
+
+	_, err = sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for stale-base merge, got %v", err)
+	}
+
+	rebaseResp, err := sliceClient.RebaseChangeset(ctx, &slicev1.RebaseChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("failed to rebase changeset: %v", err)
+	}
+	if rebaseResp.GetNewBaseCommitHash() != "head-current" {
+		t.Fatalf("expected current head base after rebase, got %q", rebaseResp.GetNewBaseCommitHash())
+	}
+}
+
 func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

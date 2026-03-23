@@ -854,10 +854,23 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		diff = summarizeReviewChanges(reviewChanges)
 	}
 
+	reviewStatus := slicev1.ReviewStatus_READY_FOR_MERGE
+	if stale, currentHead, err := s.changesetNeedsRebase(ctx, reviewCS); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
+	} else if stale {
+		reviewStatus = slicev1.ReviewStatus_NEEDS_REBASE
+		warnings = append(warnings, fmt.Sprintf(
+			"changeset base %s is stale; current slice head is %s. Run gs changeset rebase %s before merging.",
+			shortHash(reviewCS.BaseCommitHash),
+			shortHash(currentHead),
+			reviewCS.ID,
+		))
+	}
+
 	return &slicev1.ReviewChangesetResponse{
 		Changeset:    convertChangesetToProto(reviewCS),
 		Diff:         diff,
-		ReviewStatus: slicev1.ReviewStatus_READY_FOR_MERGE,
+		ReviewStatus: reviewStatus,
 		Warnings:     warnings,
 		Changes:      reviewChanges,
 		Snapshot:     changesetSnapshotToProto(snapshot),
@@ -954,6 +967,20 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to acquire locks: %v", err))
 	}
 	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, modifiedFiles)
+
+	if !useCurrentHead {
+		stale, currentHead, err := s.changesetNeedsRebase(ctx, cs)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
+		}
+		if stale {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf(
+				"changeset base commit %s is stale; current slice head is %s. Rebase the changeset before merging.",
+				shortHash(cs.BaseCommitHash),
+				shortHash(currentHead),
+			))
+		}
+	}
 
 	if !isRevertChangesetHash(cs.Hash) {
 		conflictStartedAt := time.Now()
@@ -1096,6 +1123,32 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
 	}, nil
+}
+
+func (s *sliceServiceServer) changesetNeedsRebase(ctx context.Context, cs *models.Changeset) (bool, string, error) {
+	if cs == nil {
+		return false, "", nil
+	}
+	base := strings.TrimSpace(cs.BaseCommitHash)
+	if base == "" {
+		return false, "", nil
+	}
+
+	metadata, err := s.storage.GetSliceMetadata(ctx, strings.TrimSpace(cs.SliceID))
+	if err != nil {
+		return false, "", err
+	}
+	if metadata == nil {
+		return false, "", nil
+	}
+	currentHead := strings.TrimSpace(metadata.HeadCommitHash)
+	if currentHead == "" {
+		return false, "", nil
+	}
+	if currentHead == base {
+		return false, currentHead, nil
+	}
+	return true, currentHead, nil
 }
 
 func (s *sliceServiceServer) CloseChangeset(ctx context.Context, req *slicev1.CloseChangesetRequest) (*slicev1.CloseChangesetResponse, error) {
@@ -2171,10 +2224,23 @@ func (s *sliceServiceServer) RebaseChangeset(ctx context.Context, req *slicev1.R
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	newBase := fmt.Sprintf("base-%d", time.Now().UnixNano())
+	metadata, err := s.storage.GetSliceMetadata(ctx, cs.SliceID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice metadata: %v", err))
+	}
+	newBase := ""
+	if metadata != nil {
+		newBase = strings.TrimSpace(metadata.HeadCommitHash)
+	}
+	if newBase == "" {
+		return nil, status.Error(codes.FailedPrecondition, "slice head is empty")
+	}
 	cs.BaseCommitHash = newBase
 	if err := s.storage.UpdateChangeset(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update changeset: %v", err))
+	}
+	if err := s.createChangesetSnapshot(ctx, cs); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 	}
 
 	return &slicev1.RebaseChangesetResponse{
