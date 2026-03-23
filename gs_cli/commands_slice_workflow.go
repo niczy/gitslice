@@ -14,11 +14,14 @@ import (
 )
 
 func handleSliceList(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("slice list", flag.ExitOnError)
 	limit := fs.Int("limit", 100, "Maximum slices to list")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs slice list [--limit <n>]")
+		log.Println("Usage: gs slice list [--limit <n>] [--json]")
 		return
 	}
 
@@ -34,6 +37,18 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 		}
 		return slices[i].GetUpdatedAt() > slices[j].GetUpdatedAt()
 	})
+
+	if jsonEnabled {
+		out := jsonSliceListOutput{
+			Total:  len(slices),
+			Slices: make([]jsonSliceInfo, 0, len(slices)),
+		}
+		for _, slice := range slices {
+			out.Slices = append(out.Slices, buildSliceInfoOutput(slice))
+		}
+		writeJSONOutput(out)
+		return
+	}
 
 	fmt.Printf("Slices: %d\n", len(slices))
 	for _, slice := range slices {
@@ -62,6 +77,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("slice publish", flag.ExitOnError)
 	message := fs.String("message", "", "Changeset message")
 	base := fs.String("base", "", "Base commit hash")
@@ -70,7 +86,9 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
 	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging")
 	noMerge := fs.Bool("no-merge", false, "Alias for --review-only")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	modifiedFiles := []string{}
 	if *files != "" {
@@ -106,22 +124,28 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		log.Printf("Warning: failed to track changeset ID locally: %v", err)
 	}
 
-	if isUpdate {
-		fmt.Printf("Updated changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
-	} else {
-		fmt.Printf("Created changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
-	}
-	fmt.Printf("Status: %s\n", createResp.GetStatus().String())
-
 	reviewResp, err := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
 		ChangesetId: createResp.GetChangesetId(),
 	})
 	if err != nil {
 		log.Fatalf("Failed to review changeset: %v", err)
 	}
-	printChangesetReview(reviewResp, false)
-
 	if *reviewOnly || *noMerge {
+		if jsonEnabled {
+			writeJSONOutput(jsonSlicePublishOutput{
+				Changeset:  buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles),
+				Review:     buildChangesetReviewOutput(reviewResp, false),
+				ReviewOnly: true,
+			})
+			return
+		}
+		if isUpdate {
+			fmt.Printf("Updated changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+		} else {
+			fmt.Printf("Created changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+		}
+		fmt.Printf("Status: %s\n", createResp.GetStatus().String())
+		printChangesetReview(reviewResp, false)
 		return
 	}
 
@@ -137,6 +161,23 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
+	if jsonEnabled {
+		writeJSONOutput(jsonSlicePublishOutput{
+			Changeset:  buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles),
+			Review:     buildChangesetReviewOutput(reviewResp, false),
+			ReviewOnly: false,
+			Merge:      buildMergeOutput(mergeResp),
+		})
+		return
+	}
+
+	if isUpdate {
+		fmt.Printf("Updated changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+	} else {
+		fmt.Printf("Created changeset %s (hash: %s)\n", createResp.GetChangesetId(), createResp.GetChangesetHash())
+	}
+	fmt.Printf("Status: %s\n", createResp.GetStatus().String())
+	printChangesetReview(reviewResp, false)
 	printMergeResult(mergeResp)
 }
 
@@ -174,11 +215,14 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceDelete(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("slice delete", flag.ExitOnError)
 	force := fs.Bool("force", false, "Delete even if the slice still has open changesets")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs slice delete <slice-id-or-slug> [--force]")
+		log.Println("Usage: gs slice delete <slice-id-or-slug> [--force] [--json]")
 		return
 	}
 
@@ -198,6 +242,16 @@ func handleSliceDelete(ctx context.Context, cli *CLI, args []string) {
 	removed, err := removeCheckoutRecordsForSlice(sliceID)
 	if err != nil {
 		log.Printf("Warning: failed to remove checkout registry entries: %v", err)
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(jsonSliceDeleteOutput{
+			SliceID:                resp.GetSliceId(),
+			Slug:                   resp.GetSlug(),
+			Status:                 resp.GetStatus(),
+			RemovedCheckoutRecords: removed,
+		})
+		return
 	}
 
 	fmt.Printf("Deleted slice: %s\n", resp.GetSliceId())

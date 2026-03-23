@@ -50,23 +50,21 @@ func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) stri
 	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
 
 	filePath := folderPath + "/README.md"
-	output := runCLIOrFail(t, rootWorkdir, "changeset", "create", "--message", "seed focused folder", "--files", filePath)
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("failed to extract root changeset ID from output: %s", output)
+	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", "seed focused folder", "--files", filePath)
+	if createResp.ChangesetID == "" {
+		t.Fatalf("expected root changeset ID")
 	}
-	output = runCLIOrFail(t, rootWorkdir, "changeset", "merge", changesetID)
-	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
-		t.Fatalf("expected root merge success, got: %s", output)
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
+	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected root merge success, got: %+v", mergeResp)
 	}
 
 	sliceName := fmt.Sprintf("focused-slice-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, rootWorkdir, "slice", "create", sliceName, folderPath)
-	sliceID := extractCreatedSliceID(output)
-	if sliceID == "" {
-		t.Fatalf("expected created slice ID, got: %s", output)
+	createSliceResp := runCLIJSONOrFail[sliceCreateJSON](t, rootWorkdir, "slice", "create", sliceName, folderPath)
+	if createSliceResp.SliceID == "" {
+		t.Fatalf("expected created slice ID")
 	}
-	return sliceID
+	return createSliceResp.SliceID
 }
 
 func TestSliceWorkflowCommands(t *testing.T) {
@@ -76,31 +74,37 @@ func TestSliceWorkflowCommands(t *testing.T) {
 
 	folderPath := fmt.Sprintf("apps/workflow-%d", time.Now().UnixNano())
 	filePath := folderPath + "/README.md"
-	output := runCLIOrFail(t, rootWorkdir, "changeset", "create", "--message", "seed workflow folder", "--files", filePath)
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("failed to extract changeset ID from output: %s", output)
+	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", "seed workflow folder", "--files", filePath)
+	if createResp.ChangesetID == "" {
+		t.Fatalf("failed to create changeset")
 	}
-	output = runCLIOrFail(t, rootWorkdir, "changeset", "merge", changesetID)
-	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
-		t.Fatalf("expected merge success, got: %s", output)
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
+	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected merge success, got: %+v", mergeResp)
 	}
 
 	sliceName := fmt.Sprintf("workflow-slice-%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, rootWorkdir, "slice", "create", sliceName, folderPath)
-	sliceID := extractCreatedSliceID(output)
-	sliceSlug := extractCreatedSliceSlug(output)
-	if sliceID == "" || sliceSlug == "" {
-		t.Fatalf("expected slice ID and slug in output, got: %s", output)
+	sliceCreateResp := runCLIJSONOrFail[sliceCreateJSON](t, rootWorkdir, "slice", "create", sliceName, folderPath)
+	if sliceCreateResp.SliceID == "" || sliceCreateResp.Slug == "" {
+		t.Fatalf("expected slice ID and slug in output, got: %+v", sliceCreateResp)
 	}
+	sliceID := sliceCreateResp.SliceID
+	sliceSlug := sliceCreateResp.Slug
 
-	output = runCLIOrFail(t, "", "slice", "list")
-	if !strings.Contains(output, sliceID) || !strings.Contains(output, sliceSlug) {
-		t.Fatalf("expected slice list to include created slice, got: %s", output)
+	listResp := runCLIJSONOrFail[sliceListJSON](t, "", "slice", "list")
+	foundSlice := false
+	for _, slice := range listResp.Slices {
+		if slice.SliceID == sliceID && slice.Slug == sliceSlug {
+			foundSlice = true
+			break
+		}
+	}
+	if !foundSlice {
+		t.Fatalf("expected slice list to include created slice, got: %+v", listResp)
 	}
 
 	checkoutDir := t.TempDir()
-	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug)
+	output := runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -118,20 +122,22 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	if !strings.Contains(output, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) {
 		t.Fatalf("expected slice diff to include README, got: %s", output)
 	}
-	output = runCLIOrFail(t, checkoutDir, "slice", "status")
-	if !strings.Contains(output, "Mode: no-git") ||
-		!strings.Contains(output, "Working tree: dirty") ||
-		!strings.Contains(output, "Changes: +0 ~1 -0") ||
-		!strings.Contains(output, "Remote head: skipped (use --remote)") {
-		t.Fatalf("expected slice status to show no-git dirty state, got: %s", output)
+	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status")
+	if statusResp.Mode != "no-git" ||
+		statusResp.WorkingTree != "dirty" ||
+		statusResp.Changes.Added != 0 ||
+		statusResp.Changes.Modified != 1 ||
+		statusResp.Changes.Deleted != 0 ||
+		statusResp.SyncStatus != "skipped" {
+		t.Fatalf("expected slice status to show no-git dirty state, got: %+v", statusResp)
 	}
-	output = runCLIOrFail(t, checkoutDir, "slice", "status", "--remote")
-	if !strings.Contains(output, "Remote head: ") || !strings.Contains(output, "Sync: ") || strings.Contains(output, "skipped (use --remote)") {
-		t.Fatalf("expected slice status --remote to include remote metadata, got: %s", output)
+	remoteStatusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status", "--remote")
+	if !remoteStatusResp.RemoteQueried || remoteStatusResp.SyncStatus == "skipped" || remoteStatusResp.RemoteHead == "" {
+		t.Fatalf("expected slice status --remote to include remote metadata, got: %+v", remoteStatusResp)
 	}
-	output = runCLIOrFail(t, checkoutDir, "status")
-	if !strings.Contains(output, "Mode: no-git") || !strings.Contains(output, "Slice: "+sliceID) {
-		t.Fatalf("expected top-level status alias to show slice status, got: %s", output)
+	topStatusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "status")
+	if topStatusResp.Mode != "no-git" || topStatusResp.SliceID != sliceID {
+		t.Fatalf("expected top-level status alias to show slice status, got: %+v", topStatusResp)
 	}
 
 	output = runCLIOrFail(t, checkoutDir, "doctor")
@@ -139,14 +145,16 @@ func TestSliceWorkflowCommands(t *testing.T) {
 		t.Fatalf("expected doctor output sections, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, "", "slice", "delete", sliceSlug)
-	if !strings.Contains(output, "Deleted slice: "+sliceID) {
-		t.Fatalf("expected delete output, got: %s", output)
+	deleteResp := runCLIJSONOrFail[sliceDeleteJSON](t, "", "slice", "delete", sliceSlug)
+	if deleteResp.SliceID != sliceID || deleteResp.Status == "" {
+		t.Fatalf("expected delete output, got: %+v", deleteResp)
 	}
 
-	output = runCLIOrFail(t, "", "slice", "list")
-	if strings.Contains(output, sliceID) {
-		t.Fatalf("expected deleted slice to be absent from list output, got: %s", output)
+	listResp = runCLIJSONOrFail[sliceListJSON](t, "", "slice", "list")
+	for _, slice := range listResp.Slices {
+		if slice.SliceID == sliceID {
+			t.Fatalf("expected deleted slice to be absent from list output, got: %+v", listResp)
+		}
 	}
 }
 
@@ -157,28 +165,32 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	_ = runCLIOrFail(t, workdir, "init", sliceIDArg(sliceID))
 
-	output := runCLIOrFail(t, workdir, "slice", "publish", "--review-only", "--message", "publish workflow", "--files", "publish.txt")
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("expected changeset ID from publish output, got: %s", output)
-	}
-	if !strings.Contains(output, "Changeset: "+changesetID) {
-		t.Fatalf("expected review output in publish command, got: %s", output)
+	publishPreview := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish", "--review-only", "--message", "publish workflow", "--files", "publish.txt")
+	changesetID := publishPreview.Changeset.ChangesetID
+	if changesetID == "" || !publishPreview.ReviewOnly || publishPreview.Review.ChangesetID != changesetID {
+		t.Fatalf("expected review output in publish command, got: %+v", publishPreview)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "show")
-	if !strings.Contains(output, "Changeset: "+changesetID) {
-		t.Fatalf("expected tracked changeset show output, got: %s", output)
+	showResp := runCLIJSONOrFail[changesetReviewJSON](t, workdir, "changeset", "show")
+	if showResp.ChangesetID != changesetID {
+		t.Fatalf("expected tracked changeset show output, got: %+v", showResp)
 	}
 
-	output = runCLIOrFail(t, workdir, "slice", "publish", "--files", "publish.txt")
-	if !strings.Contains(output, "Merge status: MERGE_STATUS_SUCCESS") {
-		t.Fatalf("expected publish merge success, got: %s", output)
+	publishResp := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish", "--files", "publish.txt")
+	if publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected publish merge success, got: %+v", publishResp)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "list", "--status", "merged")
-	if !strings.Contains(output, changesetID) {
-		t.Fatalf("expected merged changeset in list output, got: %s", output)
+	mergedList := runCLIJSONOrFail[changesetListJSON](t, workdir, "changeset", "list", "--status", "merged")
+	foundMerged := false
+	for _, changeset := range mergedList.Changesets {
+		if changeset.ChangesetID == changesetID {
+			foundMerged = true
+			break
+		}
+	}
+	if !foundMerged {
+		t.Fatalf("expected merged changeset in list output, got: %+v", mergedList)
 	}
 }
 
@@ -204,15 +216,14 @@ func TestChangesetCreateWorksWithoutGitCheckout(t *testing.T) {
 		t.Fatalf("write tracked file: %v", err)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "changeset", "create", "--message", "no-git create")
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("expected changeset ID, got: %s", output)
+	createResp := runCLIJSONOrFail[changesetCreateJSON](t, checkoutDir, "changeset", "create", "--message", "no-git create")
+	if createResp.ChangesetID == "" {
+		t.Fatalf("expected changeset ID, got: %+v", createResp)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "changeset", "show")
-	if !strings.Contains(output, "Changeset: "+changesetID) || !strings.Contains(output, "Files: +1 ~0 -0") {
-		t.Fatalf("expected changeset show to include modified file, got: %s", output)
+	showResp := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show")
+	if showResp.ChangesetID != createResp.ChangesetID || showResp.Diff.FilesAdded != 1 || showResp.Diff.FilesModified != 0 || showResp.Diff.FilesDeleted != 0 {
+		t.Fatalf("expected changeset show to include modified file, got: %+v", showResp)
 	}
 }
 
@@ -242,21 +253,21 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 		t.Fatalf("write new file: %v", err)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "slice", "status")
-	if !strings.Contains(output, "Mode: no-git") ||
-		!strings.Contains(output, "Working tree: dirty") ||
-		!strings.Contains(output, "Changes: +1 ~1 -0") ||
-		!strings.Contains(output, "Remote head: skipped (use --remote)") {
-		t.Fatalf("expected no-git slice status to show local changes, got: %s", output)
+	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status")
+	if statusResp.Mode != "no-git" ||
+		statusResp.WorkingTree != "dirty" ||
+		statusResp.Changes.Added != 1 ||
+		statusResp.Changes.Modified != 1 ||
+		statusResp.Changes.Deleted != 0 ||
+		statusResp.SyncStatus != "skipped" {
+		t.Fatalf("expected no-git slice status to show local changes, got: %+v", statusResp)
 	}
 
-	output = runCLIOrFail(t, checkoutDir, "slice", "publish", "--review-only", "--message", "no-git publish")
-	changesetID := extractChangesetID(output)
-	if changesetID == "" {
-		t.Fatalf("expected changeset ID from publish output, got: %s", output)
-	}
-	if !strings.Contains(output, "Changeset: "+changesetID) || !strings.Contains(output, "Status: READY_FOR_MERGE") {
-		t.Fatalf("expected publish review output to include modified file, got: %s", output)
+	publishResp := runCLIJSONOrFail[slicePublishJSON](t, checkoutDir, "slice", "publish", "--review-only", "--message", "no-git publish")
+	if publishResp.Changeset.ChangesetID == "" ||
+		publishResp.Review.ChangesetID != publishResp.Changeset.ChangesetID ||
+		publishResp.Review.ReviewStatus != "READY_FOR_MERGE" {
+		t.Fatalf("expected publish review output to include modified file, got: %+v", publishResp)
 	}
 }
 

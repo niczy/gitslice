@@ -59,6 +59,7 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 2 {
 		log.Println("Usage: gs slice create <name> <folder-path[,folder-path...]> [--folders <folder-path[,folder-path...]>]")
 		return
@@ -75,7 +76,9 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 	fs := flag.NewFlagSet("slice create", flag.ExitOnError)
 	description := fs.String("description", "Focused slice", "Description of the new slice")
 	moreFolders := fs.String("folders", "", "Additional comma-separated folder paths to include in this slice")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args[2:])
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	folderPaths = append(folderPaths, parseSliceFolderPaths(*moreFolders)...)
 	if len(folderPaths) == 0 {
@@ -99,6 +102,17 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, req)
 	if err != nil {
 		log.Fatalf("Failed to create slice: %v", err)
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(jsonSliceCreateOutput{
+			Name:        resp.Name,
+			SliceID:     resp.SliceId,
+			Slug:        resp.GetSlug(),
+			Description: *description,
+			Status:      resp.Status,
+		})
+		return
 	}
 
 	fmt.Printf("Created slice: %s (id: %s)\n", resp.Name, resp.SliceId)
