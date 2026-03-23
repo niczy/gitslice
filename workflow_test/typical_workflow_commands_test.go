@@ -100,7 +100,7 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	}
 
 	checkoutDir := t.TempDir()
-	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug, "--git")
+	output = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceSlug)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -110,31 +110,27 @@ func TestSliceWorkflowCommands(t *testing.T) {
 		t.Fatalf("expected slice tree output to include README.md, got: %s", output)
 	}
 
-	trackedFiles := strings.Fields(runGitOrFail(t, checkoutDir, "ls-files"))
-	if len(trackedFiles) == 0 {
-		t.Fatal("expected tracked files after checkout")
-	}
-	localFile := filepath.Join(checkoutDir, trackedFiles[0])
+	localFile := filepath.Join(checkoutDir, folderPath, "README.md")
 	if err := os.WriteFile(localFile, []byte("updated locally\n"), 0o644); err != nil {
 		t.Fatalf("write local file: %v", err)
 	}
 	output = runCLIOrFail(t, checkoutDir, "slice", "diff", "--name-only")
-	if !strings.Contains(output, trackedFiles[0]) {
-		t.Fatalf("expected slice diff to include %s, got: %s", trackedFiles[0], output)
+	if !strings.Contains(output, filepath.ToSlash(filepath.Join(folderPath, "README.md"))) {
+		t.Fatalf("expected slice diff to include README, got: %s", output)
 	}
 	output = runCLIOrFail(t, checkoutDir, "slice", "status")
-	if !strings.Contains(output, "Mode: git") ||
+	if !strings.Contains(output, "Mode: no-git") ||
 		!strings.Contains(output, "Working tree: dirty") ||
 		!strings.Contains(output, "Changes: +0 ~1 -0") ||
 		!strings.Contains(output, "Remote head: skipped (use --remote)") {
-		t.Fatalf("expected slice status to show git dirty state, got: %s", output)
+		t.Fatalf("expected slice status to show no-git dirty state, got: %s", output)
 	}
 	output = runCLIOrFail(t, checkoutDir, "slice", "status", "--remote")
 	if !strings.Contains(output, "Remote head: ") || !strings.Contains(output, "Sync: ") || strings.Contains(output, "skipped (use --remote)") {
 		t.Fatalf("expected slice status --remote to include remote metadata, got: %s", output)
 	}
 	output = runCLIOrFail(t, checkoutDir, "status")
-	if !strings.Contains(output, "Mode: git") || !strings.Contains(output, "Slice: "+sliceID) {
+	if !strings.Contains(output, "Mode: no-git") || !strings.Contains(output, "Slice: "+sliceID) {
 		t.Fatalf("expected top-level status alias to show slice status, got: %s", output)
 	}
 

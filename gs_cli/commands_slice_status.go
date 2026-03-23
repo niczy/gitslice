@@ -40,24 +40,16 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
-	checkoutIndex, gitEnabled, err := detectCheckoutMode(".")
+	checkoutIndex, err := detectCheckoutMode(".")
 	if err != nil {
 		log.Fatalf("Failed to read checkout mode: %v", err)
 	}
 
-	statusEntries, err := collectWorkingTreeStatus(".", checkoutIndex, gitEnabled)
+	statusEntries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
 	if err != nil {
 		log.Fatalf("Failed to inspect working tree: %v", err)
 	}
 	statusEntries = filterWorkingTreeStatusEntries(statusEntries)
-
-	branch := ""
-	if gitEnabled {
-		branch, err = gitCurrentBranch(".")
-		if err != nil {
-			log.Fatalf("Failed to read git branch: %v", err)
-		}
-	}
 
 	trackedChangesetID, err := readTrackedChangesetIDFromConfig()
 	if err != nil {
@@ -92,20 +84,13 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	added, modified, deleted := summarizeWorkingTreeStatus(statusEntries)
-	mode := "no-git"
-	if gitEnabled {
-		mode = "git"
-	}
 	workingTreeState := "clean"
 	if len(statusEntries) > 0 {
 		workingTreeState = "dirty"
 	}
 
 	fmt.Printf("Slice: %s\n", sliceID)
-	fmt.Printf("Mode: %s\n", mode)
-	if branch != "" {
-		fmt.Printf("Branch: %s\n", branch)
-	}
+	fmt.Println("Mode: no-git")
 	if localCommitHash != "" {
 		fmt.Printf("Checkout base: %s\n", localCommitHash)
 	} else {
@@ -157,76 +142,6 @@ func handleSliceStatus(ctx context.Context, cli *CLI, args []string) {
 	}
 	if len(printed) < len(statusEntries) {
 		fmt.Printf("  ... and %d more\n", len(statusEntries)-len(printed))
-	}
-}
-
-func collectWorkingTreeStatus(dir string, checkoutIndex *localCheckoutIndex, gitEnabled bool) ([]workingTreeStatusEntry, error) {
-	if gitEnabled {
-		return collectGitWorkingTreeStatus(dir)
-	}
-	return collectNoGitWorkingTreeStatus(dir, checkoutIndex)
-}
-
-func collectGitWorkingTreeStatus(dir string) ([]workingTreeStatusEntry, error) {
-	output, err := runGitCommand(dir, "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		return nil, err
-	}
-	return parseGitPorcelainStatus(output), nil
-}
-
-func parseGitPorcelainStatus(output string) []workingTreeStatusEntry {
-	if strings.TrimSpace(output) == "" {
-		return nil
-	}
-
-	seen := make(map[string]struct{})
-	entries := make([]workingTreeStatusEntry, 0)
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == "" || len(line) < 4 {
-			continue
-		}
-
-		code := line[:2]
-		pathSpec := strings.TrimSpace(line[3:])
-		if pathSpec == "" {
-			continue
-		}
-		if idx := strings.LastIndex(pathSpec, " -> "); idx >= 0 {
-			pathSpec = strings.TrimSpace(pathSpec[idx+4:])
-		}
-
-		path := filepath.Clean(pathSpec)
-		if path == "" || path == "." {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-
-		entries = append(entries, workingTreeStatusEntry{
-			Path:   path,
-			Status: gitPorcelainCodeToStatus(code),
-		})
-	}
-
-	sortWorkingTreeStatus(entries)
-	return entries
-}
-
-func gitPorcelainCodeToStatus(code string) string {
-	code = strings.TrimSpace(code)
-	switch {
-	case code == "??":
-		return "A"
-	case strings.Contains(code, "D"):
-		return "D"
-	case strings.Contains(code, "A"):
-		return "A"
-	default:
-		return "M"
 	}
 }
 

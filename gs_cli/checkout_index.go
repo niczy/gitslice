@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	checkoutIndexMagic   = "GSIDX002"
-	checkoutIndexVersion = 2
+	checkoutIndexMagic   = "GSIDX003"
+	checkoutIndexVersion = 3
 )
 
 type checkoutTrackedFile struct {
@@ -49,7 +49,6 @@ type localCheckoutIndex struct {
 	Version     uint32
 	SliceID     string
 	CommitHash  string
-	GitEnabled  bool
 	Files       []checkoutTrackedFile
 	Directories []checkoutTrackedDirectory
 }
@@ -93,10 +92,6 @@ func readCheckoutIndex(dir string) (*localCheckoutIndex, error) {
 		return nil, err
 	}
 	index.CommitHash, err = readCheckoutIndexString(reader)
-	if err != nil {
-		return nil, err
-	}
-	index.GitEnabled, err = readCheckoutIndexBool(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +162,6 @@ func writeCheckoutIndex(dir string, index *localCheckoutIndex) error {
 	if err := writeCheckoutIndexString(writer, index.CommitHash); err != nil {
 		return err
 	}
-	if err := writeCheckoutIndexBool(writer, index.GitEnabled); err != nil {
-		return err
-	}
 	if err := writeCheckoutIndexUint32(writer, uint32(len(index.Files))); err != nil {
 		return err
 	}
@@ -199,12 +191,11 @@ func writeCheckoutIndex(dir string, index *localCheckoutIndex) error {
 	return nil
 }
 
-func buildCheckoutIndex(dir, sliceID string, manifest *slicev1.SliceManifest, gitEnabled bool) (*localCheckoutIndex, error) {
+func buildCheckoutIndex(dir, sliceID string, manifest *slicev1.SliceManifest) (*localCheckoutIndex, error) {
 	index := &localCheckoutIndex{
 		Version:    checkoutIndexVersion,
 		SliceID:    strings.TrimSpace(sliceID),
 		CommitHash: strings.TrimSpace(manifest.GetCommitHash()),
-		GitEnabled: gitEnabled,
 	}
 	if manifest == nil {
 		return index, nil
@@ -336,15 +327,15 @@ func checkoutIndicesEqualContent(a, b *localCheckoutIndex) bool {
 	return true
 }
 
-func detectCheckoutMode(dir string) (*localCheckoutIndex, bool, error) {
+func detectCheckoutMode(dir string) (*localCheckoutIndex, error) {
 	index, err := readCheckoutIndex(dir)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if index == nil {
-		return nil, false, fmt.Errorf("checkout metadata missing; run gs slice checkout again")
+		return nil, fmt.Errorf("checkout metadata missing; run gs slice checkout again")
 	}
-	return index, index.GitEnabled, nil
+	return index, nil
 }
 
 func detectNoGitModifiedFiles(dir string, index *localCheckoutIndex) ([]string, error) {

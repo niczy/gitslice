@@ -28,7 +28,7 @@ func TestSliceInitStoresSliceID(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	output := runCLIOrFail(t, workdir, "init", sliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
 

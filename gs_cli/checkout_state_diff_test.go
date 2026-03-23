@@ -291,7 +291,6 @@ func TestCheckoutIndexBinaryRoundTrip(t *testing.T) {
 		Version:    checkoutIndexVersion,
 		SliceID:    "slice-test",
 		CommitHash: "commit-42",
-		GitEnabled: true,
 		Files: []checkoutTrackedFile{
 			{
 				Path:                 "README.md",

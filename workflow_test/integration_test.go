@@ -540,7 +540,7 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	output := runCLIOrFail(t, workdir, "init", sliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
 
@@ -578,7 +578,7 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 
 	rootSliceArg := sliceIDArg("root_slice")
 	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
 
@@ -607,7 +607,7 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	newSliceWorkdir := t.TempDir()
 	newSliceArg := sliceIDArg(newSliceID)
 	output = runCLIOrFail(t, newSliceWorkdir, "init", newSliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
 
@@ -624,36 +624,22 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	}
 }
 
-func TestCheckoutInitializesGitRepo(t *testing.T) {
+func TestCheckoutWritesNoGitMetadata(t *testing.T) {
 	workdir := t.TempDir()
-	sliceID := fmt.Sprintf("slice-git-%d", time.Now().UnixNano())
+	sliceID := fmt.Sprintf("slice-checkout-%d", time.Now().UnixNano())
 
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg, "--git")
+	output := runCLIOrFail(t, workdir, "slice", "checkout", sliceArg)
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("Expected checkout output, got: %s", output)
 	}
-
-	insideRepo := runGitOrFail(t, workdir, "rev-parse", "--is-inside-work-tree")
-	if insideRepo != "true" {
-		t.Fatalf("expected git repo, got %q", insideRepo)
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected checkout to skip git metadata, err=%v", err)
 	}
-
-	branch := runGitOrFail(t, workdir, "symbolic-ref", "--short", "HEAD")
-	if branch != "main" {
-		t.Fatalf("expected main branch after checkout, got %q", branch)
-	}
-
-	latestMessage := runGitOrFail(t, workdir, "log", "-1", "--pretty=%s")
-	if !strings.Contains(latestMessage, "gitslice checkout") {
-		t.Fatalf("expected checkout commit message, got %q", latestMessage)
-	}
-
-	status := runGitOrFail(t, workdir, "status", "--porcelain")
-	if status != "" {
-		t.Fatalf("expected clean git status after checkout, got %q", status)
+	if _, err := os.Stat(filepath.Join(workdir, ".gs", "index")); err != nil {
+		t.Fatalf("expected checkout index to be written, err=%v", err)
 	}
 }
 
@@ -734,201 +720,6 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	}
 	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("expected reconstructed full file to be cached again: %v", err)
-	}
-}
-
-func TestSliceSyncUpdatesCurrentCheckout(t *testing.T) {
-	ctx := context.Background()
-	homeDir := t.TempDir()
-	env := map[string]string{"HOME": homeDir}
-
-	runCLIForSlice := func(workdir string, args ...string) string {
-		t.Helper()
-		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, testUsername, args...)
-		if err != nil {
-			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
-		}
-		return output
-	}
-
-	sliceID := fmt.Sprintf("slice-sync-%d", time.Now().UnixNano())
-	createSliceFromRoot(t, sliceID, "")
-
-	writeSliceFile := func(filePath string, content []byte) string {
-		t.Helper()
-		entry, err := testStorage.GetEntryByPath(ctx, sliceID, filePath)
-		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
-			t.Fatalf("get entry %s: %v", filePath, err)
-		}
-		if entry == nil {
-			if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
-				ID:       common.GenerateEntryID(sliceID, filePath),
-				Path:     filePath,
-				Type:     "file",
-				ParentID: sliceID,
-				Size:     int64(len(content)),
-			}); err != nil {
-				t.Fatalf("add entry %s: %v", filePath, err)
-			}
-		} else {
-			entry.Size = int64(len(content))
-			if err := testStorage.UpdateEntry(ctx, entry); err != nil {
-				t.Fatalf("update entry %s: %v", filePath, err)
-			}
-		}
-		manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content)
-		if err != nil {
-			t.Fatalf("WriteSliceFileManifest(%s) failed: %v", filePath, err)
-		}
-		if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
-			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
-		}
-		return manifest.Hash
-	}
-
-	removeSliceFile := func(filePath string) {
-		t.Helper()
-		entry, err := testStorage.GetEntryByPath(ctx, sliceID, filePath)
-		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
-			t.Fatalf("get entry for delete %s: %v", filePath, err)
-		}
-		if entry != nil {
-			if err := testStorage.DeleteEntry(ctx, entry.ID); err != nil {
-				t.Fatalf("DeleteEntry(%s) failed: %v", filePath, err)
-			}
-		}
-		if err := testStorage.DeleteFileManifest(ctx, sliceID, filePath); err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
-			t.Fatalf("DeleteFileManifest(%s) failed: %v", filePath, err)
-		}
-		if err := testStorage.RemoveFileFromSlice(ctx, filePath, sliceID); err != nil {
-			t.Fatalf("RemoveFileFromSlice(%s) failed: %v", filePath, err)
-		}
-	}
-
-	setSliceHead := func(commitHash, parentHash string, fileHashes map[string]string) {
-		t.Helper()
-		now := time.Now()
-		if err := testStorage.AddSliceCommit(ctx, sliceID, &models.Commit{
-			CommitHash: commitHash,
-			ParentHash: parentHash,
-			Timestamp:  now,
-			Message:    "test commit " + commitHash,
-		}); err != nil {
-			t.Fatalf("AddSliceCommit(%s) failed: %v", commitHash, err)
-		}
-		if err := testStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
-			CommitHash: commitHash,
-			SliceID:    sliceID,
-			Files:      fileHashes,
-			Timestamp:  now,
-		}); err != nil {
-			t.Fatalf("SaveCommitSnapshot(%s) failed: %v", commitHash, err)
-		}
-		metadata, err := testStorage.GetSliceMetadata(ctx, sliceID)
-		if err != nil {
-			t.Fatalf("GetSliceMetadata(%s) failed: %v", sliceID, err)
-		}
-		metadata.HeadCommitHash = commitHash
-		metadata.LastModified = now
-		metadata.ModifiedFiles = make([]string, 0, len(fileHashes))
-		for filePath := range fileHashes {
-			metadata.ModifiedFiles = append(metadata.ModifiedFiles, filePath)
-		}
-		sort.Strings(metadata.ModifiedFiles)
-		metadata.ModifiedFilesCount = len(metadata.ModifiedFiles)
-		if err := testStorage.UpdateSliceMetadata(ctx, sliceID, metadata); err != nil {
-			t.Fatalf("UpdateSliceMetadata(%s) failed: %v", sliceID, err)
-		}
-	}
-
-	readmePath := "README.md"
-	removedPath := "stale.txt"
-	readmeV1Hash := writeSliceFile(readmePath, []byte("sync v1\n"))
-	removedHash := writeSliceFile(removedPath, []byte("remove me\n"))
-	setSliceHead("sync-commit-1", "", map[string]string{
-		readmePath:  readmeV1Hash,
-		removedPath: removedHash,
-	})
-
-	checkoutDir := filepath.Join(t.TempDir(), "checkout")
-	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
-		t.Fatalf("mkdir checkout dir: %v", err)
-	}
-	output := runCLIForSlice(checkoutDir, "slice", "checkout", sliceID, "--git")
-	if !strings.Contains(output, "Checked out slice: "+sliceID) {
-		t.Fatalf("expected checkout output, got: %s", output)
-	}
-
-	localReadme := filepath.Join(checkoutDir, readmePath)
-	localRemoved := filepath.Join(checkoutDir, removedPath)
-	got, err := os.ReadFile(localReadme)
-	if err != nil {
-		t.Fatalf("read synced readme after checkout: %v", err)
-	}
-	if string(got) != "sync v1\n" {
-		t.Fatalf("unexpected initial checkout content: %q", string(got))
-	}
-	if _, err := os.Stat(localRemoved); err != nil {
-		t.Fatalf("expected stale file to exist before sync: %v", err)
-	}
-	if status := runGitOrFail(t, checkoutDir, "status", "--porcelain"); status != "" {
-		t.Fatalf("expected clean checkout before remote updates, got %q", status)
-	}
-
-	readmeV2Hash := writeSliceFile(readmePath, []byte("sync v2\n"))
-	removeSliceFile(removedPath)
-	setSliceHead("sync-commit-2", "sync-commit-1", map[string]string{
-		readmePath: readmeV2Hash,
-	})
-	if status := runGitOrFail(t, checkoutDir, "status", "--porcelain"); status != "" {
-		t.Fatalf("expected clean checkout before sync, got %q", status)
-	}
-
-	output = runCLIForSlice(checkoutDir, "slice", "sync")
-	if !strings.Contains(output, "Synced slice: "+sliceID) {
-		t.Fatalf("expected sync output, got: %s", output)
-	}
-	if !strings.Contains(output, "Status: updated") {
-		t.Fatalf("expected updated sync status, got: %s", output)
-	}
-
-	got, err = os.ReadFile(localReadme)
-	if err != nil {
-		t.Fatalf("read synced readme after sync: %v", err)
-	}
-	if string(got) != "sync v2\n" {
-		t.Fatalf("unexpected synced content: %q", string(got))
-	}
-	if _, err := os.Stat(localRemoved); !os.IsNotExist(err) {
-		t.Fatalf("expected stale file to be removed after sync, err=%v", err)
-	}
-
-	latestMessage := runGitOrFail(t, checkoutDir, "log", "-1", "--pretty=%s")
-	if !strings.Contains(latestMessage, "gitslice sync") {
-		t.Fatalf("expected sync commit message, got %q", latestMessage)
-	}
-
-	commitCountBeforeNoop := runGitOrFail(t, checkoutDir, "rev-list", "--count", "HEAD")
-	setSliceHead("sync-commit-3", "sync-commit-2", map[string]string{
-		readmePath: readmeV2Hash,
-	})
-	output = runCLIForSlice(checkoutDir, "slice", "sync")
-	if !strings.Contains(output, "Status: up to date") {
-		t.Fatalf("expected up-to-date sync status for unchanged tree, got: %s", output)
-	}
-	commitCountAfterNoop := runGitOrFail(t, checkoutDir, "rev-list", "--count", "HEAD")
-	if commitCountAfterNoop != commitCountBeforeNoop {
-		t.Fatalf("expected no new git commit for unchanged tree, got before=%s after=%s", commitCountBeforeNoop, commitCountAfterNoop)
-	}
-
-	output = runCLIForSlice(checkoutDir, "slice", "sync")
-	if !strings.Contains(output, "Status: up to date") {
-		t.Fatalf("expected up-to-date sync status, got: %s", output)
-	}
-
-	output = runCLIForSlice(checkoutDir, "slice", "pull")
-	if !strings.Contains(output, "Status: up to date") {
-		t.Fatalf("expected pull alias to report up-to-date status, got: %s", output)
 	}
 }
 
@@ -1091,29 +882,6 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 	}
 }
 
-func TestChangesetCreateRequiresMainBranch(t *testing.T) {
-	workdir := t.TempDir()
-	sliceID := fmt.Sprintf("slice-branch-%d", time.Now().UnixNano())
-
-	createSliceFromRoot(t, sliceID, "")
-	sliceArg := sliceIDArg(sliceID)
-
-	output := runCLIOrFail(t, workdir, "init", sliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
-		t.Fatalf("Expected init output, got: %s", output)
-	}
-
-	runGitOrFail(t, workdir, "checkout", "-b", "feature/test")
-
-	output, err := runCLIWithDir(workdir, "changeset", "create", "--message", "branch change", "--files", "branch_file.txt")
-	if err == nil {
-		t.Fatalf("expected changeset creation to fail on non-main branch, output: %s", output)
-	}
-	if !strings.Contains(output, "main branch") {
-		t.Fatalf("expected main branch error, got: %s", output)
-	}
-}
-
 func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
@@ -1124,7 +892,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 
 	rootSliceArg := sliceIDArg("root_slice")
 	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
 
@@ -1161,7 +929,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files", "--git")
+	output = runCLIOrFail(t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
 	if !strings.Contains(output, "Checked out slice: "+sliceID) {
 		t.Fatalf("expected checkout output, got: %s", output)
 	}
@@ -2133,7 +1901,7 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	output := runCLIOrFail(t, workdir, "init", sliceArg)
-	if !strings.Contains(output, "Initialized empty gitslice repository") {
+	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("expected init output, got: %s", output)
 	}
 

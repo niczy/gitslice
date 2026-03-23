@@ -134,7 +134,7 @@ func TestMaterializeSliceCheckoutSkipsUnchangedTrackedFiles(t *testing.T) {
 		t.Fatalf("initial materialize failed: %v", err)
 	}
 
-	index, err := buildCheckoutIndex(workdir, "slice-test", resp.GetManifest(), false)
+	index, err := buildCheckoutIndex(workdir, "slice-test", resp.GetManifest())
 	if err != nil {
 		t.Fatalf("build checkout index: %v", err)
 	}
