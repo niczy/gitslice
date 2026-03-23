@@ -1235,6 +1235,39 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestMergeChangesetReturnsAbortedWhenSliceAlreadyLocked(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-locked", Name: "slice-locked", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	cs := &models.Changeset{
+		ID:            "cs-locked",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{"locked.txt"},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+	if err := st.LockSliceAndFiles(ctx, slice.ID, []string{"other.txt"}); err != nil {
+		t.Fatalf("failed to pre-lock slice: %v", err)
+	}
+	defer st.UnlockSliceAndFiles(ctx, slice.ID, []string{"other.txt"})
+
+	srv := newSliceServiceServer(st)
+	_, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err == nil {
+		t.Fatal("expected MergeChangeset to fail when slice is already locked")
+	}
+	if got := status.Code(err); got != codes.Aborted {
+		t.Fatalf("expected Aborted, got %v (%v)", got, err)
+	}
+}
+
 func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

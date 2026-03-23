@@ -317,6 +317,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil || len(conflicts) != 1 {
 		t.Fatalf("ListConflicts unexpected: %v len=%d", err, len(conflicts))
 	}
+	if _, err := st.ResolveConflict(ctx, file1ID, "slice-unknown"); err != ErrInvalidInput {
+		t.Fatalf("expected ErrInvalidInput for unknown preferred slice, got %v", err)
+	}
+	conflicts, err = st.ListConflicts(ctx)
+	if err != nil || len(conflicts) != 1 {
+		t.Fatalf("ListConflicts after invalid resolve unexpected: %v len=%d", err, len(conflicts))
+	}
 	resolved, err := st.ResolveConflict(ctx, file1ID, slice.ID)
 	if err != nil {
 		t.Fatalf("ResolveConflict failed: %v", err)
@@ -328,6 +335,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	// Locking
 	if err := st.LockSliceAndFiles(ctx, slice.ID, []string{file1ID}); err != nil {
 		t.Fatalf("LockSliceAndFiles failed: %v", err)
+	}
+	if err := st.LockSliceAndFiles(ctx, slice.ID, []string{file2ID}); err != ErrLockHeld {
+		t.Fatalf("expected ErrLockHeld for concurrent lock on same slice, got %v", err)
 	}
 	if err := st.LockSliceAndFiles(ctx, slice2.ID, []string{file1ID}); err != ErrLockHeld {
 		t.Fatalf("expected ErrLockHeld, got %v", err)

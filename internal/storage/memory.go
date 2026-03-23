@@ -227,6 +227,9 @@ func (s *InMemoryStorage) LockSliceAndFiles(ctx context.Context, sliceID string,
 	if _, exists := s.slices[sliceID]; !exists {
 		return ErrSliceNotFound
 	}
+	if s.lockedSlices[sliceID] {
+		return ErrLockHeld
+	}
 
 	for _, fileID := range fileIDs {
 		if owner, locked := s.fileLocks[fileID]; locked && owner != sliceID {
@@ -825,15 +828,18 @@ func (s *InMemoryStorage) ResolveConflict(ctx context.Context, fileID, preferred
 	if preferredSliceID != "" {
 		if _, ok := slices[preferredSliceID]; ok {
 			updated[preferredSliceID] = true
+		} else {
+			return nil, ErrInvalidInput
 		}
 	}
 
 	if len(updated) == 0 && len(slices) > 0 {
-		// Default to keeping the first slice if preference was unknown
+		remaining := make([]string, 0, len(slices))
 		for sliceID := range slices {
-			updated[sliceID] = true
-			break
+			remaining = append(remaining, sliceID)
 		}
+		sort.Strings(remaining)
+		updated[remaining[0]] = true
 	}
 
 	s.fileIndex[fileID] = updated
