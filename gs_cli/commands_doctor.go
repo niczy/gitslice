@@ -13,112 +13,203 @@ import (
 )
 
 func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	fs.Parse(args)
+	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 0 {
 		log.Println("Usage: gs doctor")
 		return
 	}
 
-	fmt.Println("Auth:")
-	fmt.Printf("  Source: %s\n", strings.TrimSpace(authConfig.Source))
-	if strings.TrimSpace(authConfig.Username) != "" {
-		fmt.Printf("  Username: %s\n", strings.TrimSpace(authConfig.Username))
+	out := jsonDoctorOutput{
+		Auth: jsonDoctorAuthOutput{
+			Source:            strings.TrimSpace(authConfig.Source),
+			Username:          strings.TrimSpace(authConfig.Username),
+			StoredCredentials: authConfig.CredentialStore,
+		},
 	}
-	fmt.Printf("  Stored credentials: %t\n", authConfig.CredentialStore)
 
-	fmt.Println("Services:")
 	if meResp, err := cli.adminClient.Me(ctx, &adminv1.MeRequest{}); err != nil {
-		fmt.Printf("  Admin: error (%v)\n", err)
+		out.Services.Admin.Error = err.Error()
 	} else {
-		fmt.Printf("  Admin: ok as %s\n", meResp.GetUser().GetUsername())
+		out.Services.Admin.OK = true
+		out.Services.Admin.Username = meResp.GetUser().GetUsername()
 	}
 	if rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{}); err != nil {
-		fmt.Printf("  Slice: error (%v)\n", err)
+		out.Services.Slice.Error = err.Error()
 	} else {
-		fmt.Printf("  Slice: ok root=%s head=%s\n", rootResp.GetSliceId(), rootResp.GetCommitHash())
+		out.Services.Slice.OK = true
+		out.Services.Slice.RootSliceID = rootResp.GetSliceId()
+		out.Services.Slice.Head = rootResp.GetCommitHash()
 	}
 	if stateResp, err := cli.adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{}); err != nil {
-		fmt.Printf("  Global state: error (%v)\n", err)
+		out.Services.GlobalState.Error = err.Error()
 	} else {
-		fmt.Printf("  Global state: ok head=%s\n", stateResp.GetGlobalCommitHash())
+		out.Services.GlobalState.OK = true
+		out.Services.GlobalState.Head = stateResp.GetGlobalCommitHash()
 	}
 	if homeSliceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig); err != nil {
-		fmt.Printf("  Filesystem: error (%v)\n", err)
+		out.Services.Filesystem.Error = err.Error()
 	} else {
-		fmt.Printf("  Filesystem: ok home=%s\n", homeSliceID)
+		out.Services.Filesystem.OK = true
+		out.Services.Filesystem.HomeSliceID = homeSliceID
+	}
+
+	cache, err := NewCacheManager()
+	if err != nil {
+		out.Cache.Error = err.Error()
+	} else if stats, err := cache.Stats(); err != nil {
+		out.Cache.Error = err.Error()
+	} else {
+		out.Cache.Root = cache.Root()
+		out.Cache.ObjectCount = stats.ObjectCount
+		out.Cache.TotalBytes = stats.TotalBytes
+	}
+	records, err := listCheckoutRecords()
+	if err != nil {
+		if out.Cache.Error == "" {
+			out.Cache.Error = err.Error()
+		}
+	} else {
+		out.Cache.TrackedCheckouts = len(records)
+		out.Cache.UniqueSlices = countUniqueCheckoutSlices(records)
+		out.Cache.StaleCheckoutRecords = countStaleCheckoutRecords(records)
+	}
+
+	sliceID, err := sliceIDFromConfig()
+	if err != nil {
+		out.Checkout.Error = err.Error()
+	} else {
+		out.Checkout.Present = true
+		out.Checkout.SliceID = sliceID
+		out.Checkout.Mode = "no-git"
+
+		checkoutIndex, err := readCheckoutIndex(".")
+		if err != nil {
+			out.Checkout.Error = err.Error()
+		} else if checkoutIndex != nil {
+			out.Checkout.CheckoutBase = strings.TrimSpace(checkoutIndex.CommitHash)
+			entries, statusErr := collectNoGitWorkingTreeStatus(".", checkoutIndex)
+			if statusErr != nil {
+				out.Checkout.Error = statusErr.Error()
+			} else {
+				entries = filterWorkingTreeStatusEntries(entries)
+				added, modified, deleted := summarizeWorkingTreeStatus(entries)
+				out.Checkout.Changes = jsonWorkingTreeSummary{
+					Added:    added,
+					Modified: modified,
+					Deleted:  deleted,
+				}
+				if len(entries) == 0 {
+					out.Checkout.WorkingTree = "clean"
+				} else {
+					out.Checkout.WorkingTree = "dirty"
+				}
+			}
+		}
+
+		if stateResp, err := cli.sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID}); err != nil {
+			if out.Checkout.Error == "" {
+				out.Checkout.Error = err.Error()
+			}
+		} else {
+			out.Checkout.RemoteHead = stateResp.GetLatestCommitHash()
+			out.Checkout.ModifiedFiles = len(stateResp.GetModifiedFiles())
+		}
+
+		absCwd, absErr := filepath.Abs(".")
+		if absErr != nil {
+			if out.Checkout.Error == "" {
+				out.Checkout.Error = absErr.Error()
+			}
+		} else {
+			for _, record := range records {
+				if filepath.Clean(record.Path) == filepath.Clean(absCwd) {
+					out.Checkout.Registered = true
+					out.Checkout.RegisteredCommitHash = record.CommitHash
+					break
+				}
+			}
+		}
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(out)
+		return
+	}
+
+	fmt.Println("Auth:")
+	fmt.Printf("  Source: %s\n", out.Auth.Source)
+	if out.Auth.Username != "" {
+		fmt.Printf("  Username: %s\n", out.Auth.Username)
+	}
+	fmt.Printf("  Stored credentials: %t\n", out.Auth.StoredCredentials)
+
+	fmt.Println("Services:")
+	if out.Services.Admin.OK {
+		fmt.Printf("  Admin: ok as %s\n", out.Services.Admin.Username)
+	} else {
+		fmt.Printf("  Admin: error (%s)\n", out.Services.Admin.Error)
+	}
+	if out.Services.Slice.OK {
+		fmt.Printf("  Slice: ok root=%s head=%s\n", out.Services.Slice.RootSliceID, out.Services.Slice.Head)
+	} else {
+		fmt.Printf("  Slice: error (%s)\n", out.Services.Slice.Error)
+	}
+	if out.Services.GlobalState.OK {
+		fmt.Printf("  Global state: ok head=%s\n", out.Services.GlobalState.Head)
+	} else {
+		fmt.Printf("  Global state: error (%s)\n", out.Services.GlobalState.Error)
+	}
+	if out.Services.Filesystem.OK {
+		fmt.Printf("  Filesystem: ok home=%s\n", out.Services.Filesystem.HomeSliceID)
+	} else {
+		fmt.Printf("  Filesystem: error (%s)\n", out.Services.Filesystem.Error)
 	}
 
 	fmt.Println("Cache:")
-	cache, err := NewCacheManager()
-	if err != nil {
-		fmt.Printf("  Error: %v\n", err)
-	} else if stats, err := cache.Stats(); err != nil {
-		fmt.Printf("  Error: %v\n", err)
+	if out.Cache.Error != "" {
+		fmt.Printf("  Error: %s\n", out.Cache.Error)
 	} else {
-		fmt.Printf("  Root: %s\n", cache.Root())
-		fmt.Printf("  Objects: %d\n", stats.ObjectCount)
-		fmt.Printf("  Bytes: %d\n", stats.TotalBytes)
+		fmt.Printf("  Root: %s\n", out.Cache.Root)
+		fmt.Printf("  Objects: %d\n", out.Cache.ObjectCount)
+		fmt.Printf("  Bytes: %d\n", out.Cache.TotalBytes)
 	}
-
-	records, err := listCheckoutRecords()
-	if err != nil {
-		fmt.Printf("  Checkout registry: error (%v)\n", err)
-	} else {
-		fmt.Printf("  Tracked checkouts: %d\n", len(records))
-		fmt.Printf("  Unique slices: %d\n", countUniqueCheckoutSlices(records))
-		fmt.Printf("  Stale records: %d\n", countStaleCheckoutRecords(records))
-	}
+	fmt.Printf("  Tracked checkouts: %d\n", out.Cache.TrackedCheckouts)
+	fmt.Printf("  Unique slices: %d\n", out.Cache.UniqueSlices)
+	fmt.Printf("  Stale records: %d\n", out.Cache.StaleCheckoutRecords)
 
 	fmt.Println("Checkout:")
-	sliceID, err := sliceIDFromConfig()
-	if err != nil {
-		fmt.Printf("  Current directory: not a gitslice checkout (%v)\n", err)
+	if !out.Checkout.Present {
+		fmt.Printf("  Current directory: not a gitslice checkout (%s)\n", out.Checkout.Error)
 		return
 	}
-	fmt.Printf("  Slice: %s\n", sliceID)
-	fmt.Println("  Mode: no-git")
-
-	checkoutIndex, err := readCheckoutIndex(".")
-	if err != nil {
-		fmt.Printf("  Checkout metadata: error (%v)\n", err)
-	} else if checkoutIndex == nil {
-		fmt.Println("  Checkout metadata: missing")
-	} else if strings.TrimSpace(checkoutIndex.CommitHash) != "" {
-		fmt.Printf("  Checkout base: %s\n", strings.TrimSpace(checkoutIndex.CommitHash))
+	fmt.Printf("  Slice: %s\n", out.Checkout.SliceID)
+	fmt.Printf("  Mode: %s\n", out.Checkout.Mode)
+	if out.Checkout.CheckoutBase != "" {
+		fmt.Printf("  Checkout base: %s\n", out.Checkout.CheckoutBase)
 	}
-
-	if stateResp, err := cli.sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: sliceID}); err != nil {
-		fmt.Printf("  Remote state: error (%v)\n", err)
-	} else {
-		fmt.Printf("  Remote head: %s\n", stateResp.GetLatestCommitHash())
-		fmt.Printf("  Modified files: %d\n", len(stateResp.GetModifiedFiles()))
+	if out.Checkout.RemoteHead != "" {
+		fmt.Printf("  Remote head: %s\n", out.Checkout.RemoteHead)
+		fmt.Printf("  Modified files: %d\n", out.Checkout.ModifiedFiles)
 	}
-	if checkoutIndex != nil {
-		entries, err := collectNoGitWorkingTreeStatus(".", checkoutIndex)
-		if err != nil {
-			fmt.Printf("  Working tree: error (%v)\n", err)
-		} else {
-			entries = filterWorkingTreeStatusEntries(entries)
-			added, modified, deleted := summarizeWorkingTreeStatus(entries)
-			state := "clean"
-			if len(entries) > 0 {
-				state = "dirty"
-			}
-			fmt.Printf("  Working tree: %s (+%d ~%d -%d)\n", state, added, modified, deleted)
-		}
+	if out.Checkout.WorkingTree != "" {
+		fmt.Printf(
+			"  Working tree: %s (+%d ~%d -%d)\n",
+			out.Checkout.WorkingTree,
+			out.Checkout.Changes.Added,
+			out.Checkout.Changes.Modified,
+			out.Checkout.Changes.Deleted,
+		)
 	}
-
-	absCwd, err := filepath.Abs(".")
-	if err != nil {
-		fmt.Printf("  Registry path: error (%v)\n", err)
+	if out.Checkout.Error != "" {
+		fmt.Printf("  Checkout metadata: error (%s)\n", out.Checkout.Error)
+	}
+	if out.Checkout.Registered {
+		fmt.Printf("  Registered checkout: yes (%s)\n", out.Checkout.RegisteredCommitHash)
 		return
-	}
-	for _, record := range records {
-		if filepath.Clean(record.Path) == filepath.Clean(absCwd) {
-			fmt.Printf("  Registered checkout: yes (%s)\n", record.CommitHash)
-			return
-		}
 	}
 	fmt.Println("  Registered checkout: no")
 }

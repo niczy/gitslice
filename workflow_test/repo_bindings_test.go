@@ -61,30 +61,54 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 		}
 		return output
 	}
+	runCLIJSONForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		args = append(args, "--json")
+		return runCLIForUser(workdir, args...)
+	}
 
 	remoteDir, sourceDir := createLocalGitRemote(t)
 	boundPath := fmt.Sprintf("/%s/repos/demo-%d", username, time.Now().UnixNano())
 	readmePath := boundPath + "/README.md"
 
-	output := runCLIForUser("", "repo", "import", "--push-enabled", remoteDir, boundPath)
-	if !strings.Contains(output, "Imported "+remoteDir+" into "+boundPath) {
-		t.Fatalf("expected import output, got: %s", output)
+	importOutput := runCLIJSONForUser("", "repo", "import", "--push-enabled", remoteDir, boundPath)
+	var importResp repoImportJSON
+	if err := json.Unmarshal([]byte(importOutput), &importResp); err != nil {
+		t.Fatalf("decode repo import JSON: %v\nOutput:\n%s", err, importOutput)
 	}
-	if !strings.Contains(output, "Branch: main") {
-		t.Fatalf("expected import branch output, got: %s", output)
-	}
-
-	output = runCLIForUser("", "repo", "list")
-	if !strings.Contains(output, boundPath) || !strings.Contains(output, remoteDir) {
-		t.Fatalf("expected repo list output to include binding, got: %s", output)
+	if importResp.Binding.Path != boundPath || importResp.Binding.RepoURL != remoteDir || importResp.Binding.Branch != "main" {
+		t.Fatalf("expected import output, got: %+v", importResp)
 	}
 
-	output = runCLIForUser("", "repo", "status", boundPath)
-	if !strings.Contains(output, "Push enabled: true") {
-		t.Fatalf("expected status to show push enabled, got: %s", output)
+	listOutput := runCLIJSONForUser("", "repo", "list")
+	var listResp repoListJSON
+	if err := json.Unmarshal([]byte(listOutput), &listResp); err != nil {
+		t.Fatalf("decode repo list JSON: %v\nOutput:\n%s", err, listOutput)
+	}
+	if listResp.Total < 1 {
+		t.Fatalf("expected repo list output to include binding, got: %+v", listResp)
+	}
+	foundBinding := false
+	for _, binding := range listResp.Bindings {
+		if binding.Path == boundPath && binding.RepoURL == remoteDir {
+			foundBinding = true
+			break
+		}
+	}
+	if !foundBinding {
+		t.Fatalf("expected repo list output to include binding, got: %+v", listResp)
 	}
 
-	output = runCLIForUser("", "fs", "cat", readmePath)
+	statusOutput := runCLIJSONForUser("", "repo", "status", boundPath)
+	var statusResp repoStatusJSON
+	if err := json.Unmarshal([]byte(statusOutput), &statusResp); err != nil {
+		t.Fatalf("decode repo status JSON: %v\nOutput:\n%s", err, statusOutput)
+	}
+	if !statusResp.Found || statusResp.Binding == nil || !statusResp.Binding.PushEnabled {
+		t.Fatalf("expected status to show push enabled, got: %+v", statusResp)
+	}
+
+	output := runCLIForUser("", "fs", "cat", readmePath)
 	if output != "version 1\n" {
 		t.Fatalf("unexpected imported README: %q", output)
 	}
@@ -127,9 +151,13 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 	runGitOrFail(t, sourceDir, "commit", "-m", "remote update")
 	runGitOrFail(t, sourceDir, "push", "origin", "main")
 
-	output = runCLIForUser("", "repo", "pull", boundPath)
-	if !strings.Contains(output, "Pulled") || !strings.Contains(output, "Home commit: ") {
-		t.Fatalf("expected pull output, got: %s", output)
+	pullOutput := runCLIJSONForUser("", "repo", "pull", boundPath)
+	var pullResp repoPullJSON
+	if err := json.Unmarshal([]byte(pullOutput), &pullResp); err != nil {
+		t.Fatalf("decode repo pull JSON: %v\nOutput:\n%s", err, pullOutput)
+	}
+	if !pullResp.Updated || pullResp.CommitHash == "" {
+		t.Fatalf("expected pull output, got: %+v", pullResp)
 	}
 
 	output = runCLIForUser("", "fs", "cat", readmePath)
@@ -150,9 +178,13 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("expected fs write output, got: %s", output)
 	}
 
-	output = runCLIForUser("", "repo", "push", "--message", "push repo binding changes", boundPath)
-	if !strings.Contains(output, "Pushed") {
-		t.Fatalf("expected push output, got: %s", output)
+	pushOutput := runCLIJSONForUser("", "repo", "push", "--message", "push repo binding changes", boundPath)
+	var pushResp repoPushJSON
+	if err := json.Unmarshal([]byte(pushOutput), &pushResp); err != nil {
+		t.Fatalf("decode repo push JSON: %v\nOutput:\n%s", err, pushOutput)
+	}
+	if !pushResp.Pushed || pushResp.RemoteCommit == "" {
+		t.Fatalf("expected push output, got: %+v", pushResp)
 	}
 
 	runGitOrFail(t, sourceDir, "pull", "--ff-only", "origin", "main")
@@ -164,12 +196,21 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("unexpected README in source repo after push: %q", readmeContent)
 	}
 
-	output = runCLIForUser("", "repo", "unlink", boundPath)
-	if !strings.Contains(output, "Removed repo binding: "+boundPath) {
-		t.Fatalf("expected unlink output, got: %s", output)
+	unlinkOutput := runCLIJSONForUser("", "repo", "unlink", boundPath)
+	var unlinkResp repoUnlinkJSON
+	if err := json.Unmarshal([]byte(unlinkOutput), &unlinkResp); err != nil {
+		t.Fatalf("decode repo unlink JSON: %v\nOutput:\n%s", err, unlinkOutput)
 	}
-	output = runCLIForUser("", "repo", "list")
-	if strings.Contains(output, boundPath) {
-		t.Fatalf("expected repo binding to be removed, got: %s", output)
+	if unlinkResp.Path != boundPath || unlinkResp.Status != "removed" {
+		t.Fatalf("expected unlink output, got: %+v", unlinkResp)
+	}
+	listOutput = runCLIJSONForUser("", "repo", "list")
+	if err := json.Unmarshal([]byte(listOutput), &listResp); err != nil {
+		t.Fatalf("decode repo list JSON: %v\nOutput:\n%s", err, listOutput)
+	}
+	for _, binding := range listResp.Bindings {
+		if binding.Path == boundPath {
+			t.Fatalf("expected repo binding to be removed, got: %+v", listResp)
+		}
 	}
 }

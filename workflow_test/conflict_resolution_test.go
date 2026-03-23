@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,10 +17,13 @@ import (
 func TestConflictList(t *testing.T) {
 	workdir, sliceID, fileID := createConflictSetup(t)
 
-	output := runCLIOrFail(t, workdir, "conflict", "list", "--slice", sliceID)
-
-	if !strings.Contains(output, fileID) {
-		t.Fatalf("expected conflict output to mention %s, got: %s", fileID, output)
+	output := runCLIOrFail(t, workdir, "conflict", "list", "--slice", sliceID, "--json")
+	var resp conflictListJSON
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("decode conflict list JSON: %v\nOutput:\n%s", err, output)
+	}
+	if resp.Total == 0 || len(resp.Conflicts) == 0 || resp.Conflicts[0].FileID != fileID {
+		t.Fatalf("expected conflict output to mention %s, got: %+v", fileID, resp)
 	}
 }
 
@@ -93,9 +97,13 @@ func TestConflictResolveInteractive(t *testing.T) {
 func TestConflictResolveTheirs(t *testing.T) {
 	workdir, _, fileID, sliceB := createConflictSetupWithSlices(t)
 
-	output := runCLIOrFail(t, workdir, "conflict", "resolve", "--theirs", sliceB, fileID)
-	if !strings.Contains(output, "Resolved conflict") {
-		t.Fatalf("expected resolve confirmation, got: %s", output)
+	output := runCLIOrFail(t, workdir, "conflict", "resolve", "--theirs", sliceB, fileID, "--json")
+	var resp conflictResolveJSON
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("decode conflict resolve JSON: %v\nOutput:\n%s", err, output)
+	}
+	if resp.Conflict.FileID != fileID {
+		t.Fatalf("expected resolve confirmation, got: %+v", resp)
 	}
 }
 
@@ -104,9 +112,13 @@ func TestConflictResolveTheirs(t *testing.T) {
 func TestConflictResolveOurs(t *testing.T) {
 	workdir, sliceID, fileID, _ := createConflictSetupWithSlices(t)
 
-	output := runCLIOrFail(t, workdir, "conflict", "resolve", "--ours", fileID)
-	if !strings.Contains(output, "Resolved conflict") {
-		t.Fatalf("expected resolve confirmation, got: %s", output)
+	output := runCLIOrFail(t, workdir, "conflict", "resolve", "--ours", fileID, "--json")
+	var resp conflictResolveJSON
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("decode conflict resolve JSON: %v\nOutput:\n%s", err, output)
+	}
+	if resp.Conflict.FileID != fileID {
+		t.Fatalf("expected resolve confirmation, got: %+v", resp)
 	}
 
 	// After resolving in favor of the current slice, no conflicts should remain for it
@@ -127,9 +139,13 @@ func TestConflictResolveResolved(t *testing.T) {
 func TestConflictShow(t *testing.T) {
 	_, _, fileID := createConflictSetup(t)
 
-	output := runCLIOrFail(t, "", "conflict", "show", fileID)
-	if !strings.Contains(output, "Conflict for") {
-		t.Fatalf("expected conflict details, got: %s", output)
+	output := runCLIOrFail(t, "", "conflict", "show", fileID, "--json")
+	var resp conflictShowJSON
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("decode conflict show JSON: %v\nOutput:\n%s", err, output)
+	}
+	if !resp.Found || resp.Conflict == nil || resp.Conflict.FileID != fileID {
+		t.Fatalf("expected conflict details, got: %+v", resp)
 	}
 }
 
