@@ -20,6 +20,13 @@ type localSliceSearchArtifactMetadata struct {
 	Source     string `json:"source"`
 }
 
+type localSliceSearchOverlayState struct {
+	Version      uint32   `json:"version"`
+	SliceID      string   `json:"slice_id"`
+	CommitHash   string   `json:"commit_hash"`
+	RemovedPaths []string `json:"removed_paths,omitempty"`
+}
+
 func localSearchArtifactBaseFilePath(dir string) string {
 	return filepath.Join(dir, searchArtifactBasePath)
 }
@@ -30,6 +37,14 @@ func localSearchArtifactMetadataFilePath(dir string) string {
 
 func localSearchArtifactOverlayDirPath(dir string) string {
 	return filepath.Join(dir, searchArtifactOverlayDir)
+}
+
+func localSearchArtifactOverlayFilePath(dir string) string {
+	return filepath.Join(localSearchArtifactOverlayDirPath(dir), "artifact")
+}
+
+func localSearchArtifactOverlayStateFilePath(dir string) string {
+	return filepath.Join(localSearchArtifactOverlayDirPath(dir), "state.json")
 }
 
 func ensureLocalSliceSearchArtifact(ctx context.Context, cli *CLI, dir, sliceID string, manifest *slicev1.SliceManifest) error {
@@ -109,6 +124,13 @@ func buildLocalSliceSearchArtifact(dir, sliceID string, manifest *slicev1.SliceM
 		}
 
 		absPath := filepath.Join(dir, filepath.FromSlash(file.GetPath()))
+		info, err := os.Lstat(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", file.GetPath(), err)
+		}
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		content, err := os.ReadFile(absPath)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", file.GetPath(), err)
@@ -127,6 +149,23 @@ func buildLocalSliceSearchArtifact(dir, sliceID string, manifest *slicev1.SliceM
 		})
 	}
 	return searchindex.BuildSliceArtifact(sliceID, strings.TrimSpace(manifest.GetCommitHash()), inputs), nil
+}
+
+func buildLocalSliceSearchArtifactFromIndex(dir string, index *localCheckoutIndex) (*searchindex.SliceArtifact, error) {
+	if index == nil {
+		return nil, fmt.Errorf("checkout index is nil")
+	}
+	manifest := &slicev1.SliceManifest{
+		CommitHash:   index.CommitHash,
+		FileMetadata: make([]*slicev1.FileMetadata, 0, len(index.Files)),
+	}
+	for _, record := range index.Files {
+		manifest.FileMetadata = append(manifest.FileMetadata, &slicev1.FileMetadata{
+			Path:          record.Path,
+			SymlinkTarget: record.SymlinkTarget,
+		})
+	}
+	return buildLocalSliceSearchArtifact(dir, index.SliceID, manifest)
 }
 
 func writeLocalSliceSearchArtifact(dir string, artifact *searchindex.SliceArtifact, metadata *localSliceSearchArtifactMetadata) error {
@@ -168,6 +207,132 @@ func readLocalSliceSearchArtifactMetadata(dir string) (*localSliceSearchArtifact
 		return nil, err
 	}
 	return &metadata, nil
+}
+
+func readLocalSliceSearchBaseArtifact(dir string) (*searchindex.SliceArtifact, error) {
+	raw, err := os.ReadFile(localSearchArtifactBaseFilePath(dir))
+	if err != nil {
+		return nil, err
+	}
+	return searchindex.DecodeSliceArtifact(raw)
+}
+
+func buildLocalSliceSearchOverlay(dir string, index *localCheckoutIndex, entries []workingTreeStatusEntry) (*searchindex.SliceArtifact, *localSliceSearchOverlayState, error) {
+	if index == nil {
+		return nil, nil, fmt.Errorf("checkout index is nil")
+	}
+	inputs := make([]searchindex.ArtifactInputFile, 0, len(entries))
+	removedPaths := make([]string, 0, len(entries))
+	seenRemoved := make(map[string]struct{}, len(entries))
+
+	for _, entry := range entries {
+		path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(entry.Path)))
+		if path == "." || path == "" {
+			continue
+		}
+		if entry.Status == "deleted" {
+			if _, ok := seenRemoved[path]; !ok {
+				removedPaths = append(removedPaths, path)
+				seenRemoved[path] = struct{}{}
+			}
+			continue
+		}
+
+		absPath := filepath.Join(dir, filepath.FromSlash(path))
+		info, err := os.Lstat(absPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if _, ok := seenRemoved[path]; !ok {
+					removedPaths = append(removedPaths, path)
+					seenRemoved[path] = struct{}{}
+				}
+				continue
+			}
+			return nil, nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+			if _, ok := seenRemoved[path]; !ok {
+				removedPaths = append(removedPaths, path)
+				seenRemoved[path] = struct{}{}
+			}
+			continue
+		}
+
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		blob, err := searchindex.BuildFileBlob(content, nil, searchindex.SparseModeCovering)
+		if err != nil {
+			if errors.Is(err, searchindex.ErrNonIndexableText) {
+				if _, ok := seenRemoved[path]; !ok {
+					removedPaths = append(removedPaths, path)
+					seenRemoved[path] = struct{}{}
+				}
+				continue
+			}
+			return nil, nil, fmt.Errorf("build overlay blob for %s: %w", path, err)
+		}
+		inputs = append(inputs, searchindex.ArtifactInputFile{
+			Path:              path,
+			SearchContentHash: blob.SearchContentHash,
+			NGrams:            blob.NGrams,
+		})
+	}
+
+	artifact := searchindex.BuildSliceArtifact(index.SliceID, index.CommitHash, inputs)
+	return artifact, &localSliceSearchOverlayState{
+		Version:      searchindex.CurrentArtifactVersion,
+		SliceID:      index.SliceID,
+		CommitHash:   index.CommitHash,
+		RemovedPaths: uniqueCheckoutPaths(removedPaths),
+	}, nil
+}
+
+func writeLocalSliceSearchOverlay(dir string, artifact *searchindex.SliceArtifact, state *localSliceSearchOverlayState) error {
+	if err := ensureCleanLocalSearchOverlay(dir); err != nil {
+		return err
+	}
+	if artifact == nil {
+		return fmt.Errorf("overlay artifact is nil")
+	}
+	if state == nil {
+		return fmt.Errorf("overlay state is nil")
+	}
+
+	payload, err := searchindex.EncodeSliceArtifact(artifact)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomicFile(localSearchArtifactOverlayFilePath(dir), payload, 0o600); err != nil {
+		return err
+	}
+	rawState, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomicFile(localSearchArtifactOverlayStateFilePath(dir), append(rawState, '\n'), 0o600)
+}
+
+func readLocalSliceSearchOverlay(dir string) (*searchindex.SliceArtifact, *localSliceSearchOverlayState, error) {
+	rawArtifact, err := os.ReadFile(localSearchArtifactOverlayFilePath(dir))
+	if err != nil {
+		return nil, nil, err
+	}
+	artifact, err := searchindex.DecodeSliceArtifact(rawArtifact)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rawState, err := os.ReadFile(localSearchArtifactOverlayStateFilePath(dir))
+	if err != nil {
+		return nil, nil, err
+	}
+	var state localSliceSearchOverlayState
+	if err := json.Unmarshal(rawState, &state); err != nil {
+		return nil, nil, err
+	}
+	return artifact, &state, nil
 }
 
 func ensureCleanLocalSearchOverlay(dir string) error {
