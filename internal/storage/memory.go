@@ -74,6 +74,10 @@ type InMemoryStorage struct {
 	authSessionByToken               map[string]string                                // token -> sessionID
 	authSessionByRefreshToken        map[string]string                                // refresh token -> sessionID
 	authSessionsByUser               map[string]map[string]bool                       // username -> sessionID -> true
+	agentKeys                        map[string]*models.AgentKey                      // keyID -> agent key
+	agentKeyByFingerprint            map[string]string                                // fingerprint -> keyID
+	agentKeysByUser                  map[string]map[string]bool                       // username -> keyID -> true
+	agentKeyChallenges               map[string]*models.AgentKeyChallenge             // challengeID -> challenge
 	deviceAuthorizationsByDeviceCode map[string]*models.DeviceAuthorization           // device code -> auth request
 	deviceAuthorizationByUserCode    map[string]string                                // user code -> device code
 	orgs                             map[string]*models.Organization                  // orgSlug -> org
@@ -131,6 +135,10 @@ func NewInMemoryStorage() *InMemoryStorage {
 		authSessionByToken:               make(map[string]string),
 		authSessionByRefreshToken:        make(map[string]string),
 		authSessionsByUser:               make(map[string]map[string]bool),
+		agentKeys:                        make(map[string]*models.AgentKey),
+		agentKeyByFingerprint:            make(map[string]string),
+		agentKeysByUser:                  make(map[string]map[string]bool),
+		agentKeyChallenges:               make(map[string]*models.AgentKeyChallenge),
 		deviceAuthorizationsByDeviceCode: make(map[string]*models.DeviceAuthorization),
 		deviceAuthorizationByUserCode:    make(map[string]string),
 		orgs:                             make(map[string]*models.Organization),
@@ -200,6 +208,10 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.authSessionByToken = fresh.authSessionByToken
 	s.authSessionByRefreshToken = fresh.authSessionByRefreshToken
 	s.authSessionsByUser = fresh.authSessionsByUser
+	s.agentKeys = fresh.agentKeys
+	s.agentKeyByFingerprint = fresh.agentKeyByFingerprint
+	s.agentKeysByUser = fresh.agentKeysByUser
+	s.agentKeyChallenges = fresh.agentKeyChallenges
 	s.deviceAuthorizationsByDeviceCode = fresh.deviceAuthorizationsByDeviceCode
 	s.deviceAuthorizationByUserCode = fresh.deviceAuthorizationByUserCode
 	s.orgs = fresh.orgs

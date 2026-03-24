@@ -159,6 +159,15 @@ type Storage interface {
 	TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error
 	RevokeAuthSession(ctx context.Context, username, sessionID string) error
 	RevokeAuthSessionByToken(ctx context.Context, token string) error
+	CreateAgentKey(ctx context.Context, key *models.AgentKey) error
+	GetAgentKey(ctx context.Context, keyID string) (*models.AgentKey, error)
+	GetAgentKeyByFingerprint(ctx context.Context, fingerprint string) (*models.AgentKey, error)
+	ListAgentKeysByUser(ctx context.Context, username string) ([]*models.AgentKey, error)
+	TouchAgentKey(ctx context.Context, keyID string, at time.Time) error
+	RevokeAgentKey(ctx context.Context, username, keyID string, revokedAt time.Time) error
+	CreateAgentKeyChallenge(ctx context.Context, challenge *models.AgentKeyChallenge) error
+	GetAgentKeyChallenge(ctx context.Context, challengeID string) (*models.AgentKeyChallenge, error)
+	MarkAgentKeyChallengeUsed(ctx context.Context, challengeID string, usedAt time.Time) error
 	CreateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error
 	GetDeviceAuthorizationByDeviceCode(ctx context.Context, deviceCode string) (*models.DeviceAuthorization, error)
 	GetDeviceAuthorizationByUserCode(ctx context.Context, userCode string) (*models.DeviceAuthorization, error)
