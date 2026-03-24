@@ -3567,6 +3567,339 @@ func (s *PostgresNativeStorage) RevokeAuthSessionByToken(ctx context.Context, to
 	return nil
 }
 
+func (s *PostgresNativeStorage) CreateAgentKey(ctx context.Context, key *models.AgentKey) error {
+	ctx = ensureCtx(ctx)
+	if key == nil {
+		return ErrInvalidInput
+	}
+	keyID := strings.TrimSpace(key.KeyID)
+	username := strings.TrimSpace(key.Username)
+	fingerprint := strings.TrimSpace(key.Fingerprint)
+	algorithm := strings.TrimSpace(key.Algorithm)
+	if keyID == "" || !auth.ValidateUsername(username) || fingerprint == "" || algorithm == "" || len(key.PublicKey) == 0 {
+		return ErrInvalidInput
+	}
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, username).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrEntryNotFound
+	}
+
+	now := time.Now()
+	if key.CreatedAt.IsZero() {
+		key.CreatedAt = now
+	}
+	if key.UpdatedAt.IsZero() {
+		key.UpdatedAt = key.CreatedAt
+	}
+	state := key.State
+	if state == "" {
+		state = models.AgentKeyStateActive
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_keys (
+			key_id, username, name, algorithm, public_key, fingerprint, state, created_at, updated_at, last_used_at, revoked_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL
+		)
+	`, keyID, username, strings.TrimSpace(key.Name), algorithm, key.PublicKey, fingerprint, string(state), key.CreatedAt, key.UpdatedAt, key.LastUsedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetAgentKey(ctx context.Context, keyID string) (*models.AgentKey, error) {
+	ctx = ensureCtx(ctx)
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var key models.AgentKey
+	var lastUsedAt *time.Time
+	var revokedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT key_id, username, name, algorithm, public_key, fingerprint, state, created_at, updated_at, last_used_at, revoked_at
+		FROM agent_keys
+		WHERE key_id = $1
+		LIMIT 1
+	`, keyID).Scan(
+		&key.KeyID,
+		&key.Username,
+		&key.Name,
+		&key.Algorithm,
+		&key.PublicKey,
+		&key.Fingerprint,
+		&key.State,
+		&key.CreatedAt,
+		&key.UpdatedAt,
+		&lastUsedAt,
+		&revokedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	key.LastUsedAt = lastUsedAt
+	key.RevokedAt = revokedAt
+	return &key, nil
+}
+
+func (s *PostgresNativeStorage) GetAgentKeyByFingerprint(ctx context.Context, fingerprint string) (*models.AgentKey, error) {
+	ctx = ensureCtx(ctx)
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var key models.AgentKey
+	var lastUsedAt *time.Time
+	var revokedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT key_id, username, name, algorithm, public_key, fingerprint, state, created_at, updated_at, last_used_at, revoked_at
+		FROM agent_keys
+		WHERE fingerprint = $1
+		LIMIT 1
+	`, fingerprint).Scan(
+		&key.KeyID,
+		&key.Username,
+		&key.Name,
+		&key.Algorithm,
+		&key.PublicKey,
+		&key.Fingerprint,
+		&key.State,
+		&key.CreatedAt,
+		&key.UpdatedAt,
+		&lastUsedAt,
+		&revokedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	key.LastUsedAt = lastUsedAt
+	key.RevokedAt = revokedAt
+	return &key, nil
+}
+
+func (s *PostgresNativeStorage) ListAgentKeysByUser(ctx context.Context, username string) ([]*models.AgentKey, error) {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT key_id, username, name, algorithm, public_key, fingerprint, state, created_at, updated_at, last_used_at, revoked_at
+		FROM agent_keys
+		WHERE username = $1
+		ORDER BY created_at ASC
+	`, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*models.AgentKey, 0)
+	for rows.Next() {
+		var key models.AgentKey
+		var lastUsedAt *time.Time
+		var revokedAt *time.Time
+		if err := rows.Scan(
+			&key.KeyID,
+			&key.Username,
+			&key.Name,
+			&key.Algorithm,
+			&key.PublicKey,
+			&key.Fingerprint,
+			&key.State,
+			&key.CreatedAt,
+			&key.UpdatedAt,
+			&lastUsedAt,
+			&revokedAt,
+		); err != nil {
+			return nil, err
+		}
+		key.LastUsedAt = lastUsedAt
+		key.RevokedAt = revokedAt
+		out = append(out, &key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []*models.AgentKey{}
+	}
+	return out, nil
+}
+
+func (s *PostgresNativeStorage) TouchAgentKey(ctx context.Context, keyID string, at time.Time) error {
+	ctx = ensureCtx(ctx)
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return ErrInvalidInput
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agent_keys
+		SET last_used_at = $1, updated_at = $1
+		WHERE key_id = $2
+	`, at, keyID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) RevokeAgentKey(ctx context.Context, username, keyID string, revokedAt time.Time) error {
+	ctx = ensureCtx(ctx)
+	username = strings.TrimSpace(username)
+	keyID = strings.TrimSpace(keyID)
+	if !auth.ValidateUsername(username) || keyID == "" {
+		return ErrInvalidInput
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now()
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agent_keys
+		SET state = $1, revoked_at = $2, updated_at = $2
+		WHERE key_id = $3 AND username = $4
+	`, string(models.AgentKeyStateRevoked), revokedAt, keyID, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) CreateAgentKeyChallenge(ctx context.Context, challenge *models.AgentKeyChallenge) error {
+	ctx = ensureCtx(ctx)
+	if challenge == nil {
+		return ErrInvalidInput
+	}
+	challengeID := strings.TrimSpace(challenge.ChallengeID)
+	agentKeyID := strings.TrimSpace(challenge.AgentKeyID)
+	username := strings.TrimSpace(challenge.Username)
+	if challengeID == "" || agentKeyID == "" || !auth.ValidateUsername(username) || len(challenge.Challenge) == 0 {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if challenge.CreatedAt.IsZero() {
+		challenge.CreatedAt = now
+	}
+	if challenge.ExpiresAt.IsZero() {
+		challenge.ExpiresAt = now.Add(time.Minute)
+	}
+
+	var keyUsername string
+	err := s.pool.QueryRow(ctx, `SELECT username FROM agent_keys WHERE key_id = $1`, agentKeyID).Scan(&keyUsername)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+	if keyUsername != username {
+		return ErrInvalidInput
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO agent_key_challenges (
+			challenge_id, agent_key_id, username, challenge, device_info, created_at, expires_at, used_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, NULL
+		)
+	`, challengeID, agentKeyID, username, challenge.Challenge, challenge.DeviceInfo, challenge.CreatedAt, challenge.ExpiresAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetAgentKeyChallenge(ctx context.Context, challengeID string) (*models.AgentKeyChallenge, error) {
+	ctx = ensureCtx(ctx)
+	challengeID = strings.TrimSpace(challengeID)
+	if challengeID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var challenge models.AgentKeyChallenge
+	var usedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT challenge_id, agent_key_id, username, challenge, COALESCE(device_info, ''), created_at, expires_at, used_at
+		FROM agent_key_challenges
+		WHERE challenge_id = $1
+		LIMIT 1
+	`, challengeID).Scan(
+		&challenge.ChallengeID,
+		&challenge.AgentKeyID,
+		&challenge.Username,
+		&challenge.Challenge,
+		&challenge.DeviceInfo,
+		&challenge.CreatedAt,
+		&challenge.ExpiresAt,
+		&usedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	challenge.UsedAt = usedAt
+	return &challenge, nil
+}
+
+func (s *PostgresNativeStorage) MarkAgentKeyChallengeUsed(ctx context.Context, challengeID string, usedAt time.Time) error {
+	ctx = ensureCtx(ctx)
+	challengeID = strings.TrimSpace(challengeID)
+	if challengeID == "" {
+		return ErrInvalidInput
+	}
+	if usedAt.IsZero() {
+		usedAt = time.Now()
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agent_key_challenges
+		SET used_at = $1
+		WHERE challenge_id = $2
+	`, usedAt, challengeID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
 func (s *PostgresNativeStorage) CreateDeviceAuthorization(ctx context.Context, authorization *models.DeviceAuthorization) error {
 	ctx = ensureCtx(ctx)
 	if authorization == nil {

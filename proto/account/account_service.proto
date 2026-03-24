@@ -110,6 +110,46 @@ service AccountService {
     };
   }
 
+  rpc SignupWithAgentKey(SignupWithAgentKeyRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/agent/signup"
+      body: "*"
+    };
+  }
+
+  rpc StartAgentKeyLogin(StartAgentKeyLoginRequest) returns (StartAgentKeyLoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/agent/login/start"
+      body: "*"
+    };
+  }
+
+  rpc CompleteAgentKeyLogin(CompleteAgentKeyLoginRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/agent/login/complete"
+      body: "*"
+    };
+  }
+
+  rpc ListAgentKeys(ListAgentKeysRequest) returns (ListAgentKeysResponse) {
+    option (google.api.http) = {
+      get: "/v1/auth/agent/keys"
+    };
+  }
+
+  rpc CreateAgentKey(CreateAgentKeyRequest) returns (AgentKey) {
+    option (google.api.http) = {
+      post: "/v1/auth/agent/keys"
+      body: "*"
+    };
+  }
+
+  rpc DeleteAgentKey(DeleteAgentKeyRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/auth/agent/keys/{key_id}"
+    };
+  }
+
   // Users
   rpc GetMe(GetMeRequest) returns (User) {
     option (google.api.http) = {
@@ -470,6 +510,19 @@ message Session {
   bool current = 5;
 }
 
+message AgentKey {
+  string id = 1;
+  string user_id = 2;
+  string name = 3;
+  string algorithm = 4;
+  string fingerprint = 5;
+  string created_at = 6;
+  string updated_at = 7;
+  string last_used_at = 8;
+  string revoked_at = 9;
+  bool revoked = 10;
+}
+
 message AuthMethod {
   string id = 1;
   AuthMethodType type = 2;
@@ -607,6 +660,48 @@ message ListSessionsResponse {
 
 message DeleteSessionRequest {
   string session_id = 1;
+}
+
+message SignupWithAgentKeyRequest {
+  string username = 1;
+  string email = 2;
+  string name = 3;
+  string algorithm = 4;
+  bytes public_key = 5;
+  string key_name = 6;
+}
+
+message StartAgentKeyLoginRequest {
+  string key_id = 1;
+  string fingerprint = 2;
+  bytes public_key = 3;
+}
+
+message StartAgentKeyLoginResponse {
+  string challenge_id = 1;
+  bytes challenge = 2;
+  string expires_at = 3;
+}
+
+message CompleteAgentKeyLoginRequest {
+  string challenge_id = 1;
+  bytes signature = 2;
+}
+
+message ListAgentKeysRequest {}
+
+message ListAgentKeysResponse {
+  repeated AgentKey keys = 1;
+}
+
+message CreateAgentKeyRequest {
+  string name = 1;
+  string algorithm = 2;
+  bytes public_key = 3;
+}
+
+message DeleteAgentKeyRequest {
+  string key_id = 1;
 }
 
 message GetMeRequest {}

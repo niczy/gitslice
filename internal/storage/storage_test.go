@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -1136,6 +1137,97 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if _, err := st.GetAuthSessionByToken(ctx, "auth-token3-expired-"+suffix); err != ErrEntryNotFound {
 		t.Fatalf("expected expired access token lookup to fail, got %v", err)
+	}
+
+	agentKey := &models.AgentKey{
+		KeyID:       "agent-key-" + suffix,
+		Username:    accountUsername,
+		Name:        "CI key",
+		Algorithm:   "ed25519",
+		PublicKey:   []byte("pubkey-" + suffix),
+		Fingerprint: "fingerprint-" + suffix,
+	}
+	if err := st.CreateAgentKey(ctx, agentKey); err != nil {
+		t.Fatalf("CreateAgentKey failed: %v", err)
+	}
+	if err := st.CreateAgentKey(ctx, agentKey); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate agent key, got %v", err)
+	}
+	agentKeyByID, err := st.GetAgentKey(ctx, agentKey.KeyID)
+	if err != nil {
+		t.Fatalf("GetAgentKey failed: %v", err)
+	}
+	if agentKeyByID.Username != accountUsername || !bytes.Equal(agentKeyByID.PublicKey, agentKey.PublicKey) {
+		t.Fatalf("agent key by ID mismatch: %#v", agentKeyByID)
+	}
+	agentKeyByFingerprint, err := st.GetAgentKeyByFingerprint(ctx, agentKey.Fingerprint)
+	if err != nil {
+		t.Fatalf("GetAgentKeyByFingerprint failed: %v", err)
+	}
+	if agentKeyByFingerprint.KeyID != agentKey.KeyID {
+		t.Fatalf("agent key by fingerprint mismatch: %#v", agentKeyByFingerprint)
+	}
+	agentKeysByUser, err := st.ListAgentKeysByUser(ctx, accountUsername)
+	if err != nil {
+		t.Fatalf("ListAgentKeysByUser failed: %v", err)
+	}
+	if len(agentKeysByUser) != 1 || agentKeysByUser[0].KeyID != agentKey.KeyID {
+		t.Fatalf("unexpected agent keys by user: %#v", agentKeysByUser)
+	}
+	lastUsedAt := time.Now().Add(3 * time.Minute)
+	if err := st.TouchAgentKey(ctx, agentKey.KeyID, lastUsedAt); err != nil {
+		t.Fatalf("TouchAgentKey failed: %v", err)
+	}
+	touchedAgentKey, err := st.GetAgentKey(ctx, agentKey.KeyID)
+	if err != nil {
+		t.Fatalf("GetAgentKey after touch failed: %v", err)
+	}
+	if touchedAgentKey.LastUsedAt == nil || !touchedAgentKey.LastUsedAt.Equal(lastUsedAt) {
+		t.Fatalf("expected touched last_used_at %v, got %#v", lastUsedAt, touchedAgentKey)
+	}
+
+	agentChallenge := &models.AgentKeyChallenge{
+		ChallengeID: "agent-challenge-" + suffix,
+		AgentKeyID:  agentKey.KeyID,
+		Username:    accountUsername,
+		Challenge:   []byte("challenge-" + suffix),
+		DeviceInfo:  "gs-cli",
+		ExpiresAt:   time.Now().Add(2 * time.Minute),
+	}
+	if err := st.CreateAgentKeyChallenge(ctx, agentChallenge); err != nil {
+		t.Fatalf("CreateAgentKeyChallenge failed: %v", err)
+	}
+	if err := st.CreateAgentKeyChallenge(ctx, agentChallenge); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on duplicate agent key challenge, got %v", err)
+	}
+	challengeByID, err := st.GetAgentKeyChallenge(ctx, agentChallenge.ChallengeID)
+	if err != nil {
+		t.Fatalf("GetAgentKeyChallenge failed: %v", err)
+	}
+	if challengeByID.AgentKeyID != agentKey.KeyID || !bytes.Equal(challengeByID.Challenge, agentChallenge.Challenge) {
+		t.Fatalf("agent key challenge mismatch: %#v", challengeByID)
+	}
+	usedAt := time.Now().Add(4 * time.Minute)
+	if err := st.MarkAgentKeyChallengeUsed(ctx, agentChallenge.ChallengeID, usedAt); err != nil {
+		t.Fatalf("MarkAgentKeyChallengeUsed failed: %v", err)
+	}
+	usedChallenge, err := st.GetAgentKeyChallenge(ctx, agentChallenge.ChallengeID)
+	if err != nil {
+		t.Fatalf("GetAgentKeyChallenge after mark used failed: %v", err)
+	}
+	if usedChallenge.UsedAt == nil || !usedChallenge.UsedAt.Equal(usedAt) {
+		t.Fatalf("expected used_at %v, got %#v", usedAt, usedChallenge)
+	}
+	revokedAt := time.Now().Add(5 * time.Minute)
+	if err := st.RevokeAgentKey(ctx, accountUsername, agentKey.KeyID, revokedAt); err != nil {
+		t.Fatalf("RevokeAgentKey failed: %v", err)
+	}
+	revokedAgentKey, err := st.GetAgentKey(ctx, agentKey.KeyID)
+	if err != nil {
+		t.Fatalf("GetAgentKey after revoke failed: %v", err)
+	}
+	if revokedAgentKey.State != models.AgentKeyStateRevoked || revokedAgentKey.RevokedAt == nil || !revokedAgentKey.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("revoked agent key mismatch: %#v", revokedAgentKey)
 	}
 
 	deviceAuthorization := &models.DeviceAuthorization{

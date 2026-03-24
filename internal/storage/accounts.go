@@ -65,6 +65,40 @@ func copyAuthSession(session *models.AuthSession) *models.AuthSession {
 	return &out
 }
 
+func copyAgentKey(key *models.AgentKey) *models.AgentKey {
+	if key == nil {
+		return nil
+	}
+	out := *key
+	if key.PublicKey != nil {
+		out.PublicKey = append([]byte(nil), key.PublicKey...)
+	}
+	if key.LastUsedAt != nil {
+		lastUsedAt := *key.LastUsedAt
+		out.LastUsedAt = &lastUsedAt
+	}
+	if key.RevokedAt != nil {
+		revokedAt := *key.RevokedAt
+		out.RevokedAt = &revokedAt
+	}
+	return &out
+}
+
+func copyAgentKeyChallenge(challenge *models.AgentKeyChallenge) *models.AgentKeyChallenge {
+	if challenge == nil {
+		return nil
+	}
+	out := *challenge
+	if challenge.Challenge != nil {
+		out.Challenge = append([]byte(nil), challenge.Challenge...)
+	}
+	if challenge.UsedAt != nil {
+		usedAt := *challenge.UsedAt
+		out.UsedAt = &usedAt
+	}
+	return &out
+}
+
 func copyDeviceAuthorization(authorization *models.DeviceAuthorization) *models.DeviceAuthorization {
 	if authorization == nil {
 		return nil
@@ -681,6 +715,255 @@ func (s *InMemoryStorage) RevokeAuthSessionByToken(ctx context.Context, token st
 	if session.RefreshToken != "" {
 		delete(s.authSessionByRefreshToken, session.RefreshToken)
 	}
+	return nil
+}
+
+func (s *InMemoryStorage) CreateAgentKey(ctx context.Context, key *models.AgentKey) error {
+	_ = ctx
+	if key == nil {
+		return ErrInvalidInput
+	}
+	keyID := strings.TrimSpace(key.KeyID)
+	username := strings.TrimSpace(key.Username)
+	fingerprint := strings.TrimSpace(key.Fingerprint)
+	algorithm := strings.TrimSpace(key.Algorithm)
+	if keyID == "" || !auth.ValidateUsername(username) || fingerprint == "" || algorithm == "" || len(key.PublicKey) == 0 {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.users[username]; !ok {
+		return ErrEntryNotFound
+	}
+	if _, ok := s.agentKeys[keyID]; ok {
+		return ErrEntryExists
+	}
+	if _, ok := s.agentKeyByFingerprint[fingerprint]; ok {
+		return ErrEntryExists
+	}
+
+	record := *key
+	record.KeyID = keyID
+	record.Username = username
+	record.Algorithm = algorithm
+	record.Fingerprint = fingerprint
+	record.Name = strings.TrimSpace(record.Name)
+	record.PublicKey = append([]byte(nil), key.PublicKey...)
+	if record.State == "" {
+		record.State = models.AgentKeyStateActive
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	record.RevokedAt = nil
+
+	s.agentKeys[keyID] = &record
+	s.agentKeyByFingerprint[fingerprint] = keyID
+	if s.agentKeysByUser[username] == nil {
+		s.agentKeysByUser[username] = make(map[string]bool)
+	}
+	s.agentKeysByUser[username][keyID] = true
+	return nil
+}
+
+func (s *InMemoryStorage) GetAgentKey(ctx context.Context, keyID string) (*models.AgentKey, error) {
+	_ = ctx
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key, ok := s.agentKeys[keyID]
+	if !ok || key == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyAgentKey(key), nil
+}
+
+func (s *InMemoryStorage) GetAgentKeyByFingerprint(ctx context.Context, fingerprint string) (*models.AgentKey, error) {
+	_ = ctx
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keyID, ok := s.agentKeyByFingerprint[fingerprint]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	key, ok := s.agentKeys[keyID]
+	if !ok || key == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyAgentKey(key), nil
+}
+
+func (s *InMemoryStorage) ListAgentKeysByUser(ctx context.Context, username string) ([]*models.AgentKey, error) {
+	_ = ctx
+	username = strings.TrimSpace(username)
+	if !auth.ValidateUsername(username) {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keyIDs := s.agentKeysByUser[username]
+	if len(keyIDs) == 0 {
+		return []*models.AgentKey{}, nil
+	}
+
+	out := make([]*models.AgentKey, 0, len(keyIDs))
+	for keyID := range keyIDs {
+		key, ok := s.agentKeys[keyID]
+		if !ok || key == nil {
+			continue
+		}
+		out = append(out, copyAgentKey(key))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *InMemoryStorage) TouchAgentKey(ctx context.Context, keyID string, at time.Time) error {
+	_ = ctx
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return ErrInvalidInput
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key, ok := s.agentKeys[keyID]
+	if !ok || key == nil {
+		return ErrEntryNotFound
+	}
+	lastUsedAt := at
+	key.LastUsedAt = &lastUsedAt
+	key.UpdatedAt = at
+	return nil
+}
+
+func (s *InMemoryStorage) RevokeAgentKey(ctx context.Context, username, keyID string, revokedAt time.Time) error {
+	_ = ctx
+	username = strings.TrimSpace(username)
+	keyID = strings.TrimSpace(keyID)
+	if !auth.ValidateUsername(username) || keyID == "" {
+		return ErrInvalidInput
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key, ok := s.agentKeys[keyID]
+	if !ok || key == nil || key.Username != username {
+		return ErrEntryNotFound
+	}
+	key.State = models.AgentKeyStateRevoked
+	revokedAtCopy := revokedAt
+	key.RevokedAt = &revokedAtCopy
+	key.UpdatedAt = revokedAt
+	return nil
+}
+
+func (s *InMemoryStorage) CreateAgentKeyChallenge(ctx context.Context, challenge *models.AgentKeyChallenge) error {
+	_ = ctx
+	if challenge == nil {
+		return ErrInvalidInput
+	}
+	challengeID := strings.TrimSpace(challenge.ChallengeID)
+	agentKeyID := strings.TrimSpace(challenge.AgentKeyID)
+	username := strings.TrimSpace(challenge.Username)
+	if challengeID == "" || agentKeyID == "" || !auth.ValidateUsername(username) || len(challenge.Challenge) == 0 {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.agentKeyChallenges[challengeID]; ok {
+		return ErrEntryExists
+	}
+	key, ok := s.agentKeys[agentKeyID]
+	if !ok || key == nil {
+		return ErrEntryNotFound
+	}
+	if key.Username != username {
+		return ErrInvalidInput
+	}
+
+	record := *challenge
+	record.ChallengeID = challengeID
+	record.AgentKeyID = agentKeyID
+	record.Username = username
+	record.Challenge = append([]byte(nil), challenge.Challenge...)
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	if record.ExpiresAt.IsZero() {
+		record.ExpiresAt = now.Add(time.Minute)
+	}
+	record.UsedAt = nil
+	s.agentKeyChallenges[challengeID] = &record
+	return nil
+}
+
+func (s *InMemoryStorage) GetAgentKeyChallenge(ctx context.Context, challengeID string) (*models.AgentKeyChallenge, error) {
+	_ = ctx
+	challengeID = strings.TrimSpace(challengeID)
+	if challengeID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	challenge, ok := s.agentKeyChallenges[challengeID]
+	if !ok || challenge == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyAgentKeyChallenge(challenge), nil
+}
+
+func (s *InMemoryStorage) MarkAgentKeyChallengeUsed(ctx context.Context, challengeID string, usedAt time.Time) error {
+	_ = ctx
+	challengeID = strings.TrimSpace(challengeID)
+	if challengeID == "" {
+		return ErrInvalidInput
+	}
+	if usedAt.IsZero() {
+		usedAt = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	challenge, ok := s.agentKeyChallenges[challengeID]
+	if !ok || challenge == nil {
+		return ErrEntryNotFound
+	}
+	usedAtCopy := usedAt
+	challenge.UsedAt = &usedAtCopy
 	return nil
 }
 

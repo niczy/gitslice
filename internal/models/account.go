@@ -87,6 +87,38 @@ type AuthSession struct {
 	RevokedAt             *time.Time `json:"revoked_at,omitempty"`
 }
 
+type AgentKeyState string
+
+const (
+	AgentKeyStateActive  AgentKeyState = "active"
+	AgentKeyStateRevoked AgentKeyState = "revoked"
+)
+
+type AgentKey struct {
+	KeyID       string        `json:"key_id"`
+	Username    string        `json:"username"`
+	Name        string        `json:"name"`
+	Algorithm   string        `json:"algorithm"`
+	PublicKey   []byte        `json:"public_key"`
+	Fingerprint string        `json:"fingerprint"`
+	State       AgentKeyState `json:"state"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	LastUsedAt  *time.Time    `json:"last_used_at,omitempty"`
+	RevokedAt   *time.Time    `json:"revoked_at,omitempty"`
+}
+
+type AgentKeyChallenge struct {
+	ChallengeID string     `json:"challenge_id"`
+	AgentKeyID  string     `json:"agent_key_id"`
+	Username    string     `json:"username"`
+	Challenge   []byte     `json:"challenge"`
+	DeviceInfo  string     `json:"device_info"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	UsedAt      *time.Time `json:"used_at,omitempty"`
+}
+
 type DeviceAuthorizationStatus string
 
 const (
