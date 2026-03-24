@@ -3571,6 +3571,26 @@ func (s *PostgresNativeStorage) RevokeAuthSessionByToken(ctx context.Context, to
 	return nil
 }
 
+func (s *PostgresNativeStorage) RevokeAuthSessionsByAgentKey(ctx context.Context, username, agentKeyID string) (int, error) {
+	username = strings.TrimSpace(username)
+	agentKeyID = strings.TrimSpace(agentKeyID)
+	if !auth.ValidateUsername(username) || agentKeyID == "" {
+		return 0, ErrInvalidInput
+	}
+
+	commandTag, err := s.pool.Exec(ctx, `
+		UPDATE auth_sessions
+		SET revoked_at = $3
+		WHERE username = $1
+		  AND agent_key_id = $2
+		  AND revoked_at IS NULL
+	`, username, agentKeyID, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	return int(commandTag.RowsAffected()), nil
+}
+
 func (s *PostgresNativeStorage) CreateAgentKey(ctx context.Context, key *models.AgentKey) error {
 	ctx = ensureCtx(ctx)
 	if key == nil {

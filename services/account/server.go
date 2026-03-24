@@ -176,6 +176,7 @@ func sessionToProto(session *models.AuthSession, current bool) *accountv1.Sessio
 		LastSeenAt: session.LastSeenAt.Format(timeRFC3339),
 		DeviceInfo: session.DeviceInfo,
 		Current:    current,
+		AgentKeyId: session.AgentKeyID,
 	}
 }
 
@@ -1138,6 +1139,9 @@ func (s *accountServiceServer) DeleteAgentKey(ctx context.Context, req *accountv
 		default:
 			return nil, status.Error(codes.Internal, "failed to revoke agent key")
 		}
+	}
+	if _, err := s.st.RevokeAuthSessionsByAgentKey(ctx, identity.username, keyID); err != nil {
+		return nil, status.Error(codes.Internal, "failed to revoke sessions for agent key")
 	}
 	return &emptypb.Empty{}, nil
 }
