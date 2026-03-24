@@ -2,6 +2,7 @@ package accountservice
 
 import (
 	"context"
+	"crypto/ed25519"
 	"testing"
 	"time"
 
@@ -277,6 +278,86 @@ func TestDeviceAuthorizationExpiry(t *testing.T) {
 	}
 	if _, err := srv.ApproveDeviceAuthorization(userCtx(ctx, "expireuser"), &accountv1.ApproveDeviceAuthorizationRequest{UserCode: startResp.GetUserCode()}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition for expired approval, got %v", err)
+	}
+}
+
+func TestAgentKeyManagementLifecycle(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	signupResp, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "agentowner",
+		Email:    "agentowner@example.com",
+		Password: "password123",
+		Name:     "Agent Owner",
+	})
+	if err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+	authCtx := bearerCtx(ctx, signupResp.GetAccessToken())
+
+	listResp, err := srv.ListAgentKeys(authCtx, &accountv1.ListAgentKeysRequest{})
+	if err != nil {
+		t.Fatalf("ListAgentKeys before create failed: %v", err)
+	}
+	if len(listResp.GetKeys()) != 0 {
+		t.Fatalf("expected no agent keys initially, got %#v", listResp)
+	}
+
+	publicKey := make([]byte, ed25519.PublicKeySize)
+	for i := range publicKey {
+		publicKey[i] = byte(i + 1)
+	}
+	createdKey, err := srv.CreateAgentKey(authCtx, &accountv1.CreateAgentKeyRequest{
+		Name:      "ci-runner",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentKey failed: %v", err)
+	}
+	if createdKey.GetId() == "" || createdKey.GetFingerprint() == "" || createdKey.GetRevoked() {
+		t.Fatalf("unexpected created key: %#v", createdKey)
+	}
+
+	listResp, err = srv.ListAgentKeys(authCtx, &accountv1.ListAgentKeysRequest{})
+	if err != nil {
+		t.Fatalf("ListAgentKeys after create failed: %v", err)
+	}
+	if len(listResp.GetKeys()) != 1 || listResp.GetKeys()[0].GetId() != createdKey.GetId() {
+		t.Fatalf("unexpected agent key list after create: %#v", listResp)
+	}
+
+	if _, err := srv.CreateAgentKey(authCtx, &accountv1.CreateAgentKeyRequest{
+		Name:      "duplicate",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+	}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for duplicate key, got %v", err)
+	}
+
+	if _, err := srv.CreateAgentKey(authCtx, &accountv1.CreateAgentKeyRequest{
+		Name:      "bad",
+		Algorithm: "rsa",
+		PublicKey: []byte("bad"),
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for invalid algorithm, got %v", err)
+	}
+
+	if _, err := srv.DeleteAgentKey(authCtx, &accountv1.DeleteAgentKeyRequest{KeyId: createdKey.GetId()}); err != nil {
+		t.Fatalf("DeleteAgentKey failed: %v", err)
+	}
+
+	listResp, err = srv.ListAgentKeys(authCtx, &accountv1.ListAgentKeysRequest{})
+	if err != nil {
+		t.Fatalf("ListAgentKeys after revoke failed: %v", err)
+	}
+	if len(listResp.GetKeys()) != 1 || !listResp.GetKeys()[0].GetRevoked() || listResp.GetKeys()[0].GetRevokedAt() == "" {
+		t.Fatalf("expected revoked key to remain listed, got %#v", listResp)
+	}
+
+	if _, err := srv.DeleteAgentKey(authCtx, &accountv1.DeleteAgentKeyRequest{KeyId: "missing"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound for missing key revoke, got %v", err)
 	}
 }
 

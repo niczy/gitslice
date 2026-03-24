@@ -2,8 +2,11 @@ package accountservice
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/url"
 	"os"
 	"regexp"
@@ -292,6 +295,45 @@ func teamMemberToProto(member *models.TeamMember) *accountv1.TeamMember {
 		UserId:  member.Username,
 		AddedAt: member.AddedAt.Format(timeRFC3339),
 	}
+}
+
+func agentKeyToProto(key *models.AgentKey) *accountv1.AgentKey {
+	if key == nil {
+		return nil
+	}
+	return &accountv1.AgentKey{
+		Id:          key.KeyID,
+		UserId:      key.Username,
+		Name:        key.Name,
+		Algorithm:   key.Algorithm,
+		Fingerprint: key.Fingerprint,
+		CreatedAt:   key.CreatedAt.Format(timeRFC3339),
+		UpdatedAt:   key.UpdatedAt.Format(timeRFC3339),
+		LastUsedAt:  formatOptionalTime(key.LastUsedAt),
+		RevokedAt:   formatOptionalTime(key.RevokedAt),
+		Revoked:     key.RevokedAt != nil || key.State == models.AgentKeyStateRevoked,
+	}
+}
+
+func normalizeAgentKeyAlgorithm(algorithm string) string {
+	return strings.ToLower(strings.TrimSpace(algorithm))
+}
+
+func validateAgentPublicKey(algorithm string, publicKey []byte) error {
+	switch normalizeAgentKeyAlgorithm(algorithm) {
+	case "ed25519":
+		if len(publicKey) != ed25519.PublicKeySize {
+			return status.Error(codes.InvalidArgument, "invalid ed25519 public key")
+		}
+		return nil
+	default:
+		return status.Error(codes.InvalidArgument, "unsupported agent key algorithm")
+	}
+}
+
+func agentKeyFingerprint(algorithm string, publicKey []byte) string {
+	sum := sha256.Sum256(publicKey)
+	return normalizeAgentKeyAlgorithm(algorithm) + ":" + hex.EncodeToString(sum[:])
 }
 
 func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdentity, error) {
@@ -830,6 +872,101 @@ func (s *accountServiceServer) DeleteSession(ctx context.Context, req *accountv1
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
 		return nil, status.Error(codes.Internal, "failed to revoke session")
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) ListAgentKeys(ctx context.Context, req *accountv1.ListAgentKeysRequest) (*accountv1.ListAgentKeysResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := s.st.ListAgentKeysByUser(ctx, identity.username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list agent keys")
+	}
+	out := make([]*accountv1.AgentKey, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, agentKeyToProto(key))
+	}
+	return &accountv1.ListAgentKeysResponse{Keys: out}, nil
+}
+
+func (s *accountServiceServer) CreateAgentKey(ctx context.Context, req *accountv1.CreateAgentKeyRequest) (*accountv1.AgentKey, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetName())
+	algorithm := normalizeAgentKeyAlgorithm(req.GetAlgorithm())
+	publicKey := append([]byte(nil), req.GetPublicKey()...)
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+	if err := validateAgentPublicKey(algorithm, publicKey); err != nil {
+		return nil, err
+	}
+
+	fingerprint := agentKeyFingerprint(algorithm, publicKey)
+	var created *models.AgentKey
+	for i := 0; i < 3; i++ {
+		keyID, err := randomToken("agk_", 16)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to create agent key id")
+		}
+		key := &models.AgentKey{
+			KeyID:       keyID,
+			Username:    identity.username,
+			Name:        name,
+			Algorithm:   algorithm,
+			PublicKey:   publicKey,
+			Fingerprint: fingerprint,
+			State:       models.AgentKeyStateActive,
+		}
+		err = s.st.CreateAgentKey(ctx, key)
+		if err == nil {
+			created, err = s.st.GetAgentKey(ctx, keyID)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to load created agent key")
+			}
+			return agentKeyToProto(created), nil
+		}
+		if err == storage.ErrEntryExists {
+			existing, lookupErr := s.st.GetAgentKeyByFingerprint(ctx, fingerprint)
+			if lookupErr == nil && existing != nil {
+				return nil, status.Error(codes.AlreadyExists, "agent key already exists")
+			}
+			continue
+		}
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		if err == storage.ErrInvalidInput {
+			return nil, status.Error(codes.InvalidArgument, "invalid agent key")
+		}
+		return nil, status.Error(codes.Internal, "failed to create agent key")
+	}
+	return nil, status.Error(codes.Aborted, "failed to create agent key")
+}
+
+func (s *accountServiceServer) DeleteAgentKey(ctx context.Context, req *accountv1.DeleteAgentKeyRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keyID := strings.TrimSpace(req.GetKeyId())
+	if keyID == "" {
+		return nil, status.Error(codes.InvalidArgument, "key_id is required")
+	}
+	if err := s.st.RevokeAgentKey(ctx, identity.username, keyID, time.Now()); err != nil {
+		switch err {
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "agent key not found")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid agent key id")
+		default:
+			return nil, status.Error(codes.Internal, "failed to revoke agent key")
+		}
 	}
 	return &emptypb.Empty{}, nil
 }
