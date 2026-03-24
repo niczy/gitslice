@@ -2,11 +2,15 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 )
 
@@ -105,12 +109,16 @@ func TestCheckoutSlicePrintsFilesWhenRequested(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add entry: %v", err)
 	}
-	if _, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content); err != nil {
+	manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content)
+	if err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 	if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
 		t.Fatalf("add file to slice: %v", err)
 	}
+	setWorkflowSliceHead(t, ctx, sliceID, "checkout-search-artifact-1", "", map[string]string{
+		filePath: manifest.Hash,
+	})
 	sliceArg := sliceIDArg(sliceID)
 
 	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--files")
@@ -193,5 +201,280 @@ func TestCheckoutSliceHonorsFileMetadata(t *testing.T) {
 		t.Fatalf("readlink: %v", err)
 	} else if got != linkTarget {
 		t.Fatalf("expected symlink target %q, got %q", linkTarget, got)
+	}
+}
+
+func TestCheckoutPersistsSliceSearchArtifact(t *testing.T) {
+	if testStorage == nil {
+		t.Fatalf("test storage is not initialized")
+	}
+
+	ctx := withWorkflowUser(t, context.Background())
+	sliceID := "checkout-search-artifact"
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
+	}); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+
+	filePath := "docs/readme.md"
+	content := []byte("alpha beta gamma\n")
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("add entry: %v", err)
+	}
+	manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content)
+	if err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+		t.Fatalf("add file to slice: %v", err)
+	}
+	setWorkflowSliceHead(t, ctx, sliceID, "checkout-search-artifact-local-1", "", map[string]string{
+		filePath: manifest.Hash,
+	})
+
+	workdir := t.TempDir()
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID))
+	meta := readSearchArtifactMetadata(t, workdir)
+	if meta.Source != "downloaded" {
+		t.Fatalf("expected downloaded search artifact, got %+v", meta)
+	}
+	if meta.CommitHash != resp.Commit || meta.Version != searchindex.CurrentArtifactVersion {
+		t.Fatalf("unexpected search artifact metadata: %+v", meta)
+	}
+	artifact := readBaseSearchArtifact(t, workdir)
+	if artifact.CommitHash != resp.Commit || len(artifact.Files) != 1 || artifact.Files[0].Path != filePath {
+		t.Fatalf("unexpected search artifact: %+v", artifact)
+	}
+}
+
+func TestCheckoutSearchArtifactFallsBackToLocalBuild(t *testing.T) {
+	if testStorage == nil {
+		t.Fatalf("test storage is not initialized")
+	}
+
+	ctx := withWorkflowUser(t, context.Background())
+	sliceID := "checkout-search-artifact-local"
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
+	}); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+
+	filePath := "docs/readme.md"
+	content := []byte("delta epsilon zeta\n")
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("add entry: %v", err)
+	}
+	if _, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+		t.Fatalf("add file to slice: %v", err)
+	}
+
+	workdir := t.TempDir()
+	env := map[string]string{"GS_DISABLE_SLICE_SEARCH_ARTIFACT_DOWNLOAD": "1"}
+	resp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, workdir, env, "slice", "checkout", sliceIDArg(sliceID))
+	meta := readSearchArtifactMetadata(t, workdir)
+	if meta.Source != "rebuilt_local" {
+		t.Fatalf("expected rebuilt_local search artifact, got %+v", meta)
+	}
+	artifact := readBaseSearchArtifact(t, workdir)
+	if artifact.CommitHash != resp.Commit || len(artifact.Files) != 1 || artifact.Files[0].Path != filePath {
+		t.Fatalf("unexpected fallback artifact: %+v", artifact)
+	}
+}
+
+func TestSliceSyncReplacesSliceSearchArtifactWhenCommitChanges(t *testing.T) {
+	if testStorage == nil {
+		t.Fatalf("test storage is not initialized")
+	}
+
+	ctx := withWorkflowUser(t, context.Background())
+	sliceID := "sync-search-artifact"
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
+	}); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+
+	filePath := "docs/readme.md"
+	setHead := func(commitHash, parentHash string, content []byte) {
+		t.Helper()
+		entry, err := testStorage.GetEntryByPath(ctx, sliceID, filePath)
+		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			t.Fatalf("get entry: %v", err)
+		}
+		if entry == nil {
+			entry = &models.DirectoryEntry{
+				ID:       sliceID + ":" + filePath,
+				Path:     filePath,
+				Type:     "file",
+				ParentID: sliceID,
+			}
+			if err := testStorage.AddEntry(ctx, entry); err != nil {
+				t.Fatalf("add entry: %v", err)
+			}
+		}
+		entry.Size = int64(len(content))
+		if err := testStorage.UpdateEntry(ctx, entry); err != nil {
+			t.Fatalf("update entry: %v", err)
+		}
+		manifestHash := mustWriteSliceManifest(t, ctx, testStorage, sliceID, filePath, content)
+		if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+			t.Fatalf("add file to slice: %v", err)
+		}
+
+		now := time.Now()
+		if err := testStorage.AddSliceCommit(ctx, sliceID, &models.Commit{
+			CommitHash: commitHash,
+			ParentHash: parentHash,
+			Message:    "seed " + commitHash,
+			Timestamp:  now,
+		}); err != nil {
+			t.Fatalf("add commit: %v", err)
+		}
+		if err := testStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+			CommitHash: commitHash,
+			SliceID:    sliceID,
+			Files: map[string]string{
+				filePath: manifestHash,
+			},
+			Timestamp: now,
+		}); err != nil {
+			t.Fatalf("save snapshot: %v", err)
+		}
+		meta, err := testStorage.GetSliceMetadata(ctx, sliceID)
+		if err != nil {
+			t.Fatalf("get slice metadata: %v", err)
+		}
+		meta.HeadCommitHash = commitHash
+		meta.LastModified = now
+		meta.ModifiedFiles = []string{filePath}
+		meta.ModifiedFilesCount = 1
+		if err := testStorage.UpdateSliceMetadata(ctx, sliceID, meta); err != nil {
+			t.Fatalf("update slice metadata: %v", err)
+		}
+	}
+
+	setHead("sync-search-artifact-1", "", []byte("alpha beta gamma\n"))
+
+	workdir := t.TempDir()
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID))
+	firstMeta := readSearchArtifactMetadata(t, workdir)
+	firstArtifact := readBaseSearchArtifact(t, workdir)
+	if firstMeta.CommitHash != checkoutResp.Commit || firstArtifact.CommitHash != checkoutResp.Commit {
+		t.Fatalf("unexpected initial artifact state: meta=%+v artifact=%+v", firstMeta, firstArtifact)
+	}
+	if firstArtifact.Files[0].SearchContentHash != searchindex.SearchContentHash([]byte("alpha beta gamma\n")) {
+		t.Fatalf("unexpected initial search hash: %+v", firstArtifact.Files[0])
+	}
+
+	setHead("sync-search-artifact-2", "sync-search-artifact-1", []byte("updated searchable text\n"))
+
+	syncResp := runCLIJSONOrFail[sliceSyncJSON](t, workdir, "slice", "sync")
+	secondMeta := readSearchArtifactMetadata(t, workdir)
+	secondArtifact := readBaseSearchArtifact(t, workdir)
+	if syncResp.Commit != "sync-search-artifact-2" || secondMeta.CommitHash != syncResp.Commit || secondArtifact.CommitHash != syncResp.Commit {
+		t.Fatalf("expected synced artifact to advance to commit %q, got sync=%+v meta=%+v artifact=%+v", "sync-search-artifact-2", syncResp, secondMeta, secondArtifact)
+	}
+	if secondArtifact.Files[0].SearchContentHash != searchindex.SearchContentHash([]byte("updated searchable text\n")) {
+		t.Fatalf("unexpected updated search hash: %+v", secondArtifact.Files[0])
+	}
+}
+
+func readSearchArtifactMetadata(t *testing.T, workdir string) struct {
+	Version    uint32 `json:"version"`
+	SliceID    string `json:"slice_id"`
+	CommitHash string `json:"commit_hash"`
+	Source     string `json:"source"`
+} {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join(workdir, ".gs", "search", "metadata.json"))
+	if err != nil {
+		t.Fatalf("read search artifact metadata: %v", err)
+	}
+	var meta struct {
+		Version    uint32 `json:"version"`
+		SliceID    string `json:"slice_id"`
+		CommitHash string `json:"commit_hash"`
+		Source     string `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("unmarshal search artifact metadata: %v", err)
+	}
+	return meta
+}
+
+func readBaseSearchArtifact(t *testing.T, workdir string) *searchindex.SliceArtifact {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join(workdir, ".gs", "search", "base.artifact"))
+	if err != nil {
+		t.Fatalf("read base search artifact: %v", err)
+	}
+	artifact, err := searchindex.DecodeSliceArtifact(raw)
+	if err != nil {
+		t.Fatalf("decode base search artifact: %v", err)
+	}
+	return artifact
+}
+
+func setWorkflowSliceHead(t *testing.T, ctx context.Context, sliceID, commitHash, parentHash string, files map[string]string) {
+	t.Helper()
+
+	now := time.Now()
+	if err := testStorage.AddSliceCommit(ctx, sliceID, &models.Commit{
+		CommitHash: commitHash,
+		ParentHash: parentHash,
+		Message:    "seed " + commitHash,
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("add slice commit: %v", err)
+	}
+	if err := testStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    sliceID,
+		Files:      files,
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("save commit snapshot: %v", err)
+	}
+	meta, err := testStorage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		t.Fatalf("get slice metadata: %v", err)
+	}
+	meta.HeadCommitHash = commitHash
+	meta.LastModified = now
+	meta.ModifiedFiles = make([]string, 0, len(files))
+	for path := range files {
+		meta.ModifiedFiles = append(meta.ModifiedFiles, path)
+	}
+	meta.ModifiedFilesCount = len(meta.ModifiedFiles)
+	if err := testStorage.UpdateSliceMetadata(ctx, sliceID, meta); err != nil {
+		t.Fatalf("update slice metadata: %v", err)
 	}
 }
