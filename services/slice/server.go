@@ -22,6 +22,7 @@ import (
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/rootpromote"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -297,24 +298,15 @@ func (s *sliceServiceServer) prepareCheckout(
 ) (*models.SliceMetadata, *models.Slice, string, []*slicev1.FileMetadata, map[string]struct{}, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 
-	if err := common.ValidateSliceID(req.SliceId); err != nil {
-		return nil, nil, "", nil, nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
-	}
-
-	metadata, err := s.storage.GetSliceMetadata(ctx, req.SliceId)
+	metadata, slice, effectiveCommit, err := s.resolveCheckoutTarget(ctx, req.GetSliceId(), req.GetCommitHash())
 	if err != nil {
-		return nil, nil, "", nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+		return nil, nil, "", nil, nil, err
 	}
 	resolvedCommit := strings.TrimSpace(req.GetCommitHash())
 	if resolvedCommit == "" || strings.EqualFold(resolvedCommit, "HEAD") {
 		resolvedCommit = strings.TrimSpace(metadata.HeadCommitHash)
 	}
 
-	slice, err := s.storage.GetSlice(ctx, req.SliceId)
-	if err != nil {
-		return nil, nil, "", nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
-	}
-	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
 	snapshotFiles := map[string]string(nil)
 	if effectiveCommit != "" {
 		snapshot, snapshotErr := s.storage.GetCommitSnapshot(ctx, effectiveCommit)
@@ -324,16 +316,6 @@ func (s *sliceServiceServer) prepareCheckout(
 		if snapshot != nil {
 			snapshotFiles = snapshot.Files
 		}
-	}
-	username, err := s.optionalUsername(ctx)
-	if err != nil {
-		return nil, nil, "", nil, nil, err
-	}
-	if !authz.HasSliceViewAccess(slice, username) {
-		if username == "" {
-			return nil, nil, "", nil, nil, status.Error(codes.Unauthenticated, "login required")
-		}
-		return nil, nil, "", nil, nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
 	entries, err := s.collectSliceEntries(ctx, req.SliceId)
@@ -444,6 +426,42 @@ func (s *sliceServiceServer) prepareCheckout(
 	}
 
 	return metadata, slice, resolvedCommit, fileMetadata, knownHashes, nil
+}
+
+func (s *sliceServiceServer) resolveCheckoutTarget(
+	ctx context.Context,
+	sliceID string,
+	commitHash string,
+) (*models.SliceMetadata, *models.Slice, string, error) {
+	if err := common.ValidateSliceID(sliceID); err != nil {
+		return nil, nil, "", status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
+
+	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		return nil, nil, "", status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+	}
+	resolvedCommit := strings.TrimSpace(commitHash)
+	if resolvedCommit == "" || strings.EqualFold(resolvedCommit, "HEAD") {
+		resolvedCommit = strings.TrimSpace(metadata.HeadCommitHash)
+	}
+
+	slice, err := s.storage.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, nil, "", status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", sliceID))
+	}
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, nil, "", status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, nil, "", status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
+	return metadata, slice, effectiveCommit, nil
 }
 
 func checkoutMetadataWorkerCount(jobs int) int {
@@ -686,6 +704,54 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 
 	profile.finish(time.Since(payloadStartedAt))
 	return nil
+}
+
+func (s *sliceServiceServer) GetSliceSearchArtifact(ctx context.Context, req *slicev1.GetSliceSearchArtifactRequest) (*slicev1.GetSliceSearchArtifactResponse, error) {
+	version := req.GetVersion()
+	if version == 0 {
+		version = searchindex.CurrentArtifactVersion
+	}
+	if version != searchindex.CurrentArtifactVersion {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("unsupported search artifact version: %d", version))
+	}
+
+	_, _, effectiveCommit, err := s.resolveCheckoutTarget(ctx, req.GetSliceId(), req.GetCommitHash())
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(effectiveCommit) == "" {
+		return nil, status.Error(codes.NotFound, "slice commit not found")
+	}
+
+	payload, err := s.storage.GetSliceSearchArtifact(ctx, req.GetSliceId(), effectiveCommit, version)
+	if err != nil {
+		if !errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice search artifact: %v", err))
+		}
+
+		artifact, buildErr := storage.BuildAndStoreSliceSearchArtifact(ctx, s.storage, req.GetSliceId(), effectiveCommit)
+		if buildErr != nil {
+			switch {
+			case errors.Is(buildErr, storage.ErrCommitNotFound), errors.Is(buildErr, storage.ErrEntryNotFound):
+				return nil, status.Error(codes.NotFound, fmt.Sprintf("slice search artifact unavailable for commit %s", effectiveCommit))
+			case errors.Is(buildErr, storage.ErrInvalidInput):
+				return nil, status.Error(codes.InvalidArgument, "invalid slice search artifact request")
+			default:
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to build slice search artifact: %v", buildErr))
+			}
+		}
+		payload, err = searchindex.EncodeSliceArtifact(artifact)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to encode slice search artifact: %v", err))
+		}
+	}
+
+	return &slicev1.GetSliceSearchArtifactResponse{
+		SliceId:    req.GetSliceId(),
+		CommitHash: effectiveCommit,
+		Version:    version,
+		Artifact:   payload,
+	}, nil
 }
 
 func checkoutProtoBlocks(blocks []models.Block) []*slicev1.FileBlockRef {
