@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/models"
 )
 
 type dirtyTrackerState struct {
@@ -46,28 +50,34 @@ func stopDirtyTrackerForTest(t *testing.T, checkoutDir string) {
 func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) string {
 	t.Helper()
 
-	rootWorkdir := t.TempDir()
-	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
-
 	filePath := folderPath + "/README.md"
-	localPath := filepath.Join(rootWorkdir, filepath.FromSlash(filePath))
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		t.Fatalf("mkdir focused folder seed path: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if testStorage == nil {
+		t.Fatal("expected test storage to be initialized")
 	}
-	if err := os.WriteFile(localPath, []byte("seed focused folder\n"), 0o644); err != nil {
-		t.Fatalf("write focused folder seed file: %v", err)
+	rootSlice, err := testStorage.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
 	}
-	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", "seed focused folder", "--files", filePath)
-	if createResp.ChangesetID == "" {
-		t.Fatalf("expected root changeset ID")
+	content := []byte("seed focused folder\n")
+	mustWriteSliceManifest(t, ctx, testStorage, rootSlice.ID, filePath, content)
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(rootSlice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: rootSlice.ID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
 	}
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
-	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
-		t.Fatalf("expected root merge success, got: %+v", mergeResp)
+	if err := testStorage.AddFileToSlice(ctx, filePath, rootSlice.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
 
+	workdir := t.TempDir()
 	sliceName := fmt.Sprintf("focused-slice-%d", time.Now().UnixNano())
-	createSliceResp := runCLIJSONOrFail[sliceCreateJSON](t, rootWorkdir, "slice", "create", sliceName, folderPath)
+	createSliceResp := runCLIJSONOrFail[sliceCreateJSON](t, workdir, "slice", "create", sliceName, folderPath)
 	if createSliceResp.SliceID == "" {
 		t.Fatalf("expected created slice ID")
 	}
@@ -368,8 +378,8 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read restored tracked file: %v", err)
 	}
-	if string(restoredContent) != "" {
-		t.Fatalf("expected tracked file to revert to original empty content, got %q", string(restoredContent))
+	if string(restoredContent) != "seed focused folder\n" {
+		t.Fatalf("expected tracked file to revert to original seeded content, got %q", string(restoredContent))
 	}
 	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
 		t.Fatalf("expected new file to be removed, err=%v", err)
