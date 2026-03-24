@@ -520,6 +520,139 @@ func TestAgentKeyLoginRejectsReplayAndInvalidSignatureAndRevokedKey(t *testing.T
 	}
 }
 
+func TestSignupWithAgentKeyFlow(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+
+	authResp, err := srv.SignupWithAgentKey(ctx, &accountv1.SignupWithAgentKeyRequest{
+		Username:  "agentsignup",
+		Email:     "agentsignup@example.com",
+		Name:      "Agent Signup",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+		KeyName:   "codex-runner",
+	})
+	if err != nil {
+		t.Fatalf("SignupWithAgentKey failed: %v", err)
+	}
+	if authResp.GetAccessToken() == "" || authResp.GetRefreshToken() == "" || authResp.GetSession().GetId() == "" {
+		t.Fatalf("expected refreshable auth response, got %#v", authResp)
+	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "agentsignup")
+
+	user, err := srv.st.GetUser(ctx, "agentsignup")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if user.PrimaryEmail != "agentsignup@example.com" {
+		t.Fatalf("unexpected user: %#v", user)
+	}
+
+	keys, err := srv.st.ListAgentKeysByUser(ctx, "agentsignup")
+	if err != nil {
+		t.Fatalf("ListAgentKeysByUser failed: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Name != "codex-runner" {
+		t.Fatalf("expected one created key, got %#v", keys)
+	}
+
+	session, err := srv.st.GetAuthSession(ctx, authResp.GetSession().GetId())
+	if err != nil {
+		t.Fatalf("GetAuthSession failed: %v", err)
+	}
+	if session.AgentKeyID != keys[0].KeyID {
+		t.Fatalf("expected session agent key %q, got %#v", keys[0].KeyID, session)
+	}
+}
+
+func TestSignupWithAgentKeyRejectsDuplicateUsername(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	if _, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "dupuser",
+		Email:    "dupuser@example.com",
+		Password: "password123",
+		Name:     "Dup User",
+	}); err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	_, err = srv.SignupWithAgentKey(ctx, &accountv1.SignupWithAgentKeyRequest{
+		Username:  "dupuser",
+		Email:     "other@example.com",
+		Name:      "Duplicate",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+		KeyName:   "dup-key",
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for duplicate username, got %v", err)
+	}
+}
+
+func TestSignupWithAgentKeyRejectsDuplicateKey(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+
+	if _, err := srv.SignupWithAgentKey(ctx, &accountv1.SignupWithAgentKeyRequest{
+		Username:  "agentdup1",
+		Email:     "agentdup1@example.com",
+		Name:      "Agent Dup One",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+		KeyName:   "runner-1",
+	}); err != nil {
+		t.Fatalf("first SignupWithAgentKey failed: %v", err)
+	}
+
+	_, err = srv.SignupWithAgentKey(ctx, &accountv1.SignupWithAgentKeyRequest{
+		Username:  "agentdup2",
+		Email:     "agentdup2@example.com",
+		Name:      "Agent Dup Two",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+		KeyName:   "runner-2",
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for duplicate key, got %v", err)
+	}
+	if _, err := srv.st.GetUser(ctx, "agentdup2"); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected duplicate-key signup rollback, got %v", err)
+	}
+}
+
+func TestSignupWithAgentKeyRejectsInvalidPublicKey(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	_, err := srv.SignupWithAgentKey(ctx, &accountv1.SignupWithAgentKeyRequest{
+		Username:  "badagent",
+		Email:     "badagent@example.com",
+		Name:      "Bad Agent",
+		Algorithm: "ed25519",
+		PublicKey: []byte("not-an-ed25519-key"),
+		KeyName:   "bad-key",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for invalid public key, got %v", err)
+	}
+}
+
 func TestUsersAPIGetUpdateAndDelete(t *testing.T) {
 	ctx := context.Background()
 	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}

@@ -580,6 +580,115 @@ func (s *accountServiceServer) Signup(ctx context.Context, req *accountv1.Signup
 	return s.buildAuthResponse(ctx, user, session)
 }
 
+func (s *accountServiceServer) SignupWithAgentKey(ctx context.Context, req *accountv1.SignupWithAgentKeyRequest) (*accountv1.AuthResponse, error) {
+	username := strings.TrimSpace(req.GetUsername())
+	email := normalizeEmail(req.GetEmail())
+	name := strings.TrimSpace(req.GetName())
+	keyName := strings.TrimSpace(req.GetKeyName())
+	algorithm := normalizeAgentKeyAlgorithm(req.GetAlgorithm())
+	if algorithm == "" {
+		algorithm = "ed25519"
+	}
+	publicKey := append([]byte(nil), req.GetPublicKey()...)
+
+	if !auth.ValidateUsername(username) {
+		return nil, status.Error(codes.InvalidArgument, "invalid username")
+	}
+	if !validateEmail(email) {
+		return nil, status.Error(codes.InvalidArgument, "invalid email")
+	}
+	if keyName == "" {
+		return nil, status.Error(codes.InvalidArgument, "key_name is required")
+	}
+	if err := validateAgentPublicKey(algorithm, publicKey); err != nil {
+		return nil, err
+	}
+
+	fingerprint := agentKeyFingerprint(algorithm, publicKey)
+	if _, err := s.st.GetAgentKeyByFingerprint(ctx, fingerprint); err == nil {
+		return nil, status.Error(codes.AlreadyExists, "agent key already exists")
+	} else if err != nil && err != storage.ErrEntryNotFound {
+		return nil, status.Error(codes.Internal, "failed to check agent key")
+	}
+
+	if err := s.st.CreateUser(ctx, &models.User{
+		Username:     username,
+		Name:         name,
+		PrimaryEmail: email,
+	}); err != nil {
+		switch err {
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.AlreadyExists, "account already exists")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid signup request")
+		default:
+			return nil, status.Error(codes.Internal, "failed to create account")
+		}
+	}
+
+	cleanupUser := true
+	defer func() {
+		if cleanupUser {
+			_ = s.st.DeleteUser(ctx, username)
+		}
+	}()
+
+	var createdKeyID string
+	for i := 0; i < 3; i++ {
+		keyID, err := randomToken("agk_", 16)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to create agent key id")
+		}
+		key := &models.AgentKey{
+			KeyID:       keyID,
+			Username:    username,
+			Name:        keyName,
+			Algorithm:   algorithm,
+			PublicKey:   publicKey,
+			Fingerprint: fingerprint,
+			State:       models.AgentKeyStateActive,
+		}
+		err = s.st.CreateAgentKey(ctx, key)
+		if err == nil {
+			createdKeyID = keyID
+			break
+		}
+		switch err {
+		case storage.ErrEntryExists:
+			if existing, lookupErr := s.st.GetAgentKeyByFingerprint(ctx, fingerprint); lookupErr == nil && existing != nil {
+				return nil, status.Error(codes.AlreadyExists, "agent key already exists")
+			}
+			continue
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.Internal, "failed to attach agent key to account")
+		case storage.ErrInvalidInput:
+			return nil, status.Error(codes.InvalidArgument, "invalid agent key")
+		default:
+			return nil, status.Error(codes.Internal, "failed to create agent key")
+		}
+	}
+	if createdKeyID == "" {
+		return nil, status.Error(codes.Aborted, "failed to create agent key")
+	}
+
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
+	}
+	user, err := s.st.GetUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	session, err := s.createRefreshableSession(ctx, username, createdKeyID)
+	if err != nil {
+		if stErr, ok := status.FromError(err); ok {
+			return nil, stErr.Err()
+		}
+		return nil, status.Error(codes.Internal, "failed to create session")
+	}
+	cleanupUser = false
+	return s.buildAuthResponse(ctx, user, session)
+}
+
 func (s *accountServiceServer) Login(ctx context.Context, req *accountv1.LoginRequest) (*accountv1.AuthResponse, error) {
 	username := strings.TrimSpace(req.GetUsername())
 	email := normalizeEmail(req.GetEmail())
