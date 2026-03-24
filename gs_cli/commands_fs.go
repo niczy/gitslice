@@ -608,12 +608,13 @@ func handleFilesystemSearch(ctx context.Context, cli *CLI, authConfig cliAuth, a
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs search")
 	glob := fs.String("glob", "", "Restrict search to matching paths")
+	regex := fs.Bool("regex", false, "Treat query as a regular expression")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs fs search <query> [--glob </absolute/pattern>] [--json]")
+		commandUsage("Usage: gs fs search <query> [--regex] [--glob </absolute/pattern>] [--json]")
 		return
 	}
 
@@ -629,12 +630,13 @@ func handleFilesystemSearch(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		WorkspaceId: workspaceID,
 		Query:       strings.TrimSpace(fs.Arg(0)),
 		Glob:        globPattern,
+		Regex:       *regex,
 	})
 	if err != nil {
 		commandFatalf("FS_SEARCH_FAILED", true, "", "Failed to search workspace: %v", err)
 	}
 	if jsonEnabled {
-		writeJSONOutput(resp)
+		writeJSONOutput(buildFilesystemSearchOutput(workspaceID, resp.GetQuery(), *regex, resp.GetGlob(), resp.GetMatches()))
 		return
 	}
 

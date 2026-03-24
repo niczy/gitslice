@@ -227,7 +227,7 @@ func printFilesystemHelp() {
 	fmt.Println("  mv           Move or rename an absolute home path")
 	fmt.Println("  cp           Copy an absolute home path")
 	fmt.Println("  glob         Find files by absolute home pattern")
-	fmt.Println("  search       Search file contents in the home slice")
+	fmt.Println("  search       Search file contents in the home slice (use --regex for regex mode)")
 	fmt.Println("  stat         Show metadata for an absolute home path")
 	fmt.Println("  visibility   Inspect or change path visibility")
 	fmt.Println("  snapshot     Create a snapshot")

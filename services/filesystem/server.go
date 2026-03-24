@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -1617,7 +1618,7 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 		return nil, err
 	}
 
-	workspace, _, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
+	workspace, meta, homeMode, err := s.resolveOperationWorkspace(ctx, req.GetWorkspaceId(), username, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1632,29 +1633,19 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 		return nil, err
 	}
 
-	entries, err := s.collectWorkspaceEntries(ctx, workspace.ID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
-	}
-
-	matches := make([]*filesystemv1.SearchMatch, 0)
-	for _, entry := range entries {
-		if entry == nil || entry.Type != "file" {
-			continue
+	var matches []*filesystemv1.SearchMatch
+	if req.GetRegex() {
+		regexMatches, regexErr := s.searchWorkspaceRegex(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode)
+		if regexErr != nil {
+			return nil, regexErr
 		}
-		if globPattern != "" && !globMatch(globPattern, entry.Path) {
-			continue
-		}
-
-		content, err := s.readWorkspaceFileContent(ctx, workspace.ID, entry.Path)
+		matches = regexMatches
+	} else {
+		matches, err = s.scanWorkspaceSearch(ctx, workspace.ID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
+			return findSearchMatches(displayPath, body, query)
+		})
 		if err != nil {
-			if status.Code(err) == codes.NotFound {
-				continue
-			}
 			return nil, err
-		}
-		for _, match := range findSearchMatches(displayOperationPath(entry.Path, homeMode), string(content.Content), query) {
-			matches = append(matches, match)
 		}
 	}
 
@@ -3128,6 +3119,116 @@ func findSearchMatches(filePath, body, query string) []*filesystemv1.SearchMatch
 		}
 	}
 	return results
+}
+
+func findRegexSearchMatches(filePath, body string, re *regexp.Regexp) []*filesystemv1.SearchMatch {
+	lines := strings.Split(body, "\n")
+	results := make([]*filesystemv1.SearchMatch, 0)
+	for i, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		for _, bounds := range re.FindAllStringIndex(line, -1) {
+			if len(bounds) != 2 {
+				continue
+			}
+			results = append(results, &filesystemv1.SearchMatch{
+				Path:       filePath,
+				LineNumber: int32(i + 1),
+				Line:       line,
+				MatchStart: int32(bounds[0]),
+				MatchEnd:   int32(bounds[1]),
+			})
+		}
+	}
+	return results
+}
+
+func (s *filesystemServiceServer) scanWorkspaceSearch(ctx context.Context, workspaceID, globPattern string, homeMode bool, matcher func(displayPath, body string) []*filesystemv1.SearchMatch) ([]*filesystemv1.SearchMatch, error) {
+	entries, err := s.collectWorkspaceEntries(ctx, workspaceID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
+	}
+
+	matches := make([]*filesystemv1.SearchMatch, 0)
+	for _, entry := range entries {
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		if globPattern != "" && !globMatch(globPattern, entry.Path) {
+			continue
+		}
+
+		content, err := s.readWorkspaceFileContent(ctx, workspaceID, entry.Path)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				continue
+			}
+			return nil, err
+		}
+		matches = append(matches, matcher(displayOperationPath(entry.Path, homeMode), string(content.Content))...)
+	}
+	return matches, nil
+}
+
+func (s *filesystemServiceServer) searchWorkspaceRegex(ctx context.Context, workspaceID, headCommitHash, query, globPattern string, homeMode bool) ([]*filesystemv1.SearchMatch, error) {
+	re, err := regexp.Compile(query)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
+	}
+
+	artifact, artifactErr := s.loadWorkspaceSearchArtifact(ctx, workspaceID, headCommitHash)
+	if artifactErr != nil {
+		log.Printf("filesystem: regex search falling back to scan for %s: %v", workspaceID, artifactErr)
+		return s.scanWorkspaceSearch(ctx, workspaceID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
+			return findRegexSearchMatches(displayPath, body, re)
+		})
+	}
+
+	queryNode, err := searchindex.BuildRegexQuery(query, searchindex.DefaultWeighter(), searchindex.SparseModeCovering)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
+	}
+	candidateIndexes := searchindex.CandidateFileIndexes(artifact, queryNode)
+	if len(candidateIndexes) == 0 {
+		return s.scanWorkspaceSearch(ctx, workspaceID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
+			return findRegexSearchMatches(displayPath, body, re)
+		})
+	}
+
+	matches := make([]*filesystemv1.SearchMatch, 0)
+	for _, fileIndex := range candidateIndexes {
+		if int(fileIndex) >= len(artifact.Files) {
+			continue
+		}
+		file := artifact.Files[fileIndex]
+		if globPattern != "" && !globMatch(globPattern, file.Path) {
+			continue
+		}
+		content, err := s.readWorkspaceFileContent(ctx, workspaceID, file.Path)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				continue
+			}
+			return nil, err
+		}
+		matches = append(matches, findRegexSearchMatches(displayOperationPath(file.Path, homeMode), string(content.Content), re)...)
+	}
+	return matches, nil
+}
+
+func (s *filesystemServiceServer) loadWorkspaceSearchArtifact(ctx context.Context, workspaceID, headCommitHash string) (*searchindex.SliceArtifact, error) {
+	headCommitHash = strings.TrimSpace(headCommitHash)
+	if headCommitHash == "" {
+		return searchindex.BuildSliceArtifact(workspaceID, "", nil), nil
+	}
+
+	payload, err := s.storage.GetWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion)
+	if err == nil {
+		artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
+		if decodeErr == nil && artifact != nil && artifact.CommitHash == headCommitHash {
+			return artifact, nil
+		}
+	}
+	return storage.BuildAndStoreWorkspaceSearchArtifact(ctx, s.storage, workspaceID, headCommitHash)
 }
 
 func (s *filesystemServiceServer) snapshotInfoByCommitHash(ctx context.Context, workspaceID, commitHash string) (*filesystemv1.SnapshotInfo, error) {
