@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/storage"
 )
 
 type dirtyTrackerState struct {
@@ -82,6 +84,150 @@ func createFocusedSliceFromPublishedFolder(t *testing.T, folderPath string) stri
 		t.Fatalf("expected created slice ID")
 	}
 	return createSliceResp.SliceID
+}
+
+func publishRootFolderFromWorktree(t *testing.T, folderPath, message string, populate func(rootWorkdir string)) {
+	t.Helper()
+
+	rootWorkdir := t.TempDir()
+	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
+	populate(rootWorkdir)
+
+	rootFolder := filepath.Join(rootWorkdir, filepath.FromSlash(folderPath))
+	modifiedPaths := make([]string, 0, 8)
+	err := filepath.Walk(rootFolder, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == rootFolder {
+			return nil
+		}
+		rel, err := filepath.Rel(rootWorkdir, path)
+		if err != nil {
+			return err
+		}
+		modifiedPaths = append(modifiedPaths, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk seeded root folder %s: %v", folderPath, err)
+	}
+	if len(modifiedPaths) == 0 {
+		modifiedPaths = append(modifiedPaths, folderPath)
+	}
+
+	createResp := runCLIJSONOrFail[changesetCreateJSON](t, rootWorkdir, "changeset", "create", "--message", message, "--files", strings.Join(modifiedPaths, ","))
+	if createResp.ChangesetID == "" {
+		t.Fatalf("expected root changeset ID for %s, got: %+v", folderPath, createResp)
+	}
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
+	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected root merge success for %s, got: %+v", folderPath, mergeResp)
+	}
+}
+
+func createFocusedSliceForFolder(t *testing.T, folderPath string) sliceCreateJSON {
+	t.Helper()
+
+	workdir := t.TempDir()
+	sliceName := fmt.Sprintf("workflow-slice-%d", time.Now().UnixNano())
+	createResp := runCLIJSONOrFail[sliceCreateJSON](t, workdir, "slice", "create", sliceName, folderPath)
+	if createResp.SliceID == "" || createResp.Slug == "" {
+		t.Fatalf("expected created focused slice for %s, got: %+v", folderPath, createResp)
+	}
+	return createResp
+}
+
+func checkoutFocusedSliceRef(t *testing.T, sliceRef string) string {
+	t.Helper()
+
+	checkoutDir := t.TempDir()
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceRef)
+	if checkoutResp.SliceID == "" {
+		t.Fatalf("expected checkout for created slice, got: %+v", checkoutResp)
+	}
+	return checkoutDir
+}
+
+type seededWorkflowFile struct {
+	content       []byte
+	executable    bool
+	symlinkTarget string
+}
+
+func createSeededWorkflowSlice(t *testing.T, sliceID string, files map[string]seededWorkflowFile) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withWorkflowUser(t, ctx)
+	if testStorage == nil {
+		t.Fatal("expected test storage to be initialized")
+	}
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: workflowUsername(t),
+	}); err != nil {
+		t.Fatalf("CreateSlice(%s) failed: %v", sliceID, err)
+	}
+
+	snapshotFiles := make(map[string]string, len(files))
+	for path, file := range files {
+		if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:            common.GenerateEntryID(sliceID, path),
+			Path:          path,
+			Type:          "file",
+			ParentID:      sliceID,
+			Size:          int64(len(file.content)),
+			Executable:    file.executable,
+			SymlinkTarget: file.symlinkTarget,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", path, err)
+		}
+		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, testStorage, sliceID, path, file.content, file.executable, file.symlinkTarget)
+		if err != nil {
+			t.Fatalf("WriteSliceFileManifestWithMetadata(%s) failed: %v", path, err)
+		}
+		if err := testStorage.AddFileToSlice(ctx, path, sliceID); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", path, err)
+		}
+		snapshotFiles[path] = manifest.Hash
+	}
+
+	now := time.Now()
+	commitHash := fmt.Sprintf("seed-%s", sliceID)
+	if err := testStorage.AddSliceCommit(ctx, sliceID, &models.Commit{
+		CommitHash: commitHash,
+		Timestamp:  now,
+		Message:    "seed local workflow slice",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit(%s) failed: %v", sliceID, err)
+	}
+	if err := testStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    sliceID,
+		Files:      snapshotFiles,
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot(%s) failed: %v", commitHash, err)
+	}
+	metadata, err := testStorage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata(%s) failed: %v", sliceID, err)
+	}
+	metadata.HeadCommitHash = commitHash
+	metadata.LastModified = now
+	metadata.ModifiedFiles = make([]string, 0, len(snapshotFiles))
+	for path := range snapshotFiles {
+		metadata.ModifiedFiles = append(metadata.ModifiedFiles, path)
+	}
+	sort.Strings(metadata.ModifiedFiles)
+	metadata.ModifiedFilesCount = len(metadata.ModifiedFiles)
+	if err := testStorage.UpdateSliceMetadata(ctx, sliceID, metadata); err != nil {
+		t.Fatalf("UpdateSliceMetadata(%s) failed: %v", sliceID, err)
+	}
 }
 
 func TestSliceWorkflowCommands(t *testing.T) {
@@ -310,6 +456,188 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 		publishResp.Review.ChangesetID != publishResp.Changeset.ChangesetID ||
 		publishResp.Review.ReviewStatus != "READY_FOR_MERGE" {
 		t.Fatalf("expected publish review output to include modified file, got: %+v", publishResp)
+	}
+}
+
+func TestComprehensiveNoGitSlicePublishAndSyncWorkflow(t *testing.T) {
+	sliceID := fmt.Sprintf("comprehensive-local-%d", time.Now().UnixNano())
+	readmeRel := "README.md"
+	staleRel := filepath.ToSlash(filepath.Join("docs", "stale.txt"))
+	newRel := filepath.ToSlash(filepath.Join("docs", "NEW.txt"))
+
+	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
+		readmeRel: {content: []byte("comprehensive v1\n")},
+		staleRel:  {content: []byte("stale file\n")},
+	})
+
+	checkoutA := checkoutFocusedSliceRef(t, sliceID)
+
+	initialStatus := runCLIJSONOrFail[sliceStatusJSON](t, checkoutA, "slice", "status")
+	if initialStatus.Mode != "no-git" || initialStatus.WorkingTree != "clean" || initialStatus.Changes.Added != 0 || initialStatus.Changes.Modified != 0 || initialStatus.Changes.Deleted != 0 {
+		t.Fatalf("expected initial checkout to be clean, got: %+v", initialStatus)
+	}
+
+	readmePath := filepath.Join(checkoutA, filepath.FromSlash(readmeRel))
+	stalePath := filepath.Join(checkoutA, filepath.FromSlash(staleRel))
+	newPath := filepath.Join(checkoutA, filepath.FromSlash(newRel))
+	if err := os.WriteFile(readmePath, []byte("comprehensive v2\n"), 0o644); err != nil {
+		t.Fatalf("rewrite README: %v", err)
+	}
+	if err := os.Remove(stalePath); err != nil {
+		t.Fatalf("remove stale file: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte("brand new\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutA, "slice", "status")
+	if statusResp.WorkingTree != "dirty" || statusResp.Changes.Added != 1 || statusResp.Changes.Modified != 1 || statusResp.Changes.Deleted != 1 {
+		t.Fatalf("expected mixed local changes, got: %+v", statusResp)
+	}
+
+	diffSummary := runCLIOrFail(t, checkoutA, "slice", "diff", "--summary")
+	if !strings.Contains(diffSummary, "Changes: +1 ~1 -1") ||
+		!strings.Contains(diffSummary, "M "+readmeRel) ||
+		!strings.Contains(diffSummary, "D "+staleRel) ||
+		!strings.Contains(diffSummary, "A "+newRel) {
+		t.Fatalf("expected comprehensive diff summary, got: %s", diffSummary)
+	}
+
+	restorePreview := runCLIOrFail(t, checkoutA, "slice", "restore", "--dry-run", newRel)
+	if !strings.Contains(restorePreview, "remove "+newRel) ||
+		!strings.Contains(restorePreview, "Would restore tracked files: 0") ||
+		!strings.Contains(restorePreview, "Would remove new paths: 1") {
+		t.Fatalf("expected targeted restore preview, got: %s", restorePreview)
+	}
+	restoreOutput := runCLIOrFail(t, checkoutA, "slice", "restore", newRel)
+	if !strings.Contains(restoreOutput, "Restored tracked files: 0") || !strings.Contains(restoreOutput, "Removed new paths: 1") {
+		t.Fatalf("expected targeted restore output, got: %s", restoreOutput)
+	}
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Fatalf("expected restored new path to be removed, err=%v", err)
+	}
+
+	statusResp = runCLIJSONOrFail[sliceStatusJSON](t, checkoutA, "slice", "status")
+	if statusResp.WorkingTree != "dirty" || statusResp.Changes.Added != 0 || statusResp.Changes.Modified != 1 || statusResp.Changes.Deleted != 1 {
+		t.Fatalf("expected remaining modify/delete changes after partial restore, got: %+v", statusResp)
+	}
+
+	publishPreview := runCLIJSONOrFail[slicePublishJSON](t, checkoutA, "slice", "publish", "--review-only", "--message", "comprehensive no-git workflow")
+	if publishPreview.Changeset.ChangesetID == "" ||
+		publishPreview.Review.ChangesetID != publishPreview.Changeset.ChangesetID ||
+		publishPreview.Review.ReviewStatus != "READY_FOR_MERGE" {
+		t.Fatalf("expected review-only publish output, got: %+v", publishPreview)
+	}
+	if got := publishPreview.Review.Diff.FilesAdded + publishPreview.Review.Diff.FilesModified + publishPreview.Review.Diff.FilesDeleted; got != 2 {
+		t.Fatalf("expected review-only publish to cover 2 remaining paths, got: %+v", publishPreview)
+	}
+
+	showResp := runCLIJSONOrFail[changesetReviewJSON](t, checkoutA, "changeset", "show")
+	if showResp.ChangesetID != publishPreview.Changeset.ChangesetID {
+		t.Fatalf("expected tracked changeset show output, got: %+v", showResp)
+	}
+	if got := showResp.Diff.FilesAdded + showResp.Diff.FilesModified + showResp.Diff.FilesDeleted; got != 2 {
+		t.Fatalf("expected tracked changeset show to cover 2 remaining paths, got: %+v", showResp)
+	}
+
+	publishResp := runCLIJSONOrFail[slicePublishJSON](t, checkoutA, "slice", "publish", "--message", "comprehensive no-git workflow")
+	if publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected publish merge success, got: %+v", publishResp)
+	}
+}
+
+func TestComprehensiveNoGitMetadataWorkflow(t *testing.T) {
+	sliceID := fmt.Sprintf("metadata-local-%d", time.Now().UnixNano())
+	readmeRel := "README.md"
+	scriptRel := filepath.ToSlash(filepath.Join("bin", "run.sh"))
+	linkRel := filepath.ToSlash(filepath.Join("bin", "current"))
+	linkTarget := "run.sh"
+
+	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
+		readmeRel: {content: []byte("metadata readme\n")},
+		scriptRel: {content: []byte("#!/bin/sh\necho metadata\n"), executable: true},
+		linkRel:   {content: []byte(linkTarget), symlinkTarget: linkTarget},
+	})
+
+	checkoutA := checkoutFocusedSliceRef(t, sliceID)
+
+	scriptPathA := filepath.Join(checkoutA, filepath.FromSlash(scriptRel))
+	linkPathA := filepath.Join(checkoutA, filepath.FromSlash(linkRel))
+	if info, err := os.Stat(scriptPathA); err != nil {
+		t.Fatalf("stat checked out script: %v", err)
+	} else if info.Mode().Perm() != 0o755 {
+		t.Fatalf("expected executable script after checkout, got mode %o", info.Mode().Perm())
+	}
+	if target, err := os.Readlink(linkPathA); err != nil {
+		t.Fatalf("read checked out symlink: %v", err)
+	} else if target != "run.sh" {
+		t.Fatalf("expected original symlink target, got %q", target)
+	}
+
+	if err := os.Chmod(scriptPathA, 0o644); err != nil {
+		t.Fatalf("chmod script non-executable: %v", err)
+	}
+	if err := os.Remove(linkPathA); err != nil {
+		t.Fatalf("remove original symlink: %v", err)
+	}
+	if err := os.Symlink("../README.md", linkPathA); err != nil {
+		t.Fatalf("rewrite symlink target: %v", err)
+	}
+
+	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutA, "slice", "status")
+	if statusResp.WorkingTree != "dirty" || statusResp.Changes.Added != 0 || statusResp.Changes.Modified != 2 || statusResp.Changes.Deleted != 0 {
+		t.Fatalf("expected metadata-only modifications, got: %+v", statusResp)
+	}
+
+	diffSummary := runCLIOrFail(t, checkoutA, "slice", "diff", "--stat")
+	if !strings.Contains(diffSummary, "M "+scriptRel) ||
+		!strings.Contains(diffSummary, "mode: non-executable") ||
+		!strings.Contains(diffSummary, "M "+linkRel) ||
+		!strings.Contains(diffSummary, "symlink: run.sh -> ../README.md") {
+		t.Fatalf("expected metadata notes in diff stat output, got: %s", diffSummary)
+	}
+
+	restorePreview := runCLIOrFail(t, checkoutA, "slice", "restore", "--dry-run", linkRel)
+	if !strings.Contains(restorePreview, "restore "+linkRel) ||
+		!strings.Contains(restorePreview, "Would restore tracked files: 1") ||
+		!strings.Contains(restorePreview, "Would remove new paths: 0") {
+		t.Fatalf("expected targeted metadata restore preview, got: %s", restorePreview)
+	}
+	restoreOutput := runCLIOrFail(t, checkoutA, "slice", "restore", linkRel)
+	if !strings.Contains(restoreOutput, "Restored tracked files: 1") || !strings.Contains(restoreOutput, "Removed new paths: 0") {
+		t.Fatalf("expected targeted metadata restore output, got: %s", restoreOutput)
+	}
+	if target, err := os.Readlink(linkPathA); err != nil {
+		t.Fatalf("read restored symlink: %v", err)
+	} else if target != "run.sh" {
+		t.Fatalf("expected restored symlink target, got %q", target)
+	}
+
+	statusResp = runCLIJSONOrFail[sliceStatusJSON](t, checkoutA, "slice", "status")
+	if statusResp.WorkingTree != "dirty" || statusResp.Changes.Added != 0 || statusResp.Changes.Modified == 0 || statusResp.Changes.Deleted != 0 {
+		t.Fatalf("expected restore to leave only dirty tracked metadata changes, got: %+v", statusResp)
+	}
+
+	diffSummary = runCLIOrFail(t, checkoutA, "slice", "diff", "--stat")
+	if !strings.Contains(diffSummary, "M "+scriptRel) ||
+		!strings.Contains(diffSummary, "mode: non-executable") ||
+		strings.Contains(diffSummary, "M "+linkRel) {
+		t.Fatalf("expected only executable metadata diff after symlink restore, got: %s", diffSummary)
+	}
+
+	restoreOutput = runCLIOrFail(t, checkoutA, "slice", "restore", scriptRel)
+	if !strings.Contains(restoreOutput, "Restored tracked files: 1") || !strings.Contains(restoreOutput, "Removed new paths: 0") {
+		t.Fatalf("expected script restore output, got: %s", restoreOutput)
+	}
+	if info, err := os.Stat(scriptPathA); err != nil {
+		t.Fatalf("stat restored script: %v", err)
+	} else if info.Mode().Perm() != 0o755 {
+		t.Fatalf("expected restored script to be executable, got mode %o", info.Mode().Perm())
+	}
+
+	statusResp = runCLIJSONOrFail[sliceStatusJSON](t, checkoutA, "slice", "status")
+	if statusResp.WorkingTree != "clean" || statusResp.Changes.Added != 0 || statusResp.Changes.Modified != 0 || statusResp.Changes.Deleted != 0 {
+		t.Fatalf("expected metadata workflow to end clean after restoring both paths, got: %+v", statusResp)
 	}
 }
 
