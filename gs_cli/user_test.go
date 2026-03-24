@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	accountv1 "github.com/niczy/gitslice/proto/account"
 )
 
 func TestResolveAuthConfigPrefersAPIKeyFlag(t *testing.T) {
@@ -156,5 +158,34 @@ func TestCredentialsConfigNeedsRefresh(t *testing.T) {
 	}
 	if needsRefresh {
 		t.Fatal("expected later-expiring token to remain usable")
+	}
+}
+
+func TestCredentialsConfigRefreshedFromAuthResponsePreservesAgentMetadata(t *testing.T) {
+	cfg := credentialsConfig{
+		RefreshToken:   "existing-refresh",
+		AuthMethod:     authMethodAgentKey,
+		AgentKeyID:     "key-123",
+		KeyFingerprint: "fp-123",
+	}
+
+	refreshed := cfg.refreshedFromAuthResponse(&accountv1.AuthResponse{
+		AccessToken: "fresh-access",
+		User: &accountv1.User{
+			Username: "agent-user",
+		},
+		Session: &accountv1.Session{
+			Id: "session-1",
+		},
+	})
+
+	if refreshed.AccessToken != "fresh-access" {
+		t.Fatalf("expected refreshed access token, got %q", refreshed.AccessToken)
+	}
+	if refreshed.RefreshToken != "existing-refresh" {
+		t.Fatalf("expected refresh token to be preserved, got %q", refreshed.RefreshToken)
+	}
+	if refreshed.AuthMethod != authMethodAgentKey || refreshed.AgentKeyID != "key-123" || refreshed.KeyFingerprint != "fp-123" {
+		t.Fatalf("expected agent metadata to be preserved, got %+v", refreshed)
 	}
 }

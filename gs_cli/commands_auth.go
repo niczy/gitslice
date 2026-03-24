@@ -10,6 +10,12 @@ import (
 	accountv1 "github.com/niczy/gitslice/proto/account"
 )
 
+const (
+	authMethodAgentKey = "agent_key"
+	authMethodDevice   = "device"
+	authMethodUsername = "username"
+)
+
 func handleAuthCommand(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string, args []string) {
 	args, _ = consumeBoolFlag(args, "json")
 	if len(args) == 0 {
@@ -113,11 +119,14 @@ func handleAuthSignup(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("AUTH_SIGNUP_FAILED", false, "", "Agent key signup failed: %v", err)
 	}
-	if err := writeCredentialsConfig((credentialsConfig{}).refreshedFromAuthResponse(resp)); err != nil {
+	cfg := (credentialsConfig{}).
+		refreshedFromAuthResponse(resp).
+		withAuthMetadata(authMethodAgentKey, resp.GetSession().GetAgentKeyId(), agentKeyFingerprint(agentKeyAlgorithmEd25519, publicKey))
+	if err := writeCredentialsConfig(cfg); err != nil {
 		commandFatalf("AUTH_SAVE_FAILED", false, "", "Failed to save credentials: %v", err)
 	}
 	if cliStructuredJSON {
-		writeJSONOutput(buildAuthLoginOutput(resp, "~/.gitslice/credentials.json", publicKey))
+		writeJSONOutput(buildAuthLoginOutput(resp, "~/.gitslice/credentials.json", authMethodAgentKey, publicKey))
 		return
 	}
 	fmt.Printf("Signed up and logged in as: %s\n", strings.TrimSpace(resp.GetUser().GetUsername()))
@@ -150,11 +159,14 @@ func handleAuthKeyLogin(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Failed to complete agent key login: %v", err)
 	}
-	if err := writeCredentialsConfig((credentialsConfig{}).refreshedFromAuthResponse(authResp)); err != nil {
+	cfg := (credentialsConfig{}).
+		refreshedFromAuthResponse(authResp).
+		withAuthMetadata(authMethodAgentKey, authResp.GetSession().GetAgentKeyId(), agentKeyFingerprint(agentKeyAlgorithmEd25519, publicKey))
+	if err := writeCredentialsConfig(cfg); err != nil {
 		commandFatalf("AUTH_SAVE_FAILED", false, "", "Failed to save credentials: %v", err)
 	}
 	if cliStructuredJSON {
-		writeJSONOutput(buildAuthLoginOutput(authResp, "~/.gitslice/credentials.json", publicKey))
+		writeJSONOutput(buildAuthLoginOutput(authResp, "~/.gitslice/credentials.json", authMethodAgentKey, publicKey))
 		return
 	}
 	fmt.Printf("Logged in as: %s\n", strings.TrimSpace(authResp.GetUser().GetUsername()))

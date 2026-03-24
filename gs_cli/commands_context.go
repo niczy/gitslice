@@ -26,13 +26,16 @@ func handleContext(ctx context.Context, cli *CLI, authConfig cliAuth, args []str
 		commandFatalf("CONTEXT_FAILED", false, "", "Failed to resolve current directory: %v", err)
 	}
 
+	creds := credentialsConfig{}
+	if authConfig.CredentialStore {
+		if loaded, err := readCredentialsConfig(); err == nil {
+			creds = loaded
+		}
+	}
+
 	out := jsonContextOutput{
 		CurrentDir: cwd,
-		Auth: jsonDoctorAuthOutput{
-			Source:            strings.TrimSpace(authConfig.Source),
-			Username:          strings.TrimSpace(authConfig.Username),
-			StoredCredentials: authConfig.CredentialStore,
-		},
+		Auth:       buildDoctorAuthOutput(authConfig, creds),
 	}
 
 	if homeSliceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig); err == nil {
@@ -118,6 +121,12 @@ func handleContext(ctx context.Context, cli *CLI, authConfig cliAuth, args []str
 		fmt.Printf("Auth: %s via %s\n", out.Auth.Username, out.Auth.Source)
 	} else {
 		fmt.Printf("Auth source: %s\n", out.Auth.Source)
+	}
+	if out.Auth.AuthMethod != "" {
+		fmt.Printf("Auth method: %s\n", out.Auth.AuthMethod)
+	}
+	if out.Auth.AgentKeyID != "" {
+		fmt.Printf("Agent key: %s\n", out.Auth.AgentKeyID)
 	}
 	if out.HomeSliceID != "" {
 		fmt.Printf("Home slice: %s\n", out.HomeSliceID)

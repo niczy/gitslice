@@ -90,8 +90,8 @@ export default function DocsPage({ onBrowseRepo }) {
           <h1>One versioned filesystem, two work surfaces.</h1>
           <p className="lede">
             Use <code>gs fs</code> for direct cloud edits in your home slice. Use custom slices when you want a fast
-            local checkout. Plain checkout now covers local status, diff, restore, sync, and publish on its own. Add
-            local git metadata at all.
+            local checkout. Plain checkout now covers local status, diff, restore, sync, and publish on its own
+            without local git metadata at all.
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
@@ -105,11 +105,12 @@ export default function DocsPage({ onBrowseRepo }) {
         <div className="docs-hero-card">
           <div className="docs-hero-card-head">
             <Badge variant="outline" className="w-fit">Install + login</Badge>
-            <p>Start with the CLI</p>
+            <p>Start with the CLI or an agent key</p>
           </div>
           <pre className="code-block">
             <code>{`go install github.com/niczy/gitslice/gs@latest
-gs login`}</code>
+gs auth keygen --out ~/.config/gitslice/agent_ed25519
+gs auth login --key ~/.config/gitslice/agent_ed25519`}</code>
           </pre>
         </div>
       </section>
@@ -402,9 +403,24 @@ gs cache clear --objects`}</code>
           <section id="auth" className="docs-section">
             <Badge variant="secondary" className="eyebrow">Auth</Badge>
             <h2>Authenticate once, then use the same identity everywhere</h2>
+            <p>
+              Human CLI use can start with the device flow. Agent workflows should use an enrolled <code>ed25519</code>
+              keypair so login stays non-interactive and machine-readable.
+            </p>
+            <pre className="code-block">
+              <code>{`gs auth keygen --out ~/.config/gitslice/agent_ed25519
+gs auth signup --username my-agent --email my-agent@example.com --name "My Agent" --key ~/.config/gitslice/agent_ed25519
+gs auth login --key ~/.config/gitslice/agent_ed25519
+gs auth status --json
+gs doctor --json
+gs context --json`}</code>
+            </pre>
             <ul className="docs-bullet-list">
-              <li>Use <code>gs login</code> to start the OAuth device flow for the CLI.</li>
+              <li>Use <code>gs login</code> to start the OAuth device flow for the CLI when a human is present.</li>
+              <li>Use <code>gs auth signup</code> and <code>gs auth login --key</code> for non-interactive agent auth.</li>
+              <li><code>gs auth status --json</code>, <code>gs doctor --json</code>, and <code>gs context --json</code> expose stored auth metadata including the session and enrolled agent key ID.</li>
               <li>The web app uses cookie-backed session auth.</li>
+              <li>The Settings page shows enrolled agent keys, their fingerprints, last-used timestamps, and revoke controls.</li>
               <li>Your account owns a home slice, which is why `gs fs` can work from absolute paths immediately.</li>
             </ul>
           </section>

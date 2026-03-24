@@ -320,7 +320,7 @@ Cloudflare runtime troubleshooting:
 
 ## Accounts / Organizations
 
-This repo uses lightweight account sign-in: web supports OAuth via Auth.js (Google/GitHub) and CLI supports username login. Requests include the signed-in username in metadata.
+This repo uses lightweight account sign-in: the web app supports OAuth via Auth.js (Google/GitHub), the CLI supports OAuth device login, and agents can sign up or log in non-interactively with enrolled `ed25519` keys. Requests include the signed-in user in metadata.
 
 - The root slice (`root_slice`) is publicly viewable.
 - Non-root slices are only visible/accessible to their owners.
@@ -354,22 +354,27 @@ CLI usage:
 # Start OAuth device login and store refreshable credentials in ~/.gitslice/credentials.json
 gs login
 
-# Check the current stored login
-gs login status
+# Agent-first signup/login with an ed25519 keypair
+gs auth keygen --out ~/.config/gitslice/agent_ed25519
+gs auth signup --username your_name --email you@example.com --name "Your Name" --key ~/.config/gitslice/agent_ed25519
+gs auth login --key ~/.config/gitslice/agent_ed25519
 
-# Dev-only fallback: persist a username to ~/.gitslice/user
-gs login your_name
+# Check the current stored login and auth metadata
+gs auth status --json
+gs doctor --json
+gs context --json
 
-# Or pass a dev username per-command
-gs --user your_name slice create my-slice ./some/folder
+# Manage enrolled agent keys from the CLI or Settings page
+gs auth keys list --json
+gs auth keys revoke <key-id>
 
 # Remote filesystem commands
-gs --user your_name fs write /your_name/README.md -f ./README.md
-gs --user your_name fs cat /your_name/README.md
-gs --user your_name fs snapshot -m "save point"
-gs --user your_name fs shell
-gs --user your_name fs upload ./project /your_name/project
-gs --user your_name fs download /your_name/project ./project-copy
+gs fs write /your_name/README.md -f ./README.md
+gs fs cat /your_name/README.md
+gs fs snapshot -m "save point"
+gs fs shell
+gs fs upload ./project /your_name/project
+gs fs download /your_name/project ./project-copy
 ```
 
 ## Development
