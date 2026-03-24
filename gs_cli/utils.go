@@ -12,6 +12,10 @@ const (
 	sliceConfigPath            = ".gs/config"
 	checkoutIndexPath          = ".gs/index"
 	trackedChangesetConfigPath = ".gs/changeset_id"
+	searchArtifactDirPath      = ".gs/search"
+	searchArtifactBasePath     = ".gs/search/base.artifact"
+	searchArtifactMetadataPath = ".gs/search/metadata.json"
+	searchArtifactOverlayDir   = ".gs/search/overlay"
 )
 
 // readSliceIDFromConfig reads the slice ID from the .gs/config file.

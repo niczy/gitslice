@@ -43,6 +43,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceStatus(ctx, cli, args[1:])
 	case "tree", "list-files":
 		handleSliceTree(ctx, cli, args[1:])
+	case "search":
+		handleSliceSearch(ctx, cli, args[1:])
 	case "diff":
 		handleSliceDiff(ctx, cli, args[1:])
 	case "restore":
@@ -170,6 +172,9 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write checkout index: %v", err)
 	}
+	if err := ensureLocalSliceSearchArtifact(ctx, cli, ".", sliceID, checkoutResult.Manifest); err != nil {
+		log.Printf("Warning: failed to prepare local slice search artifact: %v", err)
+	}
 	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to start dirty tracker: %v", err)
 	}
@@ -246,6 +251,9 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 
 	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
 		commandFatalf("SLICE_SYNC_FAILED", false, "", "Failed to write checkout index: %v", err)
+	}
+	if err := ensureLocalSliceSearchArtifact(ctx, cli, ".", sliceID, checkoutResult.Manifest); err != nil {
+		log.Printf("Warning: failed to refresh local slice search artifact: %v", err)
 	}
 	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to restart dirty tracker: %v", err)

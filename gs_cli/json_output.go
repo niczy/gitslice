@@ -193,6 +193,21 @@ type jsonSliceSyncOutput struct {
 	CacheHits int64  `json:"cache_hits"`
 }
 
+type jsonSliceSearchMatch struct {
+	Path       string `json:"path"`
+	LineNumber int    `json:"line_number"`
+	Line       string `json:"line"`
+}
+
+type jsonSliceSearchOutput struct {
+	SliceID string                 `json:"slice_id"`
+	Query   string                 `json:"query"`
+	Regex   bool                   `json:"regex"`
+	Glob    string                 `json:"glob,omitempty"`
+	Total   int                    `json:"total"`
+	Matches []jsonSliceSearchMatch `json:"matches,omitempty"`
+}
+
 type jsonWorkingTreeSummary struct {
 	Added    int `json:"added"`
 	Modified int `json:"modified"`
@@ -705,6 +720,28 @@ func buildSliceSyncOutput(sliceID, syncStatus string, result *checkoutFetchResul
 		output.FileCount = len(result.Manifest.GetFileMetadata())
 	}
 	output.CacheHits = result.Materialized.CacheHits
+	return output
+}
+
+func buildSliceSearchOutput(sliceID, query string, regex bool, glob string, matches []sliceSearchMatch) jsonSliceSearchOutput {
+	output := jsonSliceSearchOutput{
+		SliceID: sliceID,
+		Query:   query,
+		Regex:   regex,
+		Glob:    strings.TrimSpace(glob),
+		Total:   len(matches),
+	}
+	if len(matches) == 0 {
+		return output
+	}
+	output.Matches = make([]jsonSliceSearchMatch, 0, len(matches))
+	for _, match := range matches {
+		output.Matches = append(output.Matches, jsonSliceSearchMatch{
+			Path:       match.Path,
+			LineNumber: match.LineNumber,
+			Line:       match.Line,
+		})
+	}
 	return output
 }
 
