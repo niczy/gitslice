@@ -156,6 +156,9 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 			log.Printf("Warning: failed to persist cache index: %v", err)
 		}
 	}
+	if err := ensureCleanLocalSearchOverlay("."); err != nil {
+		log.Printf("Warning: failed to reset local search overlay after restore: %v", err)
+	}
 	if err := resetDirtyTracker(".", checkoutIndex); err != nil {
 		log.Printf("Warning: failed to restart dirty tracker: %v", err)
 	}

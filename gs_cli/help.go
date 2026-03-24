@@ -65,6 +65,7 @@ func printSliceHelp() {
 	fmt.Println("  publish   Create/update or reuse the tracked changeset and merge it")
 	fmt.Println("  tree      Print a slice file tree")
 	fmt.Println("  list-files Alias for tree")
+	fmt.Println("  search    Search file contents in the current local slice checkout (--regex, --glob, --json)")
 	fmt.Println("  diff      Show local changes for the current slice checkout (--summary, --stat, --name-only)")
 	fmt.Println("  restore   Restore local files back to the recorded slice state (--dry-run to preview)")
 	fmt.Println("  checkouts List globally tracked local slice checkouts")
