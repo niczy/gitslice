@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/searchindex"
 )
 
 func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st Storage, sliceID, filePath string, content []byte) *models.FileManifest {
@@ -89,6 +90,24 @@ func TestStoragePrefersManifestOverSharedPathContent(t *testing.T) {
 	for _, tc := range storageTestCases(ctx) {
 		t.Run(tc.name, func(t *testing.T) {
 			runManifestPreferenceTest(ctx, t, tc.factory(t))
+		})
+	}
+}
+
+func TestSearchIndexStorageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runSearchIndexStorageRoundTrip(ctx, t, tc.factory(t))
+		})
+	}
+}
+
+func TestBuildSliceSearchArtifactFromCommitSnapshot(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runBuildSliceSearchArtifactFromCommitSnapshot(ctx, t, tc.factory(t))
 		})
 	}
 }
@@ -209,6 +228,161 @@ func runManifestPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if second.Hash != secondManifest.Hash {
 		t.Fatalf("expected updated manifest-backed home hash %q, got %q", secondManifest.Hash, second.Hash)
+	}
+}
+
+func runSearchIndexStorageRoundTrip(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	blobV1 := []byte("blob-v1")
+	blobV2 := []byte("blob-v2")
+	if err := st.PutSearchIndexFileBlob(ctx, 1, "hash-1", blobV1); err != nil {
+		t.Fatalf("PutSearchIndexFileBlob v1 failed: %v", err)
+	}
+	if err := st.PutSearchIndexFileBlob(ctx, 2, "hash-1", blobV2); err != nil {
+		t.Fatalf("PutSearchIndexFileBlob v2 failed: %v", err)
+	}
+	gotBlobV1, err := st.GetSearchIndexFileBlob(ctx, 1, "hash-1")
+	if err != nil {
+		t.Fatalf("GetSearchIndexFileBlob v1 failed: %v", err)
+	}
+	gotBlobV2, err := st.GetSearchIndexFileBlob(ctx, 2, "hash-1")
+	if err != nil {
+		t.Fatalf("GetSearchIndexFileBlob v2 failed: %v", err)
+	}
+	if !bytes.Equal(gotBlobV1, blobV1) || !bytes.Equal(gotBlobV2, blobV2) {
+		t.Fatalf("unexpected blob payloads: v1=%q v2=%q", string(gotBlobV1), string(gotBlobV2))
+	}
+	if _, err := st.GetSearchIndexFileBlob(ctx, 3, "hash-1"); err != ErrEntryNotFound {
+		t.Fatalf("expected missing blob version to return ErrEntryNotFound, got %v", err)
+	}
+
+	artifactV1 := []byte("artifact-v1")
+	artifactV2 := []byte("artifact-v2")
+	if err := st.PutSliceSearchArtifact(ctx, "slice-1", "commit-1", 1, artifactV1); err != nil {
+		t.Fatalf("PutSliceSearchArtifact v1 failed: %v", err)
+	}
+	if err := st.PutSliceSearchArtifact(ctx, "slice-1", "commit-1", 2, artifactV2); err != nil {
+		t.Fatalf("PutSliceSearchArtifact v2 failed: %v", err)
+	}
+	gotArtifactV1, err := st.GetSliceSearchArtifact(ctx, "slice-1", "commit-1", 1)
+	if err != nil {
+		t.Fatalf("GetSliceSearchArtifact v1 failed: %v", err)
+	}
+	gotArtifactV2, err := st.GetSliceSearchArtifact(ctx, "slice-1", "commit-1", 2)
+	if err != nil {
+		t.Fatalf("GetSliceSearchArtifact v2 failed: %v", err)
+	}
+	if !bytes.Equal(gotArtifactV1, artifactV1) || !bytes.Equal(gotArtifactV2, artifactV2) {
+		t.Fatalf("unexpected artifact payloads: v1=%q v2=%q", string(gotArtifactV1), string(gotArtifactV2))
+	}
+	if _, err := st.GetSliceSearchArtifact(ctx, "slice-1", "commit-1", 3); err != ErrEntryNotFound {
+		t.Fatalf("expected missing artifact version to return ErrEntryNotFound, got %v", err)
+	}
+}
+
+func runBuildSliceSearchArtifactFromCommitSnapshot(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	sliceID := "slice-search-" + suffix
+	commitHash := "commit-search-" + suffix
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "Search",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	readmeManifest, err := WriteSliceFileManifest(ctx, st, sliceID, "docs/readme.md", []byte("alpha beta gamma\n"))
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest readme failed: %v", err)
+	}
+	execManifest, err := WriteSliceFileManifestWithMetadata(ctx, st, sliceID, "bin/run.sh", []byte("#!/bin/sh\necho hi\n"), true, "")
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifestWithMetadata executable failed: %v", err)
+	}
+	duplicateExecManifest, err := WriteSliceFileManifestWithMetadata(ctx, st, sliceID, "bin/run-copy.sh", []byte("#!/bin/sh\necho hi\n"), false, "")
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifestWithMetadata duplicate failed: %v", err)
+	}
+	binaryManifest, err := WriteSliceFileManifest(ctx, st, sliceID, "bin/data.bin", []byte{0x00, 0x01, 0x02})
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest binary failed: %v", err)
+	}
+	symlinkManifest, err := WriteSliceFileManifestWithMetadata(ctx, st, sliceID, "link.txt", []byte("docs/readme.md"), false, "docs/readme.md")
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifestWithMetadata symlink failed: %v", err)
+	}
+
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    sliceID,
+		Timestamp:  time.Now(),
+		Files: map[string]string{
+			"docs/readme.md":  readmeManifest.Hash,
+			"bin/run.sh":      execManifest.Hash,
+			"bin/run-copy.sh": duplicateExecManifest.Hash,
+			"bin/data.bin":    binaryManifest.Hash,
+			"link.txt":        symlinkManifest.Hash,
+		},
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	artifact, err := BuildAndStoreSliceSearchArtifact(ctx, st, sliceID, commitHash)
+	if err != nil {
+		t.Fatalf("BuildAndStoreSliceSearchArtifact failed: %v", err)
+	}
+	if artifact.Version != searchindex.CurrentArtifactVersion {
+		t.Fatalf("expected artifact version %d, got %d", searchindex.CurrentArtifactVersion, artifact.Version)
+	}
+	if got := len(artifact.Files); got != 3 {
+		t.Fatalf("expected 3 indexed text files, got %d", got)
+	}
+
+	searchHashesByPath := make(map[string]string, len(artifact.Files))
+	for _, file := range artifact.Files {
+		searchHashesByPath[file.Path] = file.SearchContentHash
+	}
+	if searchHashesByPath["bin/run.sh"] != searchHashesByPath["bin/run-copy.sh"] {
+		t.Fatalf("expected identical content paths to share search hash, got %#v", searchHashesByPath)
+	}
+	if _, ok := searchHashesByPath["bin/data.bin"]; ok {
+		t.Fatalf("expected binary file to be skipped, got %#v", searchHashesByPath)
+	}
+	if _, ok := searchHashesByPath["link.txt"]; ok {
+		t.Fatalf("expected symlink file to be skipped, got %#v", searchHashesByPath)
+	}
+
+	payload, err := st.GetSliceSearchArtifact(ctx, sliceID, commitHash, searchindex.CurrentArtifactVersion)
+	if err != nil {
+		t.Fatalf("GetSliceSearchArtifact failed: %v", err)
+	}
+	decodedArtifact, err := searchindex.DecodeSliceArtifact(payload)
+	if err != nil {
+		t.Fatalf("DecodeSliceArtifact failed: %v", err)
+	}
+	if got := len(decodedArtifact.Files); got != 3 {
+		t.Fatalf("expected 3 decoded files, got %d", got)
+	}
+
+	runHash := searchindex.SearchContentHash([]byte("#!/bin/sh\necho hi\n"))
+	blobPayload, err := st.GetSearchIndexFileBlob(ctx, searchindex.CurrentBlobVersion, runHash)
+	if err != nil {
+		t.Fatalf("GetSearchIndexFileBlob duplicate content failed: %v", err)
+	}
+	blob, err := searchindex.DecodeFileBlob(blobPayload)
+	if err != nil {
+		t.Fatalf("DecodeFileBlob failed: %v", err)
+	}
+	if blob.SearchContentHash != runHash {
+		t.Fatalf("expected blob search hash %q, got %q", runHash, blob.SearchContentHash)
+	}
+	if _, err := st.GetSearchIndexFileBlob(ctx, searchindex.CurrentBlobVersion, searchindex.SearchContentHash([]byte{0x00, 0x01, 0x02})); err != ErrEntryNotFound {
+		t.Fatalf("expected binary content to be skipped, got %v", err)
 	}
 }
 

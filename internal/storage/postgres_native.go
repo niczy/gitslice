@@ -402,6 +402,14 @@ func (s *PostgresNativeStorage) objKey(parts ...string) string {
 	return fmt.Sprintf("%s:%s", s.namespace, strings.Join(parts, ":"))
 }
 
+func (s *PostgresNativeStorage) searchBlobObjectKey(version uint32, searchContentHash string) string {
+	return s.objKey("search_index_blobs", fmt.Sprintf("v%d", version), strings.TrimSpace(searchContentHash))
+}
+
+func (s *PostgresNativeStorage) sliceSearchArtifactObjectKey(version uint32, sliceID, commitHash string) string {
+	return s.objKey("slice_search_artifacts", fmt.Sprintf("v%d", version), strings.TrimSpace(sliceID), strings.TrimSpace(commitHash))
+}
+
 type postgresNativeTxView struct {
 	*PostgresNativeStorage
 	tx pgx.Tx
@@ -2380,6 +2388,38 @@ func (s *PostgresNativeStorage) GetVersionedFileManifest(ctx context.Context, ha
 		return nil, err
 	}
 	return cloneManifest(&manifest), nil
+}
+
+func (s *PostgresNativeStorage) PutSearchIndexFileBlob(ctx context.Context, version uint32, searchContentHash string, payload []byte) error {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(searchContentHash) == "" {
+		return ErrInvalidInput
+	}
+	return s.objectStore.PutObject(ctx, s.searchBlobObjectKey(version, searchContentHash), append([]byte(nil), payload...))
+}
+
+func (s *PostgresNativeStorage) GetSearchIndexFileBlob(ctx context.Context, version uint32, searchContentHash string) ([]byte, error) {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(searchContentHash) == "" {
+		return nil, ErrInvalidInput
+	}
+	return s.objectStore.GetObject(ctx, s.searchBlobObjectKey(version, searchContentHash))
+}
+
+func (s *PostgresNativeStorage) PutSliceSearchArtifact(ctx context.Context, sliceID, commitHash string, version uint32, payload []byte) error {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(sliceID) == "" || strings.TrimSpace(commitHash) == "" {
+		return ErrInvalidInput
+	}
+	return s.objectStore.PutObject(ctx, s.sliceSearchArtifactObjectKey(version, sliceID, commitHash), append([]byte(nil), payload...))
+}
+
+func (s *PostgresNativeStorage) GetSliceSearchArtifact(ctx context.Context, sliceID, commitHash string, version uint32) ([]byte, error) {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(sliceID) == "" || strings.TrimSpace(commitHash) == "" {
+		return nil, ErrInvalidInput
+	}
+	return s.objectStore.GetObject(ctx, s.sliceSearchArtifactObjectKey(version, sliceID, commitHash))
 }
 
 // ============ Directory Entries ============
