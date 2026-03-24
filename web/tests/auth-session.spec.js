@@ -82,4 +82,99 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByTestId('settings-repo-bindings')).toContainText('https://github.com/example/demo.git');
     await expect(page.getByTestId('settings-repo-bindings')).toContainText(/yes/i);
   });
+
+  test('settings can add and revoke agent keys', async ({ page }) => {
+    const username = `webagentkeys${Date.now()}`;
+    const pastedPublicKey = 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=';
+    let keys = [
+      {
+        id: 'agk-primary',
+        user_id: username,
+        name: 'codex-laptop',
+        algorithm: 'ed25519',
+        fingerprint: 'ed25519:primary',
+        created_at: '2026-03-24T00:00:00Z',
+        updated_at: '2026-03-24T00:00:00Z',
+        last_used_at: '',
+        revoked_at: '',
+        revoked: false,
+      },
+    ];
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+
+    await page.route('**/v1/repos/bindings', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ bindings: [] }),
+      });
+    });
+    await page.route('**/v1/auth/agent/keys', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ keys }),
+        });
+        return;
+      }
+      if (route.request().method() === 'POST') {
+        const payload = JSON.parse(route.request().postData() || '{}');
+        expect(payload.name).toBe('ci-runner');
+        expect(payload.algorithm).toBe('ed25519');
+        expect(payload.publicKey).toBe(pastedPublicKey);
+        const created = {
+          id: 'agk-ci',
+          user_id: username,
+          name: payload.name,
+          algorithm: payload.algorithm,
+          fingerprint: 'ed25519:ci',
+          created_at: '2026-03-24T00:05:00Z',
+          updated_at: '2026-03-24T00:05:00Z',
+          last_used_at: '',
+          revoked_at: '',
+          revoked: false,
+        };
+        keys = [...keys, created];
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(created),
+        });
+      }
+    });
+    await page.route('**/v1/auth/agent/keys/*', async (route) => {
+      const id = route.request().url().split('/').pop();
+      keys = keys.map((key) => (
+        key.id === id
+          ? { ...key, revoked: true, revoked_at: '2026-03-24T00:06:00Z' }
+          : key
+      ));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: '{}',
+      });
+    });
+
+    await page.getByTestId('topbar-settings').click();
+    await expect(page.getByTestId('settings-page')).toBeVisible();
+    await expect(page.getByTestId('settings-agent-keys')).toContainText('codex-laptop');
+    await expect(page.getByTestId('settings-agent-keys')).toContainText('ed25519:primary');
+
+    await page.getByTestId('settings-agent-key-name').fill('ci-runner');
+    await page.getByTestId('settings-agent-key-public-key').fill(pastedPublicKey);
+    await page.getByTestId('settings-agent-key-submit').click();
+
+    await expect(page.getByTestId('settings-agent-keys')).toContainText('ci-runner');
+    await expect(page.getByTestId('settings-agent-keys')).toContainText('ed25519:ci');
+
+    await page.getByTestId('settings-agent-key-revoke-agk-ci').click();
+    await expect(page.getByTestId('settings-agent-keys')).toContainText(/revoked/i);
+    await expect(page.getByTestId('settings-agent-key-revoke-agk-ci')).toBeDisabled();
+  });
 });
