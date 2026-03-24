@@ -725,6 +725,41 @@ func (s *InMemoryStorage) RevokeAuthSessionByToken(ctx context.Context, token st
 	return nil
 }
 
+func (s *InMemoryStorage) RevokeAuthSessionsByAgentKey(ctx context.Context, username, agentKeyID string) (int, error) {
+	_ = ctx
+	username = strings.TrimSpace(username)
+	agentKeyID = strings.TrimSpace(agentKeyID)
+	if !auth.ValidateUsername(username) || agentKeyID == "" {
+		return 0, ErrInvalidInput
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sessionIDs := s.authSessionsByUser[username]
+	if len(sessionIDs) == 0 {
+		return 0, nil
+	}
+
+	revoked := 0
+	for sessionID := range sessionIDs {
+		session, ok := s.authSessions[sessionID]
+		if !ok || session == nil || session.RevokedAt != nil || session.AgentKeyID != agentKeyID {
+			continue
+		}
+		revokedAt := now
+		session.RevokedAt = &revokedAt
+		delete(s.authSessionByToken, session.Token)
+		if session.RefreshToken != "" {
+			delete(s.authSessionByRefreshToken, session.RefreshToken)
+		}
+		revoked += 1
+	}
+
+	return revoked, nil
+}
+
 func (s *InMemoryStorage) CreateAgentKey(ctx context.Context, key *models.AgentKey) error {
 	_ = ctx
 	if key == nil {

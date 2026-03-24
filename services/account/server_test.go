@@ -432,6 +432,23 @@ func TestAgentKeyLoginFlow(t *testing.T) {
 	if storedKey.LastUsedAt == nil {
 		t.Fatalf("expected last_used_at to be updated, got %#v", storedKey)
 	}
+
+	sessionList, err := srv.ListSessions(bearerCtx(ctx, authResp.GetAccessToken()), &accountv1.ListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	foundAgentSession := false
+	for _, session := range sessionList.GetSessions() {
+		if session.GetId() == authResp.GetSession().GetId() {
+			foundAgentSession = true
+			if session.GetAgentKeyId() != key.GetId() {
+				t.Fatalf("expected session agent key id %q, got %#v", key.GetId(), session)
+			}
+		}
+	}
+	if !foundAgentSession {
+		t.Fatalf("expected to find agent session %#v in %#v", authResp.GetSession(), sessionList)
+	}
 }
 
 func TestAgentKeyLoginRejectsExpiredChallenge(t *testing.T) {
@@ -517,6 +534,48 @@ func TestAgentKeyLoginRejectsReplayAndInvalidSignatureAndRevokedKey(t *testing.T
 		KeyId: key.GetId(),
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition for revoked key start, got %v", err)
+	}
+}
+
+func TestDeleteAgentKeyRevokesAttributedSessions(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	authCtx, publicKey, privateKey, key := createAgentKeyForLogin(t, ctx, srv, "agentrevoke", "agentrevoke@example.com")
+	startResp, err := srv.StartAgentKeyLogin(ctx, &accountv1.StartAgentKeyLoginRequest{
+		PublicKey: publicKey,
+	})
+	if err != nil {
+		t.Fatalf("StartAgentKeyLogin failed: %v", err)
+	}
+	authResp, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   ed25519.Sign(privateKey, startResp.GetChallenge()),
+	})
+	if err != nil {
+		t.Fatalf("CompleteAgentKeyLogin failed: %v", err)
+	}
+
+	if _, err := srv.DeleteAgentKey(authCtx, &accountv1.DeleteAgentKeyRequest{KeyId: key.GetId()}); err != nil {
+		t.Fatalf("DeleteAgentKey failed: %v", err)
+	}
+
+	keysResp, err := srv.ListAgentKeys(authCtx, &accountv1.ListAgentKeysRequest{})
+	if err != nil {
+		t.Fatalf("ListAgentKeys failed: %v", err)
+	}
+	if len(keysResp.GetKeys()) != 1 || !keysResp.GetKeys()[0].GetRevoked() || keysResp.GetKeys()[0].GetLastUsedAt() == "" {
+		t.Fatalf("expected revoked key with usage metadata, got %#v", keysResp)
+	}
+
+	if _, err := srv.ListSessions(bearerCtx(ctx, authResp.GetAccessToken()), &accountv1.ListSessionsRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected revoked agent-key access token to be rejected, got %v", err)
+	}
+	if _, err := srv.RefreshAccessToken(ctx, &accountv1.RefreshAccessTokenRequest{RefreshToken: authResp.GetRefreshToken()}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected revoked agent-key refresh token to be rejected, got %v", err)
+	}
+	if _, err := srv.StartAgentKeyLogin(ctx, &accountv1.StartAgentKeyLoginRequest{KeyId: key.GetId()}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected revoked key login start to fail, got %v", err)
 	}
 }
 

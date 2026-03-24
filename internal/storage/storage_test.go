@@ -1206,6 +1206,19 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if sessionWithKey.AgentKeyID != agentKey.KeyID {
 		t.Fatalf("expected agent-key-attributed session, got %#v", sessionWithKey)
 	}
+	revokedSessions, err := st.RevokeAuthSessionsByAgentKey(ctx, accountUsername, agentKey.KeyID)
+	if err != nil {
+		t.Fatalf("RevokeAuthSessionsByAgentKey failed: %v", err)
+	}
+	if revokedSessions != 1 {
+		t.Fatalf("expected 1 revoked session, got %d", revokedSessions)
+	}
+	if _, err := st.GetAuthSessionByToken(ctx, authSessionWithKey.Token); err != ErrEntryNotFound {
+		t.Fatalf("expected revoked agent-key session token to be invalid, got %v", err)
+	}
+	if _, err := st.GetAuthSessionByRefreshToken(ctx, authSessionWithKey.RefreshToken); err != ErrEntryNotFound {
+		t.Fatalf("expected revoked agent-key refresh token to be invalid, got %v", err)
+	}
 
 	agentChallenge := &models.AgentKeyChallenge{
 		ChallengeID: "agent-challenge-" + suffix,

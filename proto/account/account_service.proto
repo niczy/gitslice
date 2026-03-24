@@ -508,6 +508,7 @@ message Session {
   string last_seen_at = 3;
   string device_info = 4;
   bool current = 5;
+  string agent_key_id = 6;
 }
 
 message AgentKey {

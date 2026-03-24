@@ -159,6 +159,7 @@ type Storage interface {
 	TouchAuthSession(ctx context.Context, sessionID string, at time.Time) error
 	RevokeAuthSession(ctx context.Context, username, sessionID string) error
 	RevokeAuthSessionByToken(ctx context.Context, token string) error
+	RevokeAuthSessionsByAgentKey(ctx context.Context, username, agentKeyID string) (int, error)
 	CreateAgentKey(ctx context.Context, key *models.AgentKey) error
 	GetAgentKey(ctx context.Context, keyID string) (*models.AgentKey, error)
 	GetAgentKeyByFingerprint(ctx context.Context, fingerprint string) (*models.AgentKey, error)
