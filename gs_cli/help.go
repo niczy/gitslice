@@ -10,6 +10,7 @@ func printHelp() {
 	fmt.Println("  3. ~/.gitslice/credentials.json")
 	fmt.Println("  4. legacy username auth (--user, GS_USERNAME, ~/.gitslice/user)")
 	fmt.Println("\nCommands:")
+	fmt.Println("  auth       Manage CLI auth, agent keys, and key-based login")
 	fmt.Println("  login      Start OAuth device login or show current auth")
 	fmt.Println("  logout     Clear stored bearer credentials or legacy auth")
 	fmt.Println("  slice       Manage slices")
@@ -27,6 +28,27 @@ func printHelp() {
 	fmt.Println("  log         Show slice commit history")
 	fmt.Println("  root        Show root slice information")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
+}
+
+func printAuthHelp() {
+	fmt.Println("Usage: gs auth <command> [options]")
+	fmt.Println("Most auth commands support --json.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  keygen   Generate a local ed25519 agent keypair")
+	fmt.Println("  signup   Sign up with an agent private key and store bearer credentials")
+	fmt.Println("  login    Log in with an enrolled agent private key")
+	fmt.Println("  status   Show the current stored auth state")
+	fmt.Println("  logout   Clear stored bearer credentials or legacy auth")
+	fmt.Println("  keys     Manage enrolled agent keys")
+}
+
+func printAuthKeysHelp() {
+	fmt.Println("Usage: gs auth keys <command> [options]")
+	fmt.Println("Most auth key commands support --json.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  list     List enrolled agent keys")
+	fmt.Println("  add      Add an agent public key to the current account")
+	fmt.Println("  revoke   Revoke an enrolled agent key by ID")
 }
 
 func printSliceHelp() {
