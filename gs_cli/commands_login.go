@@ -57,6 +57,10 @@ func handleLogout(ctx context.Context, cli *CLI, currentAuth cliAuth, args []str
 		log.Fatal("Usage: gs logout")
 	}
 	if strings.TrimSpace(currentAuth.Authorization) == "" && !currentAuth.CredentialStore {
+		if cliStructuredJSON {
+			writeJSONOutput(jsonAuthLogoutOutput{Status: "not_logged_in"})
+			return
+		}
 		fmt.Println("Not logged in.")
 		return
 	}
@@ -78,20 +82,46 @@ func handleLogout(ctx context.Context, cli *CLI, currentAuth cliAuth, args []str
 		if err := removeUsernameConfig(); err != nil {
 			log.Fatalf("Failed to clear legacy username config: %v", err)
 		}
+		if cliStructuredJSON {
+			writeJSONOutput(jsonAuthLogoutOutput{Status: "logged_out"})
+			return
+		}
 		fmt.Println("Logged out.")
 	case "legacy username":
 		if err := removeUsernameConfig(); err != nil {
 			log.Fatalf("Failed to clear legacy username config: %v", err)
 		}
+		if cliStructuredJSON {
+			writeJSONOutput(jsonAuthLogoutOutput{Status: "logged_out"})
+			return
+		}
 		fmt.Println("Logged out.")
 	default:
+		if cliStructuredJSON {
+			writeJSONOutput(jsonAuthLogoutOutput{Status: "external_auth", Source: currentAuth.Source})
+			return
+		}
 		fmt.Printf("Auth comes from %s; clear it manually.\n", currentAuth.Source)
 	}
 }
 
 func showCurrentAuth(currentAuth cliAuth) {
 	if strings.TrimSpace(currentAuth.Authorization) == "" {
+		if cliStructuredJSON {
+			writeJSONOutput(buildAuthStatusOutput(currentAuth, credentialsConfig{}))
+			return
+		}
 		fmt.Println("Not logged in.")
+		return
+	}
+	cfg := credentialsConfig{}
+	if currentAuth.CredentialStore {
+		if loaded, err := readCredentialsConfig(); err == nil {
+			cfg = loaded
+		}
+	}
+	if cliStructuredJSON {
+		writeJSONOutput(buildAuthStatusOutput(currentAuth, cfg))
 		return
 	}
 	if strings.TrimSpace(currentAuth.Username) != "" {

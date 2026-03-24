@@ -1516,6 +1516,182 @@ curl -sf -X POST "$GS_DEVICE_APPROVE_BASE/v1/auth/device/approve" \
 	}
 }
 
+func TestCLIAgentKeySignupLoginAndManageFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	privateKeyPath := filepath.Join(t.TempDir(), "agent_ed25519")
+	keygenOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "keygen", "--out", privateKeyPath, "--json")
+	if err != nil {
+		t.Fatalf("auth keygen failed: %v\nOutput:\n%s", err, keygenOutput)
+	}
+	var keygenResp authKeygenJSON
+	if err := json.Unmarshal([]byte(keygenOutput), &keygenResp); err != nil {
+		t.Fatalf("Unmarshal keygen output failed: %v\nOutput:\n%s", err, keygenOutput)
+	}
+	if keygenResp.Status != "created" || keygenResp.Fingerprint == "" {
+		t.Fatalf("unexpected keygen response: %+v", keygenResp)
+	}
+
+	username := fmt.Sprintf("agent-key-%d", time.Now().UnixNano())
+	signupOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env,
+		"auth", "signup",
+		"--username", username,
+		"--email", username+"@example.com",
+		"--name", "Agent Key User",
+		"--key", privateKeyPath,
+		"--key-name", "primary",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("auth signup failed: %v\nOutput:\n%s", err, signupOutput)
+	}
+	var signupResp authLoginJSON
+	if err := json.Unmarshal([]byte(signupOutput), &signupResp); err != nil {
+		t.Fatalf("Unmarshal signup output failed: %v\nOutput:\n%s", err, signupOutput)
+	}
+	if signupResp.Status != "authenticated" || signupResp.Username != username || signupResp.KeyFingerprint != keygenResp.Fingerprint {
+		t.Fatalf("unexpected signup response: %+v", signupResp)
+	}
+
+	statusOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "status", "--json")
+	if err != nil {
+		t.Fatalf("auth status failed: %v\nOutput:\n%s", err, statusOutput)
+	}
+	var statusResp authStatusJSON
+	if err := json.Unmarshal([]byte(statusOutput), &statusResp); err != nil {
+		t.Fatalf("Unmarshal status output failed: %v\nOutput:\n%s", err, statusOutput)
+	}
+	if !statusResp.Authenticated || statusResp.Username != username || !statusResp.CredentialStore {
+		t.Fatalf("unexpected auth status response: %+v", statusResp)
+	}
+
+	listOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "keys", "list", "--json")
+	if err != nil {
+		t.Fatalf("auth keys list failed: %v\nOutput:\n%s", err, listOutput)
+	}
+	var listResp authKeysListJSON
+	if err := json.Unmarshal([]byte(listOutput), &listResp); err != nil {
+		t.Fatalf("Unmarshal key list output failed: %v\nOutput:\n%s", err, listOutput)
+	}
+	if listResp.Total != 1 || listResp.Keys[0].Fingerprint != keygenResp.Fingerprint {
+		t.Fatalf("unexpected key list response: %+v", listResp)
+	}
+
+	secondKeyPath := filepath.Join(t.TempDir(), "agent_secondary_ed25519")
+	secondKeygenOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "keygen", "--out", secondKeyPath, "--json")
+	if err != nil {
+		t.Fatalf("second auth keygen failed: %v\nOutput:\n%s", err, secondKeygenOutput)
+	}
+	var secondKeygenResp authKeygenJSON
+	if err := json.Unmarshal([]byte(secondKeygenOutput), &secondKeygenResp); err != nil {
+		t.Fatalf("Unmarshal second keygen output failed: %v\nOutput:\n%s", err, secondKeygenOutput)
+	}
+
+	addOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env,
+		"auth", "keys", "add",
+		"--name", "secondary",
+		"--public-key", secondKeyPath+".pub",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("auth keys add failed: %v\nOutput:\n%s", err, addOutput)
+	}
+	var addResp authKeyJSON
+	if err := json.Unmarshal([]byte(addOutput), &addResp); err != nil {
+		t.Fatalf("Unmarshal key add output failed: %v\nOutput:\n%s", err, addOutput)
+	}
+	if addResp.ID == "" || addResp.Fingerprint != secondKeygenResp.Fingerprint {
+		t.Fatalf("unexpected add key response: %+v", addResp)
+	}
+
+	revokeOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "keys", "revoke", addResp.ID, "--json")
+	if err != nil {
+		t.Fatalf("auth keys revoke failed: %v\nOutput:\n%s", err, revokeOutput)
+	}
+	var revokeResp authKeyRevokeJSON
+	if err := json.Unmarshal([]byte(revokeOutput), &revokeResp); err != nil {
+		t.Fatalf("Unmarshal key revoke output failed: %v\nOutput:\n%s", err, revokeOutput)
+	}
+	if revokeResp.Status != "revoked" || revokeResp.KeyID != addResp.ID {
+		t.Fatalf("unexpected revoke response: %+v", revokeResp)
+	}
+
+	logoutOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "logout", "--json")
+	if err != nil {
+		t.Fatalf("auth logout failed: %v\nOutput:\n%s", err, logoutOutput)
+	}
+	var logoutResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(logoutOutput), &logoutResp); err != nil {
+		t.Fatalf("Unmarshal auth logout output failed: %v\nOutput:\n%s", err, logoutOutput)
+	}
+	if logoutResp.Status != "logged_out" {
+		t.Fatalf("unexpected logout response: %+v", logoutResp)
+	}
+
+	loginOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "login", "--key", privateKeyPath, "--json")
+	if err != nil {
+		t.Fatalf("auth key login failed: %v\nOutput:\n%s", err, loginOutput)
+	}
+	var loginResp authLoginJSON
+	if err := json.Unmarshal([]byte(loginOutput), &loginResp); err != nil {
+		t.Fatalf("Unmarshal login output failed: %v\nOutput:\n%s", err, loginOutput)
+	}
+	if loginResp.Status != "authenticated" || loginResp.Username != username {
+		t.Fatalf("unexpected login response: %+v", loginResp)
+	}
+
+	loginErrorOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "login", "--key", secondKeyPath, "--json")
+	if err == nil {
+		t.Fatalf("expected revoked secondary key login to fail, output:\n%s", loginErrorOutput)
+	}
+	var loginErrResp cliErrorJSON
+	if err := json.Unmarshal([]byte(loginErrorOutput), &loginErrResp); err != nil {
+		t.Fatalf("Unmarshal login error output failed: %v\nOutput:\n%s", err, loginErrorOutput)
+	}
+	if loginErrResp.ErrorCode != "AUTH_LOGIN_FAILED" {
+		t.Fatalf("unexpected login error response: %+v", loginErrResp)
+	}
+
+	credentialsPath := filepath.Join(homeDir, ".gitslice", "credentials.json")
+	data, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile credentials failed: %v", err)
+	}
+	var creds struct {
+		AccessToken string `json:"access_token"`
+		Username    string `json:"username"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		t.Fatalf("Unmarshal credentials failed: %v", err)
+	}
+	if creds.AccessToken == "" || creds.Username != username {
+		t.Fatalf("unexpected credentials contents: %+v", creds)
+	}
+
+	remoteDir := fmt.Sprintf("/%s/agent-key-login-%d", username, time.Now().UnixNano())
+	if _, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "fs", "mkdir", remoteDir); err != nil {
+		t.Fatalf("fs mkdir after agent login failed: %v", err)
+	}
+
+	client := newFilesystemClient(t)
+	statResp, err := client.Stat(withBearerToken(ctx, creds.AccessToken), &filesystemv1.StatRequest{
+		WorkspaceId: homeslice.IDForUsername(username),
+		Path:        remoteDir,
+	})
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	if !statResp.GetExists() || statResp.GetEntry().GetType() != filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
+		t.Fatalf("expected remote directory to exist, got %#v", statResp)
+	}
+}
+
 func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

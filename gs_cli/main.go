@@ -106,6 +106,12 @@ func main() {
 		handleLogout(ctx, cli, authConfig, args[1:])
 		return
 	}
+	if args[0] == "auth" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		handleAuthCommand(ctx, cli, *apiKeyFlag, *userFlag, args[1:])
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	defer cancel()

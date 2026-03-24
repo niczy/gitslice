@@ -165,6 +165,53 @@ type repoUnlinkJSON struct {
 	Status string `json:"status"`
 }
 
+type authKeygenJSON struct {
+	Status         string `json:"status"`
+	Algorithm      string `json:"algorithm"`
+	Fingerprint    string `json:"fingerprint"`
+	PrivateKeyPath string `json:"private_key_path"`
+	PublicKeyPath  string `json:"public_key_path"`
+}
+
+type authLoginJSON struct {
+	Status                string `json:"status"`
+	Username              string `json:"username"`
+	Source                string `json:"source"`
+	SessionID             string `json:"session_id"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
+	KeyFingerprint        string `json:"key_fingerprint"`
+}
+
+type authStatusJSON struct {
+	Authenticated         bool   `json:"authenticated"`
+	Username              string `json:"username"`
+	Source                string `json:"source"`
+	CredentialStore       bool   `json:"credential_store"`
+	SessionID             string `json:"session_id"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
+}
+
+type authKeyJSON struct {
+	ID          string `json:"id"`
+	UserID      string `json:"user_id"`
+	Name        string `json:"name"`
+	Algorithm   string `json:"algorithm"`
+	Fingerprint string `json:"fingerprint"`
+	Revoked     bool   `json:"revoked"`
+}
+
+type authKeysListJSON struct {
+	Total int           `json:"total"`
+	Keys  []authKeyJSON `json:"keys"`
+}
+
+type authKeyRevokeJSON struct {
+	KeyID  string `json:"key_id"`
+	Status string `json:"status"`
+}
+
 type cacheStatsJSON struct {
 	CacheRoot            string `json:"cache_root"`
 	CachedObjects        int    `json:"cached_objects"`

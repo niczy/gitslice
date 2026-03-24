@@ -4,11 +4,69 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strings"
 
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
+
+type jsonAuthStatusOutput struct {
+	Authenticated         bool   `json:"authenticated"`
+	Username              string `json:"username,omitempty"`
+	Source                string `json:"source,omitempty"`
+	CredentialStore       bool   `json:"credential_store,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+}
+
+type jsonAuthLoginOutput struct {
+	Status                string `json:"status"`
+	Username              string `json:"username,omitempty"`
+	Source                string `json:"source,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+	KeyFingerprint        string `json:"key_fingerprint,omitempty"`
+}
+
+type jsonAuthLogoutOutput struct {
+	Status string `json:"status"`
+	Source string `json:"source,omitempty"`
+}
+
+type jsonAuthKeygenOutput struct {
+	Status         string `json:"status"`
+	Algorithm      string `json:"algorithm"`
+	Fingerprint    string `json:"fingerprint"`
+	PrivateKeyPath string `json:"private_key_path"`
+	PublicKeyPath  string `json:"public_key_path"`
+}
+
+type jsonAuthKeyOutput struct {
+	ID          string `json:"id"`
+	UserID      string `json:"user_id,omitempty"`
+	Name        string `json:"name"`
+	Algorithm   string `json:"algorithm"`
+	Fingerprint string `json:"fingerprint"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+	LastUsedAt  string `json:"last_used_at,omitempty"`
+	RevokedAt   string `json:"revoked_at,omitempty"`
+	Revoked     bool   `json:"revoked"`
+}
+
+type jsonAuthKeysListOutput struct {
+	Total int                 `json:"total"`
+	Keys  []jsonAuthKeyOutput `json:"keys"`
+}
+
+type jsonAuthKeyRevokeOutput struct {
+	KeyID  string `json:"key_id"`
+	Status string `json:"status"`
+}
 
 type jsonChangesetCreateOutput struct {
 	ChangesetID   string   `json:"changeset_id"`
@@ -397,6 +455,79 @@ func buildChangesetCreateOutput(resp *slicev1.CreateChangesetResponse, updated b
 		SliceID:       sliceID,
 		ModifiedFiles: append([]string(nil), modifiedFiles...),
 	}
+}
+
+func buildAuthStatusOutput(authConfig cliAuth, creds credentialsConfig) jsonAuthStatusOutput {
+	out := jsonAuthStatusOutput{
+		Authenticated:   strings.TrimSpace(authConfig.Authorization) != "",
+		Username:        strings.TrimSpace(authConfig.Username),
+		Source:          strings.TrimSpace(authConfig.Source),
+		CredentialStore: authConfig.CredentialStore,
+	}
+	if !out.Authenticated {
+		return out
+	}
+	out.SessionID = strings.TrimSpace(creds.SessionID)
+	if out.SessionID == "" {
+		out.SessionID = strings.TrimSpace(creds.SessionIDCamel)
+	}
+	out.AccessTokenExpiresAt = strings.TrimSpace(creds.AccessTokenExpiresAt)
+	if out.AccessTokenExpiresAt == "" {
+		out.AccessTokenExpiresAt = strings.TrimSpace(creds.AccessTokenExpiresAtCamel)
+	}
+	out.RefreshTokenExpiresAt = strings.TrimSpace(creds.RefreshTokenExpiresAt)
+	if out.RefreshTokenExpiresAt == "" {
+		out.RefreshTokenExpiresAt = strings.TrimSpace(creds.RefreshTokenExpiresAtCamel)
+	}
+	return out
+}
+
+func buildAuthLoginOutput(resp *accountv1.AuthResponse, source string, publicKey []byte) jsonAuthLoginOutput {
+	out := jsonAuthLoginOutput{
+		Status: "authenticated",
+		Source: strings.TrimSpace(source),
+	}
+	if resp == nil {
+		return out
+	}
+	out.Username = strings.TrimSpace(resp.GetUser().GetUsername())
+	out.SessionID = strings.TrimSpace(resp.GetSession().GetId())
+	out.AccessTokenExpiresAt = strings.TrimSpace(resp.GetAccessTokenExpiresAt())
+	out.RefreshTokenExpiresAt = strings.TrimSpace(resp.GetRefreshTokenExpiresAt())
+	if len(publicKey) > 0 {
+		out.KeyFingerprint = agentKeyFingerprint(agentKeyAlgorithmEd25519, publicKey)
+	}
+	return out
+}
+
+func buildAuthKeyOutput(key *accountv1.AgentKey) jsonAuthKeyOutput {
+	if key == nil {
+		return jsonAuthKeyOutput{}
+	}
+	return jsonAuthKeyOutput{
+		ID:          key.GetId(),
+		UserID:      key.GetUserId(),
+		Name:        key.GetName(),
+		Algorithm:   key.GetAlgorithm(),
+		Fingerprint: key.GetFingerprint(),
+		CreatedAt:   key.GetCreatedAt(),
+		UpdatedAt:   key.GetUpdatedAt(),
+		LastUsedAt:  key.GetLastUsedAt(),
+		RevokedAt:   key.GetRevokedAt(),
+		Revoked:     key.GetRevoked(),
+	}
+}
+
+func buildAuthKeysListOutput(resp *accountv1.ListAgentKeysResponse) jsonAuthKeysListOutput {
+	if resp == nil {
+		return jsonAuthKeysListOutput{}
+	}
+	out := jsonAuthKeysListOutput{Keys: make([]jsonAuthKeyOutput, 0, len(resp.GetKeys()))}
+	for _, key := range resp.GetKeys() {
+		out.Keys = append(out.Keys, buildAuthKeyOutput(key))
+	}
+	out.Total = len(out.Keys)
+	return out
 }
 
 func buildChangesetOutputFromInfo(info *slicev1.ChangesetInfo) jsonChangesetCreateOutput {
