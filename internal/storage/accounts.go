@@ -470,12 +470,19 @@ func (s *InMemoryStorage) CreateAuthSession(ctx context.Context, session *models
 			return ErrEntryExists
 		}
 	}
+	if agentKeyID := strings.TrimSpace(session.AgentKeyID); agentKeyID != "" {
+		key, ok := s.agentKeys[agentKeyID]
+		if !ok || key == nil || key.Username != username {
+			return ErrEntryNotFound
+		}
+	}
 
 	newSession := *session
 	newSession.SessionID = sessionID
 	newSession.Username = username
 	newSession.Token = token
 	newSession.RefreshToken = refreshToken
+	newSession.AgentKeyID = strings.TrimSpace(session.AgentKeyID)
 	if newSession.CreatedAt.IsZero() {
 		newSession.CreatedAt = now
 	}
@@ -961,6 +968,9 @@ func (s *InMemoryStorage) MarkAgentKeyChallengeUsed(ctx context.Context, challen
 	challenge, ok := s.agentKeyChallenges[challengeID]
 	if !ok || challenge == nil {
 		return ErrEntryNotFound
+	}
+	if challenge.UsedAt != nil {
+		return ErrEntryExists
 	}
 	usedAtCopy := usedAt
 	challenge.UsedAt = &usedAtCopy

@@ -361,6 +361,165 @@ func TestAgentKeyManagementLifecycle(t *testing.T) {
 	}
 }
 
+func createAgentKeyForLogin(t *testing.T, ctx context.Context, srv *accountServiceServer, username, email string) (context.Context, ed25519.PublicKey, ed25519.PrivateKey, *accountv1.AgentKey) {
+	t.Helper()
+
+	signupResp, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: username,
+		Email:    email,
+		Password: "password123",
+		Name:     "Agent Login User",
+	})
+	if err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+	authCtx := bearerCtx(ctx, signupResp.GetAccessToken())
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	key, err := srv.CreateAgentKey(authCtx, &accountv1.CreateAgentKeyRequest{
+		Name:      "agent-key",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentKey failed: %v", err)
+	}
+	return authCtx, publicKey, privateKey, key
+}
+
+func TestAgentKeyLoginFlow(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	_, _, privateKey, key := createAgentKeyForLogin(t, ctx, srv, "agentlogin", "agentlogin@example.com")
+
+	startResp, err := srv.StartAgentKeyLogin(ctx, &accountv1.StartAgentKeyLoginRequest{
+		Fingerprint: key.GetFingerprint(),
+	})
+	if err != nil {
+		t.Fatalf("StartAgentKeyLogin failed: %v", err)
+	}
+	if startResp.GetChallengeId() == "" || len(startResp.GetChallenge()) == 0 || startResp.GetExpiresAt() == "" {
+		t.Fatalf("expected challenge response, got %#v", startResp)
+	}
+
+	signature := ed25519.Sign(privateKey, startResp.GetChallenge())
+	authResp, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   signature,
+	})
+	if err != nil {
+		t.Fatalf("CompleteAgentKeyLogin failed: %v", err)
+	}
+	if authResp.GetAccessToken() == "" || authResp.GetRefreshToken() == "" || authResp.GetSession().GetId() == "" {
+		t.Fatalf("expected refreshable auth response, got %#v", authResp)
+	}
+
+	session, err := srv.st.GetAuthSession(ctx, authResp.GetSession().GetId())
+	if err != nil {
+		t.Fatalf("GetAuthSession failed: %v", err)
+	}
+	if session.AgentKeyID != key.GetId() {
+		t.Fatalf("expected session agent key %q, got %#v", key.GetId(), session)
+	}
+
+	storedKey, err := srv.st.GetAgentKey(ctx, key.GetId())
+	if err != nil {
+		t.Fatalf("GetAgentKey failed: %v", err)
+	}
+	if storedKey.LastUsedAt == nil {
+		t.Fatalf("expected last_used_at to be updated, got %#v", storedKey)
+	}
+}
+
+func TestAgentKeyLoginRejectsExpiredChallenge(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	_, _, privateKey, key := createAgentKeyForLogin(t, ctx, srv, "agentexpired", "agentexpired@example.com")
+	expiredChallenge := &models.AgentKeyChallenge{
+		ChallengeID: "agent-expired-challenge",
+		AgentKeyID:  key.GetId(),
+		Username:    "agentexpired",
+		Challenge:   []byte("expired challenge"),
+		ExpiresAt:   time.Now().Add(-time.Minute),
+	}
+	if err := srv.st.CreateAgentKeyChallenge(ctx, expiredChallenge); err != nil {
+		t.Fatalf("CreateAgentKeyChallenge failed: %v", err)
+	}
+
+	_, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: expiredChallenge.ChallengeID,
+		Signature:   ed25519.Sign(privateKey, expiredChallenge.Challenge),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for expired challenge, got %v", err)
+	}
+}
+
+func TestAgentKeyLoginRejectsReplayAndInvalidSignatureAndRevokedKey(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	authCtx, publicKey, privateKey, key := createAgentKeyForLogin(t, ctx, srv, "agentreplay", "agentreplay@example.com")
+
+	startResp, err := srv.StartAgentKeyLogin(ctx, &accountv1.StartAgentKeyLoginRequest{
+		PublicKey: publicKey,
+	})
+	if err != nil {
+		t.Fatalf("StartAgentKeyLogin failed: %v", err)
+	}
+
+	otherPublic, otherPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	_ = otherPublic
+	if _, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   ed25519.Sign(otherPrivate, startResp.GetChallenge()),
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for invalid signature, got %v", err)
+	}
+
+	signature := ed25519.Sign(privateKey, startResp.GetChallenge())
+	if _, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   signature,
+	}); err != nil {
+		t.Fatalf("CompleteAgentKeyLogin first use failed: %v", err)
+	}
+	if _, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   signature,
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for replayed challenge, got %v", err)
+	}
+
+	startResp, err = srv.StartAgentKeyLogin(ctx, &accountv1.StartAgentKeyLoginRequest{
+		KeyId: key.GetId(),
+	})
+	if err != nil {
+		t.Fatalf("StartAgentKeyLogin second challenge failed: %v", err)
+	}
+	if _, err := srv.DeleteAgentKey(authCtx, &accountv1.DeleteAgentKeyRequest{KeyId: key.GetId()}); err != nil {
+		t.Fatalf("DeleteAgentKey failed: %v", err)
+	}
+	if _, err := srv.CompleteAgentKeyLogin(ctx, &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   ed25519.Sign(privateKey, startResp.GetChallenge()),
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for revoked key, got %v", err)
+	}
+	if _, err := srv.StartAgentKeyLogin(ctx, &accountv1.StartAgentKeyLoginRequest{
+		KeyId: key.GetId(),
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for revoked key start, got %v", err)
+	}
+}
+
 func TestUsersAPIGetUpdateAndDelete(t *testing.T) {
 	ctx := context.Background()
 	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}

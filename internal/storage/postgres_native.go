@@ -3287,11 +3287,11 @@ func (s *PostgresNativeStorage) CreateAuthSession(ctx context.Context, session *
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO auth_sessions (
-			session_id, username, token, refresh_token, device_info, created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+			session_id, username, agent_key_id, token, refresh_token, device_info, created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		) VALUES (
-			$1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, NULL
+			$1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), $6, $7, $8, $9, $10, NULL
 		)
-	`, session.SessionID, session.Username, session.Token, strings.TrimSpace(session.RefreshToken), session.DeviceInfo, session.CreatedAt, session.LastSeenAt, session.AccessTokenExpiresAt, session.RefreshTokenExpiresAt)
+	`, session.SessionID, session.Username, strings.TrimSpace(session.AgentKeyID), session.Token, strings.TrimSpace(session.RefreshToken), session.DeviceInfo, session.CreatedAt, session.LastSeenAt, session.AccessTokenExpiresAt, session.RefreshTokenExpiresAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
@@ -3313,13 +3313,14 @@ func (s *PostgresNativeStorage) GetAuthSession(ctx context.Context, sessionID st
 	var refreshTokenExpiresAt *time.Time
 	var revokedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+		SELECT session_id, username, COALESCE(agent_key_id, ''), token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		FROM auth_sessions
 		WHERE session_id = $1 AND revoked_at IS NULL
 		LIMIT 1
 	`, sessionID).Scan(
 		&session.SessionID,
 		&session.Username,
+		&session.AgentKeyID,
 		&session.Token,
 		&session.RefreshToken,
 		&session.DeviceInfo,
@@ -3353,13 +3354,14 @@ func (s *PostgresNativeStorage) GetAuthSessionByToken(ctx context.Context, token
 	var refreshTokenExpiresAt *time.Time
 	var revokedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+		SELECT session_id, username, COALESCE(agent_key_id, ''), token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		FROM auth_sessions
 		WHERE token = $1 AND revoked_at IS NULL AND (access_token_expires_at IS NULL OR access_token_expires_at > NOW())
 		LIMIT 1
 	`, token).Scan(
 		&session.SessionID,
 		&session.Username,
+		&session.AgentKeyID,
 		&session.Token,
 		&session.RefreshToken,
 		&session.DeviceInfo,
@@ -3393,13 +3395,14 @@ func (s *PostgresNativeStorage) GetAuthSessionByRefreshToken(ctx context.Context
 	var refreshTokenExpiresAt *time.Time
 	var revokedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+		SELECT session_id, username, COALESCE(agent_key_id, ''), token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		FROM auth_sessions
 		WHERE refresh_token = $1 AND revoked_at IS NULL AND (refresh_token_expires_at IS NULL OR refresh_token_expires_at > NOW())
 		LIMIT 1
 	`, refreshToken).Scan(
 		&session.SessionID,
 		&session.Username,
+		&session.AgentKeyID,
 		&session.Token,
 		&session.RefreshToken,
 		&session.DeviceInfo,
@@ -3429,7 +3432,7 @@ func (s *PostgresNativeStorage) ListAuthSessionsByUser(ctx context.Context, user
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, username, token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
+		SELECT session_id, username, COALESCE(agent_key_id, ''), token, COALESCE(refresh_token, ''), COALESCE(device_info, ''), created_at, last_seen_at, access_token_expires_at, refresh_token_expires_at, revoked_at
 		FROM auth_sessions
 		WHERE username = $1 AND revoked_at IS NULL
 		ORDER BY created_at DESC
@@ -3448,6 +3451,7 @@ func (s *PostgresNativeStorage) ListAuthSessionsByUser(ctx context.Context, user
 		if err := rows.Scan(
 			&session.SessionID,
 			&session.Username,
+			&session.AgentKeyID,
 			&session.Token,
 			&session.RefreshToken,
 			&session.DeviceInfo,
@@ -3889,12 +3893,19 @@ func (s *PostgresNativeStorage) MarkAgentKeyChallengeUsed(ctx context.Context, c
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE agent_key_challenges
 		SET used_at = $1
-		WHERE challenge_id = $2
+		WHERE challenge_id = $2 AND used_at IS NULL
 	`, usedAt, challengeID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		var existing bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_key_challenges WHERE challenge_id = $1)`, challengeID).Scan(&existing); err != nil {
+			return err
+		}
+		if existing {
+			return ErrEntryExists
+		}
 		return ErrEntryNotFound
 	}
 	return nil
