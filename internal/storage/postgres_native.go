@@ -410,6 +410,10 @@ func (s *PostgresNativeStorage) sliceSearchArtifactObjectKey(version uint32, sli
 	return s.objKey("slice_search_artifacts", fmt.Sprintf("v%d", version), strings.TrimSpace(sliceID), strings.TrimSpace(commitHash))
 }
 
+func (s *PostgresNativeStorage) workspaceSearchArtifactObjectKey(version uint32, workspaceID string) string {
+	return s.objKey("workspace_search_artifacts", fmt.Sprintf("v%d", version), strings.TrimSpace(workspaceID))
+}
+
 type postgresNativeTxView struct {
 	*PostgresNativeStorage
 	tx pgx.Tx
@@ -2420,6 +2424,30 @@ func (s *PostgresNativeStorage) GetSliceSearchArtifact(ctx context.Context, slic
 		return nil, ErrInvalidInput
 	}
 	return s.objectStore.GetObject(ctx, s.sliceSearchArtifactObjectKey(version, sliceID, commitHash))
+}
+
+func (s *PostgresNativeStorage) PutWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32, payload []byte) error {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(workspaceID) == "" {
+		return ErrInvalidInput
+	}
+	return s.objectStore.PutObject(ctx, s.workspaceSearchArtifactObjectKey(version, workspaceID), append([]byte(nil), payload...))
+}
+
+func (s *PostgresNativeStorage) GetWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32) ([]byte, error) {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(workspaceID) == "" {
+		return nil, ErrInvalidInput
+	}
+	return s.objectStore.GetObject(ctx, s.workspaceSearchArtifactObjectKey(version, workspaceID))
+}
+
+func (s *PostgresNativeStorage) DeleteWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32) error {
+	ctx = ensureCtx(ctx)
+	if version == 0 || strings.TrimSpace(workspaceID) == "" {
+		return ErrInvalidInput
+	}
+	return s.objectStore.DeleteObject(ctx, s.workspaceSearchArtifactObjectKey(version, workspaceID))
 }
 
 // ============ Directory Entries ============

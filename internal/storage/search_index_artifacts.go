@@ -97,6 +97,61 @@ func BuildAndStoreSliceSearchArtifact(ctx context.Context, st Storage, sliceID, 
 	return artifact, nil
 }
 
+func StoreWorkspaceSearchArtifact(ctx context.Context, st Storage, workspaceID string, artifact *searchindex.SliceArtifact) error {
+	if artifact == nil || strings.TrimSpace(workspaceID) == "" {
+		return ErrInvalidInput
+	}
+	payload, err := searchindex.EncodeSliceArtifact(artifact)
+	if err != nil {
+		return err
+	}
+	return st.PutWorkspaceSearchArtifact(ctx, workspaceID, artifact.Version, payload)
+}
+
+func BuildAndStoreWorkspaceSearchArtifact(ctx context.Context, st Storage, workspaceID, commitHash string) (*searchindex.SliceArtifact, error) {
+	if strings.TrimSpace(workspaceID) == "" {
+		return nil, ErrInvalidInput
+	}
+	if strings.TrimSpace(commitHash) == "" {
+		meta, err := st.GetSliceMetadata(ctx, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		commitHash = strings.TrimSpace(meta.HeadCommitHash)
+	}
+	if strings.TrimSpace(commitHash) == "" {
+		artifact := searchindex.BuildSliceArtifact(workspaceID, "", nil)
+		if err := StoreWorkspaceSearchArtifact(ctx, st, workspaceID, artifact); err != nil {
+			return nil, err
+		}
+		return artifact, nil
+	}
+
+	payload, err := st.GetSliceSearchArtifact(ctx, workspaceID, commitHash, searchindex.CurrentArtifactVersion)
+	switch {
+	case err == nil:
+		artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if err := st.PutWorkspaceSearchArtifact(ctx, workspaceID, artifact.Version, payload); err != nil {
+			return nil, err
+		}
+		return artifact, nil
+	case err != nil && !errors.Is(err, ErrEntryNotFound):
+		return nil, err
+	}
+
+	artifact, err := BuildAndStoreSliceSearchArtifact(ctx, st, workspaceID, commitHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := StoreWorkspaceSearchArtifact(ctx, st, workspaceID, artifact); err != nil {
+		return nil, err
+	}
+	return artifact, nil
+}
+
 func loadOrBuildSearchBlob(ctx context.Context, st Storage, searchHash string, content []byte) (*searchindex.FileBlob, error) {
 	payload, err := st.GetSearchIndexFileBlob(ctx, searchindex.CurrentBlobVersion, searchHash)
 	if err == nil {

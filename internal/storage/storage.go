@@ -98,6 +98,9 @@ type Storage interface {
 	GetSearchIndexFileBlob(ctx context.Context, version uint32, searchContentHash string) ([]byte, error)
 	PutSliceSearchArtifact(ctx context.Context, sliceID, commitHash string, version uint32, payload []byte) error
 	GetSliceSearchArtifact(ctx context.Context, sliceID, commitHash string, version uint32) ([]byte, error)
+	PutWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32, payload []byte) error
+	GetWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32) ([]byte, error)
+	DeleteWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32) error
 
 	// Directory entries
 	AddEntry(ctx context.Context, entry *models.DirectoryEntry) error
