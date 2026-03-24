@@ -90,6 +90,13 @@ service SliceService {
     };
   }
 
+  // Fetch the immutable regex-search artifact for a slice commit.
+  rpc GetSliceSearchArtifact(GetSliceSearchArtifactRequest) returns (GetSliceSearchArtifactResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/search-artifact"
+    };
+  }
+
   // Stream checkout for large slices (server streaming)
   rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
@@ -146,6 +153,19 @@ message CheckoutChunk {
     FileContent file = 2;
     BlockContent block = 3;
   }
+}
+
+message GetSliceSearchArtifactRequest {
+  string slice_id = 1;
+  string commit_hash = 2;
+  uint32 version = 3;
+}
+
+message GetSliceSearchArtifactResponse {
+  string slice_id = 1;
+  string commit_hash = 2;
+  uint32 version = 3;
+  bytes artifact = 4;
 }
 
 message CreateChangesetRequest {

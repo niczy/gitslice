@@ -12,6 +12,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -425,6 +426,153 @@ func TestCheckoutSliceIncludesFileMetadata(t *testing.T) {
 	}
 	if got := string(mustAssembleCheckoutContent(t, resp, byPath[linkPath])); got != linkTarget {
 		t.Fatalf("expected symlink content %q, got %q", linkTarget, got)
+	}
+}
+
+func TestGetSliceSearchArtifactBuildsMissingArtifactForHeadCommit(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-search-artifact", Name: "slice-search-artifact", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	filePath := "docs/readme.md"
+	content := []byte("alpha beta gamma\n")
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	commitHash := "commit-search-artifact-head"
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			filePath: manifestHash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: commitHash,
+		Message:    "seed",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = commitHash
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.GetSliceSearchArtifact(ctx, &slicev1.GetSliceSearchArtifactRequest{
+		SliceId: slice.ID,
+	})
+	if err != nil {
+		t.Fatalf("GetSliceSearchArtifact failed: %v", err)
+	}
+	if resp.GetCommitHash() != commitHash {
+		t.Fatalf("expected commit hash %q, got %q", commitHash, resp.GetCommitHash())
+	}
+	if resp.GetVersion() != searchindex.CurrentArtifactVersion {
+		t.Fatalf("expected version %d, got %d", searchindex.CurrentArtifactVersion, resp.GetVersion())
+	}
+	artifact, err := searchindex.DecodeSliceArtifact(resp.GetArtifact())
+	if err != nil {
+		t.Fatalf("DecodeSliceArtifact failed: %v", err)
+	}
+	if got := len(artifact.Files); got != 1 || artifact.Files[0].Path != filePath {
+		t.Fatalf("unexpected artifact files: %#v", artifact.Files)
+	}
+	if _, err := st.GetSliceSearchArtifact(ctx, slice.ID, commitHash, searchindex.CurrentArtifactVersion); err != nil {
+		t.Fatalf("expected built artifact to be stored, got %v", err)
+	}
+}
+
+func TestGetSliceSearchArtifactReturnsStoredExplicitCommitArtifact(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-search-artifact-explicit", Name: "slice-search-artifact-explicit", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	commitHash := "commit-search-artifact-explicit"
+	encoded, err := searchindex.EncodeSliceArtifact(&searchindex.SliceArtifact{
+		Version:    searchindex.CurrentArtifactVersion,
+		SliceID:    slice.ID,
+		CommitHash: commitHash,
+		Files: []searchindex.SliceArtifactFile{
+			{Path: "docs/readme.md", SearchContentHash: "hash-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("EncodeSliceArtifact failed: %v", err)
+	}
+	if err := st.PutSliceSearchArtifact(ctx, slice.ID, commitHash, searchindex.CurrentArtifactVersion, encoded); err != nil {
+		t.Fatalf("PutSliceSearchArtifact failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: commitHash,
+		Message:    "seed",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = commitHash
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.GetSliceSearchArtifact(ctx, &slicev1.GetSliceSearchArtifactRequest{
+		SliceId:    slice.ID,
+		CommitHash: commitHash,
+	})
+	if err != nil {
+		t.Fatalf("GetSliceSearchArtifact failed: %v", err)
+	}
+	if !bytes.Equal(resp.GetArtifact(), encoded) {
+		t.Fatalf("expected stored artifact payload to be returned")
+	}
+}
+
+func TestGetSliceSearchArtifactRejectsUnsupportedVersion(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{ID: "slice-search-artifact-version", Name: "slice-search-artifact-version", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	_, err := srv.GetSliceSearchArtifact(ctx, &slicev1.GetSliceSearchArtifactRequest{
+		SliceId: slice.ID,
+		Version: searchindex.CurrentArtifactVersion + 1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
 
