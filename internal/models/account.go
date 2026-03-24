@@ -77,6 +77,7 @@ type TeamMember struct {
 type AuthSession struct {
 	SessionID             string     `json:"session_id"`
 	Username              string     `json:"username"`
+	AgentKeyID            string     `json:"agent_key_id,omitempty"`
 	Token                 string     `json:"token"`
 	RefreshToken          string     `json:"refresh_token,omitempty"`
 	DeviceInfo            string     `json:"device_info"`

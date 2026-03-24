@@ -32,6 +32,7 @@ const (
 	accessTokenTTL          = 15 * time.Minute
 	refreshTokenTTL         = 30 * 24 * time.Hour
 	deviceAuthorizationTTL  = 10 * time.Minute
+	agentKeyChallengeTTL    = 5 * time.Minute
 	devicePollInterval      = 5 * time.Second
 	defaultPublicWebBaseURL = "http://localhost:4173"
 )
@@ -336,6 +337,66 @@ func agentKeyFingerprint(algorithm string, publicKey []byte) string {
 	return normalizeAgentKeyAlgorithm(algorithm) + ":" + hex.EncodeToString(sum[:])
 }
 
+func activeAgentKey(key *models.AgentKey) bool {
+	if key == nil {
+		return false
+	}
+	if key.RevokedAt != nil {
+		return false
+	}
+	return key.State != models.AgentKeyStateRevoked
+}
+
+func (s *accountServiceServer) resolveAgentKeyForLogin(ctx context.Context, req *accountv1.StartAgentKeyLoginRequest) (*models.AgentKey, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	var (
+		key *models.AgentKey
+		err error
+	)
+	switch {
+	case strings.TrimSpace(req.GetKeyId()) != "":
+		key, err = s.st.GetAgentKey(ctx, strings.TrimSpace(req.GetKeyId()))
+	case strings.TrimSpace(req.GetFingerprint()) != "":
+		key, err = s.st.GetAgentKeyByFingerprint(ctx, strings.TrimSpace(req.GetFingerprint()))
+	case len(req.GetPublicKey()) > 0:
+		if err := validateAgentPublicKey("ed25519", req.GetPublicKey()); err != nil {
+			return nil, err
+		}
+		key, err = s.st.GetAgentKeyByFingerprint(ctx, agentKeyFingerprint("ed25519", req.GetPublicKey()))
+	default:
+		return nil, status.Error(codes.InvalidArgument, "key_id, fingerprint, or public_key is required")
+	}
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Unauthenticated, "agent key not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load agent key")
+	}
+	if !activeAgentKey(key) {
+		return nil, status.Error(codes.FailedPrecondition, "agent key is revoked")
+	}
+	return key, nil
+}
+
+func buildAgentKeyChallengePayload(challengeID, keyID, username string, expiresAt time.Time) ([]byte, error) {
+	nonce, err := randomToken("nonce_", 16)
+	if err != nil {
+		return nil, err
+	}
+	payload := strings.Join([]string{
+		"gitslice-agent-login-v1",
+		strings.TrimSpace(challengeID),
+		strings.TrimSpace(keyID),
+		strings.TrimSpace(username),
+		expiresAt.UTC().Format(time.RFC3339Nano),
+		nonce,
+	}, "\n")
+	return []byte(payload), nil
+}
+
 func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdentity, error) {
 	if token := auth.TokenFromGRPCContext(ctx); token != "" {
 		session, err := s.st.GetAuthSessionByToken(ctx, token)
@@ -384,7 +445,7 @@ func (s *accountServiceServer) createSession(ctx context.Context, username strin
 	return nil, status.Error(codes.Aborted, "failed to create session")
 }
 
-func (s *accountServiceServer) createRefreshableSession(ctx context.Context, username string) (*models.AuthSession, error) {
+func (s *accountServiceServer) createRefreshableSession(ctx context.Context, username, agentKeyID string) (*models.AuthSession, error) {
 	deviceInfo := deviceInfoFromContext(ctx)
 	now := time.Now()
 	accessTokenExpiresAt := now.Add(accessTokenTTL)
@@ -405,6 +466,7 @@ func (s *accountServiceServer) createRefreshableSession(ctx context.Context, use
 		session := &models.AuthSession{
 			SessionID:             sessionID,
 			Username:              username,
+			AgentKeyID:            strings.TrimSpace(agentKeyID),
 			Token:                 accessToken,
 			RefreshToken:          refreshToken,
 			DeviceInfo:            deviceInfo,
@@ -685,7 +747,7 @@ func (s *accountServiceServer) ApproveDeviceAuthorization(ctx context.Context, r
 		return nil, status.Error(codes.Internal, "failed to provision home slice")
 	}
 
-	session, err := s.createRefreshableSession(ctx, identity.username)
+	session, err := s.createRefreshableSession(ctx, identity.username, "")
 	if err != nil {
 		if stErr, ok := status.FromError(err); ok {
 			return nil, stErr.Err()
@@ -969,6 +1031,118 @@ func (s *accountServiceServer) DeleteAgentKey(ctx context.Context, req *accountv
 		}
 	}
 	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) StartAgentKeyLogin(ctx context.Context, req *accountv1.StartAgentKeyLoginRequest) (*accountv1.StartAgentKeyLoginResponse, error) {
+	key, err := s.resolveAgentKeyForLogin(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 0; i < 3; i++ {
+		challengeID, err := randomToken("agc_", 16)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to create challenge")
+		}
+		expiresAt := time.Now().Add(agentKeyChallengeTTL)
+		challengeBytes, err := buildAgentKeyChallengePayload(challengeID, key.KeyID, key.Username, expiresAt)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to create challenge")
+		}
+
+		record := &models.AgentKeyChallenge{
+			ChallengeID: challengeID,
+			AgentKeyID:  key.KeyID,
+			Username:    key.Username,
+			Challenge:   challengeBytes,
+			DeviceInfo:  deviceInfoFromContext(ctx),
+			ExpiresAt:   expiresAt,
+		}
+		if err := s.st.CreateAgentKeyChallenge(ctx, record); err != nil {
+			if err == storage.ErrEntryExists {
+				continue
+			}
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.Unauthenticated, "agent key not found")
+			}
+			return nil, status.Error(codes.Internal, "failed to create challenge")
+		}
+
+		return &accountv1.StartAgentKeyLoginResponse{
+			ChallengeId: challengeID,
+			Challenge:   append([]byte(nil), challengeBytes...),
+			ExpiresAt:   expiresAt.Format(timeRFC3339),
+		}, nil
+	}
+
+	return nil, status.Error(codes.Aborted, "failed to create challenge")
+}
+
+func (s *accountServiceServer) CompleteAgentKeyLogin(ctx context.Context, req *accountv1.CompleteAgentKeyLoginRequest) (*accountv1.AuthResponse, error) {
+	challengeID := strings.TrimSpace(req.GetChallengeId())
+	if challengeID == "" || len(req.GetSignature()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "challenge_id and signature are required")
+	}
+
+	challenge, err := s.st.GetAgentKeyChallenge(ctx, challengeID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "agent key challenge not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load challenge")
+	}
+	if challenge.UsedAt != nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent key challenge already used")
+	}
+	if !challenge.ExpiresAt.After(time.Now()) {
+		return nil, status.Error(codes.FailedPrecondition, "agent key challenge expired")
+	}
+
+	key, err := s.st.GetAgentKey(ctx, challenge.AgentKeyID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Unauthenticated, "agent key not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load agent key")
+	}
+	if !activeAgentKey(key) {
+		return nil, status.Error(codes.FailedPrecondition, "agent key is revoked")
+	}
+	if err := validateAgentPublicKey(key.Algorithm, key.PublicKey); err != nil {
+		return nil, err
+	}
+	if !ed25519.Verify(ed25519.PublicKey(key.PublicKey), challenge.Challenge, req.GetSignature()) {
+		return nil, status.Error(codes.Unauthenticated, "invalid agent key signature")
+	}
+	if err := s.st.MarkAgentKeyChallengeUsed(ctx, challengeID, time.Now()); err != nil {
+		switch err {
+		case storage.ErrEntryExists:
+			return nil, status.Error(codes.FailedPrecondition, "agent key challenge already used")
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "agent key challenge not found")
+		default:
+			return nil, status.Error(codes.Internal, "failed to consume challenge")
+		}
+	}
+	if err := s.st.TouchAgentKey(ctx, key.KeyID, time.Now()); err != nil && err != storage.ErrEntryNotFound {
+		return nil, status.Error(codes.Internal, "failed to update agent key usage")
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, key.Username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
+	}
+
+	user, err := s.st.GetUser(ctx, key.Username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	session, err := s.createRefreshableSession(ctx, key.Username, key.KeyID)
+	if err != nil {
+		if stErr, ok := status.FromError(err); ok {
+			return nil, stErr.Err()
+		}
+		return nil, status.Error(codes.Internal, "failed to create session")
+	}
+	return s.buildAuthResponse(ctx, user, session)
 }
 
 func (s *accountServiceServer) GetMe(ctx context.Context, req *accountv1.GetMeRequest) (*accountv1.User, error) {

@@ -1186,6 +1186,27 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("expected touched last_used_at %v, got %#v", lastUsedAt, touchedAgentKey)
 	}
 
+	authSessionWithKey := &models.AuthSession{
+		SessionID:             "auth-sess-key-" + suffix,
+		Username:              accountUsername,
+		AgentKeyID:            agentKey.KeyID,
+		Token:                 "auth-token-key-" + suffix,
+		RefreshToken:          "refresh-token-key-" + suffix,
+		DeviceInfo:            "agent login",
+		AccessTokenExpiresAt:  &accessExpiresAt,
+		RefreshTokenExpiresAt: &refreshExpiresAt,
+	}
+	if err := st.CreateAuthSession(ctx, authSessionWithKey); err != nil {
+		t.Fatalf("CreateAuthSession with agent key failed: %v", err)
+	}
+	sessionWithKey, err := st.GetAuthSession(ctx, authSessionWithKey.SessionID)
+	if err != nil {
+		t.Fatalf("GetAuthSession with agent key failed: %v", err)
+	}
+	if sessionWithKey.AgentKeyID != agentKey.KeyID {
+		t.Fatalf("expected agent-key-attributed session, got %#v", sessionWithKey)
+	}
+
 	agentChallenge := &models.AgentKeyChallenge{
 		ChallengeID: "agent-challenge-" + suffix,
 		AgentKeyID:  agentKey.KeyID,
@@ -1210,6 +1231,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	usedAt := time.Now().Add(4 * time.Minute)
 	if err := st.MarkAgentKeyChallengeUsed(ctx, agentChallenge.ChallengeID, usedAt); err != nil {
 		t.Fatalf("MarkAgentKeyChallengeUsed failed: %v", err)
+	}
+	if err := st.MarkAgentKeyChallengeUsed(ctx, agentChallenge.ChallengeID, usedAt.Add(time.Minute)); err != ErrEntryExists {
+		t.Fatalf("expected ErrEntryExists on replayed challenge, got %v", err)
 	}
 	usedChallenge, err := st.GetAgentKeyChallenge(ctx, agentChallenge.ChallengeID)
 	if err != nil {
