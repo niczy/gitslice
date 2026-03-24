@@ -109,6 +109,13 @@ func buildLocalSliceSearchArtifact(dir, sliceID string, manifest *slicev1.SliceM
 		}
 
 		absPath := filepath.Join(dir, filepath.FromSlash(file.GetPath()))
+		info, err := os.Lstat(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", file.GetPath(), err)
+		}
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		content, err := os.ReadFile(absPath)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", file.GetPath(), err)
