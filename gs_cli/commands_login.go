@@ -45,7 +45,10 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 		log.Fatalf("Login failed: %v", err)
 	}
 
-	if err := writeCredentialsConfig((credentialsConfig{}).refreshedFromAuthResponse(resp)); err != nil {
+	cfg := (credentialsConfig{}).
+		refreshedFromAuthResponse(resp).
+		withAuthMetadata(authMethodUsername, "", "")
+	if err := writeCredentialsConfig(cfg); err != nil {
 		log.Fatalf("Failed to save login: %v", err)
 	}
 
@@ -126,6 +129,12 @@ func showCurrentAuth(currentAuth cliAuth) {
 	}
 	if strings.TrimSpace(currentAuth.Username) != "" {
 		fmt.Printf("Logged in as: %s\n", strings.TrimSpace(currentAuth.Username))
+		if method := strings.TrimSpace(cfg.AuthMethod); method != "" {
+			fmt.Printf("Auth method: %s\n", method)
+		}
+		if agentKeyID := strings.TrimSpace(cfg.AgentKeyID); agentKeyID != "" {
+			fmt.Printf("Agent key: %s\n", agentKeyID)
+		}
 		return
 	}
 	fmt.Printf("Authenticated via %s\n", strings.TrimSpace(currentAuth.Source))
@@ -172,7 +181,9 @@ func startDeviceLogin(ctx context.Context, cli *CLI) {
 		switch pollResp.GetStatus() {
 		case accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_APPROVED:
 			fmt.Println(" done")
-			cfg := (credentialsConfig{}).refreshedFromAuthResponse(pollResp.GetAuth())
+			cfg := (credentialsConfig{}).
+				refreshedFromAuthResponse(pollResp.GetAuth()).
+				withAuthMetadata(authMethodDevice, "", "")
 			if err := writeCredentialsConfig(cfg); err != nil {
 				log.Fatalf("Failed to save login: %v", err)
 			}

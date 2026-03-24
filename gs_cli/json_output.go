@@ -17,6 +17,9 @@ type jsonAuthStatusOutput struct {
 	Username              string `json:"username,omitempty"`
 	Source                string `json:"source,omitempty"`
 	CredentialStore       bool   `json:"credential_store,omitempty"`
+	AuthMethod            string `json:"auth_method,omitempty"`
+	AgentKeyID            string `json:"agent_key_id,omitempty"`
+	KeyFingerprint        string `json:"key_fingerprint,omitempty"`
 	SessionID             string `json:"session_id,omitempty"`
 	AccessTokenExpiresAt  string `json:"access_token_expires_at,omitempty"`
 	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
@@ -26,6 +29,8 @@ type jsonAuthLoginOutput struct {
 	Status                string `json:"status"`
 	Username              string `json:"username,omitempty"`
 	Source                string `json:"source,omitempty"`
+	AuthMethod            string `json:"auth_method,omitempty"`
+	AgentKeyID            string `json:"agent_key_id,omitempty"`
 	SessionID             string `json:"session_id,omitempty"`
 	AccessTokenExpiresAt  string `json:"access_token_expires_at,omitempty"`
 	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
@@ -324,6 +329,10 @@ type jsonDoctorAuthOutput struct {
 	Source            string `json:"source,omitempty"`
 	Username          string `json:"username,omitempty"`
 	StoredCredentials bool   `json:"stored_credentials"`
+	AuthMethod        string `json:"auth_method,omitempty"`
+	AgentKeyID        string `json:"agent_key_id,omitempty"`
+	KeyFingerprint    string `json:"key_fingerprint,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
 }
 
 type jsonDoctorServiceStatus struct {
@@ -463,6 +472,9 @@ func buildAuthStatusOutput(authConfig cliAuth, creds credentialsConfig) jsonAuth
 		Username:        strings.TrimSpace(authConfig.Username),
 		Source:          strings.TrimSpace(authConfig.Source),
 		CredentialStore: authConfig.CredentialStore,
+		AuthMethod:      strings.TrimSpace(creds.AuthMethod),
+		AgentKeyID:      strings.TrimSpace(creds.AgentKeyID),
+		KeyFingerprint:  strings.TrimSpace(creds.KeyFingerprint),
 	}
 	if !out.Authenticated {
 		return out
@@ -482,22 +494,36 @@ func buildAuthStatusOutput(authConfig cliAuth, creds credentialsConfig) jsonAuth
 	return out
 }
 
-func buildAuthLoginOutput(resp *accountv1.AuthResponse, source string, publicKey []byte) jsonAuthLoginOutput {
+func buildAuthLoginOutput(resp *accountv1.AuthResponse, source, authMethod string, publicKey []byte) jsonAuthLoginOutput {
 	out := jsonAuthLoginOutput{
-		Status: "authenticated",
-		Source: strings.TrimSpace(source),
+		Status:     "authenticated",
+		Source:     strings.TrimSpace(source),
+		AuthMethod: strings.TrimSpace(authMethod),
 	}
 	if resp == nil {
 		return out
 	}
 	out.Username = strings.TrimSpace(resp.GetUser().GetUsername())
 	out.SessionID = strings.TrimSpace(resp.GetSession().GetId())
+	out.AgentKeyID = strings.TrimSpace(resp.GetSession().GetAgentKeyId())
 	out.AccessTokenExpiresAt = strings.TrimSpace(resp.GetAccessTokenExpiresAt())
 	out.RefreshTokenExpiresAt = strings.TrimSpace(resp.GetRefreshTokenExpiresAt())
 	if len(publicKey) > 0 {
 		out.KeyFingerprint = agentKeyFingerprint(agentKeyAlgorithmEd25519, publicKey)
 	}
 	return out
+}
+
+func buildDoctorAuthOutput(authConfig cliAuth, creds credentialsConfig) jsonDoctorAuthOutput {
+	return jsonDoctorAuthOutput{
+		Source:            strings.TrimSpace(authConfig.Source),
+		Username:          strings.TrimSpace(authConfig.Username),
+		StoredCredentials: authConfig.CredentialStore,
+		AuthMethod:        strings.TrimSpace(creds.AuthMethod),
+		AgentKeyID:        strings.TrimSpace(creds.AgentKeyID),
+		KeyFingerprint:    strings.TrimSpace(creds.KeyFingerprint),
+		SessionID:         firstNonEmpty(strings.TrimSpace(creds.SessionID), strings.TrimSpace(creds.SessionIDCamel)),
+	}
 }
 
 func buildAuthKeyOutput(key *accountv1.AgentKey) jsonAuthKeyOutput {

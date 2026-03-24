@@ -1556,6 +1556,9 @@ func TestCLIAgentKeySignupLoginAndManageFlow(t *testing.T) {
 	if signupResp.Status != "authenticated" || signupResp.Username != username || signupResp.KeyFingerprint != keygenResp.Fingerprint {
 		t.Fatalf("unexpected signup response: %+v", signupResp)
 	}
+	if signupResp.AuthMethod != "agent_key" || signupResp.AgentKeyID == "" {
+		t.Fatalf("expected agent-key signup metadata, got: %+v", signupResp)
+	}
 
 	statusOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "status", "--json")
 	if err != nil {
@@ -1567,6 +1570,33 @@ func TestCLIAgentKeySignupLoginAndManageFlow(t *testing.T) {
 	}
 	if !statusResp.Authenticated || statusResp.Username != username || !statusResp.CredentialStore {
 		t.Fatalf("unexpected auth status response: %+v", statusResp)
+	}
+	if statusResp.AuthMethod != "agent_key" || statusResp.AgentKeyID != signupResp.AgentKeyID || statusResp.KeyFingerprint != keygenResp.Fingerprint {
+		t.Fatalf("expected stored agent-key auth metadata, got: %+v", statusResp)
+	}
+
+	contextOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "context", "--json")
+	if err != nil {
+		t.Fatalf("context failed: %v\nOutput:\n%s", err, contextOutput)
+	}
+	var contextResp contextJSON
+	if err := json.Unmarshal([]byte(contextOutput), &contextResp); err != nil {
+		t.Fatalf("Unmarshal context output failed: %v\nOutput:\n%s", err, contextOutput)
+	}
+	if contextResp.Auth.Username != username || contextResp.Auth.AuthMethod != "agent_key" || contextResp.Auth.AgentKeyID != signupResp.AgentKeyID || contextResp.Auth.KeyFingerprint != keygenResp.Fingerprint {
+		t.Fatalf("unexpected context auth output: %+v", contextResp.Auth)
+	}
+
+	doctorOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "doctor", "--json")
+	if err != nil {
+		t.Fatalf("doctor failed: %v\nOutput:\n%s", err, doctorOutput)
+	}
+	var doctorResp doctorJSON
+	if err := json.Unmarshal([]byte(doctorOutput), &doctorResp); err != nil {
+		t.Fatalf("Unmarshal doctor output failed: %v\nOutput:\n%s", err, doctorOutput)
+	}
+	if doctorResp.Auth.Username != username || doctorResp.Auth.AuthMethod != "agent_key" || doctorResp.Auth.AgentKeyID != signupResp.AgentKeyID || doctorResp.Auth.KeyFingerprint != keygenResp.Fingerprint || doctorResp.Auth.SessionID == "" {
+		t.Fatalf("unexpected doctor auth output: %+v", doctorResp.Auth)
 	}
 
 	listOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "keys", "list", "--json")
@@ -1644,6 +1674,9 @@ func TestCLIAgentKeySignupLoginAndManageFlow(t *testing.T) {
 	}
 	if loginResp.Status != "authenticated" || loginResp.Username != username {
 		t.Fatalf("unexpected login response: %+v", loginResp)
+	}
+	if loginResp.AuthMethod != "agent_key" || loginResp.AgentKeyID == "" || loginResp.KeyFingerprint != keygenResp.Fingerprint {
+		t.Fatalf("expected agent-key login metadata, got: %+v", loginResp)
 	}
 
 	loginErrorOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "login", "--key", secondKeyPath, "--json")

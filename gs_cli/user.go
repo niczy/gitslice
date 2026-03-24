@@ -36,6 +36,9 @@ type credentialsConfig struct {
 	Username                   string `json:"username,omitempty"`
 	SessionID                  string `json:"session_id,omitempty"`
 	SessionIDCamel             string `json:"sessionId,omitempty"`
+	AuthMethod                 string `json:"auth_method,omitempty"`
+	AgentKeyID                 string `json:"agent_key_id,omitempty"`
+	KeyFingerprint             string `json:"key_fingerprint,omitempty"`
 }
 
 const accessTokenRefreshSkew = 30 * time.Second
@@ -217,6 +220,7 @@ func (c credentialsConfig) refreshedFromAuthResponse(resp *accountv1.AuthRespons
 		TokenType:             strings.TrimSpace(resp.GetTokenType()),
 		Username:              strings.TrimSpace(resp.GetUser().GetUsername()),
 		SessionID:             strings.TrimSpace(resp.GetSession().GetId()),
+		AgentKeyID:            strings.TrimSpace(resp.GetSession().GetAgentKeyId()),
 	}
 	if refreshed.AccessToken == "" {
 		refreshed.AccessToken = c.accessToken()
@@ -245,7 +249,23 @@ func (c credentialsConfig) refreshedFromAuthResponse(resp *accountv1.AuthRespons
 			refreshed.SessionID = strings.TrimSpace(c.SessionIDCamel)
 		}
 	}
+	if refreshed.AuthMethod == "" {
+		refreshed.AuthMethod = strings.TrimSpace(c.AuthMethod)
+	}
+	if refreshed.AgentKeyID == "" {
+		refreshed.AgentKeyID = strings.TrimSpace(c.AgentKeyID)
+	}
+	if refreshed.KeyFingerprint == "" {
+		refreshed.KeyFingerprint = strings.TrimSpace(c.KeyFingerprint)
+	}
 	return refreshed
+}
+
+func (c credentialsConfig) withAuthMetadata(method, agentKeyID, keyFingerprint string) credentialsConfig {
+	c.AuthMethod = strings.TrimSpace(method)
+	c.AgentKeyID = strings.TrimSpace(agentKeyID)
+	c.KeyFingerprint = strings.TrimSpace(keyFingerprint)
+	return c
 }
 
 func resolveUsername(flagValue string) string {

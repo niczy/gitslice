@@ -177,6 +177,8 @@ type authLoginJSON struct {
 	Status                string `json:"status"`
 	Username              string `json:"username"`
 	Source                string `json:"source"`
+	AuthMethod            string `json:"auth_method"`
+	AgentKeyID            string `json:"agent_key_id"`
 	SessionID             string `json:"session_id"`
 	AccessTokenExpiresAt  string `json:"access_token_expires_at"`
 	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
@@ -188,6 +190,9 @@ type authStatusJSON struct {
 	Username              string `json:"username"`
 	Source                string `json:"source"`
 	CredentialStore       bool   `json:"credential_store"`
+	AuthMethod            string `json:"auth_method"`
+	AgentKeyID            string `json:"agent_key_id"`
+	KeyFingerprint        string `json:"key_fingerprint"`
 	SessionID             string `json:"session_id"`
 	AccessTokenExpiresAt  string `json:"access_token_expires_at"`
 	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
@@ -245,6 +250,10 @@ type doctorJSON struct {
 		Source            string `json:"source"`
 		Username          string `json:"username"`
 		StoredCredentials bool   `json:"stored_credentials"`
+		AuthMethod        string `json:"auth_method"`
+		AgentKeyID        string `json:"agent_key_id"`
+		KeyFingerprint    string `json:"key_fingerprint"`
+		SessionID         string `json:"session_id"`
 	} `json:"auth"`
 	Services struct {
 		Admin struct {
@@ -338,6 +347,10 @@ type contextJSON struct {
 		Source            string `json:"source"`
 		Username          string `json:"username"`
 		StoredCredentials bool   `json:"stored_credentials"`
+		AuthMethod        string `json:"auth_method"`
+		AgentKeyID        string `json:"agent_key_id"`
+		KeyFingerprint    string `json:"key_fingerprint"`
+		SessionID         string `json:"session_id"`
 	} `json:"auth"`
 	Checkout struct {
 		Present      bool   `json:"present"`

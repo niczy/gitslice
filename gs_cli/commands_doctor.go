@@ -21,12 +21,15 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		return
 	}
 
+	creds := credentialsConfig{}
+	if authConfig.CredentialStore {
+		if loaded, err := readCredentialsConfig(); err == nil {
+			creds = loaded
+		}
+	}
+
 	out := jsonDoctorOutput{
-		Auth: jsonDoctorAuthOutput{
-			Source:            strings.TrimSpace(authConfig.Source),
-			Username:          strings.TrimSpace(authConfig.Username),
-			StoredCredentials: authConfig.CredentialStore,
-		},
+		Auth: buildDoctorAuthOutput(authConfig, creds),
 	}
 
 	if meResp, err := cli.adminClient.Me(ctx, &adminv1.MeRequest{}); err != nil {
@@ -144,6 +147,15 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		fmt.Printf("  Username: %s\n", out.Auth.Username)
 	}
 	fmt.Printf("  Stored credentials: %t\n", out.Auth.StoredCredentials)
+	if out.Auth.AuthMethod != "" {
+		fmt.Printf("  Method: %s\n", out.Auth.AuthMethod)
+	}
+	if out.Auth.SessionID != "" {
+		fmt.Printf("  Session: %s\n", out.Auth.SessionID)
+	}
+	if out.Auth.AgentKeyID != "" {
+		fmt.Printf("  Agent key: %s\n", out.Auth.AgentKeyID)
+	}
 
 	fmt.Println("Services:")
 	if out.Services.Admin.OK {

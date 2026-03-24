@@ -13,6 +13,7 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.locator('code').filter({ hasText: /gs repo import https:\/\/github\.com\/org\/repo\.git \/\$USER\/vendor\/repo --push-enabled/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice publish --message "refresh settings page" --files src\/routes\/settings\.tsx/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs changeset show/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs auth login --key ~\/\.config\/gitslice\/agent_ed25519/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache stats --checkouts/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache prune/i }).first()).toBeVisible();
   await expect(page.getByText(/uploads and checkouts exchange manifests first and then transfer only missing blocks/i)).toBeVisible();
