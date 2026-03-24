@@ -34,6 +34,8 @@ type InMemoryStorage struct {
 	blocks             map[string][]byte               // block hash -> content
 	manifests          map[string]*models.FileManifest // sliceID:path -> manifest
 	versionedManifests map[string]*models.FileManifest // file hash -> manifest
+	searchIndexBlobs   map[string][]byte               // version:searchHash -> encoded blob
+	searchArtifacts    map[string][]byte               // version:sliceID:commitHash -> encoded artifact
 
 	// Directory entries
 	entries         map[string]*models.DirectoryEntry // entryID -> entry
@@ -108,6 +110,8 @@ func NewInMemoryStorage() *InMemoryStorage {
 		blocks:                           make(map[string][]byte),
 		manifests:                        make(map[string]*models.FileManifest),
 		versionedManifests:               make(map[string]*models.FileManifest),
+		searchIndexBlobs:                 make(map[string][]byte),
+		searchArtifacts:                  make(map[string][]byte),
 		entries:                          make(map[string]*models.DirectoryEntry),
 		entriesByPath:                    make(map[string]string),
 		entriesBySlice:                   make(map[string][]string),
@@ -182,6 +186,8 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.blocks = fresh.blocks
 	s.manifests = fresh.manifests
 	s.versionedManifests = fresh.versionedManifests
+	s.searchIndexBlobs = fresh.searchIndexBlobs
+	s.searchArtifacts = fresh.searchArtifacts
 	s.entries = fresh.entries
 	s.entriesByPath = fresh.entriesByPath
 	s.entriesBySlice = fresh.entriesBySlice
@@ -1238,6 +1244,62 @@ func (s *InMemoryStorage) GetVersionedFileManifest(ctx context.Context, hash str
 		return nil, ErrEntryNotFound
 	}
 	return cloneManifest(manifest), nil
+}
+
+func searchBlobStoreKey(version uint32, searchContentHash string) string {
+	return fmt.Sprintf("%d:%s", version, strings.TrimSpace(searchContentHash))
+}
+
+func sliceSearchArtifactStoreKey(version uint32, sliceID, commitHash string) string {
+	return fmt.Sprintf("%d:%s:%s", version, strings.TrimSpace(sliceID), strings.TrimSpace(commitHash))
+}
+
+func (s *InMemoryStorage) PutSearchIndexFileBlob(ctx context.Context, version uint32, searchContentHash string, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_ = ctx
+	if version == 0 || strings.TrimSpace(searchContentHash) == "" {
+		return ErrInvalidInput
+	}
+	s.searchIndexBlobs[searchBlobStoreKey(version, searchContentHash)] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (s *InMemoryStorage) GetSearchIndexFileBlob(ctx context.Context, version uint32, searchContentHash string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_ = ctx
+	payload, ok := s.searchIndexBlobs[searchBlobStoreKey(version, searchContentHash)]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return append([]byte(nil), payload...), nil
+}
+
+func (s *InMemoryStorage) PutSliceSearchArtifact(ctx context.Context, sliceID, commitHash string, version uint32, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_ = ctx
+	if version == 0 || strings.TrimSpace(sliceID) == "" || strings.TrimSpace(commitHash) == "" {
+		return ErrInvalidInput
+	}
+	s.searchArtifacts[sliceSearchArtifactStoreKey(version, sliceID, commitHash)] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (s *InMemoryStorage) GetSliceSearchArtifact(ctx context.Context, sliceID, commitHash string, version uint32) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_ = ctx
+	payload, ok := s.searchArtifacts[sliceSearchArtifactStoreKey(version, sliceID, commitHash)]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return append([]byte(nil), payload...), nil
 }
 
 // GetRootSlice returns the root slice
