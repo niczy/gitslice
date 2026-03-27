@@ -21,6 +21,7 @@ import (
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/rootpromote"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"github.com/pmezard/go-difflib/difflib"
@@ -162,6 +163,9 @@ func (s *filesystemServiceServer) DeleteWorkspace(ctx context.Context, req *file
 		default:
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete workspace: %v", err))
 		}
+	}
+	if err := s.storage.DeleteWorkspaceSearchArtifact(ctx, workspace.ID, searchindex.CurrentArtifactVersion); err != nil && err != storage.ErrEntryNotFound {
+		log.Printf("filesystem: failed to delete workspace search artifact for %s: %v", workspace.ID, err)
 	}
 
 	return &filesystemv1.DeleteWorkspaceResponse{
@@ -3645,6 +3649,9 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		ModifiedFilesCount: len(paths),
 	}); err != nil {
 		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace metadata: %v", err))
+	}
+	if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, s.storage, workspace.ID, commitHash); err != nil {
+		log.Printf("filesystem: failed to refresh search artifact for commit %s in %s: %v", commitHash, workspace.ID, err)
 	}
 	if err := s.recordWorkspaceFileChanges(ctx, workspace, commitHash, meta.HeadCommitHash, message, now, modifiedPaths, previousFiles, files); err != nil {
 		log.Printf("filesystem: failed to index file changes for commit %s in %s: %v", commitHash, workspace.ID, err)

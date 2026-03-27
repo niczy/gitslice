@@ -9,11 +9,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
@@ -48,6 +53,64 @@ func uploadManifestForTest(filePath string, content []byte) *filesystemv1.Upload
 		})
 	}
 	return manifest
+}
+
+func mustWorkspaceSearchArtifact(t *testing.T, st storage.Storage, workspaceID string) *searchindex.SliceArtifact {
+	t.Helper()
+
+	payload, err := st.GetWorkspaceSearchArtifact(context.Background(), workspaceID, searchindex.CurrentArtifactVersion)
+	if err != nil {
+		t.Fatalf("GetWorkspaceSearchArtifact(%s) failed: %v", workspaceID, err)
+	}
+	artifact, err := searchindex.DecodeSliceArtifact(payload)
+	if err != nil {
+		t.Fatalf("DecodeSliceArtifact(%s) failed: %v", workspaceID, err)
+	}
+	return artifact
+}
+
+func searchArtifactPaths(artifact *searchindex.SliceArtifact) []string {
+	if artifact == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(artifact.Files))
+	for _, file := range artifact.Files {
+		paths = append(paths, file.Path)
+	}
+	return paths
+}
+
+func runGitOrFailFS(t *testing.T, workdir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workdir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+func createFilesystemTestGitRemote(t *testing.T) (string, string) {
+	t.Helper()
+
+	baseDir := t.TempDir()
+	remoteDir := filepath.Join(baseDir, "remote.git")
+	sourceDir := filepath.Join(baseDir, "source")
+
+	runGitOrFailFS(t, "", "init", "--bare", "--initial-branch=main", remoteDir)
+	runGitOrFailFS(t, "", "clone", remoteDir, sourceDir)
+	runGitOrFailFS(t, sourceDir, "config", "user.name", "repo-test")
+	runGitOrFailFS(t, sourceDir, "config", "user.email", "repo-test@example.com")
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte("version 1\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGitOrFailFS(t, sourceDir, "add", "README.md")
+	runGitOrFailFS(t, sourceDir, "commit", "-m", "initial import")
+	runGitOrFailFS(t, sourceDir, "push", "-u", "origin", "main")
+
+	return remoteDir, sourceDir
 }
 
 func TestCreateWorkspaceAcceptsBearerSessionToken(t *testing.T) {
@@ -224,6 +287,170 @@ func TestWorkspaceFileLifecycle(t *testing.T) {
 	}
 	if workspaces.GetTotal() != 2 {
 		t.Fatalf("expected root + created workspace, got total=%d", workspaces.GetTotal())
+	}
+}
+
+func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-search",
+		Name:        "Search Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	writeResp, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-search",
+		Path:        "docs/README.md",
+		Content:     []byte("alpha beta gamma\n"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	artifact := mustWorkspaceSearchArtifact(t, st, "ws-search")
+	if artifact.CommitHash != writeResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q, got %q", writeResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 1 || got[0] != "docs/README.md" {
+		t.Fatalf("unexpected artifact paths after write: %#v", got)
+	}
+
+	moveResp, err := svc.MoveFile(ctx, &filesystemv1.MoveFileRequest{
+		WorkspaceId:     "ws-search",
+		SourcePath:      "docs/README.md",
+		DestinationPath: "docs/GUIDE.md",
+	})
+	if err != nil {
+		t.Fatalf("MoveFile failed: %v", err)
+	}
+	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
+	if artifact.CommitHash != moveResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after move, got %q", moveResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 1 || got[0] != "docs/GUIDE.md" {
+		t.Fatalf("unexpected artifact paths after move: %#v", got)
+	}
+
+	copyResp, err := svc.CopyFile(ctx, &filesystemv1.CopyFileRequest{
+		WorkspaceId:     "ws-search",
+		SourcePath:      "docs/GUIDE.md",
+		DestinationPath: "docs/GUIDE-copy.md",
+	})
+	if err != nil {
+		t.Fatalf("CopyFile failed: %v", err)
+	}
+	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
+	if artifact.CommitHash != copyResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after copy, got %q", copyResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 2 || got[0] != "docs/GUIDE-copy.md" || got[1] != "docs/GUIDE.md" {
+		t.Fatalf("unexpected artifact paths after copy: %#v", got)
+	}
+	if artifact.Files[0].SearchContentHash != artifact.Files[1].SearchContentHash {
+		t.Fatalf("expected copied file to reuse search content hash, got %#v", artifact.Files)
+	}
+
+	binaryResp, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-search",
+		Path:        "bin/data.bin",
+		Content:     []byte{0x00, 0x01, 0x02},
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(binary) failed: %v", err)
+	}
+	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
+	if artifact.CommitHash != binaryResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after binary write, got %q", binaryResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 2 {
+		t.Fatalf("expected binary file to be excluded from artifact, got %#v", got)
+	}
+
+	deleteResp, err := svc.DeleteFile(ctx, &filesystemv1.DeleteFileRequest{
+		WorkspaceId: "ws-search",
+		Path:        "docs/GUIDE.md",
+	})
+	if err != nil {
+		t.Fatalf("DeleteFile(GUIDE) failed: %v", err)
+	}
+	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
+	if artifact.CommitHash != deleteResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after delete, got %q", deleteResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 1 || got[0] != "docs/GUIDE-copy.md" {
+		t.Fatalf("unexpected artifact paths after first delete: %#v", got)
+	}
+
+	deleteResp, err = svc.DeleteFile(ctx, &filesystemv1.DeleteFileRequest{
+		WorkspaceId: "ws-search",
+		Path:        "docs/GUIDE-copy.md",
+	})
+	if err != nil {
+		t.Fatalf("DeleteFile(copy) failed: %v", err)
+	}
+	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
+	if artifact.CommitHash != deleteResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after second delete, got %q", deleteResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 0 {
+		t.Fatalf("expected no indexed files after deleting last text file, got %#v", got)
+	}
+}
+
+func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	remoteDir, sourceDir := createFilesystemTestGitRemote(t)
+	importResp, err := svc.ImportRepo(ctx, &filesystemv1.ImportRepoRequest{
+		RepoUrl: remoteDir,
+		Path:    "/tester/vendor/demo",
+	})
+	if err != nil {
+		t.Fatalf("ImportRepo failed: %v", err)
+	}
+
+	artifact := mustWorkspaceSearchArtifact(t, st, homeslice.IDForUsername("tester"))
+	if artifact.CommitHash != importResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after import, got %q", importResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 1 || got[0] != "tester/vendor/demo/README.md" {
+		t.Fatalf("unexpected artifact paths after import: %#v", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte("version 2 from remote\n"), 0o644); err != nil {
+		t.Fatalf("rewrite remote README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "CHANGELOG.md"), []byte("remote changelog\n"), 0o644); err != nil {
+		t.Fatalf("write remote changelog: %v", err)
+	}
+	runGitOrFailFS(t, sourceDir, "add", "-A")
+	runGitOrFailFS(t, sourceDir, "commit", "-m", "remote update")
+	runGitOrFailFS(t, sourceDir, "push", "origin", "main")
+
+	pullResp, err := svc.PullRepoBinding(ctx, &filesystemv1.PullRepoBindingRequest{
+		Path: "/tester/vendor/demo",
+	})
+	if err != nil {
+		t.Fatalf("PullRepoBinding failed: %v", err)
+	}
+
+	artifact = mustWorkspaceSearchArtifact(t, st, homeslice.IDForUsername("tester"))
+	if artifact.CommitHash != pullResp.GetCommitHash() {
+		t.Fatalf("expected artifact commit %q after pull, got %q", pullResp.GetCommitHash(), artifact.CommitHash)
+	}
+	if got := searchArtifactPaths(artifact); len(got) != 2 || got[0] != "tester/vendor/demo/CHANGELOG.md" || got[1] != "tester/vendor/demo/README.md" {
+		t.Fatalf("unexpected artifact paths after pull: %#v", got)
 	}
 }
 
@@ -925,6 +1152,9 @@ func TestDeleteWorkspaceRemovesWorkspace(t *testing.T) {
 
 	if _, err := svc.GetWorkspaceInfo(ctx, &filesystemv1.GetWorkspaceInfoRequest{WorkspaceId: "ws-delete"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("expected workspace to be gone, got %v", err)
+	}
+	if _, err := st.GetWorkspaceSearchArtifact(context.Background(), "ws-delete", searchindex.CurrentArtifactVersion); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected workspace search artifact to be removed, got %v", err)
 	}
 }
 

@@ -36,6 +36,7 @@ type InMemoryStorage struct {
 	versionedManifests map[string]*models.FileManifest // file hash -> manifest
 	searchIndexBlobs   map[string][]byte               // version:searchHash -> encoded blob
 	searchArtifacts    map[string][]byte               // version:sliceID:commitHash -> encoded artifact
+	workspaceArtifacts map[string][]byte               // version:workspaceID -> encoded artifact
 
 	// Directory entries
 	entries         map[string]*models.DirectoryEntry // entryID -> entry
@@ -112,6 +113,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		versionedManifests:               make(map[string]*models.FileManifest),
 		searchIndexBlobs:                 make(map[string][]byte),
 		searchArtifacts:                  make(map[string][]byte),
+		workspaceArtifacts:               make(map[string][]byte),
 		entries:                          make(map[string]*models.DirectoryEntry),
 		entriesByPath:                    make(map[string]string),
 		entriesBySlice:                   make(map[string][]string),
@@ -188,6 +190,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.versionedManifests = fresh.versionedManifests
 	s.searchIndexBlobs = fresh.searchIndexBlobs
 	s.searchArtifacts = fresh.searchArtifacts
+	s.workspaceArtifacts = fresh.workspaceArtifacts
 	s.entries = fresh.entries
 	s.entriesByPath = fresh.entriesByPath
 	s.entriesBySlice = fresh.entriesBySlice
@@ -1254,6 +1257,10 @@ func sliceSearchArtifactStoreKey(version uint32, sliceID, commitHash string) str
 	return fmt.Sprintf("%d:%s:%s", version, strings.TrimSpace(sliceID), strings.TrimSpace(commitHash))
 }
 
+func workspaceSearchArtifactStoreKey(version uint32, workspaceID string) string {
+	return fmt.Sprintf("%d:%s", version, strings.TrimSpace(workspaceID))
+}
+
 func (s *InMemoryStorage) PutSearchIndexFileBlob(ctx context.Context, version uint32, searchContentHash string, payload []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1300,6 +1307,46 @@ func (s *InMemoryStorage) GetSliceSearchArtifact(ctx context.Context, sliceID, c
 		return nil, ErrEntryNotFound
 	}
 	return append([]byte(nil), payload...), nil
+}
+
+func (s *InMemoryStorage) PutWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_ = ctx
+	if version == 0 || strings.TrimSpace(workspaceID) == "" {
+		return ErrInvalidInput
+	}
+	s.workspaceArtifacts[workspaceSearchArtifactStoreKey(version, workspaceID)] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (s *InMemoryStorage) GetWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_ = ctx
+	payload, ok := s.workspaceArtifacts[workspaceSearchArtifactStoreKey(version, workspaceID)]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return append([]byte(nil), payload...), nil
+}
+
+func (s *InMemoryStorage) DeleteWorkspaceSearchArtifact(ctx context.Context, workspaceID string, version uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_ = ctx
+	if version == 0 || strings.TrimSpace(workspaceID) == "" {
+		return ErrInvalidInput
+	}
+	key := workspaceSearchArtifactStoreKey(version, workspaceID)
+	if _, ok := s.workspaceArtifacts[key]; !ok {
+		return ErrEntryNotFound
+	}
+	delete(s.workspaceArtifacts, key)
+	return nil
 }
 
 // GetRootSlice returns the root slice

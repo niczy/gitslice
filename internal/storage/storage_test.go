@@ -279,6 +279,24 @@ func runSearchIndexStorageRoundTrip(ctx context.Context, t *testing.T, st Storag
 	if _, err := st.GetSliceSearchArtifact(ctx, "slice-1", "commit-1", 3); err != ErrEntryNotFound {
 		t.Fatalf("expected missing artifact version to return ErrEntryNotFound, got %v", err)
 	}
+
+	workspaceArtifact := []byte("workspace-artifact-v1")
+	if err := st.PutWorkspaceSearchArtifact(ctx, "workspace-1", 1, workspaceArtifact); err != nil {
+		t.Fatalf("PutWorkspaceSearchArtifact failed: %v", err)
+	}
+	gotWorkspaceArtifact, err := st.GetWorkspaceSearchArtifact(ctx, "workspace-1", 1)
+	if err != nil {
+		t.Fatalf("GetWorkspaceSearchArtifact failed: %v", err)
+	}
+	if !bytes.Equal(gotWorkspaceArtifact, workspaceArtifact) {
+		t.Fatalf("unexpected workspace artifact payload: got=%q want=%q", string(gotWorkspaceArtifact), string(workspaceArtifact))
+	}
+	if err := st.DeleteWorkspaceSearchArtifact(ctx, "workspace-1", 1); err != nil {
+		t.Fatalf("DeleteWorkspaceSearchArtifact failed: %v", err)
+	}
+	if _, err := st.GetWorkspaceSearchArtifact(ctx, "workspace-1", 1); err != ErrEntryNotFound {
+		t.Fatalf("expected deleted workspace artifact to return ErrEntryNotFound, got %v", err)
+	}
 }
 
 func runBuildSliceSearchArtifactFromCommitSnapshot(ctx context.Context, t *testing.T, st Storage) {
