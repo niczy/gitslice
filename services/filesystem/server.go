@@ -3175,9 +3175,16 @@ func (s *filesystemServiceServer) searchWorkspaceRegex(ctx context.Context, work
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
 	}
 
-	artifact, artifactErr := s.loadWorkspaceSearchArtifact(ctx, workspaceID, headCommitHash)
+	artifactLoadStartedAt := time.Now()
+	artifact, artifactOutcome, artifactErr := s.loadWorkspaceSearchArtifact(ctx, workspaceID, headCommitHash)
+	if artifactOutcome != "" {
+		observeFilesystemSearchArtifactLoad(artifactOutcome, time.Since(artifactLoadStartedAt))
+	}
 	if artifactErr != nil {
 		log.Printf("filesystem: regex search falling back to scan for %s: %v", workspaceID, artifactErr)
+		observeFilesystemSearchFallback("artifact_error")
+		verifyStartedAt := time.Now()
+		defer observeFilesystemSearchVerify("regex_fallback_scan", time.Since(verifyStartedAt))
 		return s.scanWorkspaceSearch(ctx, workspaceID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
 			return findRegexSearchMatches(displayPath, body, re)
 		})
@@ -3188,12 +3195,18 @@ func (s *filesystemServiceServer) searchWorkspaceRegex(ctx context.Context, work
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
 	}
 	candidateIndexes := searchindex.CandidateFileIndexes(artifact, queryNode)
+	observeFilesystemSearchCandidates("regex_indexed", len(candidateIndexes))
 	if len(candidateIndexes) == 0 {
+		observeFilesystemSearchFallback("empty_candidates")
+		verifyStartedAt := time.Now()
+		defer observeFilesystemSearchVerify("regex_fallback_scan", time.Since(verifyStartedAt))
 		return s.scanWorkspaceSearch(ctx, workspaceID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
 			return findRegexSearchMatches(displayPath, body, re)
 		})
 	}
 
+	verifyStartedAt := time.Now()
+	defer observeFilesystemSearchVerify("regex_indexed", time.Since(verifyStartedAt))
 	matches := make([]*filesystemv1.SearchMatch, 0)
 	for _, fileIndex := range candidateIndexes {
 		if int(fileIndex) >= len(artifact.Files) {
@@ -3215,20 +3228,17 @@ func (s *filesystemServiceServer) searchWorkspaceRegex(ctx context.Context, work
 	return matches, nil
 }
 
-func (s *filesystemServiceServer) loadWorkspaceSearchArtifact(ctx context.Context, workspaceID, headCommitHash string) (*searchindex.SliceArtifact, error) {
+func (s *filesystemServiceServer) loadWorkspaceSearchArtifact(ctx context.Context, workspaceID, headCommitHash string) (*searchindex.SliceArtifact, string, error) {
 	headCommitHash = strings.TrimSpace(headCommitHash)
 	if headCommitHash == "" {
-		return searchindex.BuildSliceArtifact(workspaceID, "", nil), nil
+		return searchindex.BuildSliceArtifact(workspaceID, "", nil), storage.SearchArtifactOutcomeBuilt.String(), nil
 	}
 
-	payload, err := s.storage.GetWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion)
-	if err == nil {
-		artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
-		if decodeErr == nil && artifact != nil && artifact.CommitHash == headCommitHash {
-			return artifact, nil
-		}
+	artifact, outcome, err := storage.LoadOrBuildWorkspaceSearchArtifact(ctx, s.storage, workspaceID, headCommitHash)
+	if err != nil {
+		return nil, "", err
 	}
-	return storage.BuildAndStoreWorkspaceSearchArtifact(ctx, s.storage, workspaceID, headCommitHash)
+	return artifact, outcome.String(), nil
 }
 
 func (s *filesystemServiceServer) snapshotInfoByCommitHash(ctx context.Context, workspaceID, commitHash string) (*filesystemv1.SnapshotInfo, error) {

@@ -34,8 +34,12 @@ func main() {
 	switch os.Args[1] {
 	case "backfill-native":
 		cmdBackfillNative(os.Args[2:])
+	case "backfill-search-index":
+		cmdBackfillSearchIndex(os.Args[2:])
 	case "repair-native-content":
 		cmdRepairNativeContent(os.Args[2:])
+	case "repair-search-index":
+		cmdRepairSearchIndex(os.Args[2:])
 	case "prune-broken-entries":
 		cmdPruneBrokenEntries(os.Args[2:])
 	case "verify-native":
@@ -55,7 +59,9 @@ func main() {
 func usage() {
 	log.Printf("Usage:")
 	log.Printf("  storage_migrate backfill-native --dsn <dsn> --namespace <ns>")
+	log.Printf("  storage_migrate backfill-search-index --dsn <dsn> --namespace <ns> [--slice <slice-id>] [--commits <n>] [--workspace-heads]")
 	log.Printf("  storage_migrate repair-native-content --dsn <dsn> --namespace <ns>")
+	log.Printf("  storage_migrate repair-search-index --dsn <dsn> --namespace <ns> [--slice <slice-id>] [--commit <hash>] [--workspace <slice-id>] [--commits <n>]")
 	log.Printf("  storage_migrate prune-broken-entries --dsn <dsn> --namespace <ns> [--dry-run]")
 	log.Printf("  storage_migrate verify-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate drop-snapshot --dsn <dsn> --namespace <ns>")
@@ -130,6 +136,24 @@ type pruneStats struct {
 	DirectoriesDeleted   int
 	SliceRowsUpdated     int
 	SliceMetadataUpdated int
+}
+
+type searchIndexStats struct {
+	Slices         int
+	SliceCommits   int
+	WorkspaceHeads int
+	Hits           int
+	Built          int
+	Rebuilt        int
+}
+
+type searchIndexRunOptions struct {
+	SliceID              string
+	CommitHash           string
+	WorkspaceID          string
+	CommitsPerSlice      int
+	IncludeWorkspaceHead bool
+	Force                bool
 }
 
 func cmdBackfillNative(args []string) {
@@ -218,6 +242,67 @@ func cmdRepairNativeContent(args []string) {
 		stats.ManifestsBackfilled, stats.VersionedBackfilled, stats.BlocksWritten, stats.SliceEntrySizesFixed, stats.ParentEntrySizesFixed)
 }
 
+func cmdBackfillSearchIndex(args []string) {
+	fs := flag.NewFlagSet("backfill-search-index", flag.ExitOnError)
+	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
+	namespace := fs.String("namespace", "core", "Storage namespace")
+	sliceID := fs.String("slice", "", "Optional slice ID to backfill")
+	commits := fs.Int("commits", 20, "Recent commits per slice to backfill")
+	includeWorkspaceHeads := fs.Bool("workspace-heads", true, "Also refresh current workspace search artifacts for non-root slices")
+	fs.Parse(args)
+
+	ctx := context.Background()
+	native, closeNative := mustNativeStorage(ctx, *dsn, *namespace)
+	defer native.Close()
+	defer closeNative()
+
+	stats, err := runSearchIndexMaintenance(ctx, native, searchIndexRunOptions{
+		SliceID:              *sliceID,
+		CommitsPerSlice:      *commits,
+		IncludeWorkspaceHead: *includeWorkspaceHeads,
+		Force:                false,
+	})
+	if err != nil {
+		log.Fatalf("backfill search index: %v", err)
+	}
+	log.Printf("Search index backfill complete: slices=%d commits=%d workspace_heads=%d hits=%d built=%d rebuilt=%d",
+		stats.Slices, stats.SliceCommits, stats.WorkspaceHeads, stats.Hits, stats.Built, stats.Rebuilt)
+}
+
+func cmdRepairSearchIndex(args []string) {
+	fs := flag.NewFlagSet("repair-search-index", flag.ExitOnError)
+	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
+	namespace := fs.String("namespace", "core", "Storage namespace")
+	sliceID := fs.String("slice", "", "Optional slice ID to repair")
+	commitHash := fs.String("commit", "", "Optional commit hash to repair (requires --slice)")
+	workspaceID := fs.String("workspace", "", "Optional workspace ID to rebuild current workspace artifact for")
+	commits := fs.Int("commits", 20, "Recent commits per slice to rebuild when --commit is not provided")
+	fs.Parse(args)
+
+	if strings.TrimSpace(*commitHash) != "" && strings.TrimSpace(*sliceID) == "" {
+		log.Fatalf("--commit requires --slice")
+	}
+
+	ctx := context.Background()
+	native, closeNative := mustNativeStorage(ctx, *dsn, *namespace)
+	defer native.Close()
+	defer closeNative()
+
+	stats, err := runSearchIndexMaintenance(ctx, native, searchIndexRunOptions{
+		SliceID:              *sliceID,
+		CommitHash:           *commitHash,
+		WorkspaceID:          *workspaceID,
+		CommitsPerSlice:      *commits,
+		IncludeWorkspaceHead: strings.TrimSpace(*workspaceID) == "",
+		Force:                true,
+	})
+	if err != nil {
+		log.Fatalf("repair search index: %v", err)
+	}
+	log.Printf("Search index repair complete: slices=%d commits=%d workspace_heads=%d hits=%d built=%d rebuilt=%d",
+		stats.Slices, stats.SliceCommits, stats.WorkspaceHeads, stats.Hits, stats.Built, stats.Rebuilt)
+}
+
 func cmdPruneBrokenEntries(args []string) {
 	fs := flag.NewFlagSet("prune-broken-entries", flag.ExitOnError)
 	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
@@ -293,6 +378,166 @@ func cmdDropSnapshot(args []string) {
 		log.Fatalf("drop snapshot: %v", err)
 	}
 	log.Printf("Dropped snapshot namespace=%s", *namespace)
+}
+
+func mustNativeStorage(ctx context.Context, dsn, namespace string) (*storage.PostgresNativeStorage, func()) {
+	pool := mustPool(ctx, dsn)
+	defer pool.Close()
+
+	log.Printf("Ensuring native schema is migrated")
+	if err := storage.RunMigrations(ctx, pool); err != nil {
+		log.Fatalf("RunMigrations: %v", err)
+	}
+
+	cfg := config.LoadConfig()
+	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("build object store: %v", err)
+	}
+
+	native, err := storage.NewPostgresNativeStorage(ctx, dsn, objectStore, namespace)
+	if err != nil {
+		closeObjectStore()
+		log.Fatalf("new native storage: %v", err)
+	}
+
+	return native, closeObjectStore
+}
+
+func runSearchIndexMaintenance(ctx context.Context, st storage.Storage, opts searchIndexRunOptions) (*searchIndexStats, error) {
+	stats := &searchIndexStats{}
+	commitsPerSlice := opts.CommitsPerSlice
+	if commitsPerSlice <= 0 {
+		commitsPerSlice = 20
+	}
+
+	if strings.TrimSpace(opts.WorkspaceID) != "" {
+		stats.WorkspaceHeads++
+		outcome, err := ensureWorkspaceSearchArtifact(ctx, st, strings.TrimSpace(opts.WorkspaceID), strings.TrimSpace(opts.CommitHash), opts.Force)
+		if err != nil {
+			return nil, err
+		}
+		recordSearchIndexOutcome(stats, outcome)
+		if strings.TrimSpace(opts.SliceID) == "" {
+			return stats, nil
+		}
+	}
+
+	slices, err := resolveSearchIndexSlices(ctx, st, strings.TrimSpace(opts.SliceID))
+	if err != nil {
+		return nil, err
+	}
+	for _, slice := range slices {
+		if slice == nil {
+			continue
+		}
+		stats.Slices++
+		if strings.TrimSpace(opts.CommitHash) != "" {
+			stats.SliceCommits++
+			outcome, err := ensureSliceSearchArtifact(ctx, st, slice.ID, strings.TrimSpace(opts.CommitHash), opts.Force)
+			if err != nil {
+				return nil, err
+			}
+			recordSearchIndexOutcome(stats, outcome)
+		} else {
+			commits, err := st.ListSliceCommits(ctx, slice.ID, commitsPerSlice, "")
+			if err != nil {
+				return nil, err
+			}
+			for _, commit := range commits {
+				if commit == nil || strings.TrimSpace(commit.CommitHash) == "" {
+					continue
+				}
+				stats.SliceCommits++
+				outcome, err := ensureSliceSearchArtifact(ctx, st, slice.ID, strings.TrimSpace(commit.CommitHash), opts.Force)
+				if err != nil {
+					return nil, err
+				}
+				recordSearchIndexOutcome(stats, outcome)
+			}
+		}
+
+		if !opts.IncludeWorkspaceHead || slice.IsRoot {
+			continue
+		}
+		meta, err := st.GetSliceMetadata(ctx, slice.ID)
+		if err != nil {
+			return nil, err
+		}
+		headCommit := strings.TrimSpace(meta.HeadCommitHash)
+		if headCommit == "" {
+			continue
+		}
+		stats.WorkspaceHeads++
+		outcome, err := ensureWorkspaceSearchArtifact(ctx, st, slice.ID, headCommit, opts.Force)
+		if err != nil {
+			return nil, err
+		}
+		recordSearchIndexOutcome(stats, outcome)
+	}
+	return stats, nil
+}
+
+func resolveSearchIndexSlices(ctx context.Context, st storage.Storage, sliceID string) ([]*models.Slice, error) {
+	if sliceID != "" {
+		slice, err := st.GetSlice(ctx, sliceID)
+		if err != nil {
+			return nil, err
+		}
+		return []*models.Slice{slice}, nil
+	}
+
+	limit := 500
+	offset := 0
+	slices := make([]*models.Slice, 0)
+	for {
+		batch, err := st.ListSlices(ctx, limit, offset)
+		if err != nil {
+			return nil, err
+		}
+		slices = append(slices, batch...)
+		if len(batch) < limit {
+			break
+		}
+		offset += len(batch)
+	}
+	return slices, nil
+}
+
+func ensureSliceSearchArtifact(ctx context.Context, st storage.Storage, sliceID, commitHash string, force bool) (storage.SearchArtifactLoadOutcome, error) {
+	if force {
+		if _, err := storage.BuildAndStoreSliceSearchArtifact(ctx, st, sliceID, commitHash); err != nil {
+			return "", err
+		}
+		return storage.SearchArtifactOutcomeRebuilt, nil
+	}
+	_, outcome, err := storage.LoadOrBuildSliceSearchArtifact(ctx, st, sliceID, commitHash)
+	return outcome, err
+}
+
+func ensureWorkspaceSearchArtifact(ctx context.Context, st storage.Storage, workspaceID, commitHash string, force bool) (storage.SearchArtifactLoadOutcome, error) {
+	if force {
+		if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, st, workspaceID, commitHash); err != nil {
+			return "", err
+		}
+		return storage.SearchArtifactOutcomeRebuilt, nil
+	}
+	_, outcome, err := storage.LoadOrBuildWorkspaceSearchArtifact(ctx, st, workspaceID, commitHash)
+	return outcome, err
+}
+
+func recordSearchIndexOutcome(stats *searchIndexStats, outcome storage.SearchArtifactLoadOutcome) {
+	if stats == nil {
+		return
+	}
+	switch outcome {
+	case storage.SearchArtifactOutcomeHit:
+		stats.Hits++
+	case storage.SearchArtifactOutcomeBuilt:
+		stats.Built++
+	case storage.SearchArtifactOutcomeRebuilt:
+		stats.Rebuilt++
+	}
 }
 
 func dropSnapshot(ctx context.Context, pool *pgxpool.Pool, namespace string) error {
