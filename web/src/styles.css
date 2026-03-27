@@ -2282,6 +2282,122 @@ body {
   color: var(--text-muted);
 }
 
+.repo-search-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.94));
+}
+
+.repo-search-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.repo-search-panel-head .sidebar-panel-title {
+  margin-bottom: 0;
+}
+
+.repo-search-count {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.repo-search-form {
+  display: grid;
+  gap: 8px;
+}
+
+.repo-search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-primary);
+  padding: 9px 10px;
+  font-size: 0.85rem;
+}
+
+.repo-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.repo-search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.repo-search-toggle input {
+  margin: 0;
+}
+
+.repo-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.repo-search-state {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding-top: 10px;
+}
+
+.repo-search-results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.repo-search-result {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.repo-search-result:hover {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(239, 246, 255, 0.92);
+}
+
+.repo-search-result-path {
+  font-size: 0.76rem;
+  color: var(--accent);
+  word-break: break-word;
+}
+
+.repo-search-result-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.repo-search-result-line {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.77rem;
+  color: var(--text-primary);
+}
+
 .repo-code {
   flex: 1;
   min-width: 0;
@@ -4376,6 +4492,10 @@ body {
     padding: 0 12px 12px;
   }
 
+  .repo-search-panel {
+    padding: 10px;
+  }
+
   .repo-code {
     border-radius: var(--radius-sm);
     min-height: 0;
@@ -4518,6 +4638,10 @@ body {
   .sidebar-content,
   .code-content {
     padding: 0 10px 10px;
+  }
+
+  .repo-search-actions {
+    flex-wrap: wrap;
   }
 
   .file-preview {
