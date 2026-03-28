@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
@@ -64,8 +65,16 @@ func main() {
 		handleCacheCommand(args[1:])
 		return
 	}
+	if args[0] == "jobs" {
+		handleJobsCommand(args[1:])
+		return
+	}
 	if args[0] == "__watch-checkout" {
 		handleCheckoutWatcher(args[1:])
+		return
+	}
+	if args[0] == "__run-job" {
+		handleDetachedJobRunner(args[1:])
 		return
 	}
 	if args[0] == "slice" && len(args) > 1 && args[1] == "checkouts" {
@@ -151,6 +160,8 @@ func main() {
 		handleFilesystemCommand(ctx, cli, authConfig, args[1:])
 	case "cache":
 		handleCacheCommand(args[1:])
+	case "jobs":
+		handleJobsCommand(args[1:])
 	case "doctor":
 		handleDoctor(ctx, cli, authConfig, args[1:])
 	case "context":
@@ -158,6 +169,14 @@ func main() {
 	default:
 		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown command: %s", args[0]), false, "gs --help")
 	}
+}
+
+func handleDetachedJobRunner(args []string) {
+	if len(args) < 3 || strings.TrimSpace(args[0]) == "" || args[1] != "--" {
+		commandFatal("INVALID_ARGUMENT", "Usage: gs __run-job <job-id> -- <command...>", false, "")
+		return
+	}
+	os.Exit(runDetachedCLIJob(strings.TrimSpace(args[0]), args[2:]))
 }
 
 func configureCLIBehavior(args []string) []string {
