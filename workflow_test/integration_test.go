@@ -301,6 +301,11 @@ func runCLIWithDirInputEnvLegacy(workdir, input string, env map[string]string, i
 }
 
 func runCLIWithDirInputEnvLegacyUser(workdir, input string, env map[string]string, includeLegacyUser bool, legacyUser string, args ...string) (string, error) {
+	stdout, stderr, err := runCLIWithDirInputEnvLegacyUserStreams(workdir, input, env, includeLegacyUser, legacyUser, args...)
+	return stdout + stderr, err
+}
+
+func runCLIWithDirInputEnvLegacyUserStreams(workdir, input string, env map[string]string, includeLegacyUser bool, legacyUser string, args ...string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -333,8 +338,12 @@ func runCLIWithDirInputEnvLegacyUser(workdir, input string, env map[string]strin
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
 
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
 }
 
 func runGitOrFail(t *testing.T, workdir string, args ...string) string {
