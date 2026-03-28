@@ -37,17 +37,28 @@ func handleRepoCommand(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoImport(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
+	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("repo import")
 	branch := fs.String("branch", "", "Remote branch to import (default: remote default branch)")
 	force := fs.Bool("force", false, "Overwrite an existing directory or binding at the target path")
 	pushEnabled := fs.Bool("push-enabled", false, "Allow future gs repo push operations for this binding")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token for private repo import")
+	detach := fs.Bool("detach", false, "Run the import as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	detachEnabled := detachRequested || *detach
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs repo import <repo-url> </absolute/path>")
+		commandUsage("Usage: gs repo import <repo-url> </absolute/path> [--detach] [--json]")
+		return
+	}
+	if detachEnabled {
+		record, err := startDetachedCLIJob("repo import", append([]string{"repo", "import"}, args...))
+		if err != nil {
+			commandFatalf("JOB_START_FAILED", false, "", "Failed to start detached repo import job: %v", err)
+		}
+		emitDetachedJobStarted(record, jsonEnabled)
 		return
 	}
 
@@ -157,14 +168,25 @@ func handleRepoStatus(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
+	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("repo pull")
 	force := fs.Bool("force", true, "Overwrite the bound directory with the remote snapshot")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token for private repo pull")
+	detach := fs.Bool("detach", false, "Run the pull as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	detachEnabled := detachRequested || *detach
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs repo pull </absolute/path>")
+		commandUsage("Usage: gs repo pull </absolute/path> [--detach] [--json]")
+		return
+	}
+	if detachEnabled {
+		record, err := startDetachedCLIJob("repo pull", append([]string{"repo", "pull"}, args...))
+		if err != nil {
+			commandFatalf("JOB_START_FAILED", false, "", "Failed to start detached repo pull job: %v", err)
+		}
+		emitDetachedJobStarted(record, jsonEnabled)
 		return
 	}
 
@@ -197,14 +219,25 @@ func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 
 func handleRepoPush(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
+	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("repo push")
 	message := fs.String("message", "", "Commit message for the remote push")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token used to push to the remote")
+	detach := fs.Bool("detach", false, "Run the push as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	detachEnabled := detachRequested || *detach
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs repo push </absolute/path>")
+		commandUsage("Usage: gs repo push </absolute/path> [--detach] [--json]")
+		return
+	}
+	if detachEnabled {
+		record, err := startDetachedCLIJob("repo push", append([]string{"repo", "push"}, args...))
+		if err != nil {
+			commandFatalf("JOB_START_FAILED", false, "", "Failed to start detached repo push job: %v", err)
+		}
+		emitDetachedJobStarted(record, jsonEnabled)
 		return
 	}
 

@@ -32,15 +32,26 @@ type filesystemUploadInventory struct {
 
 func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
+	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("fs sync")
 	direction := fs.String("direction", "", "Sync direction: push or pull")
 	dryRun := fs.Bool("dry-run", false, "Preview the sync without applying it")
+	detach := fs.Bool("detach", false, "Run the sync as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	detachEnabled := detachRequested || *detach
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path> [--json]\n   or: gs fs sync --direction pull </absolute/path> <local-dir> [--json]")
+		commandUsage("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path> [--dry-run] [--detach] [--json]\n   or: gs fs sync --direction pull </absolute/path> <local-dir> [--dry-run] [--detach] [--json]")
+		return
+	}
+	if detachEnabled {
+		record, err := startDetachedCLIJob("fs sync", append([]string{"fs", "sync"}, args...))
+		if err != nil {
+			commandFatalf("JOB_START_FAILED", false, "", "Failed to start detached fs sync job: %v", err)
+		}
+		emitDetachedJobStarted(record, jsonEnabled)
 		return
 	}
 
@@ -63,14 +74,25 @@ func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 
 func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
+	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("fs upload")
 	dryRun := fs.Bool("dry-run", false, "Preview the upload without applying it")
+	detach := fs.Bool("detach", false, "Run the upload as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	detachEnabled := detachRequested || *detach
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--dry-run] [--json]")
+		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--dry-run] [--detach] [--json]")
+		return
+	}
+	if detachEnabled {
+		record, err := startDetachedCLIJob("fs upload", append([]string{"fs", "upload"}, args...))
+		if err != nil {
+			commandFatalf("JOB_START_FAILED", false, "", "Failed to start detached fs upload job: %v", err)
+		}
+		emitDetachedJobStarted(record, jsonEnabled)
 		return
 	}
 
@@ -166,14 +188,25 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 
 func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
+	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("fs download")
 	dryRun := fs.Bool("dry-run", false, "Preview the download without applying it")
+	detach := fs.Bool("detach", false, "Run the download as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	detachEnabled := detachRequested || *detach
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs download </absolute/path> <local-dir> [--dry-run] [--json]")
+		commandUsage("Usage: gs fs download </absolute/path> <local-dir> [--dry-run] [--detach] [--json]")
+		return
+	}
+	if detachEnabled {
+		record, err := startDetachedCLIJob("fs download", append([]string{"fs", "download"}, args...))
+		if err != nil {
+			commandFatalf("JOB_START_FAILED", false, "", "Failed to start detached fs download job: %v", err)
+		}
+		emitDetachedJobStarted(record, jsonEnabled)
 		return
 	}
 

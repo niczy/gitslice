@@ -22,6 +22,7 @@ func printHelp() {
 	fmt.Println("  repo        Bind remote repositories into your home slice")
 	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  fs          Remote home filesystem operations")
+	fmt.Println("  jobs        Inspect detached CLI jobs for long-running commands")
 	fmt.Println("  cache       Inspect and clean local checkout/cache state")
 	fmt.Println("  doctor      Check auth, slice binding, cache, and service health")
 	fmt.Println("  context     Print agent-friendly current auth/checkout/changeset context")
@@ -36,6 +37,8 @@ func printHelp() {
 	fmt.Println("  gs slice status --json")
 	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
 	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
+	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --detach --json")
+	fmt.Println("  gs jobs wait job_123 --json")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
 }
 
@@ -111,6 +114,21 @@ func printCacheHelp() {
 	fmt.Println("  gs cache clear --objects --json")
 }
 
+func printJobsHelp() {
+	fmt.Println("Usage: gs jobs <command> [options]")
+	fmt.Println("All job commands support --json.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  list     List detached CLI jobs")
+	fmt.Println("  get      Show a detached job")
+	fmt.Println("  wait     Wait for a detached job to finish")
+	fmt.Println("  logs     Print stdout/stderr captured for a detached job")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs jobs list --json")
+	fmt.Println("  gs jobs get job_123 --json")
+	fmt.Println("  gs jobs wait job_123 --timeout 2m --json")
+	fmt.Println("  gs jobs logs job_123 --json")
+}
+
 func printChangesetHelp() {
 	fmt.Println("Usage: gs changeset <command> [options]")
 	fmt.Println("\nCommands:")
@@ -162,8 +180,8 @@ func printRepoHelp() {
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
 	fmt.Println("  gs repo list --json")
-	fmt.Println("  gs repo pull /nic/vendor/repo --json")
-	fmt.Println("  gs repo push /nic/vendor/repo --json")
+	fmt.Println("  gs repo pull /nic/vendor/repo --detach --json")
+	fmt.Println("  gs repo push /nic/vendor/repo --detach --json")
 }
 
 func printFileHelp() {
@@ -211,5 +229,5 @@ func printFilesystemHelp() {
 	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
 	fmt.Println("  cat ops.jsonl | gs fs batch -m \"bulk update\"")
 	fmt.Println("  gs fs search settings --glob /nic/app/** --json")
-	fmt.Println("  gs fs sync --direction push ./site /nic/site --json")
+	fmt.Println("  gs fs sync --direction push ./site /nic/site --detach --json")
 }

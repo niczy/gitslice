@@ -214,3 +214,91 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+func TestDetachedRepoImportJobWorkflow(t *testing.T) {
+	username := fmt.Sprintf("repojob%d", time.Now().UnixNano()%1_000_000_000)
+	env := workflowProcessEnv(t, nil)
+	runCLIJSONForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		args = append(args, "--json")
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	remoteDir, _ := createLocalGitRemote(t)
+	boundPath := fmt.Sprintf("/%s/repos/detached-%d", username, time.Now().UnixNano())
+
+	startOutput := runCLIJSONForUser("", "repo", "import", "--detach", remoteDir, boundPath)
+	var started jobJSON
+	if err := json.Unmarshal([]byte(startOutput), &started); err != nil {
+		t.Fatalf("decode detached job JSON: %v\nOutput:\n%s", err, startOutput)
+	}
+	if started.JobID == "" || started.Kind != "repo import" {
+		t.Fatalf("unexpected detached job start output: %+v", started)
+	}
+
+	waitOutput := runCLIJSONForUser("", "jobs", "wait", started.JobID, "--timeout", "10s")
+	var completed jobJSON
+	if err := json.Unmarshal([]byte(waitOutput), &completed); err != nil {
+		t.Fatalf("decode completed job JSON: %v\nOutput:\n%s", err, waitOutput)
+	}
+	if completed.Status != "succeeded" || completed.ExitCode != 0 {
+		t.Fatalf("expected successful detached job, got: %+v", completed)
+	}
+	if len(completed.Result) == 0 {
+		t.Fatalf("expected detached job result JSON, got: %+v", completed)
+	}
+
+	var importResp repoImportJSON
+	if err := json.Unmarshal(completed.Result, &importResp); err != nil {
+		t.Fatalf("decode repo import job result: %v\nResult:\n%s", err, string(completed.Result))
+	}
+	if importResp.Binding.Path != boundPath || importResp.Binding.RepoURL != remoteDir {
+		t.Fatalf("unexpected repo import job result: %+v", importResp)
+	}
+
+	getOutput := runCLIJSONForUser("", "jobs", "get", started.JobID)
+	var fetched jobJSON
+	if err := json.Unmarshal([]byte(getOutput), &fetched); err != nil {
+		t.Fatalf("decode jobs get JSON: %v\nOutput:\n%s", err, getOutput)
+	}
+	if fetched.JobID != started.JobID || fetched.Status != "succeeded" {
+		t.Fatalf("unexpected jobs get output: %+v", fetched)
+	}
+
+	logsOutput := runCLIJSONForUser("", "jobs", "logs", started.JobID)
+	var logs jobLogsJSON
+	if err := json.Unmarshal([]byte(logsOutput), &logs); err != nil {
+		t.Fatalf("decode jobs logs JSON: %v\nOutput:\n%s", err, logsOutput)
+	}
+	if logs.JobID != started.JobID || !strings.Contains(logs.Stdout, "\"binding\"") {
+		t.Fatalf("unexpected jobs logs output: %+v", logs)
+	}
+
+	listOutput := runCLIJSONForUser("", "jobs", "list")
+	var list jobsListJSON
+	if err := json.Unmarshal([]byte(listOutput), &list); err != nil {
+		t.Fatalf("decode jobs list JSON: %v\nOutput:\n%s", err, listOutput)
+	}
+	found := false
+	for _, job := range list.Jobs {
+		if job.JobID == started.JobID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected jobs list to include %s, got: %+v", started.JobID, list)
+	}
+
+	output, err := runCLIWithDirInputEnvLegacyUser("", "", env, true, username, "fs", "cat", boundPath+"/README.md")
+	if err != nil {
+		t.Fatalf("CLI cat after detached import failed: %v\nOutput:\n%s", err, output)
+	}
+	if output != "version 1\n" {
+		t.Fatalf("unexpected imported README after detached import: %q", output)
+	}
+}

@@ -376,6 +376,36 @@ type jsonFilesystemActionOutput struct {
 	Message           string                    `json:"message,omitempty"`
 }
 
+type jsonJobOutput struct {
+	JobID      string          `json:"job_id"`
+	Kind       string          `json:"kind"`
+	Status     string          `json:"status"`
+	Command    []string        `json:"command,omitempty"`
+	WorkingDir string          `json:"working_dir,omitempty"`
+	CreatedAt  string          `json:"created_at,omitempty"`
+	StartedAt  string          `json:"started_at,omitempty"`
+	FinishedAt string          `json:"finished_at,omitempty"`
+	PID        int             `json:"pid,omitempty"`
+	ExitCode   int             `json:"exit_code,omitempty"`
+	StdoutPath string          `json:"stdout_path,omitempty"`
+	StderrPath string          `json:"stderr_path,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Stdout     string          `json:"stdout,omitempty"`
+	Stderr     string          `json:"stderr,omitempty"`
+}
+
+type jsonJobsListOutput struct {
+	Total int             `json:"total"`
+	Jobs  []jsonJobOutput `json:"jobs"`
+}
+
+type jsonJobLogsOutput struct {
+	JobID  string `json:"job_id"`
+	Status string `json:"status"`
+	Stdout string `json:"stdout,omitempty"`
+	Stderr string `json:"stderr,omitempty"`
+}
+
 type jsonDoctorAuthOutput struct {
 	Source            string `json:"source,omitempty"`
 	Username          string `json:"username,omitempty"`

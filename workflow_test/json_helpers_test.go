@@ -1,5 +1,7 @@
 package workflow
 
+import "encoding/json"
+
 type changesetCreateJSON struct {
 	ChangesetID string `json:"changeset_id"`
 	Status      string `json:"status"`
@@ -176,6 +178,36 @@ type repoPushJSON struct {
 type repoUnlinkJSON struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`
+}
+
+type jobJSON struct {
+	JobID      string          `json:"job_id"`
+	Kind       string          `json:"kind"`
+	Status     string          `json:"status"`
+	Command    []string        `json:"command"`
+	WorkingDir string          `json:"working_dir"`
+	CreatedAt  string          `json:"created_at"`
+	StartedAt  string          `json:"started_at"`
+	FinishedAt string          `json:"finished_at"`
+	PID        int             `json:"pid"`
+	ExitCode   int             `json:"exit_code"`
+	StdoutPath string          `json:"stdout_path"`
+	StderrPath string          `json:"stderr_path"`
+	Result     json.RawMessage `json:"result"`
+	Stdout     string          `json:"stdout"`
+	Stderr     string          `json:"stderr"`
+}
+
+type jobsListJSON struct {
+	Total int       `json:"total"`
+	Jobs  []jobJSON `json:"jobs"`
+}
+
+type jobLogsJSON struct {
+	JobID  string `json:"job_id"`
+	Status string `json:"status"`
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
 }
 
 type authKeygenJSON struct {
