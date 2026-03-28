@@ -27,6 +27,13 @@ func printHelp() {
 	fmt.Println("  status      Show working directory status")
 	fmt.Println("  log         Show slice commit history")
 	fmt.Println("  root        Show root slice information")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs auth status --json")
+	fmt.Println("  gs context --json")
+	fmt.Println("  gs slice checkout home.nic --json")
+	fmt.Println("  gs slice status --json")
+	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
+	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
 }
 
@@ -40,6 +47,11 @@ func printAuthHelp() {
 	fmt.Println("  status   Show the current stored auth state")
 	fmt.Println("  logout   Clear stored bearer credentials or legacy auth")
 	fmt.Println("  keys     Manage enrolled agent keys")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs auth keygen --out ~/.config/gitslice/agent.pem")
+	fmt.Println("  gs auth signup --username nic --email nic@example.com --name \"Nic\" --key ~/.config/gitslice/agent.pem --json")
+	fmt.Println("  gs auth login --key ~/.config/gitslice/agent.pem --json")
+	fmt.Println("  gs auth status --json")
 }
 
 func printAuthKeysHelp() {
@@ -49,6 +61,10 @@ func printAuthKeysHelp() {
 	fmt.Println("  list     List enrolled agent keys")
 	fmt.Println("  add      Add an agent public key to the current account")
 	fmt.Println("  revoke   Revoke an enrolled agent key by ID")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs auth keys list --json")
+	fmt.Println("  gs auth keys add --name ci-runner --public-key ~/.config/gitslice/agent.pub --json")
+	fmt.Println("  gs auth keys revoke ak_123 --json")
 }
 
 func printSliceHelp() {
@@ -71,6 +87,13 @@ func printSliceHelp() {
 	fmt.Println("  checkouts List globally tracked local slice checkouts")
 	fmt.Println("  delete    Delete a custom slice")
 	fmt.Println("  rename    Rename a slice (update display name)")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs slice list --json")
+	fmt.Println("  gs slice ensure ui-refresh apps/web --json")
+	fmt.Println("  gs slice checkout nic/ui-refresh --json")
+	fmt.Println("  gs slice status --json")
+	fmt.Println("  gs slice diff --summary")
+	fmt.Println("  gs slice publish --review-only --json")
 }
 
 func printCacheHelp() {
@@ -80,6 +103,10 @@ func printCacheHelp() {
 	fmt.Println("  stats     Show local cache size and tracked checkout summary")
 	fmt.Println("  prune     Remove stale tracked checkout records")
 	fmt.Println("  clear     Remove cached objects and/or tracked checkout records")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs cache stats --json")
+	fmt.Println("  gs cache prune --json")
+	fmt.Println("  gs cache clear --objects --json")
 }
 
 func printChangesetHelp() {
@@ -91,6 +118,11 @@ func printChangesetHelp() {
 	fmt.Println("  merge     Merge a changeset into the slice")
 	fmt.Println("  rebase    Rebase a changeset onto the latest slice head")
 	fmt.Println("  list      List changesets for the current slice")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs changeset create --message \"update settings\" --json")
+	fmt.Println("  gs changeset show --json")
+	fmt.Println("  gs changeset review cs_123 --json")
+	fmt.Println("  gs changeset merge cs_123 --json")
 }
 
 func printConflictHelp() {
@@ -100,12 +132,18 @@ func printConflictHelp() {
 	fmt.Println("  list       List conflicts for the current or specified slice")
 	fmt.Println("  resolve    Resolve a conflict in favor of a slice")
 	fmt.Println("  show       Show details for a conflicted file")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs conflict list --json")
+	fmt.Println("  gs conflict show file_123 --json")
+	fmt.Println("  gs conflict resolve file_123 --prefer nic/ui-refresh --json")
 }
 
 func printImportHelp() {
 	fmt.Println("Usage: gs import <command> [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  git        Import a git repository (local path or remote URL) commit-by-commit into the root slice")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs import git https://github.com/org/repo.git")
 }
 
 func printRepoHelp() {
@@ -119,6 +157,11 @@ func printRepoHelp() {
 	fmt.Println("  pull     Pull the latest remote snapshot into the bound home path")
 	fmt.Println("  push     Push the bound home path back to the tracked remote branch")
 	fmt.Println("  unlink   Remove the binding from an absolute home path")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
+	fmt.Println("  gs repo list --json")
+	fmt.Println("  gs repo pull /nic/vendor/repo --json")
+	fmt.Println("  gs repo push /nic/vendor/repo --json")
 }
 
 func printFileHelp() {
@@ -129,6 +172,11 @@ func printFileHelp() {
 	fmt.Println("  history        Show file change history")
 	fmt.Println("  dir-history    Show directory change history")
 	fmt.Println("  commit-changes Show all file changes in a commit")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs file ls apps/web --slice root_slice --json")
+	fmt.Println("  gs file cat README.md --slice root_slice --json")
+	fmt.Println("  gs file history apps/web/main.go --slice root_slice --json")
+	fmt.Println("  gs file commit-changes <commit-hash> --json")
 }
 
 func printFilesystemHelp() {
@@ -156,4 +204,10 @@ func printFilesystemHelp() {
 	fmt.Println("  sync         Sync a local directory to or from an absolute home path")
 	fmt.Println("  upload       Upload a local directory tree to an absolute home path")
 	fmt.Println("  download     Download an absolute home path to a local directory")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs fs cat /nic/app/config.json --json")
+	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
+	fmt.Println("  cat ops.jsonl | gs fs batch -m \"bulk update\"")
+	fmt.Println("  gs fs search settings --glob /nic/app/** --json")
+	fmt.Println("  gs fs sync --direction push ./site /nic/site --json")
 }
