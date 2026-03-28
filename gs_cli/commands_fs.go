@@ -34,6 +34,8 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		handleFilesystemListDirectory(ctx, cli, authConfig, args[1:])
 	case "mkdir":
 		handleFilesystemMkdir(ctx, cli, authConfig, args[1:])
+	case "ensure-dir":
+		handleFilesystemEnsureDir(ctx, cli, authConfig, args[1:])
 	case "rm":
 		handleFilesystemRemove(ctx, cli, authConfig, args[1:])
 	case "mv":
@@ -69,6 +71,65 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 	default:
 		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown fs command: %s", args[0]), false, "gs fs --help")
 	}
+}
+
+func handleFilesystemEnsureDir(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs ensure-dir")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs ensure-dir </absolute/path> [--json]")
+		return
+	}
+
+	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
+	if err != nil {
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
+	}
+
+	entry, exists, err := statFilesystemEntry(ctx, cli.filesystemClient, workspaceID, dirPath)
+	if err != nil {
+		commandFatalf("FS_ENSURE_DIR_FAILED", true, "", "Failed to inspect path: %v", err)
+	}
+	if exists {
+		if entry.GetType() != filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
+			commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Path exists and is not a directory: %s", dirPath), false, "")
+		}
+		out := jsonFilesystemActionOutput{
+			Action:    "ensure-dir",
+			Status:    "exists",
+			Path:      dirPath,
+			EntryType: filesystemEntryTypeLabel(entry.GetType()),
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Directory already exists: %s\n", dirPath)
+		return
+	}
+
+	resp, err := cli.filesystemClient.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
+		WorkspaceId: workspaceID,
+		Path:        dirPath,
+	})
+	if err != nil {
+		commandFatalf("FS_ENSURE_DIR_FAILED", true, "", "Failed to create directory: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(jsonFilesystemActionOutput{
+			Action:     "ensure-dir",
+			Status:     "created",
+			Path:       resp.GetPath(),
+			CommitHash: resp.GetCommitHash(),
+			EntryType:  "directory",
+		})
+		return
+	}
+	fmt.Printf("Ensured directory: %s\n", resp.GetPath())
+	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
 }
 
 func handleFilesystemCat(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {

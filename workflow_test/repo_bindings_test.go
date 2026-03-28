@@ -302,3 +302,52 @@ func TestDetachedRepoImportJobWorkflow(t *testing.T) {
 		t.Fatalf("unexpected imported README after detached import: %q", output)
 	}
 }
+
+func TestFilesystemEnsureDirAndRepoPullPublishWorkflow(t *testing.T) {
+	username := fmt.Sprintf("repopublish%d", time.Now().UnixNano()%1_000_000_000)
+	env := workflowProcessEnv(t, nil)
+	runCLIJSONForUser := func(workdir string, args ...string) string {
+		t.Helper()
+		args = append(args, "--json")
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
+		if err != nil {
+			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
+		}
+		return output
+	}
+
+	dirPath := fmt.Sprintf("/%s/ensure-dir-%d", username, time.Now().UnixNano())
+	var created filesystemActionJSON
+	if err := json.Unmarshal([]byte(runCLIJSONForUser("", "fs", "ensure-dir", dirPath)), &created); err != nil {
+		t.Fatalf("decode ensure-dir create JSON: %v", err)
+	}
+	if created.Action != "ensure-dir" || created.Status != "created" {
+		t.Fatalf("unexpected ensure-dir create response: %+v", created)
+	}
+	var existing filesystemActionJSON
+	if err := json.Unmarshal([]byte(runCLIJSONForUser("", "fs", "ensure-dir", dirPath)), &existing); err != nil {
+		t.Fatalf("decode ensure-dir existing JSON: %v", err)
+	}
+	if existing.Status != "exists" {
+		t.Fatalf("unexpected ensure-dir existing response: %+v", existing)
+	}
+
+	remoteDir, sourceDir := createLocalGitRemote(t)
+	boundPath := fmt.Sprintf("/%s/repos/publish-%d", username, time.Now().UnixNano())
+	_ = runCLIJSONForUser("", "repo", "import", remoteDir, boundPath)
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte("published from remote\n"), 0o644); err != nil {
+		t.Fatalf("rewrite remote README: %v", err)
+	}
+	runGitOrFail(t, sourceDir, "add", "README.md")
+	runGitOrFail(t, sourceDir, "commit", "-m", "publish pull")
+	runGitOrFail(t, sourceDir, "push", "origin", "main")
+
+	var pullResp repoPullJSON
+	if err := json.Unmarshal([]byte(runCLIJSONForUser("", "repo", "pull", "--publish", boundPath)), &pullResp); err != nil {
+		t.Fatalf("decode repo pull publish JSON: %v", err)
+	}
+	if !pullResp.Published || !pullResp.Updated || pullResp.CommitHash == "" {
+		t.Fatalf("unexpected repo pull --publish response: %+v", pullResp)
+	}
+}

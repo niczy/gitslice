@@ -171,6 +171,7 @@ func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 	args, detachRequested := consumeBoolFlag(args, "detach")
 	fs := newCommandFlagSet("repo pull")
 	force := fs.Bool("force", true, "Overwrite the bound directory with the remote snapshot")
+	publish := fs.Bool("publish", false, "Explicitly apply the remote snapshot to the home slice (default behavior)")
 	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token for private repo pull")
 	detach := fs.Bool("detach", false, "Run the pull as a detached local CLI job")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
@@ -205,10 +206,15 @@ func handleRepoPull(ctx context.Context, cli *CLI, args []string) {
 			RemoteCommit: resp.GetRemoteCommit(),
 			FileCount:    resp.GetFileCount(),
 			Updated:      resp.GetCommitHash() != "",
+			Published:    true,
 		})
 		return
 	}
 	if resp.GetCommitHash() == "" {
+		if *publish {
+			fmt.Printf("Already up to date and published: %s\n", resp.GetRemoteCommit())
+			return
+		}
 		fmt.Printf("Already up to date: %s\n", resp.GetRemoteCommit())
 		return
 	}
