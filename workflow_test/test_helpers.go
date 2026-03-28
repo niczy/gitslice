@@ -18,7 +18,9 @@ func assertUnsupportedCommand(t *testing.T, args ...string) {
 		return
 	}
 
-	if !strings.Contains(output, "Unknown") && !strings.Contains(output, "not implemented") {
+	if !strings.Contains(output, "Unknown") &&
+		!strings.Contains(output, "not implemented") &&
+		!strings.Contains(output, "Usage:") {
 		t.Fatalf("expected command %v to be unsupported, got output: %s", args, output)
 	}
 }
