@@ -226,17 +226,51 @@ func handleFilesystemMkdir(ctx context.Context, cli *CLI, authConfig cliAuth, ar
 func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs rm")
+	dryRun := fs.Bool("dry-run", false, "Preview the delete without applying it")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs fs rm </absolute/path> [--json]")
+		commandUsage("Usage: gs fs rm </absolute/path> [--dry-run] [--json]")
 		return
 	}
 
 	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
 		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
+	}
+	entry, exists, err := statFilesystemEntry(ctx, cli.filesystemClient, workspaceID, filePath)
+	if err != nil {
+		commandFatalf("FS_DELETE_FAILED", true, "", "Failed to inspect path before delete: %v", err)
+	}
+	if !exists {
+		out := jsonFilesystemActionOutput{
+			Action:  "delete",
+			Status:  "no_op",
+			Path:    filePath,
+			Message: "path already absent",
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Path already absent: %s\n", filePath)
+		return
+	}
+	if *dryRun {
+		out := jsonFilesystemActionOutput{
+			Action:    "delete",
+			Status:    "would_delete",
+			DryRun:    true,
+			Path:      filePath,
+			EntryType: filesystemEntryTypeLabel(entry.GetType()),
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Would delete %s (%s)\n", filePath, filesystemEntryTypeLabel(entry.GetType()))
+		return
 	}
 
 	resp, err := cli.filesystemClient.DeleteFile(ctx, &filesystemv1.DeleteFileRequest{
@@ -247,7 +281,12 @@ func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		commandFatalf("FS_DELETE_FAILED", true, "", "Failed to delete path: %v", err)
 	}
 	if jsonEnabled {
-		writeJSONOutput(resp)
+		writeJSONOutput(jsonFilesystemActionOutput{
+			Action:     "delete",
+			Status:     "deleted",
+			Path:       resp.GetPath(),
+			CommitHash: resp.GetCommitHash(),
+		})
 		return
 	}
 
@@ -258,11 +297,12 @@ func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, a
 func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs mv")
+	dryRun := fs.Bool("dry-run", false, "Preview the move without applying it")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs mv </absolute/source> </absolute/destination> [--json]")
+		commandUsage("Usage: gs fs mv </absolute/source> </absolute/destination> [--dry-run] [--json]")
 		return
 	}
 
@@ -277,6 +317,63 @@ func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	sourceWorkspaceID := workspaceID
 	if sourceWorkspaceID != destinationWorkspaceID {
 		commandFatal("INVALID_ARGUMENT", "Source and destination resolved to different home slices.", false, "")
+	}
+	if sourcePath == destinationPath {
+		out := jsonFilesystemActionOutput{
+			Action:          "move",
+			Status:          "no_op",
+			SourcePath:      sourcePath,
+			DestinationPath: destinationPath,
+			Message:         "source and destination are identical",
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Source and destination are identical: %s\n", sourcePath)
+		return
+	}
+	sourceEntry, sourceExists, err := statFilesystemEntry(ctx, cli.filesystemClient, sourceWorkspaceID, sourcePath)
+	if err != nil {
+		commandFatalf("FS_MOVE_FAILED", true, "", "Failed to inspect source path: %v", err)
+	}
+	_, destinationExists, err := statFilesystemEntry(ctx, cli.filesystemClient, sourceWorkspaceID, destinationPath)
+	if err != nil {
+		commandFatalf("FS_MOVE_FAILED", true, "", "Failed to inspect destination path: %v", err)
+	}
+	if !sourceExists {
+		if destinationExists {
+			out := jsonFilesystemActionOutput{
+				Action:          "move",
+				Status:          "no_op",
+				SourcePath:      sourcePath,
+				DestinationPath: destinationPath,
+				Message:         "source already absent and destination exists",
+			}
+			if jsonEnabled {
+				writeJSONOutput(out)
+				return
+			}
+			fmt.Printf("Source already absent and destination exists: %s -> %s\n", sourcePath, destinationPath)
+			return
+		}
+		commandFatalf("FS_MOVE_FAILED", false, "", "Source path not found: %s", sourcePath)
+	}
+	if *dryRun {
+		out := jsonFilesystemActionOutput{
+			Action:          "move",
+			Status:          "would_move",
+			DryRun:          true,
+			SourcePath:      sourcePath,
+			DestinationPath: destinationPath,
+			EntryType:       filesystemEntryTypeLabel(sourceEntry.GetType()),
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Would move %s -> %s (%s)\n", sourcePath, destinationPath, filesystemEntryTypeLabel(sourceEntry.GetType()))
+		return
 	}
 
 	resp, err := cli.filesystemClient.MoveFile(ctx, &filesystemv1.MoveFileRequest{
@@ -288,7 +385,13 @@ func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		commandFatalf("FS_MOVE_FAILED", true, "", "Failed to move path: %v", err)
 	}
 	if jsonEnabled {
-		writeJSONOutput(resp)
+		writeJSONOutput(jsonFilesystemActionOutput{
+			Action:          "move",
+			Status:          "moved",
+			SourcePath:      resp.GetSourcePath(),
+			DestinationPath: resp.GetDestinationPath(),
+			CommitHash:      resp.GetCommitHash(),
+		})
 		return
 	}
 
@@ -299,11 +402,12 @@ func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs cp")
+	dryRun := fs.Bool("dry-run", false, "Preview the copy without applying it")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs cp </absolute/source> </absolute/destination> [--json]")
+		commandUsage("Usage: gs fs cp </absolute/source> </absolute/destination> [--dry-run] [--json]")
 		return
 	}
 
@@ -319,6 +423,63 @@ func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	if sourceWorkspaceID != destinationWorkspaceID {
 		commandFatal("INVALID_ARGUMENT", "Source and destination resolved to different home slices.", false, "")
 	}
+	if sourcePath == destinationPath {
+		out := jsonFilesystemActionOutput{
+			Action:          "copy",
+			Status:          "no_op",
+			SourcePath:      sourcePath,
+			DestinationPath: destinationPath,
+			Message:         "source and destination are identical",
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Source and destination are identical: %s\n", sourcePath)
+		return
+	}
+	sourceEntry, sourceExists, err := statFilesystemEntry(ctx, cli.filesystemClient, sourceWorkspaceID, sourcePath)
+	if err != nil {
+		commandFatalf("FS_COPY_FAILED", true, "", "Failed to inspect source path: %v", err)
+	}
+	if !sourceExists {
+		commandFatalf("FS_COPY_FAILED", false, "", "Source path not found: %s", sourcePath)
+	}
+	destinationEntry, destinationExists, err := statFilesystemEntry(ctx, cli.filesystemClient, sourceWorkspaceID, destinationPath)
+	if err != nil {
+		commandFatalf("FS_COPY_FAILED", true, "", "Failed to inspect destination path: %v", err)
+	}
+	if destinationExists && filesystemEntriesEquivalent(sourceEntry, destinationEntry) {
+		out := jsonFilesystemActionOutput{
+			Action:          "copy",
+			Status:          "no_op",
+			SourcePath:      sourcePath,
+			DestinationPath: destinationPath,
+			Message:         "destination already matches source",
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Destination already matches source: %s -> %s\n", sourcePath, destinationPath)
+		return
+	}
+	if *dryRun {
+		out := jsonFilesystemActionOutput{
+			Action:          "copy",
+			Status:          "would_copy",
+			DryRun:          true,
+			SourcePath:      sourcePath,
+			DestinationPath: destinationPath,
+			EntryType:       filesystemEntryTypeLabel(sourceEntry.GetType()),
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Would copy %s -> %s (%s)\n", sourcePath, destinationPath, filesystemEntryTypeLabel(sourceEntry.GetType()))
+		return
+	}
 
 	resp, err := cli.filesystemClient.CopyFile(ctx, &filesystemv1.CopyFileRequest{
 		WorkspaceId:     sourceWorkspaceID,
@@ -329,7 +490,14 @@ func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		commandFatalf("FS_COPY_FAILED", true, "", "Failed to copy path: %v", err)
 	}
 	if jsonEnabled {
-		writeJSONOutput(resp)
+		writeJSONOutput(jsonFilesystemActionOutput{
+			Action:          "copy",
+			Status:          "copied",
+			SourcePath:      resp.GetSourcePath(),
+			DestinationPath: resp.GetDestinationPath(),
+			CommitHash:      resp.GetCommitHash(),
+			EntryType:       filesystemEntryTypeLabel(sourceEntry.GetType()),
+		})
 		return
 	}
 
@@ -568,30 +736,86 @@ func handleFilesystemLog(ctx context.Context, cli *CLI, authConfig cliAuth, args
 func handleFilesystemRestore(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs restore")
+	dryRun := fs.Bool("dry-run", false, "Preview the restore without applying it")
 	message := fs.String("m", "", "Optional restore message")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs fs restore <snapshot-id> [-m <message>] [--json]")
+		commandUsage("Usage: gs fs restore <snapshot-id> [--dry-run] [-m <message>] [--json]")
 		return
 	}
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
 		commandFatalf("FS_RESTORE_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
+	targetSnapshotID := strings.TrimSpace(fs.Arg(0))
+	currentSnapshotID, err := currentFilesystemSnapshotID(ctx, cli.filesystemClient, workspaceID)
+	if err != nil {
+		commandFatalf("FS_RESTORE_FAILED", true, "", "Failed to resolve current snapshot: %v", err)
+	}
+	diffResp, err := cli.filesystemClient.Diff(ctx, &filesystemv1.DiffRequest{
+		WorkspaceId:    workspaceID,
+		FromSnapshotId: targetSnapshotID,
+		ToSnapshotId:   currentSnapshotID,
+		IncludePatches: false,
+	})
+	if err != nil {
+		commandFatalf("FS_RESTORE_FAILED", true, "", "Failed to preview restore diff: %v", err)
+	}
+	if filesystemDiffSummaryIsZero(diffResp.GetSummary()) {
+		out := jsonFilesystemActionOutput{
+			Action:            "restore",
+			Status:            "no_op",
+			SnapshotID:        targetSnapshotID,
+			CurrentSnapshotID: currentSnapshotID,
+			Summary:           buildFilesystemDiffSummaryOutput(diffResp.GetSummary()),
+			Message:           "workspace already matches target snapshot",
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Workspace already matches snapshot %s\n", targetSnapshotID)
+		return
+	}
+	if *dryRun {
+		out := jsonFilesystemActionOutput{
+			Action:            "restore",
+			Status:            "would_restore",
+			DryRun:            true,
+			SnapshotID:        targetSnapshotID,
+			CurrentSnapshotID: currentSnapshotID,
+			Summary:           buildFilesystemDiffSummaryOutput(diffResp.GetSummary()),
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Would restore workspace from %s to %s\n", blankOrCurrent(currentSnapshotID), targetSnapshotID)
+		if out.Summary != nil {
+			fmt.Printf("Files: +%d ~%d -%d\n", out.Summary.FilesAdded, out.Summary.FilesModified, out.Summary.FilesDeleted)
+			fmt.Printf("Lines: +%d -%d\n", out.Summary.LinesAdded, out.Summary.LinesRemoved)
+		}
+		return
+	}
 
 	resp, err := cli.filesystemClient.RestoreSnapshot(ctx, &filesystemv1.RestoreSnapshotRequest{
 		WorkspaceId: workspaceID,
-		SnapshotId:  strings.TrimSpace(fs.Arg(0)),
+		SnapshotId:  targetSnapshotID,
 		Message:     strings.TrimSpace(*message),
 	})
 	if err != nil {
 		commandFatalf("FS_RESTORE_FAILED", true, "", "Failed to restore snapshot: %v", err)
 	}
 	if jsonEnabled {
-		writeJSONOutput(resp)
+		writeJSONOutput(jsonFilesystemActionOutput{
+			Action:            "restore",
+			Status:            "restored",
+			SnapshotID:        resp.GetRestoredSnapshotId(),
+			CurrentSnapshotID: currentSnapshotID,
+		})
 		return
 	}
 
@@ -734,6 +958,79 @@ func resolveFilesystemAbsolutePath(ctx context.Context, cli *CLI, authConfig cli
 		return "", "", err
 	}
 	return workspaceID, remotePath, nil
+}
+
+func statFilesystemEntry(
+	ctx context.Context,
+	client filesystemv1.FilesystemServiceClient,
+	workspaceID, remotePath string,
+) (*filesystemv1.WorkspaceEntry, bool, error) {
+	resp, err := client.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: workspaceID,
+		Path:        remotePath,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return resp.GetEntry(), resp.GetExists(), nil
+}
+
+func filesystemEntriesEquivalent(a, b *filesystemv1.WorkspaceEntry) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.GetType() != b.GetType() {
+		return false
+	}
+	if a.GetType() == filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY {
+		return false
+	}
+	if strings.TrimSpace(a.GetHash()) != "" && strings.TrimSpace(b.GetHash()) != "" {
+		return a.GetHash() == b.GetHash()
+	}
+	return a.GetSize() == b.GetSize()
+}
+
+func currentFilesystemSnapshotID(
+	ctx context.Context,
+	client filesystemv1.FilesystemServiceClient,
+	workspaceID string,
+) (string, error) {
+	resp, err := client.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
+		WorkspaceId: workspaceID,
+		Limit:       1,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(resp.GetSnapshots()) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(resp.GetSnapshots()[0].GetSnapshotId()), nil
+}
+
+func buildFilesystemDiffSummaryOutput(summary *filesystemv1.DiffSummary) *jsonChangesetDiffSummary {
+	if summary == nil {
+		return nil
+	}
+	return &jsonChangesetDiffSummary{
+		FilesAdded:    summary.GetFilesAdded(),
+		FilesModified: summary.GetFilesModified(),
+		FilesDeleted:  summary.GetFilesDeleted(),
+		LinesAdded:    int64(summary.GetLinesAdded()),
+		LinesRemoved:  int64(summary.GetLinesDeleted()),
+	}
+}
+
+func filesystemDiffSummaryIsZero(summary *filesystemv1.DiffSummary) bool {
+	if summary == nil {
+		return true
+	}
+	return summary.GetFilesAdded() == 0 &&
+		summary.GetFilesModified() == 0 &&
+		summary.GetFilesDeleted() == 0 &&
+		summary.GetLinesAdded() == 0 &&
+		summary.GetLinesDeleted() == 0
 }
 
 func parseAbsoluteFilesystemPathArg(value string, required bool) (string, error) {

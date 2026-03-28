@@ -34,6 +34,7 @@ func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs sync")
 	direction := fs.String("direction", "", "Sync direction: push or pull")
+	dryRun := fs.Bool("dry-run", false, "Preview the sync without applying it")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
@@ -44,6 +45,9 @@ func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	}
 
 	extraArgs := []string{fs.Arg(0), fs.Arg(1)}
+	if *dryRun {
+		extraArgs = append(extraArgs, "--dry-run")
+	}
 	if jsonEnabled {
 		extraArgs = append(extraArgs, "--json")
 	}
@@ -60,12 +64,13 @@ func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs upload")
+	dryRun := fs.Bool("dry-run", false, "Preview the upload without applying it")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--json]")
+		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--dry-run] [--json]")
 		return
 	}
 
@@ -90,6 +95,23 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 	inventory, err := buildFilesystemUploadInventory(localRoot, remoteBase)
 	if err != nil {
 		commandFatalf("FS_UPLOAD_FAILED", false, "", "Failed to plan upload directory tree: %v", err)
+	}
+	if *dryRun {
+		out := jsonFilesystemTransferOutput{
+			Action:         "upload",
+			Status:         "would_upload",
+			DryRun:         true,
+			LocalPath:      localRoot,
+			RemotePath:     filesystemDisplayPath(remoteBase),
+			FileCount:      len(inventory.files),
+			DirectoryCount: len(inventory.directories),
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Would upload %d files and %d directories to %s\n", len(inventory.files), len(inventory.directories), filesystemDisplayPath(remoteBase))
+		return
 	}
 
 	planResp, err := cli.filesystemClient.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
@@ -125,6 +147,7 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 	if jsonEnabled {
 		writeJSONOutput(jsonFilesystemTransferOutput{
 			Action:         "upload",
+			Status:         "uploaded",
 			LocalPath:      localRoot,
 			RemotePath:     filesystemDisplayPath(remoteBase),
 			FileCount:      len(inventory.files),
@@ -144,12 +167,13 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("fs download")
+	dryRun := fs.Bool("dry-run", false, "Preview the download without applying it")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs download </absolute/path> <local-dir> [--json]")
+		commandUsage("Usage: gs fs download </absolute/path> <local-dir> [--dry-run] [--json]")
 		return
 	}
 
@@ -160,6 +184,27 @@ func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth,
 	remoteBase, err := parseAbsoluteFilesystemPathArg(fs.Arg(0), true)
 	if err != nil {
 		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute path: %v", err)
+	}
+	if *dryRun {
+		filesPlanned, dirsPlanned, err := describeFilesystemRemoteTree(ctx, cli.filesystemClient, workspaceID, remoteBase)
+		if err != nil {
+			commandFatalf("FS_DOWNLOAD_FAILED", true, "", "Failed to inspect remote tree: %v", err)
+		}
+		out := jsonFilesystemTransferOutput{
+			Action:         "download",
+			Status:         "would_download",
+			DryRun:         true,
+			LocalPath:      filepath.Clean(strings.TrimSpace(fs.Arg(1))),
+			RemotePath:     filesystemDisplayPath(remoteBase),
+			FileCount:      filesPlanned,
+			DirectoryCount: dirsPlanned,
+		}
+		if jsonEnabled {
+			writeJSONOutput(out)
+			return
+		}
+		fmt.Printf("Would download %d files and %d directories from %s to %s\n", filesPlanned, dirsPlanned, filesystemDisplayPath(remoteBase), out.LocalPath)
+		return
 	}
 
 	localRoot := filepath.Clean(strings.TrimSpace(fs.Arg(1)))
@@ -174,6 +219,7 @@ func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth,
 	if jsonEnabled {
 		writeJSONOutput(jsonFilesystemTransferOutput{
 			Action:         "download",
+			Status:         "downloaded",
 			LocalPath:      localRoot,
 			RemotePath:     filesystemDisplayPath(remoteBase),
 			FileCount:      filesDownloaded,
@@ -501,6 +547,55 @@ func ensureFilesystemRemoteDirectory(
 		Path:        remotePath,
 	})
 	return err
+}
+
+func describeFilesystemRemoteTree(
+	ctx context.Context,
+	client filesystemv1.FilesystemServiceClient,
+	workspaceID, remoteBase string,
+) (files, dirs int, err error) {
+	statResp, err := client.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: workspaceID,
+		Path:        remoteBase,
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	if !statResp.GetExists() {
+		return 0, 0, fmt.Errorf("remote path not found: %s", filesystemDisplayPath(remoteBase))
+	}
+	if statResp.GetEntry().GetType() == filesystemv1.EntryType_ENTRY_TYPE_FILE {
+		return 1, 0, nil
+	}
+	return describeFilesystemRemoteDirectory(ctx, client, workspaceID, remoteBase)
+}
+
+func describeFilesystemRemoteDirectory(
+	ctx context.Context,
+	client filesystemv1.FilesystemServiceClient,
+	workspaceID, remotePath string,
+) (files, dirs int, err error) {
+	resp, err := client.ListDirectory(ctx, &filesystemv1.ListDirectoryRequest{
+		WorkspaceId: workspaceID,
+		Path:        remotePath,
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, entry := range resp.GetEntries() {
+		switch entry.GetType() {
+		case filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY:
+			childFiles, childDirs, err := describeFilesystemRemoteDirectory(ctx, client, workspaceID, entry.GetPath())
+			if err != nil {
+				return 0, 0, err
+			}
+			dirs += 1 + childDirs
+			files += childFiles
+		default:
+			files++
+		}
+	}
+	return files, dirs, nil
 }
 
 func streamWriteFilesystemFile(

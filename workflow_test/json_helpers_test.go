@@ -348,9 +348,35 @@ type conflictShowJSON struct {
 
 type cliErrorJSON struct {
 	ErrorCode       string `json:"error_code"`
+	ExitCode        int    `json:"exit_code"`
 	Message         string `json:"message"`
 	Retryable       bool   `json:"retryable"`
 	SuggestedAction string `json:"suggested_action"`
+}
+
+type filesystemActionJSON struct {
+	Action            string `json:"action"`
+	Status            string `json:"status"`
+	DryRun            bool   `json:"dry_run"`
+	Path              string `json:"path"`
+	SourcePath        string `json:"source_path"`
+	DestinationPath   string `json:"destination_path"`
+	LocalPath         string `json:"local_path"`
+	RemotePath        string `json:"remote_path"`
+	EntryType         string `json:"entry_type"`
+	CommitHash        string `json:"commit_hash"`
+	SnapshotID        string `json:"snapshot_id"`
+	CurrentSnapshotID string `json:"current_snapshot_id"`
+	FileCount         int    `json:"file_count"`
+	DirectoryCount    int    `json:"directory_count"`
+	Summary           *struct {
+		FilesAdded    int32 `json:"files_added"`
+		FilesModified int32 `json:"files_modified"`
+		FilesDeleted  int32 `json:"files_deleted"`
+		LinesAdded    int64 `json:"lines_added"`
+		LinesRemoved  int64 `json:"lines_removed"`
+	} `json:"summary"`
+	Message string `json:"message"`
 }
 
 type contextJSON struct {
