@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
@@ -25,6 +26,7 @@ var (
 	fileServerAddr    = flag.String("file-addr", "localhost:50051", "File service address")
 	fsServerAddr      = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
 	useTLS            = flag.Bool("tls", false, "Use TLS for gRPC connections")
+	nonInteractive    = flag.Bool("non-interactive", false, "Fail instead of opening interactive flows (also GS_NON_INTERACTIVE=1)")
 	apiKeyFlag        = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY and ~/.gitslice/credentials.json)")
 	userFlag          = flag.String("user", "", "Legacy username auth for dev use (overrides GS_USERNAME and ~/.gitslice/user after bearer auth sources)")
 )
@@ -51,7 +53,7 @@ type CLI struct {
 
 func main() {
 	flag.Parse()
-	args := flag.Args()
+	args := configureCLIBehavior(flag.Args())
 	if len(args) < 1 {
 		printHelp()
 		return
@@ -156,6 +158,12 @@ func main() {
 	default:
 		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown command: %s", args[0]), false, "gs --help")
 	}
+}
+
+func configureCLIBehavior(args []string) []string {
+	remaining, requested := consumeBoolFlag(args, "non-interactive")
+	cliNonInteractive = *nonInteractive || requested || envFlagEnabled(os.Getenv("GS_NON_INTERACTIVE"))
+	return remaining
 }
 
 // NewCLI creates a new CLI instance with connections to the gitslice services.

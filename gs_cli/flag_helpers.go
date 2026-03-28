@@ -19,3 +19,12 @@ func consumeBoolFlag(args []string, name string) ([]string, bool) {
 	}
 	return remaining, found
 }
+
+func envFlagEnabled(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}

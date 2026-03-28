@@ -14,6 +14,7 @@ import (
 )
 
 func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []string) {
+	args, _ = consumeBoolFlag(args, "json")
 	if len(args) == 1 && strings.TrimSpace(args[0]) == "status" {
 		showCurrentAuth(currentAuth)
 		return
@@ -27,8 +28,8 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 			showCurrentAuth(authConfig)
 			return
 		}
-		if cliStructuredJSON {
-			commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Run gs auth login --key <private-key-path> for agent-friendly auth or omit --json.", false, "gs auth login --key <private-key-path>")
+		if cliStructuredJSON || cliNonInteractive {
+			commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Run gs auth login --key <private-key-path> for agent-friendly auth.", false, "gs auth login --key <private-key-path>")
 		}
 		startDeviceLogin(ctx, cli)
 		return
@@ -62,6 +63,7 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 }
 
 func handleLogout(ctx context.Context, cli *CLI, currentAuth cliAuth, args []string) {
+	args, _ = consumeBoolFlag(args, "json")
 	if len(args) != 0 {
 		commandFatal("INVALID_ARGUMENT", "Usage: gs logout", false, "")
 	}
@@ -147,6 +149,9 @@ func showCurrentAuth(currentAuth cliAuth) {
 }
 
 func startDeviceLogin(ctx context.Context, cli *CLI) {
+	if cliNonInteractive {
+		commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Run gs auth login --key <private-key-path> for agent-friendly auth.", false, "gs auth login --key <private-key-path>")
+	}
 	startResp, err := cli.accountClient.StartDeviceAuthorization(withCLIDeviceInfo(ctx), &accountv1.StartDeviceAuthorizationRequest{})
 	if err != nil {
 		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Device login failed: %v", err)
@@ -212,7 +217,7 @@ func withCLIDeviceInfo(ctx context.Context) context.Context {
 }
 
 func tryOpenBrowser(target string) bool {
-	if strings.TrimSpace(target) == "" || strings.TrimSpace(os.Getenv("GS_NO_BROWSER")) != "" {
+	if cliNonInteractive || strings.TrimSpace(target) == "" || strings.TrimSpace(os.Getenv("GS_NO_BROWSER")) != "" {
 		return false
 	}
 	if customCommand := strings.TrimSpace(os.Getenv("GS_BROWSER_COMMAND")); customCommand != "" {

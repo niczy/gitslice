@@ -3,10 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path"
 	"strings"
@@ -16,34 +14,39 @@ import (
 )
 
 func handleFilesystemShell(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs shell", flag.ExitOnError)
+	args, _ = consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs shell")
 	parseFlagSetInterspersed(fs, args)
 
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs fs shell [</absolute/path>]")
+		commandUsage("Usage: gs fs shell [</absolute/path>]")
 		return
 	}
 
 	workspaceID, username, err := resolveFilesystemHomeIdentity(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_SHELL_FAILED", true, "", "Failed to resolve home identity: %v", err)
 	}
 	startPath := homeslice.VisibleRootPath(username)
 	if fs.NArg() == 1 {
 		startPath, err = parseAbsoluteFilesystemPathArg(fs.Arg(0), true)
 		if err != nil {
-			log.Fatal(err)
+			commandFatalf("INVALID_ARGUMENT", false, "", "Invalid shell path: %v", err)
 		}
+	}
+	interactive := stdinIsTerminal(os.Stdin)
+	if cliNonInteractive && interactive {
+		commandFatal("INTERACTIVE_REQUIRED", "gs fs shell opens an interactive prompt. Use gs fs subcommands directly in non-interactive flows.", false, "gs fs ls </absolute/path> --json")
 	}
 
 	shell := &filesystemShell{
 		workspaceID: workspaceID,
 		client:      cli.filesystemClient,
 		cwd:         startPath,
-		interactive: stdinIsTerminal(os.Stdin),
+		interactive: interactive,
 	}
 	if err := shell.run(ctx, os.Stdin, os.Stdout); err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_SHELL_FAILED", true, "", "Filesystem shell failed: %v", err)
 	}
 }
 
