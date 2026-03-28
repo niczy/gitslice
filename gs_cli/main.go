@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"log"
 	"time"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
@@ -155,8 +154,7 @@ func main() {
 	case "context":
 		handleContext(ctx, cli, authConfig, args[1:])
 	default:
-		log.Printf("Unknown command: %s", args[0])
-		printHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown command: %s", args[0]), false, "gs --help")
 	}
 }
 

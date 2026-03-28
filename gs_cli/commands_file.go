@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log"
 	"os"
 	"sort"
 	"strings"
@@ -31,20 +29,22 @@ func handleFileCommand(ctx context.Context, cli *CLI, args []string) {
 	case "commit-changes":
 		handleCommitChanges(ctx, cli, args[1:])
 	default:
-		log.Printf("Unknown file command: %s", args[0])
-		printFileHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown file command: %s", args[0]), false, "gs file --help")
 	}
 }
 
 func handleFileList(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("file ls", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("file ls")
 	sliceFlag := fs.String("slice", "", "Slice ID")
 	commitFlag := fs.String("commit", "", "Commit hash")
 	limit := fs.Int("limit", 200, "Maximum entries")
-	fs.Parse(args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs file ls [path] [--slice <slice-id>] [--commit <hash>] [--limit <n>]")
+		commandUsage("Usage: gs file ls [path] [--slice <slice-id>] [--commit <hash>] [--limit <n>] [--json]")
 		return
 	}
 	path := ""
@@ -54,7 +54,7 @@ func handleFileList(ctx context.Context, cli *CLI, args []string) {
 
 	sliceID, err := resolveFileSliceID(*sliceFlag)
 	if err != nil {
-		log.Fatalf("Failed to resolve slice ID: %v", err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve slice ID: %v", err)
 	}
 
 	req := &filev1.ListEntriesRequest{
@@ -65,7 +65,11 @@ func handleFileList(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.fileClient.ListEntries(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to list entries: %v", err)
+		commandFatalf("FILE_LIST_FAILED", true, "", "Failed to list entries: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Slice: %s\n", resp.GetSliceId())
@@ -91,25 +95,27 @@ func handleFileList(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleFileCat(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("file cat", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("file cat")
 	sliceFlag := fs.String("slice", "", "Slice ID")
 	commitFlag := fs.String("commit", "", "Commit hash")
 	raw := fs.Bool("raw", false, "Write file bytes only")
-	fs.Parse(args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs file cat <path> [--slice <slice-id>] [--commit <hash>] [--raw]")
+		commandUsage("Usage: gs file cat <path> [--slice <slice-id>] [--commit <hash>] [--raw] [--json]")
 		return
 	}
 	path := strings.TrimSpace(fs.Arg(0))
 	if path == "" {
-		log.Println("File path is required")
-		return
+		commandFatal("INVALID_ARGUMENT", "File path is required.", false, "")
 	}
 
 	sliceID, err := resolveFileSliceID(*sliceFlag)
 	if err != nil {
-		log.Fatalf("Failed to resolve slice ID: %v", err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve slice ID: %v", err)
 	}
 
 	req := &filev1.GetFileRequest{Path: path}
@@ -117,17 +123,21 @@ func handleFileCat(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.fileClient.GetFile(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to fetch file: %v", err)
+		commandFatalf("FILE_CAT_FAILED", true, "", "Failed to fetch file: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	file := resp.GetFile()
 	if file == nil {
-		log.Fatal("File response was empty")
+		commandFatal("FILE_CAT_FAILED", "File response was empty.", false, "")
 	}
 
 	if *raw {
 		if _, err := os.Stdout.Write(file.GetContent()); err != nil {
-			log.Fatalf("Failed writing file bytes: %v", err)
+			commandFatalf("FILE_CAT_FAILED", false, "", "Failed writing file bytes: %v", err)
 		}
 		return
 	}
@@ -153,25 +163,27 @@ func handleFileCat(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleFileHistory(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("file history", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("file history")
 	sliceFlag := fs.String("slice", "", "Slice ID")
 	limit := fs.Int("limit", 50, "Maximum results")
 	fromCommit := fs.String("from-commit", "", "Pagination cursor")
-	fs.Parse(args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs file history <path> [--slice <slice-id>] [--limit <n>] [--from-commit <hash>]")
+		commandUsage("Usage: gs file history <path> [--slice <slice-id>] [--limit <n>] [--from-commit <hash>] [--json]")
 		return
 	}
 	path := strings.TrimSpace(fs.Arg(0))
 	if path == "" {
-		log.Println("File path is required")
-		return
+		commandFatal("INVALID_ARGUMENT", "File path is required.", false, "")
 	}
 
 	sliceID, err := resolveFileSliceID(*sliceFlag)
 	if err != nil {
-		log.Fatalf("Failed to resolve slice ID: %v", err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve slice ID: %v", err)
 	}
 
 	req := &filev1.GetFileHistoryRequest{
@@ -182,7 +194,11 @@ func handleFileHistory(ctx context.Context, cli *CLI, args []string) {
 	}
 	resp, err := cli.fileClient.GetFileHistory(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to fetch file history: %v", err)
+		commandFatalf("FILE_HISTORY_FAILED", true, "", "Failed to fetch file history: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("File history for %s (%d change(s))\n", path, len(resp.GetChanges()))
@@ -195,15 +211,18 @@ func handleFileHistory(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleDirectoryHistory(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("file dir-history", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("file dir-history")
 	sliceFlag := fs.String("slice", "", "Slice ID")
 	limit := fs.Int("limit", 100, "Maximum results")
 	fromCommit := fs.String("from-commit", "", "Pagination cursor")
 	changeTypes := fs.String("type", "", "Comma-separated filter: add,modify,delete,rename")
-	fs.Parse(args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs file dir-history [path] [--slice <slice-id>] [--limit <n>] [--from-commit <hash>] [--type add,modify,...]")
+		commandUsage("Usage: gs file dir-history [path] [--slice <slice-id>] [--limit <n>] [--from-commit <hash>] [--type add,modify,...] [--json]")
 		return
 	}
 	path := ""
@@ -213,12 +232,12 @@ func handleDirectoryHistory(ctx context.Context, cli *CLI, args []string) {
 
 	sliceID, err := resolveFileSliceID(*sliceFlag)
 	if err != nil {
-		log.Fatalf("Failed to resolve slice ID: %v", err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve slice ID: %v", err)
 	}
 
 	types, err := parseChangeTypesCSV(*changeTypes)
 	if err != nil {
-		log.Fatalf("Invalid --type value: %v", err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid --type value: %v", err)
 	}
 
 	req := &filev1.GetDirectoryHistoryRequest{
@@ -230,7 +249,11 @@ func handleDirectoryHistory(ctx context.Context, cli *CLI, args []string) {
 	}
 	resp, err := cli.fileClient.GetDirectoryHistory(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to fetch directory history: %v", err)
+		commandFatalf("DIRECTORY_HISTORY_FAILED", true, "", "Failed to fetch directory history: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	summary := resp.GetSummary()
@@ -261,18 +284,20 @@ func handleDirectoryHistory(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleCommitChanges(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("file commit-changes", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("file commit-changes")
 	patches := fs.Bool("patches", false, "Include unified patches")
-	fs.Parse(args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs file commit-changes <commit-hash> [--patches]")
+		commandUsage("Usage: gs file commit-changes <commit-hash> [--patches] [--json]")
 		return
 	}
 	commitHash := strings.TrimSpace(fs.Arg(0))
 	if commitHash == "" {
-		log.Println("Commit hash is required")
-		return
+		commandFatal("INVALID_ARGUMENT", "Commit hash is required.", false, "")
 	}
 
 	req := &filev1.GetCommitChangesRequest{
@@ -281,7 +306,11 @@ func handleCommitChanges(ctx context.Context, cli *CLI, args []string) {
 	}
 	resp, err := cli.fileClient.GetCommitChanges(ctx, req)
 	if err != nil {
-		log.Fatalf("Failed to fetch commit changes: %v", err)
+		commandFatalf("COMMIT_CHANGES_FAILED", true, "", "Failed to fetch commit changes: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
