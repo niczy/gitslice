@@ -213,6 +213,7 @@ type repoPullJSON struct {
 	RemoteCommit string          `json:"remote_commit"`
 	FileCount    int32           `json:"file_count"`
 	Updated      bool            `json:"updated"`
+	Published    bool            `json:"published"`
 }
 
 type repoPushJSON struct {

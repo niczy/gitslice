@@ -85,9 +85,13 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
 	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging")
 	noMerge := fs.Bool("no-merge", false, "Alias for --review-only")
+	explicitMerge := fs.Bool("merge", false, "Merge the tracked changeset after review (default behavior)")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+	if (*reviewOnly || *noMerge) && *explicitMerge {
+		commandFatal("INVALID_ARGUMENT", "Use either --merge or --review-only/--no-merge, not both.", false, "")
+	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
 	if err != nil {
