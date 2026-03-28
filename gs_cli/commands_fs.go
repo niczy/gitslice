@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -68,20 +67,25 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 	case "download":
 		handleFilesystemDownload(ctx, cli, authConfig, args[1:])
 	default:
-		log.Printf("Unknown fs command: %s", args[0])
-		printFilesystemHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown fs command: %s", args[0]), false, "gs fs --help")
 	}
 }
 
 func handleFilesystemCat(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs cat </absolute/path>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs cat")
+	raw := fs.Bool("raw", false, "Write file bytes only")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs cat </absolute/path> [--raw] [--json]")
 		return
 	}
 
-	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.ReadFile(ctx, &filesystemv1.ReadFileRequest{
@@ -89,32 +93,45 @@ func handleFilesystemCat(ctx context.Context, cli *CLI, authConfig cliAuth, args
 		Path:        filePath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to read file: %v", err)
+		commandFatalf("FS_READ_FAILED", true, "", "Failed to read file: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	if _, err := os.Stdout.Write(resp.GetContent()); err != nil {
-		log.Fatalf("Failed to write file content: %v", err)
+		commandFatalf("FS_READ_FAILED", false, "", "Failed to write file content: %v", err)
+	}
+	if !*raw && (len(resp.GetContent()) == 0 || resp.GetContent()[len(resp.GetContent())-1] != '\n') {
+		fmt.Println()
 	}
 }
 
 func handleFilesystemWrite(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs write", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs write")
 	fileFlag := fs.String("f", "", "Read file content from a local path instead of stdin")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs write </absolute/path> [-f <local-file>] < input")
+		commandUsage("Usage: gs fs write </absolute/path> [-f <local-file>] [--json] < input")
 		return
 	}
 
 	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
+	}
+	if strings.TrimSpace(*fileFlag) == "" && stdinIsTerminal(os.Stdin) {
+		commandFatal("INPUT_REQUIRED", "File content must be provided via -f or stdin.", false, "gs fs write </absolute/path> -f <local-file>")
 	}
 
 	content, err := readFilesystemWriteInput(strings.TrimSpace(*fileFlag))
 	if err != nil {
-		log.Fatalf("Failed to read input content: %v", err)
+		commandFatalf("FS_WRITE_FAILED", false, "", "Failed to read input content: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.WriteFile(ctx, &filesystemv1.WriteFileRequest{
@@ -123,7 +140,11 @@ func handleFilesystemWrite(ctx context.Context, cli *CLI, authConfig cliAuth, ar
 		Content:     content,
 	})
 	if err != nil {
-		log.Fatalf("Failed to write file: %v", err)
+		commandFatalf("FS_WRITE_FAILED", true, "", "Failed to write file: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Wrote %s (%d bytes)\n", resp.GetPath(), resp.GetSize())
@@ -131,14 +152,19 @@ func handleFilesystemWrite(ctx context.Context, cli *CLI, authConfig cliAuth, ar
 }
 
 func handleFilesystemListDirectory(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs ls </absolute/path>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs ls")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs ls </absolute/path> [--json]")
 		return
 	}
 
-	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.ListDirectory(ctx, &filesystemv1.ListDirectoryRequest{
@@ -146,7 +172,11 @@ func handleFilesystemListDirectory(ctx context.Context, cli *CLI, authConfig cli
 		Path:        dirPath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to list directory: %v", err)
+		commandFatalf("FS_LIST_FAILED", true, "", "Failed to list directory: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Path: %s\n", filesystemDisplayPath(resp.GetPath()))
@@ -162,14 +192,19 @@ func handleFilesystemListDirectory(ctx context.Context, cli *CLI, authConfig cli
 }
 
 func handleFilesystemMkdir(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs mkdir </absolute/path>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs mkdir")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs mkdir </absolute/path> [--json]")
 		return
 	}
 
-	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, dirPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
@@ -177,7 +212,11 @@ func handleFilesystemMkdir(ctx context.Context, cli *CLI, authConfig cliAuth, ar
 		Path:        dirPath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to create directory: %v", err)
+		commandFatalf("FS_MKDIR_FAILED", true, "", "Failed to create directory: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Created directory %s\n", resp.GetPath())
@@ -185,14 +224,19 @@ func handleFilesystemMkdir(ctx context.Context, cli *CLI, authConfig cliAuth, ar
 }
 
 func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs rm </absolute/path>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs rm")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs rm </absolute/path> [--json]")
 		return
 	}
 
-	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.DeleteFile(ctx, &filesystemv1.DeleteFileRequest{
@@ -200,7 +244,11 @@ func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		Path:        filePath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to delete path: %v", err)
+		commandFatalf("FS_DELETE_FAILED", true, "", "Failed to delete path: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Deleted %s\n", resp.GetPath())
@@ -208,22 +256,27 @@ func handleFilesystemRemove(ctx context.Context, cli *CLI, authConfig cliAuth, a
 }
 
 func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 2 {
-		log.Println("Usage: gs fs mv </absolute/source> </absolute/destination>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs mv")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 2 {
+		commandUsage("Usage: gs fs mv </absolute/source> </absolute/destination> [--json]")
 		return
 	}
 
-	workspaceID, sourcePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, sourcePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve source path: %v", err)
 	}
-	destinationWorkspaceID, destinationPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[1])
+	destinationWorkspaceID, destinationPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(1))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve destination path: %v", err)
 	}
 	sourceWorkspaceID := workspaceID
 	if sourceWorkspaceID != destinationWorkspaceID {
-		log.Fatal("source and destination resolved to different home slices")
+		commandFatal("INVALID_ARGUMENT", "Source and destination resolved to different home slices.", false, "")
 	}
 
 	resp, err := cli.filesystemClient.MoveFile(ctx, &filesystemv1.MoveFileRequest{
@@ -232,7 +285,11 @@ func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		DestinationPath: destinationPath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to move path: %v", err)
+		commandFatalf("FS_MOVE_FAILED", true, "", "Failed to move path: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Moved %s -> %s\n", resp.GetSourcePath(), resp.GetDestinationPath())
@@ -240,22 +297,27 @@ func handleFilesystemMove(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 }
 
 func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 2 {
-		log.Println("Usage: gs fs cp </absolute/source> </absolute/destination>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs cp")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 2 {
+		commandUsage("Usage: gs fs cp </absolute/source> </absolute/destination> [--json]")
 		return
 	}
 
-	workspaceID, sourcePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, sourcePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve source path: %v", err)
 	}
-	destinationWorkspaceID, destinationPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[1])
+	destinationWorkspaceID, destinationPath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(1))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve destination path: %v", err)
 	}
 	sourceWorkspaceID := workspaceID
 	if sourceWorkspaceID != destinationWorkspaceID {
-		log.Fatal("source and destination resolved to different home slices")
+		commandFatal("INVALID_ARGUMENT", "Source and destination resolved to different home slices.", false, "")
 	}
 
 	resp, err := cli.filesystemClient.CopyFile(ctx, &filesystemv1.CopyFileRequest{
@@ -264,7 +326,11 @@ func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		DestinationPath: destinationPath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to copy path: %v", err)
+		commandFatalf("FS_COPY_FAILED", true, "", "Failed to copy path: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Copied %s -> %s\n", resp.GetSourcePath(), resp.GetDestinationPath())
@@ -272,25 +338,34 @@ func handleFilesystemCopy(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 }
 
 func handleFilesystemGlob(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs glob </absolute/pattern>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs glob")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs glob </absolute/pattern> [--json]")
 		return
 	}
 
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_GLOB_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
-	pattern, err := parseAbsoluteFilesystemPatternArg(args[0], true)
+	pattern, err := parseAbsoluteFilesystemPatternArg(fs.Arg(0), true)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute pattern: %v", err)
 	}
 	resp, err := cli.filesystemClient.Glob(ctx, &filesystemv1.GlobRequest{
 		WorkspaceId: workspaceID,
 		Pattern:     pattern,
 	})
 	if err != nil {
-		log.Fatalf("Failed to glob workspace: %v", err)
+		commandFatalf("FS_GLOB_FAILED", true, "", "Failed to glob workspace: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	for _, path := range resp.GetPaths() {
@@ -299,22 +374,25 @@ func handleFilesystemGlob(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 }
 
 func handleFilesystemSearch(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs search", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs search")
 	glob := fs.String("glob", "", "Restrict search to matching paths")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs search <query> [--glob </absolute/pattern>]")
+		commandUsage("Usage: gs fs search <query> [--glob </absolute/pattern>] [--json]")
 		return
 	}
 
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_SEARCH_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 	globPattern, err := parseAbsoluteFilesystemPatternArg(*glob, false)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute pattern: %v", err)
 	}
 	resp, err := cli.filesystemClient.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: workspaceID,
@@ -322,7 +400,11 @@ func handleFilesystemSearch(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		Glob:        globPattern,
 	})
 	if err != nil {
-		log.Fatalf("Failed to search workspace: %v", err)
+		commandFatalf("FS_SEARCH_FAILED", true, "", "Failed to search workspace: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	for _, match := range resp.GetMatches() {
@@ -331,14 +413,19 @@ func handleFilesystemSearch(ctx context.Context, cli *CLI, authConfig cliAuth, a
 }
 
 func handleFilesystemStat(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	if len(args) != 1 {
-		log.Println("Usage: gs fs stat </absolute/path>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs stat")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs fs stat </absolute/path> [--json]")
 		return
 	}
 
-	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, args[0])
+	workspaceID, filePath, err := resolveFilesystemAbsolutePath(ctx, cli, authConfig, fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to resolve absolute path: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.Stat(ctx, &filesystemv1.StatRequest{
@@ -346,7 +433,11 @@ func handleFilesystemStat(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		Path:        filePath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to stat path: %v", err)
+		commandFatalf("FS_STAT_FAILED", true, "", "Failed to stat path: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 	if !resp.GetExists() {
 		fmt.Printf("Not found: %s\n", filePath)
@@ -363,21 +454,23 @@ func handleFilesystemStat(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 }
 
 func handleFilesystemSnapshot(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs snapshot", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs snapshot")
 	message := fs.String("m", "", "Snapshot message")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs fs snapshot -m <message>")
+		commandUsage("Usage: gs fs snapshot -m <message> [--json]")
 		return
 	}
 	if strings.TrimSpace(*message) == "" {
-		log.Println("Snapshot message is required")
-		return
+		commandFatal("INVALID_ARGUMENT", "Snapshot message is required.", false, "gs fs snapshot -m <message>")
 	}
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_SNAPSHOT_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.Snapshot(ctx, &filesystemv1.SnapshotRequest{
@@ -385,7 +478,11 @@ func handleFilesystemSnapshot(ctx context.Context, cli *CLI, authConfig cliAuth,
 		Message:     strings.TrimSpace(*message),
 	})
 	if err != nil {
-		log.Fatalf("Failed to create snapshot: %v", err)
+		commandFatalf("FS_SNAPSHOT_FAILED", true, "", "Failed to create snapshot: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	snapshot := resp.GetSnapshot()
@@ -394,17 +491,20 @@ func handleFilesystemSnapshot(ctx context.Context, cli *CLI, authConfig cliAuth,
 }
 
 func handleFilesystemSnapshots(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs snapshots", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs snapshots")
 	limit := fs.Int("limit", 10, "Maximum snapshots to return")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs fs snapshots [--limit <n>]")
+		commandUsage("Usage: gs fs snapshots [--limit <n>] [--json]")
 		return
 	}
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_SNAPSHOTS_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
@@ -412,7 +512,11 @@ func handleFilesystemSnapshots(ctx context.Context, cli *CLI, authConfig cliAuth
 		Limit:       int32(*limit),
 	})
 	if err != nil {
-		log.Fatalf("Failed to list snapshots: %v", err)
+		commandFatalf("FS_SNAPSHOTS_FAILED", true, "", "Failed to list snapshots: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	for _, snapshot := range resp.GetSnapshots() {
@@ -421,18 +525,21 @@ func handleFilesystemSnapshots(ctx context.Context, cli *CLI, authConfig cliAuth
 }
 
 func handleFilesystemLog(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs log", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs log")
 	limit := fs.Int("limit", 20, "Maximum commits to return")
 	fromSnapshot := fs.String("from", "", "Pagination cursor")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs fs log [--limit <n>] [--from <snapshot-id>]")
+		commandUsage("Usage: gs fs log [--limit <n>] [--from <snapshot-id>] [--json]")
 		return
 	}
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_LOG_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.ListSnapshots(ctx, &filesystemv1.ListSnapshotsRequest{
@@ -441,7 +548,11 @@ func handleFilesystemLog(ctx context.Context, cli *CLI, authConfig cliAuth, args
 		FromSnapshotId: strings.TrimSpace(*fromSnapshot),
 	})
 	if err != nil {
-		log.Fatalf("Failed to list filesystem history: %v", err)
+		commandFatalf("FS_LOG_FAILED", true, "", "Failed to list filesystem history: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	for _, snapshot := range resp.GetSnapshots() {
@@ -455,17 +566,20 @@ func handleFilesystemLog(ctx context.Context, cli *CLI, authConfig cliAuth, args
 }
 
 func handleFilesystemRestore(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs restore", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs restore")
 	message := fs.String("m", "", "Optional restore message")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs restore <snapshot-id> [-m <message>]")
+		commandUsage("Usage: gs fs restore <snapshot-id> [-m <message>] [--json]")
 		return
 	}
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_RESTORE_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.RestoreSnapshot(ctx, &filesystemv1.RestoreSnapshotRequest{
@@ -474,7 +588,11 @@ func handleFilesystemRestore(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		Message:     strings.TrimSpace(*message),
 	})
 	if err != nil {
-		log.Fatalf("Failed to restore snapshot: %v", err)
+		commandFatalf("FS_RESTORE_FAILED", true, "", "Failed to restore snapshot: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Restored to %s\n", resp.GetRestoredSnapshotId())
@@ -484,18 +602,21 @@ func handleFilesystemRestore(ctx context.Context, cli *CLI, authConfig cliAuth, 
 }
 
 func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs diff", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs diff")
 	toSnapshot := fs.String("to", "", "Optional target snapshot ID")
 	includePatches := fs.Bool("patch", true, "Include unified patches")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() > 1 {
-		log.Println("Usage: gs fs diff [snapshot-id] [--to <snapshot-id>] [--patch=false]")
+		commandUsage("Usage: gs fs diff [snapshot-id] [--to <snapshot-id>] [--patch=false] [--json]")
 		return
 	}
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_DIFF_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	fromSnapshotID := ""
@@ -507,10 +628,10 @@ func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 			Limit:       1,
 		})
 		if err != nil {
-			log.Fatalf("Failed to resolve latest snapshot for diff: %v", err)
+			commandFatalf("FS_DIFF_FAILED", true, "", "Failed to resolve latest snapshot for diff: %v", err)
 		}
 		if len(listResp.GetSnapshots()) == 0 {
-			log.Fatal("No snapshots found; provide a snapshot ID explicitly or create one first")
+			commandFatal("FS_DIFF_FAILED", "No snapshots found; provide a snapshot ID explicitly or create one first.", false, "gs fs snapshot -m <message>")
 		}
 		fromSnapshotID = listResp.GetSnapshots()[0].GetSnapshotId()
 	}
@@ -522,7 +643,11 @@ func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		IncludePatches: *includePatches,
 	})
 	if err != nil {
-		log.Fatalf("Failed to diff workspace: %v", err)
+		commandFatalf("FS_DIFF_FAILED", true, "", "Failed to diff workspace: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	summary := resp.GetSummary()
@@ -538,18 +663,21 @@ func handleFilesystemDiff(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 }
 
 func handleFilesystemShow(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs show", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs show")
 	patches := fs.Bool("patches", true, "Include unified patches")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
-		log.Println("Usage: gs fs show <commit-hash> [--patches=false]")
+		commandUsage("Usage: gs fs show <commit-hash> [--patches=false] [--json]")
 		return
 	}
 
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_SHOW_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	commitHash := strings.TrimSpace(fs.Arg(0))
@@ -558,7 +686,7 @@ func handleFilesystemShow(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 		IncludePatches: *patches,
 	})
 	if err != nil {
-		log.Fatalf("Failed to fetch filesystem commit changes: %v", err)
+		commandFatalf("FS_SHOW_FAILED", true, "", "Failed to fetch filesystem commit changes: %v", err)
 	}
 
 	fmt.Printf("Commit: %s\n", resp.GetCommitHash())
@@ -566,6 +694,12 @@ func handleFilesystemShow(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	fmt.Printf("Changes: %d\n", len(resp.GetChanges()))
 	for _, change := range resp.GetChanges() {
 		remapFilesystemHomeChange(change, workspaceID)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
+	}
+	for _, change := range resp.GetChanges() {
 		printFileChange(change, *patches)
 	}
 }
@@ -691,7 +825,7 @@ func blankOrCurrent(value string) string {
 
 func parseFlagSetInterspersed(fs *flag.FlagSet, args []string) {
 	if err := fs.Parse(reorderInterspersedArgs(fs, args)); err != nil {
-		log.Fatal(err)
+		commandFatal("INVALID_ARGUMENT", err.Error(), false, "")
 	}
 }
 

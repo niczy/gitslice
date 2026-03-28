@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -23,33 +22,40 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 		if strings.TrimSpace(currentAuth.Authorization) != "" || currentAuth.CredentialStore {
 			authConfig, err := ensureCLIAuthReady(ctx, cli, currentAuth)
 			if err != nil {
-				log.Fatalf("Failed to resolve current login: %v", err)
+				commandFatalf("AUTH_REFRESH_FAILED", true, "", "Failed to resolve current login: %v", err)
 			}
 			showCurrentAuth(authConfig)
 			return
+		}
+		if cliStructuredJSON {
+			commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Run gs auth login --key <private-key-path> for agent-friendly auth or omit --json.", false, "gs auth login --key <private-key-path>")
 		}
 		startDeviceLogin(ctx, cli)
 		return
 	}
 	if len(args) != 1 {
-		log.Fatal("Usage: gs login [status|<username>]")
+		commandFatal("INVALID_ARGUMENT", "Usage: gs login [status|<username>]", false, "")
 	}
 
 	username := strings.TrimSpace(args[0])
 	if username == "" {
-		log.Fatal("Usage: gs login [status|<username>]")
+		commandFatal("INVALID_ARGUMENT", "Usage: gs login [status|<username>]", false, "")
 	}
 
 	resp, err := cli.accountClient.Login(withCLIDeviceInfo(ctx), &accountv1.LoginRequest{Username: username})
 	if err != nil {
-		log.Fatalf("Login failed: %v", err)
+		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Login failed: %v", err)
 	}
 
 	cfg := (credentialsConfig{}).
 		refreshedFromAuthResponse(resp).
 		withAuthMetadata(authMethodUsername, "", "")
 	if err := writeCredentialsConfig(cfg); err != nil {
-		log.Fatalf("Failed to save login: %v", err)
+		commandFatalf("AUTH_SAVE_FAILED", false, "", "Failed to save login: %v", err)
+	}
+	if cliStructuredJSON {
+		writeJSONOutput(buildAuthLoginOutput(resp, "~/.gitslice/credentials.json", authMethodUsername, nil))
+		return
 	}
 
 	fmt.Printf("Logged in as: %s\n", strings.TrimSpace(resp.GetUser().GetUsername()))
@@ -57,7 +63,7 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 
 func handleLogout(ctx context.Context, cli *CLI, currentAuth cliAuth, args []string) {
 	if len(args) != 0 {
-		log.Fatal("Usage: gs logout")
+		commandFatal("INVALID_ARGUMENT", "Usage: gs logout", false, "")
 	}
 	if strings.TrimSpace(currentAuth.Authorization) == "" && !currentAuth.CredentialStore {
 		if cliStructuredJSON {
@@ -72,18 +78,18 @@ func handleLogout(ctx context.Context, cli *CLI, currentAuth cliAuth, args []str
 	case "~/.gitslice/credentials.json":
 		authConfig, err := ensureCLIAuthReady(ctx, cli, currentAuth)
 		if err != nil {
-			log.Printf("Warning: failed to refresh stored login before logout: %v", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to refresh stored login before logout: %v\n", err)
 			authConfig = currentAuth
 		}
 		logoutCtx := withCLIDeviceInfo(withCLIAuth(ctx, authConfig))
 		if _, err := cli.accountClient.Logout(logoutCtx, &accountv1.LogoutRequest{}); err != nil {
-			log.Printf("Warning: failed to revoke session: %v", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to revoke session: %v\n", err)
 		}
 		if err := removeCredentialsConfig(); err != nil {
-			log.Fatalf("Failed to remove stored credentials: %v", err)
+			commandFatalf("AUTH_LOGOUT_FAILED", false, "", "Failed to remove stored credentials: %v", err)
 		}
 		if err := removeUsernameConfig(); err != nil {
-			log.Fatalf("Failed to clear legacy username config: %v", err)
+			commandFatalf("AUTH_LOGOUT_FAILED", false, "", "Failed to clear legacy username config: %v", err)
 		}
 		if cliStructuredJSON {
 			writeJSONOutput(jsonAuthLogoutOutput{Status: "logged_out"})
@@ -92,7 +98,7 @@ func handleLogout(ctx context.Context, cli *CLI, currentAuth cliAuth, args []str
 		fmt.Println("Logged out.")
 	case "legacy username":
 		if err := removeUsernameConfig(); err != nil {
-			log.Fatalf("Failed to clear legacy username config: %v", err)
+			commandFatalf("AUTH_LOGOUT_FAILED", false, "", "Failed to clear legacy username config: %v", err)
 		}
 		if cliStructuredJSON {
 			writeJSONOutput(jsonAuthLogoutOutput{Status: "logged_out"})
@@ -143,7 +149,7 @@ func showCurrentAuth(currentAuth cliAuth) {
 func startDeviceLogin(ctx context.Context, cli *CLI) {
 	startResp, err := cli.accountClient.StartDeviceAuthorization(withCLIDeviceInfo(ctx), &accountv1.StartDeviceAuthorizationRequest{})
 	if err != nil {
-		log.Fatalf("Device login failed: %v", err)
+		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Device login failed: %v", err)
 	}
 
 	verificationURI := strings.TrimSpace(startResp.GetVerificationUri())
@@ -176,7 +182,7 @@ func startDeviceLogin(ctx context.Context, cli *CLI) {
 			DeviceCode: startResp.GetDeviceCode(),
 		})
 		if err != nil {
-			log.Fatalf("\nDevice login failed while polling: %v", err)
+			commandFatalf("AUTH_LOGIN_FAILED", true, "", "Device login failed while polling: %v", err)
 		}
 		switch pollResp.GetStatus() {
 		case accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_APPROVED:
@@ -185,17 +191,17 @@ func startDeviceLogin(ctx context.Context, cli *CLI) {
 				refreshedFromAuthResponse(pollResp.GetAuth()).
 				withAuthMetadata(authMethodDevice, "", "")
 			if err := writeCredentialsConfig(cfg); err != nil {
-				log.Fatalf("Failed to save login: %v", err)
+				commandFatalf("AUTH_SAVE_FAILED", false, "", "Failed to save login: %v", err)
 			}
 			fmt.Printf("Logged in as %s (stored in ~/.gitslice/credentials.json)\n", strings.TrimSpace(cfg.Username))
 			return
 		case accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_DENIED:
-			log.Fatal("\nDevice login was denied")
+			commandFatal("AUTH_LOGIN_FAILED", "Device login was denied.", false, "")
 		case accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_EXPIRED:
-			log.Fatal("\nDevice login expired")
+			commandFatal("AUTH_LOGIN_FAILED", "Device login expired.", false, "")
 		}
 		if time.Now().After(deadline) {
-			log.Fatal("\nDevice login expired")
+			commandFatal("AUTH_LOGIN_FAILED", "Device login expired.", false, "")
 		}
 		time.Sleep(pollInterval)
 	}

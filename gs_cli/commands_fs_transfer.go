@@ -4,11 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -33,56 +31,65 @@ type filesystemUploadInventory struct {
 }
 
 func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs sync", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs sync")
 	direction := fs.String("direction", "", "Sync direction: push or pull")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path>")
-		log.Println("   or: gs fs sync --direction pull </absolute/path> <local-dir>")
+		commandUsage("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path> [--json]\n   or: gs fs sync --direction pull </absolute/path> <local-dir> [--json]")
 		return
 	}
 
+	extraArgs := []string{fs.Arg(0), fs.Arg(1)}
+	if jsonEnabled {
+		extraArgs = append(extraArgs, "--json")
+	}
 	switch strings.ToLower(strings.TrimSpace(*direction)) {
 	case "push":
-		handleFilesystemUpload(ctx, cli, authConfig, []string{fs.Arg(0), fs.Arg(1)})
+		handleFilesystemUpload(ctx, cli, authConfig, extraArgs)
 	case "pull":
-		handleFilesystemDownload(ctx, cli, authConfig, []string{fs.Arg(0), fs.Arg(1)})
+		handleFilesystemDownload(ctx, cli, authConfig, extraArgs)
 	default:
-		log.Fatal("fs sync requires --direction push or --direction pull")
+		commandFatal("INVALID_ARGUMENT", "fs sync requires --direction push or --direction pull", false, "")
 	}
 }
 
 func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs upload", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs upload")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs upload <local-dir> </absolute/path>")
+		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--json]")
 		return
 	}
 
 	localRoot := filepath.Clean(strings.TrimSpace(fs.Arg(0)))
 	info, err := os.Stat(localRoot)
 	if err != nil {
-		log.Fatalf("Failed to stat local path: %v", err)
+		commandFatalf("FS_UPLOAD_FAILED", false, "", "Failed to stat local path: %v", err)
 	}
 	if !info.IsDir() {
-		log.Fatal("local source must be a directory")
+		commandFatal("INVALID_ARGUMENT", "Local source must be a directory.", false, "")
 	}
 
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 	remoteBase, err := parseAbsoluteFilesystemPathArg(fs.Arg(1), true)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute path: %v", err)
 	}
 
 	inventory, err := buildFilesystemUploadInventory(localRoot, remoteBase)
 	if err != nil {
-		log.Fatalf("Failed to plan upload directory tree: %v", err)
+		commandFatalf("FS_UPLOAD_FAILED", false, "", "Failed to plan upload directory tree: %v", err)
 	}
 
 	planResp, err := cli.filesystemClient.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
@@ -90,7 +97,7 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		Files:       collectFilesystemUploadManifests(inventory.files),
 	})
 	if err != nil {
-		log.Fatalf("Failed to plan upload directory tree: %v", err)
+		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to plan upload directory tree: %v", err)
 	}
 
 	missingBlocks := make(map[string]struct{}, len(planResp.GetMissingBlockHashes()))
@@ -101,10 +108,10 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		}
 	}
 	if _, err := uploadFilesystemMissingBlocks(ctx, cli.filesystemClient, workspaceID, inventory, missingBlocks); err != nil {
-		log.Fatalf("Failed to upload missing file blocks: %v", err)
+		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to upload missing file blocks: %v", err)
 	}
 	if len(missingBlocks) != 0 {
-		log.Fatalf("Failed to upload all missing file blocks; %d blocks still missing", len(missingBlocks))
+		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to upload all missing file blocks; %d blocks still missing", len(missingBlocks))
 	}
 
 	_, err = cli.filesystemClient.FinalizeUpload(ctx, &filesystemv1.FinalizeUploadRequest{
@@ -113,7 +120,17 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		Files:       collectFilesystemUploadManifests(inventory.files),
 	})
 	if err != nil {
-		log.Fatalf("Failed to upload directory tree: %v", err)
+		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to upload directory tree: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(jsonFilesystemTransferOutput{
+			Action:         "upload",
+			LocalPath:      localRoot,
+			RemotePath:     filesystemDisplayPath(remoteBase),
+			FileCount:      len(inventory.files),
+			DirectoryCount: len(inventory.directories),
+		})
+		return
 	}
 
 	fmt.Printf(
@@ -125,31 +142,44 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 }
 
 func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs download", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs download")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 2 {
-		log.Println("Usage: gs fs download </absolute/path> <local-dir>")
+		commandUsage("Usage: gs fs download </absolute/path> <local-dir> [--json]")
 		return
 	}
 
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_DOWNLOAD_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 	remoteBase, err := parseAbsoluteFilesystemPathArg(fs.Arg(0), true)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute path: %v", err)
 	}
 
 	localRoot := filepath.Clean(strings.TrimSpace(fs.Arg(1)))
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {
-		log.Fatalf("Failed to create local directory: %v", err)
+		commandFatalf("FS_DOWNLOAD_FAILED", false, "", "Failed to create local directory: %v", err)
 	}
 
 	filesDownloaded, dirsDownloaded, err := downloadFilesystemTree(ctx, cli.filesystemClient, workspaceID, remoteBase, localRoot)
 	if err != nil {
-		log.Fatalf("Failed to download directory tree: %v", err)
+		commandFatalf("FS_DOWNLOAD_FAILED", true, "", "Failed to download directory tree: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(jsonFilesystemTransferOutput{
+			Action:         "download",
+			LocalPath:      localRoot,
+			RemotePath:     filesystemDisplayPath(remoteBase),
+			FileCount:      filesDownloaded,
+			DirectoryCount: dirsDownloaded,
+		})
+		return
 	}
 
 	fmt.Printf(

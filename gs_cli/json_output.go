@@ -10,6 +10,8 @@ import (
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type jsonAuthStatusOutput struct {
@@ -340,6 +342,19 @@ type jsonCacheClearOutput struct {
 	ClearedPathFound            bool   `json:"cleared_path_found,omitempty"`
 }
 
+type jsonInitOutput struct {
+	Status  string `json:"status"`
+	SliceID string `json:"slice_id"`
+}
+
+type jsonFilesystemTransferOutput struct {
+	Action         string `json:"action"`
+	LocalPath      string `json:"local_path"`
+	RemotePath     string `json:"remote_path"`
+	FileCount      int    `json:"file_count"`
+	DirectoryCount int    `json:"directory_count"`
+}
+
 type jsonDoctorAuthOutput struct {
 	Source            string `json:"source,omitempty"`
 	Username          string `json:"username,omitempty"`
@@ -460,6 +475,26 @@ type jsonChangesetListOutput struct {
 }
 
 func writeJSONOutput(value any) {
+	if msg, ok := value.(proto.Message); ok {
+		marshaler := protojson.MarshalOptions{
+			Indent:          "  ",
+			UseProtoNames:   true,
+			EmitUnpopulated: false,
+		}
+		data, err := marshaler.Marshal(msg)
+		if err != nil {
+			log.Fatalf("Failed to write JSON output: %v", err)
+		}
+		if _, err := os.Stdout.Write(data); err != nil {
+			log.Fatalf("Failed to write JSON output: %v", err)
+		}
+		if len(data) == 0 || data[len(data)-1] != '\n' {
+			if _, err := os.Stdout.Write([]byte("\n")); err != nil {
+				log.Fatalf("Failed to write JSON output: %v", err)
+			}
+		}
+		return
+	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
