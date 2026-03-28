@@ -4,6 +4,8 @@ import "fmt"
 
 func printHelp() {
 	fmt.Println("Usage: gs <command> [options]")
+	fmt.Println("\nGlobal behavior:")
+	fmt.Println("  --non-interactive   Fail instead of opening interactive flows (also GS_NON_INTERACTIVE=1)")
 	fmt.Println("\nGlobal auth resolution:")
 	fmt.Println("  1. --api-key")
 	fmt.Println("  2. GS_API_KEY")

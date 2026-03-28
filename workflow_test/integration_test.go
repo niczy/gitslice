@@ -1416,6 +1416,27 @@ func TestCLILoginAndLogoutUseStoredBearerCredentials(t *testing.T) {
 	}
 }
 
+func TestCLINonInteractiveLoginFailsFast(t *testing.T) {
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	output, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "login", "--non-interactive", "--json")
+	if err == nil {
+		t.Fatalf("expected non-interactive login to fail\nOutput:\n%s", output)
+	}
+
+	var errResp cliErrorJSON
+	if unmarshalErr := json.Unmarshal([]byte(output), &errResp); unmarshalErr != nil {
+		t.Fatalf("Unmarshal login error output failed: %v\nOutput:\n%s", unmarshalErr, output)
+	}
+	if errResp.ErrorCode != "INTERACTIVE_REQUIRED" {
+		t.Fatalf("unexpected login error response: %+v", errResp)
+	}
+	if errResp.SuggestedAction != "gs auth login --key <private-key-path>" {
+		t.Fatalf("unexpected login suggested action: %+v", errResp)
+	}
+}
+
 func TestCLIDeviceLoginAndRefreshesStoredCredentials(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1772,6 +1793,28 @@ func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	}
 	if got := string(readResp.GetContent()); got != "print('hello world')\n" {
 		t.Fatalf("unexpected shell-written file content: %q", got)
+	}
+}
+
+func TestCLINonInteractiveFilesystemShellFailsFast(t *testing.T) {
+	username := workflowUsername(t)
+	env := workflowProcessEnv(t, map[string]string{"GS_NON_INTERACTIVE": "1"})
+	remoteRoot := fmt.Sprintf("/%s/fs-shell-non-interactive-%d", username, time.Now().UnixNano())
+
+	output, err := runCLIWithDirInputEnvLegacyUser("", "", env, true, username, "fs", "shell", remoteRoot, "--json")
+	if err == nil {
+		t.Fatalf("expected non-interactive fs shell to fail\nOutput:\n%s", output)
+	}
+
+	var errResp cliErrorJSON
+	if unmarshalErr := json.Unmarshal([]byte(output), &errResp); unmarshalErr != nil {
+		t.Fatalf("Unmarshal fs shell error output failed: %v\nOutput:\n%s", unmarshalErr, output)
+	}
+	if errResp.ErrorCode != "INTERACTIVE_REQUIRED" {
+		t.Fatalf("unexpected fs shell error response: %+v", errResp)
+	}
+	if !strings.Contains(errResp.SuggestedAction, "gs fs ls") {
+		t.Fatalf("unexpected fs shell suggested action: %+v", errResp)
 	}
 }
 

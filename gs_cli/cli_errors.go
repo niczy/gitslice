@@ -16,6 +16,7 @@ type jsonCLIErrorOutput struct {
 }
 
 var cliStructuredJSON bool
+var cliNonInteractive bool
 
 func configureCLIOutputMode(args []string) {
 	_, cliStructuredJSON = consumeBoolFlag(args, "json")
