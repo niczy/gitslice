@@ -15,6 +15,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
 type dirtyTrackerState struct {
@@ -332,6 +333,52 @@ func TestSliceWorkflowCommands(t *testing.T) {
 		if slice.SliceID == sliceID {
 			t.Fatalf("expected deleted slice to be absent from list output, got: %+v", listResp)
 		}
+	}
+}
+
+func TestSliceTreeRenameAndChangesetRebaseJSON(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withWorkflowUser(t, ctx)
+
+	sliceID := fmt.Sprintf("slice-json-%d", time.Now().UnixNano())
+	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
+		"apps/json-workflow/README.md": {content: []byte("json workflow\n")},
+		"apps/json-workflow/src/main.go": {
+			content: []byte("package main\nfunc main() {}\n"),
+		},
+	})
+
+	treeResp := runCLIJSONOrFail[sliceTreeJSON](t, "", "slice", "tree", "apps", "--slice", sliceIDArg(sliceID))
+	if treeResp.SliceID != sliceID || treeResp.Path != "apps" {
+		t.Fatalf("unexpected slice tree JSON: %+v", treeResp)
+	}
+	if len(treeResp.Nodes) != 1 || treeResp.Nodes[0].Name != "json-workflow" {
+		t.Fatalf("expected apps/json-workflow in tree output, got: %+v", treeResp)
+	}
+
+	renameResp := runCLIJSONOrFail[sliceRenameJSON](t, "", "slice", "rename", sliceIDArg(sliceID), "Renamed JSON Slice")
+	if renameResp.SliceID != sliceID || renameResp.Name != "Renamed JSON Slice" || renameResp.Status != "renamed" {
+		t.Fatalf("unexpected slice rename JSON: %+v", renameResp)
+	}
+
+	createResp, err := newSliceClient(t).CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        sliceID,
+		BaseCommitHash: "stale-base",
+		ModifiedFiles:  []string{"apps/json-workflow/README.md"},
+		Author:         "tester",
+		Message:        "json rebase",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	rebaseResp := runCLIJSONOrFail[changesetRebaseJSON](t, "", "changeset", "rebase", createResp.GetChangesetId())
+	if rebaseResp.ChangesetID != createResp.GetChangesetId() {
+		t.Fatalf("unexpected changeset rebase JSON: %+v", rebaseResp)
+	}
+	if rebaseResp.NewBaseCommitHash != "seed-"+sliceID {
+		t.Fatalf("expected rebase to current head, got: %+v", rebaseResp)
 	}
 }
 

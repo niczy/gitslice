@@ -97,6 +97,7 @@ func printSliceHelp() {
 	fmt.Println("  gs slice ensure ui-refresh apps/web --json")
 	fmt.Println("  gs slice checkout nic/ui-refresh --json")
 	fmt.Println("  gs slice status --json")
+	fmt.Println("  gs slice tree --slice nic/ui-refresh --json")
 	fmt.Println("  gs slice diff --summary")
 	fmt.Println("  gs slice publish --review-only --json")
 }
@@ -142,6 +143,7 @@ func printChangesetHelp() {
 	fmt.Println("  gs changeset create --message \"update settings\" --json")
 	fmt.Println("  gs changeset show --json")
 	fmt.Println("  gs changeset review cs_123 --json")
+	fmt.Println("  gs changeset rebase cs_123 --json")
 	fmt.Println("  gs changeset merge cs_123 --json")
 }
 

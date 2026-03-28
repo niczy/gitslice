@@ -257,15 +257,31 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {
-	if len(args) < 1 {
-		commandUsage("Usage: gs changeset rebase <changeset-id>")
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("changeset rebase")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs changeset rebase <changeset-id> [--json]")
 		return
 	}
 
-	req := &slicev1.RebaseChangesetRequest{ChangesetId: args[0]}
+	req := &slicev1.RebaseChangesetRequest{ChangesetId: fs.Arg(0)}
 	resp, err := cli.sliceClient.RebaseChangeset(ctx, req)
 	if err != nil {
 		commandFatalf("CHANGESET_REBASE_FAILED", true, "", "Failed to rebase changeset: %v", err)
+	}
+	if jsonEnabled {
+		out := jsonChangesetRebaseOutput{
+			ChangesetID:         req.ChangesetId,
+			Status:              resp.GetStatus().String(),
+			NewBaseCommitHash:   resp.GetNewBaseCommitHash(),
+			SliceCommitsToApply: append([]string(nil), resp.GetSliceCommitsToApply()...),
+			Conflicts:           buildMergeConflicts(resp.GetConflicts()),
+		}
+		writeJSONOutput(out)
+		return
 	}
 
 	fmt.Printf("Rebase status: %s\n", resp.Status.String())
