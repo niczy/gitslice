@@ -382,6 +382,29 @@ func TestSliceTreeRenameAndChangesetRebaseJSON(t *testing.T) {
 	}
 }
 
+func TestSliceResourceAliasesWorkflow(t *testing.T) {
+	rootResp := runCLIJSONOrFail[sliceRootJSON](t, "", "slice", "root")
+	if rootResp.SliceID != "root_slice" {
+		t.Fatalf("unexpected slice root response: %+v", rootResp)
+	}
+
+	sliceID := fmt.Sprintf("slice-alias-%d", time.Now().UnixNano())
+	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
+		"docs/README.md": {content: []byte("alias history\n")},
+	})
+
+	bindDir := t.TempDir()
+	bindResp := runCLIJSONOrFail[initJSON](t, bindDir, "slice", "bind", rootResp.SliceID)
+	if bindResp.Status != "initialized" || bindResp.SliceID != rootResp.SliceID {
+		t.Fatalf("unexpected slice bind response: %+v", bindResp)
+	}
+
+	historyResp := runCLIJSONOrFail[sliceHistoryJSON](t, "", "slice", "history", sliceID)
+	if len(historyResp.Commits) == 0 {
+		t.Fatalf("expected slice history commits, got: %+v", historyResp)
+	}
+}
+
 func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 	sliceID := fmt.Sprintf("slice-publish-%d", time.Now().UnixNano())

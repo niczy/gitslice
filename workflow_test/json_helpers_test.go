@@ -23,6 +23,11 @@ type sliceCreateJSON struct {
 	Slug    string `json:"slug"`
 }
 
+type initJSON struct {
+	Status  string `json:"status"`
+	SliceID string `json:"slice_id"`
+}
+
 type sliceEnsureJSON struct {
 	Created bool   `json:"created"`
 	SliceID string `json:"slice_id"`
@@ -108,6 +113,18 @@ type sliceRenameJSON struct {
 	Name    string `json:"name"`
 	Slug    string `json:"slug"`
 	Status  string `json:"status"`
+}
+
+type sliceRootJSON struct {
+	SliceID    string `json:"slice_id"`
+	CommitHash string `json:"commit_hash"`
+}
+
+type sliceHistoryJSON struct {
+	Commits []struct {
+		CommitHash string `json:"commit_hash"`
+		Message    string `json:"message"`
+	} `json:"commits"`
 }
 
 type changesetReviewJSON struct {

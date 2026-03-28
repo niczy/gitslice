@@ -27,6 +27,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	switch args[0] {
+	case "bind":
+		handleInit(ctx, cli, args[1:])
 	case "list":
 		handleSliceList(ctx, cli, args[1:])
 	case "ensure":
@@ -43,6 +45,10 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceStatus(ctx, cli, args[1:])
 	case "tree", "list-files":
 		handleSliceTree(ctx, cli, args[1:])
+	case "history":
+		handleLog(ctx, cli, args[1:])
+	case "root":
+		handleRootSlice(ctx, cli)
 	case "search":
 		handleSliceSearch(ctx, cli, args[1:])
 	case "diff":
