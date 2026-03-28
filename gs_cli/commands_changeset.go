@@ -31,8 +31,7 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 	case "list":
 		handleChangesetList(ctx, cli, args[1:])
 	default:
-		log.Printf("Unknown changeset command: %s", args[0])
-		printChangesetHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown changeset command: %s", args[0]), false, "gs changeset --help")
 	}
 }
 

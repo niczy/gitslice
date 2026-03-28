@@ -1424,6 +1424,13 @@ func TestCLINonInteractiveLoginFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected non-interactive login to fail\nOutput:\n%s", output)
 	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected login failure to be an exit error, got %T (%v)", err, err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("expected login to exit 2, got %d\nOutput:\n%s", exitErr.ExitCode(), output)
+	}
 
 	var errResp cliErrorJSON
 	if unmarshalErr := json.Unmarshal([]byte(output), &errResp); unmarshalErr != nil {
@@ -1804,6 +1811,13 @@ func TestCLINonInteractiveFilesystemShellFailsFast(t *testing.T) {
 	output, err := runCLIWithDirInputEnvLegacyUser("", "", env, true, username, "fs", "shell", remoteRoot, "--json")
 	if err == nil {
 		t.Fatalf("expected non-interactive fs shell to fail\nOutput:\n%s", output)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected fs shell failure to be an exit error, got %T (%v)", err, err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("expected fs shell to exit 2, got %d\nOutput:\n%s", exitErr.ExitCode(), output)
 	}
 
 	var errResp cliErrorJSON

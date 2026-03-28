@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -28,8 +27,7 @@ func handleCacheCommand(args []string) {
 		}
 		handleCacheClear(cache, args[1:])
 	default:
-		log.Printf("Unknown cache command: %s", args[0])
-		printCacheHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown cache command: %s", args[0]), false, "gs cache --help")
 	}
 }
 
@@ -140,7 +138,7 @@ func handleCacheClear(cache *CacheManager, args []string) {
 		*clearCheckouts = true
 	}
 	if !*clearObjects && !*clearStale && !*clearCheckouts && strings.TrimSpace(*clearPath) == "" {
-		log.Println("Usage: gs cache clear [--objects] [--stale-checkouts] [--checkouts] [--path <dir>] [--all]")
+		commandUsage("Usage: gs cache clear [--objects] [--stale-checkouts] [--checkouts] [--path <dir>] [--all]")
 		return
 	}
 	out := jsonCacheClearOutput{}

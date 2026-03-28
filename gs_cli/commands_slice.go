@@ -56,8 +56,7 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	case "rename":
 		handleRenameSlice(ctx, cli, args[1:])
 	default:
-		log.Printf("Unknown slice command: %s", args[0])
-		printSliceHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown slice command: %s", args[0]), false, "gs slice --help")
 	}
 }
 

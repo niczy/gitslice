@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	adminv1 "github.com/niczy/gitslice/proto/admin"
@@ -23,8 +22,7 @@ func handleConflictCommand(ctx context.Context, cli *CLI, args []string) {
 	case "show":
 		handleConflictShow(ctx, cli, args[1:])
 	default:
-		log.Printf("Unknown conflict command: %s", args[0])
-		printConflictHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown conflict command: %s", args[0]), false, "gs conflict --help")
 	}
 }
 
