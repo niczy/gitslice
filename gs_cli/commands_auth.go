@@ -29,7 +29,9 @@ func handleAuthCommand(ctx context.Context, cli *CLI, apiKeyFlag, userFlag strin
 	case "signup":
 		handleAuthSignup(ctx, cli, args[1:])
 	case "login":
-		handleAuthKeyLogin(ctx, cli, args[1:])
+		handleAuthLogin(ctx, cli, args[1:])
+	case "ensure":
+		handleAuthEnsure(ctx, cli, apiKeyFlag, userFlag, args[1:])
 	case "status":
 		handleAuthStatus(ctx, cli, apiKeyFlag, userFlag, args[1:])
 	case "logout":
@@ -132,37 +134,31 @@ func handleAuthSignup(ctx context.Context, cli *CLI, args []string) {
 	fmt.Printf("Signed up and logged in as: %s\n", strings.TrimSpace(resp.GetUser().GetUsername()))
 }
 
-func handleAuthKeyLogin(ctx context.Context, cli *CLI, args []string) {
+func handleAuthLogin(ctx context.Context, cli *CLI, args []string) {
 	fs := newCommandFlagSet("auth login")
 	keyPath := fs.String("key", "", "Path to the agent private key PEM")
-	parseCommandFlags(fs, args)
+	device := fs.Bool("device", false, "Use interactive browser/device login")
+	parseFlagSetInterspersed(fs, args)
+	if *device {
+		if strings.TrimSpace(*keyPath) != "" {
+			commandFatal("INVALID_ARGUMENT", "Choose either --key or --device for auth login.", false, "")
+		}
+		if cliStructuredJSON || cliNonInteractive {
+			commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Use gs auth login --key <private-key-path> in agent-driven flows.", false, "gs auth login --key <private-key-path>")
+		}
+		startDeviceLogin(ctx, cli)
+		return
+	}
 	if strings.TrimSpace(*keyPath) == "" {
-		commandUsage("Usage: gs auth login --key <private-key-path> [--json]")
+		commandUsage("Usage: gs auth login --key <private-key-path> [--json]\n   or: gs auth login --device")
 		return
 	}
 
-	privateKey, publicKey, err := loadAgentPrivateKey(*keyPath)
+	authResp, publicKey, err := loginWithAgentKey(ctx, cli, *keyPath)
 	if err != nil {
-		commandFatalf("AUTH_INVALID_KEY", false, "", "Failed to load agent private key: %v", err)
+		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Failed to log in with agent key: %v", err)
 	}
-	startResp, err := cli.accountClient.StartAgentKeyLogin(withCLIDeviceInfo(ctx), &accountv1.StartAgentKeyLoginRequest{
-		PublicKey: append([]byte(nil), publicKey...),
-	})
-	if err != nil {
-		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Failed to start agent key login: %v", err)
-	}
-	signature := ed25519.Sign(privateKey, startResp.GetChallenge())
-	authResp, err := cli.accountClient.CompleteAgentKeyLogin(withCLIDeviceInfo(ctx), &accountv1.CompleteAgentKeyLoginRequest{
-		ChallengeId: startResp.GetChallengeId(),
-		Signature:   signature,
-	})
-	if err != nil {
-		commandFatalf("AUTH_LOGIN_FAILED", true, "", "Failed to complete agent key login: %v", err)
-	}
-	cfg := (credentialsConfig{}).
-		refreshedFromAuthResponse(authResp).
-		withAuthMetadata(authMethodAgentKey, authResp.GetSession().GetAgentKeyId(), agentKeyFingerprint(agentKeyAlgorithmEd25519, publicKey))
-	if err := writeCredentialsConfig(cfg); err != nil {
+	if err := persistAgentKeyAuth(authResp, publicKey); err != nil {
 		commandFatalf("AUTH_SAVE_FAILED", false, "", "Failed to save credentials: %v", err)
 	}
 	if cliStructuredJSON {
@@ -170,6 +166,79 @@ func handleAuthKeyLogin(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 	fmt.Printf("Logged in as: %s\n", strings.TrimSpace(authResp.GetUser().GetUsername()))
+}
+
+func handleAuthEnsure(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string, args []string) {
+	fs := newCommandFlagSet("auth ensure")
+	keyPath := fs.String("key", "", "Path to an enrolled agent private key used when auth is missing")
+	device := fs.Bool("device", false, "Use interactive browser/device login when auth is missing")
+	parseFlagSetInterspersed(fs, args)
+	if fs.NArg() != 0 {
+		commandUsage("Usage: gs auth ensure [--key <private-key-path>] [--device] [--json]")
+		return
+	}
+	if *device && strings.TrimSpace(*keyPath) != "" {
+		commandFatal("INVALID_ARGUMENT", "Choose either --key or --device for auth ensure.", false, "")
+	}
+
+	authConfig, err := resolveAuthConfig(apiKeyFlag, userFlag)
+	if err != nil {
+		commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
+	}
+	creds := credentialsConfig{}
+	ensured := false
+	if strings.TrimSpace(authConfig.Authorization) != "" || authConfig.CredentialStore {
+		authConfig, err = ensureCLIAuthReady(ctx, cli, authConfig)
+		if err == nil && authConfig.CredentialStore {
+			if loaded, loadErr := readCredentialsConfig(); loadErr == nil {
+				creds = loaded
+			}
+		}
+	}
+	if strings.TrimSpace(authConfig.Authorization) == "" {
+		switch {
+		case strings.TrimSpace(*keyPath) != "":
+			authResp, publicKey, err := loginWithAgentKey(ctx, cli, *keyPath)
+			if err != nil {
+				commandFatalf("AUTH_LOGIN_FAILED", true, "", "Failed to log in with agent key: %v", err)
+			}
+			if err := persistAgentKeyAuth(authResp, publicKey); err != nil {
+				commandFatalf("AUTH_SAVE_FAILED", false, "", "Failed to save credentials: %v", err)
+			}
+			authConfig, err = resolveAuthConfig(apiKeyFlag, userFlag)
+			if err != nil {
+				commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve refreshed auth: %v", err)
+			}
+			if loaded, loadErr := readCredentialsConfig(); loadErr == nil {
+				creds = loaded
+			}
+			ensured = true
+		case *device:
+			if cliStructuredJSON || cliNonInteractive {
+				commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Use gs auth ensure --key <private-key-path> in agent-driven flows.", false, "gs auth ensure --key <private-key-path>")
+			}
+			startDeviceLogin(ctx, cli)
+			authConfig, err = resolveAuthConfig(apiKeyFlag, userFlag)
+			if err != nil {
+				commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve refreshed auth: %v", err)
+			}
+			if loaded, loadErr := readCredentialsConfig(); loadErr == nil {
+				creds = loaded
+			}
+			ensured = true
+		default:
+			commandFatal("AUTH_REQUIRED", "Authentication required. Run gs auth ensure --key <private-key-path> or set GS_API_KEY / GS_API_KEY_FILE.", false, "gs auth ensure --key <private-key-path>")
+		}
+	}
+	if cliStructuredJSON {
+		writeJSONOutput(buildAuthEnsureOutput(authConfig, creds, ensured))
+		return
+	}
+	if ensured {
+		fmt.Printf("Auth ready for: %s\n", strings.TrimSpace(firstNonEmpty(creds.Username, authConfig.Username)))
+		return
+	}
+	showCurrentAuth(authConfig)
 }
 
 func handleAuthStatus(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string, args []string) {
@@ -191,6 +260,35 @@ func handleAuthStatus(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string
 		commandFatalf("AUTH_REFRESH_FAILED", true, "gs auth login --key <private-key-path>", "Failed to resolve current login: %v", err)
 	}
 	showCurrentAuth(authConfig)
+}
+
+func loginWithAgentKey(ctx context.Context, cli *CLI, keyPath string) (*accountv1.AuthResponse, []byte, error) {
+	privateKey, publicKey, err := loadAgentPrivateKey(keyPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load agent private key: %w", err)
+	}
+	startResp, err := cli.accountClient.StartAgentKeyLogin(withCLIDeviceInfo(ctx), &accountv1.StartAgentKeyLoginRequest{
+		PublicKey: append([]byte(nil), publicKey...),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("start agent key login: %w", err)
+	}
+	signature := ed25519.Sign(privateKey, startResp.GetChallenge())
+	authResp, err := cli.accountClient.CompleteAgentKeyLogin(withCLIDeviceInfo(ctx), &accountv1.CompleteAgentKeyLoginRequest{
+		ChallengeId: startResp.GetChallengeId(),
+		Signature:   signature,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("complete agent key login: %w", err)
+	}
+	return authResp, publicKey, nil
+}
+
+func persistAgentKeyAuth(authResp *accountv1.AuthResponse, publicKey []byte) error {
+	cfg := (credentialsConfig{}).
+		refreshedFromAuthResponse(authResp).
+		withAuthMetadata(authMethodAgentKey, authResp.GetSession().GetAgentKeyId(), agentKeyFingerprint(agentKeyAlgorithmEd25519, publicKey))
+	return writeCredentialsConfig(cfg)
 }
 
 func handleAuthKeys(ctx context.Context, cli *CLI, args []string) {

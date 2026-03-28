@@ -44,6 +44,21 @@ type jsonAuthLogoutOutput struct {
 	Source string `json:"source,omitempty"`
 }
 
+type jsonAuthEnsureOutput struct {
+	Status                string `json:"status"`
+	Ensured               bool   `json:"ensured"`
+	Authenticated         bool   `json:"authenticated"`
+	Username              string `json:"username,omitempty"`
+	Source                string `json:"source,omitempty"`
+	CredentialStore       bool   `json:"credential_store,omitempty"`
+	AuthMethod            string `json:"auth_method,omitempty"`
+	AgentKeyID            string `json:"agent_key_id,omitempty"`
+	KeyFingerprint        string `json:"key_fingerprint,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+}
+
 type jsonAuthKeygenOutput struct {
 	Status         string `json:"status"`
 	Algorithm      string `json:"algorithm"`
@@ -140,6 +155,14 @@ type jsonMergeOutput struct {
 	Conflicts     []jsonMergeConflict `json:"conflicts,omitempty"`
 }
 
+type jsonChangesetRebaseOutput struct {
+	ChangesetID         string              `json:"changeset_id"`
+	Status              string              `json:"status"`
+	NewBaseCommitHash   string              `json:"new_base_commit_hash,omitempty"`
+	SliceCommitsToApply []string            `json:"slice_commits_to_apply,omitempty"`
+	Conflicts           []jsonMergeConflict `json:"conflicts,omitempty"`
+}
+
 type jsonSliceInfo struct {
 	Name        string   `json:"name"`
 	SliceID     string   `json:"slice_id"`
@@ -208,6 +231,28 @@ type jsonSliceSearchOutput struct {
 	Glob    string                 `json:"glob,omitempty"`
 	Total   int                    `json:"total"`
 	Matches []jsonSliceSearchMatch `json:"matches,omitempty"`
+}
+
+type jsonSliceTreeNode struct {
+	Name     string              `json:"name"`
+	Path     string              `json:"path"`
+	Type     string              `json:"type"`
+	Size     int64               `json:"size,omitempty"`
+	Children []jsonSliceTreeNode `json:"children,omitempty"`
+}
+
+type jsonSliceTreeOutput struct {
+	SliceID string              `json:"slice_id"`
+	Commit  string              `json:"commit,omitempty"`
+	Path    string              `json:"path"`
+	Nodes   []jsonSliceTreeNode `json:"nodes,omitempty"`
+}
+
+type jsonSliceRenameOutput struct {
+	SliceID string `json:"slice_id"`
+	Name    string `json:"name"`
+	Slug    string `json:"slug,omitempty"`
+	Status  string `json:"status"`
 }
 
 type jsonWorkingTreeSummary struct {
@@ -607,6 +652,24 @@ func buildAuthStatusOutput(authConfig cliAuth, creds credentialsConfig) jsonAuth
 	return out
 }
 
+func buildAuthEnsureOutput(authConfig cliAuth, creds credentialsConfig, ensured bool) jsonAuthEnsureOutput {
+	status := buildAuthStatusOutput(authConfig, creds)
+	return jsonAuthEnsureOutput{
+		Status:                "ready",
+		Ensured:               ensured,
+		Authenticated:         status.Authenticated,
+		Username:              status.Username,
+		Source:                status.Source,
+		CredentialStore:       status.CredentialStore,
+		AuthMethod:            status.AuthMethod,
+		AgentKeyID:            status.AgentKeyID,
+		KeyFingerprint:        status.KeyFingerprint,
+		SessionID:             status.SessionID,
+		AccessTokenExpiresAt:  status.AccessTokenExpiresAt,
+		RefreshTokenExpiresAt: status.RefreshTokenExpiresAt,
+	}
+}
+
 func buildAuthLoginOutput(resp *accountv1.AuthResponse, source, authMethod string, publicKey []byte) jsonAuthLoginOutput {
 	out := jsonAuthLoginOutput{
 		Status:     "authenticated",
@@ -750,18 +813,24 @@ func buildMergeOutput(resp *slicev1.MergeChangesetResponse) *jsonMergeOutput {
 		NewCommitHash: resp.GetNewCommitHash(),
 		Message:       resp.GetMessage(),
 	}
-	if len(resp.GetConflicts()) > 0 {
-		output.Conflicts = make([]jsonMergeConflict, 0, len(resp.GetConflicts()))
-		for _, conflict := range resp.GetConflicts() {
-			output.Conflicts = append(output.Conflicts, jsonMergeConflict{
-				FileID:              conflict.GetFileId(),
-				Type:                conflict.GetType().String(),
-				ConflictingSliceIDs: append([]string(nil), conflict.GetConflictingSliceIds()...),
-				Message:             conflict.GetMessage(),
-			})
-		}
-	}
+	output.Conflicts = buildMergeConflicts(resp.GetConflicts())
 	return output
+}
+
+func buildMergeConflicts(conflicts []*slicev1.Conflict) []jsonMergeConflict {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	out := make([]jsonMergeConflict, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		out = append(out, jsonMergeConflict{
+			FileID:              conflict.GetFileId(),
+			Type:                conflict.GetType().String(),
+			ConflictingSliceIDs: append([]string(nil), conflict.GetConflictingSliceIds()...),
+			Message:             conflict.GetMessage(),
+		})
+	}
+	return out
 }
 
 func buildSliceInfoOutput(slice *adminv1.SliceInfo) jsonSliceInfo {

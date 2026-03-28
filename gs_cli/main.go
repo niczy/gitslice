@@ -28,7 +28,7 @@ var (
 	fsServerAddr      = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
 	useTLS            = flag.Bool("tls", false, "Use TLS for gRPC connections")
 	nonInteractive    = flag.Bool("non-interactive", false, "Fail instead of opening interactive flows (also GS_NON_INTERACTIVE=1)")
-	apiKeyFlag        = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY and ~/.gitslice/credentials.json)")
+	apiKeyFlag        = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY, GS_API_KEY_FILE, and ~/.gitslice/credentials.json)")
 	userFlag          = flag.String("user", "", "Legacy username auth for dev use (overrides GS_USERNAME and ~/.gitslice/user after bearer auth sources)")
 )
 

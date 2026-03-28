@@ -131,17 +131,27 @@ func handleRootSlice(ctx context.Context, cli *CLI) {
 }
 
 func handleRenameSlice(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 2 {
-		commandUsage("Usage: gs slice rename <slice-id> <new-name>")
+		commandUsage("Usage: gs slice rename <slice-id> <new-name> [--json]")
 		return
 	}
 
-	sliceID, err := normalizeSliceID(args[0])
+	fs := newCommandFlagSet("slice rename")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() != 2 {
+		commandUsage("Usage: gs slice rename <slice-id> <new-name> [--json]")
+		return
+	}
+
+	sliceID, err := normalizeSliceID(fs.Arg(0))
 	if err != nil {
 		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid slice ID: %v", err)
 	}
 
-	newName := strings.TrimSpace(args[1])
+	newName := strings.TrimSpace(fs.Arg(1))
 	if newName == "" {
 		commandFatal("INVALID_ARGUMENT", "New name cannot be empty.", false, "")
 	}
@@ -152,6 +162,15 @@ func handleRenameSlice(ctx context.Context, cli *CLI, args []string) {
 	})
 	if err != nil {
 		commandFatalf("SLICE_RENAME_FAILED", true, "", "Failed to rename slice: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(jsonSliceRenameOutput{
+			SliceID: resp.GetSliceId(),
+			Name:    resp.GetName(),
+			Slug:    resp.GetSlug(),
+			Status:  "renamed",
+		})
+		return
 	}
 
 	fmt.Printf("Renamed slice %s to %q\n", resp.SliceId, resp.Name)

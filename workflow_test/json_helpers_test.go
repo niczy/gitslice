@@ -11,6 +11,13 @@ type mergeJSON struct {
 	Status string `json:"status"`
 }
 
+type changesetRebaseJSON struct {
+	ChangesetID         string   `json:"changeset_id"`
+	Status              string   `json:"status"`
+	NewBaseCommitHash   string   `json:"new_base_commit_hash"`
+	SliceCommitsToApply []string `json:"slice_commits_to_apply"`
+}
+
 type sliceCreateJSON struct {
 	SliceID string `json:"slice_id"`
 	Slug    string `json:"slug"`
@@ -79,6 +86,28 @@ type sliceStatusJSON struct {
 		Modified int `json:"modified"`
 		Deleted  int `json:"deleted"`
 	} `json:"changes"`
+}
+
+type sliceTreeJSON struct {
+	SliceID string `json:"slice_id"`
+	Path    string `json:"path"`
+	Nodes   []struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		Type     string `json:"type"`
+		Children []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"children"`
+	} `json:"nodes"`
+}
+
+type sliceRenameJSON struct {
+	SliceID string `json:"slice_id"`
+	Name    string `json:"name"`
+	Slug    string `json:"slug"`
+	Status  string `json:"status"`
 }
 
 type changesetReviewJSON struct {
@@ -231,6 +260,21 @@ type authLoginJSON struct {
 }
 
 type authStatusJSON struct {
+	Authenticated         bool   `json:"authenticated"`
+	Username              string `json:"username"`
+	Source                string `json:"source"`
+	CredentialStore       bool   `json:"credential_store"`
+	AuthMethod            string `json:"auth_method"`
+	AgentKeyID            string `json:"agent_key_id"`
+	KeyFingerprint        string `json:"key_fingerprint"`
+	SessionID             string `json:"session_id"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
+}
+
+type authEnsureJSON struct {
+	Status                string `json:"status"`
+	Ensured               bool   `json:"ensured"`
 	Authenticated         bool   `json:"authenticated"`
 	Username              string `json:"username"`
 	Source                string `json:"source"`

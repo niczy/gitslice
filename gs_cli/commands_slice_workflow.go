@@ -205,13 +205,16 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("slice tree")
 	sliceFlag := fs.String("slice", "", "Slice ID or slug (defaults to the current checkout)")
 	commitFlag := fs.String("commit", "", "Commit hash")
 	depth := fs.Int("depth", 0, "Maximum recursion depth (0 = unlimited)")
-	parseCommandFlags(fs, args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() > 1 {
-		commandUsage("Usage: gs slice tree [path] [--slice <slice-id-or-slug>] [--commit <hash>] [--depth <n>]")
+		commandUsage("Usage: gs slice tree [path] [--slice <slice-id-or-slug>] [--commit <hash>] [--depth <n>] [--json]")
 		return
 	}
 
@@ -224,6 +227,25 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("INVALID_SLICE_REFERENCE", false, "gs slice list --json", "Failed to resolve slice: %v", err)
 	}
+	commitHash := strings.TrimSpace(*commitFlag)
+
+	if jsonEnabled {
+		nodes, err := buildSliceTreeNodes(ctx, cli, sliceID, commitHash, rootPath, 1, *depth)
+		if err != nil {
+			commandFatalf("SLICE_TREE_FAILED", true, "", "Failed to build slice tree: %v", err)
+		}
+		displayPath := "/"
+		if rootPath != "" {
+			displayPath = rootPath
+		}
+		writeJSONOutput(jsonSliceTreeOutput{
+			SliceID: sliceID,
+			Commit:  commitHash,
+			Path:    displayPath,
+			Nodes:   nodes,
+		})
+		return
+	}
 
 	fmt.Printf("Slice: %s\n", sliceID)
 	if rootPath == "" {
@@ -232,7 +254,7 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 		fmt.Printf("Path: %s\n", rootPath)
 	}
 
-	if err := printSliceTree(ctx, cli, sliceID, strings.TrimSpace(*commitFlag), rootPath, "", 1, *depth); err != nil {
+	if err := printSliceTree(ctx, cli, sliceID, commitHash, rootPath, "", 1, *depth); err != nil {
 		commandFatalf("SLICE_TREE_FAILED", true, "", "Failed to print slice tree: %v", err)
 	}
 }
@@ -339,4 +361,45 @@ func printSliceTree(
 	}
 
 	return nil
+}
+
+func buildSliceTreeNodes(
+	ctx context.Context,
+	cli *CLI,
+	sliceID, commitHash, currentPath string,
+	level, maxDepth int,
+) ([]jsonSliceTreeNode, error) {
+	req := &filev1.ListEntriesRequest{Path: currentPath, Limit: 10000}
+	applyListEntriesVersion(req, sliceID, commitHash)
+	resp, err := cli.fileClient.ListEntries(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := append([]*filev1.DirectoryEntry(nil), resp.GetEntries()...)
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].GetType() != entries[j].GetType() {
+			return entries[i].GetType() == filev1.EntryType_ENTRY_TYPE_DIRECTORY
+		}
+		return entries[i].GetName() < entries[j].GetName()
+	})
+
+	nodes := make([]jsonSliceTreeNode, 0, len(entries))
+	for _, entry := range entries {
+		node := jsonSliceTreeNode{
+			Name: entry.GetName(),
+			Path: entry.GetPath(),
+			Type: strings.ToLower(strings.TrimPrefix(entry.GetType().String(), "ENTRY_TYPE_")),
+			Size: entry.GetSize(),
+		}
+		if entry.GetType() == filev1.EntryType_ENTRY_TYPE_DIRECTORY && (maxDepth == 0 || level < maxDepth) {
+			children, err := buildSliceTreeNodes(ctx, cli, sliceID, commitHash, entry.GetPath(), level+1, maxDepth)
+			if err != nil {
+				return nil, err
+			}
+			node.Children = children
+		}
+		nodes = append(nodes, node)
+	}
+	return nodes, nil
 }

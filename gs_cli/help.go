@@ -9,8 +9,9 @@ func printHelp() {
 	fmt.Println("\nGlobal auth resolution:")
 	fmt.Println("  1. --api-key")
 	fmt.Println("  2. GS_API_KEY")
-	fmt.Println("  3. ~/.gitslice/credentials.json")
-	fmt.Println("  4. legacy username auth (--user, GS_USERNAME, ~/.gitslice/user)")
+	fmt.Println("  3. GS_API_KEY_FILE")
+	fmt.Println("  4. ~/.gitslice/credentials.json")
+	fmt.Println("  5. legacy username auth (--user, GS_USERNAME, ~/.gitslice/user)")
 	fmt.Println("\nCommands:")
 	fmt.Println("  auth       Manage CLI auth, agent keys, and key-based login")
 	fmt.Println("  login      Start OAuth device login or show current auth")
@@ -48,7 +49,8 @@ func printAuthHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  keygen   Generate a local ed25519 agent keypair")
 	fmt.Println("  signup   Sign up with an agent private key and store bearer credentials")
-	fmt.Println("  login    Log in with an enrolled agent private key")
+	fmt.Println("  login    Log in with an enrolled agent private key or --device")
+	fmt.Println("  ensure   Ensure the CLI is authenticated, optionally by logging in with --key")
 	fmt.Println("  status   Show the current stored auth state")
 	fmt.Println("  logout   Clear stored bearer credentials or legacy auth")
 	fmt.Println("  keys     Manage enrolled agent keys")
@@ -56,6 +58,7 @@ func printAuthHelp() {
 	fmt.Println("  gs auth keygen --out ~/.config/gitslice/agent.pem")
 	fmt.Println("  gs auth signup --username nic --email nic@example.com --name \"Nic\" --key ~/.config/gitslice/agent.pem --json")
 	fmt.Println("  gs auth login --key ~/.config/gitslice/agent.pem --json")
+	fmt.Println("  gs auth ensure --key ~/.config/gitslice/agent.pem --json")
 	fmt.Println("  gs auth status --json")
 }
 
@@ -97,6 +100,7 @@ func printSliceHelp() {
 	fmt.Println("  gs slice ensure ui-refresh apps/web --json")
 	fmt.Println("  gs slice checkout nic/ui-refresh --json")
 	fmt.Println("  gs slice status --json")
+	fmt.Println("  gs slice tree --slice nic/ui-refresh --json")
 	fmt.Println("  gs slice diff --summary")
 	fmt.Println("  gs slice publish --review-only --json")
 }
@@ -142,6 +146,7 @@ func printChangesetHelp() {
 	fmt.Println("  gs changeset create --message \"update settings\" --json")
 	fmt.Println("  gs changeset show --json")
 	fmt.Println("  gs changeset review cs_123 --json")
+	fmt.Println("  gs changeset rebase cs_123 --json")
 	fmt.Println("  gs changeset merge cs_123 --json")
 }
 
