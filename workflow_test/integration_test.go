@@ -1929,6 +1929,185 @@ func TestFilesystemTransferWorkflowEndToEnd(t *testing.T) {
 	}
 }
 
+func TestFilesystemDryRunAndIdempotentWorkflow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withWorkflowUser(t, ctx)
+	username := workflowUsername(t)
+	client := newFilesystemClient(t)
+	workspaceID := homeslice.IDForUsername(username)
+	basePath := fmt.Sprintf("/%s/fs-ops-%d", username, time.Now().UnixNano())
+
+	filePath := basePath + "/delete-me.txt"
+	if _, err := client.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        filePath,
+		Content:     []byte("delete me\n"),
+	}); err != nil {
+		t.Fatalf("write delete target failed: %v", err)
+	}
+
+	rmPreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "rm", filePath, "--dry-run")
+	if rmPreview.Status != "would_delete" || !rmPreview.DryRun || rmPreview.Path != filePath {
+		t.Fatalf("unexpected rm dry-run response: %+v", rmPreview)
+	}
+	statResp, err := client.Stat(ctx, &filesystemv1.StatRequest{WorkspaceId: workspaceID, Path: filePath})
+	if err != nil || !statResp.GetExists() {
+		t.Fatalf("expected delete target to remain after dry-run, stat=%#v err=%v", statResp, err)
+	}
+
+	rmResp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "rm", filePath)
+	if rmResp.Status != "deleted" || rmResp.CommitHash == "" {
+		t.Fatalf("unexpected rm response: %+v", rmResp)
+	}
+	rmNoOp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "rm", filePath)
+	if rmNoOp.Status != "no_op" {
+		t.Fatalf("expected rm retry to no-op, got %+v", rmNoOp)
+	}
+
+	moveSource := basePath + "/move-source.txt"
+	moveDest := basePath + "/move-dest.txt"
+	if _, err := client.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        moveSource,
+		Content:     []byte("move me\n"),
+	}); err != nil {
+		t.Fatalf("write move source failed: %v", err)
+	}
+	movePreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "mv", moveSource, moveDest, "--dry-run")
+	if movePreview.Status != "would_move" || movePreview.SourcePath != moveSource || movePreview.DestinationPath != moveDest {
+		t.Fatalf("unexpected move dry-run response: %+v", movePreview)
+	}
+	moveResp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "mv", moveSource, moveDest)
+	if moveResp.Status != "moved" || moveResp.CommitHash == "" {
+		t.Fatalf("unexpected move response: %+v", moveResp)
+	}
+	moveNoOp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "mv", moveSource, moveDest)
+	if moveNoOp.Status != "no_op" {
+		t.Fatalf("expected move retry to no-op, got %+v", moveNoOp)
+	}
+
+	copySource := basePath + "/copy-source.txt"
+	copyDest := basePath + "/copy-dest.txt"
+	if _, err := client.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        copySource,
+		Content:     []byte("copy me\n"),
+	}); err != nil {
+		t.Fatalf("write copy source failed: %v", err)
+	}
+	copyPreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "cp", copySource, copyDest, "--dry-run")
+	if copyPreview.Status != "would_copy" || copyPreview.SourcePath != copySource || copyPreview.DestinationPath != copyDest {
+		t.Fatalf("unexpected copy dry-run response: %+v", copyPreview)
+	}
+	copyResp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "cp", copySource, copyDest)
+	if copyResp.Status != "copied" || copyResp.CommitHash == "" {
+		t.Fatalf("unexpected copy response: %+v", copyResp)
+	}
+	copyNoOp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "cp", copySource, copyDest)
+	if copyNoOp.Status != "no_op" {
+		t.Fatalf("expected copy retry to no-op, got %+v", copyNoOp)
+	}
+
+	restorePath := basePath + "/restore.txt"
+	if _, err := client.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        restorePath,
+		Content:     []byte("before restore\n"),
+	}); err != nil {
+		t.Fatalf("write restore seed failed: %v", err)
+	}
+	snapshotResp, err := client.Snapshot(ctx, &filesystemv1.SnapshotRequest{
+		WorkspaceId: workspaceID,
+		Message:     "before restore",
+	})
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+	if _, err := client.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: workspaceID,
+		Path:        restorePath,
+		Content:     []byte("after restore\n"),
+	}); err != nil {
+		t.Fatalf("write restore mutation failed: %v", err)
+	}
+
+	restorePreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "restore", snapshotResp.GetSnapshot().GetSnapshotId(), "--dry-run")
+	if restorePreview.Status != "would_restore" || restorePreview.SnapshotID != snapshotResp.GetSnapshot().GetSnapshotId() || restorePreview.Summary == nil {
+		t.Fatalf("unexpected restore dry-run response: %+v", restorePreview)
+	}
+	restoreResp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "restore", snapshotResp.GetSnapshot().GetSnapshotId())
+	if restoreResp.Status != "restored" {
+		t.Fatalf("unexpected restore response: %+v", restoreResp)
+	}
+	restoreNoOp := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "restore", snapshotResp.GetSnapshot().GetSnapshotId())
+	if restoreNoOp.Status != "no_op" {
+		t.Fatalf("expected restore retry to no-op, got %+v", restoreNoOp)
+	}
+	readResp, err := client.ReadFile(ctx, &filesystemv1.ReadFileRequest{WorkspaceId: workspaceID, Path: restorePath})
+	if err != nil {
+		t.Fatalf("read restored file failed: %v", err)
+	}
+	if got := string(readResp.GetContent()); got != "before restore\n" {
+		t.Fatalf("unexpected restored file content: %q", got)
+	}
+}
+
+func TestFilesystemTransferDryRunWorkflow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = withWorkflowUser(t, ctx)
+	username := workflowUsername(t)
+	client := newFilesystemClient(t)
+	remoteProjectRoot := fmt.Sprintf("/%s/fs-transfer-dry-run-%d/project", username, time.Now().UnixNano())
+
+	uploadRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(uploadRoot, "src"), 0o755); err != nil {
+		t.Fatalf("create src dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(uploadRoot, "docs", "empty"), 0o755); err != nil {
+		t.Fatalf("create empty dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(uploadRoot, "README.md"), []byte("transfer root\n"), 0o600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(uploadRoot, "src", "main.py"), []byte("print('transfer')\n"), 0o600); err != nil {
+		t.Fatalf("write src/main.py: %v", err)
+	}
+
+	uploadPreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "upload", uploadRoot, remoteProjectRoot, "--dry-run")
+	if uploadPreview.Status != "would_upload" || uploadPreview.FileCount != 2 || uploadPreview.DirectoryCount != 3 {
+		t.Fatalf("unexpected upload dry-run response: %+v", uploadPreview)
+	}
+	statResp, err := client.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: homeslice.IDForUsername(username),
+		Path:        remoteProjectRoot,
+	})
+	if err != nil {
+		t.Fatalf("stat remote upload root failed: %v", err)
+	}
+	if statResp.GetExists() {
+		t.Fatalf("expected upload dry-run to leave remote path absent: %#v", statResp)
+	}
+
+	runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "sync", "--direction", "push", uploadRoot, remoteProjectRoot, "--dry-run")
+	runCLIOrFail(t, "", "fs", "upload", uploadRoot, remoteProjectRoot)
+
+	downloadRoot := filepath.Join(t.TempDir(), "download-preview")
+	downloadPreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "download", remoteProjectRoot, downloadRoot, "--dry-run")
+	if downloadPreview.Status != "would_download" || downloadPreview.FileCount != 2 || downloadPreview.DirectoryCount != 3 {
+		t.Fatalf("unexpected download dry-run response: %+v", downloadPreview)
+	}
+	if _, err := os.Stat(downloadRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected dry-run download target to remain absent, stat err=%v", err)
+	}
+
+	syncPullPreview := runCLIJSONOrFail[filesystemActionJSON](t, "", "fs", "sync", "--direction", "pull", remoteProjectRoot, downloadRoot, "--dry-run")
+	if syncPullPreview.Status != "would_download" || syncPullPreview.FileCount != 2 || syncPullPreview.DirectoryCount != 3 {
+		t.Fatalf("unexpected sync pull dry-run response: %+v", syncPullPreview)
+	}
+}
+
 func TestRootSliceGenesisPathsNormalized(t *testing.T) {
 	t.Setenv("RUN_INTEGRATION_TESTS", "")
 	t.Setenv("SKIP_GIT_POPULATION", "")

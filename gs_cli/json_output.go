@@ -349,10 +349,31 @@ type jsonInitOutput struct {
 
 type jsonFilesystemTransferOutput struct {
 	Action         string `json:"action"`
+	Status         string `json:"status,omitempty"`
+	DryRun         bool   `json:"dry_run,omitempty"`
 	LocalPath      string `json:"local_path"`
 	RemotePath     string `json:"remote_path"`
 	FileCount      int    `json:"file_count"`
 	DirectoryCount int    `json:"directory_count"`
+}
+
+type jsonFilesystemActionOutput struct {
+	Action            string                    `json:"action"`
+	Status            string                    `json:"status"`
+	DryRun            bool                      `json:"dry_run,omitempty"`
+	Path              string                    `json:"path,omitempty"`
+	SourcePath        string                    `json:"source_path,omitempty"`
+	DestinationPath   string                    `json:"destination_path,omitempty"`
+	LocalPath         string                    `json:"local_path,omitempty"`
+	RemotePath        string                    `json:"remote_path,omitempty"`
+	EntryType         string                    `json:"entry_type,omitempty"`
+	CommitHash        string                    `json:"commit_hash,omitempty"`
+	SnapshotID        string                    `json:"snapshot_id,omitempty"`
+	CurrentSnapshotID string                    `json:"current_snapshot_id,omitempty"`
+	FileCount         int                       `json:"file_count,omitempty"`
+	DirectoryCount    int                       `json:"directory_count,omitempty"`
+	Summary           *jsonChangesetDiffSummary `json:"summary,omitempty"`
+	Message           string                    `json:"message,omitempty"`
 }
 
 type jsonDoctorAuthOutput struct {
