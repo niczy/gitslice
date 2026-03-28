@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,13 +20,13 @@ func handleImportCommand(ctx context.Context, cli *CLI, args []string) {
 	case "git":
 		handleImportGit(ctx, cli, args[1:])
 	default:
-		log.Printf("Unknown import command: %s", args[0])
-		printImportHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown import command: %s", args[0]), false, "gs import --help")
 	}
 }
 
 func handleImportGit(ctx context.Context, cli *CLI, args []string) {
-	fs := flag.NewFlagSet("import git", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("import git")
 	repo := fs.String("repo", ".", "Git repo source: local path on server host or remote URL (e.g. https://github.com/org/repo.git)")
 	ref := fs.String("ref", "HEAD", "Git ref to import (e.g. HEAD, main, <sha>)")
 	sliceID := fs.String("slice", "root_slice", "Target slice ID")
@@ -37,7 +35,9 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 	firstParent := fs.Bool("first-parent", true, "Import first-parent linear history (merges are not represented)")
 	maxCommits := fs.Int("max-commits", 0, "Optional cap for number of commits imported (0 = no cap)")
 	timeout := fs.Duration("timeout", 30*time.Minute, "Timeout for the import operation")
-	fs.Parse(args)
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	repoArg := strings.TrimSpace(*repo)
 	req := &adminv1.ImportGitRepoRequest{
@@ -63,12 +63,22 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 
 	resp, err := cli.adminClient.ImportGitRepo(importCtx, req)
 	if err != nil {
-		log.Fatalf("Import failed: %v", err)
+		commandFatalf("IMPORT_FAILED", true, "", "Import failed: %v", err)
 	}
 
 	displayMount := *mount
 	if displayMount == "" {
 		displayMount = "/o/genesis/projects/" + repoNameForDisplay(repoArg)
+	}
+	if jsonEnabled {
+		writeJSONOutput(jsonImportGitOutput{
+			SliceID:         req.SliceId,
+			MountPath:       displayMount,
+			ImportedCommits: int(resp.GetImportedCommits()),
+			HeadCommitHash:  resp.GetHeadCommitHash(),
+			Warnings:        append([]string(nil), resp.GetWarnings()...),
+		})
+		return
 	}
 
 	fmt.Printf("Imported %d commit(s) into slice %s at %s\n", resp.ImportedCommits, req.SliceId, displayMount)

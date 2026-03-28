@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
@@ -32,8 +31,7 @@ func handleRepoCommand(ctx context.Context, cli *CLI, args []string) {
 	case "unlink":
 		handleRepoUnlink(ctx, cli, args[1:])
 	default:
-		log.Printf("Unknown repo command: %s", args[0])
-		printRepoHelp()
+		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown repo command: %s", args[0]), false, "gs repo --help")
 	}
 }
 

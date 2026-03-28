@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
 	"os"
 	"strings"
 
@@ -474,6 +474,14 @@ type jsonChangesetListOutput struct {
 	Changesets []jsonChangesetListItem `json:"changesets"`
 }
 
+type jsonImportGitOutput struct {
+	SliceID         string   `json:"slice_id"`
+	MountPath       string   `json:"mount_path"`
+	ImportedCommits int      `json:"imported_commits"`
+	HeadCommitHash  string   `json:"head_commit_hash"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
 func writeJSONOutput(value any) {
 	if msg, ok := value.(proto.Message); ok {
 		marshaler := protojson.MarshalOptions{
@@ -483,14 +491,17 @@ func writeJSONOutput(value any) {
 		}
 		data, err := marshaler.Marshal(msg)
 		if err != nil {
-			log.Fatalf("Failed to write JSON output: %v", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Failed to write JSON output: %v\n", err)
+			os.Exit(cliExitGeneral)
 		}
 		if _, err := os.Stdout.Write(data); err != nil {
-			log.Fatalf("Failed to write JSON output: %v", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Failed to write JSON output: %v\n", err)
+			os.Exit(cliExitGeneral)
 		}
 		if len(data) == 0 || data[len(data)-1] != '\n' {
 			if _, err := os.Stdout.Write([]byte("\n")); err != nil {
-				log.Fatalf("Failed to write JSON output: %v", err)
+				_, _ = fmt.Fprintf(os.Stderr, "Failed to write JSON output: %v\n", err)
+				os.Exit(cliExitGeneral)
 			}
 		}
 		return
@@ -498,7 +509,8 @@ func writeJSONOutput(value any) {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
-		log.Fatalf("Failed to write JSON output: %v", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Failed to write JSON output: %v\n", err)
+		os.Exit(cliExitGeneral)
 	}
 }
 

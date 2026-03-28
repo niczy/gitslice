@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,28 +34,31 @@ type filesystemBatchEditInput struct {
 }
 
 func handleFilesystemBatch(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-	fs := flag.NewFlagSet("fs batch", flag.ExitOnError)
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("fs batch")
 	fileFlag := fs.String("f", "", "Read batch operations from a JSON or JSONL file")
 	message := fs.String("m", "", "Commit message for the batch")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 0 {
-		log.Println("Usage: gs fs batch [-f <ops.jsonl>] [-m <message>]")
+		commandUsage("Usage: gs fs batch [-f <ops.jsonl>] [-m <message>] [--json]")
 		return
 	}
 
 	workspaceID, err := resolveFilesystemHomeWorkspace(ctx, cli, authConfig)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_BATCH_FAILED", true, "", "Failed to resolve home workspace: %v", err)
 	}
 
 	data, baseDir, err := readFilesystemBatchInput(strings.TrimSpace(*fileFlag))
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_BATCH_FAILED", false, "", "Failed to read batch input: %v", err)
 	}
 	operations, err := parseFilesystemBatchOperations(data, baseDir)
 	if err != nil {
-		log.Fatal(err)
+		commandFatalf("FS_BATCH_FAILED", false, "", "Failed to parse batch input: %v", err)
 	}
 
 	resp, err := cli.filesystemClient.Batch(ctx, &filesystemv1.BatchRequest{
@@ -66,7 +67,11 @@ func handleFilesystemBatch(ctx context.Context, cli *CLI, authConfig cliAuth, ar
 		Message:     strings.TrimSpace(*message),
 	})
 	if err != nil {
-		log.Fatalf("Failed to execute filesystem batch: %v", err)
+		commandFatalf("FS_BATCH_FAILED", true, "", "Failed to execute filesystem batch: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(resp)
+		return
 	}
 
 	fmt.Printf("Batch commit: %s\n", resp.GetCommitHash())
