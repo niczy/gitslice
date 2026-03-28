@@ -55,6 +55,27 @@ func TestResolveAuthConfigUsesCredentialsFileBeforeLegacyUsername(t *testing.T) 
 	}
 }
 
+func TestResolveAuthConfigUsesAPIKeyFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tokenPath := filepath.Join(home, "agent.token")
+	if err := os.WriteFile(tokenPath, []byte("file-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile token failed: %v", err)
+	}
+	t.Setenv("GS_API_KEY_FILE", tokenPath)
+
+	authConfig, err := resolveAuthConfig("", "")
+	if err != nil {
+		t.Fatalf("resolveAuthConfig failed: %v", err)
+	}
+	if authConfig.Authorization != "Bearer file-token" {
+		t.Fatalf("unexpected authorization: %q", authConfig.Authorization)
+	}
+	if authConfig.Source != "GS_API_KEY_FILE" {
+		t.Fatalf("unexpected source: %q", authConfig.Source)
+	}
+}
+
 func TestResolveAuthConfigFallsBackToLegacyUsername(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

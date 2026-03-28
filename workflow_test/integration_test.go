@@ -1753,6 +1753,64 @@ func TestCLIAgentKeySignupLoginAndManageFlow(t *testing.T) {
 	}
 }
 
+func TestCLIAuthEnsureWithAgentKey(t *testing.T) {
+	homeDir := t.TempDir()
+	env := map[string]string{"HOME": homeDir}
+
+	privateKeyPath := filepath.Join(t.TempDir(), "agent_ed25519")
+	if output, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "keygen", "--out", privateKeyPath, "--json"); err != nil {
+		t.Fatalf("auth keygen failed: %v\nOutput:\n%s", err, output)
+	}
+
+	username := fmt.Sprintf("agent-ensure-%d", time.Now().UnixNano())
+	signupOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env,
+		"auth", "signup",
+		"--username", username,
+		"--email", username+"@example.com",
+		"--name", "Agent Ensure User",
+		"--key", privateKeyPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("auth signup failed: %v\nOutput:\n%s", err, signupOutput)
+	}
+	var signupResp authLoginJSON
+	if err := json.Unmarshal([]byte(signupOutput), &signupResp); err != nil {
+		t.Fatalf("Unmarshal signup output failed: %v\nOutput:\n%s", err, signupOutput)
+	}
+
+	readyOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "ensure", "--key", privateKeyPath, "--json")
+	if err != nil {
+		t.Fatalf("auth ensure failed: %v\nOutput:\n%s", err, readyOutput)
+	}
+	var readyResp authEnsureJSON
+	if err := json.Unmarshal([]byte(readyOutput), &readyResp); err != nil {
+		t.Fatalf("Unmarshal auth ensure output failed: %v\nOutput:\n%s", err, readyOutput)
+	}
+	if !readyResp.Authenticated || readyResp.Ensured || readyResp.Username != username {
+		t.Fatalf("unexpected ready auth ensure response: %+v", readyResp)
+	}
+
+	if output, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "logout", "--json"); err != nil {
+		t.Fatalf("auth logout failed: %v\nOutput:\n%s", err, output)
+	}
+
+	ensuredOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "ensure", "--key", privateKeyPath, "--json")
+	if err != nil {
+		t.Fatalf("auth ensure with key failed: %v\nOutput:\n%s", err, ensuredOutput)
+	}
+	var ensuredResp authEnsureJSON
+	if err := json.Unmarshal([]byte(ensuredOutput), &ensuredResp); err != nil {
+		t.Fatalf("Unmarshal ensured auth output failed: %v\nOutput:\n%s", err, ensuredOutput)
+	}
+	if !ensuredResp.Authenticated || !ensuredResp.Ensured || ensuredResp.Username != username {
+		t.Fatalf("unexpected ensured auth response: %+v", ensuredResp)
+	}
+	if ensuredResp.AuthMethod != "agent_key" || ensuredResp.AgentKeyID != signupResp.AgentKeyID {
+		t.Fatalf("expected agent-key metadata after ensure, got: %+v", ensuredResp)
+	}
+}
+
 func TestFilesystemShellWorkflowEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

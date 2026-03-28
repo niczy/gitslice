@@ -272,6 +272,21 @@ type authStatusJSON struct {
 	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
 }
 
+type authEnsureJSON struct {
+	Status                string `json:"status"`
+	Ensured               bool   `json:"ensured"`
+	Authenticated         bool   `json:"authenticated"`
+	Username              string `json:"username"`
+	Source                string `json:"source"`
+	CredentialStore       bool   `json:"credential_store"`
+	AuthMethod            string `json:"auth_method"`
+	AgentKeyID            string `json:"agent_key_id"`
+	KeyFingerprint        string `json:"key_fingerprint"`
+	SessionID             string `json:"session_id"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at"`
+}
+
 type authKeyJSON struct {
 	ID          string `json:"id"`
 	UserID      string `json:"user_id"`

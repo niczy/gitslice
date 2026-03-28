@@ -44,6 +44,21 @@ type jsonAuthLogoutOutput struct {
 	Source string `json:"source,omitempty"`
 }
 
+type jsonAuthEnsureOutput struct {
+	Status                string `json:"status"`
+	Ensured               bool   `json:"ensured"`
+	Authenticated         bool   `json:"authenticated"`
+	Username              string `json:"username,omitempty"`
+	Source                string `json:"source,omitempty"`
+	CredentialStore       bool   `json:"credential_store,omitempty"`
+	AuthMethod            string `json:"auth_method,omitempty"`
+	AgentKeyID            string `json:"agent_key_id,omitempty"`
+	KeyFingerprint        string `json:"key_fingerprint,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	AccessTokenExpiresAt  string `json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+}
+
 type jsonAuthKeygenOutput struct {
 	Status         string `json:"status"`
 	Algorithm      string `json:"algorithm"`
@@ -635,6 +650,24 @@ func buildAuthStatusOutput(authConfig cliAuth, creds credentialsConfig) jsonAuth
 		out.RefreshTokenExpiresAt = strings.TrimSpace(creds.RefreshTokenExpiresAtCamel)
 	}
 	return out
+}
+
+func buildAuthEnsureOutput(authConfig cliAuth, creds credentialsConfig, ensured bool) jsonAuthEnsureOutput {
+	status := buildAuthStatusOutput(authConfig, creds)
+	return jsonAuthEnsureOutput{
+		Status:                "ready",
+		Ensured:               ensured,
+		Authenticated:         status.Authenticated,
+		Username:              status.Username,
+		Source:                status.Source,
+		CredentialStore:       status.CredentialStore,
+		AuthMethod:            status.AuthMethod,
+		AgentKeyID:            status.AgentKeyID,
+		KeyFingerprint:        status.KeyFingerprint,
+		SessionID:             status.SessionID,
+		AccessTokenExpiresAt:  status.AccessTokenExpiresAt,
+		RefreshTokenExpiresAt: status.RefreshTokenExpiresAt,
+	}
 }
 
 func buildAuthLoginOutput(resp *accountv1.AuthResponse, source, authMethod string, publicKey []byte) jsonAuthLoginOutput {

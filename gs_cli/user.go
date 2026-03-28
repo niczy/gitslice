@@ -294,6 +294,20 @@ func resolveAuthConfig(apiKeyFlag, userFlag string) (cliAuth, error) {
 			Source:        "GS_API_KEY",
 		}, nil
 	}
+	if tokenFile := strings.TrimSpace(os.Getenv("GS_API_KEY_FILE")); tokenFile != "" {
+		data, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return cliAuth{}, fmt.Errorf("read GS_API_KEY_FILE: %w", err)
+		}
+		token := strings.TrimSpace(string(data))
+		if token == "" {
+			return cliAuth{}, fmt.Errorf("GS_API_KEY_FILE %q is empty", tokenFile)
+		}
+		return cliAuth{
+			Authorization: "Bearer " + token,
+			Source:        "GS_API_KEY_FILE",
+		}, nil
+	}
 	if cfg, err := readCredentialsConfig(); err == nil {
 		if token := cfg.accessToken(); token != "" || cfg.refreshToken() != "" {
 			authorization := ""
