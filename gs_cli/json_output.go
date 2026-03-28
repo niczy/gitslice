@@ -334,6 +334,7 @@ type jsonRepoPullOutput struct {
 	RemoteCommit string          `json:"remote_commit,omitempty"`
 	FileCount    int32           `json:"file_count"`
 	Updated      bool            `json:"updated"`
+	Published    bool            `json:"published,omitempty"`
 }
 
 type jsonRepoPushOutput struct {
