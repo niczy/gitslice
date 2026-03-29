@@ -1,15 +1,18 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-
 import { Auth } from '@auth/core';
 import GitHub from '@auth/core/providers/github';
 import Google from '@auth/core/providers/google';
+import {
+  decodeBase64URLUTF8,
+  encodeBase64URLUTF8,
+  getConfiguredAPIBaseURL,
+  randomHex,
+  signHMACSHA256Base64URL,
+  timingSafeEqualText,
+} from '../shared/runtime.js';
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
-const gatewayTarget =
-  process.env.PUBLIC_API_BASE_URL ||
-  process.env.VITE_FILE_API_PROXY_TARGET ||
-  'http://localhost:50051';
+const gatewayTarget = getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
 
 function buildUsernameFromProfile(profile) {
   const raw = [
@@ -32,7 +35,7 @@ function buildUsernameFromProfile(profile) {
   if (trimmed.length >= 3) {
     return trimmed;
   }
-  return `${trimmed}${randomBytes(2).toString('hex')}`.slice(0, 8);
+  return `${trimmed}${randomHex(2)}`.slice(0, 8);
 }
 
 export function createAuthContext() {
@@ -88,20 +91,20 @@ export function createAuthContext() {
 }
 
 function encodeBase64URL(value) {
-  return Buffer.from(value, 'utf8').toString('base64url');
+  return encodeBase64URLUTF8(value);
 }
 
 function decodeBase64URL(value) {
-  return Buffer.from(value, 'base64url').toString('utf8');
+  return decodeBase64URLUTF8(value);
 }
 
-function signDevSession(username, authSecret) {
+async function signDevSession(username, authSecret) {
   const payload = encodeBase64URL(JSON.stringify({ username }));
-  const signature = createHmac('sha256', authSecret).update(payload).digest('base64url');
+  const signature = await signHMACSHA256Base64URL(authSecret, payload);
   return `${payload}.${signature}`;
 }
 
-function verifyDevSession(rawValue, authSecret) {
+async function verifyDevSession(rawValue, authSecret) {
   if (!rawValue || !authSecret) {
     return '';
   }
@@ -109,10 +112,8 @@ function verifyDevSession(rawValue, authSecret) {
   if (!payload || !signature) {
     return '';
   }
-  const expected = createHmac('sha256', authSecret).update(payload).digest('base64url');
-  const actualBuffer = Buffer.from(signature, 'utf8');
-  const expectedBuffer = Buffer.from(expected, 'utf8');
-  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+  const expected = await signHMACSHA256Base64URL(authSecret, payload);
+  if (!timingSafeEqualText(signature, expected)) {
     return '';
   }
   try {
@@ -199,7 +200,7 @@ export async function loadSession(request) {
     };
   }
 
-  const devUsername = verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authSecret);
+  const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authSecret);
   if (!devUsername) {
     return null;
   }
@@ -270,12 +271,12 @@ export async function handleDevLoginRequest(request) {
     source: 'dev',
     expires: '',
   }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Set-Cookie': serializeCookie(request, DEV_SESSION_COOKIE, signDevSession(username, authSecret), 60 * 60 * 24 * 30),
-    },
-  });
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': serializeCookie(request, DEV_SESSION_COOKIE, await signDevSession(username, authSecret), 60 * 60 * 24 * 30),
+      },
+    });
 }
 
 export function handleDevLogoutRequest(request) {

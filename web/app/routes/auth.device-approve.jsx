@@ -1,9 +1,7 @@
 import { createAuthContext, loadSession } from '../../server/auth.js';
+import { getConfiguredAPIBaseURL } from '../../shared/runtime.js';
 
-const gatewayTarget =
-  process.env.PUBLIC_API_BASE_URL ||
-  process.env.VITE_FILE_API_PROXY_TARGET ||
-  'http://localhost:50051';
+const gatewayTarget = getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
 
 export async function action({ request }) {
   const { authSecret, startupError } = createAuthContext();
