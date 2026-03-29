@@ -36,10 +36,35 @@ function loadEnvFile(filePath) {
   return env;
 }
 
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  switch (String(value).trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return fallback;
+  }
+}
+
 const fileEnv = loadEnvFile(opsEnvPath);
+const shouldRunWebSSR = parseBoolean(
+  fileEnv.RUN_WEB_SSR,
+  (fileEnv.WEB_DEPLOY_TARGET || "node") === "node",
+);
 
 const coreEnv = {
   DEPLOY_ENV: fileEnv.DEPLOY_ENV || "production",
+  CORE_BIND_ADDR: fileEnv.CORE_BIND_ADDR || "127.0.0.1",
   CORE_SERVICE_PORT: fileEnv.CORE_SERVICE_PORT || "50051",
   STORAGE_TYPE: fileEnv.STORAGE_TYPE || "postgres",
   POSTGRES_DSN: fileEnv.POSTGRES_DSN || "postgres://nic@127.0.0.1:55432/gitslice?sslmode=disable",
@@ -61,7 +86,7 @@ const coreEnv = {
   R2_ACCESS_KEY_ID: fileEnv.R2_ACCESS_KEY_ID || "",
   R2_SECRET_ACCESS_KEY: fileEnv.R2_SECRET_ACCESS_KEY || "",
   R2_USE_PATH_STYLE: fileEnv.R2_USE_PATH_STYLE || "",
-  PUBLIC_WEB_BASE_URL: fileEnv.PUBLIC_WEB_BASE_URL || "https://agenttools.dev",
+  PUBLIC_WEB_BASE_URL: fileEnv.PUBLIC_WEB_BASE_URL || "https://gitslice.io",
   PUBLIC_API_BASE_URL: fileEnv.PUBLIC_API_BASE_URL || "",
   WEB_DEPLOY_TARGET: fileEnv.WEB_DEPLOY_TARGET || "node",
   WEB_COMPAT_RUNTIME: fileEnv.WEB_COMPAT_RUNTIME || "node",
@@ -71,7 +96,7 @@ const webEnv = {
   DEPLOY_ENV: fileEnv.DEPLOY_ENV || "production",
   HOST: fileEnv.WEB_HOST || "127.0.0.1",
   PORT: fileEnv.WEB_PORT || "4173",
-  PUBLIC_WEB_BASE_URL: fileEnv.PUBLIC_WEB_BASE_URL || "https://agenttools.dev",
+  PUBLIC_WEB_BASE_URL: fileEnv.PUBLIC_WEB_BASE_URL || "https://gitslice.io",
   PUBLIC_API_BASE_URL: fileEnv.PUBLIC_API_BASE_URL || "",
   WEB_DEPLOY_TARGET: fileEnv.WEB_DEPLOY_TARGET || "node",
   WEB_COMPAT_RUNTIME: fileEnv.WEB_COMPAT_RUNTIME || "node",
@@ -91,29 +116,31 @@ const webEnv = {
   AUTH_GITHUB_ID: fileEnv.AUTH_GITHUB_ID,
   AUTH_GITHUB_SECRET: fileEnv.AUTH_GITHUB_SECRET,
 };
+const apps = [
+  {
+    name: "gitslice-core",
+    script: "./core_server",
+    cwd: repoRoot,
+    autorestart: true,
+    max_restarts: 10,
+    out_file: path.join(repoRoot, "logs/pm2-core.out.log"),
+    error_file: path.join(repoRoot, "logs/pm2-core.err.log"),
+    env: coreEnv,
+  },
+];
 
-module.exports = {
-  apps: [
-    {
-      name: "gitslice-core",
-      script: "./core_server",
-      cwd: repoRoot,
-      autorestart: true,
-      max_restarts: 10,
-      out_file: path.join(repoRoot, "logs/pm2-core.out.log"),
-      error_file: path.join(repoRoot, "logs/pm2-core.err.log"),
-      env: coreEnv,
-    },
-    {
-      name: "gitslice-web",
-      script: "npm",
-      args: "run start",
-      cwd: path.join(repoRoot, "web"),
-      autorestart: true,
-      max_restarts: 10,
-      out_file: path.join(repoRoot, "logs/pm2-web.out.log"),
-      error_file: path.join(repoRoot, "logs/pm2-web.err.log"),
-      env: webEnv,
-    },
-  ],
-};
+if (shouldRunWebSSR) {
+  apps.push({
+    name: "gitslice-web",
+    script: "npm",
+    args: "run start",
+    cwd: path.join(repoRoot, "web"),
+    autorestart: true,
+    max_restarts: 10,
+    out_file: path.join(repoRoot, "logs/pm2-web.out.log"),
+    error_file: path.join(repoRoot, "logs/pm2-web.err.log"),
+    env: webEnv,
+  });
+}
+
+module.exports = { apps };

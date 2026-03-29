@@ -104,11 +104,11 @@ func main() {
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
 	grpcAddr := cfg.GetCoreServiceAddr()
-	if strings.TrimSpace(cfg.GatewayPort) != "" && strings.TrimSpace(cfg.GatewayPort) != strings.TrimPrefix(grpcAddr, ":") {
+	if strings.TrimSpace(cfg.GatewayPort) != "" && strings.TrimSpace(cfg.GatewayPort) != strings.TrimSpace(cfg.CoreServicePort) {
 		log.Printf("Ignoring deprecated GATEWAY_PORT=%s; serving gRPC and HTTP gateway on %s", cfg.GatewayPort, grpcAddr)
 	}
 
-	grpcDialAddr := "localhost" + grpcAddr
+	grpcDialAddr := cfg.GetCoreServiceDialAddr()
 	gatewayMux, closeConns, err := gateway.NewMux(ctx, grpcDialAddr)
 	if err != nil {
 		log.Fatalf("Failed to create gateway mux: %v", err)

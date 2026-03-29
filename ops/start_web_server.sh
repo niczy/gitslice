@@ -10,6 +10,7 @@ WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
 DEPLOY_ENV="${DEPLOY_ENV:-production}"
+CORE_BIND_ADDR="${CORE_BIND_ADDR:-127.0.0.1}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 # In production we don't want to auto-scan the local git repo and populate genesis.
 # Leave overrideable for one-off maintenance runs.
@@ -19,11 +20,12 @@ STORAGE_TYPE="${STORAGE_TYPE:-postgres}"
 POSTGRES_DSN="${POSTGRES_DSN:-}"
 OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
 OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
-PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://agenttools.dev}"
+PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://gitslice.io}"
 PUBLIC_API_BASE_URL="${PUBLIC_API_BASE_URL:-http://127.0.0.1:${CORE_SERVICE_PORT}}"
 VITE_FILE_API_BASE_URL="${VITE_FILE_API_BASE_URL:-$PUBLIC_API_BASE_URL}"
 WEB_DEPLOY_TARGET="${WEB_DEPLOY_TARGET:-node}"
 WEB_COMPAT_RUNTIME="${WEB_COMPAT_RUNTIME:-node}"
+RUN_WEB_SSR="${RUN_WEB_SSR:-auto}"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-4173}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
@@ -33,6 +35,25 @@ PM2_NODE_BIN="${PM2_NODE_BIN:-}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+should_run_web_ssr() {
+  case "$(printf '%s' "$RUN_WEB_SSR" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    auto|"")
+      [ "$WEB_DEPLOY_TARGET" = "node" ]
+      return $?
+      ;;
+    *)
+      log "ERROR: RUN_WEB_SSR must be one of auto,true,false,1,0,yes,no,on,off"
+      exit 1
+      ;;
+  esac
 }
 
 discover_pm2_bin() {
@@ -226,6 +247,7 @@ start_core_server_nohup() {
   cd "$REPO_ROOT"
 
   log "Starting core server (log: $CORE_LOG)..."
+  CORE_BIND_ADDR="$CORE_BIND_ADDR" \
   CORE_SERVICE_PORT="$CORE_SERVICE_PORT" \
     STORAGE_TYPE="$STORAGE_TYPE" \
     POSTGRES_DSN="$POSTGRES_DSN" \
@@ -239,7 +261,7 @@ start_core_server_nohup() {
     WEB_COMPAT_RUNTIME="$WEB_COMPAT_RUNTIME" \
     nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
   local pid=$!
-  log "Core server started with PID $pid (DEPLOY_ENV=$DEPLOY_ENV, STORAGE_TYPE=$STORAGE_TYPE, SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE, PUBLIC_WEB_BASE_URL=$PUBLIC_WEB_BASE_URL, PUBLIC_API_BASE_URL=$PUBLIC_API_BASE_URL)"
+  log "Core server started with PID $pid (DEPLOY_ENV=$DEPLOY_ENV, CORE_BIND_ADDR=$CORE_BIND_ADDR, STORAGE_TYPE=$STORAGE_TYPE, SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE, PUBLIC_WEB_BASE_URL=$PUBLIC_WEB_BASE_URL, PUBLIC_API_BASE_URL=$PUBLIC_API_BASE_URL)"
 
   if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "$CORE_LOG"; then
     log "ERROR: Failed to start core gRPC. Check $CORE_LOG for details"
@@ -297,7 +319,9 @@ start_services_with_pm2() {
     exit 1
   fi
 
-  wait_for_web_server
+  if should_run_web_ssr; then
+    wait_for_web_server
+  fi
 }
 
 start_services() {
@@ -309,11 +333,17 @@ start_services() {
   fi
 
   start_core_server_nohup
-  start_web_server_nohup
+  if should_run_web_ssr; then
+    start_web_server_nohup
+  fi
 }
 
 log "=== Starting all services ==="
 ensure_node_runtime
-build_web_server
+if should_run_web_ssr; then
+  build_web_server
+else
+  log "Skipping local web SSR build/start because WEB_DEPLOY_TARGET=$WEB_DEPLOY_TARGET and RUN_WEB_SSR=$RUN_WEB_SSR"
+fi
 start_services
 log "=== All services started ==="

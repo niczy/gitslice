@@ -7,6 +7,7 @@ import (
 
 func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("DEPLOY_ENV", "staging")
+	t.Setenv("CORE_BIND_ADDR", "127.0.0.1")
 	t.Setenv("STORAGE_TYPE", "postgres")
 	t.Setenv("POSTGRES_DSN", "postgres://user:pass@localhost:5432/gitslice?sslmode=disable")
 	t.Setenv("POSTGRES_MAX_CONNS", "25")
@@ -20,6 +21,9 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	if cfg.DeployEnv != "staging" {
 		t.Fatalf("expected deploy env staging, got %q", cfg.DeployEnv)
 	}
+	if cfg.CoreBindAddr != "127.0.0.1" {
+		t.Fatalf("expected core bind addr 127.0.0.1, got %q", cfg.CoreBindAddr)
+	}
 	if cfg.PostgresMaxConns != 25 {
 		t.Fatalf("expected max conns 25, got %d", cfg.PostgresMaxConns)
 	}
@@ -28,6 +32,28 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 	if cfg.PostgresMaxConnLifetime != 45*time.Minute {
 		t.Fatalf("expected max conn lifetime 45m, got %s", cfg.PostgresMaxConnLifetime)
+	}
+}
+
+func TestCoreServiceAddrDefaultsToWildcard(t *testing.T) {
+	cfg := &Config{CoreServicePort: "50051"}
+
+	if got := cfg.GetCoreServiceAddr(); got != ":50051" {
+		t.Fatalf("expected wildcard core addr, got %q", got)
+	}
+	if got := cfg.GetCoreServiceDialAddr(); got != "127.0.0.1:50051" {
+		t.Fatalf("expected loopback dial addr, got %q", got)
+	}
+}
+
+func TestCoreServiceAddrUsesExplicitBindAddr(t *testing.T) {
+	cfg := &Config{CoreServicePort: "50052", CoreBindAddr: "127.0.0.1"}
+
+	if got := cfg.GetCoreServiceAddr(); got != "127.0.0.1:50052" {
+		t.Fatalf("expected explicit core addr, got %q", got)
+	}
+	if got := cfg.GetCoreServiceDialAddr(); got != "127.0.0.1:50052" {
+		t.Fatalf("expected explicit dial addr, got %q", got)
 	}
 }
 
