@@ -39,19 +39,36 @@ function loadEnvFile(filePath) {
 const fileEnv = loadEnvFile(opsEnvPath);
 
 const coreEnv = {
+  DEPLOY_ENV: fileEnv.DEPLOY_ENV || "production",
   CORE_SERVICE_PORT: fileEnv.CORE_SERVICE_PORT || "50051",
   STORAGE_TYPE: fileEnv.STORAGE_TYPE || "postgres",
   POSTGRES_DSN: fileEnv.POSTGRES_DSN || "postgres://nic@127.0.0.1:55432/gitslice?sslmode=disable",
+  POSTGRES_MAX_CONNS: fileEnv.POSTGRES_MAX_CONNS || "",
+  POSTGRES_MIN_CONNS: fileEnv.POSTGRES_MIN_CONNS || "",
+  POSTGRES_MAX_CONN_LIFETIME: fileEnv.POSTGRES_MAX_CONN_LIFETIME || "",
   SKIP_GIT_POPULATION: fileEnv.SKIP_GIT_POPULATION || "1",
   OBJECT_STORE_TYPE: fileEnv.OBJECT_STORE_TYPE || "filesystem",
   OBJECT_STORE_DIR: fileEnv.OBJECT_STORE_DIR || path.join(repoRoot, ".objectstore"),
+  R2_BUCKET: fileEnv.R2_BUCKET || "",
+  R2_PREFIX: fileEnv.R2_PREFIX || "",
   PUBLIC_WEB_BASE_URL: fileEnv.PUBLIC_WEB_BASE_URL || "https://agenttools.dev",
+  PUBLIC_API_BASE_URL: fileEnv.PUBLIC_API_BASE_URL || "",
+  WEB_DEPLOY_TARGET: fileEnv.WEB_DEPLOY_TARGET || "node",
+  WEB_COMPAT_RUNTIME: fileEnv.WEB_COMPAT_RUNTIME || "node",
 };
 
 const webEnv = {
+  DEPLOY_ENV: fileEnv.DEPLOY_ENV || "production",
   HOST: fileEnv.WEB_HOST || "127.0.0.1",
   PORT: fileEnv.WEB_PORT || "4173",
-  VITE_FILE_API_PROXY_TARGET: fileEnv.VITE_FILE_API_PROXY_TARGET || "http://127.0.0.1:50051",
+  PUBLIC_WEB_BASE_URL: fileEnv.PUBLIC_WEB_BASE_URL || "https://agenttools.dev",
+  PUBLIC_API_BASE_URL: fileEnv.PUBLIC_API_BASE_URL || "",
+  WEB_DEPLOY_TARGET: fileEnv.WEB_DEPLOY_TARGET || "node",
+  WEB_COMPAT_RUNTIME: fileEnv.WEB_COMPAT_RUNTIME || "node",
+  VITE_FILE_API_PROXY_TARGET:
+    fileEnv.PUBLIC_API_BASE_URL ||
+    fileEnv.VITE_FILE_API_PROXY_TARGET ||
+    "http://127.0.0.1:50051",
   VITE_WEB_AGENT_REAL_RUNTIME: fileEnv.VITE_WEB_AGENT_REAL_RUNTIME,
   AUTH_SECRET: fileEnv.AUTH_SECRET,
   AUTH_GOOGLE_ID: fileEnv.AUTH_GOOGLE_ID,

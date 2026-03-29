@@ -136,6 +136,9 @@ CORE_SERVICE_PORT=50051 ./core_server
 # Optional: override the browser URL returned by OAuth device login
 PUBLIC_WEB_BASE_URL=http://localhost:4173 CORE_SERVICE_PORT=50051 ./core_server
 
+# Optional: override the public API origin used by split-host web deployments
+PUBLIC_API_BASE_URL=http://localhost:50051 CORE_SERVICE_PORT=50051 ./core_server
+
 # Run core server with PostgreSQL + GCS storage
 STORAGE_TYPE=postgres \
 POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
@@ -152,6 +155,35 @@ CORE_SERVICE_PORT=50051 ./core_server
 
 # Run CLI (override addresses if needed)
 ./gs_cli --help
+```
+
+### Deployment Topology
+
+The target hosted topology is:
+
+1. `gitslice.io`
+   - Cloudflare Worker for the public web app
+2. `api.gitslice.io`
+   - VM-hosted core service behind Nginx
+   - public gRPC and `/v1/*` gateway traffic
+3. `agenttools.dev`
+   - staging Worker web environment
+4. `api.agenttools.dev`
+   - staging VM-hosted core API
+
+The shared deployment env vocabulary is:
+
+```bash
+DEPLOY_ENV=production|staging
+PUBLIC_WEB_BASE_URL=https://gitslice.io
+PUBLIC_API_BASE_URL=https://api.gitslice.io
+WEB_DEPLOY_TARGET=node|cloudflare_worker
+WEB_COMPAT_RUNTIME=node|worker
+POSTGRES_MAX_CONNS=20
+POSTGRES_MIN_CONNS=2
+POSTGRES_MAX_CONN_LIFETIME=30m
+R2_BUCKET=...
+R2_PREFIX=production
 ```
 
 ### Remote filesystem workflow
@@ -456,6 +488,8 @@ pm2 save
 The PM2 ecosystem reads `ops/.env` for both core and web settings, including
 Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
 The web app now runs a React Router SSR server on `127.0.0.1:4173` instead of `vite preview`.
+For the target hosted split, keep `PUBLIC_WEB_BASE_URL`, `PUBLIC_API_BASE_URL`,
+`DEPLOY_ENV`, `WEB_DEPLOY_TARGET`, and the Postgres/R2 settings in `ops/.env`.
 
 To restore PM2 apps on reboot (user crontab approach):
 
@@ -465,7 +499,9 @@ To restore PM2 apps on reboot (user crontab approach):
 
 ### NGINX (Cloudflare in Front, Origin HTTPS)
 
-`ops/nginx.conf` terminates TLS on the origin for both `agenttools.dev` and `api.agenttools.dev`, redirects port `80` to HTTPS, and serves HTTP/2 on port `443`.
+`ops/nginx.conf` currently terminates TLS on the origin for `agenttools.dev` and
+`api.agenttools.dev`, redirects port `80` to HTTPS, and serves HTTP/2 on port
+`443`.
 
 `api.agenttools.dev` routes the public gRPC service paths to the core server:
 - `/slice.v1.SliceService/`
@@ -475,9 +511,18 @@ To restore PM2 apps on reboot (user crontab approach):
 - `/filesystem.v1.FilesystemService/`
 - `/agent.v1.AgentService/`
 
-`agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths, all backed by the same core upstream port used for gRPC.
+This is the current staging/origin layout. The target production split is:
 
-For CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
+1. `gitslice.io` on a Cloudflare Worker
+2. `api.gitslice.io` on the VM origin
+3. staging and production using separate Neon and R2 namespaces
+
+For the Worker/VM split, browser-origin API traffic should use
+`PUBLIC_API_BASE_URL`, while CLI connectivity continues to target
+`api.gitslice.io:443`.
+
+For staging CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
+For the target production layout, CLI connectivity moves to `api.gitslice.io:443`.
 
 The origin Nginx config keeps long-lived gRPC calls open for up to `30m`, which
 is required for large repo imports and similarly heavy CLI operations to survive
