@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,8 @@ import (
 type Config struct {
 	// Service ports. CoreServicePort is the single ingress for both gRPC and HTTP.
 	CoreServicePort string
+	// CoreBindAddr optionally constrains the core listener to a specific local interface.
+	CoreBindAddr string
 	// GatewayPort is a deprecated legacy setting kept for compatibility with older env files.
 	GatewayPort string
 	// DeployEnv identifies the target environment for logging and validation.
@@ -107,6 +110,7 @@ func LoadConfig() (*Config, error) {
 	}
 	return &Config{
 		CoreServicePort:         corePort,
+		CoreBindAddr:            getEnv("CORE_BIND_ADDR", ""),
 		GatewayPort:             getEnv("GATEWAY_PORT", corePort),
 		DeployEnv:               getEnv("DEPLOY_ENV", ""),
 		StorageType:             getEnv("STORAGE_TYPE", "memory"),
@@ -254,7 +258,21 @@ func (c *Config) validateObjectStore() error {
 
 // GetCoreServiceAddr returns the full address for the core gRPC server.
 func (c *Config) GetCoreServiceAddr() string {
+	if bindAddr := strings.TrimSpace(c.CoreBindAddr); bindAddr != "" {
+		return net.JoinHostPort(bindAddr, c.CoreServicePort)
+	}
 	return fmt.Sprintf(":%s", c.CoreServicePort)
+}
+
+// GetCoreServiceDialAddr returns the loopback-safe address used by internal clients.
+func (c *Config) GetCoreServiceDialAddr() string {
+	bindAddr := strings.TrimSpace(c.CoreBindAddr)
+	switch bindAddr {
+	case "", "0.0.0.0", "::":
+		return net.JoinHostPort("127.0.0.1", c.CoreServicePort)
+	default:
+		return net.JoinHostPort(bindAddr, c.CoreServicePort)
+	}
 }
 
 // GetSliceServiceAddr returns the full address for the slice service (legacy alias).

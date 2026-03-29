@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_LOG_DIR="${LOG_DIR:-./logs}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
+WEB_DEPLOY_TARGET="${WEB_DEPLOY_TARGET:-node}"
+RUN_WEB_SSR="${RUN_WEB_SSR:-auto}"
 LOCK_FILE="${REPO_ROOT}/.restart_all.lock"
 DEFAULT_PATH="$HOME/.local/go/bin:$HOME/.local/protoc/bin:$HOME/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NVM_NODE_BIN="${NVM_NODE_BIN:-}"
@@ -14,6 +16,24 @@ fi
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+should_run_web_ssr() {
+  case "$(printf '%s' "$RUN_WEB_SSR" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    auto|"")
+      [ "$WEB_DEPLOY_TARGET" = "node" ]
+      return $?
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 ensure_path() {
@@ -110,4 +130,8 @@ setup_cronjob
 log "Deployment complete!"
 log "Services:"
 log "  - Core (gRPC + HTTP):     localhost:${CORE_SERVICE_PORT}"
-log "  - Web SSR server:         localhost:4173"
+if should_run_web_ssr; then
+  log "  - Web SSR server:         localhost:4173"
+else
+  log "  - Public web:             Cloudflare Worker (${PUBLIC_WEB_BASE_URL:-unset})"
+fi

@@ -171,15 +171,21 @@ The target hosted topology is:
 4. `api.agenttools.dev`
    - staging VM-hosted core API
 
+On the shared VM, keep the internal core listeners distinct:
+
+1. production core: `127.0.0.1:50051`
+2. staging core: `127.0.0.1:50052`
+
 The shared deployment env vocabulary is:
 
 ```bash
 DEPLOY_ENV=production|staging
+CORE_BIND_ADDR=127.0.0.1
 PUBLIC_WEB_BASE_URL=https://gitslice.io
 PUBLIC_API_BASE_URL=https://api.gitslice.io
 VITE_FILE_API_BASE_URL=
-WEB_DEPLOY_TARGET=node|cloudflare_worker
-WEB_COMPAT_RUNTIME=node|worker
+WEB_DEPLOY_TARGET=cloudflare_worker
+WEB_COMPAT_RUNTIME=worker
 POSTGRES_DSN=postgres://...
 POSTGRES_MAX_CONNS=20
 POSTGRES_MIN_CONNS=2
@@ -229,7 +235,16 @@ wrangler secret put AUTH_GITHUB_ID --env staging
 wrangler secret put AUTH_GITHUB_SECRET --env staging
 wrangler secret put AUTH_GOOGLE_ID --env staging
 wrangler secret put AUTH_GOOGLE_SECRET --env staging
+wrangler secret put AUTH_SECRET --env production
+wrangler secret put AUTH_GITHUB_ID --env production
+wrangler secret put AUTH_GITHUB_SECRET --env production
+wrangler secret put AUTH_GOOGLE_ID --env production
+wrangler secret put AUTH_GOOGLE_SECRET --env production
 ```
+
+The production cutover does not need to preserve old browser sessions. Rotating `AUTH_SECRET`
+as part of the first `gitslice.io` Worker deploy is acceptable and will invalidate any stale
+cookies minted by the old origin.
 
 ### Remote filesystem workflow
 
@@ -532,10 +547,12 @@ pm2 save
 
 The PM2 ecosystem reads `ops/.env` for both core and web settings, including
 Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
-The web app now runs a React Router SSR server on `127.0.0.1:4173` instead of `vite preview`.
-For the target hosted split, keep `PUBLIC_WEB_BASE_URL`, `PUBLIC_API_BASE_URL`,
-`VITE_FILE_API_BASE_URL`, `DEPLOY_ENV`, `WEB_DEPLOY_TARGET`, and the Postgres/R2
-settings in `ops/.env`.
+When `WEB_DEPLOY_TARGET=cloudflare_worker`, the VM is core-only by default and the
+ecosystem skips the local `gitslice-web` process unless `RUN_WEB_SSR=1` is set for
+an explicit Node SSR fallback.
+For the target hosted split, keep `CORE_BIND_ADDR`, `PUBLIC_WEB_BASE_URL`,
+`PUBLIC_API_BASE_URL`, `VITE_FILE_API_BASE_URL`, `DEPLOY_ENV`, `WEB_DEPLOY_TARGET`,
+and the Postgres/R2 settings in `ops/.env`.
 Set `OBJECT_STORE_TYPE=r2` with `R2_ENDPOINT`, `R2_BUCKET`, `R2_PREFIX`,
 `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` for staging and production.
 
@@ -547,23 +564,24 @@ To restore PM2 apps on reboot (user crontab approach):
 
 ### NGINX (Cloudflare in Front, Origin HTTPS)
 
-`ops/nginx.conf` currently terminates TLS on the origin for `agenttools.dev` and
-`api.agenttools.dev`, redirects port `80` to HTTPS, and serves HTTP/2 on port
-`443`.
+`ops/nginx.conf` is now API-origin-only: the Worker owns `gitslice.io` and
+`agenttools.dev`, while Nginx on the VM terminates TLS for:
 
-`api.agenttools.dev` routes the public gRPC service paths to the core server:
+1. `api.gitslice.io`
+2. `api.agenttools.dev`
+
+and routes them to separate local core listeners:
+
+1. production -> `127.0.0.1:50051`
+2. staging -> `127.0.0.1:50052`
+
+Both API origins route the public gRPC service paths to the core server:
 - `/slice.v1.SliceService/`
 - `/admin.v1.AdminService/`
 - `/account.v1.AccountService/`
 - `/file.v1.FileService/`
 - `/filesystem.v1.FilesystemService/`
 - `/agent.v1.AgentService/`
-
-This is the current staging/origin layout. The target production split is:
-
-1. `gitslice.io` on a Cloudflare Worker
-2. `api.gitslice.io` on the VM origin
-3. staging and production using separate Neon and R2 namespaces
 
 To copy referenced objects from the current store into a target R2 namespace before cutover:
 
@@ -609,11 +627,27 @@ same-origin `/v1/*` routes on the web host, and the Worker should proxy them to
 For staging CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
 For the target production layout, CLI connectivity moves to `api.gitslice.io:443`.
 
+Suggested production cutover smoke checks:
+
+```bash
+curl -sf https://gitslice.io/ >/dev/null
+curl -sf https://api.gitslice.io/v1/global/state >/dev/null
+curl -sf https://api.agenttools.dev/v1/global/state >/dev/null
+# After exporting GS_API_KEY=... (or logging in locally):
+gs context --json --slice-addr api.gitslice.io:443 --account-addr api.gitslice.io:443 --admin-addr api.gitslice.io:443 --file-addr api.gitslice.io:443 --fs-addr api.gitslice.io:443
+```
+
+For object storage, verify a real production write/read path after cutover by
+creating a small file through the CLI or browser and confirming the bytes round-trip
+through the production R2 namespace.
+
 The origin Nginx config keeps long-lived gRPC calls open for up to `30m`, which
 is required for large repo imports and similarly heavy CLI operations to survive
 the public edge without a `504 Gateway Timeout`.
 
-Cloudflare must proxy `api.agenttools.dev` in gRPC mode and use an HTTPS origin mode such as `Full (strict)`. Plain HTTP origin mode and h2c on port `80` are not compatible with Cloudflare gRPC proxying.
+Cloudflare must proxy both `api.agenttools.dev` and `api.gitslice.io` in gRPC mode
+and use an HTTPS origin mode such as `Full (strict)`. Plain HTTP origin mode and
+h2c on port `80` are not compatible with Cloudflare gRPC proxying.
 
 Apply config:
 
