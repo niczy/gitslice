@@ -27,6 +27,12 @@ type PostgresNativeStorage struct {
 	namespace   string
 }
 
+type PostgresNativeStorageOptions struct {
+	MaxConns        int32
+	MinConns        int32
+	MaxConnLifetime time.Duration
+}
+
 func nativeEntryID(sliceID, p string) string {
 	if p == "" {
 		// Root node uses the slice ID so callers can list root children via parentID=sliceID.
@@ -272,6 +278,10 @@ func pgSchemaFromNamespace(namespace string) string {
 // NewPostgresNativeStorage creates a new native PostgreSQL storage backend.
 // It runs schema migrations on startup to ensure tables exist.
 func NewPostgresNativeStorage(ctx context.Context, dsn string, objectStore ObjectStore, namespace string) (*PostgresNativeStorage, error) {
+	return NewPostgresNativeStorageWithOptions(ctx, dsn, objectStore, namespace, PostgresNativeStorageOptions{})
+}
+
+func NewPostgresNativeStorageWithOptions(ctx context.Context, dsn string, objectStore ObjectStore, namespace string, options PostgresNativeStorageOptions) (*PostgresNativeStorage, error) {
 	ctx = ensureCtx(ctx)
 	if dsn == "" {
 		return nil, ErrInvalidInput
@@ -289,6 +299,7 @@ func NewPostgresNativeStorage(ctx context.Context, dsn string, objectStore Objec
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
+	applyPostgresNativePoolOptions(cfg, options)
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		// Keep default behavior for the public schema.
 		if schema == "" || schema == "public" {
@@ -323,6 +334,18 @@ func NewPostgresNativeStorage(ctx context.Context, dsn string, objectStore Objec
 		objectStore: objectStore,
 		namespace:   namespace,
 	}, nil
+}
+
+func applyPostgresNativePoolOptions(cfg *pgxpool.Config, options PostgresNativeStorageOptions) {
+	if options.MaxConns > 0 {
+		cfg.MaxConns = options.MaxConns
+	}
+	if options.MinConns > 0 {
+		cfg.MinConns = options.MinConns
+	}
+	if options.MaxConnLifetime > 0 {
+		cfg.MaxConnLifetime = options.MaxConnLifetime
+	}
 }
 
 // Close closes the backing Postgres pool.
@@ -2729,7 +2752,7 @@ func (s *PostgresNativeStorage) UpdateGlobalState(ctx context.Context, state *mo
 
 func (s *PostgresNativeStorage) Ping(ctx context.Context) error {
 	ctx = ensureCtx(ctx)
-	if err := s.pool.Ping(ctx); err != nil {
+	if err := s.PingMetadata(ctx); err != nil {
 		return err
 	}
 
@@ -2740,6 +2763,11 @@ func (s *PostgresNativeStorage) Ping(ctx context.Context) error {
 	_, err := s.objectStore.GetObject(ctx, key)
 	_ = s.objectStore.DeleteObject(ctx, key)
 	return err
+}
+
+func (s *PostgresNativeStorage) PingMetadata(ctx context.Context) error {
+	ctx = ensureCtx(ctx)
+	return s.pool.Ping(ctx)
 }
 
 // ============ Commit Snapshots ============

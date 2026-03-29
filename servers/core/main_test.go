@@ -52,6 +52,9 @@ func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/health", common.HealthCheckHandler("test-core"))
+	httpMux.HandleFunc("/health/db", common.DependencyHealthCheckHandler("test-core", "database", func(context.Context) error {
+		return st.PingMetadata(ctx)
+	}))
 	httpMux.Handle("/", gateway.WithNoBodyWriteGuard(gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux))))
 
 	server := &http.Server{Handler: buildCombinedCoreHandler(grpcServer, httpMux)}
@@ -64,6 +67,9 @@ func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
 	baseURL := "http://" + lis.Addr().String()
 	if err := waitForHTTPStatus(baseURL+"/health", http.StatusOK, 2*time.Second); err != nil {
 		t.Fatalf("health endpoint did not become ready: %v", err)
+	}
+	if err := waitForHTTPStatus(baseURL+"/health/db", http.StatusOK, 2*time.Second); err != nil {
+		t.Fatalf("db health endpoint did not become ready: %v", err)
 	}
 
 	resp, err := http.Get(baseURL + "/v1/global/state")

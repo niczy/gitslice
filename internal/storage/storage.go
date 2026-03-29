@@ -116,6 +116,7 @@ type Storage interface {
 
 	// Health check
 	Ping(ctx context.Context) error
+	PingMetadata(ctx context.Context) error
 
 	// Commit snapshot operations for versioned file access
 	GetCommitSnapshot(ctx context.Context, commitHash string) (*models.CommitSnapshot, error)

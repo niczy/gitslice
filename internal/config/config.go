@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Config holds all configuration values for gitslice services.
@@ -12,12 +16,17 @@ type Config struct {
 	CoreServicePort string
 	// GatewayPort is a deprecated legacy setting kept for compatibility with older env files.
 	GatewayPort string
+	// DeployEnv identifies the target environment for logging and validation.
+	DeployEnv string
 
 	// Storage type (memory, postgres, postgres_native)
 	StorageType string
 
 	// Postgres configuration (if storage type is postgres or postgres_native)
-	PostgresDSN string
+	PostgresDSN             string
+	PostgresMaxConns        int32
+	PostgresMinConns        int32
+	PostgresMaxConnLifetime time.Duration
 
 	// Object store configuration (filesystem, GCS)
 	//
@@ -63,7 +72,7 @@ type Config struct {
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
-func LoadConfig() *Config {
+func LoadConfig() (*Config, error) {
 	corePort := getEnv("CORE_SERVICE_PORT", "")
 	if corePort == "" {
 		if value, ok := os.LookupEnv("SLICE_SERVICE_PORT"); ok && value != "" {
@@ -74,25 +83,41 @@ func LoadConfig() *Config {
 			corePort = "50051"
 		}
 	}
+	postgresMaxConns, err := getEnvOptionalInt32("POSTGRES_MAX_CONNS")
+	if err != nil {
+		return nil, err
+	}
+	postgresMinConns, err := getEnvOptionalInt32("POSTGRES_MIN_CONNS")
+	if err != nil {
+		return nil, err
+	}
+	postgresMaxConnLifetime, err := getEnvOptionalDuration("POSTGRES_MAX_CONN_LIFETIME")
+	if err != nil {
+		return nil, err
+	}
 	return &Config{
-		CoreServicePort:    corePort,
-		GatewayPort:        getEnv("GATEWAY_PORT", corePort),
-		StorageType:        getEnv("STORAGE_TYPE", "memory"),
-		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
-		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
-		ObjectStoreDir:     getEnv("OBJECT_STORE_DIR", ""),
-		GCSBucket:          getEnv("GCS_BUCKET", "gitslice-objects"),
-		GCSEndpoint:        getEnv("GCS_ENDPOINT", ""),
-		GCSCredentialsFile: getEnv("GCS_CREDENTIALS_FILE", ""),
-		GCSCredentialsJSON: getEnv("GCS_CREDENTIALS_JSON", ""),
-		GCSDisableAuth:     getEnvBool("GCS_DISABLE_AUTH", false),
-		AgentWSTokenSecret: getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
-		E2BAPIURL:          getEnv("E2B_API_URL", ""),
-		E2BDomain:          getEnv("E2B_DOMAIN", "e2b.app"),
-		E2BAPIKey:          getEnv("E2B_API_KEY", ""),
-		E2BAccessToken:     getEnv("E2B_ACCESS_TOKEN", ""),
-		CodexAPIKey:        getEnv("OPENAI_API_KEY", ""),
-		ClaudeAPIKey:       getEnv("ANTHROPIC_API_KEY", ""),
+		CoreServicePort:         corePort,
+		GatewayPort:             getEnv("GATEWAY_PORT", corePort),
+		DeployEnv:               getEnv("DEPLOY_ENV", ""),
+		StorageType:             getEnv("STORAGE_TYPE", "memory"),
+		PostgresDSN:             getEnv("POSTGRES_DSN", ""),
+		PostgresMaxConns:        postgresMaxConns,
+		PostgresMinConns:        postgresMinConns,
+		PostgresMaxConnLifetime: postgresMaxConnLifetime,
+		ObjectStoreType:         getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:          getEnv("OBJECT_STORE_DIR", ""),
+		GCSBucket:               getEnv("GCS_BUCKET", "gitslice-objects"),
+		GCSEndpoint:             getEnv("GCS_ENDPOINT", ""),
+		GCSCredentialsFile:      getEnv("GCS_CREDENTIALS_FILE", ""),
+		GCSCredentialsJSON:      getEnv("GCS_CREDENTIALS_JSON", ""),
+		GCSDisableAuth:          getEnvBool("GCS_DISABLE_AUTH", false),
+		AgentWSTokenSecret:      getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
+		E2BAPIURL:               getEnv("E2B_API_URL", ""),
+		E2BDomain:               getEnv("E2B_DOMAIN", "e2b.app"),
+		E2BAPIKey:               getEnv("E2B_API_KEY", ""),
+		E2BAccessToken:          getEnv("E2B_ACCESS_TOKEN", ""),
+		CodexAPIKey:             getEnv("OPENAI_API_KEY", ""),
+		ClaudeAPIKey:            getEnv("ANTHROPIC_API_KEY", ""),
 		AgentEgressAllowlist: getEnv(
 			"AGENT_EGRESS_ALLOWLIST",
 			"",
@@ -110,7 +135,60 @@ func LoadConfig() *Config {
 		CFCServiceTokenID:           getEnv("CFC_SERVICE_TOKEN_ID", ""),
 		CFCServiceTokenSecret:       getEnv("CFC_SERVICE_TOKEN_SECRET", ""),
 		CFCRequestTimeoutSec:        getEnvInt("CFC_REQUEST_TIMEOUT_SEC", 30),
+	}, nil
+}
+
+type PostgresTargetSummary struct {
+	Host     string
+	Database string
+	Remote   bool
+	UsesTLS  bool
+}
+
+func (c *Config) Validate() error {
+	if !strings.EqualFold(c.StorageType, "postgres") {
+		return nil
 	}
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return fmt.Errorf("POSTGRES_DSN is required for STORAGE_TYPE=postgres")
+	}
+	if c.PostgresMaxConns < 0 {
+		return fmt.Errorf("POSTGRES_MAX_CONNS must be >= 0")
+	}
+	if c.PostgresMinConns < 0 {
+		return fmt.Errorf("POSTGRES_MIN_CONNS must be >= 0")
+	}
+	if c.PostgresMaxConns > 0 && c.PostgresMinConns > c.PostgresMaxConns {
+		return fmt.Errorf("POSTGRES_MIN_CONNS must be <= POSTGRES_MAX_CONNS")
+	}
+	if c.PostgresMaxConnLifetime < 0 {
+		return fmt.Errorf("POSTGRES_MAX_CONN_LIFETIME must be >= 0")
+	}
+	summary, err := c.PostgresTargetSummary()
+	if err != nil {
+		return fmt.Errorf("parse POSTGRES_DSN: %w", err)
+	}
+	if summary.Remote && !summary.UsesTLS {
+		return fmt.Errorf("remote POSTGRES_DSN must enable TLS")
+	}
+	return nil
+}
+
+func (c *Config) PostgresTargetSummary() (*PostgresTargetSummary, error) {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return nil, nil
+	}
+	poolCfg, err := pgxpool.ParseConfig(c.PostgresDSN)
+	if err != nil {
+		return nil, err
+	}
+	host := strings.TrimSpace(poolCfg.ConnConfig.Host)
+	return &PostgresTargetSummary{
+		Host:     host,
+		Database: strings.TrimSpace(poolCfg.ConnConfig.Database),
+		Remote:   !isLocalPostgresHost(host),
+		UsesTLS:  poolCfg.ConnConfig.TLSConfig != nil,
+	}, nil
 }
 
 // GetCoreServiceAddr returns the full address for the core gRPC server.
@@ -164,4 +242,50 @@ func getEnvInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return parsed
+}
+
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
+}
+
+func getEnvOptionalInt32(key string) (int32, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return int32(parsed), nil
+}
+
+func getEnvOptionalDuration(key string) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func isLocalPostgresHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	switch host {
+	case "", "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return strings.HasPrefix(host, "/")
+	}
 }
