@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/niczy/gitslice/internal/storage"
+)
 
 func TestResolvePruneEffectiveCommit(t *testing.T) {
 	info := map[string]pruneSliceInfo{
@@ -35,5 +39,56 @@ func TestCountAffectedPruneSlices(t *testing.T) {
 	}
 	if got, want := countAffectedPruneSlices(entries), 3; got != want {
 		t.Fatalf("affected slice count mismatch: got %d want %d", got, want)
+	}
+}
+
+func TestValidateObjectStoreMigrationConfigRejectsMismatchedR2Namespace(t *testing.T) {
+	cfg := storage.ObjectStoreConfig{
+		Type:     "r2",
+		R2Bucket: "bucket",
+		R2Prefix: "staging",
+	}
+	if err := validateObjectStoreMigrationConfig("target", cfg, "production"); err == nil {
+		t.Fatalf("expected mismatched R2 namespace validation failure")
+	}
+}
+
+func TestValidateObjectStoreMigrationConfigAllowsMatchingR2Namespace(t *testing.T) {
+	cfg := storage.ObjectStoreConfig{
+		Type:     "r2",
+		R2Bucket: "bucket",
+		R2Prefix: "production/core",
+	}
+	if err := validateObjectStoreMigrationConfig("target", cfg, "production"); err != nil {
+		t.Fatalf("expected matching R2 namespace to validate, got %v", err)
+	}
+}
+
+func TestValidateObjectStoreMigrationConfigRequiresEnvForR2(t *testing.T) {
+	cfg := storage.ObjectStoreConfig{
+		Type:     "r2",
+		R2Bucket: "bucket",
+		R2Prefix: "production",
+	}
+	if err := validateObjectStoreMigrationConfig("source", cfg, ""); err == nil {
+		t.Fatalf("expected missing R2 env validation failure")
+	}
+}
+
+func TestSameObjectStoreConfig(t *testing.T) {
+	left := storage.ObjectStoreConfig{
+		Type:       "r2",
+		R2Bucket:   "bucket",
+		R2Prefix:   "production",
+		R2Endpoint: "https://account.r2.cloudflarestorage.com",
+	}
+	right := storage.ObjectStoreConfig{
+		Type:       "r2",
+		R2Bucket:   "bucket",
+		R2Prefix:   "production/",
+		R2Endpoint: "https://account.r2.cloudflarestorage.com",
+	}
+	if !sameObjectStoreConfig(left, right) {
+		t.Fatalf("expected matching object-store configs to compare equal")
 	}
 }

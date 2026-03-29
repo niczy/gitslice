@@ -35,6 +35,8 @@ func TestValidateRejectsRemotePostgresWithoutTLS(t *testing.T) {
 	cfg := &Config{
 		StorageType:             "postgres",
 		PostgresDSN:             "postgres://user:pass@db.neon.tech:5432/gitslice?sslmode=disable",
+		ObjectStoreType:         "filesystem",
+		ObjectStoreDir:          "/tmp/objectstore",
 		PostgresMaxConns:        10,
 		PostgresMinConns:        2,
 		PostgresMaxConnLifetime: 30 * time.Minute,
@@ -49,6 +51,8 @@ func TestValidateAllowsLocalPostgresWithoutTLS(t *testing.T) {
 	cfg := &Config{
 		StorageType:             "postgres",
 		PostgresDSN:             "postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable",
+		ObjectStoreType:         "filesystem",
+		ObjectStoreDir:          "/tmp/objectstore",
 		PostgresMaxConns:        10,
 		PostgresMinConns:        2,
 		PostgresMaxConnLifetime: 30 * time.Minute,
@@ -63,6 +67,8 @@ func TestValidateRejectsMinConnsAboveMax(t *testing.T) {
 	cfg := &Config{
 		StorageType:             "postgres",
 		PostgresDSN:             "postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable",
+		ObjectStoreType:         "filesystem",
+		ObjectStoreDir:          "/tmp/objectstore",
 		PostgresMaxConns:        2,
 		PostgresMinConns:        3,
 		PostgresMaxConnLifetime: 30 * time.Minute,
@@ -70,5 +76,54 @@ func TestValidateRejectsMinConnsAboveMax(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected min/max validation failure")
+	}
+}
+
+func TestValidateRequiresR2Fields(t *testing.T) {
+	cfg := &Config{
+		DeployEnv:       "production",
+		StorageType:     "postgres",
+		PostgresDSN:     "postgres://user:pass@db.example.com:5432/gitslice?sslmode=require",
+		ObjectStoreType: "r2",
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected missing R2 config validation failure")
+	}
+}
+
+func TestValidateRejectsR2PrefixOutsideDeployEnv(t *testing.T) {
+	cfg := &Config{
+		DeployEnv:         "production",
+		StorageType:       "postgres",
+		PostgresDSN:       "postgres://user:pass@db.example.com:5432/gitslice?sslmode=require",
+		ObjectStoreType:   "r2",
+		R2Bucket:          "bucket",
+		R2Prefix:          "staging",
+		R2Endpoint:        "https://account.r2.cloudflarestorage.com",
+		R2AccessKeyID:     "access",
+		R2SecretAccessKey: "secret",
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected mismatched R2 prefix validation failure")
+	}
+}
+
+func TestValidateAllowsR2ConfigForMatchingEnv(t *testing.T) {
+	cfg := &Config{
+		DeployEnv:         "staging",
+		StorageType:       "postgres",
+		PostgresDSN:       "postgres://user:pass@db.example.com:5432/gitslice?sslmode=require",
+		ObjectStoreType:   "r2",
+		R2Bucket:          "bucket",
+		R2Prefix:          "staging/core",
+		R2Endpoint:        "https://account.r2.cloudflarestorage.com",
+		R2AccessKeyID:     "access",
+		R2SecretAccessKey: "secret",
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected matching R2 config to validate, got %v", err)
 	}
 }

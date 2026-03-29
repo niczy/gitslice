@@ -36,6 +36,7 @@ type Config struct {
 	// OBJECT_STORE_TYPE may be:
 	// - "gcs" (default)
 	// - "filesystem" (stores objects under OBJECT_STORE_DIR)
+	// - "r2" (stores objects in Cloudflare R2 via the S3-compatible API)
 	ObjectStoreType string
 	ObjectStoreDir  string
 
@@ -45,6 +46,15 @@ type Config struct {
 	GCSCredentialsFile string
 	GCSCredentialsJSON string
 	GCSDisableAuth     bool
+
+	// R2 object store configuration (when OBJECT_STORE_TYPE=r2)
+	R2Bucket          string
+	R2Prefix          string
+	R2Endpoint        string
+	R2Region          string
+	R2AccessKeyID     string
+	R2SecretAccessKey string
+	R2UsePathStyle    bool
 
 	// Agent session WebSocket token signing.
 	AgentWSTokenSecret string
@@ -111,6 +121,13 @@ func LoadConfig() (*Config, error) {
 		GCSCredentialsFile:      getEnv("GCS_CREDENTIALS_FILE", ""),
 		GCSCredentialsJSON:      getEnv("GCS_CREDENTIALS_JSON", ""),
 		GCSDisableAuth:          getEnvBool("GCS_DISABLE_AUTH", false),
+		R2Bucket:                getEnv("R2_BUCKET", ""),
+		R2Prefix:                getEnv("R2_PREFIX", ""),
+		R2Endpoint:              getEnv("R2_ENDPOINT", ""),
+		R2Region:                getEnv("R2_REGION", "auto"),
+		R2AccessKeyID:           getEnv("R2_ACCESS_KEY_ID", ""),
+		R2SecretAccessKey:       getEnv("R2_SECRET_ACCESS_KEY", ""),
+		R2UsePathStyle:          getEnvBool("R2_USE_PATH_STYLE", false),
 		AgentWSTokenSecret:      getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
 		E2BAPIURL:               getEnv("E2B_API_URL", ""),
 		E2BDomain:               getEnv("E2B_DOMAIN", "e2b.app"),
@@ -152,6 +169,9 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return fmt.Errorf("POSTGRES_DSN is required for STORAGE_TYPE=postgres")
 	}
+	if err := c.validateObjectStore(); err != nil {
+		return err
+	}
 	if c.PostgresMaxConns < 0 {
 		return fmt.Errorf("POSTGRES_MAX_CONNS must be >= 0")
 	}
@@ -189,6 +209,47 @@ func (c *Config) PostgresTargetSummary() (*PostgresTargetSummary, error) {
 		Remote:   !isLocalPostgresHost(host),
 		UsesTLS:  poolCfg.ConnConfig.TLSConfig != nil,
 	}, nil
+}
+
+func (c *Config) validateObjectStore() error {
+	switch strings.ToLower(strings.TrimSpace(c.ObjectStoreType)) {
+	case "filesystem", "fs", "file":
+		if strings.TrimSpace(c.ObjectStoreDir) == "" {
+			return fmt.Errorf("OBJECT_STORE_DIR is required for OBJECT_STORE_TYPE=filesystem")
+		}
+		return nil
+	case "", "gcs":
+		if strings.TrimSpace(c.GCSBucket) == "" {
+			return fmt.Errorf("GCS_BUCKET is required for OBJECT_STORE_TYPE=gcs")
+		}
+		return nil
+	case "r2":
+		if strings.TrimSpace(c.R2Bucket) == "" {
+			return fmt.Errorf("R2_BUCKET is required for OBJECT_STORE_TYPE=r2")
+		}
+		if strings.TrimSpace(c.R2Prefix) == "" {
+			return fmt.Errorf("R2_PREFIX is required for OBJECT_STORE_TYPE=r2")
+		}
+		if strings.TrimSpace(c.R2Endpoint) == "" {
+			return fmt.Errorf("R2_ENDPOINT is required for OBJECT_STORE_TYPE=r2")
+		}
+		if strings.TrimSpace(c.R2AccessKeyID) == "" {
+			return fmt.Errorf("R2_ACCESS_KEY_ID is required for OBJECT_STORE_TYPE=r2")
+		}
+		if strings.TrimSpace(c.R2SecretAccessKey) == "" {
+			return fmt.Errorf("R2_SECRET_ACCESS_KEY is required for OBJECT_STORE_TYPE=r2")
+		}
+		deployEnv := strings.ToLower(strings.TrimSpace(c.DeployEnv))
+		if deployEnv != "" {
+			prefix := strings.Trim(strings.TrimSpace(c.R2Prefix), "/")
+			if prefix != deployEnv && !strings.HasPrefix(prefix, deployEnv+"/") {
+				return fmt.Errorf("R2_PREFIX must match DEPLOY_ENV namespace")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported OBJECT_STORE_TYPE: %s", c.ObjectStoreType)
+	}
 }
 
 // GetCoreServiceAddr returns the full address for the core gRPC server.

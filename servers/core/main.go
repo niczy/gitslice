@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	gcsstorage "cloud.google.com/go/storage"
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
@@ -26,7 +25,6 @@ import (
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 )
 
@@ -192,7 +190,7 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 		if cfg.PostgresDSN == "" {
 			return nil, nil, fmt.Errorf("POSTGRES_DSN is required for STORAGE_TYPE=postgres")
 		}
-		objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+		objectStore, closeObjectStore, err := storage.BuildObjectStore(ctx, storage.ObjectStoreConfigFromAppConfig(cfg))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -214,46 +212,6 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 	default:
 		return nil, nil, fmt.Errorf("unsupported STORAGE_TYPE: %s", cfg.StorageType)
 	}
-}
-
-func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectStore, func(), error) {
-	switch strings.ToLower(cfg.ObjectStoreType) {
-	case "filesystem", "fs", "file":
-		store, err := storage.NewFilesystemObjectStore(cfg.ObjectStoreDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		return store, func() {}, nil
-	case "", "gcs":
-		// Continue below.
-	default:
-		return nil, nil, fmt.Errorf("unsupported OBJECT_STORE_TYPE: %s", cfg.ObjectStoreType)
-	}
-
-	if cfg.GCSBucket == "" {
-		return nil, nil, fmt.Errorf("GCS_BUCKET is required")
-	}
-
-	clientOpts := []option.ClientOption{}
-	if cfg.GCSEndpoint != "" {
-		clientOpts = append(clientOpts, option.WithEndpoint(cfg.GCSEndpoint))
-	}
-	if cfg.GCSDisableAuth {
-		clientOpts = append(clientOpts, option.WithoutAuthentication())
-	}
-	if cfg.GCSCredentialsFile != "" {
-		clientOpts = append(clientOpts, option.WithCredentialsFile(cfg.GCSCredentialsFile))
-	}
-	if cfg.GCSCredentialsJSON != "" {
-		clientOpts = append(clientOpts, option.WithCredentialsJSON([]byte(cfg.GCSCredentialsJSON)))
-	}
-
-	client, err := gcsstorage.NewClient(ctx, clientOpts...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return storage.NewGCSObjectStore(client, cfg.GCSBucket), func() { _ = client.Close() }, nil
 }
 
 func logPostgresRuntimeConfig(cfg *config.Config) {
