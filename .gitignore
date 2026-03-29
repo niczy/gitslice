@@ -43,6 +43,8 @@ __pycache__/
 web/node_modules/
 web/dist/
 web/build/
+web/.dev.vars
+web/.wrangler/
 web/playwright-report/
 web/test-results/
 test-results/
