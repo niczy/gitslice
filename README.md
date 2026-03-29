@@ -177,6 +177,7 @@ The shared deployment env vocabulary is:
 DEPLOY_ENV=production|staging
 PUBLIC_WEB_BASE_URL=https://gitslice.io
 PUBLIC_API_BASE_URL=https://api.gitslice.io
+VITE_FILE_API_BASE_URL=https://api.gitslice.io
 WEB_DEPLOY_TARGET=node|cloudflare_worker
 WEB_COMPAT_RUNTIME=node|worker
 POSTGRES_DSN=postgres://...
@@ -502,7 +503,8 @@ The PM2 ecosystem reads `ops/.env` for both core and web settings, including
 Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
 The web app now runs a React Router SSR server on `127.0.0.1:4173` instead of `vite preview`.
 For the target hosted split, keep `PUBLIC_WEB_BASE_URL`, `PUBLIC_API_BASE_URL`,
-`DEPLOY_ENV`, `WEB_DEPLOY_TARGET`, and the Postgres/R2 settings in `ops/.env`.
+`VITE_FILE_API_BASE_URL`, `DEPLOY_ENV`, `WEB_DEPLOY_TARGET`, and the Postgres/R2
+settings in `ops/.env`.
 Set `OBJECT_STORE_TYPE=r2` with `R2_ENDPOINT`, `R2_BUCKET`, `R2_PREFIX`,
 `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` for staging and production.
 

@@ -117,6 +117,15 @@ export default function RepoBrowser({
       return '';
     }
 
+    const normalizedAuthUsername = String(authUsername || '').trim().toLowerCase();
+    const normalizedRequested = requested.toLowerCase();
+    if (
+      normalizedAuthUsername &&
+      (normalizedRequested === normalizedAuthUsername || normalizedRequested === `home.${normalizedAuthUsername}`)
+    ) {
+      return `home.${normalizedAuthUsername}`;
+    }
+
     const candidateIds = [requested];
     if (requested.startsWith('home.')) {
       const suffix = requested.slice('home.'.length).trim();
@@ -134,7 +143,7 @@ export default function RepoBrowser({
     }
 
     return '';
-  }, [slices]);
+  }, [authUsername, slices]);
 
   const sliceId = useMemo(() => {
     if (!rawSliceId) {

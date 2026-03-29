@@ -4,6 +4,7 @@ import { formatChangeType } from '../utils/format.js';
 import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 import { decodeBase64 } from '../utils/highlight.js';
+import { base64ToBytes } from '../../shared/runtime.js';
 import { Button } from './ui/button.jsx';
 
 function isBinaryPatchText(patch = '') {
@@ -32,13 +33,11 @@ function detectBinaryFromBase64(encoded = '') {
     return false;
   }
   try {
-    const raw = typeof window !== 'undefined'
-      ? window.atob(encoded)
-      : Buffer.from(encoded, 'base64').toString('binary');
+    const raw = base64ToBytes(encoded);
     const sampleSize = Math.min(raw.length, 2048);
     let controlChars = 0;
     for (let index = 0; index < sampleSize; index += 1) {
-      const code = raw.charCodeAt(index);
+      const code = raw[index];
       if (code === 0) {
         return true;
       }

@@ -2,24 +2,16 @@
 // Code highlighting and encoding utilities
 // ---------------------------------------------------------------------------
 
+import { decodeBase64UTF8 } from '../../shared/runtime.js';
+
 export function decodeBase64(value) {
   if (!value) {
     return '';
   }
-  const decode = (input) => {
-    if (typeof window !== 'undefined' && typeof window.atob === 'function') {
-      return window.atob(input);
-    }
-    return Buffer.from(input, 'base64').toString('binary');
-  };
   try {
-    return decodeURIComponent(escape(decode(value)));
+    return decodeBase64UTF8(value);
   } catch (error) {
-    try {
-      return decode(value);
-    } catch (innerError) {
-      return value;
-    }
+    return value;
   }
 }
 

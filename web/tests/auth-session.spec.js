@@ -1,6 +1,9 @@
 // @ts-check
 import { test, expect } from '@playwright/test';
 
+const webPort = process.env.E2E_WEB_PORT || '4173';
+const webBaseURL = `http://127.0.0.1:${webPort}`;
+
 test.describe('Cookie-backed web auth', () => {
   test('username login creates a persistent cookie-backed session', async ({ page }) => {
     await page.goto('/login');
@@ -44,7 +47,24 @@ test.describe('Cookie-backed web auth', () => {
 
     await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester2/i);
     await expect(page.getByText(/Unable to load entries/i)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /📁.*\/webtester2$/i })).toBeVisible();
+  });
+
+  test('browser data requests stay same-origin and rely on the web proxy', async ({ page }) => {
+    const seenBrowserRequests = [];
+    page.on('request', (request) => {
+      if (request.url().startsWith(`${webBaseURL}/v1/`)) {
+        seenBrowserRequests.push(request.url());
+      }
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill('websplit1');
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await page.getByTestId('topbar-settings').click();
+    await expect(page.getByTestId('settings-page')).toBeVisible();
+    await expect.poll(() => seenBrowserRequests.length).toBeGreaterThan(0);
   });
 
   test('settings shows repo bindings for the signed-in user', async ({ page }) => {

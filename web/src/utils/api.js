@@ -4,7 +4,9 @@
 
 import { getSignedInUsername } from '../auth.js';
 
-export const apiBaseUrl = import.meta.env.VITE_FILE_API_BASE_URL || '';
+// Browser data requests stay same-origin so auth cookies continue to work
+// when the web tier proxies API traffic to a different origin.
+export const apiBaseUrl = '';
 
 export function currentUsername() {
   return getSignedInUsername();
