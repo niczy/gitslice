@@ -37,6 +37,7 @@ Each environment must use separate infrastructure namespaces:
 2. separate R2 bucket or, at minimum, an isolated environment prefix for staging vs production
 3. separate Worker deployments and secrets for staging vs production
 4. separate VM config and origin hostnames for staging vs production where applicable
+5. separate internal core listeners, PM2 app names, and Nginx upstreams for staging vs production on the shared VM
 
 This plan deliberately avoids the larger Cloudflare migration path in [cludflare_migration.md](/home/nic/workspace/gitslice/spec/cludflare_migration.md). That older plan assumes D1 and a broader Cloudflare-hosted architecture. This plan does not.
 
@@ -162,6 +163,15 @@ Recommended default naming:
 7. staging object namespace: `staging`
 8. production object namespace: `production`
 
+Recommended shared-VM internal listener layout:
+
+1. production core listener: `127.0.0.1:50051`
+2. staging core listener: `127.0.0.1:50052`
+3. production PM2 app: `gitslice-core-production`
+4. staging PM2 app: `gitslice-core-staging`
+5. production Nginx upstream hostname: `api.gitslice.io`
+6. staging Nginx upstream hostname: `api.agenttools.dev`
+
 ---
 
 ## Worker Readiness Audit
@@ -257,7 +267,8 @@ This plan does not do the following:
    - routes grpc-gateway `/v1/*` to the VM origin
 3. current VM origin
    - Nginx on `443`
-   - proxies gRPC and `/v1/*` to local core on `127.0.0.1:50051`
+   - routes `api.gitslice.io` gRPC and `/v1/*` to local production core on `127.0.0.1:50051`
+   - routes `api.agenttools.dev` gRPC and `/v1/*` to local staging core on `127.0.0.1:50052`
    - no longer serves the public web app once cutover is complete
 
 ### Data topology
@@ -274,6 +285,7 @@ This plan does not do the following:
 1. VM responsibilities after cutover:
    - `core_server`
    - Nginx for `api.gitslice.io`
+   - separate staging and production core processes on distinct local listeners
    - no public web SSR process required
    - no production blob durability responsibility on local filesystem
 2. Worker responsibilities after cutover:
@@ -325,7 +337,10 @@ The plan should standardize the following deployment config:
 ### Core / VM config
 
 - `DEPLOY_ENV=staging|production`
+- `CORE_BIND_ADDR`
 - `CORE_SERVICE_PORT`
+- `PM2_APP_NAME`
+- `NGINX_UPSTREAM_NAME`
 - `POSTGRES_DSN`
 - `POSTGRES_MIGRATION_DSN`
 - `POSTGRES_MAX_CONNS`
@@ -355,6 +370,7 @@ The plan should standardize the following deployment config:
 - `NEON_DATABASE_NAME`
 - `R2_BUCKET`
 - `R2_PREFIX`
+- `CORE_INTERNAL_PORT`
 
 ### Deployment mode flags
 
@@ -362,6 +378,15 @@ The plan should standardize the following deployment config:
 - `WEB_COMPAT_RUNTIME=node|worker`
 
 The exact env names can change in implementation, but the split itself should not.
+
+Required environment-specific defaults on the shared VM:
+
+1. production:
+   - `CORE_BIND_ADDR=127.0.0.1`
+   - `CORE_SERVICE_PORT=50051`
+2. staging:
+   - `CORE_BIND_ADDR=127.0.0.1`
+   - `CORE_SERVICE_PORT=50052`
 
 ---
 
@@ -382,6 +407,7 @@ After the migration:
 8. staging changes on `agenttools.dev` must not mutate production data or production object blobs
 9. production is allowed to invalidate old web sessions during cutover
 10. production must not rely on VM-local filesystem object storage
+11. staging and production core instances can run concurrently on the same VM without port collisions
 
 ---
 
@@ -569,6 +595,7 @@ Acceptance:
 2. `api.agenttools.dev` remains VM-hosted and healthy
 3. staging browser auth, browser API traffic, CLI traffic, core health, and object reads/writes all work
 4. staging and production remain isolated
+5. staging and production cores run concurrently on the shared VM without listener conflicts
 
 Rollback:
 
@@ -598,6 +625,7 @@ Changes:
    - `https://api.gitslice.io/v1/global/state`
    - CLI access to `api.gitslice.io:443`
    - object read/write path through R2
+   - staging API remains healthy on `api.agenttools.dev` after production cutover
 
 Acceptance:
 
@@ -607,6 +635,7 @@ Acceptance:
 4. production uses its own R2 namespace
 5. the VM no longer needs to be considered the production web origin or durable object store
 6. invalidating old production browser sessions is acceptable
+7. staging remains healthy on its separate local port and hostname after production cutover
 
 Rollback:
 
@@ -624,6 +653,8 @@ Changes:
 2. remove stale assumptions that public web health comes from `127.0.0.1:4173`
 3. add deployment verification scripts for:
    - local core health
+   - local staging core health on `127.0.0.1:50052`
+   - local production core health on `127.0.0.1:50051`
    - public staging web health
    - public staging API health
    - public production Worker web health
@@ -632,6 +663,7 @@ Changes:
 4. document the final staging and production topology clearly
 5. remove stale docs about Node SSR as the production web host
 6. remove stale docs or scripts that imply production durability depends on VM-local object storage
+7. update ops docs/scripts to show separate PM2 process names and Nginx upstreams for staging vs production
 
 Acceptance:
 
@@ -655,12 +687,14 @@ Recommended production order:
    - VM core on `api.agenttools.dev`
    - staging Neon namespace
    - staging R2 namespace
+   - staging core on `127.0.0.1:50052`
 3. verify staging end to end
 4. merge PR6 and cut production directly to the target architecture:
    - Worker web on `gitslice.io`
    - VM core on `api.gitslice.io`
    - production Neon namespace
    - production R2 namespace
+   - production core on `127.0.0.1:50051`
 5. merge PR7 and remove old VM-web assumptions from ops/docs
 
 ---
@@ -680,6 +714,7 @@ The migration is complete when:
 9. auth flows, CLI flows, and browser flows all continue to work
 10. no compatibility requirement remains for the pre-cutover production web deployment
 11. the VM is no longer responsible for production blob durability
+12. staging and production core instances coexist on the same VM with separate local ports and no process or upstream collisions
 
 ---
 
@@ -692,6 +727,7 @@ The migration is complete when:
 3. Neon connection tuning under real production concurrency
 4. R2 data migration correctness during staging and production cutover
 5. stale production assumptions in current PM2/Nginx/docs scripts
+6. shared-VM misconfiguration that points both hostnames at the same local core listener
 
 ### Lower-risk items
 
@@ -713,6 +749,9 @@ If we choose explicit defaults in follow-up PRs, the recommended production defa
 6. do not leave production coupled to VM-local filesystem blobs
 7. keep `agenttools.dev` as a permanent staging namespace, not a temporary alias for production
 8. prefer direct cutover over compatibility layers because there is no production traffic to preserve
+9. use separate local core ports on the shared VM:
+   - production `127.0.0.1:50051`
+   - staging `127.0.0.1:50052`
 
 ---
 
