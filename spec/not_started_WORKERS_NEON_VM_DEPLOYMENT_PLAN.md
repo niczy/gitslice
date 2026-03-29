@@ -11,9 +11,9 @@
 
 The target production topology is:
 
-1. `agenttools.dev`
+1. `gitslice.io`
    - served by a Cloudflare Worker running the web app
-2. `api.agenttools.dev`
+2. `api.gitslice.io`
    - served from the current VM
    - Cloudflare-proxied to the VM origin
    - terminates public gRPC and grpc-gateway HTTP traffic
@@ -82,7 +82,7 @@ Relevant facts from the current codebase:
 These decisions keep the rollout tractable:
 
 1. keep the Go core on the current VM
-2. keep public native gRPC on `api.agenttools.dev`
+2. keep public native gRPC on `api.gitslice.io`
 3. keep Nginx on the VM as the TLS and Cloudflare-facing origin for the core
 4. move only the web app to a Cloudflare Worker
 5. use Neon as PostgreSQL, not D1
@@ -108,11 +108,11 @@ This plan does not do the following:
 
 ### Public topology
 
-1. `agenttools.dev`
+1. `gitslice.io`
    - Cloudflare Worker
    - serves web HTML, assets, auth routes, and web SSR/data loader traffic
-   - may proxy compatibility paths like `/v1/*` to `api.agenttools.dev` if needed
-2. `api.agenttools.dev`
+   - may proxy compatibility paths like `/v1/*` to `api.gitslice.io` if needed
+2. `api.gitslice.io`
    - Cloudflare-proxied hostname
    - routes public gRPC to the VM origin
    - routes grpc-gateway `/v1/*` to the VM origin
@@ -134,10 +134,10 @@ This plan does not do the following:
 
 1. VM responsibilities after cutover:
    - `core_server`
-   - Nginx for `api.agenttools.dev`
+   - Nginx for `api.gitslice.io`
    - no public web SSR process required
 2. Worker responsibilities after cutover:
-   - public web app at `agenttools.dev`
+   - public web app at `gitslice.io`
    - web-side auth/session routes
    - optional compatibility proxying for browser HTTP calls
 
@@ -149,7 +149,7 @@ This plan does not do the following:
 
 1. Workers are appropriate for HTTP and asset serving, not for public native gRPC termination.
 2. The current web runtime must be made Worker-compatible because it still uses Node-specific crypto and Buffer APIs.
-3. Worker deployment should own `agenttools.dev`, not `api.agenttools.dev`.
+3. Worker deployment should own `gitslice.io`, not `api.gitslice.io`.
 
 ### Core / gRPC constraints
 
@@ -185,7 +185,7 @@ The plan should standardize the following deployment config:
 
 ### Worker config
 
-- `PUBLIC_API_BASE_URL=https://api.agenttools.dev`
+- `PUBLIC_API_BASE_URL=https://api.gitslice.io`
 - `AUTH_SECRET`
 - `AUTH_GOOGLE_*`
 - `AUTH_GITHUB_*`
@@ -207,8 +207,8 @@ The exact env names can change in implementation, but the split itself should no
 
 After the migration:
 
-1. `gs` CLI still targets `api.agenttools.dev:443` for gRPC and grpc-gateway HTTP
-2. browser users load `https://agenttools.dev/` from the Worker
+1. `gs` CLI still targets `api.gitslice.io:443` for gRPC and grpc-gateway HTTP
+2. browser users load `https://gitslice.io/` from the Worker
 3. browser auth flows still work:
    - sign in
    - device approval
@@ -307,10 +307,10 @@ Changes:
 
 1. centralize public API origin handling in the web server/runtime
 2. stop assuming same-host `/v1/*` availability inside the web app
-3. make auth/device approval flows explicitly target `api.agenttools.dev` through config
+3. make auth/device approval flows explicitly target `api.gitslice.io` through config
 4. audit cookie, callback, redirect, and forwarded-header behavior for:
-   - `agenttools.dev`
-   - `api.agenttools.dev`
+   - `gitslice.io`
+   - `api.gitslice.io`
 5. add browser and SSR tests for split-host mode
 6. keep current Node SSR deployment working during this refactor
 
@@ -381,14 +381,14 @@ Rollback:
 
 ---
 
-### PR6 - Production Worker cutover for `agenttools.dev`
+### PR6 - Production Worker cutover for `gitslice.io`
 
 Goal: move public web traffic to Cloudflare Workers while keeping core traffic on the VM.
 
 Changes:
 
-1. assign `agenttools.dev` to the Worker deployment
-2. keep `api.agenttools.dev` on the VM + Nginx origin path
+1. assign `gitslice.io` to the Worker deployment
+2. keep `api.gitslice.io` on the VM + Nginx origin path
 3. reduce VM web responsibilities:
    - stop treating the VM web process as the public source of truth
    - optionally keep it as a short-term rollback path
@@ -397,17 +397,17 @@ Changes:
    - Worker web
    - public `/auth/*`
    - public `/v1/*` browser path, if retained
-   - public gRPC at `api.agenttools.dev`
+   - public gRPC at `api.gitslice.io`
 
 Acceptance:
 
-1. `agenttools.dev` is Worker-hosted
-2. `api.agenttools.dev` remains healthy for CLI and browser API traffic
+1. `gitslice.io` is Worker-hosted
+2. `api.gitslice.io` remains healthy for CLI and browser API traffic
 3. user-visible web behavior is unchanged
 
 Rollback:
 
-1. point `agenttools.dev` back to the VM-hosted web deploy
+1. point `gitslice.io` back to the VM-hosted web deploy
 2. keep the Worker deploy intact for retry
 
 ---
@@ -422,7 +422,7 @@ Changes:
 2. remove stale assumptions that public web health comes from `127.0.0.1:4173`
 3. add deployment verification scripts for:
    - local core health
-   - public `api.agenttools.dev` gRPC/gateway health
+   - public `api.gitslice.io` gRPC/gateway health
    - public Worker web health
 4. document rollback procedures for:
    - Neon failure
@@ -452,7 +452,7 @@ Recommended production order:
 3. cut core to Neon on the VM
 4. verify core behavior on Neon before any public web cutover
 5. merge PR5 and verify Worker previews
-6. merge PR6 and cut `agenttools.dev` to the Worker
+6. merge PR6 and cut `gitslice.io` to the Worker
 7. merge PR7 and remove stale VM-web assumptions from production ops
 
 ---
@@ -461,8 +461,8 @@ Recommended production order:
 
 The migration is complete when:
 
-1. `agenttools.dev` is served from a Cloudflare Worker
-2. `api.agenttools.dev` serves public gRPC and `/v1/*` from the current VM origin
+1. `gitslice.io` is served from a Cloudflare Worker
+2. `api.gitslice.io` serves public gRPC and `/v1/*` from the current VM origin
 3. the Go core uses Neon as its authoritative PostgreSQL database
 4. the VM no longer needs to run the public web app in production
 5. auth flows, CLI flows, and browser flows all continue to work
@@ -474,7 +474,7 @@ The migration is complete when:
 ### Highest-risk items
 
 1. web auth runtime portability to Workers
-2. cross-host cookie and redirect behavior between `agenttools.dev` and `api.agenttools.dev`
+2. cross-host cookie and redirect behavior between `gitslice.io` and `api.gitslice.io`
 3. Neon connection tuning under real production concurrency
 4. stale production assumptions in current PM2/Nginx/docs scripts
 
@@ -489,7 +489,7 @@ The migration is complete when:
 
 If we choose explicit defaults in follow-up PRs, the recommended production defaults are:
 
-1. keep `api.agenttools.dev` as the CLI and public API origin
+1. keep `api.gitslice.io` as the CLI and public API origin
 2. keep the core on the VM behind Nginx on `443`
 3. use Neon direct PostgreSQL connection for the long-running Go core
 4. reserve pooled/HTTP-style Neon access for future serverless jobs only if needed
@@ -503,4 +503,3 @@ If we choose explicit defaults in follow-up PRs, the recommended production defa
 2. Cloudflare gRPC requirements: https://developers.cloudflare.com/network/grpc-connections/
 3. Neon connection pooling: https://neon.com/docs/connect/connection-pooling
 4. Neon compute lifecycle: https://neon.com/docs/introduction/compute-lifecycle
-
