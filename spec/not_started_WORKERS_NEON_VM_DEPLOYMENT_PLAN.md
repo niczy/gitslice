@@ -77,6 +77,56 @@ Relevant facts from the current codebase:
 
 ---
 
+## Worker Readiness Audit
+
+Based on the current `web/` tree, the web app is **migratable to Cloudflare Workers**, but not yet deployable there without a portability pass.
+
+### Already in good shape
+
+1. the app is already SSR React Router rather than an ad hoc custom Node server in [package.json](/home/nic/workspace/gitslice/web/package.json)
+2. the route handlers already use Web `Request`/`Response` style instead of Express-only APIs:
+   - [auth.$.jsx](/home/nic/workspace/gitslice/web/app/routes/auth.$.jsx)
+   - [auth.session.jsx](/home/nic/workspace/gitslice/web/app/routes/auth.session.jsx)
+   - [auth.dev-login.jsx](/home/nic/workspace/gitslice/web/app/routes/auth.dev-login.jsx)
+   - [auth.dev-logout.jsx](/home/nic/workspace/gitslice/web/app/routes/auth.dev-logout.jsx)
+   - [auth.device.jsx](/home/nic/workspace/gitslice/web/app/routes/auth.device.jsx)
+   - [v1.$.jsx](/home/nic/workspace/gitslice/web/app/routes/v1.$.jsx)
+3. the React Router config is minimal in [react-router.config.js](/home/nic/workspace/gitslice/web/react-router.config.js), which reduces framework migration risk
+4. the active proxy path in [proxy.js](/home/nic/workspace/gitslice/web/server/proxy.js) already uses `fetch` and Web request bodies
+
+### Actual blockers
+
+1. there is no Worker deployment target yet:
+   - no Wrangler config
+   - no Worker build script
+   - no Worker preview or production deploy path
+2. the active auth runtime in [auth.js](/home/nic/workspace/gitslice/web/server/auth.js) still assumes Node-oriented helpers:
+   - `node:crypto`
+   - `Buffer`
+   - `process.env`
+3. shared/client helpers still contain `Buffer` fallback code:
+   - [highlight.js](/home/nic/workspace/gitslice/web/src/utils/highlight.js)
+   - [CommitDiffPage.jsx](/home/nic/workspace/gitslice/web/src/components/CommitDiffPage.jsx)
+4. the public API base URL still needs to become an explicit Worker/runtime binding rather than just a Node-side SSR default
+
+### Legacy code that should be cleaned up
+
+1. [auth-middleware.js](/home/nic/workspace/gitslice/web/auth-middleware.js) is Node `req`/`res` style middleware and does not appear to be part of the active route path anymore
+2. that file should be either:
+   - removed if fully dead
+   - or isolated as Node-only compatibility code that is not part of the Worker bundle
+
+### Working conclusion
+
+1. the app does **not** need a rewrite to move to Workers
+2. the migration is mainly:
+   - runtime portability cleanup
+   - explicit split-host API config
+   - Worker deployment plumbing
+3. the biggest real risk is auth/session portability, not React Router itself
+
+---
+
 ## Locked Decisions
 
 These decisions keep the rollout tractable:
@@ -148,8 +198,9 @@ This plan does not do the following:
 ### Cloudflare Worker constraints
 
 1. Workers are appropriate for HTTP and asset serving, not for public native gRPC termination.
-2. The current web runtime must be made Worker-compatible because it still uses Node-specific crypto and Buffer APIs.
+2. The current web runtime must be made Worker-compatible because the active auth and shared helpers still use Node-oriented crypto and Buffer APIs.
 3. Worker deployment should own `gitslice.io`, not `api.gitslice.io`.
+4. The route layer is already close to Worker-ready; the main gap is shared runtime code and deployment plumbing.
 
 ### Core / gRPC constraints
 
@@ -332,17 +383,18 @@ Goal: remove Node-only assumptions that block Cloudflare Worker deployment.
 
 Changes:
 
-1. replace Node-specific crypto and encoding helpers in:
+1. replace Node-specific crypto and encoding helpers in the active Worker path:
    - [auth.js](/home/nic/workspace/gitslice/web/server/auth.js)
-   - [auth-middleware.js](/home/nic/workspace/gitslice/web/auth-middleware.js)
-   - any Buffer-only browser/runtime helpers
+   - [highlight.js](/home/nic/workspace/gitslice/web/src/utils/highlight.js)
+   - [CommitDiffPage.jsx](/home/nic/workspace/gitslice/web/src/components/CommitDiffPage.jsx)
 2. introduce a small runtime abstraction for:
    - HMAC/signing
    - random bytes
    - base64url encoding/decoding
-3. ensure server-side proxy/fetch code uses Web-standard Request/Response semantics
-4. keep Node SSR support as a fallback during this PR
-5. add tests that run the shared auth/runtime helpers in a Worker-compatible environment
+3. remove or isolate [auth-middleware.js](/home/nic/workspace/gitslice/web/auth-middleware.js) so dead Node middleware is not treated as part of the Worker path
+4. ensure server-side proxy/fetch code stays on Web-standard Request/Response semantics
+5. keep Node SSR support as a fallback during this PR
+6. add tests that run the shared auth/runtime helpers in a Worker-compatible environment
 
 Acceptance:
 
@@ -365,15 +417,18 @@ Changes:
 1. add Wrangler config for the web app
 2. add Worker build/deploy scripts under `web/`
 3. add Worker env/secrets documentation
-4. add preview deployment support in GitHub Actions
-5. bind static assets correctly for the React Router build output
-6. add a Worker-local dev path alongside the existing Node preview path
+4. explicitly bind the public API base URL for split-host mode:
+   - `PUBLIC_API_BASE_URL=https://api.gitslice.io`
+5. add preview deployment support in GitHub Actions
+6. bind static assets correctly for the React Router build output
+7. add a Worker-local dev path alongside the existing Node preview path
 
 Acceptance:
 
 1. the web app can be preview-deployed to a Workers hostname
 2. preview smoke tests pass
-3. Node deploy path still exists as fallback
+3. auth routes and `/v1` compatibility proxying work against a remote API host
+4. Node deploy path still exists as fallback
 
 Rollback:
 
