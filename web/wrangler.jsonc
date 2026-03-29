@@ -1,0 +1,58 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gitslice-web",
+  "main": "./worker.js",
+  "compatibility_date": "2026-03-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./build/client",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "DEPLOY_ENV": "production",
+    "WEB_DEPLOY_TARGET": "cloudflare_worker",
+    "WEB_COMPAT_RUNTIME": "worker",
+    "PUBLIC_WEB_BASE_URL": "https://gitslice.io",
+    "PUBLIC_API_BASE_URL": "https://api.gitslice.io",
+    "VITE_FILE_API_BASE_URL": "",
+    "VITE_FILE_API_PROXY_TARGET": "https://api.gitslice.io"
+  },
+  "env": {
+    "staging": {
+      "name": "gitslice-web-staging",
+      "routes": [
+        {
+          "pattern": "agenttools.dev",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "DEPLOY_ENV": "staging",
+        "WEB_DEPLOY_TARGET": "cloudflare_worker",
+        "WEB_COMPAT_RUNTIME": "worker",
+        "PUBLIC_WEB_BASE_URL": "https://agenttools.dev",
+        "PUBLIC_API_BASE_URL": "https://api.agenttools.dev",
+        "VITE_FILE_API_BASE_URL": "",
+        "VITE_FILE_API_PROXY_TARGET": "https://api.agenttools.dev"
+      }
+    },
+    "production": {
+      "name": "gitslice-web-production",
+      "routes": [
+        {
+          "pattern": "gitslice.io",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "DEPLOY_ENV": "production",
+        "WEB_DEPLOY_TARGET": "cloudflare_worker",
+        "WEB_COMPAT_RUNTIME": "worker",
+        "PUBLIC_WEB_BASE_URL": "https://gitslice.io",
+        "PUBLIC_API_BASE_URL": "https://api.gitslice.io",
+        "VITE_FILE_API_BASE_URL": "",
+        "VITE_FILE_API_PROXY_TARGET": "https://api.gitslice.io"
+      }
+    }
+  }
+}

@@ -177,7 +177,7 @@ The shared deployment env vocabulary is:
 DEPLOY_ENV=production|staging
 PUBLIC_WEB_BASE_URL=https://gitslice.io
 PUBLIC_API_BASE_URL=https://api.gitslice.io
-VITE_FILE_API_BASE_URL=https://api.gitslice.io
+VITE_FILE_API_BASE_URL=
 WEB_DEPLOY_TARGET=node|cloudflare_worker
 WEB_COMPAT_RUNTIME=node|worker
 POSTGRES_DSN=postgres://...
@@ -199,6 +199,37 @@ For the Neon-backed core deployment:
 3. remote PostgreSQL targets are expected to use TLS; `sslmode=disable` is only valid for local development targets
 4. staging and production must use separate R2 namespaces, either by bucket or by `R2_PREFIX`
 5. `OBJECT_STORE_TYPE=r2` is the production target; VM-local filesystem object storage is only a local-development fallback
+6. for the Worker web target, browser `/v1/*` calls stay same-origin and the Worker proxies them to `PUBLIC_API_BASE_URL`
+
+### Worker Web Deploy
+
+The React Router web app now has a first-class Cloudflare Worker target under [wrangler.jsonc](/home/nic/workspace/gitslice/web/wrangler.jsonc). The Worker serves the built assets from `build/client`, runs SSR through [worker.js](/home/nic/workspace/gitslice/web/worker.js), and proxies browser-side `/v1/*` traffic to `PUBLIC_API_BASE_URL` while keeping auth cookies on the web origin.
+
+Useful commands:
+
+```bash
+cd web
+npm run dev:worker
+npm run preview:worker
+npm run deploy:worker:staging
+npm run deploy:worker:production
+```
+
+For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gitslice/web/.dev.vars.example) to `.dev.vars` and set:
+- `AUTH_SECRET`
+- `AUTH_GOOGLE_*` when testing Google OAuth
+- `AUTH_GITHUB_*` when testing GitHub OAuth
+
+For staging and production deploys, set Worker secrets with Wrangler instead of checking them into config:
+
+```bash
+cd web
+wrangler secret put AUTH_SECRET --env staging
+wrangler secret put AUTH_GITHUB_ID --env staging
+wrangler secret put AUTH_GITHUB_SECRET --env staging
+wrangler secret put AUTH_GOOGLE_ID --env staging
+wrangler secret put AUTH_GOOGLE_SECRET --env staging
+```
 
 ### Remote filesystem workflow
 
@@ -572,8 +603,8 @@ The copy and verify commands only operate on metadata-referenced objects:
 Search artifacts can be regenerated after cutover and do not need to be copied.
 
 For the Worker/VM split, browser-origin API traffic should use
-`PUBLIC_API_BASE_URL`, while CLI connectivity continues to target
-`api.gitslice.io:443`.
+same-origin `/v1/*` routes on the web host, and the Worker should proxy them to
+`PUBLIC_API_BASE_URL`. CLI connectivity continues to target `api.gitslice.io:443`.
 
 For staging CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
 For the target production layout, CLI connectivity moves to `api.gitslice.io:443`.
