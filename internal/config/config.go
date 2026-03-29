@@ -8,9 +8,10 @@ import (
 
 // Config holds all configuration values for gitslice services.
 type Config struct {
-	// Service ports
+	// Service ports. CoreServicePort is the single ingress for both gRPC and HTTP.
 	CoreServicePort string
-	GatewayPort     string
+	// GatewayPort is a deprecated legacy setting kept for compatibility with older env files.
+	GatewayPort string
 
 	// Storage type (memory, postgres, postgres_native)
 	StorageType string
@@ -75,7 +76,7 @@ func LoadConfig() *Config {
 	}
 	return &Config{
 		CoreServicePort:    corePort,
-		GatewayPort:        getEnv("GATEWAY_PORT", "8080"),
+		GatewayPort:        getEnv("GATEWAY_PORT", corePort),
 		StorageType:        getEnv("STORAGE_TYPE", "memory"),
 		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
 		ObjectStoreType:    getEnv("OBJECT_STORE_TYPE", "gcs"),
@@ -128,8 +129,9 @@ func (c *Config) GetAdminServiceAddr() string {
 }
 
 // GetGatewayAddr returns the full address for the HTTP gateway.
+// The gateway is served on the same port as the gRPC core service.
 func (c *Config) GetGatewayAddr() string {
-	return fmt.Sprintf(":%s", c.GatewayPort)
+	return c.GetCoreServiceAddr()
 }
 
 // getEnv retrieves an environment variable or returns a default value.

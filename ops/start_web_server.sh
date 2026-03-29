@@ -10,7 +10,6 @@ WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
-GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 # In production we don't want to auto-scan the local git repo and populate genesis.
 # Leave overrideable for one-off maintenance runs.
 SKIP_GIT_POPULATION="${SKIP_GIT_POPULATION:-1}"
@@ -216,7 +215,6 @@ start_core_server_nohup() {
 
   log "Starting core server (log: $CORE_LOG)..."
   CORE_SERVICE_PORT="$CORE_SERVICE_PORT" \
-    GATEWAY_PORT="$GATEWAY_PORT" \
     STORAGE_TYPE="$STORAGE_TYPE" \
     POSTGRES_DSN="$POSTGRES_DSN" \
     SKIP_GIT_POPULATION="$SKIP_GIT_POPULATION" \
@@ -232,8 +230,8 @@ start_core_server_nohup() {
     exit 1
   fi
 
-  if ! wait_for_health "Gateway" "http://localhost:${GATEWAY_PORT}/health" 30 "$CORE_LOG"; then
-    log "ERROR: Failed to start gateway. Check $CORE_LOG for details"
+  if ! wait_for_health "Core HTTP health" "http://localhost:${CORE_SERVICE_PORT}/health" 30 "$CORE_LOG"; then
+    log "ERROR: Failed to start core HTTP health endpoint. Check $CORE_LOG for details"
     exit 1
   fi
 }
@@ -270,8 +268,8 @@ start_services_with_pm2() {
     exit 1
   fi
 
-  if ! wait_for_health "Gateway" "http://localhost:${GATEWAY_PORT}/health" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
-    log "ERROR: Failed to start gateway via PM2"
+  if ! wait_for_health "Core HTTP health" "http://localhost:${CORE_SERVICE_PORT}/health" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
+    log "ERROR: Failed to start core HTTP health endpoint via PM2"
     exit 1
   fi
 

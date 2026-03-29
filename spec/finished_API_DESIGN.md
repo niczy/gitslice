@@ -502,7 +502,7 @@ Key behaviors in the prototype:
 - **Authentication + authorization enforced:** Clients send identity via `Authorization: User <username>` (HTTP) or gRPC metadata. Slice/Admin RPCs enforce slice-level access (unauthenticated -> `Unauthenticated`, unauthorized -> `PermissionDenied`). The current HTTP login is a lightweight “fake” user provisioning step; no real OAuth integration yet.
 - **Streaming RPCs are defined but not implemented:** `StreamCheckoutSlice` and `StreamCreateChangeset` return `UNIMPLEMENTED` until server support is added.
 - **Conflict tracking is in-memory:** Locks and conflict ownership are managed via `InMemoryStorage`.
-- **FileService gateway:** the core server hosts the FileService gRPC-Gateway on `:8080` for HTTP access to `ListEntries` and `GetFile`.
+- **FileService gateway:** the core server hosts the FileService gRPC-Gateway on the same `:50051` listener as gRPC for HTTP access to `ListEntries` and `GetFile`.
 
 ## Error Handling
 

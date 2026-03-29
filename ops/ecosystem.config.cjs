@@ -40,7 +40,6 @@ const fileEnv = loadEnvFile(opsEnvPath);
 
 const coreEnv = {
   CORE_SERVICE_PORT: fileEnv.CORE_SERVICE_PORT || "50051",
-  GATEWAY_PORT: fileEnv.GATEWAY_PORT || "8080",
   STORAGE_TYPE: fileEnv.STORAGE_TYPE || "postgres",
   POSTGRES_DSN: fileEnv.POSTGRES_DSN || "postgres://nic@127.0.0.1:55432/gitslice?sslmode=disable",
   SKIP_GIT_POPULATION: fileEnv.SKIP_GIT_POPULATION || "1",
@@ -52,7 +51,7 @@ const coreEnv = {
 const webEnv = {
   HOST: fileEnv.WEB_HOST || "127.0.0.1",
   PORT: fileEnv.WEB_PORT || "4173",
-  VITE_FILE_API_PROXY_TARGET: fileEnv.VITE_FILE_API_PROXY_TARGET || "http://127.0.0.1:8080",
+  VITE_FILE_API_PROXY_TARGET: fileEnv.VITE_FILE_API_PROXY_TARGET || "http://127.0.0.1:50051",
   VITE_WEB_AGENT_REAL_RUNTIME: fileEnv.VITE_WEB_AGENT_REAL_RUNTIME,
   AUTH_SECRET: fileEnv.AUTH_SECRET,
   AUTH_GOOGLE_ID: fileEnv.AUTH_GOOGLE_ID,

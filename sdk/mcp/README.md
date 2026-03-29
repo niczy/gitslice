@@ -20,7 +20,7 @@ npx gitslice-mcp
 
 ## Environment
 
-- `GITSLICE_BASE_URL`: API base URL. Defaults to `http://127.0.0.1:8080`.
+- `GITSLICE_BASE_URL`: API base URL. Defaults to `http://127.0.0.1:50051`.
 - `GITSLICE_USERNAME`: fake-user auth username for current repo auth.
 - `GITSLICE_API_KEY`: optional bearer-style auth instead of username.
 - `GITSLICE_WORKSPACE`: default workspace used by resources and any tool call that omits `workspaceId`.

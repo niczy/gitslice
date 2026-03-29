@@ -1,6 +1,6 @@
 import { createAuthContext, loadSession } from '../../server/auth.js';
 
-const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:8080';
+const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:50051';
 
 export async function action({ request }) {
   const { authSecret, startupError } = createAuthContext();

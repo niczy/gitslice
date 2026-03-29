@@ -16,7 +16,7 @@ These guidelines apply to the entire repository.
   - Avoid changes that break `git pull --ff-only` based update flow.
   - Preserve lock/health-check behavior so cron runs do not overlap or silently fail.
   - Prefer running restarts via `ops/restart_all.sh` (it prepares `PATH`); running `ops/start_web_server.sh` directly with a missing `PATH` can fail `make build-core` (e.g. `protoc` not found) and leave Nginx upstreams down (resulting in `502`).
-  - When diagnosing `502` on `agenttools.dev`, check the Nginx upstreams are actually listening: `127.0.0.1:4173` (web preview) and `127.0.0.1:8080` (gateway).
+  - When diagnosing `502` on `agenttools.dev`, check the Nginx upstreams are actually listening: `127.0.0.1:4173` (web preview) and `127.0.0.1:50051` (core gRPC + HTTP gateway).
   - If PM2 logs show `listen tcp :50051: bind: address already in use`, there are multiple `core_server` instances running; stop the stray one or PM2 will flap/restart and admin operations (like git import) may hit the wrong instance.
   - If `/v1/global/state` returns `globalCommitHash=global-init` and empty history, genesis population/import hasn't run (or state was reset) for the currently running server.
   - Prod defaults: start `core_server` with `SKIP_GIT_POPULATION=1` (disable genesis auto-population from the local git checkout). For `STORAGE_TYPE=postgres`, ensure the object store is configured (GCS creds or `OBJECT_STORE_TYPE=filesystem` + `OBJECT_STORE_DIR`).

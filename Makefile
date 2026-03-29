@@ -7,10 +7,9 @@ GOOGLEAPIS_DIR := third_party/googleapis
 # This commit is from 2024-05-13, matching our genproto dependency date
 GOOGLEAPIS_COMMIT := 0d38cae77aba1a9da2b4d5f27c3eabf7e48cf0e3
 CORE_SERVICE_PORT ?= 50051
-GATEWAY_PORT ?= 8080
 WEB_PORTS ?= 5173 4173 5174
-STOP_SERVER_PORTS := $(CORE_SERVICE_PORT) $(GATEWAY_PORT) $(WEB_PORTS)
-VITE_FILE_API_PROXY_TARGET ?= http://localhost:$(GATEWAY_PORT)
+STOP_SERVER_PORTS := $(CORE_SERVICE_PORT) $(WEB_PORTS)
+VITE_FILE_API_PROXY_TARGET ?= http://localhost:$(CORE_SERVICE_PORT)
 
 install:
 	go mod download
@@ -61,9 +60,9 @@ build-cli: proto
 
 start-servers: build
 	@$(MAKE) stop-servers
-	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) GATEWAY_PORT=$(GATEWAY_PORT) ./core_server &
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) ./core_server &
 	cd web && VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) npm run dev &
-	@echo "Services started (core on :$(CORE_SERVICE_PORT), gateway on :$(GATEWAY_PORT), web). Press Ctrl+C to stop."
+	@echo "Services started (core gRPC + HTTP on :$(CORE_SERVICE_PORT), web). Press Ctrl+C to stop."
 
 stop-servers:
 	@tool=""; \

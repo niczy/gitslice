@@ -130,25 +130,25 @@ go build -o gs_cli/gs_cli ./gs_cli/
 ### Run
 
 ```bash
-# Run core server (gRPC on :50051, gateway on :8080)
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+# Run core server (gRPC + gateway on :50051)
+CORE_SERVICE_PORT=50051 ./core_server
 
 # Optional: override the browser URL returned by OAuth device login
-PUBLIC_WEB_BASE_URL=http://localhost:4173 CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+PUBLIC_WEB_BASE_URL=http://localhost:4173 CORE_SERVICE_PORT=50051 ./core_server
 
 # Run core server with PostgreSQL + GCS storage
 STORAGE_TYPE=postgres \
 POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
 GCS_BUCKET=gitslice-objects \
 GCS_CREDENTIALS_FILE=/path/to/service-account.json \
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+CORE_SERVICE_PORT=50051 ./core_server
 
 # Run core server with PostgreSQL + filesystem object store (no GCS required)
 STORAGE_TYPE=postgres \
 POSTGRES_DSN='postgres://user:pass@localhost:5432/gitslice?sslmode=disable' \
 OBJECT_STORE_TYPE=filesystem \
 OBJECT_STORE_DIR="$PWD/.objectstore" \
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+CORE_SERVICE_PORT=50051 ./core_server
 
 # Run CLI (override addresses if needed)
 ./gs_cli --help
@@ -232,7 +232,7 @@ E2B_API_KEY=your-e2b-api-key \
 E2B_DOMAIN=e2b.app \
 E2B_RUNTIME_WS_PORT=9000 \
 E2B_RUNTIME_WS_PATH=/ws \
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+CORE_SERVICE_PORT=50051 ./core_server
 ```
 
 If `E2B_API_KEY` and `E2B_ACCESS_TOKEN` are both unset, agent sessions use the simulated runtime provider.
@@ -244,7 +244,7 @@ CFC_CONTROL_BASE_URL=https://<worker-subdomain>.workers.dev \
 CFC_SERVICE_TOKEN_ID=<service-token-id> \
 CFC_SERVICE_TOKEN_SECRET=<service-token-secret> \
 AGENT_RUNTIME_PROVIDER_DEFAULT=cloudflare_containers \
-CORE_SERVICE_PORT=50051 GATEWAY_PORT=8080 ./core_server
+CORE_SERVICE_PORT=50051 ./core_server
 ```
 
 For rollout safety, keep `AGENT_RUNTIME_PROVIDER_DEFAULT=e2b` initially and opt slices into Cloudflare via environment registry (`provider=cloudflare_containers`).
@@ -475,7 +475,7 @@ To restore PM2 apps on reboot (user crontab approach):
 - `/filesystem.v1.FilesystemService/`
 - `/agent.v1.AgentService/`
 
-`agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths.
+`agenttools.dev` continues to serve the web app and `/v1/` REST gateway paths, all backed by the same core upstream port used for gRPC.
 
 For CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
 

@@ -6,7 +6,7 @@ import Google from '@auth/core/providers/google';
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
-const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:8080';
+const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:50051';
 
 function buildUsernameFromProfile(profile) {
   const raw = [
