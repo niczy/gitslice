@@ -9,6 +9,9 @@ LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pw
 WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
+PRODUCTION_ENV_FILE="${PRODUCTION_ENV_FILE:-$REPO_ROOT/ops/.env.production}"
+LEGACY_PRODUCTION_ENV_FILE="$REPO_ROOT/ops/.env"
+STAGING_ENV_FILE="${STAGING_ENV_FILE:-$REPO_ROOT/ops/.env.staging}"
 DEPLOY_ENV="${DEPLOY_ENV:-production}"
 CORE_BIND_ADDR="${CORE_BIND_ADDR:-127.0.0.1}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
@@ -32,13 +35,58 @@ MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
 PM2_STOP_TIMEOUT_SECONDS="${PM2_STOP_TIMEOUT_SECONDS:-10}"
 PM2_BIN="${PM2_BIN:-}"
 PM2_NODE_BIN="${PM2_NODE_BIN:-}"
+PM2_PRODUCTION_CORE_APP="${PM2_PRODUCTION_CORE_APP:-gitslice-core-production}"
+PM2_STAGING_CORE_APP="${PM2_STAGING_CORE_APP:-gitslice-core-staging}"
+PM2_PRODUCTION_WEB_APP="${PM2_PRODUCTION_WEB_APP:-gitslice-web-production}"
+PM2_STAGING_WEB_APP="${PM2_STAGING_WEB_APP:-gitslice-web-staging}"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
-should_run_web_ssr() {
-  case "$(printf '%s' "$RUN_WEB_SSR" | tr '[:upper:]' '[:lower:]')" in
+resolve_production_env_file() {
+  if [ -f "$PRODUCTION_ENV_FILE" ]; then
+    printf '%s\n' "$PRODUCTION_ENV_FILE"
+    return 0
+  fi
+  if [ -f "$LEGACY_PRODUCTION_ENV_FILE" ]; then
+    printf '%s\n' "$LEGACY_PRODUCTION_ENV_FILE"
+    return 0
+  fi
+  return 1
+}
+
+read_env_value() {
+  local file_path="$1"
+  local key="$2"
+  local default_value="$3"
+
+  if [ -z "$file_path" ] || [ ! -f "$file_path" ]; then
+    printf '%s\n' "$default_value"
+    return 0
+  fi
+
+  local line
+  line="$(grep -E "^(export[[:space:]]+)?${key}=" "$file_path" | tail -n 1 || true)"
+  if [ -z "$line" ]; then
+    printf '%s\n' "$default_value"
+    return 0
+  fi
+
+  line="${line#export }"
+  line="${line#${key}=}"
+  line="${line%\"}"
+  line="${line#\"}"
+  line="${line%\'}"
+  line="${line#\'}"
+  printf '%s\n' "$line"
+}
+
+should_run_web_ssr_mode() {
+  local run_web_value="${1:-auto}"
+  local deploy_target="${2:-node}"
+
+  case "$(printf '%s' "$run_web_value" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on)
       return 0
       ;;
@@ -46,14 +94,88 @@ should_run_web_ssr() {
       return 1
       ;;
     auto|"")
-      [ "$WEB_DEPLOY_TARGET" = "node" ]
+      [ "$deploy_target" = "node" ]
       return $?
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+should_run_web_ssr() {
+  if should_run_web_ssr_mode "$RUN_WEB_SSR" "$WEB_DEPLOY_TARGET"; then
+    return 0
+  fi
+  case "$(printf '%s' "$RUN_WEB_SSR" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on|0|false|no|off|auto|"")
+      return 1
       ;;
     *)
       log "ERROR: RUN_WEB_SSR must be one of auto,true,false,1,0,yes,no,on,off"
       exit 1
       ;;
   esac
+}
+
+verify_pm2_core_target() {
+  local role="$1"
+  local env_file="$2"
+  local default_port="$3"
+  local log_file="$REPO_ROOT/logs/pm2-core-${role}.err.log"
+  local port
+
+  port="$(read_env_value "$env_file" CORE_SERVICE_PORT "$default_port")"
+  if ! wait_for_port "${role^} core gRPC" "$port" 30 "$log_file"; then
+    log "ERROR: Failed to start ${role} core gRPC via PM2"
+    exit 1
+  fi
+
+  if ! wait_for_health "${role^} core HTTP health" "http://127.0.0.1:${port}/health" 30 "$log_file"; then
+    log "ERROR: Failed to start ${role} core HTTP health endpoint via PM2"
+    exit 1
+  fi
+}
+
+verify_pm2_web_target() {
+  local role="$1"
+  local env_file="$2"
+  local default_port="$3"
+  local deploy_target run_web_ssr web_port
+
+  deploy_target="$(read_env_value "$env_file" WEB_DEPLOY_TARGET "cloudflare_worker")"
+  run_web_ssr="$(read_env_value "$env_file" RUN_WEB_SSR "auto")"
+  if ! should_run_web_ssr_mode "$run_web_ssr" "$deploy_target"; then
+    return 0
+  fi
+
+  web_port="$(read_env_value "$env_file" WEB_PORT "$default_port")"
+  if ! wait_for_port "${role^} web SSR" "$web_port" 30 "$REPO_ROOT/logs/pm2-web-${role}.err.log"; then
+    log "ERROR: Failed to start ${role} web SSR via PM2"
+    exit 1
+  fi
+}
+
+pm2_needs_web_build() {
+  local production_env_file staging_run_web_ssr staging_deploy_target
+  local production_run_web_ssr production_deploy_target
+
+  production_env_file="$(resolve_production_env_file || true)"
+  production_run_web_ssr="$(read_env_value "$production_env_file" RUN_WEB_SSR "auto")"
+  production_deploy_target="$(read_env_value "$production_env_file" WEB_DEPLOY_TARGET "cloudflare_worker")"
+  if should_run_web_ssr_mode "$production_run_web_ssr" "$production_deploy_target"; then
+    return 0
+  fi
+
+  if [ -f "$STAGING_ENV_FILE" ]; then
+    staging_run_web_ssr="$(read_env_value "$STAGING_ENV_FILE" RUN_WEB_SSR "auto")"
+    staging_deploy_target="$(read_env_value "$STAGING_ENV_FILE" WEB_DEPLOY_TARGET "cloudflare_worker")"
+    if should_run_web_ssr_mode "$staging_run_web_ssr" "$staging_deploy_target"; then
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 discover_pm2_bin() {
@@ -187,19 +309,29 @@ ensure_node_runtime() {
 
 stop_pm2_gitslice_apps() {
   discover_pm2_bin >/dev/null 2>&1 || return 0
+  local app_names=(
+    "$PM2_PRODUCTION_CORE_APP"
+    "$PM2_STAGING_CORE_APP"
+    "$PM2_PRODUCTION_WEB_APP"
+    "$PM2_STAGING_WEB_APP"
+    "gitslice-core"
+    "gitslice-web"
+  )
+  local app_name
 
   # Prevent PM2 autorestart from racing the manual restart flow.
   if command -v timeout >/dev/null 2>&1; then
-    if [ -n "$PM2_NODE_BIN" ]; then
-      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_NODE_BIN" "$PM2_BIN" stop gitslice-core >/dev/null 2>&1 || true
-      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_NODE_BIN" "$PM2_BIN" stop gitslice-web >/dev/null 2>&1 || true
-    else
-      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_BIN" stop gitslice-core >/dev/null 2>&1 || true
-      timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_BIN" stop gitslice-web >/dev/null 2>&1 || true
-    fi
+    for app_name in "${app_names[@]}"; do
+      if [ -n "$PM2_NODE_BIN" ]; then
+        timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_NODE_BIN" "$PM2_BIN" stop "$app_name" >/dev/null 2>&1 || true
+      else
+        timeout "${PM2_STOP_TIMEOUT_SECONDS}s" "$PM2_BIN" stop "$app_name" >/dev/null 2>&1 || true
+      fi
+    done
   else
-    run_pm2 stop gitslice-core >/dev/null 2>&1 || true
-    run_pm2 stop gitslice-web >/dev/null 2>&1 || true
+    for app_name in "${app_names[@]}"; do
+      run_pm2 stop "$app_name" >/dev/null 2>&1 || true
+    done
   fi
 }
 
@@ -302,6 +434,12 @@ start_web_server_nohup() {
 
 start_services_with_pm2() {
   discover_pm2_bin >/dev/null 2>&1 || return 1
+  local production_env_file staging_env_file
+  production_env_file="$(resolve_production_env_file || true)"
+  staging_env_file=""
+  if [ -f "$STAGING_ENV_FILE" ]; then
+    staging_env_file="$STAGING_ENV_FILE"
+  fi
 
   log "Starting services via PM2 ecosystem ($PM2_BIN)..."
   pkill -f "$CORE_BIN" >/dev/null 2>&1 || true
@@ -309,18 +447,12 @@ start_services_with_pm2() {
 
   run_pm2 startOrRestart "$PM2_ECOSYSTEM_FILE" --update-env >/dev/null
 
-  if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
-    log "ERROR: Failed to start core gRPC via PM2"
-    exit 1
-  fi
+  verify_pm2_core_target "production" "$production_env_file" "50051"
+  verify_pm2_web_target "production" "$production_env_file" "4173"
 
-  if ! wait_for_health "Core HTTP health" "http://localhost:${CORE_SERVICE_PORT}/health" 30 "/home/nic/workspace/gitslice/logs/pm2-core.err.log"; then
-    log "ERROR: Failed to start core HTTP health endpoint via PM2"
-    exit 1
-  fi
-
-  if should_run_web_ssr; then
-    wait_for_web_server
+  if [ -n "$staging_env_file" ]; then
+    verify_pm2_core_target "staging" "$staging_env_file" "50052"
+    verify_pm2_web_target "staging" "$staging_env_file" "4174"
   fi
 }
 
@@ -340,7 +472,7 @@ start_services() {
 
 log "=== Starting all services ==="
 ensure_node_runtime
-if should_run_web_ssr; then
+if should_run_web_ssr || pm2_needs_web_build; then
   build_web_server
 else
   log "Skipping local web SSR build/start because WEB_DEPLOY_TARGET=$WEB_DEPLOY_TARGET and RUN_WEB_SSR=$RUN_WEB_SSR"

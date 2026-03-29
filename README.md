@@ -198,6 +198,20 @@ R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 ```
 
+On the shared VM, keep separate env files:
+
+```bash
+cp ops/.env.example ops/.env.production
+cp ops/.env.example ops/.env.staging
+```
+
+Then adjust staging-specific values in `ops/.env.staging`:
+- `DEPLOY_ENV=staging`
+- `CORE_SERVICE_PORT=50052`
+- `PUBLIC_WEB_BASE_URL=https://agenttools.dev`
+- `PUBLIC_API_BASE_URL=https://api.agenttools.dev`
+- staging Neon DSN and staging R2 namespace
+
 For the Neon-backed core deployment:
 
 1. staging and production must use separate Neon databases, branches, or credentials
@@ -435,9 +449,11 @@ For local setup, copy the template and fill in values:
 cp web/.env.example web/.env
 ```
 
-For production deploys managed by `ops/restart_all.sh` or PM2, put the same `AUTH_*`
-values in `ops/.env`. The restart script sources `ops/.env`, and the PM2 ecosystem
-reads it directly so hourly restarts keep the web auth middleware configured.
+For local Node SSR fallback on the VM, put the same `AUTH_*` values in the
+environment file for that target (`ops/.env.production` or `ops/.env.staging`,
+falling back to the legacy `ops/.env` for production only). For the normal Worker
+deploy path, set auth secrets with Wrangler instead of storing them in the VM env
+files.
 
 
 CLI usage:
@@ -518,8 +534,8 @@ See `.github/workflows/build.yml` for details.
 `ops/restart_all.sh` is the canonical deploy script. It:
 - Acquires a lock to avoid overlapping cron runs
 - Pulls latest changes (`git fetch --prune` + `git pull --ff-only`) when upstream is configured
-- Rebuilds/restarts core + gateway + web preview via `ops/start_web_server.sh`
-- Verifies service health before exiting
+- Rebuilds/restarts the VM-hosted core services via `ops/start_web_server.sh`
+- Verifies local production/staging core health via `ops/verify_deploy.sh --local-only`
 - Ensures an hourly user crontab entry exists
 - Starts `core_server` with `SKIP_GIT_POPULATION=1` by default (disable genesis auto-population from the local git checkout)
 
@@ -545,16 +561,21 @@ pm2 start ops/ecosystem.config.cjs
 pm2 save
 ```
 
-The PM2 ecosystem reads `ops/.env` for both core and web settings, including
-Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
+The PM2 ecosystem now reads:
+- `ops/.env.production` for `gitslice-core-production`
+- `ops/.env.staging` for `gitslice-core-staging`
+- falling back to the legacy `ops/.env` only for production if `ops/.env.production` is absent
+
 When `WEB_DEPLOY_TARGET=cloudflare_worker`, the VM is core-only by default and the
-ecosystem skips the local `gitslice-web` process unless `RUN_WEB_SSR=1` is set for
-an explicit Node SSR fallback.
+ecosystem skips local `gitslice-web-*` processes unless `RUN_WEB_SSR=1` is set for
+an explicit Node SSR fallback. The final production target should not require any
+public web process on the VM.
+
 For the target hosted split, keep `CORE_BIND_ADDR`, `PUBLIC_WEB_BASE_URL`,
 `PUBLIC_API_BASE_URL`, `VITE_FILE_API_BASE_URL`, `DEPLOY_ENV`, `WEB_DEPLOY_TARGET`,
-and the Postgres/R2 settings in `ops/.env`.
-Set `OBJECT_STORE_TYPE=r2` with `R2_ENDPOINT`, `R2_BUCKET`, `R2_PREFIX`,
-`R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` for staging and production.
+and the Postgres/R2 settings in each env file. Set `OBJECT_STORE_TYPE=r2` with
+`R2_ENDPOINT`, `R2_BUCKET`, `R2_PREFIX`, `R2_ACCESS_KEY_ID`, and
+`R2_SECRET_ACCESS_KEY` for staging and production.
 
 To restore PM2 apps on reboot (user crontab approach):
 
@@ -640,6 +661,20 @@ gs context --json --slice-addr api.gitslice.io:443 --account-addr api.gitslice.i
 For object storage, verify a real production write/read path after cutover by
 creating a small file through the CLI or browser and confirming the bytes round-trip
 through the production R2 namespace.
+
+For repeatable shared-VM verification, use the deploy helper:
+
+```bash
+./ops/verify_deploy.sh --local-only
+./ops/verify_deploy.sh
+```
+
+It checks:
+- local production core health on `127.0.0.1:50051`
+- local staging core health on `127.0.0.1:50052` when `ops/.env.staging` exists
+- public `gitslice.io` and `api.gitslice.io`
+- public `agenttools.dev` and `api.agenttools.dev` when staging is configured
+- presence of required R2 config for each configured environment
 
 The origin Nginx config keeps long-lived gRPC calls open for up to `30m`, which
 is required for large repo imports and similarly heavy CLI operations to survive
