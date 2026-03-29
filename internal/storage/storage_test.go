@@ -1749,6 +1749,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err := st.Ping(ctx); err != nil {
 		t.Fatalf("Ping failed: %v", err)
 	}
+	if err := st.PingMetadata(ctx); err != nil {
+		t.Fatalf("PingMetadata failed: %v", err)
+	}
 }
 
 func TestFileChangeHistory(t *testing.T) {

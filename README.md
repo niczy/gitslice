@@ -179,12 +179,19 @@ PUBLIC_WEB_BASE_URL=https://gitslice.io
 PUBLIC_API_BASE_URL=https://api.gitslice.io
 WEB_DEPLOY_TARGET=node|cloudflare_worker
 WEB_COMPAT_RUNTIME=node|worker
+POSTGRES_DSN=postgres://...
 POSTGRES_MAX_CONNS=20
 POSTGRES_MIN_CONNS=2
 POSTGRES_MAX_CONN_LIFETIME=30m
 R2_BUCKET=...
 R2_PREFIX=production
 ```
+
+For the Neon-backed core deployment:
+
+1. staging and production must use separate Neon databases, branches, or credentials
+2. `POSTGRES_DSN` is the runtime connection string and is also used for startup migrations today
+3. remote PostgreSQL targets are expected to use TLS; `sslmode=disable` is only valid for local development targets
 
 ### Remote filesystem workflow
 

@@ -31,7 +31,14 @@ import (
 )
 
 func main() {
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+	logPostgresRuntimeConfig(cfg)
 
 	ctx := context.Background()
 	st, closeStorage, err := initStorage(ctx, cfg)
@@ -112,6 +119,9 @@ func main() {
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/health", common.HealthCheckHandler("core-server"))
+	httpMux.HandleFunc("/health/db", common.DependencyHealthCheckHandler("core-server", "database", func(ctx context.Context) error {
+		return st.PingMetadata(ctx)
+	}))
 	httpMux.Handle("/debug/vars", expvar.Handler())
 	httpMux.HandleFunc("/health/agent-runtime", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -144,7 +154,7 @@ func main() {
 		_ = json.NewEncoder(w).Encode(payload)
 	})
 	httpMux.HandleFunc("/ready", common.ReadyCheckHandler("core-server", func(ctx context.Context) bool {
-		return gateway.GRPCReady(ctx, grpcDialAddr)
+		return st.PingMetadata(ctx) == nil && gateway.GRPCReady(ctx, grpcDialAddr)
 	}))
 
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
@@ -187,7 +197,11 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 			return nil, nil, err
 		}
 
-		st, err := storage.NewPostgresNativeStorage(ctx, cfg.PostgresDSN, objectStore, "core")
+		st, err := storage.NewPostgresNativeStorageWithOptions(ctx, cfg.PostgresDSN, objectStore, "core", storage.PostgresNativeStorageOptions{
+			MaxConns:        cfg.PostgresMaxConns,
+			MinConns:        cfg.PostgresMinConns,
+			MaxConnLifetime: cfg.PostgresMaxConnLifetime,
+		})
 		if err != nil {
 			closeObjectStore()
 			return nil, nil, err
@@ -240,6 +254,40 @@ func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectSt
 	}
 
 	return storage.NewGCSObjectStore(client, cfg.GCSBucket), func() { _ = client.Close() }, nil
+}
+
+func logPostgresRuntimeConfig(cfg *config.Config) {
+	if !strings.EqualFold(cfg.StorageType, "postgres") {
+		return
+	}
+	summary, err := cfg.PostgresTargetSummary()
+	if err != nil || summary == nil {
+		log.Printf("Postgres runtime config: unable to summarize POSTGRES_DSN (%v)", err)
+		return
+	}
+	maxConns := "pgx-default"
+	if cfg.PostgresMaxConns > 0 {
+		maxConns = fmt.Sprintf("%d", cfg.PostgresMaxConns)
+	}
+	minConns := "pgx-default"
+	if cfg.PostgresMinConns > 0 {
+		minConns = fmt.Sprintf("%d", cfg.PostgresMinConns)
+	}
+	maxConnLifetime := "pgx-default"
+	if cfg.PostgresMaxConnLifetime > 0 {
+		maxConnLifetime = cfg.PostgresMaxConnLifetime.String()
+	}
+	log.Printf(
+		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s max_conn_lifetime=%s deploy_env=%s",
+		summary.Host,
+		summary.Database,
+		summary.Remote,
+		summary.UsesTLS,
+		maxConns,
+		minConns,
+		maxConnLifetime,
+		strings.TrimSpace(cfg.DeployEnv),
+	)
 }
 
 func parseCommaSeparated(value string) []string {

@@ -1092,6 +1092,10 @@ func (s *InMemoryStorage) Ping(ctx context.Context) error {
 	return nil
 }
 
+func (s *InMemoryStorage) PingMetadata(ctx context.Context) error {
+	return nil
+}
+
 // contains checks if a string contains a substring (case-insensitive)
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || findSubstring(s, substr))

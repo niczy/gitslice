@@ -190,7 +190,10 @@ func cmdBackfillNative(args []string) {
 		log.Fatalf("RunMigrations: %v", err)
 	}
 
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
 	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
 	if err != nil {
 		log.Fatalf("build object store: %v", err)
@@ -233,7 +236,10 @@ func cmdRepairNativeContent(args []string) {
 		log.Fatalf("RunMigrations: %v", err)
 	}
 
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
 	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
 	if err != nil {
 		log.Fatalf("build object store: %v", err)
@@ -264,7 +270,10 @@ func cmdPruneBrokenEntries(args []string) {
 		log.Fatalf("RunMigrations: %v", err)
 	}
 
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
 	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
 	if err != nil {
 		log.Fatalf("build object store: %v", err)

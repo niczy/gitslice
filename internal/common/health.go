@@ -9,10 +9,12 @@ import (
 
 // HealthStatus represents the health status of a service.
 type HealthStatus struct {
-	Status    string    `json:"status"`
-	Service   string    `json:"service"`
-	Timestamp time.Time `json:"timestamp"`
-	Uptime    string    `json:"uptime,omitempty"`
+	Status     string    `json:"status"`
+	Service    string    `json:"service"`
+	Timestamp  time.Time `json:"timestamp"`
+	Uptime     string    `json:"uptime,omitempty"`
+	Dependency string    `json:"dependency,omitempty"`
+	Error      string    `json:"error,omitempty"`
 }
 
 var serviceStartTime = time.Now()
@@ -35,6 +37,42 @@ func HealthCheckHandler(serviceName string) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(health)
+	}
+}
+
+// DependencyHealthCheckHandler returns a handler for checking a named dependency.
+func DependencyHealthCheckHandler(serviceName, dependency string, check func(context.Context) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		status := "healthy"
+		statusCode := http.StatusOK
+		errMessage := ""
+		if check != nil {
+			if err := check(ctx); err != nil {
+				status = "unhealthy"
+				statusCode = http.StatusServiceUnavailable
+				errMessage = err.Error()
+			}
+		}
+
+		health := HealthStatus{
+			Status:     status,
+			Service:    serviceName,
+			Dependency: dependency,
+			Error:      errMessage,
+			Timestamp:  time.Now(),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
 		json.NewEncoder(w).Encode(health)
 	}
 }
