@@ -20,8 +20,8 @@ The target production topology is:
 3. `Neon`
    - authoritative PostgreSQL metadata database for the Go core
 4. object storage
-   - stays on the current backend for now (`filesystem` or `gcs`)
-   - no R2 migration in this plan
+   - stays on the current backend for the initial cutover (`filesystem` or `gcs`)
+   - may move to R2 in a follow-on phase after the core/web/database split is stable
 
 This plan deliberately avoids the larger Cloudflare migration path in [cludflare_migration.md](/home/nic/workspace/gitslice/spec/cludflare_migration.md). That older plan assumes D1 and R2 migration. This plan does not.
 
@@ -54,6 +54,12 @@ The real deployment simplification is:
 1. Worker for web
 2. VM for core
 3. Neon for DB
+
+R2 can still be a good second-phase improvement because:
+
+1. it removes dependence on VM-local blob storage if production is still using `filesystem`
+2. it aligns blob hosting with the Cloudflare edge footprint
+3. it gives an S3-compatible object-store target without requiring the D1 migration from the broader Cloudflare plan
 
 ---
 
@@ -136,7 +142,7 @@ These decisions keep the rollout tractable:
 3. keep Nginx on the VM as the TLS and Cloudflare-facing origin for the core
 4. move only the web app to a Cloudflare Worker
 5. use Neon as PostgreSQL, not D1
-6. keep current object storage unchanged in this plan
+6. keep current object storage unchanged for the initial cutover
 7. do not rewrite service APIs or move gRPC handling into Workers
 
 ---
@@ -147,7 +153,7 @@ This plan does not do the following:
 
 1. move the Go core off the VM
 2. move metadata from PostgreSQL to D1
-3. move object storage from the current backend to R2
+3. move object storage from the current backend to R2 as part of the initial cutover
 4. replace protobuf or grpc-gateway contracts
 5. replace Nginx for the core origin path
 6. collapse public gRPC and public web onto the same Cloudflare Worker
@@ -177,8 +183,9 @@ This plan does not do the following:
    - authoritative metadata DB for the Go core
    - accessed directly by the core with PostgreSQL wire protocol
 2. object store
-   - unchanged from current production
+   - unchanged from current production in the initial phase
    - `filesystem` or `gcs`, whichever remains configured
+   - optional future target: `r2`
 
 ### Operational topology
 
@@ -233,6 +240,7 @@ The plan should standardize the following deployment config:
 - `OBJECT_STORE_TYPE`
 - `OBJECT_STORE_DIR`
 - `GCS_*` if still using GCS
+- `R2_*` if/when using R2 in the follow-on object-store phase
 
 ### Worker config
 
@@ -267,6 +275,7 @@ After the migration:
 4. browser-origin API calls still work
 5. VM restarts for core do not require restarting the public web
 6. web deploys do not require touching the VM core
+7. if a later R2 cutover happens, blob reads/writes remain transparent to users and CLI clients
 
 ---
 
@@ -279,6 +288,7 @@ Low-risk order:
 3. cut over Neon first or in parallel canary
 4. cut over the Worker-hosted web only after web/API boundary cleanup
 5. keep the current VM web path available until the Worker path is proven
+6. only consider R2 after the Worker + Neon + VM split is already stable
 
 This is intentionally not a big-bang cutover.
 
@@ -303,7 +313,7 @@ Changes:
    - web deploy target
    - worker deploy settings
    - Neon pool tuning
-4. document that object storage is unchanged in this plan
+4. document that object storage is unchanged in the initial cutover, with R2 called out as a later optional phase
 5. add rollout and rollback checklist sections to `README.md`
 
 Acceptance:
@@ -350,7 +360,41 @@ Rollback:
 
 ---
 
-### PR3 - Web/API boundary hardening for split-host deployment
+### PR3 - Optional R2 readiness and adapter validation
+
+Goal: make a later R2 cutover low-risk without coupling it to the initial web/database migration.
+
+Changes:
+
+1. audit the current object-store backend usage and document production state:
+   - `filesystem`
+   - `gcs`
+2. if not already present or production-ready, add or harden the R2/S3-compatible object-store adapter under [internal/storage](/home/nic/workspace/gitslice/internal/storage)
+3. add copy and verification tooling for:
+   - current object store -> R2
+4. add parity tests for:
+   - put/get/delete
+   - missing-object semantics
+   - concurrent object reads
+5. add rollout docs for:
+   - canary reads
+   - full cutover
+   - rollback to the previous object store
+
+Acceptance:
+
+1. the app still runs unchanged on the current object store
+2. R2 can be validated independently in staging or canary
+3. no production object-store cutover is required yet
+
+Rollback:
+
+1. keep the current object store authoritative
+2. leave copied R2 data in place for later retry
+
+---
+
+### PR4 - Web/API boundary hardening for split-host deployment
 
 Goal: make the web app run correctly when the public web host and public API host are different.
 
@@ -377,7 +421,7 @@ Rollback:
 
 ---
 
-### PR4 - Worker portability refactor for the web runtime
+### PR5 - Worker portability refactor for the web runtime
 
 Goal: remove Node-only assumptions that block Cloudflare Worker deployment.
 
@@ -408,7 +452,7 @@ Rollback:
 
 ---
 
-### PR5 - Cloudflare Worker deployment target for the web app
+### PR6 - Cloudflare Worker deployment target for the web app
 
 Goal: make the web app deployable to Cloudflare Workers without changing production traffic yet.
 
@@ -436,7 +480,7 @@ Rollback:
 
 ---
 
-### PR6 - Production Worker cutover for `gitslice.io`
+### PR7 - Production Worker cutover for `gitslice.io`
 
 Goal: move public web traffic to Cloudflare Workers while keeping core traffic on the VM.
 
@@ -467,7 +511,7 @@ Rollback:
 
 ---
 
-### PR7 - VM deploy cleanup, observability, and rollback hardening
+### PR8 - VM deploy cleanup, observability, and rollback hardening
 
 Goal: make the split deployment operationally safe after cutover.
 
@@ -502,13 +546,14 @@ Rollback:
 
 Recommended production order:
 
-1. merge PR1 through PR4
+1. merge PR1 through PR5
 2. run web preview deployment on Workers
 3. cut core to Neon on the VM
 4. verify core behavior on Neon before any public web cutover
-5. merge PR5 and verify Worker previews
-6. merge PR6 and cut `gitslice.io` to the Worker
-7. merge PR7 and remove stale VM-web assumptions from production ops
+5. merge PR6 and verify Worker previews
+6. merge PR7 and cut `gitslice.io` to the Worker
+7. merge PR8 and remove stale VM-web assumptions from production ops
+8. treat R2 as a separate optional cutover after the above is stable
 
 ---
 
@@ -522,6 +567,11 @@ The migration is complete when:
 4. the VM no longer needs to run the public web app in production
 5. auth flows, CLI flows, and browser flows all continue to work
 
+Optional extended success criteria for a later R2 phase:
+
+1. object blobs are served from R2 with no user-visible API change
+2. the VM is no longer responsible for production blob durability if `filesystem` was previously in use
+
 ---
 
 ## Risks
@@ -532,11 +582,13 @@ The migration is complete when:
 2. cross-host cookie and redirect behavior between `gitslice.io` and `api.gitslice.io`
 3. Neon connection tuning under real production concurrency
 4. stale production assumptions in current PM2/Nginx/docs scripts
+5. later R2 data migration correctness if object storage is moved after the main cutover
 
 ### Lower-risk items
 
 1. core behavior on Neon itself, because the app already targets PostgreSQL
 2. preserving public gRPC, because the VM + Nginx origin path stays in place
+3. later R2 adoption, because it can be decoupled from the web/database migration
 
 ---
 
@@ -548,7 +600,8 @@ If we choose explicit defaults in follow-up PRs, the recommended production defa
 2. keep the core on the VM behind Nginx on `443`
 3. use Neon direct PostgreSQL connection for the long-running Go core
 4. reserve pooled/HTTP-style Neon access for future serverless jobs only if needed
-5. keep object storage unchanged until there is a separate reason to migrate it
+5. keep object storage unchanged until the Worker + Neon + VM split is stable
+6. if production still depends on VM-local filesystem blobs, plan an explicit R2 follow-on cutover instead of leaving that coupling in place indefinitely
 
 ---
 
