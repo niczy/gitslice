@@ -7,7 +7,6 @@ import (
 	"expvar"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +24,8 @@ import (
 	fileservice "github.com/niczy/gitslice/services/file"
 	filesystemservice "github.com/niczy/gitslice/services/filesystem"
 	sliceservice "github.com/niczy/gitslice/services/slice"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 )
@@ -44,12 +45,6 @@ func main() {
 	}
 	if err := sliceservice.RunGenesisInit(ctx, st); err != nil {
 		log.Printf("Warning: genesis population failed: %v", err)
-	}
-
-	grpcAddr := cfg.GetCoreServiceAddr()
-	lis, err := net.Listen("tcp", grpcAddr)
-	if err != nil {
-		log.Fatalf("Failed to listen on gRPC addr %s: %v", grpcAddr, err)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -103,12 +98,10 @@ func main() {
 	agentSessionService.StartLifecycleLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
-	go func() {
-		log.Printf("Core gRPC server listening on %s", grpcAddr)
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("Failed to serve gRPC: %v", err)
-		}
-	}()
+	grpcAddr := cfg.GetCoreServiceAddr()
+	if strings.TrimSpace(cfg.GatewayPort) != "" && strings.TrimSpace(cfg.GatewayPort) != strings.TrimPrefix(grpcAddr, ":") {
+		log.Printf("Ignoring deprecated GATEWAY_PORT=%s; serving gRPC and HTTP gateway on %s", cfg.GatewayPort, grpcAddr)
+	}
 
 	grpcDialAddr := "localhost" + grpcAddr
 	gatewayMux, closeConns, err := gateway.NewMux(ctx, grpcDialAddr)
@@ -161,14 +154,24 @@ func main() {
 	httpMux.Handle("/", gateway.WithNoBodyWriteGuard(gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux))))
 
 	server := &http.Server{
-		Addr:    cfg.GetGatewayAddr(),
-		Handler: httpMux,
+		Addr:    grpcAddr,
+		Handler: buildCombinedCoreHandler(grpcServer, httpMux),
 	}
 
-	log.Printf("Gateway listening on %s", cfg.GetGatewayAddr())
+	log.Printf("Core server listening on %s (gRPC + HTTP gateway)", grpcAddr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Failed to serve gateway: %v", err)
+		log.Fatalf("Failed to serve combined core handler: %v", err)
 	}
+}
+
+func buildCombinedCoreHandler(grpcServer *grpc.Server, httpMux http.Handler) http.Handler {
+	return h2c.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/grpc") {
+			grpcServer.ServeHTTP(w, r)
+			return
+		}
+		httpMux.ServeHTTP(w, r)
+	}), &http2.Server{})
 }
 
 func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func(), error) {

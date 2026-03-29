@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { encode } from '@auth/core/jwt';
 
-const gatewayPort = process.env.E2E_GATEWAY_PORT || '18080';
-const gatewayBaseURL = `http://127.0.0.1:${gatewayPort}`;
+const corePort = process.env.E2E_CORE_PORT || process.env.E2E_GATEWAY_PORT || '50151';
+const gatewayBaseURL = `http://127.0.0.1:${corePort}`;
 const authSecret = 'test-auth-secret';
 
 async function addAuthSessionCookie(context, username) {

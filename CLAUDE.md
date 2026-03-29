@@ -109,8 +109,7 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 
 ### Service Ports
 
-- Core gRPC server: `50051` (configurable via `CORE_SERVICE_PORT`; legacy envs still accepted)
-- HTTP Gateway: `8080` (configurable via `GATEWAY_PORT`)
+- Core server (gRPC + HTTP Gateway): `50051` (configurable via `CORE_SERVICE_PORT`; legacy envs still accepted)
 
 ### Important Patterns
 
@@ -280,7 +279,6 @@ RUN_INTEGRATION_TESTS=1 go test -v ./workflow_test/...
 ```bash
 # Service Ports
 CORE_SERVICE_PORT=50051
-GATEWAY_PORT=8080
 
 # Storage
 STORAGE_TYPE=memory  # or "postgres"

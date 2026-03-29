@@ -9,7 +9,7 @@ A source control system that scales to billions of files and millions of commits
 ## Prototype Architecture (Current)
 
 The current implementation is a single-process prototype with in-memory storage:
-- **Core server**: `servers/core/main.go` runs the SliceService/AdminService/FileService gRPC server on `:50051` and the HTTP gateway on `:8080`.
+- **Core server**: `servers/core/main.go` runs the SliceService/AdminService/FileService gRPC server and the HTTP gateway on the same `:50051` listener.
 - **Storage layer**: `internal/storage/memory.go` backs all metadata and file contents in-memory.
 - **CLI**: `gs_cli/main.go` connects to the core gRPC server via `--addr` (or the legacy `--slice-addr`/`--admin-addr` flags).
 - **Ops**: `ops/nginx.conf` contains a basic reverse proxy layout for the gRPC endpoints.

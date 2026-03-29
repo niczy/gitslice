@@ -4,7 +4,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_LOG_DIR="${LOG_DIR:-./logs}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
-GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 LOCK_FILE="${REPO_ROOT}/.restart_all.lock"
 DEFAULT_PATH="$HOME/.local/go/bin:$HOME/.local/protoc/bin:$HOME/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NVM_NODE_BIN="${NVM_NODE_BIN:-}"
@@ -81,8 +80,8 @@ LOG_DIR="$SERVICE_LOG_DIR" "$REPO_ROOT/ops/start_web_server.sh"
 
 log "Verifying all services are healthy..."
 # Final verification that all services are up before starting nginx
-if ! curl -sf "http://localhost:${GATEWAY_PORT}/health" >/dev/null 2>&1; then
-  log "ERROR: Gateway service is not healthy on port ${GATEWAY_PORT}"
+if ! curl -sf "http://localhost:${CORE_SERVICE_PORT}/health" >/dev/null 2>&1; then
+  log "ERROR: Core HTTP health endpoint is not healthy on port ${CORE_SERVICE_PORT}"
   exit 1
 fi
 if ! nc -z localhost "${CORE_SERVICE_PORT}" 2>/dev/null; then
@@ -110,6 +109,5 @@ setup_cronjob
 
 log "Deployment complete!"
 log "Services:"
-log "  - Core gRPC server:       localhost:${CORE_SERVICE_PORT}"
-log "  - HTTP Gateway:           localhost:${GATEWAY_PORT}"
+log "  - Core (gRPC + HTTP):     localhost:${CORE_SERVICE_PORT}"
 log "  - Web SSR server:         localhost:4173"

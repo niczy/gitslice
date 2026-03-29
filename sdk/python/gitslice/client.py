@@ -24,7 +24,7 @@ class GitsliceClient:
     def __init__(
         self,
         *,
-        base_url: str = "http://127.0.0.1:8080",
+        base_url: str = "http://127.0.0.1:50051",
         username: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 30.0,

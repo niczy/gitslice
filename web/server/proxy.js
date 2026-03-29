@@ -1,4 +1,4 @@
-const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:8080';
+const gatewayTarget = process.env.VITE_FILE_API_PROXY_TARGET || 'http://localhost:50051';
 
 function buildProxyURL(request, suffix = '') {
   const url = new URL(request.url);

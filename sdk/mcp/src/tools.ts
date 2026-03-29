@@ -259,7 +259,7 @@ export class RestGitsliceApi implements GitsliceApi {
       throw new Error("GITSLICE_USERNAME or GITSLICE_API_KEY is required");
     }
 
-    this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:8080").replace(/\/+$/, "");
+    this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:50051").replace(/\/+$/, "");
     this.authHeader = username
       ? `User ${username}`
       : apiKey.toLowerCase().startsWith("bearer ") || apiKey.toLowerCase().startsWith("user ")

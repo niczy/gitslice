@@ -55,7 +55,7 @@ export class GitsliceClient {
       throw new Error("username or apiKey is required");
     }
 
-    this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:8080").replace(/\/+$/, "");
+    this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:50051").replace(/\/+$/, "");
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
     this.authHeader = GitsliceClient.buildAuthHeader(username, apiKey);
