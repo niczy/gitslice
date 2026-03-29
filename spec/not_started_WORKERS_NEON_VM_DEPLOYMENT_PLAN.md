@@ -23,6 +23,22 @@ The target production topology is:
    - stays on the current backend for the initial cutover (`filesystem` or `gcs`)
    - may move to R2 in a follow-on phase after the core/web/database split is stable
 
+The environment split is:
+
+1. staging
+   - web: `agenttools.dev`
+   - api: `api.agenttools.dev`
+2. production
+   - web: `gitslice.io`
+   - api: `api.gitslice.io`
+
+Each environment must use separate infrastructure namespaces:
+
+1. separate Neon database or branch/role namespace for staging vs production
+2. separate R2 bucket or, at minimum, an isolated environment prefix for staging vs production
+3. separate Worker deployments and secrets for staging vs production
+4. separate VM config and origin hostnames for staging vs production where applicable
+
 This plan deliberately avoids the larger Cloudflare migration path in [cludflare_migration.md](/home/nic/workspace/gitslice/spec/cludflare_migration.md). That older plan assumes D1 and R2 migration. This plan does not.
 
 This is the lowest-risk architecture change from the current repo state:
@@ -80,6 +96,63 @@ Relevant facts from the current codebase:
    - [proxy.js](/home/nic/workspace/gitslice/web/server/proxy.js)
 5. the core currently uses a standard PostgreSQL DSN in [config.go](/home/nic/workspace/gitslice/internal/config/config.go)
 6. the public web and public API are currently coupled in origin docs and runbooks
+
+---
+
+## Environment Topology And Namespace Rules
+
+This plan assumes two long-lived environments:
+
+### Staging
+
+1. public web host: `agenttools.dev`
+2. public API host: `api.agenttools.dev`
+3. purpose:
+   - pre-production verification
+   - Worker preview/canary validation
+   - Neon cutover rehearsal
+   - later R2 rehearsal
+
+### Production
+
+1. public web host: `gitslice.io`
+2. public API host: `api.gitslice.io`
+3. purpose:
+   - real customer traffic
+
+### Isolation requirements
+
+The environments must not share mutable infrastructure state.
+
+Required isolation:
+
+1. Neon
+   - separate project, database, or branch per environment
+   - separate credentials per environment
+   - staging migrations must not mutate production data
+2. Worker deployments
+   - separate Worker environments/routes
+   - separate secrets for OAuth, auth cookies, and API base URLs
+3. Core VM config
+   - separate env files or explicit deploy environment selection
+   - no shared production DSN in staging deploy scripts
+4. R2, when introduced later
+   - separate bucket per environment if possible
+   - otherwise a strict environment prefix such as:
+     - `staging/...`
+     - `production/...`
+   - no mixed staging/production object namespace
+
+Recommended default naming:
+
+1. staging web: `agenttools.dev`
+2. staging api: `api.agenttools.dev`
+3. production web: `gitslice.io`
+4. production api: `api.gitslice.io`
+5. staging Worker env: `staging`
+6. production Worker env: `production`
+7. staging object namespace: `staging`
+8. production object namespace: `production`
 
 ---
 
@@ -229,6 +302,7 @@ The plan should standardize the following deployment config:
 
 ### Core / VM config
 
+- `DEPLOY_ENV=staging|production`
 - `CORE_SERVICE_PORT`
 - `POSTGRES_DSN`
 - `POSTGRES_MIGRATION_DSN`
@@ -244,7 +318,9 @@ The plan should standardize the following deployment config:
 
 ### Worker config
 
-- `PUBLIC_API_BASE_URL=https://api.gitslice.io`
+- `DEPLOY_ENV=staging|production`
+- `PUBLIC_WEB_BASE_URL`
+- `PUBLIC_API_BASE_URL`
 - `AUTH_SECRET`
 - `AUTH_GOOGLE_*`
 - `AUTH_GITHUB_*`
@@ -252,6 +328,13 @@ The plan should standardize the following deployment config:
 - `CF_ACCOUNT_ID`
 - `CF_ZONE_ID`
 - `CLOUDFLARE_WORKER_NAME`
+
+### Environment-specific resource config
+
+- `NEON_PROJECT_ID` or equivalent environment-scoped reference
+- `NEON_DATABASE_NAME`
+- `R2_BUCKET`
+- `R2_PREFIX`
 
 ### Deployment mode flags
 
@@ -276,6 +359,7 @@ After the migration:
 5. VM restarts for core do not require restarting the public web
 6. web deploys do not require touching the VM core
 7. if a later R2 cutover happens, blob reads/writes remain transparent to users and CLI clients
+8. staging changes on `agenttools.dev` must not mutate production data or production object blobs
 
 ---
 
@@ -314,7 +398,10 @@ Changes:
    - worker deploy settings
    - Neon pool tuning
 4. document that object storage is unchanged in the initial cutover, with R2 called out as a later optional phase
-5. add rollout and rollback checklist sections to `README.md`
+5. add environment naming and namespace rules:
+   - `agenttools.dev` staging
+   - `gitslice.io` production
+6. add rollout and rollback checklist sections to `README.md`
 
 Acceptance:
 
@@ -346,12 +433,15 @@ Changes:
    - backup/export
    - cutover
    - rollback
+7. make environment isolation explicit in config and runbooks:
+   - staging Neon target
+   - production Neon target
 
 Acceptance:
 
 1. core runs cleanly against a Neon database
 2. targeted storage tests pass
-3. deploy docs contain an explicit Neon production setup
+3. deploy docs contain explicit staging and production Neon setup
 
 Rollback:
 
@@ -372,20 +462,26 @@ Changes:
 2. if not already present or production-ready, add or harden the R2/S3-compatible object-store adapter under [internal/storage](/home/nic/workspace/gitslice/internal/storage)
 3. add copy and verification tooling for:
    - current object store -> R2
-4. add parity tests for:
+4. enforce environment namespace separation in tooling:
+   - staging target
+   - production target
+   - no default mixed writes
+5. add parity tests for:
    - put/get/delete
    - missing-object semantics
    - concurrent object reads
-5. add rollout docs for:
+6. add rollout docs for:
    - canary reads
    - full cutover
    - rollback to the previous object store
+7. document bucket/prefix naming per environment
 
 Acceptance:
 
 1. the app still runs unchanged on the current object store
 2. R2 can be validated independently in staging or canary
 3. no production object-store cutover is required yet
+4. staging and production object namespaces are provably isolated
 
 Rollback:
 
@@ -404,6 +500,8 @@ Changes:
 2. stop assuming same-host `/v1/*` availability inside the web app
 3. make auth/device approval flows explicitly target `api.gitslice.io` through config
 4. audit cookie, callback, redirect, and forwarded-header behavior for:
+   - `agenttools.dev`
+   - `api.agenttools.dev`
    - `gitslice.io`
    - `api.gitslice.io`
 5. add browser and SSR tests for split-host mode
@@ -462,10 +560,14 @@ Changes:
 2. add Worker build/deploy scripts under `web/`
 3. add Worker env/secrets documentation
 4. explicitly bind the public API base URL for split-host mode:
-   - `PUBLIC_API_BASE_URL=https://api.gitslice.io`
+   - staging: `PUBLIC_API_BASE_URL=https://api.agenttools.dev`
+   - production: `PUBLIC_API_BASE_URL=https://api.gitslice.io`
 5. add preview deployment support in GitHub Actions
 6. bind static assets correctly for the React Router build output
 7. add a Worker-local dev path alongside the existing Node preview path
+8. add separate Worker environments/routes for:
+   - `agenttools.dev`
+   - `gitslice.io`
 
 Acceptance:
 
@@ -473,6 +575,7 @@ Acceptance:
 2. preview smoke tests pass
 3. auth routes and `/v1` compatibility proxying work against a remote API host
 4. Node deploy path still exists as fallback
+5. staging and production Worker configs are distinct
 
 Rollback:
 
@@ -486,13 +589,16 @@ Goal: move public web traffic to Cloudflare Workers while keeping core traffic o
 
 Changes:
 
-1. assign `gitslice.io` to the Worker deployment
-2. keep `api.gitslice.io` on the VM + Nginx origin path
-3. reduce VM web responsibilities:
+1. keep `agenttools.dev` as the staging Worker/web environment
+2. assign `gitslice.io` to the production Worker deployment
+3. keep `api.agenttools.dev` and `api.gitslice.io` on the VM + Nginx origin path for their respective environments
+4. reduce VM web responsibilities:
    - stop treating the VM web process as the public source of truth
    - optionally keep it as a short-term rollback path
-4. update Nginx docs and origin runbooks so the VM is described as API-only
-5. add explicit end-to-end smoke checks for:
+5. update Nginx docs and origin runbooks so the VM is described as API-only
+6. add explicit end-to-end smoke checks for:
+   - staging Worker web on `agenttools.dev`
+   - staging API on `api.agenttools.dev`
    - Worker web
    - public `/auth/*`
    - public `/v1/*` browser path, if retained
@@ -503,6 +609,7 @@ Acceptance:
 1. `gitslice.io` is Worker-hosted
 2. `api.gitslice.io` remains healthy for CLI and browser API traffic
 3. user-visible web behavior is unchanged
+4. staging remains available and isolated on `agenttools.dev`
 
 Rollback:
 
@@ -521,6 +628,8 @@ Changes:
 2. remove stale assumptions that public web health comes from `127.0.0.1:4173`
 3. add deployment verification scripts for:
    - local core health
+   - public staging web health
+   - public staging API health
    - public `api.gitslice.io` gRPC/gateway health
    - public Worker web health
 4. document rollback procedures for:
@@ -547,13 +656,16 @@ Rollback:
 Recommended production order:
 
 1. merge PR1 through PR5
-2. run web preview deployment on Workers
-3. cut core to Neon on the VM
-4. verify core behavior on Neon before any public web cutover
-5. merge PR6 and verify Worker previews
-6. merge PR7 and cut `gitslice.io` to the Worker
-7. merge PR8 and remove stale VM-web assumptions from production ops
-8. treat R2 as a separate optional cutover after the above is stable
+2. make `agenttools.dev` the staging validation environment for Worker and Neon changes
+3. run web preview deployment on Workers
+4. cut staging core to staging Neon
+5. verify staging core and staging web behavior before any production cutover
+6. cut production core to production Neon on the VM
+7. verify production core behavior on Neon before any public production web cutover
+8. merge PR6 and verify Worker previews
+9. merge PR7 and cut `gitslice.io` to the Worker
+10. merge PR8 and remove stale VM-web assumptions from production ops
+11. treat R2 as a separate optional cutover after the above is stable
 
 ---
 
@@ -561,16 +673,19 @@ Recommended production order:
 
 The migration is complete when:
 
-1. `gitslice.io` is served from a Cloudflare Worker
-2. `api.gitslice.io` serves public gRPC and `/v1/*` from the current VM origin
-3. the Go core uses Neon as its authoritative PostgreSQL database
-4. the VM no longer needs to run the public web app in production
-5. auth flows, CLI flows, and browser flows all continue to work
+1. `agenttools.dev` exists as a staging environment with isolated infrastructure
+2. `api.agenttools.dev` exists as the staging API origin with isolated infrastructure
+3. `gitslice.io` is served from a Cloudflare Worker
+4. `api.gitslice.io` serves public gRPC and `/v1/*` from the current VM origin
+5. the Go core uses separate Neon namespaces for staging and production
+6. the VM no longer needs to run the public web app in production
+7. auth flows, CLI flows, and browser flows all continue to work
 
 Optional extended success criteria for a later R2 phase:
 
-1. object blobs are served from R2 with no user-visible API change
-2. the VM is no longer responsible for production blob durability if `filesystem` was previously in use
+1. staging and production object blobs are isolated in separate R2 namespaces
+2. object blobs are served from R2 with no user-visible API change
+3. the VM is no longer responsible for production blob durability if `filesystem` was previously in use
 
 ---
 
@@ -602,6 +717,7 @@ If we choose explicit defaults in follow-up PRs, the recommended production defa
 4. reserve pooled/HTTP-style Neon access for future serverless jobs only if needed
 5. keep object storage unchanged until the Worker + Neon + VM split is stable
 6. if production still depends on VM-local filesystem blobs, plan an explicit R2 follow-on cutover instead of leaving that coupling in place indefinitely
+7. keep `agenttools.dev` as a permanent staging namespace, not a temporary alias for production
 
 ---
 
