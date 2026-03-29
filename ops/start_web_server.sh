@@ -9,6 +9,7 @@ LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pw
 WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
+DEPLOY_ENV="${DEPLOY_ENV:-production}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
 # In production we don't want to auto-scan the local git repo and populate genesis.
 # Leave overrideable for one-off maintenance runs.
@@ -19,6 +20,9 @@ POSTGRES_DSN="${POSTGRES_DSN:-}"
 OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
 OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://agenttools.dev}"
+PUBLIC_API_BASE_URL="${PUBLIC_API_BASE_URL:-http://127.0.0.1:${CORE_SERVICE_PORT}}"
+WEB_DEPLOY_TARGET="${WEB_DEPLOY_TARGET:-node}"
+WEB_COMPAT_RUNTIME="${WEB_COMPAT_RUNTIME:-node}"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-4173}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-18}"
@@ -207,6 +211,7 @@ build_web_server() {
   fi
 
   log "Building web SSR bundle..."
+  log "Web deploy target: $WEB_DEPLOY_TARGET (runtime compatibility: $WEB_COMPAT_RUNTIME, deploy env: $DEPLOY_ENV)"
   npm run build
 }
 
@@ -221,9 +226,13 @@ start_core_server_nohup() {
     OBJECT_STORE_TYPE="$OBJECT_STORE_TYPE" \
     OBJECT_STORE_DIR="$OBJECT_STORE_DIR" \
     PUBLIC_WEB_BASE_URL="$PUBLIC_WEB_BASE_URL" \
+    PUBLIC_API_BASE_URL="$PUBLIC_API_BASE_URL" \
+    DEPLOY_ENV="$DEPLOY_ENV" \
+    WEB_DEPLOY_TARGET="$WEB_DEPLOY_TARGET" \
+    WEB_COMPAT_RUNTIME="$WEB_COMPAT_RUNTIME" \
     nohup "$CORE_BIN" > "$CORE_LOG" 2>&1 &
   local pid=$!
-  log "Core server started with PID $pid (STORAGE_TYPE=$STORAGE_TYPE, SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE, PUBLIC_WEB_BASE_URL=$PUBLIC_WEB_BASE_URL)"
+  log "Core server started with PID $pid (DEPLOY_ENV=$DEPLOY_ENV, STORAGE_TYPE=$STORAGE_TYPE, SKIP_GIT_POPULATION=$SKIP_GIT_POPULATION, OBJECT_STORE_TYPE=$OBJECT_STORE_TYPE, PUBLIC_WEB_BASE_URL=$PUBLIC_WEB_BASE_URL, PUBLIC_API_BASE_URL=$PUBLIC_API_BASE_URL)"
 
   if ! wait_for_port "Core gRPC" "$CORE_SERVICE_PORT" 30 "$CORE_LOG"; then
     log "ERROR: Failed to start core gRPC. Check $CORE_LOG for details"
@@ -249,7 +258,14 @@ start_web_server_nohup() {
   stop_web_server_processes
 
   log "Starting web SSR server (log: $WEB_LOG)..."
-  HOST="$WEB_HOST" PORT="$WEB_PORT" nohup npm run start > "$WEB_LOG" 2>&1 &
+  HOST="$WEB_HOST" \
+    PORT="$WEB_PORT" \
+    DEPLOY_ENV="$DEPLOY_ENV" \
+    PUBLIC_WEB_BASE_URL="$PUBLIC_WEB_BASE_URL" \
+    PUBLIC_API_BASE_URL="$PUBLIC_API_BASE_URL" \
+    WEB_DEPLOY_TARGET="$WEB_DEPLOY_TARGET" \
+    WEB_COMPAT_RUNTIME="$WEB_COMPAT_RUNTIME" \
+    nohup npm run start > "$WEB_LOG" 2>&1 &
   log "Web SSR server started with PID $!"
   wait_for_web_server
 }
