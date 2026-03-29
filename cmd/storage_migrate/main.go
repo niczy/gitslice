@@ -15,14 +15,12 @@ import (
 	"strings"
 	"time"
 
-	gcsstorage "cloud.google.com/go/storage"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
-	"google.golang.org/api/option"
 )
 
 func main() {
@@ -44,6 +42,10 @@ func main() {
 		cmdVerifyNative(os.Args[2:])
 	case "drop-snapshot":
 		cmdDropSnapshot(os.Args[2:])
+	case "copy-object-store":
+		cmdCopyObjectStore(os.Args[2:])
+	case "verify-object-store":
+		cmdVerifyObjectStore(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -57,6 +59,8 @@ func usage() {
 	log.Printf("  storage_migrate prune-broken-entries --dsn <dsn> --namespace <ns> [--dry-run]")
 	log.Printf("  storage_migrate verify-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate drop-snapshot --dsn <dsn> --namespace <ns>")
+	log.Printf("  storage_migrate copy-object-store --dsn <dsn> --namespace <ns> --target-env <env> --source-object-store-type <type> --target-object-store-type r2")
+	log.Printf("  storage_migrate verify-object-store --dsn <dsn> --namespace <ns> --target-env <env> --source-object-store-type <type> --target-object-store-type r2")
 }
 
 func mustPool(ctx context.Context, dsn string) *pgxpool.Pool {
@@ -72,46 +76,6 @@ func mustPool(ctx context.Context, dsn string) *pgxpool.Pool {
 		log.Fatalf("ping: %v", err)
 	}
 	return pool
-}
-
-func buildObjectStore(ctx context.Context, cfg *config.Config) (storage.ObjectStore, func(), error) {
-	switch strings.ToLower(cfg.ObjectStoreType) {
-	case "filesystem", "fs", "file":
-		store, err := storage.NewFilesystemObjectStore(cfg.ObjectStoreDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		return store, func() {}, nil
-	case "", "gcs":
-		// Continue below.
-	default:
-		return nil, nil, fmt.Errorf("unsupported OBJECT_STORE_TYPE: %s", cfg.ObjectStoreType)
-	}
-
-	if cfg.GCSBucket == "" {
-		return nil, nil, fmt.Errorf("GCS_BUCKET is required")
-	}
-
-	clientOpts := []option.ClientOption{}
-	if cfg.GCSEndpoint != "" {
-		clientOpts = append(clientOpts, option.WithEndpoint(cfg.GCSEndpoint))
-	}
-	if cfg.GCSDisableAuth {
-		clientOpts = append(clientOpts, option.WithoutAuthentication())
-	}
-	if cfg.GCSCredentialsFile != "" {
-		clientOpts = append(clientOpts, option.WithCredentialsFile(cfg.GCSCredentialsFile))
-	}
-	if cfg.GCSCredentialsJSON != "" {
-		clientOpts = append(clientOpts, option.WithCredentialsJSON([]byte(cfg.GCSCredentialsJSON)))
-	}
-
-	client, err := gcsstorage.NewClient(ctx, clientOpts...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return storage.NewGCSObjectStore(client, cfg.GCSBucket), func() { _ = client.Close() }, nil
 }
 
 func readSnapshotPayload(ctx context.Context, pool *pgxpool.Pool, namespace string) ([]byte, error) {
@@ -194,7 +158,7 @@ func cmdBackfillNative(args []string) {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	objectStore, closeObjectStore, err := storage.BuildObjectStore(ctx, storage.ObjectStoreConfigFromAppConfig(cfg))
 	if err != nil {
 		log.Fatalf("build object store: %v", err)
 	}
@@ -240,7 +204,7 @@ func cmdRepairNativeContent(args []string) {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	objectStore, closeObjectStore, err := storage.BuildObjectStore(ctx, storage.ObjectStoreConfigFromAppConfig(cfg))
 	if err != nil {
 		log.Fatalf("build object store: %v", err)
 	}
@@ -274,7 +238,7 @@ func cmdPruneBrokenEntries(args []string) {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	objectStore, closeObjectStore, err := storage.BuildObjectStore(ctx, storage.ObjectStoreConfigFromAppConfig(cfg))
 	if err != nil {
 		log.Fatalf("build object store: %v", err)
 	}

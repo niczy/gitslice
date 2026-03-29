@@ -183,8 +183,12 @@ POSTGRES_DSN=postgres://...
 POSTGRES_MAX_CONNS=20
 POSTGRES_MIN_CONNS=2
 POSTGRES_MAX_CONN_LIFETIME=30m
+R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+R2_REGION=auto
 R2_BUCKET=...
 R2_PREFIX=production
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
 ```
 
 For the Neon-backed core deployment:
@@ -192,6 +196,8 @@ For the Neon-backed core deployment:
 1. staging and production must use separate Neon databases, branches, or credentials
 2. `POSTGRES_DSN` is the runtime connection string and is also used for startup migrations today
 3. remote PostgreSQL targets are expected to use TLS; `sslmode=disable` is only valid for local development targets
+4. staging and production must use separate R2 namespaces, either by bucket or by `R2_PREFIX`
+5. `OBJECT_STORE_TYPE=r2` is the production target; VM-local filesystem object storage is only a local-development fallback
 
 ### Remote filesystem workflow
 
@@ -497,6 +503,8 @@ Auth.js credentials such as `AUTH_SECRET`, `AUTH_GOOGLE_*`, and `AUTH_GITHUB_*`.
 The web app now runs a React Router SSR server on `127.0.0.1:4173` instead of `vite preview`.
 For the target hosted split, keep `PUBLIC_WEB_BASE_URL`, `PUBLIC_API_BASE_URL`,
 `DEPLOY_ENV`, `WEB_DEPLOY_TARGET`, and the Postgres/R2 settings in `ops/.env`.
+Set `OBJECT_STORE_TYPE=r2` with `R2_ENDPOINT`, `R2_BUCKET`, `R2_PREFIX`,
+`R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` for staging and production.
 
 To restore PM2 apps on reboot (user crontab approach):
 
@@ -523,6 +531,43 @@ This is the current staging/origin layout. The target production split is:
 1. `gitslice.io` on a Cloudflare Worker
 2. `api.gitslice.io` on the VM origin
 3. staging and production using separate Neon and R2 namespaces
+
+To copy referenced objects from the current store into a target R2 namespace before cutover:
+
+```bash
+OBJECT_STORE_TYPE=filesystem \
+OBJECT_STORE_DIR=/srv/gitslice/objectstore \
+TARGET_OBJECT_STORE_TYPE=r2 \
+TARGET_ENV=production \
+TARGET_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com \
+TARGET_R2_BUCKET=gitslice-production \
+TARGET_R2_PREFIX=production \
+TARGET_R2_ACCESS_KEY_ID=... \
+TARGET_R2_SECRET_ACCESS_KEY=... \
+./storage_migrate copy-object-store --dsn "$POSTGRES_DSN" --namespace core
+```
+
+To verify the copied objects against the authoritative source store:
+
+```bash
+OBJECT_STORE_TYPE=filesystem \
+OBJECT_STORE_DIR=/srv/gitslice/objectstore \
+TARGET_OBJECT_STORE_TYPE=r2 \
+TARGET_ENV=production \
+TARGET_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com \
+TARGET_R2_BUCKET=gitslice-production \
+TARGET_R2_PREFIX=production \
+TARGET_R2_ACCESS_KEY_ID=... \
+TARGET_R2_SECRET_ACCESS_KEY=... \
+./storage_migrate verify-object-store --dsn "$POSTGRES_DSN" --namespace core
+```
+
+The copy and verify commands only operate on metadata-referenced objects:
+- current slice manifests
+- versioned manifests
+- referenced block payloads
+
+Search artifacts can be regenerated after cutover and do not need to be copied.
 
 For the Worker/VM split, browser-origin API traffic should use
 `PUBLIC_API_BASE_URL`, while CLI connectivity continues to target
