@@ -8,6 +8,7 @@ type Slice struct {
 	Name         string             `json:"name"`
 	Slug         string             `json:"slug"`
 	Description  string             `json:"description"`
+	Visibility   Visibility         `json:"visibility"`
 	Files        []string           `json:"files"`
 	FolderMounts []SliceFolderMount `json:"folder_mounts,omitempty"`
 	Owners       []string           `json:"owners"`

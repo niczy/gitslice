@@ -1385,6 +1385,7 @@ func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
 		Name:        "Root Slice",
 		Slug:        "root",
 		Description: "The root slice containing all files",
+		Visibility:  models.VisibilityPrivate,
 		Files:       []string{},
 		Owners:      []string{"system"},
 		CreatedBy:   "system",

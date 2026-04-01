@@ -4,6 +4,7 @@ package filesystem.v1;
 
 option go_package = "github.com/niczy/gitslice/proto/filesystem;filesystemv1";
 
+import "common/visibility.proto";
 import "google/api/annotations.proto";
 
 service FilesystemService {
@@ -97,6 +98,19 @@ service FilesystemService {
     option (google.api.http) = {
       get: "/v1/fs/workspaces/{workspace_id}/stat"
       additional_bindings { get: "/v1/fs/workspaces/{workspace_id}/stat/{path=**}" }
+    };
+  }
+
+  rpc GetPathVisibility(GetPathVisibilityRequest) returns (GetPathVisibilityResponse) {
+    option (google.api.http) = {
+      get: "/v1/fs:visibility"
+    };
+  }
+
+  rpc SetPathVisibility(SetPathVisibilityRequest) returns (SetPathVisibilityResponse) {
+    option (google.api.http) = {
+      post: "/v1/fs:visibility"
+      body: "*"
     };
   }
 
@@ -282,6 +296,7 @@ message WorkspaceInfo {
   int32 path_count = 9;
   int32 file_count = 10;
   bool is_root = 11;
+  common.v1.Visibility visibility = 12;
 }
 
 message ListWorkspacesResponse {
@@ -419,6 +434,7 @@ message WorkspaceEntry {
   EntryType type = 3;
   int64 size = 4;
   string hash = 5;
+  common.v1.Visibility effective_visibility = 6;
 }
 
 message ListDirectoryRequest {
@@ -451,6 +467,35 @@ message StatRequest {
 message StatResponse {
   bool exists = 1;
   WorkspaceEntry entry = 2;
+}
+
+message PathVisibilityInfo {
+  string path = 1;
+  common.v1.Visibility visibility = 2;
+  bool explicit_rule = 3;
+  string resolved_from_path = 4;
+  common.v1.Visibility effective_visibility = 5;
+}
+
+message GetPathVisibilityRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message GetPathVisibilityResponse {
+  string workspace_id = 1;
+  PathVisibilityInfo visibility = 2;
+}
+
+message SetPathVisibilityRequest {
+  string path = 1;
+  common.v1.Visibility visibility = 2;
+  bool recursive = 3;
+}
+
+message SetPathVisibilityResponse {
+  PathVisibilityInfo visibility = 1;
+  bool recursive = 2;
 }
 
 message ExistsRequest {

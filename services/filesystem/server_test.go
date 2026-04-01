@@ -20,6 +20,7 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
+	commonv1 "github.com/niczy/gitslice/proto/common"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	fileservice "github.com/niczy/gitslice/services/file"
@@ -140,6 +141,26 @@ func TestCreateWorkspaceAcceptsBearerSessionToken(t *testing.T) {
 	}
 	if workspace.GetCreatedBy() != "tester" {
 		t.Fatalf("expected created_by tester, got %q", workspace.GetCreatedBy())
+	}
+	if got, want := workspace.GetVisibility(), commonv1.Visibility_VISIBILITY_PRIVATE; got != want {
+		t.Fatalf("expected visibility %v, got %v", want, got)
+	}
+}
+
+func TestSetPathVisibilityUnimplemented(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	_, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
+		Path:       "/tester/project",
+		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("SetPathVisibility error = %v, want %v", status.Code(err), codes.Unimplemented)
 	}
 }
 
