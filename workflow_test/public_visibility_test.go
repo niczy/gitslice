@@ -13,6 +13,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	commonv1 "github.com/niczy/gitslice/proto/common"
+	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -156,6 +157,71 @@ func TestPublicGatewayRoutesFollowSliceVisibilityToggle(t *testing.T) {
 	}
 
 	assertGatewayStatus(t, fmt.Sprintf("%s/v1/public/files/togglezone/toggle.txt?slice_id=%s", gatewayServiceURL, sliceID), http.StatusNotFound)
+}
+
+func TestPublicGatewayRoutesExposeAncestorDirectoriesForPublicFile(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if testStorage == nil {
+		t.Fatalf("expected integration storage")
+	}
+
+	sliceID := fmt.Sprintf("public-ancestor-%d", time.Now().UnixNano())
+	slice := &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"ancestorzone/guides/public.txt"},
+	}
+	if err := testStorage.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(sliceID, "ancestorzone/guides/public.txt"),
+		Path:     "ancestorzone/guides/public.txt",
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len("ancestor public")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, "ancestorzone/guides/public.txt", sliceID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, testStorage, sliceID, "ancestorzone/guides/public.txt", []byte("ancestor public"))
+
+	filesystemClient := newFilesystemClient(t)
+	authCtx := withUsername(ctx, "tester")
+	if _, err := filesystemClient.SetPathVisibility(authCtx, &filesystemv1.SetPathVisibilityRequest{
+		Path:       "/ancestorzone/guides/public.txt",
+		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
+	}); err != nil {
+		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
+	}
+	if _, err := filesystemClient.SetPathVisibility(authCtx, &filesystemv1.SetPathVisibilityRequest{
+		Path:       "/ancestorzone",
+		Visibility: commonv1.Visibility_VISIBILITY_PRIVATE,
+		Recursive:  true,
+	}); err != nil {
+		t.Fatalf("SetPathVisibility(private dir) failed: %v", err)
+	}
+
+	rootEntries := fetchPublicGatewayEntries(t, fmt.Sprintf("%s/v1/public/entries?slice_id=%s", gatewayServiceURL, sliceID))
+	assertGatewayEntryNames(t, rootEntries.Entries, "ancestorzone")
+
+	docsEntries := fetchPublicGatewayEntries(t, fmt.Sprintf("%s/v1/public/entries/ancestorzone?slice_id=%s", gatewayServiceURL, sliceID))
+	assertGatewayEntryNames(t, docsEntries.Entries, "guides")
+
+	file := fetchPublicGatewayFile(t, fmt.Sprintf("%s/v1/public/files/ancestorzone/guides/public.txt?slice_id=%s", gatewayServiceURL, sliceID))
+	raw, err := base64.StdEncoding.DecodeString(file.File.Content)
+	if err != nil {
+		t.Fatalf("DecodeString failed: %v", err)
+	}
+	if got := string(raw); got != "ancestor public" {
+		t.Fatalf("public file content = %q, want %q", got, "ancestor public")
+	}
 }
 
 func fetchPublicGatewayEntries(t *testing.T, url string) gatewayEntriesResponse {

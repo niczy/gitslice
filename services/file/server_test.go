@@ -343,6 +343,79 @@ func TestListPublicEntriesHidesPrivateSiblings(t *testing.T) {
 	}
 }
 
+func TestListPublicEntriesAllowsAncestorTraversalForPublicDescendant(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "public-ancestor",
+		Name:      "public-ancestor",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/guides/public.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/guides/public.txt", []byte("hello"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/guides/public.txt"),
+		Path:     "docs/guides/public.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("hello")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+		Path:       "/docs/guides/public.txt",
+		EntryType:  models.PathVisibilityEntryTypeFile,
+		Visibility: models.VisibilityPublic,
+	}); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule(public file) failed: %v", err)
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+		Path:       "/docs",
+		EntryType:  models.PathVisibilityEntryTypeDirectory,
+		Visibility: models.VisibilityPrivate,
+	}); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule(private dir) failed: %v", err)
+	}
+
+	storedSlice, err := st.GetSlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	rootResp, err := svc.ListPublicEntries(context.Background(), &filev1.ListPublicEntriesRequest{
+		SliceSlug: storedSlice.Slug,
+	})
+	if err != nil {
+		t.Fatalf("ListPublicEntries(root) failed: %v", err)
+	}
+	if got, want := len(rootResp.GetEntries()), 1; got != want {
+		t.Fatalf("len(root entries) = %d, want %d", got, want)
+	}
+	if got, want := rootResp.GetEntries()[0].GetPath(), "docs"; got != want {
+		t.Fatalf("root entry path = %q, want %q", got, want)
+	}
+
+	nestedResp, err := svc.ListPublicEntries(context.Background(), &filev1.ListPublicEntriesRequest{
+		SliceSlug: storedSlice.Slug,
+		Path:      "docs",
+	})
+	if err != nil {
+		t.Fatalf("ListPublicEntries(docs) failed: %v", err)
+	}
+	if got, want := len(nestedResp.GetEntries()), 1; got != want {
+		t.Fatalf("len(docs entries) = %d, want %d", got, want)
+	}
+	if got, want := nestedResp.GetEntries()[0].GetPath(), "docs/guides"; got != want {
+		t.Fatalf("docs entry path = %q, want %q", got, want)
+	}
+}
+
 func TestGetPublicFileAllowsSlicePublicOverride(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

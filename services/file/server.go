@@ -179,13 +179,36 @@ func (s *fileServiceServer) ensurePublicPathVisible(ctx context.Context, slice *
 	return nil
 }
 
+func (s *fileServiceServer) ensurePublicDirectoryVisible(ctx context.Context, slice *models.Slice, requestedPath string) error {
+	if slice != nil && slice.Visibility.IsPublic() {
+		return nil
+	}
+
+	public, err := visibility.IsPublic(ctx, s.storage, slice, requestedPath)
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
+	}
+	if public {
+		return nil
+	}
+
+	hasDescendant, _, err := s.directoryHasPublicDescendant(ctx, slice.ID, slice, requestedPath)
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
+	}
+	if hasDescendant {
+		return nil
+	}
+	return status.Error(codes.NotFound, "path not found")
+}
+
 func (s *fileServiceServer) filterPublicEntries(ctx context.Context, slice *models.Slice, entries []*filev1.DirectoryEntry) ([]*filev1.DirectoryEntry, error) {
 	filtered := make([]*filev1.DirectoryEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry == nil {
 			continue
 		}
-		public, err := visibility.IsPublic(ctx, s.storage, slice, entry.GetPath())
+		public, err := s.publicEntryVisible(ctx, slice, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -194,6 +217,101 @@ func (s *fileServiceServer) filterPublicEntries(ctx context.Context, slice *mode
 		}
 	}
 	return filtered, nil
+}
+
+func (s *fileServiceServer) publicEntryVisible(ctx context.Context, slice *models.Slice, entry *filev1.DirectoryEntry) (bool, error) {
+	if entry == nil {
+		return false, nil
+	}
+	public, err := visibility.IsPublic(ctx, s.storage, slice, entry.GetPath())
+	if err != nil {
+		return false, err
+	}
+	if public || entry.GetType() != filev1.EntryType_ENTRY_TYPE_DIRECTORY {
+		return public, nil
+	}
+
+	hasDescendant, _, err := s.directoryHasPublicDescendant(ctx, slice.ID, slice, entry.GetPath())
+	if err != nil {
+		return false, err
+	}
+	return hasDescendant, nil
+}
+
+func sliceBackingSliceID(sliceID string, slice *models.Slice) string {
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" {
+		return strings.TrimSpace(slice.ParentSlice)
+	}
+	return strings.TrimSpace(sliceID)
+}
+
+func (s *fileServiceServer) sliceDisplayPathExists(ctx context.Context, sliceID string, slice *models.Slice, displayPath string) (bool, bool, error) {
+	normalizedDisplayPath := cleanPath(displayPath)
+	if normalizedDisplayPath == "" {
+		return true, true, nil
+	}
+
+	pathMap, displayPaths, err := s.cachedSlicePathMap(ctx, sliceID, slice, "", false)
+	if err != nil {
+		return false, false, err
+	}
+	if _, ok := pathMap[normalizedDisplayPath]; ok {
+		return true, false, nil
+	}
+	prefix := normalizedDisplayPath + "/"
+	idx := sort.SearchStrings(displayPaths, prefix)
+	if idx < len(displayPaths) && strings.HasPrefix(displayPaths[idx], prefix) {
+		return true, true, nil
+	}
+
+	storedPath := common.SliceStoredPath(slice, normalizedDisplayPath)
+	if storedPath == "" {
+		return false, false, nil
+	}
+	entry, err := s.storage.GetEntryByPath(ctx, sliceBackingSliceID(sliceID, slice), storedPath)
+	if err == nil && entry != nil {
+		return true, entry.Type == "directory", nil
+	}
+	if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return false, false, err
+	}
+	return false, false, nil
+}
+
+func (s *fileServiceServer) directoryHasPublicDescendant(ctx context.Context, sliceID string, slice *models.Slice, displayPath string) (bool, string, error) {
+	prefix := ""
+	normalizedDisplayPath := cleanPath(displayPath)
+	if normalizedDisplayPath != "" {
+		prefix = visibility.NormalizePath(normalizedDisplayPath) + "/"
+	}
+
+	rules, err := s.storage.ListPathVisibilityRules(ctx, prefix)
+	if err != nil {
+		return false, "", err
+	}
+	for _, rule := range rules {
+		if rule == nil || !models.NormalizeVisibility(rule.Visibility).IsPublic() {
+			continue
+		}
+
+		ruleDisplayPath := common.CleanRelativePath(strings.TrimPrefix(rule.Path, "/"))
+		if ruleDisplayPath == "" {
+			continue
+		}
+		ruleDisplayPath = common.SliceDisplayPath(slice, ruleDisplayPath)
+		if ruleDisplayPath == "" {
+			ruleDisplayPath = common.CleanRelativePath(strings.TrimPrefix(rule.Path, "/"))
+		}
+
+		exists, _, err := s.sliceDisplayPathExists(ctx, sliceID, slice, ruleDisplayPath)
+		if err != nil {
+			return false, "", err
+		}
+		if exists {
+			return true, rule.Path, nil
+		}
+	}
+	return false, "", nil
 }
 
 // resolveVersion extracts the effective slice and commit from oneof version specifiers.
@@ -382,7 +500,7 @@ func (s *fileServiceServer) ListPublicEntries(ctx context.Context, req *filev1.L
 	if err != nil {
 		return nil, err
 	}
-	if err := s.ensurePublicPathVisible(ctx, slice, req.GetPath()); err != nil {
+	if err := s.ensurePublicDirectoryVisible(ctx, slice, req.GetPath()); err != nil {
 		return nil, err
 	}
 
