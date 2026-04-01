@@ -111,6 +111,103 @@ func modelVisibilityToProto(v models.Visibility) commonv1.Visibility {
 	}
 }
 
+func protoVisibilityToModel(v commonv1.Visibility) (models.Visibility, error) {
+	switch v {
+	case commonv1.Visibility_VISIBILITY_PRIVATE:
+		return models.VisibilityPrivate, nil
+	case commonv1.Visibility_VISIBILITY_PUBLIC:
+		return models.VisibilityPublic, nil
+	default:
+		return models.VisibilityPrivate, status.Error(codes.InvalidArgument, "visibility must be public or private")
+	}
+}
+
+func normalizePathPropagationMode(mode commonv1.PathVisibilityPropagationMode) (commonv1.PathVisibilityPropagationMode, error) {
+	switch mode {
+	case commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNSPECIFIED,
+		commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED:
+		return commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED, nil
+	case commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC,
+		commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PRIVATE:
+		return mode, nil
+	default:
+		return commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED, status.Error(codes.InvalidArgument, "invalid path_propagation_mode")
+	}
+}
+
+func canManageSliceVisibility(slice *models.Slice, username string) bool {
+	if slice == nil || strings.TrimSpace(username) == "" {
+		return false
+	}
+	if slice.CreatedBy == username {
+		return true
+	}
+	for _, owner := range slice.Owners {
+		if owner == username {
+			return true
+		}
+	}
+	return false
+}
+
+func addSliceVisibilityTarget(targets map[string]models.PathVisibilityEntryType, rawPath string, entryType models.PathVisibilityEntryType) {
+	cleaned := common.CleanRelativePath(rawPath)
+	if cleaned == "" {
+		return
+	}
+	if existing, ok := targets[cleaned]; ok {
+		if existing == models.PathVisibilityEntryTypeDirectory {
+			return
+		}
+		if entryType == models.PathVisibilityEntryTypeDirectory {
+			targets[cleaned] = entryType
+		}
+		return
+	}
+	targets[cleaned] = entryType
+}
+
+func addSliceVisibilityAncestors(targets map[string]models.PathVisibilityEntryType, rawPath string) {
+	cleaned := common.CleanRelativePath(rawPath)
+	if cleaned == "" {
+		return
+	}
+	for dir := path.Dir(cleaned); dir != "." && dir != ""; dir = path.Dir(dir) {
+		addSliceVisibilityTarget(targets, dir, models.PathVisibilityEntryTypeDirectory)
+	}
+}
+
+func collectSliceVisibilityTargets(slice *models.Slice, entries []*models.DirectoryEntry) map[string]models.PathVisibilityEntryType {
+	targets := make(map[string]models.PathVisibilityEntryType)
+	for _, entry := range entries {
+		if entry == nil || strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		displayPath := common.SliceDisplayPath(slice, entry.Path)
+		if displayPath == "" {
+			displayPath = common.CleanRelativePath(entry.Path)
+		}
+		switch entry.Type {
+		case "directory":
+			addSliceVisibilityTarget(targets, displayPath, models.PathVisibilityEntryTypeDirectory)
+		default:
+			addSliceVisibilityTarget(targets, displayPath, models.PathVisibilityEntryTypeFile)
+		}
+		addSliceVisibilityAncestors(targets, displayPath)
+	}
+	if slice != nil {
+		for _, filePath := range slice.Files {
+			displayPath := common.SliceDisplayPath(slice, filePath)
+			if displayPath == "" {
+				displayPath = common.CleanRelativePath(filePath)
+			}
+			addSliceVisibilityTarget(targets, displayPath, models.PathVisibilityEntryTypeFile)
+			addSliceVisibilityAncestors(targets, displayPath)
+		}
+	}
+	return targets
+}
+
 // RunGenesisInit populates the root slice from the git repository by creating
 // and merging a changeset through the service's own RPC methods.
 func RunGenesisInit(ctx context.Context, st storage.Storage) error {
@@ -2871,7 +2968,80 @@ func (s *sliceServiceServer) GetSliceVisibility(ctx context.Context, req *slicev
 }
 
 func (s *sliceServiceServer) SetSliceVisibility(ctx context.Context, req *slicev1.SetSliceVisibilityRequest) (*slicev1.SetSliceVisibilityResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "slice visibility updates are not implemented yet")
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	slice, err := s.storage.GetSlice(ctx, req.GetSliceId())
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.GetSliceId()))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice: %v", err))
+	}
+	if !canManageSliceVisibility(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized to change slice visibility")
+	}
+
+	visibility, err := protoVisibilityToModel(req.GetVisibility())
+	if err != nil {
+		return nil, err
+	}
+	propagationMode, err := normalizePathPropagationMode(req.GetPathPropagationMode())
+	if err != nil {
+		return nil, err
+	}
+	if visibility != models.VisibilityPublic && propagationMode != commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED {
+		return nil, status.Error(codes.InvalidArgument, "path_propagation_mode is only supported when making a slice public")
+	}
+
+	if err := s.storage.UpdateSliceVisibility(ctx, slice.ID, visibility); err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", slice.ID))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update slice visibility: %v", err))
+	}
+
+	if propagationMode != commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED {
+		entries, err := s.collectSliceEntries(ctx, slice.ID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect slice entries: %v", err))
+		}
+		targets := collectSliceVisibilityTargets(slice, entries)
+		keys := make([]string, 0, len(targets))
+		for key := range targets {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		propagatedVisibility := models.VisibilityPrivate
+		if propagationMode == commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC {
+			propagatedVisibility = models.VisibilityPublic
+		}
+
+		for _, targetPath := range keys {
+			if err := s.storage.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+				Path:       targetPath,
+				EntryType:  targets[targetPath],
+				Visibility: propagatedVisibility,
+				UpdatedBy:  username,
+			}); err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update path visibility for %s: %v", targetPath, err))
+			}
+		}
+	}
+
+	updatedSlice, err := s.storage.GetSlice(ctx, slice.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to reload slice visibility: %v", err))
+	}
+
+	return &slicev1.SetSliceVisibilityResponse{
+		SliceId:             updatedSlice.ID,
+		Visibility:          modelVisibilityToProto(updatedSlice.Visibility),
+		PathPropagationMode: propagationMode,
+	}, nil
 }
 
 func defaultSliceNameFromFolders(folderPaths []string, fallback string) string {

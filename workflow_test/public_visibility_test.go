@@ -12,6 +12,8 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
+	commonv1 "github.com/niczy/gitslice/proto/common"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
 type gatewayFileEnvelope struct {
@@ -93,6 +95,67 @@ func TestPublicGatewayRoutesRespectVisibility(t *testing.T) {
 	}
 
 	assertGatewayStatus(t, fmt.Sprintf("%s/v1/public/files/docs/private.txt?slice_id=%s", gatewayServiceURL, sliceID), http.StatusNotFound)
+}
+
+func TestPublicGatewayRoutesFollowSliceVisibilityToggle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if testStorage == nil {
+		t.Fatalf("expected integration storage")
+	}
+
+	sliceID := fmt.Sprintf("public-toggle-%d", time.Now().UnixNano())
+	slice := &models.Slice{
+		ID:        sliceID,
+		Name:      sliceID,
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"togglezone/toggle.txt"},
+	}
+	if err := testStorage.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(sliceID, "togglezone/toggle.txt"),
+		Path:     "togglezone/toggle.txt",
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len("toggle me")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, "togglezone/toggle.txt", sliceID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, testStorage, sliceID, "togglezone/toggle.txt", []byte("toggle me"))
+
+	sliceClient := newSliceClient(t)
+	authCtx := withUsername(ctx, "tester")
+	if _, err := sliceClient.SetSliceVisibility(authCtx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:    sliceID,
+		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
+	}); err != nil {
+		t.Fatalf("SetSliceVisibility(public) failed: %v", err)
+	}
+
+	file := fetchPublicGatewayFile(t, fmt.Sprintf("%s/v1/public/files/togglezone/toggle.txt?slice_id=%s", gatewayServiceURL, sliceID))
+	raw, err := base64.StdEncoding.DecodeString(file.File.Content)
+	if err != nil {
+		t.Fatalf("DecodeString failed: %v", err)
+	}
+	if got := string(raw); got != "toggle me" {
+		t.Fatalf("public file content = %q, want %q", got, "toggle me")
+	}
+
+	if _, err := sliceClient.SetSliceVisibility(authCtx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:    sliceID,
+		Visibility: commonv1.Visibility_VISIBILITY_PRIVATE,
+	}); err != nil {
+		t.Fatalf("SetSliceVisibility(private) failed: %v", err)
+	}
+
+	assertGatewayStatus(t, fmt.Sprintf("%s/v1/public/files/togglezone/toggle.txt?slice_id=%s", gatewayServiceURL, sliceID), http.StatusNotFound)
 }
 
 func fetchPublicGatewayEntries(t *testing.T, url string) gatewayEntriesResponse {

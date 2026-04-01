@@ -274,17 +274,138 @@ func TestGetSliceVisibilityDefaultsPrivate(t *testing.T) {
 	}
 }
 
-func TestSetSliceVisibilityUnimplemented(t *testing.T) {
+func TestSetSliceVisibilityUpdatesSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{ID: "slice-visibility", Name: "slice-visibility", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
 	svc := newSliceServiceServer(st)
 
-	_, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
+	resp, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
 		SliceId:    "slice-visibility",
 		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
 	})
-	if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("SetSliceVisibility error = %v, want %v", status.Code(err), codes.Unimplemented)
+	if err != nil {
+		t.Fatalf("SetSliceVisibility failed: %v", err)
+	}
+	if got, want := resp.GetVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
+		t.Fatalf("response visibility = %v, want %v", got, want)
+	}
+	stored, err := st.GetSlice(ctx, "slice-visibility")
+	if err != nil {
+		t.Fatalf("GetSlice failed: %v", err)
+	}
+	if got, want := stored.Visibility, models.VisibilityPublic; got != want {
+		t.Fatalf("stored visibility = %q, want %q", got, want)
+	}
+}
+
+func TestSetSliceVisibilityPropagatesPublicPaths(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{
+		ID:        "slice-visibility",
+		Name:      "slice-visibility",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/guide.md"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "dir-docs", Path: "docs", Type: "directory", ParentID: slice.ID}); err != nil {
+		t.Fatalf("AddEntry(dir) failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "file-guide", Path: "docs/guide.md", Type: "file", ParentID: slice.ID}); err != nil {
+		t.Fatalf("AddEntry(file) failed: %v", err)
+	}
+
+	svc := newSliceServiceServer(st)
+	resp, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:             slice.ID,
+		Visibility:          commonv1.Visibility_VISIBILITY_PUBLIC,
+		PathPropagationMode: commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC,
+	})
+	if err != nil {
+		t.Fatalf("SetSliceVisibility failed: %v", err)
+	}
+	if got, want := resp.GetPathPropagationMode(), commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC; got != want {
+		t.Fatalf("path_propagation_mode = %v, want %v", got, want)
+	}
+
+	dirRule, err := st.GetPathVisibilityRule(ctx, "/docs")
+	if err != nil {
+		t.Fatalf("GetPathVisibilityRule(dir) failed: %v", err)
+	}
+	if got, want := dirRule.Visibility, models.VisibilityPublic; got != want {
+		t.Fatalf("dir visibility = %q, want %q", got, want)
+	}
+
+	fileRule, err := st.GetPathVisibilityRule(ctx, "/docs/guide.md")
+	if err != nil {
+		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
+	}
+	if got, want := fileRule.Visibility, models.VisibilityPublic; got != want {
+		t.Fatalf("file visibility = %q, want %q", got, want)
+	}
+}
+
+func TestSetSliceVisibilityPropagatesPrivatePaths(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{
+		ID:        "slice-visibility-private",
+		Name:      "slice-visibility-private",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/guide.md"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "dir-docs", Path: "docs", Type: "directory", ParentID: slice.ID}); err != nil {
+		t.Fatalf("AddEntry(dir) failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: "file-guide", Path: "docs/guide.md", Type: "file", ParentID: slice.ID}); err != nil {
+		t.Fatalf("AddEntry(file) failed: %v", err)
+	}
+
+	svc := newSliceServiceServer(st)
+	if _, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:             slice.ID,
+		Visibility:          commonv1.Visibility_VISIBILITY_PUBLIC,
+		PathPropagationMode: commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PRIVATE,
+	}); err != nil {
+		t.Fatalf("SetSliceVisibility failed: %v", err)
+	}
+
+	fileRule, err := st.GetPathVisibilityRule(ctx, "/docs/guide.md")
+	if err != nil {
+		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
+	}
+	if got, want := fileRule.Visibility, models.VisibilityPrivate; got != want {
+		t.Fatalf("file visibility = %q, want %q", got, want)
+	}
+}
+
+func TestSetSliceVisibilityRejectsPropagationOnPrivateSlice(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{ID: "slice-private-reject", Name: "slice-private-reject", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := newSliceServiceServer(st)
+	_, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:             slice.ID,
+		Visibility:          commonv1.Visibility_VISIBILITY_PRIVATE,
+		PathPropagationMode: commonv1.PathVisibilityPropagationMode_PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("SetSliceVisibility error = %v, want %v", status.Code(err), codes.InvalidArgument)
 	}
 }
 
