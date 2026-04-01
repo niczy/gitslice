@@ -18,6 +18,14 @@ service FileService {
     };
   }
 
+  // List public entries within a slice at a given path.
+  rpc ListPublicEntries(ListPublicEntriesRequest) returns (ListEntriesResponse) {
+    option (google.api.http) = {
+      get: "/v1/public/entries/{path=**}"
+      additional_bindings { get: "/v1/public/entries" }
+    };
+  }
+
   // Fetch the contents of a file within a slice.
   // If no version is specified, uses root_slice at HEAD.
   rpc GetFile(GetFileRequest) returns (GetFileResponse) {
@@ -26,6 +34,14 @@ service FileService {
       additional_bindings { get: "/v1/files" }
       additional_bindings { get: "/v1/slices/{slice_version.slice_id}/files/{path=**}" }
       additional_bindings { get: "/v1/slices/{slice_version.slice_id}/files" }
+    };
+  }
+
+  // Fetch the contents of a public file within a slice at HEAD.
+  rpc GetPublicFile(GetPublicFileRequest) returns (GetFileResponse) {
+    option (google.api.http) = {
+      get: "/v1/public/files/{path=**}"
+      additional_bindings { get: "/v1/public/files" }
     };
   }
 
@@ -72,6 +88,13 @@ message ListEntriesRequest {
   }
 }
 
+message ListPublicEntriesRequest {
+  string slice_id = 1;
+  string slice_slug = 2;
+  string path = 3;
+  int32 limit = 4;
+}
+
 message ListEntriesResponse {
   string slice_id = 1;
   string path = 2;
@@ -102,6 +125,12 @@ message GetFileRequest {
     string commit_hash = 10;      // Global commit hash (uses root_slice)
     SliceVersion slice_version = 11;  // Specific slice at version
   }
+}
+
+message GetPublicFileRequest {
+  string slice_id = 1;
+  string slice_slug = 2;
+  string path = 3;
 }
 
 message GetFileResponse {

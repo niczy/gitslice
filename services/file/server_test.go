@@ -195,6 +195,200 @@ func TestGetFileRejectsLargeUnaryPayloads(t *testing.T) {
 	}
 }
 
+func TestGetPublicFileAllowsAnonymousReadForPublicFile(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "public-file",
+		Name:      "public-file",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/public.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/public.txt", []byte("hello public"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/public.txt"),
+		Path:     "docs/public.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("hello public")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+		Path:       "/docs/public.txt",
+		EntryType:  models.PathVisibilityEntryTypeFile,
+		Visibility: models.VisibilityPublic,
+	}); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetPublicFile(context.Background(), &filev1.GetPublicFileRequest{
+		SliceId: slice.ID,
+		Path:    "docs/public.txt",
+	})
+	if err != nil {
+		t.Fatalf("GetPublicFile failed: %v", err)
+	}
+	if got := string(resp.GetFile().GetContent()); got != "hello public" {
+		t.Fatalf("unexpected content %q", got)
+	}
+}
+
+func TestGetPublicFileReturnsNotFoundForPrivateFile(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "private-file",
+		Name:      "private-file",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/private.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/private.txt", []byte("hidden"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/private.txt"),
+		Path:     "docs/private.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("hidden")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	_, err := svc.GetPublicFile(context.Background(), &filev1.GetPublicFileRequest{
+		SliceId: slice.ID,
+		Path:    "docs/private.txt",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("GetPublicFile error = %v, want %v", status.Code(err), codes.NotFound)
+	}
+}
+
+func TestListPublicEntriesHidesPrivateSiblings(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "public-folder",
+		Name:      "public-folder",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files: []string{
+			"docs/public.txt",
+			"docs/private.txt",
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	for filePath, content := range map[string]string{
+		"docs/public.txt":  "public",
+		"docs/private.txt": "private",
+	} {
+		mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte(content))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(slice.ID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: slice.ID,
+			Size:     int64(len(content)),
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+		Path:       "/docs",
+		EntryType:  models.PathVisibilityEntryTypeDirectory,
+		Visibility: models.VisibilityPublic,
+	}); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule(dir) failed: %v", err)
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+		Path:       "/docs/private.txt",
+		EntryType:  models.PathVisibilityEntryTypeFile,
+		Visibility: models.VisibilityPrivate,
+	}); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule(file) failed: %v", err)
+	}
+
+	storedSlice, err := st.GetSlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.ListPublicEntries(context.Background(), &filev1.ListPublicEntriesRequest{
+		SliceSlug: storedSlice.Slug,
+		Path:      "docs",
+	})
+	if err != nil {
+		t.Fatalf("ListPublicEntries failed: %v", err)
+	}
+	if got, want := len(resp.GetEntries()), 1; got != want {
+		t.Fatalf("len(entries) = %d, want %d", got, want)
+	}
+	if got := resp.GetEntries()[0].GetPath(); got != "docs/public.txt" {
+		t.Fatalf("entry path = %q, want %q", got, "docs/public.txt")
+	}
+}
+
+func TestGetPublicFileAllowsSlicePublicOverride(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:         "slice-public",
+		Name:       "slice-public",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+		Files:      []string{"docs/private.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, slice.ID, "docs/private.txt", []byte("slice public"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, "docs/private.txt"),
+		Path:     "docs/private.txt",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("slice public")),
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, &models.PathVisibilityRule{
+		Path:       "/docs/private.txt",
+		EntryType:  models.PathVisibilityEntryTypeFile,
+		Visibility: models.VisibilityPrivate,
+	}); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.GetPublicFile(context.Background(), &filev1.GetPublicFileRequest{
+		SliceId: slice.ID,
+		Path:    "docs/private.txt",
+	})
+	if err != nil {
+		t.Fatalf("GetPublicFile failed: %v", err)
+	}
+	if got := string(resp.GetFile().GetContent()); got != "slice public" {
+		t.Fatalf("unexpected content %q", got)
+	}
+}
+
 func TestListEntriesReturnsFileHash(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()
