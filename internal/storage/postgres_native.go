@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/models"
@@ -476,6 +477,34 @@ func (s *postgresNativeTxView) AddAgentSessionAudit(ctx context.Context, audit *
 	return s.PostgresNativeStorage.AddAgentSessionAudit(ctx, audit)
 }
 
+func (s *postgresNativeTxView) UpdateSliceVisibility(ctx context.Context, sliceID string, visibility models.Visibility) error {
+	ctx = ensureCtx(ctx)
+	tag, err := s.tx.Exec(ctx, `UPDATE slices SET visibility = $1, updated_at = NOW() WHERE id = $2`, string(models.NormalizeVisibility(visibility)), sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
+func (s *postgresNativeTxView) GetPathVisibilityRule(ctx context.Context, p string) (*models.PathVisibilityRule, error) {
+	return s.PostgresNativeStorage.getPathVisibilityRule(ctx, s.tx, p)
+}
+
+func (s *postgresNativeTxView) ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error) {
+	return s.PostgresNativeStorage.listPathVisibilityRules(ctx, s.tx, pathPrefix)
+}
+
+func (s *postgresNativeTxView) UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error {
+	return s.PostgresNativeStorage.upsertPathVisibilityRule(ctx, s.tx, rule)
+}
+
+func (s *postgresNativeTxView) DeletePathVisibilityRule(ctx context.Context, p string) error {
+	return s.PostgresNativeStorage.deletePathVisibilityRule(ctx, s.tx, p)
+}
+
 func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Slice) error {
 	ctx = ensureCtx(ctx)
 	if slice == nil || slice.ID == "" {
@@ -486,6 +515,7 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 	if slice.CreatedAt.IsZero() {
 		slice.CreatedAt = now
 	}
+	slice.Visibility = models.NormalizeVisibility(slice.Visibility)
 	slice.UpdatedAt = now
 
 	filesJSON, _ := json.Marshal(slice.Files)
@@ -508,10 +538,10 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 	slice.Slug = slug
 
 	_, err = s.tx.Exec(ctx, `
-		INSERT INTO slices (id, name, slug, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at, environment)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO slices (id, name, slug, description, created_by, parent_id, is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13, $14)
 	`, slice.ID, slice.Name, slice.Slug, slice.Description, slice.CreatedBy,
-		slice.ParentSlice, slice.IsRoot, filesJSON, mountsJSON, ownersJSON,
+		slice.ParentSlice, slice.IsRoot, string(slice.Visibility), filesJSON, mountsJSON, ownersJSON,
 		slice.CreatedAt, slice.UpdatedAt, slice.Environment)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -550,22 +580,22 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 
 func (s *postgresNativeTxView) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
 }
 
 func (s *postgresNativeTxView) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
 }
 
 func (s *postgresNativeTxView) GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE slug = $1 LIMIT 1`, slug)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE slug = $1 LIMIT 1`, slug)
 }
 
 func (s *postgresNativeTxView) GetRootSlice(ctx context.Context) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
+	return s.scanSlice(ctx, s.tx, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
 }
 
 func (s *postgresNativeTxView) InitializeRootSlice(ctx context.Context) error {
@@ -1130,6 +1160,7 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 	}
 
 	now := time.Now()
+	slice.Visibility = models.NormalizeVisibility(slice.Visibility)
 	slice.CreatedAt = now
 	slice.UpdatedAt = now
 
@@ -1159,10 +1190,10 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 	slice.Slug = slug
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO slices (id, name, slug, description, created_by, parent_id, is_root, files, folder_mounts, owners, created_at, updated_at, environment)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO slices (id, name, slug, description, created_by, parent_id, is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13, $14)
 	`, slice.ID, slice.Name, slice.Slug, slice.Description, slice.CreatedBy,
-		slice.ParentSlice, slice.IsRoot, filesJSON, mountsJSON, ownersJSON,
+		slice.ParentSlice, slice.IsRoot, string(slice.Visibility), filesJSON, mountsJSON, ownersJSON,
 		slice.CreatedAt, slice.UpdatedAt, slice.Environment)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -1271,13 +1302,13 @@ func (s *PostgresNativeStorage) DeleteSlice(ctx context.Context, sliceID string)
 
 func (s *PostgresNativeStorage) GetSlice(ctx context.Context, sliceID string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE id = $1`, sliceID)
 }
 
 func (s *PostgresNativeStorage) ListSlices(ctx context.Context, limit, offset int) ([]*models.Slice, error) {
 	ctx = ensureCtx(ctx)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
+		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment
 		FROM slices ORDER BY created_at LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -1297,7 +1328,7 @@ func (s *PostgresNativeStorage) CountSlices(ctx context.Context) (int, error) {
 func (s *PostgresNativeStorage) ListSlicesByOwner(ctx context.Context, owner string, limit, offset int) ([]*models.Slice, error) {
 	ctx = ensureCtx(ctx)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
+		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment
 		FROM slices WHERE owners @> $1::jsonb ORDER BY created_at LIMIT $2 OFFSET $3
 	`, fmt.Sprintf(`[%q]`, owner), limit, offset)
 	if err != nil {
@@ -1311,7 +1342,7 @@ func (s *PostgresNativeStorage) SearchSlices(ctx context.Context, query string, 
 	ctx = ensureCtx(ctx)
 	pattern := "%" + query + "%"
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment
+		SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment
 		FROM slices WHERE name ILIKE $1 OR description ILIKE $1 ORDER BY created_at LIMIT $2 OFFSET $3
 	`, pattern, limit, offset)
 	if err != nil {
@@ -1323,7 +1354,7 @@ func (s *PostgresNativeStorage) SearchSlices(ctx context.Context, query string, 
 
 func (s *PostgresNativeStorage) GetRootSlice(ctx context.Context) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE is_root = true LIMIT 1`)
 }
 
 func (s *PostgresNativeStorage) InitializeRootSlice(ctx context.Context) error {
@@ -1410,6 +1441,19 @@ func (s *PostgresNativeStorage) UpdateSliceName(ctx context.Context, sliceID, ne
 	return nil
 }
 
+func (s *PostgresNativeStorage) UpdateSliceVisibility(ctx context.Context, sliceID string, visibility models.Visibility) error {
+	ctx = ensureCtx(ctx)
+
+	tag, err := s.pool.Exec(ctx, `UPDATE slices SET visibility = $1, updated_at = NOW() WHERE id = $2`, string(models.NormalizeVisibility(visibility)), sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
 // UpdateSliceEnvironment sets the default environment for a slice.
 func (s *PostgresNativeStorage) UpdateSliceEnvironment(ctx context.Context, sliceID, environment string) error {
 	ctx = ensureCtx(ctx)
@@ -1424,15 +1468,31 @@ func (s *PostgresNativeStorage) UpdateSliceEnvironment(ctx context.Context, slic
 	return nil
 }
 
+func (s *PostgresNativeStorage) GetPathVisibilityRule(ctx context.Context, p string) (*models.PathVisibilityRule, error) {
+	return s.getPathVisibilityRule(ctx, s.pool, p)
+}
+
+func (s *PostgresNativeStorage) ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error) {
+	return s.listPathVisibilityRules(ctx, s.pool, pathPrefix)
+}
+
+func (s *PostgresNativeStorage) UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error {
+	return s.upsertPathVisibilityRule(ctx, s.pool, rule)
+}
+
+func (s *PostgresNativeStorage) DeletePathVisibilityRule(ctx context.Context, p string) error {
+	return s.deletePathVisibilityRule(ctx, s.pool, p)
+}
+
 // GetSliceByName retrieves the first non-root slice matching the given display name.
 func (s *PostgresNativeStorage) GetSliceByName(ctx context.Context, name string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE name = $1 AND is_root = false LIMIT 1`, name)
 }
 
 func (s *PostgresNativeStorage) GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error) {
 	ctx = ensureCtx(ctx)
-	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE slug = $1 LIMIT 1`, slug)
+	return s.scanSlice(ctx, s.pool, `SELECT id, name, slug, description, created_by, COALESCE(parent_id, ''), is_root, visibility, files, folder_mounts, owners, created_at, updated_at, environment FROM slices WHERE slug = $1 LIMIT 1`, slug)
 }
 
 // ============ Metadata Operations ============
@@ -5172,6 +5232,11 @@ func (s *PostgresNativeStorage) AddAgentSessionAudit(ctx context.Context, audit 
 // queryable abstracts *pgxpool.Pool and pgx.Tx for shared scan methods.
 type queryable interface {
 	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
+}
+
+type execable interface {
+	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
 }
 
 func (s *PostgresNativeStorage) sliceSlugExists(ctx context.Context, q queryable, slug string) (bool, error) {
@@ -5214,10 +5279,11 @@ func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql 
 	var sl models.Slice
 	var filesJSON, ownersJSON, mountsJSON []byte
 	var parentID *string
+	var visibility string
 
 	err := q.QueryRow(ctx, sql, args...).Scan(
 		&sl.ID, &sl.Name, &sl.Slug, &sl.Description, &sl.CreatedBy, &parentID,
-		&sl.IsRoot, &filesJSON, &mountsJSON, &ownersJSON,
+		&sl.IsRoot, &visibility, &filesJSON, &mountsJSON, &ownersJSON,
 		&sl.CreatedAt, &sl.UpdatedAt, &sl.Environment,
 	)
 	if err != nil {
@@ -5230,6 +5296,7 @@ func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql 
 	if parentID != nil {
 		sl.ParentSlice = *parentID
 	}
+	sl.Visibility = models.NormalizeVisibility(models.Visibility(visibility))
 	if err := json.Unmarshal(filesJSON, &sl.Files); err != nil {
 		sl.Files = []string{}
 	}
@@ -5252,9 +5319,10 @@ func (s *PostgresNativeStorage) collectSlices(rows pgx.Rows) ([]*models.Slice, e
 		var sl models.Slice
 		var filesJSON, ownersJSON, mountsJSON []byte
 		var parentID *string
+		var visibility string
 		if err := rows.Scan(
 			&sl.ID, &sl.Name, &sl.Slug, &sl.Description, &sl.CreatedBy, &parentID,
-			&sl.IsRoot, &filesJSON, &mountsJSON, &ownersJSON,
+			&sl.IsRoot, &visibility, &filesJSON, &mountsJSON, &ownersJSON,
 			&sl.CreatedAt, &sl.UpdatedAt, &sl.Environment,
 		); err != nil {
 			return nil, err
@@ -5262,6 +5330,7 @@ func (s *PostgresNativeStorage) collectSlices(rows pgx.Rows) ([]*models.Slice, e
 		if parentID != nil {
 			sl.ParentSlice = *parentID
 		}
+		sl.Visibility = models.NormalizeVisibility(models.Visibility(visibility))
 		if err := json.Unmarshal(filesJSON, &sl.Files); err != nil {
 			sl.Files = []string{}
 		}
@@ -5280,6 +5349,106 @@ func (s *PostgresNativeStorage) collectSlices(rows pgx.Rows) ([]*models.Slice, e
 		result = []*models.Slice{}
 	}
 	return result, rows.Err()
+}
+
+func (s *PostgresNativeStorage) getPathVisibilityRule(ctx context.Context, q queryable, p string) (*models.PathVisibilityRule, error) {
+	ctx = ensureCtx(ctx)
+	pathKey := normalizeVisibilityPath(p)
+	if pathKey == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var rule models.PathVisibilityRule
+	err := q.QueryRow(ctx, `
+		SELECT path, entry_type, visibility, updated_by, updated_at
+		FROM path_visibility
+		WHERE path = $1
+	`, pathKey).Scan(&rule.Path, &rule.EntryType, &rule.Visibility, &rule.UpdatedBy, &rule.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return copyPathVisibilityRule(&rule), nil
+}
+
+func (s *PostgresNativeStorage) listPathVisibilityRules(ctx context.Context, q queryable, pathPrefix string) ([]*models.PathVisibilityRule, error) {
+	ctx = ensureCtx(ctx)
+	prefix := normalizeVisibilityPath(pathPrefix)
+
+	sql := `
+		SELECT path, entry_type, visibility, updated_by, updated_at
+		FROM path_visibility
+	`
+	args := []interface{}{}
+	if prefix != "" {
+		sql += ` WHERE path = $1 OR path LIKE $1 || '/%'`
+		args = append(args, prefix)
+	}
+	sql += ` ORDER BY path`
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rules := make([]*models.PathVisibilityRule, 0)
+	for rows.Next() {
+		var rule models.PathVisibilityRule
+		if err := rows.Scan(&rule.Path, &rule.EntryType, &rule.Visibility, &rule.UpdatedBy, &rule.UpdatedAt); err != nil {
+			return nil, err
+		}
+		rules = append(rules, copyPathVisibilityRule(&rule))
+	}
+	if rules == nil {
+		rules = []*models.PathVisibilityRule{}
+	}
+	return rules, rows.Err()
+}
+
+func (s *PostgresNativeStorage) upsertPathVisibilityRule(ctx context.Context, q execable, rule *models.PathVisibilityRule) error {
+	ctx = ensureCtx(ctx)
+	if rule == nil {
+		return ErrInvalidInput
+	}
+	pathKey := normalizeVisibilityPath(rule.Path)
+	if pathKey == "" {
+		return ErrInvalidInput
+	}
+
+	updatedAt := rule.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+
+	_, err := q.Exec(ctx, `
+		INSERT INTO path_visibility (path, entry_type, visibility, updated_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (path) DO UPDATE SET
+			entry_type = EXCLUDED.entry_type,
+			visibility = EXCLUDED.visibility,
+			updated_by = EXCLUDED.updated_by,
+			updated_at = EXCLUDED.updated_at
+	`, pathKey, string(rule.EntryType), string(models.NormalizeVisibility(rule.Visibility)), rule.UpdatedBy, updatedAt)
+	return err
+}
+
+func (s *PostgresNativeStorage) deletePathVisibilityRule(ctx context.Context, q execable, p string) error {
+	ctx = ensureCtx(ctx)
+	pathKey := normalizeVisibilityPath(p)
+	if pathKey == "" {
+		return ErrInvalidInput
+	}
+	tag, err := q.Exec(ctx, `DELETE FROM path_visibility WHERE path = $1`, pathKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
 }
 
 func (s *PostgresNativeStorage) collectFileChanges(rows pgx.Rows) ([]*models.FileChangeRecord, error) {

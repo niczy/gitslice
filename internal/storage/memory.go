@@ -43,6 +43,7 @@ type InMemoryStorage struct {
 	entriesByPath   map[string]string                 // sliceID:path -> entryID
 	entriesBySlice  map[string][]string               // sliceID -> []entryID
 	entriesByParent map[string][]string               // parentID -> []entryID (direct children)
+	pathVisibility  map[string]*models.PathVisibilityRule
 
 	// Changesets
 	changesets                map[string]*models.Changeset         // changesetID -> changeset
@@ -118,6 +119,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		entriesByPath:                    make(map[string]string),
 		entriesBySlice:                   make(map[string][]string),
 		entriesByParent:                  make(map[string][]string),
+		pathVisibility:                   make(map[string]*models.PathVisibilityRule),
 		changesets:                       make(map[string]*models.Changeset),
 		sliceChangesets:                  make(map[string][]string),
 		changesetSnapshots:               make(map[string]*models.ChangesetSnapshot),
@@ -195,6 +197,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.entriesByPath = fresh.entriesByPath
 	s.entriesBySlice = fresh.entriesBySlice
 	s.entriesByParent = fresh.entriesByParent
+	s.pathVisibility = fresh.pathVisibility
 	s.changesets = fresh.changesets
 	s.sliceChangesets = fresh.sliceChangesets
 	s.changesetSnapshots = fresh.changesetSnapshots
@@ -311,6 +314,7 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 	}
 
 	now := time.Now()
+	slice.Visibility = models.NormalizeVisibility(slice.Visibility)
 	slice.CreatedAt = now
 	slice.UpdatedAt = now
 
@@ -761,6 +765,20 @@ func (s *InMemoryStorage) UpdateSliceName(ctx context.Context, sliceID, newName 
 	return nil
 }
 
+func (s *InMemoryStorage) UpdateSliceVisibility(ctx context.Context, sliceID string, visibility models.Visibility) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slice, exists := s.slices[sliceID]
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	slice.Visibility = models.NormalizeVisibility(visibility)
+	slice.UpdatedAt = time.Now()
+	return nil
+}
+
 // UpdateSliceEnvironment sets the default environment for a slice.
 func (s *InMemoryStorage) UpdateSliceEnvironment(ctx context.Context, sliceID, environment string) error {
 	s.mu.Lock()
@@ -773,6 +791,97 @@ func (s *InMemoryStorage) UpdateSliceEnvironment(ctx context.Context, sliceID, e
 
 	slice.Environment = environment
 	slice.UpdatedAt = time.Now()
+	return nil
+}
+
+func normalizeVisibilityPath(p string) string {
+	cleaned := strings.TrimSpace(p)
+	if cleaned == "" {
+		return ""
+	}
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	cleaned = path.Clean(cleaned)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func copyPathVisibilityRule(rule *models.PathVisibilityRule) *models.PathVisibilityRule {
+	if rule == nil {
+		return nil
+	}
+	copied := *rule
+	copied.Path = normalizeVisibilityPath(rule.Path)
+	copied.Visibility = models.NormalizeVisibility(rule.Visibility)
+	return &copied
+}
+
+func (s *InMemoryStorage) GetPathVisibilityRule(ctx context.Context, p string) (*models.PathVisibilityRule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	pathKey := normalizeVisibilityPath(p)
+	rule, ok := s.pathVisibility[pathKey]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	return copyPathVisibilityRule(rule), nil
+}
+
+func (s *InMemoryStorage) ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	prefix := normalizeVisibilityPath(pathPrefix)
+	rules := make([]*models.PathVisibilityRule, 0)
+	for _, rule := range s.pathVisibility {
+		if rule == nil {
+			continue
+		}
+		if prefix != "" && rule.Path != prefix && !strings.HasPrefix(rule.Path, prefix+"/") {
+			continue
+		}
+		rules = append(rules, copyPathVisibilityRule(rule))
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		return rules[i].Path < rules[j].Path
+	})
+	return rules, nil
+}
+
+func (s *InMemoryStorage) UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error {
+	if rule == nil {
+		return ErrInvalidInput
+	}
+	pathKey := normalizeVisibilityPath(rule.Path)
+	if pathKey == "" {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	copied := copyPathVisibilityRule(rule)
+	copied.Path = pathKey
+	if copied.UpdatedAt.IsZero() {
+		copied.UpdatedAt = time.Now()
+	}
+	s.pathVisibility[pathKey] = copied
+	return nil
+}
+
+func (s *InMemoryStorage) DeletePathVisibilityRule(ctx context.Context, p string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pathKey := normalizeVisibilityPath(p)
+	if _, ok := s.pathVisibility[pathKey]; !ok {
+		return ErrEntryNotFound
+	}
+	delete(s.pathVisibility, pathKey)
 	return nil
 }
 

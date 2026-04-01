@@ -53,6 +53,7 @@ type Storage interface {
 	UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error
 	SetSliceFiles(ctx context.Context, sliceID string, files []string) error
 	UpdateSliceName(ctx context.Context, sliceID, newName string) error
+	UpdateSliceVisibility(ctx context.Context, sliceID string, visibility models.Visibility) error
 	UpdateSliceEnvironment(ctx context.Context, sliceID, environment string) error
 	GetSliceByName(ctx context.Context, name string) (*models.Slice, error)
 	GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error)
@@ -109,6 +110,10 @@ type Storage interface {
 	ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error)
 	UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error
 	DeleteEntry(ctx context.Context, entryID string) error
+	GetPathVisibilityRule(ctx context.Context, path string) (*models.PathVisibilityRule, error)
+	ListPathVisibilityRules(ctx context.Context, pathPrefix string) ([]*models.PathVisibilityRule, error)
+	UpsertPathVisibilityRule(ctx context.Context, rule *models.PathVisibilityRule) error
+	DeletePathVisibilityRule(ctx context.Context, path string) error
 
 	// Global state
 	GetGlobalState(ctx context.Context) (*models.GlobalState, error)

@@ -112,6 +112,24 @@ func TestBuildSliceSearchArtifactFromCommitSnapshot(t *testing.T) {
 	}
 }
 
+func TestSliceVisibilityStorageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runSliceVisibilityStorageRoundTrip(ctx, t, tc.factory(t))
+		})
+	}
+}
+
+func TestPathVisibilityStorageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runPathVisibilityStorageRoundTrip(ctx, t, tc.factory(t))
+		})
+	}
+}
+
 func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
@@ -296,6 +314,102 @@ func runSearchIndexStorageRoundTrip(ctx context.Context, t *testing.T, st Storag
 	}
 	if _, err := st.GetWorkspaceSearchArtifact(ctx, "workspace-1", 1); err != ErrEntryNotFound {
 		t.Fatalf("expected deleted workspace artifact to return ErrEntryNotFound, got %v", err)
+	}
+}
+
+func runSliceVisibilityStorageRoundTrip(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	slice := &models.Slice{
+		ID:        "slice-visibility",
+		Name:      "slice-visibility",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	stored, err := st.GetSlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice failed: %v", err)
+	}
+	if got, want := stored.Visibility, models.VisibilityPrivate; got != want {
+		t.Fatalf("default visibility = %q, want %q", got, want)
+	}
+
+	if err := st.UpdateSliceVisibility(ctx, slice.ID, models.VisibilityPublic); err != nil {
+		t.Fatalf("UpdateSliceVisibility failed: %v", err)
+	}
+
+	stored, err = st.GetSlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSlice(after update) failed: %v", err)
+	}
+	if got, want := stored.Visibility, models.VisibilityPublic; got != want {
+		t.Fatalf("updated visibility = %q, want %q", got, want)
+	}
+}
+
+func runPathVisibilityStorageRoundTrip(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	if _, err := st.GetPathVisibilityRule(ctx, "/alice/docs"); err != ErrEntryNotFound {
+		t.Fatalf("GetPathVisibilityRule(missing) = %v, want %v", err, ErrEntryNotFound)
+	}
+
+	dirRule := &models.PathVisibilityRule{
+		Path:       "/alice/docs",
+		EntryType:  models.PathVisibilityEntryTypeDirectory,
+		Visibility: models.VisibilityPublic,
+		UpdatedBy:  "alice",
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, dirRule); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule(dir) failed: %v", err)
+	}
+
+	fileRule := &models.PathVisibilityRule{
+		Path:       "/alice/docs/README.md",
+		EntryType:  models.PathVisibilityEntryTypeFile,
+		Visibility: models.VisibilityPrivate,
+		UpdatedBy:  "alice",
+	}
+	if err := st.UpsertPathVisibilityRule(ctx, fileRule); err != nil {
+		t.Fatalf("UpsertPathVisibilityRule(file) failed: %v", err)
+	}
+
+	gotDir, err := st.GetPathVisibilityRule(ctx, "/alice/docs")
+	if err != nil {
+		t.Fatalf("GetPathVisibilityRule(dir) failed: %v", err)
+	}
+	if got, want := gotDir.Visibility, models.VisibilityPublic; got != want {
+		t.Fatalf("dir visibility = %q, want %q", got, want)
+	}
+
+	gotFile, err := st.GetPathVisibilityRule(ctx, "/alice/docs/README.md")
+	if err != nil {
+		t.Fatalf("GetPathVisibilityRule(file) failed: %v", err)
+	}
+	if got, want := gotFile.Visibility, models.VisibilityPrivate; got != want {
+		t.Fatalf("file visibility = %q, want %q", got, want)
+	}
+
+	rules, err := st.ListPathVisibilityRules(ctx, "/alice/docs")
+	if err != nil {
+		t.Fatalf("ListPathVisibilityRules failed: %v", err)
+	}
+	if got, want := len(rules), 2; got != want {
+		t.Fatalf("ListPathVisibilityRules len = %d, want %d", got, want)
+	}
+	if rules[0].Path != "/alice/docs" || rules[1].Path != "/alice/docs/README.md" {
+		t.Fatalf("unexpected rule order: %#v", rules)
+	}
+
+	if err := st.DeletePathVisibilityRule(ctx, "/alice/docs/README.md"); err != nil {
+		t.Fatalf("DeletePathVisibilityRule failed: %v", err)
+	}
+	if _, err := st.GetPathVisibilityRule(ctx, "/alice/docs/README.md"); err != ErrEntryNotFound {
+		t.Fatalf("GetPathVisibilityRule(after delete) = %v, want %v", err, ErrEntryNotFound)
 	}
 }
 
