@@ -17,6 +17,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	"github.com/niczy/gitslice/internal/visibility"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
@@ -140,6 +141,59 @@ func (s *fileServiceServer) optionalUsername(ctx context.Context) (string, error
 		return "", nil
 	}
 	return identity.Username, nil
+}
+
+func (s *fileServiceServer) resolvePublicSlice(ctx context.Context, sliceID, sliceSlug string) (*models.Slice, error) {
+	if trimmed := strings.TrimSpace(sliceSlug); trimmed != "" {
+		slice, err := s.storage.GetSliceBySlug(ctx, trimmed)
+		if err == nil {
+			return slice, nil
+		}
+		if !errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice by slug: %v", err))
+		}
+	}
+
+	if trimmed := strings.TrimSpace(sliceID); trimmed != "" {
+		slice, err := s.storage.GetSlice(ctx, trimmed)
+		if err == nil {
+			return slice, nil
+		}
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, "slice not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice: %v", err))
+	}
+
+	return nil, status.Error(codes.InvalidArgument, "slice_id or slice_slug is required")
+}
+
+func (s *fileServiceServer) ensurePublicPathVisible(ctx context.Context, slice *models.Slice, requestedPath string) error {
+	public, err := visibility.IsPublic(ctx, s.storage, slice, requestedPath)
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to resolve visibility: %v", err))
+	}
+	if !public {
+		return status.Error(codes.NotFound, "path not found")
+	}
+	return nil
+}
+
+func (s *fileServiceServer) filterPublicEntries(ctx context.Context, slice *models.Slice, entries []*filev1.DirectoryEntry) ([]*filev1.DirectoryEntry, error) {
+	filtered := make([]*filev1.DirectoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		public, err := visibility.IsPublic(ctx, s.storage, slice, entry.GetPath())
+		if err != nil {
+			return nil, err
+		}
+		if public {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }
 
 // resolveVersion extracts the effective slice and commit from oneof version specifiers.
@@ -320,7 +374,35 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	normalizedPath := cleanPath(req.Path)
+	return s.listEntriesResolved(ctx, sliceID, resolvedCommit, slice, req.GetPath(), req.GetLimit(), preferSnapshots)
+}
+
+func (s *fileServiceServer) ListPublicEntries(ctx context.Context, req *filev1.ListPublicEntriesRequest) (*filev1.ListEntriesResponse, error) {
+	slice, err := s.resolvePublicSlice(ctx, req.GetSliceId(), req.GetSliceSlug())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensurePublicPathVisible(ctx, slice, req.GetPath()); err != nil {
+		return nil, err
+	}
+
+	resp, err := s.listEntriesResolved(ctx, slice.ID, "", slice, req.GetPath(), req.GetLimit(), false)
+	if err != nil {
+		if status.Code(err) == codes.PermissionDenied || status.Code(err) == codes.Unauthenticated {
+			return nil, status.Error(codes.NotFound, "path not found")
+		}
+		return nil, err
+	}
+	filtered, filterErr := s.filterPublicEntries(ctx, slice, resp.GetEntries())
+	if filterErr != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to filter visibility: %v", filterErr))
+	}
+	resp.Entries = filtered
+	return resp, nil
+}
+
+func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, resolvedCommit string, slice *models.Slice, requestPath string, limit int32, preferSnapshots bool) (*filev1.ListEntriesResponse, error) {
+	normalizedPath := cleanPath(requestPath)
 
 	// Fast path for mounted slices: the root entries are the mount aliases, which we can
 	// list without scanning all underlying files. For nested paths we can translate the
@@ -348,8 +430,8 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 			truncated := false
-			if req.Limit > 0 && int(req.Limit) < len(entries) {
-				entries = entries[:req.Limit]
+			if limit > 0 && int(limit) < len(entries) {
+				entries = entries[:limit]
 				truncated = true
 			}
 
@@ -391,7 +473,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 			}
 			children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 			if err == nil {
-				return buildListResponse(sliceID, normalizedPath, children, slice, req.Limit), nil
+				return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
 			}
 		}
 		// Fall back to legacy path scanning if directory entries are not materialized.
@@ -408,7 +490,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 		if normalizedPath == "" {
 			children, err := s.storage.ListEntries(ctx, backingSliceID, backingSliceID)
 			if err == nil && len(children) > 0 {
-				return buildListResponse(sliceID, "", children, slice, req.Limit), nil
+				return buildListResponse(sliceID, "", children, slice, limit), nil
 			}
 		} else {
 			storedParentPath := common.SliceStoredPath(slice, normalizedPath)
@@ -419,7 +501,7 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 					}
 					children, err := s.storage.ListEntries(ctx, backingSliceID, parentEntry.ID)
 					if err == nil {
-						return buildListResponse(sliceID, normalizedPath, children, slice, req.Limit), nil
+						return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
 					}
 				}
 			}
@@ -541,8 +623,8 @@ func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEnt
 	})
 
 	truncated := false
-	if req.Limit > 0 && int(req.Limit) < len(entries) {
-		entries = entries[:req.Limit]
+	if limit > 0 && int(limit) < len(entries) {
+		entries = entries[:limit]
 		truncated = true
 	}
 
@@ -735,7 +817,25 @@ func (s *fileServiceServer) GetFile(ctx context.Context, req *filev1.GetFileRequ
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
 
-	requestPath := cleanPath(req.Path)
+	return s.getFileResolved(ctx, sliceID, resolvedCommit, slice, req.GetPath(), preferSnapshots)
+}
+
+func (s *fileServiceServer) GetPublicFile(ctx context.Context, req *filev1.GetPublicFileRequest) (*filev1.GetFileResponse, error) {
+	if strings.TrimSpace(req.GetPath()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "path is required")
+	}
+	slice, err := s.resolvePublicSlice(ctx, req.GetSliceId(), req.GetSliceSlug())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensurePublicPathVisible(ctx, slice, req.GetPath()); err != nil {
+		return nil, err
+	}
+	return s.getFileResolved(ctx, slice.ID, "", slice, req.GetPath(), false)
+}
+
+func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolvedCommit string, slice *models.Slice, requestPath string, preferSnapshots bool) (*filev1.GetFileResponse, error) {
+	requestPath = cleanPath(requestPath)
 
 	// Mounted slices can translate display paths to stored paths without scanning the
 	// full slice file set. Restrict requests to mount aliases to avoid leaking parent files.
