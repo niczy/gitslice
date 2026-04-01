@@ -23,6 +23,7 @@ The required product rules are:
 5. if a slice is made public, every file and folder in that slice becomes public
 6. the unit of visibility is the logical path
 7. if a path is made public, that path is public in every slice where it exists
+8. when making a slice public, the caller can optionally make all paths inside that slice globally `public` or globally `private`
 
 This is a binary visibility model, not a full ACL system.
 
@@ -44,7 +45,8 @@ The desired model is much simpler than general sharing:
 
 - default everything to private
 - optionally expose specific paths publicly across slices
-- allow a whole slice to be made public in one action without changing global path visibility
+- allow a whole slice to be made public in one action
+- optionally propagate a slice-public action into global path visibility
 
 ---
 
@@ -74,12 +76,12 @@ not:
 Slice visibility remains separate:
 
 - `slice.visibility` controls whether the whole slice is public
-- `path.visibility` controls whether that logical path is public across all slices
+- `path.visibility` controls whether that logical path is `public` or `private` across all slices
 
 So effective public access is:
 
 - `slice is public`
-- or `path is public`
+- or the path/nearest ancestor path rule resolves to `public`
 
 This still matches the current user-visible model in
 [slice.go](/home/nic/workspace/gitslice/internal/models/slice.go), where slices and
@@ -103,7 +105,8 @@ paths are the real product objects, not raw blobs.
 4. **Effective visibility is computed**
    - A slice can be public without mutating global path visibility.
    - A path can be public without making the whole slice public.
-   - Folder visibility is inherited by descendants through path ancestry.
+   - A path can also be explicitly private.
+   - Folder visibility is inherited by descendants through path ancestry and can be overridden by deeper explicit path rules.
 
 5. **Simple public-read semantics**
    - Public means anonymous read/browse is allowed.
@@ -186,8 +189,8 @@ Users can set a folder to:
 Folder visibility is recursive:
 
 - making a folder public makes descendant paths effectively public in every slice
-- making a folder private removes that global public folder rule
-- descendants may still be public if they have their own explicit public rules
+- making a folder private makes descendant paths effectively private in every non-public slice
+- descendants may still be public or private if they have their own deeper explicit path rules
 
 ### Slice visibility
 
@@ -199,8 +202,17 @@ Users can set a slice to:
 Making a slice public means:
 
 - every file and folder in that slice becomes effectively public
-- this does not mutate the global path visibility table
+- this can optionally mutate the global path visibility table for the paths currently in that slice
 - new files/folders created in that slice are effectively public while the slice stays public
+
+When making a slice public, support a path propagation mode:
+
+- `unchanged`
+  - leave global path visibility as-is
+- `public`
+  - mark every current path in the slice globally `public`
+- `private`
+  - mark every current path in the slice globally `private`
 
 Making a slice private means:
 
@@ -211,7 +223,8 @@ So the product behavior is:
 
 - slice visibility is slice-local
 - path visibility is global
-- effective visibility is the union of both
+- slice visibility can optionally bulk-write global path visibility
+- effective visibility is slice override plus path rules
 
 ---
 
@@ -280,7 +293,7 @@ So ancestor cleanup should be:
 
 Recommendation for v1:
 
-- derive ancestor traversability from explicit public path rules plus slice visibility
+- derive ancestor traversability from explicit path rules plus slice visibility
 - avoid materializing ancestor visibility into every slice row
 
 ---
@@ -294,8 +307,8 @@ Write paths must preserve visibility expectations.
 When creating a new file/folder:
 
 - if slice is public -> new entry is effectively public
-- else if parent path is public globally -> new entry is effectively public
-- else if the exact path is already public globally -> new entry is effectively public
+- else if the exact path already has an explicit global rule -> respect it
+- else if the nearest ancestor folder has an explicit global rule -> inherit it
 - else -> new entry becomes private
 
 ### Move / Rename
@@ -319,14 +332,20 @@ Same as move:
 Imported or synchronized files must inherit:
 
 - slice-level public state
-- destination-folder global public state
-- existing exact-path global public state
+- existing exact-path global rule if present
+- otherwise nearest destination-folder global rule if present
+- otherwise private default
 
 ### Slice public toggle
 
-Changing slice visibility updates only the slice record.
+Changing slice visibility always updates the slice record.
 
-It does not rewrite global path visibility records.
+It may also rewrite global path visibility records if the caller chooses:
+
+- `path_propagation_mode=public`
+- `path_propagation_mode=private`
+
+Otherwise, `path_propagation_mode=unchanged` leaves global path visibility alone.
 
 ---
 
@@ -381,6 +400,12 @@ Optional additions:
 
 But the key is that the table is keyed by `path`, not `slice_id`.
 
+Recommended semantics:
+
+- exact explicit path rule wins over inherited ancestor rule
+- nearest explicit ancestor folder rule applies when the path has no explicit rule
+- slice public overrides path-private for reads inside that slice
+
 ## Important constraint
 
 Do **not** add visibility to:
@@ -400,13 +425,17 @@ Recommended effective lookup:
 1. load slice visibility
 2. if slice is public, allow read
 3. else load explicit visibility for the requested path
-4. if path is public, allow read
-5. else walk ancestor folder paths for a public folder rule
-6. else deny anonymous/public read
+4. if the path has an explicit rule, respect it
+5. else walk ancestor folder paths for the nearest explicit folder rule
+6. if a nearest ancestor folder rule exists, respect it
+7. else deny anonymous/public read
 
 So the effective rule is:
 
-- `public if slice_public OR path_public OR ancestor_folder_public`
+- `public if slice_public`
+- otherwise `public/private` from exact path rule if present
+- otherwise `public/private` from nearest ancestor folder rule if present
+- otherwise `private`
 
 ---
 
@@ -451,8 +480,9 @@ Anonymous/public search should only return paths that are effectively public in 
 searched slice:
 
 - whole slice if the slice is public
-- otherwise paths made public globally
+- otherwise paths with an exact global `public` rule
 - otherwise descendants of globally public folders
+- excluding any deeper paths with explicit global `private` rules
 
 This applies to:
 
@@ -563,9 +593,13 @@ Must cover:
 - new files/folders default private
 - making a slice public makes all descendants effectively public
 - making a folder public exposes that folder subtree in every slice
+- making a folder private hides that folder subtree in every non-public slice unless a deeper path is explicitly public
 - making a file public exposes that file path in every slice
+- making a file private hides that file path in every non-public slice
 - making a file public makes required ancestor dirs traversable
 - making a slice private removes only slice-level public visibility
+- making a slice public with `path_propagation_mode=public` marks current slice paths globally public
+- making a slice public with `path_propagation_mode=private` marks current slice paths globally private
 - move/copy into public/private destinations recalculates visibility correctly
 - the same public path is visible in two different slices
 
@@ -645,19 +679,22 @@ Acceptance:
 
 Goal:
 
-- make slice-level public/private transitions work without mutating global path visibility
+- make slice-level public/private transitions work, with optional bulk path propagation
 
 Changes:
 
 1. add `SetSliceVisibility` / `GetSliceVisibility`
 2. ensure effective reads treat the whole slice as public when enabled
-3. ensure future writes inherit slice visibility correctly
-4. add regression tests
+3. add `path_propagation_mode = unchanged | public | private`
+4. ensure future writes inherit slice visibility correctly
+5. add regression tests
 
 Acceptance:
 
 1. making a slice public makes every file/folder in that slice effectively public
-2. making it private leaves global path visibility intact
+2. `path_propagation_mode=public` marks current slice paths globally public
+3. `path_propagation_mode=private` marks current slice paths globally private
+4. making the slice private leaves those path rules intact
 
 ### PR5 - Folder/file visibility toggles and ancestor handling
 
@@ -689,7 +726,8 @@ Changes:
 1. add `gs slice visibility ...`
 2. add `gs fs visibility ...`
 3. support `--json`
-4. add CLI workflow tests
+4. add slice-level propagation flags
+5. add CLI workflow tests
 
 Acceptance:
 
@@ -741,12 +779,14 @@ The feature is complete when:
 1. every slice/file/folder defaults private
 2. file and folder visibility can be changed independently
 3. making a path public makes that path public in every slice where it exists
-4. making a slice public makes all files/folders in that slice public
-5. slice visibility and path visibility compose cleanly
-6. anonymous users can browse/read only effectively public content
-7. private content remains hidden in file reads, listings, browser views, and search
-8. new content inherits the correct visibility from its slice/path context
-9. the CLI and web app both expose the feature clearly
+4. making a path private makes that path private in every non-public slice where it exists
+5. making a slice public makes all files/folders in that slice public
+6. slice visibility and path visibility compose cleanly
+7. slice-public transitions can optionally bulk-propagate `public` or `private` path rules
+8. anonymous users can browse/read only effectively public content
+9. private content remains hidden in file reads, listings, browser views, and search
+10. new content inherits the correct visibility from its slice/path context
+11. the CLI and web app both expose the feature clearly
 
 ---
 
@@ -756,6 +796,7 @@ Ship the simplest defensible model:
 
 - binary visibility only
 - global path visibility + independent slice visibility
+- optional slice-to-path bulk propagation
 - effective read-time visibility calculation
 - public current-tree reads only
 - no ACL redesign
