@@ -4,6 +4,7 @@ package slice.v1;
 
 option go_package = "github.com/niczy/gitslice/proto;slicev1";
 
+import "common/visibility.proto";
 import "google/api/annotations.proto";
 import "file/file_service.proto";
 
@@ -87,6 +88,21 @@ service SliceService {
   rpc GetSliceBySlug(GetSliceBySlugRequest) returns (GetSliceBySlugResponse) {
     option (google.api.http) = {
       get: "/v1/slices/by-slug"
+    };
+  }
+
+  // Inspect the configured visibility of a slice.
+  rpc GetSliceVisibility(GetSliceVisibilityRequest) returns (GetSliceVisibilityResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/visibility"
+    };
+  }
+
+  // Update the configured visibility of a slice.
+  rpc SetSliceVisibility(SetSliceVisibilityRequest) returns (SetSliceVisibilityResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices/{slice_id}:setVisibility"
+      body: "*"
     };
   }
 
@@ -407,6 +423,7 @@ message GetRootSliceRequest {}
 message GetRootSliceResponse {
   string slice_id = 1;
   string commit_hash = 2;
+  common.v1.Visibility visibility = 3;
 }
 
 // Request to create a slice from an existing folder
@@ -426,6 +443,7 @@ message CreateSliceFromFolderResponse {
   repeated string files = 3;
   string name = 4;
   string slug = 5;
+  common.v1.Visibility visibility = 6;
 }
 
 // Request to rename a slice
@@ -468,6 +486,7 @@ message GetSliceByNameResponse {
   repeated string files = 5;
   string environment = 6;
   string slug = 7;
+  common.v1.Visibility visibility = 8;
 }
 
 message GetSliceBySlugRequest {
@@ -482,4 +501,26 @@ message GetSliceBySlugResponse {
   repeated string files = 5;
   string environment = 6;
   string slug = 7;
+  common.v1.Visibility visibility = 8;
+}
+
+message GetSliceVisibilityRequest {
+  string slice_id = 1;
+}
+
+message GetSliceVisibilityResponse {
+  string slice_id = 1;
+  common.v1.Visibility visibility = 2;
+}
+
+message SetSliceVisibilityRequest {
+  string slice_id = 1;
+  common.v1.Visibility visibility = 2;
+  common.v1.PathVisibilityPropagationMode path_propagation_mode = 3;
+}
+
+message SetSliceVisibilityResponse {
+  string slice_id = 1;
+  common.v1.Visibility visibility = 2;
+  common.v1.PathVisibilityPropagationMode path_propagation_mode = 3;
 }

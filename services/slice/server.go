@@ -25,6 +25,7 @@ import (
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/sliceconfig"
 	"github.com/niczy/gitslice/internal/storage"
+	commonv1 "github.com/niczy/gitslice/proto/common"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"github.com/pmezard/go-difflib/difflib"
@@ -99,6 +100,15 @@ func NewService(st storage.Storage) slicev1.SliceServiceServer {
 // NewInternalService constructs the concrete slice service for cross-package reuse.
 func NewInternalService(st storage.Storage) *sliceServiceServer {
 	return newSliceServiceServer(st)
+}
+
+func modelVisibilityToProto(v models.Visibility) commonv1.Visibility {
+	switch models.NormalizeVisibility(v) {
+	case models.VisibilityPublic:
+		return commonv1.Visibility_VISIBILITY_PUBLIC
+	default:
+		return commonv1.Visibility_VISIBILITY_PRIVATE
+	}
 }
 
 // RunGenesisInit populates the root slice from the git repository by creating
@@ -2577,6 +2587,7 @@ func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetR
 	return &slicev1.GetRootSliceResponse{
 		SliceId:    rootSlice.ID,
 		CommitHash: metadata.HeadCommitHash,
+		Visibility: modelVisibilityToProto(rootSlice.Visibility),
 	}, nil
 }
 
@@ -2634,6 +2645,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		ID:           sliceID,
 		Name:         sliceName,
 		Description:  req.Description,
+		Visibility:   models.VisibilityPrivate,
 		Files:        selectedFiles,
 		FolderMounts: buildSliceFolderMounts(folderSelections),
 		Owners:       []string{username},
@@ -2656,11 +2668,12 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	}
 
 	return &slicev1.CreateSliceFromFolderResponse{
-		SliceId: sliceID,
-		Status:  "created",
-		Files:   selectedFiles,
-		Name:    sliceName,
-		Slug:    newSlice.Slug,
+		SliceId:    sliceID,
+		Status:     "created",
+		Files:      selectedFiles,
+		Name:       sliceName,
+		Slug:       newSlice.Slug,
+		Visibility: modelVisibilityToProto(newSlice.Visibility),
 	}, nil
 }
 
@@ -2791,6 +2804,7 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 		Files:         slice.Files,
 		Environment:   slice.Environment,
 		Slug:          slice.Slug,
+		Visibility:    modelVisibilityToProto(slice.Visibility),
 	}, nil
 }
 
@@ -2828,7 +2842,36 @@ func (s *sliceServiceServer) GetSliceBySlug(ctx context.Context, req *slicev1.Ge
 		Files:         slice.Files,
 		Environment:   slice.Environment,
 		Slug:          slice.Slug,
+		Visibility:    modelVisibilityToProto(slice.Visibility),
 	}, nil
+}
+
+func (s *sliceServiceServer) GetSliceVisibility(ctx context.Context, req *slicev1.GetSliceVisibilityRequest) (*slicev1.GetSliceVisibilityResponse, error) {
+	slice, err := s.storage.GetSlice(ctx, req.GetSliceId())
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.GetSliceId()))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice: %v", err))
+	}
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return nil, status.Error(codes.Unauthenticated, "login required")
+		}
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	return &slicev1.GetSliceVisibilityResponse{
+		SliceId:    slice.ID,
+		Visibility: modelVisibilityToProto(slice.Visibility),
+	}, nil
+}
+
+func (s *sliceServiceServer) SetSliceVisibility(ctx context.Context, req *slicev1.SetSliceVisibilityRequest) (*slicev1.SetSliceVisibilityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "slice visibility updates are not implemented yet")
 }
 
 func defaultSliceNameFromFolders(folderPaths []string, fallback string) string {

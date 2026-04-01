@@ -23,6 +23,7 @@ import (
 	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
+	commonv1 "github.com/niczy/gitslice/proto/common"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
@@ -90,6 +91,15 @@ func NewService(st storage.Storage) filesystemv1.FilesystemServiceServer {
 	return newFilesystemServiceServer(st)
 }
 
+func modelVisibilityToFilesystemProto(v models.Visibility) commonv1.Visibility {
+	switch models.NormalizeVisibility(v) {
+	case models.VisibilityPublic:
+		return commonv1.Visibility_VISIBILITY_PUBLIC
+	default:
+		return commonv1.Visibility_VISIBILITY_PRIVATE
+	}
+}
+
 func (s *filesystemServiceServer) CreateWorkspace(ctx context.Context, req *filesystemv1.CreateWorkspaceRequest) (*filesystemv1.WorkspaceInfo, error) {
 	username, err := s.requireUser(ctx)
 	if err != nil {
@@ -116,6 +126,7 @@ func (s *filesystemServiceServer) CreateWorkspace(ctx context.Context, req *file
 		ID:          workspaceID,
 		Name:        name,
 		Description: strings.TrimSpace(req.GetDescription()),
+		Visibility:  models.VisibilityPrivate,
 		Owners:      []string{username},
 		CreatedBy:   username,
 		Files:       []string{},
@@ -243,6 +254,14 @@ func (s *filesystemServiceServer) GetWorkspaceInfo(ctx context.Context, req *fil
 		return nil, err
 	}
 	return s.workspaceInfo(ctx, workspace)
+}
+
+func (s *filesystemServiceServer) GetPathVisibility(ctx context.Context, req *filesystemv1.GetPathVisibilityRequest) (*filesystemv1.GetPathVisibilityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "path visibility is not implemented yet")
+}
+
+func (s *filesystemServiceServer) SetPathVisibility(ctx context.Context, req *filesystemv1.SetPathVisibilityRequest) (*filesystemv1.SetPathVisibilityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "path visibility is not implemented yet")
 }
 
 func (s *filesystemServiceServer) ReadFile(ctx context.Context, req *filesystemv1.ReadFileRequest) (*filesystemv1.ReadFileResponse, error) {
@@ -1625,6 +1644,7 @@ func (s *filesystemServiceServer) Fork(ctx context.Context, req *filesystemv1.Fo
 		ID:          forkWorkspaceID,
 		Name:        name,
 		Description: description,
+		Visibility:  models.VisibilityPrivate,
 		Owners:      []string{username},
 		CreatedBy:   username,
 		Files:       []string{},
@@ -3521,6 +3541,7 @@ func (s *filesystemServiceServer) workspaceInfo(ctx context.Context, workspace *
 		PathCount:      int32(len(paths)),
 		FileCount:      int32(fileCount),
 		IsRoot:         workspace.IsRoot,
+		Visibility:     modelVisibilityToFilesystemProto(workspace.Visibility),
 	}, nil
 }
 

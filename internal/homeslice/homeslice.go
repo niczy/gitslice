@@ -158,6 +158,7 @@ func ensureHomeSliceRecord(ctx context.Context, st storage.Storage, user *models
 		ID:          sliceID,
 		Name:        user.Username,
 		Description: fmt.Sprintf("Home slice for %s", user.Username),
+		Visibility:  models.VisibilityPrivate,
 		Files:       []string{},
 		Owners:      []string{user.Username},
 		CreatedBy:   user.Username,

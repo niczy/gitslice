@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package common.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/common;commonv1";
+
+enum Visibility {
+  VISIBILITY_UNSPECIFIED = 0;
+  VISIBILITY_PRIVATE = 1;
+  VISIBILITY_PUBLIC = 2;
+}
+
+enum PathVisibilityPropagationMode {
+  PATH_VISIBILITY_PROPAGATION_MODE_UNSPECIFIED = 0;
+  PATH_VISIBILITY_PROPAGATION_MODE_UNCHANGED = 1;
+  PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC = 2;
+  PATH_VISIBILITY_PROPAGATION_MODE_PRIVATE = 3;
+}

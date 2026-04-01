@@ -14,6 +14,7 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
+	commonv1 "github.com/niczy/gitslice/proto/common"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
@@ -252,6 +253,38 @@ func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
 	}
 	if len(resp.GetManifest().GetFileMetadata()) != 1 || resp.GetManifest().GetFileMetadata()[0].GetFileId() != path {
 		t.Fatalf("unexpected manifest: %#v", resp.GetManifest().GetFileMetadata())
+	}
+}
+
+func TestGetSliceVisibilityDefaultsPrivate(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{ID: "slice-visibility", Name: "slice-visibility", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := newSliceServiceServer(st)
+	resp, err := svc.GetSliceVisibility(ctx, &slicev1.GetSliceVisibilityRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("GetSliceVisibility failed: %v", err)
+	}
+	if got, want := resp.GetVisibility(), commonv1.Visibility_VISIBILITY_PRIVATE; got != want {
+		t.Fatalf("visibility = %v, want %v", got, want)
+	}
+}
+
+func TestSetSliceVisibilityUnimplemented(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	svc := newSliceServiceServer(st)
+
+	_, err := svc.SetSliceVisibility(ctx, &slicev1.SetSliceVisibilityRequest{
+		SliceId:    "slice-visibility",
+		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("SetSliceVisibility error = %v, want %v", status.Code(err), codes.Unimplemented)
 	}
 }
 
