@@ -57,6 +57,23 @@ export async function fetchRepoBindings() {
   return payload?.bindings || [];
 }
 
+export async function searchWorkspaceFiles(workspaceId, { query, glob = '', regex = false } = {}) {
+  const params = new URLSearchParams();
+  params.set('query', String(query || '').trim());
+  if (String(glob || '').trim()) {
+    params.set('glob', String(glob || '').trim());
+  }
+  if (regex) {
+    params.set('regex', 'true');
+  }
+
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs/workspaces/${encodeURIComponent(workspaceId)}:search?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to search files'));
+  }
+  return response.json();
+}
+
 function decodeBase64(value) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);

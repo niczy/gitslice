@@ -814,6 +814,7 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 }
 
 func (s *sliceServiceServer) GetSliceSearchArtifact(ctx context.Context, req *slicev1.GetSliceSearchArtifactRequest) (*slicev1.GetSliceSearchArtifactResponse, error) {
+	startedAt := time.Now()
 	version := req.GetVersion()
 	if version == 0 {
 		version = searchindex.CurrentArtifactVersion
@@ -830,28 +831,23 @@ func (s *sliceServiceServer) GetSliceSearchArtifact(ctx context.Context, req *sl
 		return nil, status.Error(codes.NotFound, "slice commit not found")
 	}
 
-	payload, err := s.storage.GetSliceSearchArtifact(ctx, req.GetSliceId(), effectiveCommit, version)
+	artifact, outcome, err := storage.LoadOrBuildSliceSearchArtifact(ctx, s.storage, req.GetSliceId(), effectiveCommit)
 	if err != nil {
-		if !errors.Is(err, storage.ErrEntryNotFound) {
+		switch {
+		case errors.Is(err, storage.ErrCommitNotFound), errors.Is(err, storage.ErrEntryNotFound):
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice search artifact unavailable for commit %s", effectiveCommit))
+		case errors.Is(err, storage.ErrInvalidInput):
+			return nil, status.Error(codes.InvalidArgument, "invalid slice search artifact request")
+		default:
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice search artifact: %v", err))
 		}
-
-		artifact, buildErr := storage.BuildAndStoreSliceSearchArtifact(ctx, s.storage, req.GetSliceId(), effectiveCommit)
-		if buildErr != nil {
-			switch {
-			case errors.Is(buildErr, storage.ErrCommitNotFound), errors.Is(buildErr, storage.ErrEntryNotFound):
-				return nil, status.Error(codes.NotFound, fmt.Sprintf("slice search artifact unavailable for commit %s", effectiveCommit))
-			case errors.Is(buildErr, storage.ErrInvalidInput):
-				return nil, status.Error(codes.InvalidArgument, "invalid slice search artifact request")
-			default:
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to build slice search artifact: %v", buildErr))
-			}
-		}
-		payload, err = searchindex.EncodeSliceArtifact(artifact)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to encode slice search artifact: %v", err))
-		}
 	}
+
+	payload, err := searchindex.EncodeSliceArtifact(artifact)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to encode slice search artifact: %v", err))
+	}
+	observeSliceSearchArtifactDownload(outcome.String(), time.Since(startedAt))
 
 	return &slicev1.GetSliceSearchArtifactResponse{
 		SliceId:    req.GetSliceId(),

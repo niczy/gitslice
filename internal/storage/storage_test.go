@@ -518,6 +518,112 @@ func runBuildSliceSearchArtifactFromCommitSnapshot(ctx context.Context, t *testi
 	}
 }
 
+func TestLoadOrBuildSliceSearchArtifactRepairsCorruptPayload(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.factory(t)
+			sliceID := fmt.Sprintf("slice-search-repair-%d", time.Now().UnixNano())
+			commitHash := fmt.Sprintf("commit-search-repair-%d", time.Now().UnixNano())
+			if err := st.CreateSlice(ctx, &models.Slice{ID: sliceID, Name: sliceID, Owners: []string{"tester"}, CreatedBy: "tester"}); err != nil {
+				t.Fatalf("CreateSlice failed: %v", err)
+			}
+			manifest, err := WriteSliceFileManifest(ctx, st, sliceID, "docs/readme.md", []byte("hello repair\n"))
+			if err != nil {
+				t.Fatalf("WriteSliceFileManifest failed: %v", err)
+			}
+			if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+				CommitHash: commitHash,
+				SliceID:    sliceID,
+				Timestamp:  time.Now(),
+				Files: map[string]string{
+					"docs/readme.md": manifest.Hash,
+				},
+			}); err != nil {
+				t.Fatalf("SaveCommitSnapshot failed: %v", err)
+			}
+			if err := st.PutSliceSearchArtifact(ctx, sliceID, commitHash, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
+				t.Fatalf("PutSliceSearchArtifact(corrupt) failed: %v", err)
+			}
+
+			artifact, outcome, err := LoadOrBuildSliceSearchArtifact(ctx, st, sliceID, commitHash)
+			if err != nil {
+				t.Fatalf("LoadOrBuildSliceSearchArtifact failed: %v", err)
+			}
+			if outcome != SearchArtifactOutcomeRebuilt {
+				t.Fatalf("expected rebuilt outcome, got %q", outcome)
+			}
+			if got := len(artifact.Files); got != 1 {
+				t.Fatalf("expected 1 indexed file, got %d", got)
+			}
+			payload, err := st.GetSliceSearchArtifact(ctx, sliceID, commitHash, searchindex.CurrentArtifactVersion)
+			if err != nil {
+				t.Fatalf("GetSliceSearchArtifact failed: %v", err)
+			}
+			if _, err := searchindex.DecodeSliceArtifact(payload); err != nil {
+				t.Fatalf("DecodeSliceArtifact after repair failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadOrBuildWorkspaceSearchArtifactRepairsCorruptPayload(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.factory(t)
+			workspaceID := fmt.Sprintf("workspace-search-repair-%d", time.Now().UnixNano())
+			commitHash := fmt.Sprintf("commit-workspace-repair-%d", time.Now().UnixNano())
+			if err := st.CreateSlice(ctx, &models.Slice{ID: workspaceID, Name: workspaceID, Owners: []string{"tester"}, CreatedBy: "tester"}); err != nil {
+				t.Fatalf("CreateSlice failed: %v", err)
+			}
+			manifest, err := WriteSliceFileManifest(ctx, st, workspaceID, "docs/readme.md", []byte("hello workspace repair\n"))
+			if err != nil {
+				t.Fatalf("WriteSliceFileManifest failed: %v", err)
+			}
+			if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+				CommitHash: commitHash,
+				SliceID:    workspaceID,
+				Timestamp:  time.Now(),
+				Files: map[string]string{
+					"docs/readme.md": manifest.Hash,
+				},
+			}); err != nil {
+				t.Fatalf("SaveCommitSnapshot failed: %v", err)
+			}
+			meta, err := st.GetSliceMetadata(ctx, workspaceID)
+			if err != nil {
+				t.Fatalf("GetSliceMetadata failed: %v", err)
+			}
+			meta.HeadCommitHash = commitHash
+			if err := st.UpdateSliceMetadata(ctx, workspaceID, meta); err != nil {
+				t.Fatalf("UpdateSliceMetadata failed: %v", err)
+			}
+			if err := st.PutWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
+				t.Fatalf("PutWorkspaceSearchArtifact(corrupt) failed: %v", err)
+			}
+
+			artifact, outcome, err := LoadOrBuildWorkspaceSearchArtifact(ctx, st, workspaceID, commitHash)
+			if err != nil {
+				t.Fatalf("LoadOrBuildWorkspaceSearchArtifact failed: %v", err)
+			}
+			if outcome != SearchArtifactOutcomeRebuilt {
+				t.Fatalf("expected rebuilt outcome, got %q", outcome)
+			}
+			if got := len(artifact.Files); got != 1 {
+				t.Fatalf("expected 1 indexed file, got %d", got)
+			}
+			payload, err := st.GetWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion)
+			if err != nil {
+				t.Fatalf("GetWorkspaceSearchArtifact failed: %v", err)
+			}
+			if _, err := searchindex.DecodeSliceArtifact(payload); err != nil {
+				t.Fatalf("DecodeSliceArtifact workspace after repair failed: %v", err)
+			}
+		})
+	}
+}
+
 func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 

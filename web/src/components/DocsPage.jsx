@@ -394,6 +394,7 @@ gs cache clear --objects`}</code>
             <h2>Use the browser when you want visibility, not just commands</h2>
             <ul className="docs-bullet-list">
               <li>The repo browser shows slices, folders, file previews, and commit history.</li>
+              <li>Signed-in home and custom slices now support indexed file search in the browser, including regex queries and glob filters.</li>
               <li>Diff pages let you inspect commit patches and changeset patches in the browser.</li>
               <li>The web app defaults signed-in users to their home slice and keeps custom slices available for inspection.</li>
               <li>The docs page you are reading is part of the same app, so docs and product stay in one surface.</li>

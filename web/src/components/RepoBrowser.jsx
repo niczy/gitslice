@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
+import { apiBaseUrl, fetchWithAuth, searchWorkspaceFiles } from '../utils/api.js';
 import { formatBytes } from '../utils/format.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
@@ -103,6 +103,13 @@ export default function RepoBrowser({
   const [activeView, setActiveView] = useState('files');
   const [isCompactHeader, setIsCompactHeader] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth <= 920));
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchGlob, setSearchGlob] = useState('');
+  const [searchRegex, setSearchRegex] = useState(false);
+  const [searchMatches, setSearchMatches] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
@@ -162,11 +169,28 @@ export default function RepoBrowser({
     onSliceChange(sliceId);
   }, [onSliceChange, rawSliceId, sliceId]);
 
-  const canLoad = sliceId !== '' && (sliceId === 'root_slice' || Boolean(String(authUsername || '').trim()));
-
   const currentSlice = useMemo(() => {
     return slices.find((slice) => slice.slice_id === sliceId) || null;
   }, [slices, sliceId]);
+
+  const canLoad = sliceId !== '' && (sliceId === 'root_slice' || Boolean(String(authUsername || '').trim()));
+  const canSearchRemotely = canLoad && !sliceHash && !currentSlice?.is_root && Boolean(String(authUsername || '').trim());
+
+  const searchDisabledReason = useMemo(() => {
+    if (!canLoad) {
+      return 'Choose a slice to search files.';
+    }
+    if (!String(authUsername || '').trim()) {
+      return 'Sign in to search a workspace.';
+    }
+    if (sliceHash) {
+      return 'Search is available on the live slice, not historical snapshots.';
+    }
+    if (currentSlice?.is_root) {
+      return 'Search is available on signed-in home and custom slices.';
+    }
+    return '';
+  }, [authUsername, canLoad, currentSlice?.is_root, sliceHash]);
 
   const currentSliceLabel = useMemo(() => {
     return currentSlice?.name || sliceId;
@@ -305,6 +329,16 @@ export default function RepoBrowser({
     setFocusedEntry({ path: '', type: 'directory' });
   }, [sliceId, sliceHash]);
 
+  useEffect(() => {
+    setSearchQuery('');
+    setSearchGlob('');
+    setSearchRegex(false);
+    setSearchMatches([]);
+    setSearchLoading(false);
+    setSearchError('');
+    setHasSearched(false);
+  }, [sliceId, sliceHash]);
+
   const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
 
   // Build URL for entries endpoint based on mode
@@ -394,6 +428,137 @@ export default function RepoBrowser({
       fetchFileHistory(selectedFile);
     }
   };
+
+  const normalizeWorkspaceResultPath = useCallback((value) => String(value || '').replace(/^\/+/, ''), []);
+
+  const openFilePath = useCallback(async (targetPath) => {
+    const normalizedPath = normalizeWorkspaceResultPath(targetPath);
+    if (!canLoad || !normalizedPath) {
+      return;
+    }
+
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setSidebarOpen(false);
+    }
+
+    setActiveView('files');
+    setSelectedFile(normalizedPath);
+    setFileContent('');
+    setEncodedFileContent('');
+    setDraftContent('');
+    setIsLoading(true);
+    setError('');
+    setFileError('');
+    setShowHistory(false);
+    setFileHistory([]);
+    setHistoryError('');
+
+    const nextTreeEntries = { ...treeEntries };
+    const nextExpandedPaths = new Set(['']);
+
+    for (const path of expandedPaths) {
+      nextExpandedPaths.add(path);
+    }
+
+    try {
+      if (!nextTreeEntries['']) {
+        const rootResponse = await fetchWithAuth(buildEntriesUrl(''));
+        if (!rootResponse.ok) {
+          throw new Error('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+        }
+        const rootPayload = await rootResponse.json();
+        nextTreeEntries[''] = rootPayload.entries || [];
+      }
+
+      const parts = normalizedPath.split('/');
+      for (let i = 1; i < parts.length; i += 1) {
+        const parentPath = parts.slice(0, i).join('/');
+        nextExpandedPaths.add(parentPath);
+        if (nextTreeEntries[parentPath]) {
+          continue;
+        }
+        const dirResponse = await fetchWithAuth(buildEntriesUrl(parentPath));
+        if (!dirResponse.ok) {
+          throw new Error('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+        }
+        const dirPayload = await dirResponse.json();
+        nextTreeEntries[parentPath] = dirPayload.entries || [];
+      }
+
+      setTreeEntries(nextTreeEntries);
+      setExpandedPaths(Array.from(nextExpandedPaths));
+
+      if (Object.prototype.hasOwnProperty.call(fileDrafts, normalizedPath)) {
+        setFileContent(fileDrafts[normalizedPath]);
+        setEncodedFileContent('');
+        setDraftContent(fileDrafts[normalizedPath]);
+        setIsEditingFile(false);
+        return;
+      }
+
+      const fileResponse = await fetchWithAuth(buildFileUrl(normalizedPath));
+      if (!fileResponse.ok) {
+        throw new Error(await readErrorMessage(fileResponse, 'Unable to load file content'));
+      }
+      const filePayload = await fileResponse.json();
+      const content = filePayload?.file?.content || '';
+      setFileError('');
+      setEncodedFileContent(content);
+      const decodedContent = decodeBase64(content);
+      setFileContent(decodedContent);
+      setDraftContent(decodedContent);
+      setIsEditingFile(false);
+    } catch (err) {
+      setFileContent('');
+      setEncodedFileContent('');
+      setFileError(err?.message || 'Unable to load file content.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [buildEntriesUrl, buildFileUrl, canLoad, expandedPaths, fileDrafts, normalizeWorkspaceResultPath, treeEntries]);
+
+  const handleSearchSubmit = useCallback(async (event) => {
+    event.preventDefault();
+    if (!canSearchRemotely) {
+      return;
+    }
+
+    const query = String(searchQuery || '').trim();
+    if (!query) {
+      setSearchError('Enter a search query.');
+      setSearchMatches([]);
+      setHasSearched(false);
+      return;
+    }
+
+    setSearchLoading(true);
+    setSearchError('');
+    try {
+      const payload = await searchWorkspaceFiles(sliceId, {
+        query,
+        glob: searchGlob,
+        regex: searchRegex,
+      });
+      setSearchMatches((payload?.matches || []).map((match) => ({
+        path: match?.path ?? '',
+        line_number: match?.line_number ?? match?.lineNumber ?? 0,
+        line: match?.line ?? '',
+      })));
+      setHasSearched(true);
+    } catch (err) {
+      setSearchMatches([]);
+      setSearchError(err?.message || 'Unable to search files.');
+      setHasSearched(true);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [canSearchRemotely, searchGlob, searchQuery, searchRegex, sliceId]);
+
+  const clearSearchResults = useCallback(() => {
+    setSearchMatches([]);
+    setSearchError('');
+    setHasSearched(false);
+  }, []);
 
   const renderFileActions = (onActionDone) => {
     if (viewingSettings || !selectedFile) {
@@ -676,53 +841,7 @@ export default function RepoBrowser({
       await toggleDirectory(entry);
       return;
     }
-
-    // Close sidebar on mobile after selecting a file
-    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
-      setSidebarOpen(false);
-    }
-
-    setActiveView('files');
-    setSelectedFile(entry.path);
-    setFileContent('');
-    setEncodedFileContent('');
-    setDraftContent('');
-    setIsLoading(true);
-    setError('');
-    setFileError('');
-    setShowHistory(false);
-    setFileHistory([]);
-    setHistoryError('');
-
-    if (Object.prototype.hasOwnProperty.call(fileDrafts, entry.path)) {
-      setFileContent(fileDrafts[entry.path]);
-      setEncodedFileContent('');
-      setDraftContent(fileDrafts[entry.path]);
-      setIsEditingFile(false);
-      setIsLoading(false);
-      return;
-    }
-
-    try {
-      const response = await fetchWithAuth(buildFileUrl(entry.path));
-      if (!response.ok) {
-        throw new Error(await readErrorMessage(response, 'Unable to load file content'));
-      }
-      const payload = await response.json();
-      const content = payload?.file?.content || '';
-      setFileError('');
-      setEncodedFileContent(content);
-      const decodedContent = decodeBase64(content);
-      setFileContent(decodedContent);
-      setDraftContent(decodedContent);
-      setIsEditingFile(false);
-    } catch (err) {
-      setFileContent('');
-      setEncodedFileContent('');
-      setFileError(err?.message || 'Unable to load file content.');
-    } finally {
-      setIsLoading(false);
-    }
+    await openFilePath(entry.path);
   };
 
   const confirmFileEdit = () => {
@@ -846,6 +965,88 @@ export default function RepoBrowser({
                   </Button>
                 </div>
               </div>
+              <section className="repo-search-panel" data-testid="repo-search-panel">
+                <div className="repo-search-panel-head">
+                  <h2 className="sidebar-panel-title">Search</h2>
+                  {hasSearched && !searchLoading && !searchError && (
+                    <span className="repo-search-count">
+                      {searchMatches.length} match{searchMatches.length === 1 ? '' : 'es'}
+                    </span>
+                  )}
+                </div>
+                {canSearchRemotely ? (
+                  <>
+                    <form className="repo-search-form" data-testid="repo-search-form" onSubmit={handleSearchSubmit}>
+                      <input
+                        type="search"
+                        className="repo-search-input"
+                        placeholder="Search this slice"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        data-testid="repo-search-query"
+                      />
+                      <input
+                        type="text"
+                        className="repo-search-input repo-search-glob"
+                        placeholder="Optional glob, e.g. src/**/*.js"
+                        value={searchGlob}
+                        onChange={(event) => setSearchGlob(event.target.value)}
+                        data-testid="repo-search-glob"
+                      />
+                      <label className="repo-search-toggle">
+                        <input
+                          type="checkbox"
+                          checked={searchRegex}
+                          onChange={(event) => setSearchRegex(event.target.checked)}
+                          data-testid="repo-search-regex"
+                        />
+                        Regex
+                      </label>
+                      <div className="repo-search-actions">
+                        <Button
+                          type="submit"
+                          variant="secondary"
+                          disabled={searchLoading}
+                          data-testid="repo-search-submit"
+                        >
+                          {searchLoading ? 'Searching...' : 'Search'}
+                        </Button>
+                        {(hasSearched || searchError) && (
+                          <Button type="button" variant="ghost" onClick={clearSearchResults}>
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </form>
+                    {searchError && <div className="panel-error">{searchError}</div>}
+                    {!searchError && searchLoading && <div className="repo-search-state">Searching indexed workspace files…</div>}
+                    {hasSearched && !searchLoading && !searchError && searchMatches.length === 0 && (
+                      <div className="panel-empty">No matches found for this query.</div>
+                    )}
+                    {searchMatches.length > 0 && (
+                      <ul className="repo-search-results" data-testid="repo-search-results">
+                        {searchMatches.map((match, index) => (
+                          <li key={`${match.path}-${match.line_number}-${index}`}>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="repo-search-result"
+                              onClick={() => openFilePath(match.path)}
+                              data-testid="repo-search-result"
+                            >
+                              <span className="repo-search-result-path">{match.path}</span>
+                              <span className="repo-search-result-meta">Line {match.line_number || 1}</span>
+                              <code className="repo-search-result-line">{match.line}</code>
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <div className="panel-empty">{searchDisabledReason}</div>
+                )}
+              </section>
               <h2 className="sidebar-panel-title">File tree</h2>
               {error && <div className="panel-error">{error}</div>}
               {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}

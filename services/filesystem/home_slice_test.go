@@ -3,6 +3,7 @@ package filesystemservice
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -16,6 +17,18 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+func parseFilesystemMetricMap(t *testing.T, raw string) map[string]int64 {
+	t.Helper()
+	if raw == "" {
+		return map[string]int64{}
+	}
+	decoded := map[string]int64{}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(%q) failed: %v", raw, err)
+	}
+	return decoded
+}
 
 func TestHomeSliceAbsolutePathLifecycle(t *testing.T) {
 	ctx := authContext("tester")
@@ -213,6 +226,7 @@ func TestHomeSliceRegexSearchUsesIndexedWorkspaceArtifact(t *testing.T) {
 	if err := st.PutWorkspaceSearchArtifact(context.Background(), homeID, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
 		t.Fatalf("PutWorkspaceSearchArtifact(corrupt) failed: %v", err)
 	}
+	before := snapshotFilesystemMetrics()
 	searchResp, err = svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: homeID,
 		Query:       "hello.*world",
@@ -224,6 +238,25 @@ func TestHomeSliceRegexSearchUsesIndexedWorkspaceArtifact(t *testing.T) {
 	}
 	if len(searchResp.GetMatches()) != 1 || searchResp.GetMatches()[0].GetPath() != "/tester/docs/README.md" {
 		t.Fatalf("unexpected regex fallback response: %#v", searchResp)
+	}
+	after := snapshotFilesystemMetrics()
+
+	beforeArtifactLoads := parseFilesystemMetricMap(t, before.SearchArtifactLoads)
+	afterArtifactLoads := parseFilesystemMetricMap(t, after.SearchArtifactLoads)
+	if afterArtifactLoads["rebuilt"] <= beforeArtifactLoads["rebuilt"] {
+		t.Fatalf("expected rebuilt artifact load metric to increase, before=%v after=%v", beforeArtifactLoads, afterArtifactLoads)
+	}
+
+	beforeCandidates := parseFilesystemMetricMap(t, before.SearchCandidateCount)
+	afterCandidates := parseFilesystemMetricMap(t, after.SearchCandidateCount)
+	if afterCandidates["regex_indexed"] <= beforeCandidates["regex_indexed"] {
+		t.Fatalf("expected indexed candidate metric to increase, before=%v after=%v", beforeCandidates, afterCandidates)
+	}
+
+	beforeFallbacks := parseFilesystemMetricMap(t, before.SearchFallbackTotal)
+	afterFallbacks := parseFilesystemMetricMap(t, after.SearchFallbackTotal)
+	if afterFallbacks["artifact_error"] != beforeFallbacks["artifact_error"] {
+		t.Fatalf("expected corrupt workspace artifact to be repaired without artifact_error fallback, before=%v after=%v", beforeFallbacks, afterFallbacks)
 	}
 }
 

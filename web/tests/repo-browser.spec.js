@@ -37,7 +37,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await ensureRootRepositoryVisible(page);
 
     // Navigate: o -> genesis -> projects -> gitslice
-    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
     await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
 
     await page.getByRole('button', { name: /📁.*genesis/i }).click();
@@ -61,7 +61,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await ensureRootRepositoryVisible(page);
 
     // Navigate to gitslice root (wait for each level to load)
-    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
     await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*genesis/i }).click();
     await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
@@ -89,7 +89,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await ensureRootRepositoryVisible(page);
 
     // Navigate to gitslice root (wait for each level to load)
-    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
     await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*genesis/i }).click();
     await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
@@ -111,7 +111,7 @@ test.describe('Root Repository Browsing (real server)', () => {
 
     await ensureRootRepositoryVisible(page);
 
-    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
     await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*genesis/i }).click();
     await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
@@ -134,7 +134,7 @@ test.describe('Root Repository Browsing (real server)', () => {
     await ensureRootRepositoryVisible(page);
 
     // Navigate to gitslice root (wait for each level to load)
-    await page.getByRole('button', { name: /📁.*o/i }).click();
+    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
     await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
     await page.getByRole('button', { name: /📁.*genesis/i }).click();
     await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
@@ -160,7 +160,56 @@ test.describe('Slice-specific Browsing (real server)', () => {
     await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
 
     // Should see the "o" directory (genesis files)
-    await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /📁.*\/o$/i })).toBeVisible();
+  });
+});
+
+test.describe('Repo Browser Search', () => {
+  test('submits indexed workspace search and renders structured results', async ({ page }) => {
+    const username = `zzsrch${Date.now()}`;
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page.getByTestId('repo-search-panel')).toBeVisible();
+
+    let sawSearchRequest = false;
+    await page.route('**/v1/fs/workspaces/*:search**', async (route) => {
+      const url = new URL(route.request().url());
+      expect(url.searchParams.get('query')).toBe('TODO:\\s+ship search');
+      expect(url.searchParams.get('glob')).toBe('/' + username + '/notes/*.md');
+      expect(url.searchParams.get('regex')).toBe('true');
+      sawSearchRequest = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          workspace_id: `home.${username}`,
+          query: 'TODO:\\s+ship search',
+          glob: `/${username}/notes/*.md`,
+          matches: [
+            {
+              path: `/${username}/notes/todo.md`,
+              line_number: 7,
+              line: 'TODO: ship search',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.getByTestId('repo-search-query').fill('TODO:\\s+ship search');
+    await page.getByTestId('repo-search-glob').fill(`/${username}/notes/*.md`);
+    await page.getByTestId('repo-search-regex').check();
+    await page.getByTestId('repo-search-submit').click();
+
+    await expect(page.getByTestId('repo-search-results')).toBeVisible();
+    await expect(page.getByTestId('repo-search-result')).toContainText(`/${username}/notes/todo.md`);
+    await expect(page.getByTestId('repo-search-result')).toContainText('Line 7');
+    await expect(page.getByTestId('repo-search-result')).toContainText('TODO: ship search');
+    expect(sawSearchRequest).toBe(true);
   });
 });
 
