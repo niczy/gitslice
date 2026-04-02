@@ -115,6 +115,12 @@ type sliceRenameJSON struct {
 	Status  string `json:"status"`
 }
 
+type sliceVisibilityJSON struct {
+	SliceID             string `json:"slice_id"`
+	Visibility          string `json:"visibility"`
+	PathPropagationMode string `json:"path_propagation_mode"`
+}
+
 type sliceRootJSON struct {
 	SliceID    string `json:"slice_id"`
 	CommitHash string `json:"commit_hash"`
@@ -471,6 +477,16 @@ type filesystemActionJSON struct {
 		LinesRemoved  int64 `json:"lines_removed"`
 	} `json:"summary"`
 	Message string `json:"message"`
+}
+
+type pathVisibilityJSON struct {
+	WorkspaceID         string `json:"workspace_id"`
+	Path                string `json:"path"`
+	Visibility          string `json:"visibility"`
+	ExplicitRule        bool   `json:"explicit_rule"`
+	ResolvedFromPath    string `json:"resolved_from_path"`
+	EffectiveVisibility string `json:"effective_visibility"`
+	Recursive           bool   `json:"recursive"`
 }
 
 type contextJSON struct {

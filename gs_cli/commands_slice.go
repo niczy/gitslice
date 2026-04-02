@@ -43,6 +43,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSlicePublish(ctx, cli, args[1:])
 	case "status":
 		handleSliceStatus(ctx, cli, args[1:])
+	case "visibility":
+		handleSliceVisibilityCommand(ctx, cli, args[1:])
 	case "tree", "list-files":
 		handleSliceTree(ctx, cli, args[1:])
 	case "history":

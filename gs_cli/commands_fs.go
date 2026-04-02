@@ -68,6 +68,8 @@ func handleFilesystemCommand(ctx context.Context, cli *CLI, authConfig cliAuth, 
 		handleFilesystemUpload(ctx, cli, authConfig, args[1:])
 	case "download":
 		handleFilesystemDownload(ctx, cli, authConfig, args[1:])
+	case "visibility":
+		handleFilesystemVisibilityCommand(ctx, cli, authConfig, args[1:])
 	default:
 		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown fs command: %s", args[0]), false, "gs fs --help")
 	}
