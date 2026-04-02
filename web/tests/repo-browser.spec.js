@@ -166,7 +166,7 @@ test.describe('Slice-specific Browsing (real server)', () => {
 
 test.describe('Repo Browser Search', () => {
   test('submits indexed workspace search and renders structured results', async ({ page }) => {
-    const username = `browsersearch${Date.now()}`;
+    const username = `zzsrch${Date.now()}`;
 
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
