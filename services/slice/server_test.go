@@ -730,6 +730,36 @@ func TestGetSliceSearchArtifactRejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
+func TestGetSliceSearchArtifactRequiresAuthForPublicSlice(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{
+		ID:         "slice-search-artifact-public",
+		Name:       "slice-search-artifact-public",
+		Owners:     []string{"tester"},
+		CreatedBy:  "tester",
+		Visibility: models.VisibilityPublic,
+	}
+	if err := st.CreateSlice(context.Background(), slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	_, err := srv.GetSliceSearchArtifact(context.Background(), &slicev1.GetSliceSearchArtifactRequest{
+		SliceId: slice.ID,
+	})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated for anonymous caller, got %v", err)
+	}
+
+	otherCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User other"))
+	_, err = srv.GetSliceSearchArtifact(otherCtx, &slicev1.GetSliceSearchArtifactRequest{
+		SliceId: slice.ID,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for non-owner on public slice, got %v", err)
+	}
+}
+
 func TestStreamCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()

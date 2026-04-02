@@ -285,6 +285,170 @@ func TestGetPathVisibilityMakesAncestorsTraversableForPublicFile(t *testing.T) {
 	}
 }
 
+func TestListDirectoryAndStatIncludeEffectiveVisibility(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-visibility-list",
+		Name:        "Visibility List Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
+		WorkspaceId: "ws-visibility-list",
+		Path:        "docs/guides",
+	}); err != nil {
+		t.Fatalf("MakeDirectory failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-visibility-list",
+		Path:        "docs/guides/public.txt",
+		Content:     []byte("public file"),
+	}); err != nil {
+		t.Fatalf("WriteFile(public) failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-visibility-list",
+		Path:        "docs/private.txt",
+		Content:     []byte("private file"),
+	}); err != nil {
+		t.Fatalf("WriteFile(private) failed: %v", err)
+	}
+	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
+		Path:       "/docs/guides/public.txt",
+		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
+	}); err != nil {
+		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
+	}
+
+	rootStat, err := svc.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: "ws-visibility-list",
+	})
+	if err != nil {
+		t.Fatalf("Stat(root) failed: %v", err)
+	}
+	if got, want := rootStat.GetEntry().GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
+		t.Fatalf("root effective_visibility = %v, want %v", got, want)
+	}
+
+	rootList, err := svc.ListDirectory(ctx, &filesystemv1.ListDirectoryRequest{
+		WorkspaceId: "ws-visibility-list",
+	})
+	if err != nil {
+		t.Fatalf("ListDirectory(root) failed: %v", err)
+	}
+	if got, want := len(rootList.GetEntries()), 1; got != want {
+		t.Fatalf("expected 1 root entry, got %d", got)
+	}
+	if got, want := rootList.GetEntries()[0].GetPath(), "docs"; got != want {
+		t.Fatalf("root entry path = %q, want %q", got, want)
+	}
+	if got, want := rootList.GetEntries()[0].GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
+		t.Fatalf("root list effective_visibility = %v, want %v", got, want)
+	}
+
+	docsList, err := svc.ListDirectory(ctx, &filesystemv1.ListDirectoryRequest{
+		WorkspaceId: "ws-visibility-list",
+		Path:        "docs",
+	})
+	if err != nil {
+		t.Fatalf("ListDirectory(docs) failed: %v", err)
+	}
+	if got, want := len(docsList.GetEntries()), 2; got != want {
+		t.Fatalf("expected 2 docs entries, got %d", got)
+	}
+	entriesByPath := make(map[string]*filesystemv1.WorkspaceEntry, len(docsList.GetEntries()))
+	for _, entry := range docsList.GetEntries() {
+		entriesByPath[entry.GetPath()] = entry
+	}
+	if got, want := entriesByPath["docs/guides"].GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
+		t.Fatalf("guides effective_visibility = %v, want %v", got, want)
+	}
+	if got, want := entriesByPath["docs/private.txt"].GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PRIVATE; got != want {
+		t.Fatalf("private file effective_visibility = %v, want %v", got, want)
+	}
+
+	guidesStat, err := svc.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: "ws-visibility-list",
+		Path:        "docs/guides",
+	})
+	if err != nil {
+		t.Fatalf("Stat(guides) failed: %v", err)
+	}
+	if got, want := guidesStat.GetEntry().GetEffectiveVisibility(), commonv1.Visibility_VISIBILITY_PUBLIC; got != want {
+		t.Fatalf("guides stat effective_visibility = %v, want %v", got, want)
+	}
+}
+
+func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-search-visibility",
+		Name:        "Search Visibility Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
+		WorkspaceId: "ws-search-visibility",
+		Path:        "docs",
+	}); err != nil {
+		t.Fatalf("MakeDirectory failed: %v", err)
+	}
+	for filePath, content := range map[string]string{
+		"docs/public.txt":  "needle public",
+		"docs/private.txt": "needle private",
+	} {
+		if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+			WorkspaceId: "ws-search-visibility",
+			Path:        filePath,
+			Content:     []byte(content),
+		}); err != nil {
+			t.Fatalf("WriteFile(%s) failed: %v", filePath, err)
+		}
+	}
+	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
+		Path:       "/docs/public.txt",
+		Visibility: commonv1.Visibility_VISIBILITY_PUBLIC,
+	}); err != nil {
+		t.Fatalf("SetPathVisibility(public file) failed: %v", err)
+	}
+	if _, err := svc.SetPathVisibility(ctx, &filesystemv1.SetPathVisibilityRequest{
+		Path:       "/docs/private.txt",
+		Visibility: commonv1.Visibility_VISIBILITY_PRIVATE,
+	}); err != nil {
+		t.Fatalf("SetPathVisibility(private file) failed: %v", err)
+	}
+
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: "ws-search-visibility",
+		Query:       "needle",
+		Glob:        "docs/*.txt",
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if got, want := len(searchResp.GetMatches()), 2; got != want {
+		t.Fatalf("expected 2 search matches, got %d", got)
+	}
+	if got, want := searchResp.GetMatches()[0].GetPath(), "docs/private.txt"; got != want {
+		t.Fatalf("first search path = %q, want %q", got, want)
+	}
+	if got, want := searchResp.GetMatches()[1].GetPath(), "docs/public.txt"; got != want {
+		t.Fatalf("second search path = %q, want %q", got, want)
+	}
+}
+
 func TestWorkspaceFileLifecycle(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
