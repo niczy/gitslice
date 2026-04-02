@@ -3,6 +3,7 @@ package sliceservice
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,6 +23,18 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+func parseSliceMetricMap(t *testing.T, raw string) map[string]int64 {
+	t.Helper()
+	if raw == "" {
+		return map[string]int64{}
+	}
+	decoded := map[string]int64{}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(%q) failed: %v", raw, err)
+	}
+	return decoded
+}
 
 const statusFilterAll = slicev1.ChangesetStatus(-1)
 
@@ -709,6 +722,67 @@ func TestGetSliceSearchArtifactReturnsStoredExplicitCommitArtifact(t *testing.T)
 	}
 	if !bytes.Equal(resp.GetArtifact(), encoded) {
 		t.Fatalf("expected stored artifact payload to be returned")
+	}
+}
+
+func TestGetSliceSearchArtifactRepairsCorruptStoredArtifact(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-search-artifact-repair", Name: "slice-search-artifact-repair", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	commitHash := "commit-search-artifact-repair"
+	filePath := "docs/readme.md"
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, []byte("repair me\n"))
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			filePath: manifestHash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: commitHash,
+		Message:    "seed",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = commitHash
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+	if err := st.PutSliceSearchArtifact(ctx, slice.ID, commitHash, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
+		t.Fatalf("PutSliceSearchArtifact(corrupt) failed: %v", err)
+	}
+
+	before := snapshotSliceSearchMetrics()
+	srv := newSliceServiceServer(st)
+	resp, err := srv.GetSliceSearchArtifact(ctx, &slicev1.GetSliceSearchArtifactRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("GetSliceSearchArtifact failed: %v", err)
+	}
+	artifact, err := searchindex.DecodeSliceArtifact(resp.GetArtifact())
+	if err != nil {
+		t.Fatalf("DecodeSliceArtifact failed: %v", err)
+	}
+	if got := len(artifact.Files); got != 1 || artifact.Files[0].Path != filePath {
+		t.Fatalf("unexpected repaired artifact files: %#v", artifact.Files)
+	}
+	after := snapshotSliceSearchMetrics()
+	beforeCounts := parseSliceMetricMap(t, before["slice_search_artifact_download_count"])
+	afterCounts := parseSliceMetricMap(t, after["slice_search_artifact_download_count"])
+	if afterCounts["rebuilt"] <= beforeCounts["rebuilt"] {
+		t.Fatalf("expected rebuilt download metric to increase, before=%v after=%v", beforeCounts, afterCounts)
 	}
 }
 

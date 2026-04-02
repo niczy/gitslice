@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/searchindex"
 )
@@ -87,6 +88,7 @@ func StoreSliceSearchArtifact(ctx context.Context, st Storage, artifact *searchi
 }
 
 func BuildAndStoreSliceSearchArtifact(ctx context.Context, st Storage, sliceID, commitHash string) (*searchindex.SliceArtifact, error) {
+	startedAt := time.Now()
 	artifact, err := BuildSliceSearchArtifact(ctx, st, sliceID, commitHash)
 	if err != nil {
 		return nil, err
@@ -94,7 +96,40 @@ func BuildAndStoreSliceSearchArtifact(ctx context.Context, st Storage, sliceID, 
 	if err := StoreSliceSearchArtifact(ctx, st, artifact); err != nil {
 		return nil, err
 	}
+	observeSearchArtifactBuild("slice", SearchArtifactOutcomeBuilt, time.Since(startedAt), artifact)
 	return artifact, nil
+}
+
+func LoadOrBuildSliceSearchArtifact(ctx context.Context, st Storage, sliceID, commitHash string) (*searchindex.SliceArtifact, SearchArtifactLoadOutcome, error) {
+	startedAt := time.Now()
+
+	payload, err := st.GetSliceSearchArtifact(ctx, sliceID, commitHash, searchindex.CurrentArtifactVersion)
+	switch {
+	case err == nil:
+		artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
+		if decodeErr == nil && validateStoredArtifact(artifact, sliceID, commitHash) == nil {
+			observeSearchArtifactLoad("slice", SearchArtifactOutcomeHit, time.Since(startedAt))
+			return artifact, SearchArtifactOutcomeHit, nil
+		}
+	case err != nil && !errors.Is(err, ErrEntryNotFound):
+		return nil, "", err
+	}
+
+	outcome := SearchArtifactOutcomeBuilt
+	if err == nil {
+		outcome = SearchArtifactOutcomeRebuilt
+	}
+	buildStartedAt := time.Now()
+	artifact, buildErr := BuildSliceSearchArtifact(ctx, st, sliceID, commitHash)
+	if buildErr != nil {
+		return nil, "", buildErr
+	}
+	if err := StoreSliceSearchArtifact(ctx, st, artifact); err != nil {
+		return nil, "", err
+	}
+	observeSearchArtifactBuild("slice", outcome, time.Since(buildStartedAt), artifact)
+	observeSearchArtifactLoad("slice", outcome, time.Since(startedAt))
+	return artifact, outcome, nil
 }
 
 func StoreWorkspaceSearchArtifact(ctx context.Context, st Storage, workspaceID string, artifact *searchindex.SliceArtifact) error {
@@ -127,22 +162,7 @@ func BuildAndStoreWorkspaceSearchArtifact(ctx context.Context, st Storage, works
 		return artifact, nil
 	}
 
-	payload, err := st.GetSliceSearchArtifact(ctx, workspaceID, commitHash, searchindex.CurrentArtifactVersion)
-	switch {
-	case err == nil:
-		artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		if err := st.PutWorkspaceSearchArtifact(ctx, workspaceID, artifact.Version, payload); err != nil {
-			return nil, err
-		}
-		return artifact, nil
-	case err != nil && !errors.Is(err, ErrEntryNotFound):
-		return nil, err
-	}
-
-	artifact, err := BuildAndStoreSliceSearchArtifact(ctx, st, workspaceID, commitHash)
+	artifact, _, err := LoadOrBuildSliceSearchArtifact(ctx, st, workspaceID, commitHash)
 	if err != nil {
 		return nil, err
 	}
@@ -152,17 +172,63 @@ func BuildAndStoreWorkspaceSearchArtifact(ctx context.Context, st Storage, works
 	return artifact, nil
 }
 
+func LoadOrBuildWorkspaceSearchArtifact(ctx context.Context, st Storage, workspaceID, commitHash string) (*searchindex.SliceArtifact, SearchArtifactLoadOutcome, error) {
+	startedAt := time.Now()
+
+	commitHash = strings.TrimSpace(commitHash)
+	if commitHash == "" {
+		meta, err := st.GetSliceMetadata(ctx, workspaceID)
+		if err != nil {
+			return nil, "", err
+		}
+		commitHash = strings.TrimSpace(meta.HeadCommitHash)
+	}
+	if commitHash == "" {
+		artifact := searchindex.BuildSliceArtifact(workspaceID, "", nil)
+		if err := StoreWorkspaceSearchArtifact(ctx, st, workspaceID, artifact); err != nil {
+			return nil, "", err
+		}
+		observeSearchArtifactLoad("workspace", SearchArtifactOutcomeBuilt, time.Since(startedAt))
+		return artifact, SearchArtifactOutcomeBuilt, nil
+	}
+
+	payload, err := st.GetWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion)
+	switch {
+	case err == nil:
+		artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
+		if decodeErr == nil && validateStoredArtifact(artifact, workspaceID, commitHash) == nil {
+			observeSearchArtifactLoad("workspace", SearchArtifactOutcomeHit, time.Since(startedAt))
+			return artifact, SearchArtifactOutcomeHit, nil
+		}
+	case err != nil && !errors.Is(err, ErrEntryNotFound):
+		return nil, "", err
+	}
+
+	outcome := SearchArtifactOutcomeBuilt
+	if err == nil {
+		outcome = SearchArtifactOutcomeRebuilt
+	}
+	artifact, buildErr := BuildAndStoreWorkspaceSearchArtifact(ctx, st, workspaceID, commitHash)
+	if buildErr != nil {
+		return nil, "", buildErr
+	}
+	observeSearchArtifactLoad("workspace", outcome, time.Since(startedAt))
+	return artifact, outcome, nil
+}
+
 func loadOrBuildSearchBlob(ctx context.Context, st Storage, searchHash string, content []byte) (*searchindex.FileBlob, error) {
 	payload, err := st.GetSearchIndexFileBlob(ctx, searchindex.CurrentBlobVersion, searchHash)
 	if err == nil {
 		blob, decodeErr := searchindex.DecodeFileBlob(payload)
-		if decodeErr != nil {
-			return nil, decodeErr
+		if decodeErr == nil {
+			return blob, nil
 		}
-		return blob, nil
-	}
-	if !errors.Is(err, ErrEntryNotFound) {
+		observeSearchBlobBuild("rebuilt")
+	} else if !errors.Is(err, ErrEntryNotFound) {
 		return nil, err
+	}
+	if errors.Is(err, ErrEntryNotFound) {
+		observeSearchBlobBuild("built")
 	}
 
 	blob, err := searchindex.BuildFileBlob(content, searchindex.DefaultWeighter(), searchindex.SparseModeCovering)

@@ -1,44 +1,80 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 )
 
-func TestResolvePruneEffectiveCommit(t *testing.T) {
-	info := map[string]pruneSliceInfo{
-		"root_slice":     {headCommit: "root-head"},
-		"home.alice":     {parentID: "root_slice", headCommit: "fs-home"},
-		"slice.child":    {parentID: "home.alice", headCommit: "init-slice"},
-		"slice.grand":    {parentID: "slice.child", headCommit: ""},
-		"slice.detached": {headCommit: "custom-head"},
+func TestRunSearchIndexMaintenanceBuildsAndReusesArtifacts(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "home.tester", Name: "home.tester", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	manifest, err := storage.WriteSliceFileManifest(ctx, st, slice.ID, "tester/docs/readme.md", []byte("hello maintenance\n"))
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	commitHash := "commit-search-maintenance"
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Timestamp:  time.Now(),
+		Files: map[string]string{
+			"tester/docs/readme.md": manifest.Hash,
+		},
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: commitHash,
+		Message:    "seed",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = commitHash
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
 	}
 
-	cache := map[string]string{}
-	if got, want := resolvePruneEffectiveCommit("home.alice", info, cache, map[string]bool{}), "fs-home"; got != want {
-		t.Fatalf("home effective commit mismatch: got %q want %q", got, want)
+	first, err := runSearchIndexMaintenance(ctx, st, searchIndexRunOptions{
+		CommitsPerSlice:      5,
+		IncludeWorkspaceHead: true,
+	})
+	if err != nil {
+		t.Fatalf("runSearchIndexMaintenance(first) failed: %v", err)
 	}
-	if got, want := resolvePruneEffectiveCommit("slice.child", info, cache, map[string]bool{}), "fs-home"; got != want {
-		t.Fatalf("child effective commit mismatch: got %q want %q", got, want)
+	if first.Built == 0 {
+		t.Fatalf("expected initial maintenance to build artifacts, got %+v", first)
 	}
-	if got, want := resolvePruneEffectiveCommit("slice.grand", info, cache, map[string]bool{}), "fs-home"; got != want {
-		t.Fatalf("grandchild effective commit mismatch: got %q want %q", got, want)
+	if _, err := st.GetSliceSearchArtifact(ctx, slice.ID, commitHash, searchindex.CurrentArtifactVersion); err != nil {
+		t.Fatalf("GetSliceSearchArtifact failed: %v", err)
 	}
-	if got, want := resolvePruneEffectiveCommit("slice.detached", info, cache, map[string]bool{}), "custom-head"; got != want {
-		t.Fatalf("detached effective commit mismatch: got %q want %q", got, want)
+	if _, err := st.GetWorkspaceSearchArtifact(ctx, slice.ID, searchindex.CurrentArtifactVersion); err != nil {
+		t.Fatalf("GetWorkspaceSearchArtifact failed: %v", err)
 	}
-}
 
-func TestCountAffectedPruneSlices(t *testing.T) {
-	entries := []pruneCandidate{
-		{sliceID: "root_slice"},
-		{sliceID: "home.alice"},
-		{sliceID: "home.alice"},
-		{sliceID: "slice.child"},
+	second, err := runSearchIndexMaintenance(ctx, st, searchIndexRunOptions{
+		CommitsPerSlice:      5,
+		IncludeWorkspaceHead: true,
+	})
+	if err != nil {
+		t.Fatalf("runSearchIndexMaintenance(second) failed: %v", err)
 	}
-	if got, want := countAffectedPruneSlices(entries), 3; got != want {
-		t.Fatalf("affected slice count mismatch: got %d want %d", got, want)
+	if second.Hits == 0 {
+		t.Fatalf("expected repeated maintenance to hit cached artifacts, got %+v", second)
 	}
 }
 
