@@ -389,8 +389,11 @@ func mustNativeStorage(ctx context.Context, dsn, namespace string) (*storage.Pos
 		log.Fatalf("RunMigrations: %v", err)
 	}
 
-	cfg := config.LoadConfig()
-	objectStore, closeObjectStore, err := buildObjectStore(ctx, cfg)
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+	objectStore, closeObjectStore, err := storage.BuildObjectStore(ctx, storage.ObjectStoreConfigFromAppConfig(cfg))
 	if err != nil {
 		log.Fatalf("build object store: %v", err)
 	}
