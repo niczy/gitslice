@@ -163,3 +163,229 @@ test.describe('Slice-specific Browsing (real server)', () => {
     await expect(page.getByRole('button', { name: /📁.*o/i })).toBeVisible();
   });
 });
+
+test.describe('Repo Browser Settings', () => {
+  test('manages slice and folder visibility with public links', async ({ page }) => {
+    const username = `webvisibility${Date.now()}`;
+    const sliceId = `home.${username}`;
+    const sliceSetBodies = [];
+    const pathSetBodies = [];
+    let sliceVisibility = 1;
+    let pathExplicitRule = false;
+    let pathRuleVisibility = 1;
+    let pathResolvedFromPath = '';
+
+    const effectivePathVisibility = () => {
+      if (sliceVisibility === 2) {
+        return 2;
+      }
+      return pathExplicitRule ? pathRuleVisibility : 1;
+    };
+
+    const pathVisibilityPayload = (path) => ({
+      workspace_id: sliceId,
+      visibility: {
+        path,
+        visibility: pathExplicitRule ? pathRuleVisibility : 1,
+        explicit_rule: pathExplicitRule,
+        resolved_from_path: pathResolvedFromPath,
+        effective_visibility: effectivePathVisibility(),
+      },
+    });
+
+    await page.addInitScript(() => {
+      window.__copiedTexts = [];
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text) => {
+            window.__copiedTexts.push(text);
+          },
+        },
+      });
+    });
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: sliceId,
+              name: sliceId,
+              description: 'Visibility test slice',
+              files: ['docs/guide.md'],
+              owners: [username],
+              created_by: username,
+              is_root: false,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/entries**`, async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const decodedPath = decodeURIComponent(requestUrl.pathname.split('/entries')[1] || '').replace(/^\/+/, '');
+      const entries = decodedPath === 'docs'
+        ? [
+            {
+              id: `${sliceId}:docs/guide.md`,
+              name: 'guide.md',
+              path: 'docs/guide.md',
+              type: 'ENTRY_TYPE_FILE',
+              size: 18,
+            },
+          ]
+        : [
+            {
+              id: `${sliceId}:docs`,
+              name: 'docs',
+              path: 'docs',
+              type: 'ENTRY_TYPE_DIRECTORY',
+              size: 0,
+            },
+          ];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ entries }),
+      });
+    });
+
+    await page.route('**/v1/environments?limit=500&offset=0', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          environments: [
+            { name: 'staging', displayName: 'Staging' },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/environment`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slice_id: sliceId,
+          environment: '',
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/visibility`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slice_id: sliceId,
+          visibility: sliceVisibility,
+          path_propagation_mode: 1,
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}:setVisibility`, async (route) => {
+      const payload = JSON.parse(route.request().postData() || '{}');
+      sliceSetBodies.push(payload);
+      sliceVisibility = payload.visibility;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slice_id: sliceId,
+          visibility: sliceVisibility,
+          path_propagation_mode: payload.pathPropagationMode,
+        }),
+      });
+    });
+
+    await page.route('**/v1/fs:visibility?*', async (route) => {
+      const requestUrl = new URL(route.request().url());
+      expect(requestUrl.searchParams.get('workspace_id')).toBe(sliceId);
+      expect(requestUrl.searchParams.get('path')).toBe('/docs');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(pathVisibilityPayload('/docs')),
+      });
+    });
+
+    await page.route('**/v1/fs:visibility', async (route) => {
+      const payload = JSON.parse(route.request().postData() || '{}');
+      pathSetBodies.push(payload);
+      pathExplicitRule = true;
+      pathRuleVisibility = payload.visibility;
+      pathResolvedFromPath = payload.path;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          recursive: Boolean(payload.recursive),
+          visibility: {
+            path: payload.path,
+            visibility: pathRuleVisibility,
+            explicit_rule: true,
+            resolved_from_path: pathResolvedFromPath,
+            effective_visibility: effectivePathVisibility(),
+          },
+        }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page.getByRole('button', { name: /📁.*\/docs/i })).toBeVisible();
+
+    await page.getByRole('button', { name: /📁.*\/docs/i }).click();
+    await expect(page.getByRole('button', { name: /guide\.md/i })).toBeVisible();
+
+    await page.getByTestId('repo-view-settings').click();
+    await expect(page.getByTestId('slice-settings-panel')).toBeVisible();
+    await expect(page.getByTestId('slice-visibility-status')).toContainText('Private');
+    await expect(page.getByTestId('path-visibility-status')).toContainText('Private');
+    await expect(page.getByTestId('path-visibility-panel')).toContainText('/docs');
+
+    await page.getByTestId('path-visibility-set-public').click();
+    await expect(page.getByTestId('path-visibility-status')).toContainText('Public');
+    await expect(page.getByTestId('path-visibility-panel')).toContainText('Explicit rule');
+    expect(pathSetBodies).toEqual([
+      {
+        path: '/docs',
+        visibility: 2,
+        recursive: true,
+      },
+    ]);
+
+    await page.getByTestId('slice-visibility-propagation').selectOption('public');
+    await page.getByTestId('slice-visibility-set-public').click();
+    await expect(page.getByTestId('slice-visibility-status')).toContainText('Public');
+    expect(sliceSetBodies).toEqual([
+      {
+        visibility: 2,
+        pathPropagationMode: 2,
+      },
+    ]);
+
+    const origin = new URL(page.url()).origin;
+    const sliceUrl = `${origin}/v1/public/entries?slice_id=${sliceId}`;
+    const pathUrl = `${origin}/v1/public/entries/docs?slice_id=${sliceId}`;
+
+    await expect(page.getByTestId('slice-visibility-url')).toHaveValue(sliceUrl);
+    await expect(page.getByTestId('path-visibility-url')).toHaveValue(pathUrl);
+
+    await page.getByTestId('slice-visibility-copy-url').click();
+    await page.getByTestId('path-visibility-copy-url').click();
+
+    await expect(page.getByTestId('slice-visibility-copy-url')).toContainText('Copy public URL');
+    const copiedTexts = await page.evaluate(() => window.__copiedTexts);
+    expect(copiedTexts).toEqual([sliceUrl, pathUrl]);
+  });
+});

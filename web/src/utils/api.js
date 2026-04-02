@@ -140,6 +140,57 @@ export async function getSliceEnvironment(sliceId) {
   return response.json();
 }
 
+export async function getSliceVisibility(sliceId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/visibility`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load slice visibility'));
+  }
+  return response.json();
+}
+
+export async function updateSliceVisibility(sliceId, { visibility, pathPropagationMode }) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}:setVisibility`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      visibility,
+      pathPropagationMode,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to update slice visibility'));
+  }
+  return response.json();
+}
+
+export async function getPathVisibility({ workspaceId, path }) {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    path,
+  });
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs:visibility?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load path visibility'));
+  }
+  return response.json();
+}
+
+export async function updatePathVisibility({ path, visibility, recursive = false }) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs:visibility`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      path,
+      visibility,
+      recursive,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to update path visibility'));
+  }
+  return response.json();
+}
+
 export async function updateSliceEnvironment(sliceId, environment) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/environment`, {
     method: 'PUT',
