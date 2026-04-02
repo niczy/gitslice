@@ -86,6 +86,7 @@ func printSliceHelp() {
 	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug (--files)")
 	fmt.Println("  clone     Alias for checkout")
 	fmt.Println("  status    Show the current slice checkout status (local by default; add --remote for remote head)")
+	fmt.Println("  visibility Inspect or change slice visibility")
 	fmt.Println("  pull      Alias for sync")
 	fmt.Println("  sync      Sync the current checked out slice in place")
 	fmt.Println("  publish   Create/update or reuse the tracked changeset and merge it")
@@ -105,6 +106,8 @@ func printSliceHelp() {
 	fmt.Println("  gs slice ensure ui-refresh apps/web --json")
 	fmt.Println("  gs slice checkout nic/ui-refresh --json")
 	fmt.Println("  gs slice status --json")
+	fmt.Println("  gs slice visibility get nic/ui-refresh --json")
+	fmt.Println("  gs slice visibility set nic/ui-refresh public --propagate public --json")
 	fmt.Println("  gs slice tree --slice nic/ui-refresh --json")
 	fmt.Println("  gs slice history nic/ui-refresh --json")
 	fmt.Println("  gs slice diff --summary")
@@ -226,6 +229,7 @@ func printFilesystemHelp() {
 	fmt.Println("  glob         Find files by absolute home pattern")
 	fmt.Println("  search       Search file contents in the home slice")
 	fmt.Println("  stat         Show metadata for an absolute home path")
+	fmt.Println("  visibility   Inspect or change path visibility")
 	fmt.Println("  snapshot     Create a snapshot")
 	fmt.Println("  snapshots    List snapshots")
 	fmt.Println("  log          Show home-slice commit history")
@@ -240,7 +244,33 @@ func printFilesystemHelp() {
 	fmt.Println("  gs fs cat /nic/app/config.json --json")
 	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
 	fmt.Println("  gs fs ensure-dir /nic/app/config --json")
+	fmt.Println("  gs fs visibility get /nic/app/config.json --json")
+	fmt.Println("  gs fs visibility set /nic/app public --recursive --json")
 	fmt.Println("  cat ops.jsonl | gs fs batch -m \"bulk update\"")
 	fmt.Println("  gs fs search settings --glob /nic/app/** --json")
 	fmt.Println("  gs fs sync --direction push ./site /nic/site --detach --json")
+}
+
+func printSliceVisibilityHelp() {
+	fmt.Println("Usage: gs slice visibility <command> [options]")
+	fmt.Println("All visibility commands support --json.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  get     Show the current visibility for a slice")
+	fmt.Println("  set     Update a slice visibility and optionally propagate path visibility")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs slice visibility get nic/ui-refresh --json")
+	fmt.Println("  gs slice visibility set nic/ui-refresh public --propagate public --json")
+	fmt.Println("  gs slice visibility set nic/ui-refresh private --json")
+}
+
+func printFilesystemVisibilityHelp() {
+	fmt.Println("Usage: gs fs visibility <command> [options]")
+	fmt.Println("All visibility commands support --json.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  get     Show the current visibility for an absolute home path")
+	fmt.Println("  set     Update visibility for an absolute home path")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs fs visibility get /nic/app/config.json --json")
+	fmt.Println("  gs fs visibility set /nic/app/config.json public --json")
+	fmt.Println("  gs fs visibility set /nic/app public --recursive --json")
 }
