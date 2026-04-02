@@ -69,6 +69,19 @@ type sliceSearchJSON struct {
 	} `json:"matches"`
 }
 
+type fsSearchJSON struct {
+	WorkspaceID string `json:"workspace_id"`
+	Query       string `json:"query"`
+	Regex       bool   `json:"regex"`
+	Glob        string `json:"glob"`
+	Total       int    `json:"total"`
+	Matches     []struct {
+		Path       string `json:"path"`
+		LineNumber int    `json:"line_number"`
+		Line       string `json:"line"`
+	} `json:"matches"`
+}
+
 type sliceListJSON struct {
 	Total  int `json:"total"`
 	Slices []struct {

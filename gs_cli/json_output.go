@@ -255,6 +255,21 @@ type jsonSliceRenameOutput struct {
 	Status  string `json:"status"`
 }
 
+type jsonFilesystemSearchMatch struct {
+	Path       string `json:"path"`
+	LineNumber int    `json:"line_number"`
+	Line       string `json:"line"`
+}
+
+type jsonFilesystemSearchOutput struct {
+	WorkspaceID string                      `json:"workspace_id"`
+	Query       string                      `json:"query"`
+	Regex       bool                        `json:"regex"`
+	Glob        string                      `json:"glob,omitempty"`
+	Total       int                         `json:"total"`
+	Matches     []jsonFilesystemSearchMatch `json:"matches,omitempty"`
+}
+
 type jsonWorkingTreeSummary struct {
 	Added    int `json:"added"`
 	Modified int `json:"modified"`
@@ -910,6 +925,32 @@ func buildSliceSearchOutput(sliceID, query string, regex bool, glob string, matc
 			Line:       match.Line,
 		})
 	}
+	return output
+}
+
+func buildFilesystemSearchOutput(workspaceID, query string, regex bool, glob string, matches []*filesystemv1.SearchMatch) jsonFilesystemSearchOutput {
+	output := jsonFilesystemSearchOutput{
+		WorkspaceID: workspaceID,
+		Query:       query,
+		Regex:       regex,
+		Glob:        strings.TrimSpace(glob),
+		Total:       len(matches),
+	}
+	if len(matches) == 0 {
+		return output
+	}
+	output.Matches = make([]jsonFilesystemSearchMatch, 0, len(matches))
+	for _, match := range matches {
+		if match == nil {
+			continue
+		}
+		output.Matches = append(output.Matches, jsonFilesystemSearchMatch{
+			Path:       match.GetPath(),
+			LineNumber: int(match.GetLineNumber()),
+			Line:       match.GetLine(),
+		})
+	}
+	output.Total = len(output.Matches)
 	return output
 }
 

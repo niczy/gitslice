@@ -677,6 +677,7 @@ message SearchRequest {
   string workspace_id = 1;
   string query = 2;
   string glob = 3;
+  bool regex = 4;
 }
 
 message SearchMatch {

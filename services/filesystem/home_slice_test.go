@@ -9,6 +9,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
+	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	"google.golang.org/grpc/codes"
@@ -168,6 +169,61 @@ func TestHomeSliceRejectsForeignAndRelativePaths(t *testing.T) {
 		Content:     []byte("bad\n"),
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied for foreign path, got %v", err)
+	}
+}
+
+func TestHomeSliceRegexSearchUsesIndexedWorkspaceArtifact(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	homeID := homeslice.IDForUsername("tester")
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: homeID,
+		Path:        "/tester/docs/README.md",
+		Content:     []byte("hello agent world\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(README) failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: homeID,
+		Path:        "/tester/notes/todo.txt",
+		Content:     []byte("hello todo\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(todo) failed: %v", err)
+	}
+
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: homeID,
+		Query:       "hello.*world",
+		Glob:        "/tester/**/*.md",
+		Regex:       true,
+	})
+	if err != nil {
+		t.Fatalf("Search(regex) failed: %v", err)
+	}
+	if len(searchResp.GetMatches()) != 1 || searchResp.GetMatches()[0].GetPath() != "/tester/docs/README.md" {
+		t.Fatalf("unexpected regex search response: %#v", searchResp)
+	}
+
+	if err := st.PutWorkspaceSearchArtifact(context.Background(), homeID, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
+		t.Fatalf("PutWorkspaceSearchArtifact(corrupt) failed: %v", err)
+	}
+	searchResp, err = svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: homeID,
+		Query:       "hello.*world",
+		Glob:        "/tester/**/*.md",
+		Regex:       true,
+	})
+	if err != nil {
+		t.Fatalf("Search(regex fallback) failed: %v", err)
+	}
+	if len(searchResp.GetMatches()) != 1 || searchResp.GetMatches()[0].GetPath() != "/tester/docs/README.md" {
+		t.Fatalf("unexpected regex fallback response: %#v", searchResp)
 	}
 }
 
