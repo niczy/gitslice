@@ -92,6 +92,9 @@ export default function RepoBrowser({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileError, setFileError] = useState('');
+  const [focusedEntry, setFocusedEntry] = useState(() => (initialBrowserState?.file
+    ? { path: initialBrowserState.file, type: 'file' }
+    : { path: '', type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 900));
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
@@ -299,6 +302,7 @@ export default function RepoBrowser({
     setFileDrafts({});
     setIsEditingFile(false);
     setFileError('');
+    setFocusedEntry({ path: '', type: 'directory' });
   }, [sliceId, sliceHash]);
 
   const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
@@ -520,6 +524,7 @@ export default function RepoBrowser({
           setTreeEntries(allEntries);
           setExpandedPaths(pathsToExpand);
           setSelectedFile(pendingFile);
+          setFocusedEntry({ path: pendingFile, type: 'file' });
 
           // Load file content
           try {
@@ -666,6 +671,7 @@ export default function RepoBrowser({
 
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
+    setFocusedEntry({ path: entry.path, type: entryKind });
     if (entryKind === 'directory') {
       await toggleDirectory(entry);
       return;
@@ -741,6 +747,7 @@ export default function RepoBrowser({
   };
 
   const handleBreadcrumbClick = async (path) => {
+    setFocusedEntry({ path, type: 'directory' });
     if (path && !treeEntries[path]) {
       await fetchEntries(path);
     }
@@ -936,7 +943,14 @@ export default function RepoBrowser({
               </div>
             </div>
             <div className="code-content">
-              {viewingSettings && <SliceSettings sliceId={sliceId} sliceName={currentSliceLabel} />}
+              {viewingSettings && (
+                <SliceSettings
+                  sliceId={sliceId}
+                  sliceName={currentSliceLabel}
+                  selectedPath={focusedEntry?.path || ''}
+                  selectedPathType={focusedEntry?.type || 'directory'}
+                />
+              )}
               {!viewingSettings && !selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
               {!viewingSettings && selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
               {!viewingSettings && selectedFile && !showHistory && (
