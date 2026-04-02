@@ -863,7 +863,13 @@ func (s *filesystemServiceServer) ListDirectory(ctx context.Context, req *filesy
 		Entries:     make([]*filesystemv1.WorkspaceEntry, 0, len(entries)),
 	}
 	for _, entry := range entries {
-		response.Entries = append(response.Entries, entryToProto(entry, homeMode))
+		protoEntry := entryToProto(entry, homeMode)
+		info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, entry.Path, protoEntry.GetPath(), entry.Type == "directory")
+		if err != nil {
+			return nil, err
+		}
+		protoEntry.EffectiveVisibility = info.GetEffectiveVisibility()
+		response.Entries = append(response.Entries, protoEntry)
 	}
 	return response, nil
 }
@@ -919,12 +925,17 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 		return nil, err
 	}
 	if !homeMode && statPath == "" {
+		info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, "", "", true)
+		if err != nil {
+			return nil, err
+		}
 		return &filesystemv1.StatResponse{
 			Exists: true,
 			Entry: &filesystemv1.WorkspaceEntry{
-				Name: path.Base(workspace.ID),
-				Path: "",
-				Type: filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY,
+				Name:                path.Base(workspace.ID),
+				Path:                "",
+				Type:                filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY,
+				EffectiveVisibility: info.GetEffectiveVisibility(),
 			},
 		}, nil
 	}
@@ -936,9 +947,15 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 		}
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to stat path: %v", err))
 	}
+	protoEntry := entryToProto(entry, homeMode)
+	info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, entry.Path, protoEntry.GetPath(), entry.Type == "directory")
+	if err != nil {
+		return nil, err
+	}
+	protoEntry.EffectiveVisibility = info.GetEffectiveVisibility()
 	return &filesystemv1.StatResponse{
 		Exists: true,
-		Entry:  entryToProto(entry, homeMode),
+		Entry:  protoEntry,
 	}, nil
 }
 
@@ -4204,17 +4221,22 @@ func (s *filesystemServiceServer) resolveOperationPattern(username string, homeM
 	return validateGlobPattern(storedPattern, required)
 }
 
-func entryToProto(entry *models.DirectoryEntry, homeMode bool) *filesystemv1.WorkspaceEntry {
+func entryToProto(entry *models.DirectoryEntry, homeMode bool, effectiveVisibility ...commonv1.Visibility) *filesystemv1.WorkspaceEntry {
 	if entry == nil {
 		return nil
 	}
+	visibilityValue := commonv1.Visibility_VISIBILITY_PRIVATE
+	if len(effectiveVisibility) > 0 {
+		visibilityValue = effectiveVisibility[0]
+	}
 	displayPath := displayOperationPath(entry.Path, homeMode)
 	return &filesystemv1.WorkspaceEntry{
-		Name: path.Base(displayPath),
-		Path: displayPath,
-		Type: entryTypeToProto(entry.Type),
-		Size: entry.Size,
-		Hash: strings.TrimSpace(entry.Hash),
+		Name:                path.Base(displayPath),
+		Path:                displayPath,
+		Type:                entryTypeToProto(entry.Type),
+		Size:                entry.Size,
+		Hash:                strings.TrimSpace(entry.Hash),
+		EffectiveVisibility: visibilityValue,
 	}
 }
 
