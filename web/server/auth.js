@@ -12,7 +12,10 @@ import {
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
-const gatewayTarget = getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
+
+function getGatewayTarget() {
+  return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
+}
 
 function buildUsernameFromProfile(profile) {
   const raw = [
@@ -245,14 +248,19 @@ export async function handleDevLoginRequest(request) {
     return Response.json({ error: 'Invalid username' }, { status: 400 });
   }
 
-  const loginResponse = await fetch(new URL('/v1/auth/login', gatewayTarget), {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ username }),
-  });
+  let loginResponse;
+  try {
+    loginResponse = await fetch(new URL('/v1/auth/login', getGatewayTarget()), {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ username }),
+    });
+  } catch {
+    return Response.json({ error: 'Unable to reach the API origin for development login' }, { status: 502 });
+  }
   if (!loginResponse.ok) {
     const bodyText = await loginResponse.text();
     return new Response(bodyText || JSON.stringify({ error: 'Unable to provision development account' }), {

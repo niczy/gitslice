@@ -5,7 +5,18 @@ const repoRoot = "/home/nic/workspace/gitslice";
 const opsDir = path.join(repoRoot, "ops");
 const legacyProdEnvPath = path.join(opsDir, ".env");
 const productionEnvPath = path.join(opsDir, ".env.production");
-const stagingEnvPath = path.join(opsDir, ".env.staging");
+const preferredStagingEnvPath = path.join(opsDir, "staging", ".env");
+const legacyStagingEnvPath = path.join(opsDir, ".env.staging");
+const productionEnvPathOverride = process.env.PRODUCTION_ENV_FILE || "";
+const stagingEnvPathOverride = process.env.STAGING_ENV_FILE || "";
+const resolvedProductionEnvPath =
+  productionEnvPathOverride ||
+  (fs.existsSync(productionEnvPath) ? productionEnvPath : legacyProdEnvPath);
+const stagingEnvPath =
+  stagingEnvPathOverride ||
+  (fs.existsSync(preferredStagingEnvPath)
+  ? preferredStagingEnvPath
+  : legacyStagingEnvPath);
 
 function loadEnvFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
@@ -39,26 +50,6 @@ function loadEnvFile(filePath) {
   return env;
 }
 
-function parseBoolean(value, fallback) {
-  if (value === undefined || value === null || value === "") {
-    return fallback;
-  }
-  switch (String(value).trim().toLowerCase()) {
-    case "1":
-    case "true":
-    case "yes":
-    case "on":
-      return true;
-    case "0":
-    case "false":
-    case "no":
-    case "off":
-      return false;
-    default:
-      return fallback;
-  }
-}
-
 function resolveEnvConfig(target, defaults) {
   if (target === "staging") {
     const env = loadEnvFile(stagingEnvPath);
@@ -68,7 +59,7 @@ function resolveEnvConfig(target, defaults) {
     return env;
   }
 
-  const env = loadEnvFile(productionEnvPath) || loadEnvFile(legacyProdEnvPath) || {};
+  const env = loadEnvFile(resolvedProductionEnvPath) || {};
   return Object.keys(env).length === 0 ? defaults : env;
 }
 
@@ -121,7 +112,7 @@ function buildCoreEnv(target, fileEnv) {
     CORE_BIND_ADDR: fileEnv.CORE_BIND_ADDR || defaults.CORE_BIND_ADDR,
     CORE_SERVICE_PORT: fileEnv.CORE_SERVICE_PORT || defaults.CORE_SERVICE_PORT,
     STORAGE_TYPE: fileEnv.STORAGE_TYPE || defaults.STORAGE_TYPE,
-    POSTGRES_DSN: fileEnv.POSTGRES_DSN || defaults.POSTGRES_DSN,
+    POSTGRES_DSN: fileEnv.POSTGRES_DSN || fileEnv.NEON_DB || defaults.POSTGRES_DSN,
     POSTGRES_MAX_CONNS: fileEnv.POSTGRES_MAX_CONNS || "",
     POSTGRES_MIN_CONNS: fileEnv.POSTGRES_MIN_CONNS || "",
     POSTGRES_MAX_CONN_LIFETIME: fileEnv.POSTGRES_MAX_CONN_LIFETIME || "",
@@ -147,38 +138,6 @@ function buildCoreEnv(target, fileEnv) {
   };
 }
 
-function buildWebEnv(target, fileEnv, coreEnv) {
-  const defaults = coreDefaults(target);
-  return {
-    DEPLOY_ENV: coreEnv.DEPLOY_ENV,
-    HOST: fileEnv.WEB_HOST || defaults.WEB_HOST,
-    PORT: fileEnv.WEB_PORT || defaults.WEB_PORT,
-    PUBLIC_WEB_BASE_URL: coreEnv.PUBLIC_WEB_BASE_URL,
-    PUBLIC_API_BASE_URL: coreEnv.PUBLIC_API_BASE_URL,
-    WEB_DEPLOY_TARGET: coreEnv.WEB_DEPLOY_TARGET,
-    WEB_COMPAT_RUNTIME: coreEnv.WEB_COMPAT_RUNTIME,
-    VITE_FILE_API_BASE_URL:
-      fileEnv.VITE_FILE_API_BASE_URL ||
-      coreEnv.PUBLIC_API_BASE_URL ||
-      "",
-    VITE_FILE_API_PROXY_TARGET:
-      fileEnv.VITE_FILE_API_PROXY_TARGET ||
-      coreEnv.PUBLIC_API_BASE_URL ||
-      fileEnv.VITE_FILE_API_BASE_URL ||
-      `http://${coreEnv.CORE_BIND_ADDR}:${coreEnv.CORE_SERVICE_PORT}`,
-    VITE_WEB_AGENT_REAL_RUNTIME: fileEnv.VITE_WEB_AGENT_REAL_RUNTIME,
-    AUTH_SECRET: fileEnv.AUTH_SECRET,
-    AUTH_GOOGLE_ID: fileEnv.AUTH_GOOGLE_ID,
-    AUTH_GOOGLE_SECRET: fileEnv.AUTH_GOOGLE_SECRET,
-    AUTH_GITHUB_ID: fileEnv.AUTH_GITHUB_ID,
-    AUTH_GITHUB_SECRET: fileEnv.AUTH_GITHUB_SECRET,
-  };
-}
-
-function shouldRunWebSSR(fileEnv, coreEnv) {
-  return parseBoolean(fileEnv.RUN_WEB_SSR, coreEnv.WEB_DEPLOY_TARGET === "node");
-}
-
 function appendAppsForTarget(apps, target) {
   const fileEnv = resolveEnvConfig(target, coreDefaults(target));
   if (!fileEnv) {
@@ -196,20 +155,6 @@ function appendAppsForTarget(apps, target) {
     error_file: path.join(repoRoot, `logs/pm2-core-${target}.err.log`),
     env: coreEnv,
   });
-
-  if (shouldRunWebSSR(fileEnv, coreEnv)) {
-    apps.push({
-      name: `gitslice-web-${target}`,
-      script: "npm",
-      args: "run start",
-      cwd: path.join(repoRoot, "web"),
-      autorestart: true,
-      max_restarts: 10,
-      out_file: path.join(repoRoot, `logs/pm2-web-${target}.out.log`),
-      error_file: path.join(repoRoot, `logs/pm2-web-${target}.err.log`),
-      env: buildWebEnv(target, fileEnv, coreEnv),
-    });
-  }
 }
 
 const apps = [];

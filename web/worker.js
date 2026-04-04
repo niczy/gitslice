@@ -56,6 +56,10 @@ async function tryServeAsset(request, env) {
   if (typeof env?.ASSETS?.fetch !== 'function') {
     return null;
   }
+  const method = String(request.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    return null;
+  }
   try {
     const response = await env.ASSETS.fetch(request.url, toMutableRequest(request, { stripIfNoneMatch: true }));
     if (response && response.status >= 200 && response.status < 400) {

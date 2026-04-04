@@ -12,6 +12,9 @@ PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
 PRODUCTION_ENV_FILE="${PRODUCTION_ENV_FILE:-$REPO_ROOT/ops/.env.production}"
 LEGACY_PRODUCTION_ENV_FILE="$REPO_ROOT/ops/.env"
 STAGING_ENV_FILE="${STAGING_ENV_FILE:-$REPO_ROOT/ops/.env.staging}"
+if [ ! -f "$STAGING_ENV_FILE" ] && [ -f "$REPO_ROOT/ops/staging/.env" ]; then
+  STAGING_ENV_FILE="$REPO_ROOT/ops/staging/.env"
+fi
 DEPLOY_ENV="${DEPLOY_ENV:-production}"
 CORE_BIND_ADDR="${CORE_BIND_ADDR:-127.0.0.1}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
@@ -21,6 +24,7 @@ SKIP_GIT_POPULATION="${SKIP_GIT_POPULATION:-1}"
 # If using Postgres metadata in production, avoid requiring GCS ADC creds by default.
 STORAGE_TYPE="${STORAGE_TYPE:-postgres}"
 POSTGRES_DSN="${POSTGRES_DSN:-}"
+POSTGRES_DSN="${POSTGRES_DSN:-${NEON_DB:-}}"
 OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
 OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 PUBLIC_WEB_BASE_URL="${PUBLIC_WEB_BASE_URL:-https://gitslice.io}"

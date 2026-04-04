@@ -5,6 +5,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCTION_ENV_FILE="${PRODUCTION_ENV_FILE:-$REPO_ROOT/ops/.env.production}"
 LEGACY_PRODUCTION_ENV_FILE="$REPO_ROOT/ops/.env"
 STAGING_ENV_FILE="${STAGING_ENV_FILE:-$REPO_ROOT/ops/.env.staging}"
+if [ ! -f "$STAGING_ENV_FILE" ] && [ -f "$REPO_ROOT/ops/staging/.env" ]; then
+  STAGING_ENV_FILE="$REPO_ROOT/ops/staging/.env"
+fi
 MODE="full"
 
 log() {

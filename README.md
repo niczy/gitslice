@@ -205,10 +205,10 @@ On the shared VM, keep separate env files:
 
 ```bash
 cp ops/.env.example ops/.env.production
-cp ops/.env.example ops/.env.staging
+cp ops/.env.example ops/staging/.env
 ```
 
-Then adjust staging-specific values in `ops/.env.staging`:
+Then adjust staging-specific values in `ops/staging/.env`:
 - `DEPLOY_ENV=staging`
 - `CORE_SERVICE_PORT=50052`
 - `PUBLIC_WEB_BASE_URL=https://agenttools.dev`
@@ -237,6 +237,28 @@ npm run preview:worker
 npm run deploy:worker:staging
 npm run deploy:worker:production
 ```
+
+You can also deploy the Worker through the ops wrapper, which resolves the
+environment file and exports `CLOUDFLARE_API_TOKEN` before running Wrangler:
+
+```bash
+./ops/deploy.sh --env staging --app web
+./ops/deploy.sh --env production --app web
+./ops/deploy.sh --env staging --app api
+./ops/deploy.sh --env production --app api
+```
+
+By default the wrapper reads:
+- staging: `ops/staging/.env`
+- production: `ops/.env.production` (fallback: `ops/.env`)
+
+`--app api` rebuilds `core_server`, restarts the matching PM2 app
+(`gitslice-core-staging` or `gitslice-core-production`), and waits for the
+local health check on the configured `CORE_SERVICE_PORT`. The selected env file
+must contain the core runtime settings for that target. In particular, when
+`OBJECT_STORE_TYPE=r2`, the deploy wrapper expects `R2_BUCKET`,
+`R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` to be set before
+it will restart the API process.
 
 For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gitslice/web/.dev.vars.example) to `.dev.vars` and set:
 - `AUTH_SECRET`
@@ -458,11 +480,11 @@ For local setup, copy the template and fill in values:
 cp web/.env.example web/.env
 ```
 
-For local Node SSR fallback on the VM, put the same `AUTH_*` values in the
-environment file for that target (`ops/.env.production` or `ops/.env.staging`,
-falling back to the legacy `ops/.env` for production only). For the normal Worker
-deploy path, set auth secrets with Wrangler instead of storing them in the VM env
-files.
+For local Node SSR fallback outside the normal VM deploy path, put the same
+`AUTH_*` values in the environment file for that target (`ops/.env.production`
+or `ops/staging/.env`, falling back to the legacy `ops/.env` for production
+only). For the normal Worker deploy path, set auth secrets with Wrangler
+instead of storing them in the VM env files.
 
 
 CLI usage:
@@ -572,13 +594,12 @@ pm2 save
 
 The PM2 ecosystem now reads:
 - `ops/.env.production` for `gitslice-core-production`
-- `ops/.env.staging` for `gitslice-core-staging`
+- `ops/staging/.env` for `gitslice-core-staging`
 - falling back to the legacy `ops/.env` only for production if `ops/.env.production` is absent
 
-When `WEB_DEPLOY_TARGET=cloudflare_worker`, the VM is core-only by default and the
-ecosystem skips local `gitslice-web-*` processes unless `RUN_WEB_SSR=1` is set for
-an explicit Node SSR fallback. The final production target should not require any
-public web process on the VM.
+The PM2 ecosystem is now VM-core-only. It supervises `gitslice-core-production`
+and `gitslice-core-staging` only. The public web app runs on Cloudflare Worker,
+so the VM no longer starts or supervises `gitslice-web-*` processes through PM2.
 
 For the target hosted split, keep `CORE_BIND_ADDR`, `PUBLIC_WEB_BASE_URL`,
 `PUBLIC_API_BASE_URL`, `VITE_FILE_API_BASE_URL`, `DEPLOY_ENV`, `WEB_DEPLOY_TARGET`,
@@ -680,7 +701,7 @@ For repeatable shared-VM verification, use the deploy helper:
 
 It checks:
 - local production core health on `127.0.0.1:50051`
-- local staging core health on `127.0.0.1:50052` when `ops/.env.staging` exists
+- local staging core health on `127.0.0.1:50052` when `ops/staging/.env` exists
 - public `gitslice.io` and `api.gitslice.io`
 - public `agenttools.dev` and `api.agenttools.dev` when staging is configured
 - presence of required R2 config for each configured environment
