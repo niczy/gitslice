@@ -1,7 +1,9 @@
 import { createAuthContext, loadSession } from '../../server/auth.js';
 import { getConfiguredAPIBaseURL } from '../../shared/runtime.js';
 
-const gatewayTarget = getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
+function getGatewayTarget() {
+  return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
+}
 
 export async function action({ request }) {
   const { authSecret, startupError } = createAuthContext();
@@ -27,14 +29,19 @@ export async function action({ request }) {
     return Response.json({ error: 'userCode is required' }, { status: 400 });
   }
 
-  const response = await fetch(new URL('/v1/auth/device/approve', gatewayTarget), {
-    method: 'POST',
-    headers: {
-      Authorization: `User ${username}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ userCode }),
-  });
+  let response;
+  try {
+    response = await fetch(new URL('/v1/auth/device/approve', getGatewayTarget()), {
+      method: 'POST',
+      headers: {
+        Authorization: `User ${username}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ userCode }),
+    });
+  } catch {
+    return Response.json({ error: 'Unable to reach the API origin for device approval' }, { status: 502 });
+  }
 
   return new Response(await response.text(), {
     status: response.status,
