@@ -1597,6 +1597,9 @@ func (s *InMemoryStorage) upsertEntryLocked(sliceID string, e *models.DirectoryE
 
 		// Replace the stored value with a copy to avoid external mutation.
 		c := *e
+		if c.Size == 0 && existing.Size > 0 && existing.Type == c.Type {
+			c.Size = existing.Size
+		}
 		if len(e.Content) > 0 {
 			c.Content = append([]byte(nil), e.Content...)
 		}
@@ -1613,6 +1616,45 @@ func (s *InMemoryStorage) upsertEntryLocked(sliceID string, e *models.DirectoryE
 	s.entriesByPath[sliceID+":"+e.Path] = e.ID
 	s.entriesBySlice[sliceID] = append(s.entriesBySlice[sliceID], e.ID)
 	s.entriesByParent[e.ParentID] = append(s.entriesByParent[e.ParentID], e.ID)
+}
+
+func (s *InMemoryStorage) adjustAncestorDirectorySizesLocked(sliceID, filePath string, delta int64) {
+	if delta == 0 {
+		return
+	}
+	for _, dirPath := range ancestorDirectoryPaths(filePath) {
+		entryID, ok := s.entriesByPath[sliceID+":"+dirPath]
+		if !ok {
+			continue
+		}
+		entry, ok := s.entries[entryID]
+		if !ok || entry == nil || entry.Type != "directory" {
+			continue
+		}
+		entry.Size += delta
+		if entry.Size < 0 {
+			entry.Size = 0
+		}
+	}
+}
+
+func (s *InMemoryStorage) rebuildDirectorySizesLocked() {
+	for _, entry := range s.entries {
+		if entry == nil || entry.Type != "directory" {
+			continue
+		}
+		entry.Size = 0
+	}
+	for _, entry := range s.entries {
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		sliceID := inferSliceIDForEntry(entry)
+		if sliceID == "" {
+			continue
+		}
+		s.adjustAncestorDirectorySizesLocked(sliceID, entry.Path, entry.Size)
+	}
 }
 
 func (s *InMemoryStorage) materializeDirectoryTreeLocked(sliceID string, rawFiles []string, includeFiles bool) {
@@ -1718,12 +1760,28 @@ func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryE
 		// Directory IDs must be deterministic so child-parent pointers can be computed.
 		id = entryIDForPath(sliceID, p)
 	}
+	oldContribution := int64(0)
 	if existingID, ok := s.entriesByPath[sliceID+":"+p]; ok {
 		// Path already exists (e.g. created from slice.Files); update that row.
 		id = existingID
+		if existing, exists := s.entries[existingID]; exists && existing != nil {
+			oldContribution = directoryEntryAggregateContribution(existing)
+			if typ == "directory" && entry.Size == 0 && existing.Type == "directory" {
+				entry = &models.DirectoryEntry{
+					ID:            entry.ID,
+					Path:          entry.Path,
+					Type:          entry.Type,
+					ParentID:      entry.ParentID,
+					Content:       entry.Content,
+					Size:          existing.Size,
+					Hash:          entry.Hash,
+					Executable:    entry.Executable,
+					SymlinkTarget: entry.SymlinkTarget,
+				}
+			}
+		}
 	}
-
-	s.upsertEntryLocked(sliceID, &models.DirectoryEntry{
+	newEntry := &models.DirectoryEntry{
 		ID:            id,
 		Path:          p,
 		Type:          typ,
@@ -1733,7 +1791,9 @@ func (s *InMemoryStorage) AddEntry(ctx context.Context, entry *models.DirectoryE
 		Hash:          entry.Hash,
 		Executable:    entry.Executable,
 		SymlinkTarget: entry.SymlinkTarget,
-	})
+	}
+	s.upsertEntryLocked(sliceID, newEntry)
+	s.adjustAncestorDirectorySizesLocked(sliceID, p, directoryEntryAggregateContribution(newEntry)-oldContribution)
 
 	return nil
 }
@@ -1861,6 +1921,11 @@ func (s *InMemoryStorage) UpdateEntry(ctx context.Context, entry *models.Directo
 	// Ensure parent directories exist and recompute parent pointer from the path.
 	s.materializeDirectoryTreeLocked(sliceID, []string{p}, false)
 	newParent := parentIDForPath(sliceID, p)
+	storedSize := entry.Size
+	if typ == "directory" && storedSize == 0 && prev.Type == "directory" {
+		storedSize = prev.Size
+	}
+	oldContribution := directoryEntryAggregateContribution(prev)
 
 	// Maintain indexes if parent/path changed.
 	if prev.ParentID != newParent {
@@ -1888,10 +1953,18 @@ func (s *InMemoryStorage) UpdateEntry(ctx context.Context, entry *models.Directo
 	updated.Path = p
 	updated.Type = typ
 	updated.ParentID = newParent
+	updated.Size = storedSize
 	if len(entry.Content) > 0 {
 		updated.Content = append([]byte(nil), entry.Content...)
 	}
 	s.entries[entry.ID] = &updated
+	newContribution := directoryEntryAggregateContribution(&updated)
+	if prev.Path == p {
+		s.adjustAncestorDirectorySizesLocked(sliceID, p, newContribution-oldContribution)
+	} else {
+		s.adjustAncestorDirectorySizesLocked(sliceID, prev.Path, -oldContribution)
+		s.adjustAncestorDirectorySizesLocked(sliceID, p, newContribution)
+	}
 	return nil
 }
 
@@ -1914,10 +1987,11 @@ func (s *InMemoryStorage) deleteEntryLocked(entryID string) {
 	if !exists {
 		return
 	}
+	sliceID := inferSliceIDForEntry(entry)
+	oldContribution := directoryEntryAggregateContribution(entry)
 
 	delete(s.entries, entryID)
 
-	sliceID := inferSliceIDForEntry(entry)
 	if sliceID != "" {
 		delete(s.entriesByPath, sliceID+":"+entry.Path)
 		ids := s.entriesBySlice[sliceID]
@@ -1945,6 +2019,9 @@ func (s *InMemoryStorage) deleteEntryLocked(entryID string) {
 		delete(s.entriesByParent, entry.ParentID)
 	} else {
 		s.entriesByParent[entry.ParentID] = outParent
+	}
+	if sliceID != "" {
+		s.adjustAncestorDirectorySizesLocked(sliceID, entry.Path, -oldContribution)
 	}
 }
 
@@ -1986,6 +2063,9 @@ func (s *InMemoryStorage) UpdateGlobalState(ctx context.Context, state *models.G
 // RebuildIndexes is a no-op for the in-memory backend because indexes are kept in memory alongside data.
 func (s *InMemoryStorage) RebuildIndexes(ctx context.Context) error {
 	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rebuildDirectorySizesLocked()
 	return nil
 }
 

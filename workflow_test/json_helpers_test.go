@@ -492,6 +492,16 @@ type filesystemActionJSON struct {
 	Message string `json:"message"`
 }
 
+type filesystemStatJSON struct {
+	Exists bool `json:"exists"`
+	Entry  struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+		Size int64  `json:"size,string"`
+		Hash string `json:"hash"`
+	} `json:"entry"`
+}
+
 type pathVisibilityJSON struct {
 	WorkspaceID         string `json:"workspace_id"`
 	Path                string `json:"path"`

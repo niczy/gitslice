@@ -385,6 +385,60 @@ func TestListDirectoryAndStatIncludeEffectiveVisibility(t *testing.T) {
 	}
 }
 
+func TestStatDirectoryReturnsRecursiveSize(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-stat-size",
+		Name:        "Stat Size Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-stat-size",
+		Path:        "docs/readme.md",
+		Content:     []byte("hello"),
+	}); err != nil {
+		t.Fatalf("WriteFile(readme) failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-stat-size",
+		Path:        "docs/guides/setup.md",
+		Content:     []byte("world!!"),
+	}); err != nil {
+		t.Fatalf("WriteFile(setup) failed: %v", err)
+	}
+
+	docsStat, err := svc.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: "ws-stat-size",
+		Path:        "docs",
+	})
+	if err != nil {
+		t.Fatalf("Stat(docs) failed: %v", err)
+	}
+	if got, want := docsStat.GetEntry().GetType(), filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY; got != want {
+		t.Fatalf("docs type = %v, want %v", got, want)
+	}
+	if got, want := docsStat.GetEntry().GetSize(), int64(12); got != want {
+		t.Fatalf("docs size = %d, want %d", got, want)
+	}
+
+	rootStat, err := svc.Stat(ctx, &filesystemv1.StatRequest{
+		WorkspaceId: "ws-stat-size",
+	})
+	if err != nil {
+		t.Fatalf("Stat(root) failed: %v", err)
+	}
+	if got, want := rootStat.GetEntry().GetSize(), int64(12); got != want {
+		t.Fatalf("root size = %d, want %d", got, want)
+	}
+}
+
 func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
