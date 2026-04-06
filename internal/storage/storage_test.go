@@ -130,6 +130,15 @@ func TestPathVisibilityStorageRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDirectoryEntryAggregatesSubtreeSizes(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runDirectoryEntryAggregatesSubtreeSizes(ctx, t, tc.factory(t))
+		})
+	}
+}
+
 func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
@@ -314,6 +323,86 @@ func runSearchIndexStorageRoundTrip(ctx context.Context, t *testing.T, st Storag
 	}
 	if _, err := st.GetWorkspaceSearchArtifact(ctx, "workspace-1", 1); err != ErrEntryNotFound {
 		t.Fatalf("expected deleted workspace artifact to return ErrEntryNotFound, got %v", err)
+	}
+}
+
+func runDirectoryEntryAggregatesSubtreeSizes(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	slice := &models.Slice{
+		ID:        "home.alice",
+		Name:      "alice",
+		Files:     []string{"docs/readme.md", "docs/guides/setup.md"},
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	readmeID := generateEntryID(slice.ID, "docs/readme.md")
+	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{
+		ID:       readmeID,
+		Path:     "docs/readme.md",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     5,
+	}); err != nil {
+		t.Fatalf("UpdateEntry(readme) failed: %v", err)
+	}
+	setupID := generateEntryID(slice.ID, "docs/guides/setup.md")
+	if err := st.UpdateEntry(ctx, &models.DirectoryEntry{
+		ID:       setupID,
+		Path:     "docs/guides/setup.md",
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     7,
+	}); err != nil {
+		t.Fatalf("UpdateEntry(setup) failed: %v", err)
+	}
+
+	docsEntry, err := st.GetEntryByPath(ctx, slice.ID, "docs")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(docs) failed: %v", err)
+	}
+	if got, want := docsEntry.Size, int64(12); got != want {
+		t.Fatalf("docs size = %d, want %d", got, want)
+	}
+	guidesEntry, err := st.GetEntryByPath(ctx, slice.ID, "docs/guides")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(docs/guides) failed: %v", err)
+	}
+	if got, want := guidesEntry.Size, int64(7); got != want {
+		t.Fatalf("docs/guides size = %d, want %d", got, want)
+	}
+	rootEntry, err := st.GetEntryByPath(ctx, slice.ID, "")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(root) failed: %v", err)
+	}
+	if got, want := rootEntry.Size, int64(12); got != want {
+		t.Fatalf("root size = %d, want %d", got, want)
+	}
+
+	if err := st.DeleteEntry(ctx, readmeID); err != nil {
+		t.Fatalf("DeleteEntry(readme) failed: %v", err)
+	}
+	docsEntry, err = st.GetEntryByPath(ctx, slice.ID, "docs")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(docs after delete) failed: %v", err)
+	}
+	if got, want := docsEntry.Size, int64(7); got != want {
+		t.Fatalf("docs size after delete = %d, want %d", got, want)
+	}
+
+	if err := st.RebuildIndexes(ctx); err != nil {
+		t.Fatalf("RebuildIndexes failed: %v", err)
+	}
+	docsEntry, err = st.GetEntryByPath(ctx, slice.ID, "docs")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(docs after rebuild) failed: %v", err)
+	}
+	if got, want := docsEntry.Size, int64(7); got != want {
+		t.Fatalf("docs size after rebuild = %d, want %d", got, want)
 	}
 }
 

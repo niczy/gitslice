@@ -5,6 +5,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/niczy/gitslice/internal/models"
 )
 
 // NOTE: This file intentionally duplicates a few path helpers used by
@@ -29,6 +31,32 @@ func extractParentDirs(filePath string) []string {
 		dirs = append(dirs, dirPath)
 	}
 	return dirs
+}
+
+func ancestorDirectoryPaths(filePath string) []string {
+	dirs := []string{""}
+	for _, dirPath := range extractParentDirs(cleanRelativePath(filePath)) {
+		if dirPath == "" {
+			continue
+		}
+		dirs = append(dirs, dirPath)
+	}
+	return dirs
+}
+
+func directoryEntryAggregateContribution(entry *models.DirectoryEntry) int64 {
+	if entry == nil {
+		return 0
+	}
+	if entry.Size < 0 {
+		return 0
+	}
+	switch strings.TrimSpace(entry.Type) {
+	case "file", "directory":
+		return entry.Size
+	default:
+		return 0
+	}
 }
 
 func sortDirsByDepth(dirs map[string]bool) []string {

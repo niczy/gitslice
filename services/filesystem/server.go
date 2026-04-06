@@ -926,9 +926,17 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 		return nil, err
 	}
 	if !homeMode && statPath == "" {
+		rootEntry, err := s.storage.GetEntryByPath(ctx, workspace.ID, "")
+		if err != nil && err != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to stat path: %v", err))
+		}
 		info, err := s.buildWorkspacePathVisibilityInfo(ctx, workspace, homeMode, "", "", true)
 		if err != nil {
 			return nil, err
+		}
+		var size int64
+		if rootEntry != nil {
+			size = rootEntry.Size
 		}
 		return &filesystemv1.StatResponse{
 			Exists: true,
@@ -936,6 +944,7 @@ func (s *filesystemServiceServer) Stat(ctx context.Context, req *filesystemv1.St
 				Name:                path.Base(workspace.ID),
 				Path:                "",
 				Type:                filesystemv1.EntryType_ENTRY_TYPE_DIRECTORY,
+				Size:                size,
 				EffectiveVisibility: info.GetEffectiveVisibility(),
 			},
 		}, nil

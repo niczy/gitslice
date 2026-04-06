@@ -191,7 +191,10 @@ func (s *PostgresNativeStorage) materializeDirectoryTreeTx(ctx context.Context, 
 			ON CONFLICT (slice_id, path) DO UPDATE SET
 				type = EXCLUDED.type,
 				parent_id = EXCLUDED.parent_id,
-				size = EXCLUDED.size,
+				size = CASE
+					WHEN EXCLUDED.size = 0 THEN directory_entries.size
+					ELSE EXCLUDED.size
+				END,
 				updated_at = NOW()
 		`, id, sliceID, pth, typ, parent, size)
 	}
@@ -223,6 +226,127 @@ func (s *PostgresNativeStorage) materializeDirectoryTreeTx(ctx context.Context, 
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := res.Exec(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+type postgresEntryAggregateState struct {
+	ID   string
+	Path string
+	Type string
+	Size int64
+}
+
+func loadEntryAggregateState(ctx context.Context, tx pgx.Tx, sliceID, entryPath string) (*postgresEntryAggregateState, error) {
+	entryPath = cleanRelativePath(entryPath)
+	var state postgresEntryAggregateState
+	err := tx.QueryRow(ctx, `
+		SELECT id, path, type, size
+		FROM directory_entries
+		WHERE slice_id = $1 AND path = $2
+	`, sliceID, entryPath).Scan(&state.ID, &state.Path, &state.Type, &state.Size)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &state, nil
+}
+
+func loadEntryAggregateStateByID(ctx context.Context, tx pgx.Tx, entryID string) (*postgresEntryAggregateState, error) {
+	var state postgresEntryAggregateState
+	err := tx.QueryRow(ctx, `
+		SELECT id, path, type, size
+		FROM directory_entries
+		WHERE id = $1
+	`, entryID).Scan(&state.ID, &state.Path, &state.Type, &state.Size)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &state, nil
+}
+
+func adjustAncestorDirectorySizesTx(ctx context.Context, tx pgx.Tx, sliceID, filePath string, delta int64) error {
+	if delta == 0 {
+		return nil
+	}
+	paths := ancestorDirectoryPaths(filePath)
+	if len(paths) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE directory_entries
+		SET size = GREATEST(0, size + $3),
+			updated_at = NOW()
+		WHERE slice_id = $1 AND type = 'directory' AND path = ANY($2)
+	`, sliceID, paths, delta)
+	return err
+}
+
+func rebuildDirectorySizesTx(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `
+		SELECT slice_id, path, type, size
+		FROM directory_entries
+		ORDER BY slice_id, path
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type entryRow struct {
+		sliceID string
+		path    string
+		typ     string
+		size    int64
+	}
+	type sliceTotals struct {
+		directories []string
+		totals      map[string]int64
+	}
+
+	bySlice := make(map[string]*sliceTotals)
+	for rows.Next() {
+		var row entryRow
+		if err := rows.Scan(&row.sliceID, &row.path, &row.typ, &row.size); err != nil {
+			return err
+		}
+		agg := bySlice[row.sliceID]
+		if agg == nil {
+			agg = &sliceTotals{totals: make(map[string]int64)}
+			bySlice[row.sliceID] = agg
+		}
+		if row.typ == "directory" {
+			agg.directories = append(agg.directories, row.path)
+			agg.totals[row.path] = 0
+			continue
+		}
+		if row.typ != "file" || row.size <= 0 {
+			continue
+		}
+		for _, dirPath := range ancestorDirectoryPaths(row.path) {
+			agg.totals[dirPath] += row.size
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for sliceID, agg := range bySlice {
+		for _, dirPath := range agg.directories {
+			if _, err := tx.Exec(ctx, `
+				UPDATE directory_entries
+				SET size = $3,
+					updated_at = NOW()
+				WHERE slice_id = $1 AND path = $2 AND type = 'directory'
+			`, sliceID, dirPath, agg.totals[dirPath]); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -330,11 +454,17 @@ func NewPostgresNativeStorageWithOptions(ctx context.Context, dsn string, object
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
-	return &PostgresNativeStorage{
+	storage := &PostgresNativeStorage{
 		pool:        pool,
 		objectStore: objectStore,
 		namespace:   namespace,
-	}, nil
+	}
+	if err := storage.RebuildIndexes(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("rebuild indexes: %w", err)
+	}
+
+	return storage, nil
 }
 
 func applyPostgresNativePoolOptions(cfg *pgxpool.Config, options PostgresNativeStorageOptions) {
@@ -847,8 +977,20 @@ func (s *postgresNativeTxView) AddEntry(ctx context.Context, entry *models.Direc
 	if err := s.materializeDirectoryTreeTx(ctx, s.tx, sliceID, []string{p}, false); err != nil {
 		return err
 	}
+	prevState, err := loadEntryAggregateState(ctx, s.tx, sliceID, p)
+	if err != nil && err != ErrEntryNotFound {
+		return err
+	}
+	storedSize := entry.Size
+	if prevState != nil && typ == "directory" && storedSize == 0 && prevState.Type == "directory" {
+		storedSize = prevState.Size
+	}
+	oldContribution := int64(0)
+	if prevState != nil {
+		oldContribution = directoryEntryAggregateContribution(&models.DirectoryEntry{Type: prevState.Type, Size: prevState.Size})
+	}
 
-	_, err := s.tx.Exec(ctx, `
+	_, err = s.tx.Exec(ctx, `
 		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size, is_executable, symlink_target)
 		VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8)
 		ON CONFLICT (slice_id, path) DO UPDATE SET
@@ -858,8 +1000,12 @@ func (s *postgresNativeTxView) AddEntry(ctx context.Context, entry *models.Direc
 			is_executable = EXCLUDED.is_executable,
 			symlink_target = EXCLUDED.symlink_target,
 			updated_at = NOW()
-	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget)
-	return err
+	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), storedSize, entry.Executable, entry.SymlinkTarget)
+	if err != nil {
+		return err
+	}
+	newContribution := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: typ, Size: storedSize})
+	return adjustAncestorDirectorySizesTx(ctx, s.tx, sliceID, p, newContribution-oldContribution)
 }
 
 func (s *postgresNativeTxView) UpdateEntry(ctx context.Context, entry *models.DirectoryEntry) error {
@@ -888,22 +1034,50 @@ func (s *postgresNativeTxView) UpdateEntry(ctx context.Context, entry *models.Di
 	if err := s.materializeDirectoryTreeTx(ctx, s.tx, sliceID, []string{p}, false); err != nil {
 		return err
 	}
+	prevState, err := loadEntryAggregateStateByID(ctx, s.tx, entry.ID)
+	if err != nil {
+		return err
+	}
+	storedSize := entry.Size
+	if typ == "directory" && storedSize == 0 && prevState.Type == "directory" {
+		storedSize = prevState.Size
+	}
+	oldContribution := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: prevState.Type, Size: prevState.Size})
 
 	tag, err := s.tx.Exec(ctx, `
 		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, is_executable = $5, symlink_target = $6, updated_at = NOW()
 		WHERE id = $7
-	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget, entry.ID)
+	`, p, typ, nativeParentID(sliceID, p), storedSize, entry.Executable, entry.SymlinkTarget, entry.ID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
 	}
-	return nil
+	newContribution := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: typ, Size: storedSize})
+	if prevState.Path == p {
+		return adjustAncestorDirectorySizesTx(ctx, s.tx, sliceID, p, newContribution-oldContribution)
+	}
+	if err := adjustAncestorDirectorySizesTx(ctx, s.tx, sliceID, prevState.Path, -oldContribution); err != nil {
+		return err
+	}
+	return adjustAncestorDirectorySizesTx(ctx, s.tx, sliceID, p, newContribution)
 }
 
 func (s *postgresNativeTxView) DeleteEntry(ctx context.Context, entryID string) error {
 	ctx = ensureCtx(ctx)
+	var sliceID, entryPath, entryType string
+	var entrySize int64
+	if err := s.tx.QueryRow(ctx, `
+		SELECT slice_id, path, type, size
+		FROM directory_entries
+		WHERE id = $1
+	`, entryID).Scan(&sliceID, &entryPath, &entryType, &entrySize); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrEntryNotFound
+		}
+		return err
+	}
 	tag, err := s.tx.Exec(ctx, `DELETE FROM directory_entries WHERE id = $1`, entryID)
 	if err != nil {
 		return err
@@ -911,7 +1085,10 @@ func (s *postgresNativeTxView) DeleteEntry(ctx context.Context, entryID string) 
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
 	}
-	return nil
+	return adjustAncestorDirectorySizesTx(ctx, s.tx, sliceID, entryPath, -directoryEntryAggregateContribution(&models.DirectoryEntry{
+		Type: entryType,
+		Size: entrySize,
+	}))
 }
 
 func (s *postgresNativeTxView) PutBlock(ctx context.Context, hash string, data []byte) error {
@@ -1970,7 +2147,16 @@ func (s *PostgresNativeStorage) UnlockSliceAndFiles(ctx context.Context, sliceID
 // ============ Index Maintenance ============
 
 func (s *PostgresNativeStorage) RebuildIndexes(ctx context.Context) error {
-	return nil
+	ctx = ensureCtx(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := rebuildDirectorySizesTx(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ============ Changeset Operations ============
@@ -2572,6 +2758,18 @@ func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.Dire
 	if err := s.materializeDirectoryTreeTx(ctx, tx, sliceID, []string{p}, false); err != nil {
 		return err
 	}
+	prevState, err := loadEntryAggregateState(ctx, tx, sliceID, p)
+	if err != nil && err != ErrEntryNotFound {
+		return err
+	}
+	storedSize := entry.Size
+	if prevState != nil && typ == "directory" && storedSize == 0 && prevState.Type == "directory" {
+		storedSize = prevState.Size
+	}
+	oldContribution := int64(0)
+	if prevState != nil {
+		oldContribution = directoryEntryAggregateContribution(&models.DirectoryEntry{Type: prevState.Type, Size: prevState.Size})
+	}
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size, is_executable, symlink_target)
@@ -2583,8 +2781,12 @@ func (s *PostgresNativeStorage) AddEntry(ctx context.Context, entry *models.Dire
 			is_executable = EXCLUDED.is_executable,
 			symlink_target = EXCLUDED.symlink_target,
 			updated_at = NOW()
-	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget)
+	`, insertID, sliceID, p, typ, nativeParentID(sliceID, p), storedSize, entry.Executable, entry.SymlinkTarget)
 	if err != nil {
+		return err
+	}
+	newContribution := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: typ, Size: storedSize})
+	if err := adjustAncestorDirectorySizesTx(ctx, tx, sliceID, p, newContribution-oldContribution); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -2730,31 +2932,77 @@ func (s *PostgresNativeStorage) UpdateEntry(ctx context.Context, entry *models.D
 	if err := s.materializeDirectoryTreeTx(ctx, tx, sliceID, []string{p}, false); err != nil {
 		return err
 	}
+	prevState, err := loadEntryAggregateStateByID(ctx, tx, entry.ID)
+	if err != nil {
+		return err
+	}
+	storedSize := entry.Size
+	if typ == "directory" && storedSize == 0 && prevState.Type == "directory" {
+		storedSize = prevState.Size
+	}
+	oldContribution := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: prevState.Type, Size: prevState.Size})
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE directory_entries SET path = $1, type = $2, parent_id = $3, content = NULL, size = $4, is_executable = $5, symlink_target = $6, updated_at = NOW()
 		WHERE id = $7
-	`, p, typ, nativeParentID(sliceID, p), entry.Size, entry.Executable, entry.SymlinkTarget, entry.ID)
+	`, p, typ, nativeParentID(sliceID, p), storedSize, entry.Executable, entry.SymlinkTarget, entry.ID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
+	}
+	newContribution := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: typ, Size: storedSize})
+	if prevState.Path == p {
+		if err := adjustAncestorDirectorySizesTx(ctx, tx, sliceID, p, newContribution-oldContribution); err != nil {
+			return err
+		}
+	} else {
+		if err := adjustAncestorDirectorySizesTx(ctx, tx, sliceID, prevState.Path, -oldContribution); err != nil {
+			return err
+		}
+		if err := adjustAncestorDirectorySizesTx(ctx, tx, sliceID, p, newContribution); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
 
 func (s *PostgresNativeStorage) DeleteEntry(ctx context.Context, entryID string) error {
 	ctx = ensureCtx(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 
-	tag, err := s.pool.Exec(ctx, `DELETE FROM directory_entries WHERE id = $1`, entryID)
+	var sliceID, entryPath, entryType string
+	var entrySize int64
+	if err := tx.QueryRow(ctx, `
+		SELECT slice_id, path, type, size
+		FROM directory_entries
+		WHERE id = $1
+	`, entryID).Scan(&sliceID, &entryPath, &entryType, &entrySize); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM directory_entries WHERE id = $1`, entryID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
 	}
-	return nil
+	if err := adjustAncestorDirectorySizesTx(ctx, tx, sliceID, entryPath, -directoryEntryAggregateContribution(&models.DirectoryEntry{
+		Type: entryType,
+		Size: entrySize,
+	})); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ============ Global State ============
