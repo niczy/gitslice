@@ -261,9 +261,12 @@ must contain the core runtime settings for that target. In particular, when
 it will restart the API process.
 
 For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gitslice/web/.dev.vars.example) to `.dev.vars` and set:
+- `AUTH_PROVIDER=workos` when validating the WorkOS path
+- `ALLOW_DEV_LOGIN=1` only if you want username/dev login available as an explicit local fallback
 - `AUTH_SECRET`
 - `AUTH_GOOGLE_*` when testing Google OAuth
 - `AUTH_GITHUB_*` when testing GitHub OAuth
+- `WORKOS_*` when testing WorkOS
 
 For staging and production deploys, set Worker secrets with Wrangler instead of checking them into config:
 
