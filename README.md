@@ -136,7 +136,7 @@ go build -o gs_cli/gs_cli ./gs_cli/
 # Run core server (gRPC + gateway on :50051)
 CORE_SERVICE_PORT=50051 ./core_server
 
-# Optional: override the browser URL returned by OAuth device login
+# Optional: override the browser URL returned by browser-approved device login
 PUBLIC_WEB_BASE_URL=http://localhost:4173 CORE_SERVICE_PORT=50051 ./core_server
 
 # Optional: override the public API origin used by split-host web deployments
@@ -264,8 +264,6 @@ For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gits
 - `AUTH_PROVIDER=workos` when validating the WorkOS path
 - `ALLOW_DEV_LOGIN=1` only if you want username/dev login available as an explicit local fallback
 - `AUTH_SECRET`
-- `AUTH_GOOGLE_*` when testing Google OAuth
-- `AUTH_GITHUB_*` when testing GitHub OAuth
 - `WORKOS_*` when testing WorkOS
 
 For staging and production deploys, set Worker secrets with Wrangler instead of checking them into config:
@@ -273,15 +271,15 @@ For staging and production deploys, set Worker secrets with Wrangler instead of 
 ```bash
 cd web
 wrangler secret put AUTH_SECRET --env staging
-wrangler secret put AUTH_GITHUB_ID --env staging
-wrangler secret put AUTH_GITHUB_SECRET --env staging
-wrangler secret put AUTH_GOOGLE_ID --env staging
-wrangler secret put AUTH_GOOGLE_SECRET --env staging
+wrangler secret put WORKOS_CLIENT_ID --env staging
+wrangler secret put WORKOS_API_KEY --env staging
+wrangler secret put WORKOS_COOKIE_PASSWORD --env staging
+wrangler secret put WORKOS_REDIRECT_URI --env staging
 wrangler secret put AUTH_SECRET --env production
-wrangler secret put AUTH_GITHUB_ID --env production
-wrangler secret put AUTH_GITHUB_SECRET --env production
-wrangler secret put AUTH_GOOGLE_ID --env production
-wrangler secret put AUTH_GOOGLE_SECRET --env production
+wrangler secret put WORKOS_CLIENT_ID --env production
+wrangler secret put WORKOS_API_KEY --env production
+wrangler secret put WORKOS_COOKIE_PASSWORD --env production
+wrangler secret put WORKOS_REDIRECT_URI --env production
 ```
 
 The production cutover does not need to preserve old browser sessions. Rotating `AUTH_SECRET`
@@ -466,15 +464,15 @@ This repo uses WorkOS-backed human web sign-in, browser-approved CLI device logi
 - Non-root slices are only visible/accessible to their owners.
 - Organizations are user-created groups shown on the profile page (no invites yet).
 
-Web OAuth environment variables (see `web/.env.example`):
+Web auth environment variables (see `web/.env.example`):
 
 ```bash
 VITE_WEB_AGENT_REAL_RUNTIME=1
+AUTH_PROVIDER=workos
 AUTH_SECRET=replace-with-long-random-string
-AUTH_GOOGLE_ID=your-google-oauth-client-id
-AUTH_GOOGLE_SECRET=your-google-oauth-client-secret
-AUTH_GITHUB_ID=your-github-oauth-client-id
-AUTH_GITHUB_SECRET=your-github-oauth-client-secret
+WORKOS_CLIENT_ID=client_...
+WORKOS_API_KEY=sk_...
+WORKOS_COOKIE_PASSWORD=replace-with-long-random-string
 ```
 
 For local setup, copy the template and fill in values:

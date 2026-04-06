@@ -419,10 +419,11 @@ gs context --json`}</code>
             </pre>
             <ul className="docs-bullet-list">
               <li>Use <code>gs login</code> or <code>gs auth login --device</code> to start browser-approved human CLI auth.</li>
+              <li>Use <code>gs login</code> or <code>gs auth login --device</code> to start browser-approved human CLI auth.</li>
               <li>Use <code>gs auth signup</code> and <code>gs auth login --key</code> for non-interactive agent auth.</li>
               <li>Use <code>gs auth claim-token</code> to create a one-time URL that lets a human attach WorkOS sign-in to an agent-created account.</li>
               <li><code>gs auth status --json</code>, <code>gs doctor --json</code>, and <code>gs context --json</code> expose stored auth metadata including the session and enrolled agent key ID.</li>
-              <li>The web app uses cookie-backed session auth.</li>
+              <li>The web app uses a WorkOS-backed browser session and only exposes username sign-in as an explicit local/dev fallback.</li>
               <li>The Settings page shows enrolled agent keys, their fingerprints, last-used timestamps, and revoke controls.</li>
               <li>Your account owns a home slice, which is why `gs fs` can work from absolute paths immediately.</li>
             </ul>

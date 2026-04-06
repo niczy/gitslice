@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-- Current status: `in progress`
+- Current status: `completed`
 - Last updated: `2026-04-06`
 
 Completed:
@@ -11,13 +11,10 @@ Completed:
 - `PR2 - Worker-side WorkOS Bootstrap`
 - `PR3 - Core API WorkOS JWT Verification`
 - `PR4 - Local User Provisioning + Account Linkage`
+- `PR5 - Agent-Created Account Claim Flow`
 - `PR6 - Replace Web Sign-In Surface`
 - `PR7 - Web Account Management`
 - `PR8 - Linked Auth Methods Implementation`
-
-Still pending:
-
-- `PR5 - Agent-Created Account Claim Flow`
 - `PR9 - WorkOS Organizations Linkage`
 - `PR10 - Optional Human CLI Auth via WorkOS`
 - `PR11 - Cleanup + Remove Legacy Human Web Auth`

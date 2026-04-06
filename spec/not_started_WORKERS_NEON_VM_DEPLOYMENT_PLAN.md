@@ -357,8 +357,10 @@ The plan should standardize the following deployment config:
 - `PUBLIC_WEB_BASE_URL`
 - `PUBLIC_API_BASE_URL`
 - `AUTH_SECRET`
-- `AUTH_GOOGLE_*`
-- `AUTH_GITHUB_*`
+- `WORKOS_CLIENT_ID`
+- `WORKOS_API_KEY`
+- `WORKOS_COOKIE_PASSWORD`
+- `WORKOS_REDIRECT_URI`
 - `WORKER_ENV`
 - `CF_ACCOUNT_ID`
 - `CF_ZONE_ID`

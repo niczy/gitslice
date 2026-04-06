@@ -1,7 +1,7 @@
 let cachedSession = null;
 
 function normalizeSession(session) {
-  const source = String(session?.source || '').trim() || 'oauth';
+  const source = String(session?.source || '').trim() || 'workos';
   const username = String(session?.user?.username || '').trim();
   const workosUserId = String(session?.user?.workosUserId || session?.user?.id || '').trim();
   if (!username && !(source === 'workos' && workosUserId)) {
@@ -65,9 +65,9 @@ export async function fetchOAuthSession() {
   return setCachedSession(await response.json());
 }
 
-export function startOAuthSignIn(providerId) {
+export function startOAuthSignIn() {
   const callbackUrl = `${window.location.origin}/login`;
-  const url = new URL(`/auth/signin/${providerId}`, window.location.origin);
+  const url = new URL('/auth/signin/workos', window.location.origin);
   url.searchParams.set('callbackUrl', callbackUrl);
   window.location.assign(url.toString());
 }
