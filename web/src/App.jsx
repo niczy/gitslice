@@ -42,7 +42,12 @@ function getHomeSliceId(username) {
   return trimmedUsername ? `home.${trimmedUsername}` : '';
 }
 
-function App({ initialRoute, initialSession = null, routerNavigate }) {
+function App({
+  initialRoute,
+  initialAuthConfig = { authProvider: 'local', allowDevLogin: true },
+  initialSession = null,
+  routerNavigate,
+}) {
   const queryClient = useQueryClient();
   const [activePage, setActivePage] = useState(() => initialRoute.page);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
@@ -299,6 +304,8 @@ function App({ initialRoute, initialSession = null, routerNavigate }) {
         {activePage === 'docs' && <DocsPage onBrowseRepo={openBrowserHome} />}
         {activePage === 'login' && (
           <LoginPage
+            authProvider={initialAuthConfig.authProvider}
+            allowDevLogin={initialAuthConfig.allowDevLogin}
             onLogin={doLogin}
             onOAuthLogin={doOAuthLogin}
             onCancel={() => navigate('landing')}

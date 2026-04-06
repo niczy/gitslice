@@ -26,6 +26,50 @@ export function getAuthProvider() {
   return String(process.env.AUTH_PROVIDER || 'local').trim().toLowerCase() || 'local';
 }
 
+function parseBooleanEnv(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
+function isLocalHost(urlString) {
+  try {
+    const url = new URL(urlString);
+    const hostname = String(url.hostname || '').trim().toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+export function isDevLoginEnabled(request, authContext = null) {
+  const explicit = parseBooleanEnv(process.env.ALLOW_DEV_LOGIN);
+  if (explicit !== null) {
+    return explicit;
+  }
+  const provider = String(authContext?.authProvider || getAuthProvider()).trim().toLowerCase();
+  if (provider !== 'workos') {
+    return true;
+  }
+  return isLocalHost(request?.url);
+}
+
+export function getPublicAuthConfig(request) {
+  const authContext = createAuthContext(request);
+  return {
+    authProvider: String(authContext?.authProvider || getAuthProvider()).trim().toLowerCase() || 'local',
+    allowDevLogin: isDevLoginEnabled(request, authContext),
+  };
+}
+
 function buildUsernameFromProfile(profile) {
   const raw = [
     profile?.preferred_username,
@@ -394,10 +438,25 @@ export async function loadSession(request) {
   if (!authContext?.authSecret) {
     return null;
   }
+  const allowDevLogin = isDevLoginEnabled(request, authContext);
   if (authContext.authProvider === 'workos') {
     const { session, accessToken } = await authenticateWorkOSSession(request, authContext);
     if (!session) {
-      return null;
+      if (!allowDevLogin) {
+        return null;
+      }
+      const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authContext.authSecret);
+      if (!devUsername) {
+        return null;
+      }
+      return {
+        user: {
+          name: devUsername,
+          username: devUsername,
+        },
+        source: 'dev',
+        expires: '',
+      };
     }
     return ensureWorkOSLocalIdentity(request, accessToken, session);
   }
@@ -432,21 +491,38 @@ export async function loadSession(request) {
 
 export async function handleSessionRequest(request) {
   const authContext = createAuthContext(request);
-  if (authContext.startupError) {
+  const allowDevLogin = isDevLoginEnabled(request, authContext);
+  if (authContext.startupError && !(allowDevLogin && authContext.authSecret)) {
     return Response.json({ error: authContext.startupError }, { status: 500 });
   }
 
   if (authContext.authProvider === 'workos') {
     let session = null;
     let clearCookie = false;
-    try {
-      const authSession = await authenticateWorkOSSession(request, authContext);
-      clearCookie = authSession.clearCookie;
-      if (authSession.session) {
-        session = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session);
+    if (!authContext.startupError) {
+      try {
+        const authSession = await authenticateWorkOSSession(request, authContext);
+        clearCookie = authSession.clearCookie;
+        if (authSession.session) {
+          session = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session);
+        }
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? error.message : 'Failed to load WorkOS session' }, { status: 500 });
       }
-    } catch (error) {
-      return Response.json({ error: error instanceof Error ? error.message : 'Failed to load WorkOS session' }, { status: 500 });
+    }
+
+    if (!session && allowDevLogin) {
+      const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authContext.authSecret);
+      if (devUsername) {
+        session = {
+          user: {
+            name: devUsername,
+            username: devUsername,
+          },
+          source: 'dev',
+          expires: '',
+        };
+      }
     }
 
     const response = session ? Response.json(session) : Response.json({ error: 'Not signed in' }, { status: 401 });
@@ -464,9 +540,14 @@ export async function handleSessionRequest(request) {
 }
 
 export async function handleDevLoginRequest(request) {
-  const { authSecret, startupError } = createAuthContext();
-  if (startupError || !authSecret) {
+  const authContext = createAuthContext(request);
+  const { authSecret, startupError } = authContext;
+  const allowDevLogin = isDevLoginEnabled(request, authContext);
+  if ((!allowDevLogin && startupError) || !authSecret) {
     return Response.json({ error: startupError || 'Auth is not configured' }, { status: 500 });
+  }
+  if (!allowDevLogin) {
+    return Response.json({ error: 'Development login is disabled' }, { status: 403 });
   }
 
   let payload = {};

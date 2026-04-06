@@ -3,16 +3,17 @@ import { useLoaderData, useLocation, useNavigate } from 'react-router';
 import App from '../../src/App.jsx';
 import { setCachedSession } from '../../src/auth.js';
 import { parseLocation } from '../../src/utils/routing.js';
-import { loadSession } from '../../server/auth.js';
+import { getPublicAuthConfig, loadSession } from '../../server/auth.js';
 
 export async function loader({ request }) {
   return {
     session: await loadSession(request),
+    authConfig: getPublicAuthConfig(request),
   };
 }
 
 export default function AppShellRoute() {
-  const { session } = useLoaderData();
+  const { session, authConfig } = useLoaderData();
   const location = useLocation();
   const navigate = useNavigate();
   const routeInfo = parseLocation(location);
@@ -24,6 +25,7 @@ export default function AppShellRoute() {
   return (
     <App
       initialRoute={routeInfo}
+      initialAuthConfig={authConfig || { authProvider: 'local', allowDevLogin: true }}
       initialSession={session || null}
       routerNavigate={navigate}
     />
