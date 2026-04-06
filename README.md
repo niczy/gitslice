@@ -266,20 +266,16 @@ For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gits
 - `AUTH_SECRET`
 - `WORKOS_*` when testing WorkOS
 
-For staging and production deploys, set Worker secrets with Wrangler instead of checking them into config:
+For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_JWKS_URL`, `WORKOS_AUTHKIT_DOMAIN`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:
 
 ```bash
 cd web
 wrangler secret put AUTH_SECRET --env staging
-wrangler secret put WORKOS_CLIENT_ID --env staging
 wrangler secret put WORKOS_API_KEY --env staging
 wrangler secret put WORKOS_COOKIE_PASSWORD --env staging
-wrangler secret put WORKOS_REDIRECT_URI --env staging
 wrangler secret put AUTH_SECRET --env production
-wrangler secret put WORKOS_CLIENT_ID --env production
 wrangler secret put WORKOS_API_KEY --env production
 wrangler secret put WORKOS_COOKIE_PASSWORD --env production
-wrangler secret put WORKOS_REDIRECT_URI --env production
 ```
 
 The production cutover does not need to preserve old browser sessions. Rotating `AUTH_SECRET`

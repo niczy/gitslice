@@ -203,6 +203,55 @@ sync_worker_secret() {
   )
 }
 
+build_worker_config() {
+  local base_config="$REPO_ROOT/web/wrangler.jsonc"
+  local output_config=""
+
+  output_config="$(mktemp "${TMPDIR:-/tmp}/gitslice-wrangler-${ENV_NAME}-XXXXXX.jsonc")"
+  node - "$base_config" "$output_config" "$ENV_NAME" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [baseConfigPath, outputConfigPath, envName] = process.argv.slice(2);
+const config = JSON.parse(fs.readFileSync(baseConfigPath, 'utf8'));
+const configDir = path.dirname(baseConfigPath);
+const envConfig = { ...(config.env?.[envName] || {}) };
+const vars = { ...(envConfig.vars || {}) };
+
+const workerVars = {
+  AUTH_PROVIDER: process.env.AUTH_PROVIDER || '',
+  ALLOW_DEV_LOGIN: process.env.ALLOW_DEV_LOGIN || '',
+  WORKOS_CLIENT_ID: process.env.WORKOS_CLIENT_ID || '',
+  WORKOS_REDIRECT_URI: process.env.WORKOS_REDIRECT_URI || '',
+  WORKOS_JWKS_URL: process.env.WORKOS_JWKS_URL || '',
+  WORKOS_AUTHKIT_DOMAIN: process.env.WORKOS_AUTHKIT_DOMAIN || '',
+};
+
+for (const [key, value] of Object.entries(workerVars)) {
+  if (String(value || '').trim()) {
+    vars[key] = value;
+  } else {
+    delete vars[key];
+  }
+}
+
+envConfig.vars = vars;
+config.env = { ...(config.env || {}), [envName]: envConfig };
+if (config.main) {
+  config.main = path.resolve(configDir, config.main);
+}
+if (config.assets?.directory) {
+  config.assets = {
+    ...config.assets,
+    directory: path.resolve(configDir, config.assets.directory),
+  };
+}
+fs.writeFileSync(outputConfigPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+  printf '%s\n' "$output_config"
+}
+
 sync_worker_secrets() {
   local auth_provider=""
   auth_provider="$(printf '%s' "${AUTH_PROVIDER:-local}" | tr '[:upper:]' '[:lower:]')"
@@ -220,12 +269,8 @@ sync_worker_secrets() {
   fi
 
   sync_worker_secret "AUTH_SECRET" "${AUTH_SECRET:-}"
-  sync_worker_secret "WORKOS_CLIENT_ID" "${WORKOS_CLIENT_ID:-}"
   sync_worker_secret "WORKOS_API_KEY" "${WORKOS_API_KEY:-}"
-  sync_worker_secret "WORKOS_REDIRECT_URI" "${WORKOS_REDIRECT_URI:-}"
-  sync_worker_secret "WORKOS_JWKS_URL" "${WORKOS_JWKS_URL:-}"
   sync_worker_secret "WORKOS_COOKIE_PASSWORD" "${WORKOS_COOKIE_PASSWORD:-}"
-  sync_worker_secret "WORKOS_AUTHKIT_DOMAIN" "${WORKOS_AUTHKIT_DOMAIN:-}"
 }
 
 validate_api_env() {
@@ -277,14 +322,9 @@ validate_api_env() {
 }
 
 deploy_web() {
-  local script_name=""
+  local worker_config=""
   case "$ENV_NAME" in
-    staging)
-      script_name="deploy:worker:staging"
-      ;;
-    production)
-      script_name="deploy:worker:production"
-      ;;
+    staging|production) ;;
     *)
       echo "Unsupported deploy environment for web: $ENV_NAME" >&2
       exit 1
@@ -299,11 +339,14 @@ deploy_web() {
   require_command npm
 
   sync_worker_secrets
+  worker_config="$(build_worker_config)"
+  trap 'rm -f "$worker_config"' RETURN
 
-  log "Deploying web app for $ENV_NAME using $script_name"
+  log "Deploying web app for $ENV_NAME"
   (
     cd "$REPO_ROOT/web"
-    npm run "$script_name"
+    npm run build
+    npx wrangler deploy --config "$worker_config" --env "$ENV_NAME"
   )
   log "Web deploy finished for $ENV_NAME"
 }
