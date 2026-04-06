@@ -3663,6 +3663,34 @@ func (s *PostgresNativeStorage) GetUserByEmail(ctx context.Context, email string
 	return &u, nil
 }
 
+func (s *PostgresNativeStorage) GetUserByWorkOSUserID(ctx context.Context, workOSUserID string) (*models.User, error) {
+	ctx = ensureCtx(ctx)
+	workOSUserID = strings.TrimSpace(workOSUserID)
+	if workOSUserID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var u models.User
+	err := s.pool.QueryRow(ctx, `
+		SELECT username, COALESCE(account_id, ''), COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(auth_source, ''), COALESCE(workos_user_id, ''), COALESCE(root_path, ''), created_at, updated_at
+		FROM users
+		WHERE workos_user_id = $1 AND workos_user_id <> ''
+		LIMIT 1
+	`, workOSUserID).
+		Scan(&u.Username, &u.AccountID, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.AuthSource, &u.WorkOSUserID, &u.RootPath, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	u.PrimaryEmail = strings.ToLower(strings.TrimSpace(u.PrimaryEmail))
+	if u.RootPath == "" {
+		u.RootPath = rootPathForSlug(u.Username)
+	}
+	return &u, nil
+}
+
 func (s *PostgresNativeStorage) ListUsers(ctx context.Context, limit, offset int) ([]*models.User, error) {
 	ctx = ensureCtx(ctx)
 	if offset < 0 {

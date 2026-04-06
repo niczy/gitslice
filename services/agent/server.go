@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/niczy/gitslice/internal/agentsession"
-	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -30,14 +30,11 @@ func RegisterGRPCServer(srv *grpc.Server, st storage.Storage, svc *agentsession.
 }
 
 func (s *agentServiceServer) requireUser(ctx context.Context) (string, error) {
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return "", status.Error(codes.Unauthenticated, "login required")
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return "", err
 	}
-	if _, err := s.st.EnsureUser(ctx, username); err != nil {
-		return "", status.Error(codes.InvalidArgument, "invalid user")
-	}
-	return username, nil
+	return identity.Username, nil
 }
 
 func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.CreateSessionRequest) (*agentv1.CreateSessionResponse, error) {

@@ -396,6 +396,32 @@ func (s *InMemoryStorage) GetUserByEmail(ctx context.Context, email string) (*mo
 	return copyUser(u), nil
 }
 
+func (s *InMemoryStorage) GetUserByWorkOSUserID(ctx context.Context, workOSUserID string) (*models.User, error) {
+	_ = ctx
+	workOSUserID = strings.TrimSpace(workOSUserID)
+	if workOSUserID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, user := range s.users {
+		if user == nil {
+			continue
+		}
+		if strings.TrimSpace(user.WorkOSUserID) != workOSUserID {
+			continue
+		}
+		if user.RootPath == "" {
+			user.RootPath = rootPathForSlug(user.Username)
+		}
+		return copyUser(user), nil
+	}
+
+	return nil, ErrEntryNotFound
+}
+
 func (s *InMemoryStorage) ListUsers(ctx context.Context, limit, offset int) ([]*models.User, error) {
 	_ = ctx
 	if offset < 0 {

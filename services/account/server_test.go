@@ -3,9 +3,17 @@ package accountservice
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -21,6 +29,10 @@ func bearerCtx(ctx context.Context, token string) context.Context {
 
 func userCtx(ctx context.Context, username string) context.Context {
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "User "+username))
+}
+
+func workOSBearerCtx(ctx context.Context, token string) context.Context {
+	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+token))
 }
 
 func assertHomeSliceProvisioned(t *testing.T, ctx context.Context, st storage.Storage, username string) {
@@ -133,6 +145,94 @@ func TestResetPasswordFlow(t *testing.T) {
 	if _, err := srv.ListSessions(bearerCtx(ctx, oldToken), &accountv1.ListSessionsRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected old token invalidated by reset, got %v", err)
 	}
+}
+
+func TestGetMeAcceptsLinkedWorkOSToken(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_123",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	user := &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		Name:         "Alice",
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "workos",
+		WorkOSUserID: "user_123",
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice"); err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	assertHomeSliceProvisioned(t, ctx, st, "alice")
+
+	srv := &accountServiceServer{st: st}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
+
+	me, err := srv.GetMe(workOSBearerCtx(ctx, token), &accountv1.GetMeRequest{})
+	if err != nil {
+		t.Fatalf("GetMe failed: %v", err)
+	}
+	if me.GetUsername() != "alice" || me.GetPrimaryEmail() != "alice@example.com" {
+		t.Fatalf("unexpected user: %#v", me)
+	}
+}
+
+func startAccountWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{{
+				"kid": "test-kid",
+				"kty": "RSA",
+				"alg": "RS256",
+				"use": "sig",
+				"n":   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	return privateKey, server
+}
+
+func signAccountWorkOSToken(t *testing.T, privateKey *rsa.PrivateKey, audience, subject, sessionID string) string {
+	t.Helper()
+
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"aud": []string{audience},
+		"exp": now.Add(10 * time.Minute).Unix(),
+		"iat": now.Unix(),
+		"iss": "https://api.workos.com/",
+		"sub": subject,
+		"sid": sessionID,
+	})
+	token.Header["kid"] = "test-kid"
+	signed, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("SignedString failed: %v", err)
+	}
+	return signed
 }
 
 func TestDeviceAuthorizationFlowAndRefresh(t *testing.T) {
