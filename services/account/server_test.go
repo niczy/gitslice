@@ -329,6 +329,113 @@ func TestEnsureWorkOSLocalIdentityIsIdempotentForLinkedUser(t *testing.T) {
 	}
 }
 
+func TestListAuthMethodsSynthesizesPasswordAndWorkOSMethods(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_123",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	passwordHash, err := hashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hashPassword failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		PrimaryEmail: "alice@example.com",
+		PasswordHash: passwordHash,
+		AuthSource:   "workos",
+		WorkOSUserID: "user_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
+
+	resp, err := srv.ListAuthMethods(workOSBearerCtx(ctx, token), &accountv1.ListAuthMethodsRequest{})
+	if err != nil {
+		t.Fatalf("ListAuthMethods failed: %v", err)
+	}
+	if len(resp.GetMethods()) != 2 {
+		t.Fatalf("expected 2 auth methods, got %#v", resp.GetMethods())
+	}
+	if resp.GetMethods()[0].GetId() != "password" && resp.GetMethods()[1].GetId() != "password" {
+		t.Fatalf("expected password method, got %#v", resp.GetMethods())
+	}
+	if resp.GetMethods()[0].GetId() != "oauth:workos" && resp.GetMethods()[1].GetId() != "oauth:workos" {
+		t.Fatalf("expected WorkOS method, got %#v", resp.GetMethods())
+	}
+}
+
+func TestLinkAuthMethodAttachesCurrentWorkOSIdentity(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+	signupResp, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "alice",
+		Email:    "alice@example.com",
+		Password: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_attach_123", "sess_workos_123")
+
+	method, err := srv.LinkAuthMethod(bearerCtx(ctx, signupResp.GetAccessToken()), &accountv1.LinkAuthMethodRequest{
+		Type:     accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH,
+		Provider: "workos",
+		Token:    token,
+	})
+	if err != nil {
+		t.Fatalf("LinkAuthMethod failed: %v", err)
+	}
+	if method.GetId() != "oauth:workos" {
+		t.Fatalf("unexpected method: %#v", method)
+	}
+	user, err := srv.st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if user.WorkOSUserID != "user_attach_123" || user.AuthSource != "workos" {
+		t.Fatalf("unexpected linked user: %#v", user)
+	}
+}
+
+func TestDeleteAuthMethodRejectsRemovingOnlyHumanMethod(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	srv := &accountServiceServer{st: st}
+
+	signupResp, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "alice",
+		Email:    "alice@example.com",
+		Password: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+
+	if _, err := srv.DeleteAuthMethod(bearerCtx(ctx, signupResp.GetAccessToken()), &accountv1.DeleteAuthMethodRequest{MethodId: "password"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected failed precondition when deleting only auth method, got %v", err)
+	}
+}
+
 func startAccountWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
 	t.Helper()
 
