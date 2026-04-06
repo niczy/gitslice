@@ -16,35 +16,36 @@ export async function proxyRequest(request, suffix = '') {
   const headers = new Headers(request.headers);
   headers.set('x-forwarded-host', new URL(request.url).host);
   headers.set('x-forwarded-proto', new URL(request.url).protocol.replace(':', ''));
-  let responseCookie = '';
-  let clearCookie = false;
-  const hasWorkOSSessionCookie = String(request.headers.get('cookie') || '').includes('gs_workos_session=');
+  const responseCookies = [];
   if (!headers.has('Authorization') && getAuthProvider() === 'workos') {
     const authResult = await getProxyAuthorizationResult(request);
-    responseCookie = authResult.setCookie || '';
-    clearCookie = Boolean(authResult.clearCookie);
+    responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
-    } else if (hasWorkOSSessionCookie && clearCookie) {
+    } else if (authResult.rejectUnauthenticated) {
       const response = Response.json({ error: 'Not signed in' }, { status: 401 });
-      response.headers.append('Set-Cookie', 'gs_workos_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure');
+      for (const cookie of responseCookies) {
+        if (cookie) {
+          response.headers.append('Set-Cookie', cookie);
+        }
+      }
       return response;
     }
   }
 
   try {
+    const body = ['GET', 'HEAD'].includes(request.method.toUpperCase()) ? undefined : await request.clone().arrayBuffer();
     const response = await fetch(targetURL, {
       method: request.method,
       headers,
-      body: ['GET', 'HEAD'].includes(request.method.toUpperCase()) ? undefined : await request.clone().arrayBuffer(),
+      body,
       redirect: 'manual',
     });
     const proxied = new Response(response.body, response);
-    if (responseCookie) {
-      proxied.headers.append('Set-Cookie', responseCookie);
-    }
-    if (clearCookie) {
-      proxied.headers.append('Set-Cookie', 'gs_workos_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure');
+    for (const cookie of responseCookies) {
+      if (cookie) {
+        proxied.headers.append('Set-Cookie', cookie);
+      }
     }
     return proxied;
   } catch {

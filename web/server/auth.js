@@ -1,20 +1,28 @@
 import { WorkOS } from '@workos-inc/node';
 import {
+  base64URLToBytes,
+  bytesToBase64URL,
+  bytesToUTF8,
   decodeBase64URLUTF8,
   encodeBase64URLUTF8,
   getConfiguredAPIBaseURL,
   randomHex,
   signHMACSHA256Base64URL,
   timingSafeEqualText,
+  utf8ToBytes,
 } from '../shared/runtime.js';
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
+const LOCAL_SESSION_COOKIE = 'gs_local_session';
 const WORKOS_SESSION_COOKIE = 'gs_workos_session';
 const WORKOS_STATE_COOKIE = 'gs_workos_state';
 const WORKOS_STATE_COOKIE_MAX_AGE = 60 * 10;
 const WORKOS_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+const LOCAL_SESSION_COOKIE_DEFAULT_MAX_AGE = 60 * 60 * 24 * 30;
+const LOCAL_SESSION_REFRESH_SKEW_MS = 60 * 1000;
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
 const MAX_AUTH_ERROR_DETAIL_LENGTH = 240;
+const localSessionKeyCache = new Map();
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
@@ -66,6 +74,13 @@ export function getPublicAuthConfig(request) {
     authProvider: String(authContext?.authProvider || getAuthProvider()).trim().toLowerCase() || 'local',
     allowDevLogin: isDevLoginEnabled(request, authContext),
   };
+}
+
+function requireCrypto() {
+  if (!globalThis.crypto?.subtle || typeof globalThis.crypto?.getRandomValues !== 'function') {
+    throw new Error('Web Crypto APIs are not available in the current runtime');
+  }
+  return globalThis.crypto;
 }
 
 function buildUsernameFromProfile(profile) {
@@ -128,6 +143,46 @@ async function verifySignedPayload(rawValue, authSecret) {
   }
   try {
     return JSON.parse(decodeBase64URL(payload));
+  } catch {
+    return null;
+  }
+}
+
+async function importLocalSessionKey(authSecret) {
+  if (localSessionKeyCache.has(authSecret)) {
+    return localSessionKeyCache.get(authSecret);
+  }
+  const crypto = requireCrypto();
+  const digestPromise = crypto.subtle.digest('SHA-256', utf8ToBytes(`gs_local_session:${authSecret}`))
+    .then((digest) => crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']));
+  localSessionKeyCache.set(authSecret, digestPromise);
+  return digestPromise;
+}
+
+async function sealLocalSessionPayload(payload, authSecret) {
+  const crypto = requireCrypto();
+  const key = await importLocalSessionKey(authSecret);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = utf8ToBytes(JSON.stringify(payload));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
+  return `${bytesToBase64URL(iv)}.${bytesToBase64URL(ciphertext)}`;
+}
+
+async function unsealLocalSessionPayload(rawValue, authSecret) {
+  if (!rawValue || !authSecret) {
+    return null;
+  }
+  const [encodedIV, encodedCiphertext] = String(rawValue).split('.');
+  if (!encodedIV || !encodedCiphertext) {
+    return null;
+  }
+  try {
+    const crypto = requireCrypto();
+    const key = await importLocalSessionKey(authSecret);
+    const iv = base64URLToBytes(encodedIV);
+    const ciphertext = base64URLToBytes(encodedCiphertext);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+    return JSON.parse(bytesToUTF8(new Uint8Array(plaintext)));
   } catch {
     return null;
   }
@@ -241,6 +296,112 @@ function buildWorkOSSessionPayloadFromAuthenticatedSession(authResponse) {
   });
 }
 
+function parseTimeMs(rawValue) {
+  const value = String(rawValue || '').trim();
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sanitizeLocalSessionUser(user, fallbackUser = null) {
+  const username = String(user?.username || fallbackUser?.username || fallbackUser?.localUsername || '').trim();
+  if (!USERNAME_PATTERN.test(username)) {
+    return null;
+  }
+  return {
+    username,
+    name: String(user?.name || fallbackUser?.name || '').trim(),
+    email: String(user?.email || user?.primaryEmail || fallbackUser?.email || '').trim(),
+    workosUserId: String(user?.workosUserId || fallbackUser?.workosUserId || fallbackUser?.id || '').trim(),
+    profilePictureUrl: String(user?.profilePictureUrl || fallbackUser?.profilePictureUrl || '').trim(),
+  };
+}
+
+function normalizeLocalSessionPayload(payload) {
+  const user = sanitizeLocalSessionUser(payload?.user);
+  const refreshToken = String(payload?.refreshToken || '').trim();
+  if (!user || !refreshToken) {
+    return null;
+  }
+  return {
+    source: 'workos',
+    sessionId: String(payload?.sessionId || '').trim(),
+    accountId: String(payload?.accountId || '').trim(),
+    linkedExistingUser: Boolean(payload?.linkedExistingUser),
+    organizationId: String(payload?.organizationId || '').trim(),
+    authenticationMethod: String(payload?.authenticationMethod || '').trim(),
+    accessToken: String(payload?.accessToken || '').trim(),
+    refreshToken,
+    accessTokenExpiresAt: String(payload?.accessTokenExpiresAt || '').trim(),
+    refreshTokenExpiresAt: String(payload?.refreshTokenExpiresAt || '').trim(),
+    user,
+  };
+}
+
+function shouldRefreshLocalSession(localSession) {
+  if (!localSession?.accessToken) {
+    return true;
+  }
+  const expiresAt = parseTimeMs(localSession.accessTokenExpiresAt);
+  if (!expiresAt) {
+    return false;
+  }
+  return expiresAt <= Date.now() + LOCAL_SESSION_REFRESH_SKEW_MS;
+}
+
+function isLocalRefreshExpired(localSession) {
+  const expiresAt = parseTimeMs(localSession?.refreshTokenExpiresAt);
+  if (!expiresAt) {
+    return false;
+  }
+  return expiresAt <= Date.now() + LOCAL_SESSION_REFRESH_SKEW_MS;
+}
+
+function buildPublicSessionFromLocalSession(localSession) {
+  const user = sanitizeLocalSessionUser(localSession?.user);
+  if (!user) {
+    return null;
+  }
+  return {
+    user,
+    source: 'workos',
+    apiAuthSource: 'local_session',
+    sessionId: String(localSession?.sessionId || '').trim(),
+    accountId: String(localSession?.accountId || '').trim(),
+    linkedExistingUser: Boolean(localSession?.linkedExistingUser),
+    organizationId: String(localSession?.organizationId || '').trim(),
+    authenticationMethod: String(localSession?.authenticationMethod || '').trim(),
+    expires: String(localSession?.accessTokenExpiresAt || localSession?.refreshTokenExpiresAt || '').trim(),
+  };
+}
+
+function buildLocalSessionPayloadFromAuth(authResponse, fallbackSession = null) {
+  const user = sanitizeLocalSessionUser(authResponse?.user, fallbackSession?.user);
+  const refreshToken = String(authResponse?.refreshToken || fallbackSession?.refreshToken || '').trim();
+  if (!user || !refreshToken) {
+    return null;
+  }
+  return normalizeLocalSessionPayload({
+    source: 'workos',
+    sessionId: String(authResponse?.sessionId || fallbackSession?.sessionId || '').trim(),
+    accountId: String(fallbackSession?.accountId || '').trim(),
+    linkedExistingUser: Boolean(fallbackSession?.linkedExistingUser),
+    organizationId: String(fallbackSession?.organizationId || '').trim(),
+    authenticationMethod: String(fallbackSession?.authenticationMethod || '').trim(),
+    accessToken: String(authResponse?.accessToken || '').trim(),
+    refreshToken,
+    accessTokenExpiresAt: String(authResponse?.accessTokenExpiresAt || '').trim(),
+    refreshTokenExpiresAt: String(authResponse?.refreshTokenExpiresAt || fallbackSession?.refreshTokenExpiresAt || '').trim(),
+    user,
+  });
+}
+
+function buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession) {
+  return buildLocalSessionPayloadFromAuth(ensuredSession?.localAuth, ensuredSession);
+}
+
 function createWorkOSAuthContext(authSecret, request) {
   const clientId = String(process.env.WORKOS_CLIENT_ID || '').trim();
   const apiKey = String(process.env.WORKOS_API_KEY || '').trim();
@@ -318,6 +479,23 @@ function serializeCookie(request, name, value, maxAgeSeconds) {
     parts.push('Secure');
   }
   return parts.join('; ');
+}
+
+async function serializeLocalSessionCookie(request, localSession, authSecret) {
+  const sealed = await sealLocalSessionPayload(localSession, authSecret);
+  const refreshExpiry = parseTimeMs(localSession?.refreshTokenExpiresAt);
+  const maxAge = refreshExpiry
+    ? Math.max(0, Math.floor((refreshExpiry - Date.now()) / 1000))
+    : LOCAL_SESSION_COOKIE_DEFAULT_MAX_AGE;
+  return serializeCookie(request, LOCAL_SESSION_COOKIE, sealed, maxAge);
+}
+
+function clearLocalSessionCookie(request) {
+  return serializeCookie(request, LOCAL_SESSION_COOKIE, '', 0);
+}
+
+function clearWorkOSSessionCookie(request) {
+  return serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0);
 }
 
 function parseCookieHeader(value) {
@@ -429,10 +607,12 @@ async function authenticateWorkOSSession(request, authContext) {
   }
 }
 
-async function ensureWorkOSLocalIdentity(request, accessToken, session, claimToken = '') {
+async function ensureWorkOSLocalIdentity(request, accessToken, session, options = {}) {
   if (!session?.user?.workosUserId || !accessToken) {
     return session;
   }
+  const claimToken = String(options?.claimToken || '').trim();
+  const issueLocalSession = Boolean(options?.issueLocalSession);
 
   const response = await fetch(new URL('/v1/auth/workos/ensure-local-identity', getGatewayTarget()), {
     method: 'POST',
@@ -445,7 +625,8 @@ async function ensureWorkOSLocalIdentity(request, accessToken, session, claimTok
       preferredUsername: session.user.derivedUsername || '',
       name: session.user.name || '',
       primaryEmail: session.user.email || '',
-      claimToken: String(claimToken || '').trim(),
+      claimToken,
+      issueLocalSession,
     }),
   });
 
@@ -466,6 +647,7 @@ async function ensureWorkOSLocalIdentity(request, accessToken, session, claimTok
     ...session,
     accountId: String(payload?.accountId || '').trim(),
     linkedExistingUser: Boolean(payload?.linkedExistingUser),
+    localAuth: payload?.localAuth || null,
     user: {
       ...(session.user || {}),
       username: localUsername,
@@ -473,6 +655,134 @@ async function ensureWorkOSLocalIdentity(request, accessToken, session, claimTok
       name: String(payload?.user?.name || session.user?.name || '').trim(),
       email: String(payload?.user?.primaryEmail || session.user?.email || '').trim(),
     },
+  };
+}
+
+async function loadLocalSession(request, authSecret) {
+  const rawValue = parseCookieHeader(request.headers.get('cookie')).get(LOCAL_SESSION_COOKIE);
+  if (!rawValue) {
+    return { localSession: null, clearCookie: false };
+  }
+  const parsed = await unsealLocalSessionPayload(rawValue, authSecret);
+  const localSession = normalizeLocalSessionPayload(parsed);
+  if (!localSession || isLocalRefreshExpired(localSession)) {
+    return { localSession: null, clearCookie: true };
+  }
+  return { localSession, clearCookie: false };
+}
+
+async function refreshLocalSession(request, authContext, localSession) {
+  const response = await fetch(new URL('/v1/auth/token/refresh', getGatewayTarget()), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      refreshToken: localSession.refreshToken,
+    }),
+  });
+  if (!response.ok) {
+    return { localSession: null, setCookie: '', clearCookie: true };
+  }
+  const authResponse = await response.json();
+  const nextLocalSession = buildLocalSessionPayloadFromAuth(authResponse, localSession);
+  if (!nextLocalSession) {
+    return { localSession: null, setCookie: '', clearCookie: true };
+  }
+  return {
+    localSession: nextLocalSession,
+    setCookie: await serializeLocalSessionCookie(request, nextLocalSession, authContext.authSecret),
+    clearCookie: false,
+  };
+}
+
+async function bootstrapLocalSessionFromWorkOS(request, authContext, authSession, claimToken = '') {
+  if (!authSession?.session || !authSession?.accessToken) {
+    return { localSession: null, setCookie: '' };
+  }
+  const ensuredSession = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session, {
+    claimToken,
+    issueLocalSession: true,
+  });
+  const localSession = buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession);
+  if (!localSession) {
+    throw new Error('failed to create local session from WorkOS identity');
+  }
+  return {
+    localSession,
+    setCookie: await serializeLocalSessionCookie(request, localSession, authContext.authSecret),
+  };
+}
+
+async function resolveWorkOSBackedLocalSession(request, authContext, options = {}) {
+  const setCookies = [];
+  let clearWorkOSCookie = false;
+  let clearLocalCookie = false;
+
+  let { localSession, clearCookie: shouldClearLocalCookie } = await loadLocalSession(request, authContext.authSecret);
+  if (shouldClearLocalCookie) {
+    clearLocalCookie = true;
+  }
+  if (localSession && shouldRefreshLocalSession(localSession)) {
+    const refreshed = await refreshLocalSession(request, authContext, localSession);
+    if (refreshed.localSession) {
+      localSession = refreshed.localSession;
+      if (refreshed.setCookie) {
+        setCookies.push(refreshed.setCookie);
+      }
+      clearLocalCookie = false;
+    } else {
+      localSession = null;
+      clearLocalCookie = clearLocalCookie || refreshed.clearCookie;
+    }
+  }
+  if (localSession) {
+    return {
+      localSession,
+      publicSession: buildPublicSessionFromLocalSession(localSession),
+      setCookies,
+      clearLocalCookie,
+      clearWorkOSCookie,
+    };
+  }
+  if (!options.allowWorkOSBootstrap) {
+    return {
+      localSession: null,
+      publicSession: null,
+      setCookies,
+      clearLocalCookie,
+      clearWorkOSCookie,
+    };
+  }
+
+  const workosAuthSession = await authenticateWorkOSSession(request, authContext);
+  if (workosAuthSession.setCookie) {
+    setCookies.push(workosAuthSession.setCookie);
+  }
+  if (workosAuthSession.clearCookie) {
+    clearWorkOSCookie = true;
+  }
+  if (!workosAuthSession.session || !workosAuthSession.accessToken) {
+    return {
+      localSession: null,
+      publicSession: null,
+      setCookies,
+      clearLocalCookie,
+      clearWorkOSCookie,
+    };
+  }
+
+  const bootstrapped = await bootstrapLocalSessionFromWorkOS(request, authContext, workosAuthSession, options.claimToken || '');
+  if (bootstrapped.setCookie) {
+    setCookies.push(bootstrapped.setCookie);
+  }
+  return {
+    localSession: bootstrapped.localSession,
+    publicSession: buildPublicSessionFromLocalSession(bootstrapped.localSession),
+    setCookies,
+    clearLocalCookie: false,
+    clearWorkOSCookie,
   };
 }
 
@@ -484,13 +794,23 @@ export async function getProxyAuthorizationHeader(request) {
 export async function getProxyAuthorizationResult(request) {
   const authContext = createAuthContext(request);
   if (authContext.authProvider !== 'workos' || authContext.startupError) {
-    return { authorization: '', setCookie: '', clearCookie: false };
+    return { authorization: '', setCookies: [], rejectUnauthenticated: false };
   }
-  const { accessToken, setCookie, clearCookie } = await authenticateWorkOSSession(request, authContext);
+  const cookieHeader = String(request.headers.get('cookie') || '');
+  const hadSessionCookie = cookieHeader.includes(`${LOCAL_SESSION_COOKIE}=`)
+    || cookieHeader.includes(`${WORKOS_SESSION_COOKIE}=`);
+  const authSession = await resolveWorkOSBackedLocalSession(request, authContext);
+  const setCookies = [...authSession.setCookies];
+  if (authSession.clearLocalCookie) {
+    setCookies.push(clearLocalSessionCookie(request));
+  }
+  if (authSession.clearWorkOSCookie) {
+    setCookies.push(clearWorkOSSessionCookie(request));
+  }
   return {
-    authorization: accessToken ? `Bearer ${accessToken}` : '',
-    setCookie,
-    clearCookie,
+    authorization: authSession.localSession?.accessToken ? `Bearer ${authSession.localSession.accessToken}` : '',
+    setCookies,
+    rejectUnauthenticated: hadSessionCookie && !authSession.localSession,
   };
 }
 
@@ -501,8 +821,8 @@ export async function loadSession(request) {
   }
   const allowDevLogin = isDevLoginEnabled(request, authContext);
   if (authContext.authProvider === 'workos') {
-    const { session, accessToken } = await authenticateWorkOSSession(request, authContext);
-    if (!session) {
+    const resolvedSession = await resolveWorkOSBackedLocalSession(request, authContext);
+    if (!resolvedSession.publicSession) {
       if (!allowDevLogin) {
         return null;
       }
@@ -519,7 +839,7 @@ export async function loadSession(request) {
         expires: '',
       };
     }
-    return ensureWorkOSLocalIdentity(request, accessToken, session);
+    return resolvedSession.publicSession;
   }
   const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authContext.authSecret);
   if (!devUsername) {
@@ -545,15 +865,17 @@ export async function handleSessionRequest(request) {
 
   if (authContext.authProvider === 'workos') {
     let session = null;
-    let clearCookie = false;
-    let setCookie = '';
+    const setCookies = [];
     if (!authContext.startupError) {
       try {
-        const authSession = await authenticateWorkOSSession(request, authContext);
-        clearCookie = authSession.clearCookie;
-        setCookie = authSession.setCookie || '';
-        if (authSession.session) {
-          session = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session);
+        const resolvedSession = await resolveWorkOSBackedLocalSession(request, authContext);
+        session = resolvedSession.publicSession;
+        setCookies.push(...resolvedSession.setCookies);
+        if (resolvedSession.clearLocalCookie) {
+          setCookies.push(clearLocalSessionCookie(request));
+        }
+        if (resolvedSession.clearWorkOSCookie) {
+          setCookies.push(clearWorkOSSessionCookie(request));
         }
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : 'Failed to load WorkOS session' }, { status: 500 });
@@ -575,11 +897,10 @@ export async function handleSessionRequest(request) {
     }
 
     const response = session ? Response.json(session) : Response.json({ error: 'Not signed in' }, { status: 401 });
-    if (setCookie) {
-      response.headers.append('Set-Cookie', setCookie);
-    }
-    if (clearCookie) {
-      response.headers.append('Set-Cookie', serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0));
+    for (const cookie of setCookies) {
+      if (cookie) {
+        response.headers.append('Set-Cookie', cookie);
+      }
     }
     return response;
   }
@@ -654,13 +975,15 @@ export async function handleDevLoginRequest(request) {
 }
 
 export function handleDevLogoutRequest(request) {
-  return new Response(JSON.stringify({ ok: true }), {
+  const response = new Response(JSON.stringify({ ok: true }), {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      'Set-Cookie': serializeCookie(request, DEV_SESSION_COOKIE, '', 0),
     },
   });
+  response.headers.append('Set-Cookie', serializeCookie(request, DEV_SESSION_COOKIE, '', 0));
+  response.headers.append('Set-Cookie', clearLocalSessionCookie(request));
+  return response;
 }
 
 async function handleWorkOSSignInRequest(request, authContext) {
@@ -751,7 +1074,8 @@ async function handleWorkOSLogoutRequest(request, authContext) {
     }
   }
   return redirectWithCookies(redirectURL, [
-    serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0),
+    clearWorkOSSessionCookie(request),
+    clearLocalSessionCookie(request),
   ]);
 }
 
@@ -769,18 +1093,25 @@ async function handleWorkOSClaimAccountRequest(request, authContext) {
     signinURL.searchParams.set('callbackUrl', url.toString());
     const response = redirectWithCookies(signinURL.toString(), []);
     if (clearCookie) {
-      response.headers.append('Set-Cookie', serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0));
+      response.headers.append('Set-Cookie', clearWorkOSSessionCookie(request));
     }
     return response;
   }
 
   try {
-    await ensureWorkOSLocalIdentity(request, accessToken, session, claimToken);
+    const ensuredSession = await ensureWorkOSLocalIdentity(request, accessToken, session, {
+      claimToken,
+      issueLocalSession: true,
+    });
+    const localSession = buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession);
+    const cookies = [];
+    if (localSession) {
+      cookies.push(await serializeLocalSessionCookie(request, localSession, authContext.authSecret));
+    }
+    return redirectWithCookies(callbackURL, cookies);
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Failed to claim account' }, { status: 400 });
   }
-
-  return redirectWithCookies(callbackURL, []);
 }
 
 export async function handleAuthRequest(request) {
@@ -806,6 +1137,16 @@ export async function handleAuthRequest(request) {
   }
   return Response.json({ error: 'Auth route not found' }, { status: 404 });
 }
+
+export const __test = {
+  async createLocalSessionCookieValue(payload, authSecret) {
+    const normalized = normalizeLocalSessionPayload(payload);
+    if (!normalized) {
+      throw new Error('invalid local session payload');
+    }
+    return sealLocalSessionPayload(normalized, authSecret);
+  },
+};
 
 export function renderDevicePage({ userCode, startupError }) {
   const safeUserCode = escapeHTML(userCode);
