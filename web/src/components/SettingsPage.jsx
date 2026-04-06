@@ -5,17 +5,42 @@ import { Button } from './ui/button.jsx';
 import { Card, CardContent } from './ui/card.jsx';
 import {
   createAgentKey,
+  deleteAuthMethod,
   deleteAuthSession,
   fetchAgentKeys,
+  fetchAuthMethods,
   fetchAuthSessions,
   fetchRepoBindings,
+  linkCurrentWorkOSAuthMethod,
   revokeAgentKey,
 } from '../utils/api.js';
+
+function formatAuthMethodType(value) {
+  const normalized = String(value || '').trim();
+  switch (normalized) {
+    case 'AUTH_METHOD_TYPE_PASSWORD':
+    case '1':
+      return 'password';
+    case 'AUTH_METHOD_TYPE_OAUTH':
+    case '2':
+      return 'oauth';
+    case 'AUTH_METHOD_TYPE_SAML':
+    case '3':
+      return 'saml';
+    default:
+      return normalized || 'unknown';
+  }
+}
 
 export default function SettingsPage({ username, authSessionSource, onOpenProfile, onLogout }) {
   const [bindings, setBindings] = useState([]);
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsError, setBindingsError] = useState('');
+  const [authMethods, setAuthMethods] = useState([]);
+  const [authMethodsLoading, setAuthMethodsLoading] = useState(false);
+  const [authMethodsError, setAuthMethodsError] = useState('');
+  const [linkingWorkOS, setLinkingWorkOS] = useState(false);
+  const [removingMethodId, setRemovingMethodId] = useState('');
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState('');
@@ -35,6 +60,9 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setBindings([]);
       setBindingsLoading(false);
       setBindingsError('');
+      setAuthMethods([]);
+      setAuthMethodsLoading(false);
+      setAuthMethodsError('');
       setSessions([]);
       setSessionsLoading(false);
       setSessionsError('');
@@ -48,6 +76,8 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
 
     setBindingsLoading(true);
     setBindingsError('');
+    setAuthMethodsLoading(true);
+    setAuthMethodsError('');
     setSessionsLoading(true);
     setSessionsError('');
     setAgentKeysLoading(true);
@@ -67,6 +97,23 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       .finally(() => {
         if (!cancelled) {
           setBindingsLoading(false);
+        }
+      });
+    fetchAuthMethods()
+      .then((nextMethods) => {
+        if (!cancelled) {
+          setAuthMethods(nextMethods);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setAuthMethods([]);
+          setAuthMethodsError(err?.message || 'Unable to load auth methods.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthMethodsLoading(false);
         }
       });
     fetchAuthSessions()
@@ -134,6 +181,46 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setSessionsError(err?.message || 'Unable to load sessions.');
     } finally {
       setSessionsLoading(false);
+    }
+  }
+
+  async function refreshAuthMethods() {
+    setAuthMethodsLoading(true);
+    setAuthMethodsError('');
+    try {
+      const nextMethods = await fetchAuthMethods();
+      setAuthMethods(nextMethods);
+    } catch (err) {
+      setAuthMethods([]);
+      setAuthMethodsError(err?.message || 'Unable to load auth methods.');
+    } finally {
+      setAuthMethodsLoading(false);
+    }
+  }
+
+  async function handleLinkCurrentWorkOS() {
+    setAuthMethodsError('');
+    setLinkingWorkOS(true);
+    try {
+      await linkCurrentWorkOSAuthMethod();
+      await refreshAuthMethods();
+    } catch (err) {
+      setAuthMethodsError(err?.message || 'Unable to link WorkOS sign-in.');
+    } finally {
+      setLinkingWorkOS(false);
+    }
+  }
+
+  async function handleDeleteAuthMethod(methodId) {
+    setAuthMethodsError('');
+    setRemovingMethodId(methodId);
+    try {
+      await deleteAuthMethod(methodId);
+      await refreshAuthMethods();
+    } catch (err) {
+      setAuthMethodsError(err?.message || 'Unable to remove auth method.');
+    } finally {
+      setRemovingMethodId('');
     }
   }
 
@@ -216,9 +303,81 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                 </div>
                 <div className="auth-actions">
                   <Button type="button" onClick={onOpenProfile}>Open Profile Details</Button>
+                  <Button type="button" variant="ghost" onClick={refreshAuthMethods}>Refresh auth methods</Button>
                   <Button type="button" variant="ghost" onClick={refreshSessions}>Refresh sessions</Button>
                   <Button type="button" variant="ghost" onClick={onLogout}>Logout</Button>
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/70">
+              <CardContent className="space-y-4 pt-6">
+                <div className="space-y-2">
+                  <h3>Linked sign-in methods</h3>
+                  <p className="status">
+                    WorkOS is the primary human sign-in path. Local password methods still appear here when they exist.
+                  </p>
+                </div>
+                {authMethodsLoading && <div className="panel-empty">Loading auth methods…</div>}
+                {!authMethodsLoading && authMethodsError && <div className="panel-error">{authMethodsError}</div>}
+                {!authMethodsLoading && !authMethodsError && authMethods.length === 0 && (
+                  <div className="panel-empty" data-testid="settings-auth-methods-empty">
+                    No linked human sign-in methods yet.
+                  </div>
+                )}
+                {!authMethodsLoading && !authMethodsError && authMethods.length > 0 && (
+                  <div className="space-y-3" data-testid="settings-auth-methods">
+                    {authMethods.map((method) => (
+                      <div key={method.id} className="rounded-lg border border-border/70 bg-background/40 p-3">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div className="kv flex-1">
+                            <div className="kv-row">
+                              <span className="kv-key">Provider</span>
+                              <span className="kv-val">{method.provider || formatAuthMethodType(method.type)}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Type</span>
+                              <span className="kv-val">{formatAuthMethodType(method.type)}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Email</span>
+                              <span className="kv-val">{method.email || 'not set'}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Linked</span>
+                              <span className="kv-val">{method.linked_at || method.linkedAt || 'unknown'}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline">{method.provider || formatAuthMethodType(method.type)}</Badge>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              disabled={removingMethodId === method.id}
+                              onClick={() => handleDeleteAuthMethod(method.id)}
+                              data-testid={`settings-auth-method-delete-${method.id}`}
+                            >
+                              {removingMethodId === method.id ? 'Removing…' : 'Remove'}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {authSessionSource === 'workos' && !authMethods.some((method) => method.id === 'oauth:workos') && (
+                  <div className="auth-actions">
+                    <Button
+                      type="button"
+                      onClick={handleLinkCurrentWorkOS}
+                      disabled={linkingWorkOS}
+                      data-testid="settings-auth-method-link-workos"
+                    >
+                      {linkingWorkOS ? 'Linking…' : 'Link current WorkOS login'}
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

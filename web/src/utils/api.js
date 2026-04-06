@@ -108,6 +108,39 @@ export async function deleteAuthSession(sessionId) {
   }
 }
 
+export async function fetchAuthMethods() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/methods`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load auth methods'));
+  }
+  const payload = await response.json();
+  return payload?.methods || [];
+}
+
+export async function linkCurrentWorkOSAuthMethod() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/methods/link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      type: 2,
+      provider: 'workos',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to link WorkOS sign-in'));
+  }
+  return response.json();
+}
+
+export async function deleteAuthMethod(methodId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/methods/${encodeURIComponent(methodId)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to remove auth method'));
+  }
+}
+
 export async function fetchOrganizations() {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/orgs`);
   if (!response.ok) {

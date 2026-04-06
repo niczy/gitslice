@@ -184,6 +184,46 @@ func sessionToProto(session *models.AuthSession, current bool) *accountv1.Sessio
 	}
 }
 
+func authMethodToProto(id string, methodType accountv1.AuthMethodType, provider, email string, linkedAt time.Time) *accountv1.AuthMethod {
+	return &accountv1.AuthMethod{
+		Id:       id,
+		Type:     methodType,
+		Provider: provider,
+		Email:    email,
+		LinkedAt: linkedAt.Format(timeRFC3339),
+	}
+}
+
+func authMethodsForUser(user *models.User) []*accountv1.AuthMethod {
+	if user == nil {
+		return nil
+	}
+	methods := make([]*accountv1.AuthMethod, 0, 2)
+	linkedAt := user.UpdatedAt
+	if linkedAt.IsZero() {
+		linkedAt = user.CreatedAt
+	}
+	if strings.TrimSpace(user.PasswordHash) != "" {
+		methods = append(methods, authMethodToProto(
+			"password",
+			accountv1.AuthMethodType_AUTH_METHOD_TYPE_PASSWORD,
+			"password",
+			user.PrimaryEmail,
+			linkedAt,
+		))
+	}
+	if strings.TrimSpace(user.WorkOSUserID) != "" {
+		methods = append(methods, authMethodToProto(
+			"oauth:workos",
+			accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH,
+			"workos",
+			user.PrimaryEmail,
+			linkedAt,
+		))
+	}
+	return methods
+}
+
 func deviceAuthorizationStatusToProto(status models.DeviceAuthorizationStatus, expiresAt time.Time) accountv1.DeviceAuthorizationStatus {
 	if !expiresAt.IsZero() && !expiresAt.After(time.Now()) {
 		return accountv1.DeviceAuthorizationStatus_DEVICE_AUTHORIZATION_STATUS_EXPIRED
@@ -1317,6 +1357,140 @@ func (s *accountServiceServer) ResetPassword(ctx context.Context, req *accountv1
 		}
 	}
 
+	return &emptypb.Empty{}, nil
+}
+
+func (s *accountServiceServer) ListAuthMethods(ctx context.Context, req *accountv1.ListAuthMethodsRequest) (*accountv1.ListAuthMethodsResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	return &accountv1.ListAuthMethodsResponse{Methods: authMethodsForUser(user)}, nil
+}
+
+func (s *accountServiceServer) LinkAuthMethod(ctx context.Context, req *accountv1.LinkAuthMethodRequest) (*accountv1.AuthMethod, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+
+	methodType := req.GetType()
+	provider := strings.ToLower(strings.TrimSpace(req.GetProvider()))
+	if methodType == accountv1.AuthMethodType_AUTH_METHOD_TYPE_UNSPECIFIED && provider == "workos" {
+		methodType = accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH
+	}
+
+	switch methodType {
+	case accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH:
+		if provider != "workos" {
+			return nil, status.Error(codes.Unimplemented, "only WorkOS auth method linking is supported")
+		}
+		workOSUserID := strings.TrimSpace(identity.workOSUserID)
+		if workOSUserID == "" && strings.TrimSpace(req.GetToken()) != "" {
+			claims, verifyErr := authresolver.VerifyExplicitWorkOSAccessToken(ctx, req.GetToken())
+			if verifyErr != nil {
+				return nil, verifyErr
+			}
+			workOSUserID = strings.TrimSpace(claims.Subject)
+		}
+		if workOSUserID == "" {
+			return nil, status.Error(codes.Unauthenticated, "WorkOS authentication required to link WorkOS")
+		}
+		if strings.TrimSpace(user.WorkOSUserID) == workOSUserID {
+			return authMethodToProto("oauth:workos", accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH, "workos", user.PrimaryEmail, user.UpdatedAt), nil
+		}
+		if strings.TrimSpace(user.WorkOSUserID) != "" && strings.TrimSpace(user.WorkOSUserID) != workOSUserID {
+			return nil, status.Error(codes.FailedPrecondition, "a different WorkOS identity is already linked")
+		}
+		existing, lookupErr := s.st.GetUserByWorkOSUserID(ctx, workOSUserID)
+		if lookupErr == nil && existing != nil && existing.Username != user.Username {
+			return nil, status.Error(codes.AlreadyExists, "WorkOS identity is already linked to another account")
+		}
+		if lookupErr != nil && lookupErr != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, "failed to validate WorkOS identity link")
+		}
+		user.WorkOSUserID = workOSUserID
+		user.AuthSource = "workos"
+		user.UpdatedAt = time.Now()
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			switch err {
+			case storage.ErrEntryNotFound:
+				return nil, status.Error(codes.NotFound, "user not found")
+			case storage.ErrEntryExists:
+				return nil, status.Error(codes.AlreadyExists, "WorkOS identity is already linked")
+			default:
+				return nil, status.Error(codes.Internal, "failed to link WorkOS identity")
+			}
+		}
+		return authMethodToProto("oauth:workos", accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH, "workos", user.PrimaryEmail, user.UpdatedAt), nil
+	default:
+		return nil, status.Error(codes.Unimplemented, "auth method linking is not supported for this method type")
+	}
+}
+
+func (s *accountServiceServer) DeleteAuthMethod(ctx context.Context, req *accountv1.DeleteAuthMethodRequest) (*emptypb.Empty, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+
+	switch strings.TrimSpace(req.GetMethodId()) {
+	case "password":
+		if strings.TrimSpace(user.PasswordHash) == "" {
+			return nil, status.Error(codes.NotFound, "password auth method not found")
+		}
+		if strings.TrimSpace(user.WorkOSUserID) == "" {
+			return nil, status.Error(codes.FailedPrecondition, "cannot remove the only human sign-in method")
+		}
+		user.PasswordHash = ""
+		if user.AuthSource == "" {
+			user.AuthSource = "workos"
+		}
+	case "oauth:workos":
+		if strings.TrimSpace(user.WorkOSUserID) == "" {
+			return nil, status.Error(codes.NotFound, "WorkOS auth method not found")
+		}
+		if strings.TrimSpace(user.PasswordHash) == "" {
+			return nil, status.Error(codes.FailedPrecondition, "cannot remove the only human sign-in method")
+		}
+		user.WorkOSUserID = ""
+		if user.AuthSource == "workos" {
+			user.AuthSource = "local"
+		}
+	default:
+		return nil, status.Error(codes.NotFound, "auth method not found")
+	}
+
+	user.UpdatedAt = time.Now()
+	if err := s.st.UpdateUser(ctx, user); err != nil {
+		switch err {
+		case storage.ErrEntryNotFound:
+			return nil, status.Error(codes.NotFound, "user not found")
+		default:
+			return nil, status.Error(codes.Internal, "failed to remove auth method")
+		}
+	}
 	return &emptypb.Empty{}, nil
 }
 

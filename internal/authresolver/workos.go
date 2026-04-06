@@ -53,6 +53,14 @@ func ResolveGRPCWorkOSClaims(ctx context.Context) (*workosauth.Claims, error) {
 	return verifyWorkOSAccessToken(ctx, token)
 }
 
+func VerifyExplicitWorkOSAccessToken(ctx context.Context, token string) (*workosauth.Claims, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, status.Error(codes.Unauthenticated, "WorkOS access token required")
+	}
+	return verifyWorkOSAccessToken(ctx, token)
+}
+
 func workOSVerifierFromEnv() (*workosauth.Verifier, error) {
 	clientID := strings.TrimSpace(os.Getenv("WORKOS_CLIENT_ID"))
 	jwksURL := strings.TrimSpace(os.Getenv("WORKOS_JWKS_URL"))

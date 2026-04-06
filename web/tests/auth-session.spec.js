@@ -258,6 +258,86 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByTestId('settings-sessions')).not.toContainText('gs auth login --device');
   });
 
+  test('settings lists and removes linked auth methods', async ({ page }) => {
+    const username = `authlink${Date.now()}`;
+    let methods = [
+      {
+        id: 'password',
+        type: 'AUTH_METHOD_TYPE_PASSWORD',
+        provider: 'password',
+        email: `${username}@example.com`,
+        linked_at: '2026-04-05T12:00:00Z',
+      },
+      {
+        id: 'oauth:workos',
+        type: 'AUTH_METHOD_TYPE_OAUTH',
+        provider: 'workos',
+        email: `${username}@example.com`,
+        linked_at: '2026-04-05T12:05:00Z',
+      },
+    ];
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+
+    await page.route('**/v1/repos/bindings', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ bindings: [] }),
+      });
+    });
+    await page.route('**/v1/auth/sessions', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ sessions: [] }),
+      });
+    });
+    await page.route('**/v1/auth/agent/keys', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ keys: [] }),
+      });
+    });
+    await page.route('**/v1/auth/methods', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ methods }),
+        });
+        return;
+      }
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(methods.find((method) => method.id === 'oauth:workos')),
+        });
+      }
+    });
+    await page.route('**/v1/auth/methods/*', async (route) => {
+      const methodId = decodeURIComponent(route.request().url().split('/').pop() || '');
+      methods = methods.filter((method) => method.id !== methodId);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: '{}',
+      });
+    });
+
+    await page.getByTestId('topbar-settings').click();
+    await expect(page.getByTestId('settings-auth-methods')).toContainText('password');
+    await expect(page.getByTestId('settings-auth-methods')).toContainText('workos');
+
+    await page.getByTestId('settings-auth-method-delete-password').click();
+    await expect(page.getByTestId('settings-auth-methods')).not.toContainText('password');
+  });
+
   test('profile can update local fields and delete the local account', async ({ page }) => {
     const username = `acctusr${Date.now()}`;
     let currentUser = {
