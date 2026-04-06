@@ -479,6 +479,116 @@ func applyPostgresNativePoolOptions(cfg *pgxpool.Config, options PostgresNativeS
 	}
 }
 
+func (s *PostgresNativeStorage) CreateAccount(ctx context.Context, account *models.Account) error {
+	ctx = ensureCtx(ctx)
+	if account == nil {
+		return ErrInvalidInput
+	}
+	accountID := strings.TrimSpace(account.AccountID)
+	ownerMode := normalizeAccountOwnerMode(account.OwnerMode)
+	claimState := normalizeAccountClaimState(account.ClaimState)
+	claimTokenHash := strings.TrimSpace(account.ClaimTokenHash)
+	if accountID == "" || !validAccountOwnerMode(ownerMode) || !validAccountClaimState(claimState) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if account.CreatedAt.IsZero() {
+		account.CreatedAt = now
+	}
+	account.UpdatedAt = now
+	account.AccountID = accountID
+	account.OwnerMode = ownerMode
+	account.ClaimState = claimState
+	account.ClaimTokenHash = claimTokenHash
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO accounts (account_id, owner_mode, claim_state, claim_token_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, accountID, string(ownerMode), string(claimState), claimTokenHash, account.CreatedAt, account.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) GetAccount(ctx context.Context, accountID string) (*models.Account, error) {
+	ctx = ensureCtx(ctx)
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var account models.Account
+	err := s.pool.QueryRow(ctx, `
+		SELECT account_id, owner_mode, claim_state, COALESCE(claim_token_hash, ''), created_at, updated_at
+		FROM accounts
+		WHERE account_id = $1
+	`, accountID).Scan(&account.AccountID, &account.OwnerMode, &account.ClaimState, &account.ClaimTokenHash, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &account, nil
+}
+
+func (s *PostgresNativeStorage) GetAccountByClaimTokenHash(ctx context.Context, claimTokenHash string) (*models.Account, error) {
+	ctx = ensureCtx(ctx)
+	claimTokenHash = strings.TrimSpace(claimTokenHash)
+	if claimTokenHash == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var account models.Account
+	err := s.pool.QueryRow(ctx, `
+		SELECT account_id, owner_mode, claim_state, COALESCE(claim_token_hash, ''), created_at, updated_at
+		FROM accounts
+		WHERE claim_token_hash = $1
+	`, claimTokenHash).Scan(&account.AccountID, &account.OwnerMode, &account.ClaimState, &account.ClaimTokenHash, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return &account, nil
+}
+
+func (s *PostgresNativeStorage) UpdateAccount(ctx context.Context, account *models.Account) error {
+	ctx = ensureCtx(ctx)
+	if account == nil {
+		return ErrInvalidInput
+	}
+	accountID := strings.TrimSpace(account.AccountID)
+	ownerMode := normalizeAccountOwnerMode(account.OwnerMode)
+	claimState := normalizeAccountClaimState(account.ClaimState)
+	claimTokenHash := strings.TrimSpace(account.ClaimTokenHash)
+	if accountID == "" || !validAccountOwnerMode(ownerMode) || !validAccountClaimState(claimState) {
+		return ErrInvalidInput
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE accounts
+		SET owner_mode = $1, claim_state = $2, claim_token_hash = $3, updated_at = NOW()
+		WHERE account_id = $4
+	`, string(ownerMode), string(claimState), claimTokenHash, accountID)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrEntryExists
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
 // Close closes the backing Postgres pool.
 func (s *PostgresNativeStorage) Close() error {
 	s.pool.Close()
@@ -531,6 +641,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			repo_bindings,
 			auth_sessions,
 			users,
+			accounts,
 			file_changes,
 			global_state,
 			file_manifests,
@@ -574,6 +685,22 @@ type postgresNativeTxView struct {
 }
 
 // ---- Transactional overrides used by BulkWrite (git import) ----
+
+func (s *postgresNativeTxView) CreateAccount(ctx context.Context, account *models.Account) error {
+	return s.PostgresNativeStorage.CreateAccount(ctx, account)
+}
+
+func (s *postgresNativeTxView) GetAccount(ctx context.Context, accountID string) (*models.Account, error) {
+	return s.PostgresNativeStorage.GetAccount(ctx, accountID)
+}
+
+func (s *postgresNativeTxView) GetAccountByClaimTokenHash(ctx context.Context, claimTokenHash string) (*models.Account, error) {
+	return s.PostgresNativeStorage.GetAccountByClaimTokenHash(ctx, claimTokenHash)
+}
+
+func (s *postgresNativeTxView) UpdateAccount(ctx context.Context, account *models.Account) error {
+	return s.PostgresNativeStorage.UpdateAccount(ctx, account)
+}
 
 func (s *postgresNativeTxView) CreateAgentSession(ctx context.Context, session *models.AgentSession) error {
 	return s.PostgresNativeStorage.CreateAgentSession(ctx, session)
@@ -3471,8 +3598,8 @@ func (s *PostgresNativeStorage) EnsureUser(ctx context.Context, username string)
 
 	now := time.Now()
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO users (username, name, primary_email, password_hash, root_path, created_at, updated_at)
-		VALUES ($1, '', '', '', $2, $3, $4)
+		INSERT INTO users (username, account_id, name, primary_email, password_hash, auth_source, workos_user_id, root_path, created_at, updated_at)
+		VALUES ($1, NULL, '', '', '', '', '', $2, $3, $4)
 		ON CONFLICT (username) DO NOTHING
 	`, username, rootPath, now, now)
 	if err != nil {
@@ -3491,10 +3618,10 @@ func (s *PostgresNativeStorage) GetUser(ctx context.Context, username string) (*
 
 	var u models.User
 	err := s.pool.QueryRow(ctx, `
-		SELECT username, COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(root_path, ''), created_at, updated_at
+		SELECT username, COALESCE(account_id, ''), COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(auth_source, ''), COALESCE(workos_user_id, ''), COALESCE(root_path, ''), created_at, updated_at
 		FROM users WHERE username = $1
 	`, username).
-		Scan(&u.Username, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.RootPath, &u.CreatedAt, &u.UpdatedAt)
+		Scan(&u.Username, &u.AccountID, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.AuthSource, &u.WorkOSUserID, &u.RootPath, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -3517,12 +3644,12 @@ func (s *PostgresNativeStorage) GetUserByEmail(ctx context.Context, email string
 
 	var u models.User
 	err := s.pool.QueryRow(ctx, `
-		SELECT username, COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(root_path, ''), created_at, updated_at
+		SELECT username, COALESCE(account_id, ''), COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(auth_source, ''), COALESCE(workos_user_id, ''), COALESCE(root_path, ''), created_at, updated_at
 		FROM users
 		WHERE lower(primary_email) = $1 AND primary_email <> ''
 		LIMIT 1
 	`, email).
-		Scan(&u.Username, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.RootPath, &u.CreatedAt, &u.UpdatedAt)
+		Scan(&u.Username, &u.AccountID, &u.Name, &u.PrimaryEmail, &u.PasswordHash, &u.AuthSource, &u.WorkOSUserID, &u.RootPath, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -3543,7 +3670,7 @@ func (s *PostgresNativeStorage) ListUsers(ctx context.Context, limit, offset int
 	}
 
 	query := `
-		SELECT username, COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(root_path, ''), created_at, updated_at
+		SELECT username, COALESCE(account_id, ''), COALESCE(name, ''), COALESCE(primary_email, ''), COALESCE(password_hash, ''), COALESCE(auth_source, ''), COALESCE(workos_user_id, ''), COALESCE(root_path, ''), created_at, updated_at
 		FROM users
 		ORDER BY username ASC
 	`
@@ -3565,7 +3692,7 @@ func (s *PostgresNativeStorage) ListUsers(ctx context.Context, limit, offset int
 	users := make([]*models.User, 0)
 	for rows.Next() {
 		var user models.User
-		if err := rows.Scan(&user.Username, &user.Name, &user.PrimaryEmail, &user.PasswordHash, &user.RootPath, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		if err := rows.Scan(&user.Username, &user.AccountID, &user.Name, &user.PrimaryEmail, &user.PasswordHash, &user.AuthSource, &user.WorkOSUserID, &user.RootPath, &user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, err
 		}
 		user.PrimaryEmail = strings.ToLower(strings.TrimSpace(user.PrimaryEmail))
@@ -3596,6 +3723,9 @@ func (s *PostgresNativeStorage) CreateUser(ctx context.Context, user *models.Use
 		return ErrEntryExists
 	}
 	email := strings.ToLower(strings.TrimSpace(user.PrimaryEmail))
+	accountID := strings.TrimSpace(user.AccountID)
+	authSource := strings.TrimSpace(user.AuthSource)
+	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
 	now := time.Now()
 	if user.CreatedAt.IsZero() {
 		user.CreatedAt = now
@@ -3604,12 +3734,15 @@ func (s *PostgresNativeStorage) CreateUser(ctx context.Context, user *models.Use
 	user.RootPath = rootPath
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO users (username, name, primary_email, password_hash, root_path, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, username, user.Name, email, user.PasswordHash, rootPath, user.CreatedAt, user.UpdatedAt)
+		INSERT INTO users (username, account_id, name, primary_email, password_hash, auth_source, workos_user_id, root_path, created_at, updated_at)
+		VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10)
+	`, username, accountID, user.Name, email, user.PasswordHash, authSource, workOSUserID, rootPath, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
+		}
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return ErrEntryNotFound
 		}
 		return err
 	}
@@ -3626,16 +3759,22 @@ func (s *PostgresNativeStorage) UpdateUser(ctx context.Context, user *models.Use
 		return ErrInvalidInput
 	}
 	email := strings.ToLower(strings.TrimSpace(user.PrimaryEmail))
+	accountID := strings.TrimSpace(user.AccountID)
+	authSource := strings.TrimSpace(user.AuthSource)
+	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
 	now := time.Now()
 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE users
-		SET name = $1, primary_email = $2, password_hash = $3, updated_at = $4
-		WHERE username = $5
-	`, user.Name, email, user.PasswordHash, now, username)
+		SET account_id = NULLIF($1, ''), name = $2, primary_email = $3, password_hash = $4, auth_source = $5, workos_user_id = $6, updated_at = $7
+		WHERE username = $8
+	`, accountID, user.Name, email, user.PasswordHash, authSource, workOSUserID, now, username)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
+		}
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return ErrEntryNotFound
 		}
 		return err
 	}
@@ -4519,6 +4658,7 @@ func (s *PostgresNativeStorage) CreateOrganization(ctx context.Context, org *mod
 	org.Slug = slug
 	org.Name = name
 	org.CreatedBy = createdBy
+	org.WorkOSOrganizationID = strings.TrimSpace(org.WorkOSOrganizationID)
 	org.RootPath = rootPathForSlug(org.Slug)
 
 	var slugTaken bool
@@ -4536,9 +4676,9 @@ func (s *PostgresNativeStorage) CreateOrganization(ctx context.Context, org *mod
 	org.UpdatedAt = now
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO organizations (slug, name, created_by, root_path, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, org.Slug, org.Name, org.CreatedBy, org.RootPath, org.CreatedAt, org.UpdatedAt)
+		INSERT INTO organizations (slug, name, created_by, workos_organization_id, root_path, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, org.Slug, org.Name, org.CreatedBy, org.WorkOSOrganizationID, org.RootPath, org.CreatedAt, org.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
@@ -4557,11 +4697,11 @@ func (s *PostgresNativeStorage) GetOrganization(ctx context.Context, orgSlug str
 
 	var org models.Organization
 	err := s.pool.QueryRow(ctx, `
-		SELECT slug, name, created_by, COALESCE(root_path, ''), created_at, updated_at
+		SELECT slug, name, created_by, COALESCE(workos_organization_id, ''), COALESCE(root_path, ''), created_at, updated_at
 		FROM organizations
 		WHERE slug = $1
 	`, orgSlug).
-		Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.RootPath, &org.CreatedAt, &org.UpdatedAt)
+		Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.WorkOSOrganizationID, &org.RootPath, &org.CreatedAt, &org.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -4587,9 +4727,9 @@ func (s *PostgresNativeStorage) UpdateOrganization(ctx context.Context, org *mod
 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE organizations
-		SET name = $1, updated_at = NOW()
-		WHERE slug = $2
-	`, name, slug)
+		SET name = $1, workos_organization_id = $2, updated_at = NOW()
+		WHERE slug = $3
+	`, name, strings.TrimSpace(org.WorkOSOrganizationID), slug)
 	if err != nil {
 		return err
 	}
@@ -4665,11 +4805,12 @@ func (s *PostgresNativeStorage) AddOrganizationMember(ctx context.Context, membe
 	member.OrgSlug = orgSlug
 	member.Username = username
 	member.Role = role
+	member.WorkOSMembershipID = strings.TrimSpace(member.WorkOSMembershipID)
 
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO organization_members (org_slug, username, role, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, member.OrgSlug, member.Username, string(member.Role), member.CreatedAt, member.UpdatedAt)
+		INSERT INTO organization_members (org_slug, username, role, workos_membership_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, member.OrgSlug, member.Username, string(member.Role), member.WorkOSMembershipID, member.CreatedAt, member.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrEntryExists
@@ -4689,10 +4830,10 @@ func (s *PostgresNativeStorage) GetOrganizationMember(ctx context.Context, orgSl
 
 	var member models.OrganizationMember
 	err := s.pool.QueryRow(ctx, `
-		SELECT org_slug, username, role, created_at, updated_at
+		SELECT org_slug, username, role, COALESCE(workos_membership_id, ''), created_at, updated_at
 		FROM organization_members
 		WHERE org_slug = $1 AND username = $2
-	`, orgSlug, username).Scan(&member.OrgSlug, &member.Username, &member.Role, &member.CreatedAt, &member.UpdatedAt)
+	`, orgSlug, username).Scan(&member.OrgSlug, &member.Username, &member.Role, &member.WorkOSMembershipID, &member.CreatedAt, &member.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -4718,7 +4859,7 @@ func (s *PostgresNativeStorage) ListOrganizationMembers(ctx context.Context, org
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT org_slug, username, role, created_at, updated_at
+		SELECT org_slug, username, role, COALESCE(workos_membership_id, ''), created_at, updated_at
 		FROM organization_members
 		WHERE org_slug = $1
 		ORDER BY username
@@ -4731,7 +4872,7 @@ func (s *PostgresNativeStorage) ListOrganizationMembers(ctx context.Context, org
 	members := make([]*models.OrganizationMember, 0)
 	for rows.Next() {
 		var member models.OrganizationMember
-		if err := rows.Scan(&member.OrgSlug, &member.Username, &member.Role, &member.CreatedAt, &member.UpdatedAt); err != nil {
+		if err := rows.Scan(&member.OrgSlug, &member.Username, &member.Role, &member.WorkOSMembershipID, &member.CreatedAt, &member.UpdatedAt); err != nil {
 			return nil, err
 		}
 		members = append(members, &member)
@@ -4756,9 +4897,9 @@ func (s *PostgresNativeStorage) UpdateOrganizationMember(ctx context.Context, me
 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE organization_members
-		SET role = $1, updated_at = NOW()
-		WHERE org_slug = $2 AND username = $3
-	`, string(role), orgSlug, username)
+		SET role = $1, workos_membership_id = $2, updated_at = NOW()
+		WHERE org_slug = $3 AND username = $4
+	`, string(role), strings.TrimSpace(member.WorkOSMembershipID), orgSlug, username)
 	if err != nil {
 		return err
 	}
@@ -4768,6 +4909,7 @@ func (s *PostgresNativeStorage) UpdateOrganizationMember(ctx context.Context, me
 	member.OrgSlug = orgSlug
 	member.Username = username
 	member.Role = role
+	member.WorkOSMembershipID = strings.TrimSpace(member.WorkOSMembershipID)
 	return nil
 }
 
@@ -5153,7 +5295,7 @@ func (s *PostgresNativeStorage) ListOrganizationsForUser(ctx context.Context, us
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT o.slug, o.name, o.created_by, COALESCE(o.root_path, ''), o.created_at, o.updated_at
+		SELECT o.slug, o.name, o.created_by, COALESCE(o.workos_organization_id, ''), COALESCE(o.root_path, ''), o.created_at, o.updated_at
 		FROM organizations o
 		INNER JOIN organization_members m ON o.slug = m.org_slug
 		WHERE m.username = $1
@@ -5167,7 +5309,7 @@ func (s *PostgresNativeStorage) ListOrganizationsForUser(ctx context.Context, us
 	var orgs []*models.Organization
 	for rows.Next() {
 		var org models.Organization
-		if err := rows.Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.RootPath, &org.CreatedAt, &org.UpdatedAt); err != nil {
+		if err := rows.Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.WorkOSOrganizationID, &org.RootPath, &org.CreatedAt, &org.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if org.RootPath == "" {

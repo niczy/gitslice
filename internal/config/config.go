@@ -22,6 +22,9 @@ type Config struct {
 	// DeployEnv identifies the target environment for logging and validation.
 	DeployEnv string
 
+	// Auth provider controls the human auth integration mode.
+	AuthProvider string
+
 	// Storage type (memory, postgres, postgres_native)
 	StorageType string
 
@@ -61,6 +64,14 @@ type Config struct {
 
 	// Agent session WebSocket token signing.
 	AgentWSTokenSecret string
+
+	// WorkOS auth configuration.
+	WorkOSClientID       string
+	WorkOSAPIKey         string
+	WorkOSRedirectURI    string
+	WorkOSJWKSURL        string
+	WorkOSCookiePassword string
+	WorkOSAuthKitDomain  string
 
 	// E2B runtime provider settings for agent sessions.
 	E2BAPIURL                string
@@ -113,6 +124,7 @@ func LoadConfig() (*Config, error) {
 		CoreBindAddr:            getEnv("CORE_BIND_ADDR", ""),
 		GatewayPort:             getEnv("GATEWAY_PORT", corePort),
 		DeployEnv:               getEnv("DEPLOY_ENV", ""),
+		AuthProvider:            getEnv("AUTH_PROVIDER", "local"),
 		StorageType:             getEnv("STORAGE_TYPE", "memory"),
 		PostgresDSN:             getEnv("POSTGRES_DSN", ""),
 		PostgresMaxConns:        postgresMaxConns,
@@ -133,6 +145,12 @@ func LoadConfig() (*Config, error) {
 		R2SecretAccessKey:       getEnv("R2_SECRET_ACCESS_KEY", ""),
 		R2UsePathStyle:          getEnvBool("R2_USE_PATH_STYLE", false),
 		AgentWSTokenSecret:      getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
+		WorkOSClientID:          getEnv("WORKOS_CLIENT_ID", ""),
+		WorkOSAPIKey:            getEnv("WORKOS_API_KEY", ""),
+		WorkOSRedirectURI:       getEnv("WORKOS_REDIRECT_URI", ""),
+		WorkOSJWKSURL:           getEnv("WORKOS_JWKS_URL", ""),
+		WorkOSCookiePassword:    getEnv("WORKOS_COOKIE_PASSWORD", ""),
+		WorkOSAuthKitDomain:     getEnv("WORKOS_AUTHKIT_DOMAIN", ""),
 		E2BAPIURL:               getEnv("E2B_API_URL", ""),
 		E2BDomain:               getEnv("E2B_DOMAIN", "e2b.app"),
 		E2BAPIKey:               getEnv("E2B_API_KEY", ""),
@@ -167,6 +185,11 @@ type PostgresTargetSummary struct {
 }
 
 func (c *Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.AuthProvider)) {
+	case "", "local", "workos":
+	default:
+		return fmt.Errorf("AUTH_PROVIDER must be one of: local, workos")
+	}
 	if !strings.EqualFold(c.StorageType, "postgres") {
 		return nil
 	}

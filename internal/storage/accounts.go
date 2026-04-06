@@ -45,6 +45,14 @@ func copyUser(user *models.User) *models.User {
 	return &out
 }
 
+func copyAccount(account *models.Account) *models.Account {
+	if account == nil {
+		return nil
+	}
+	out := *account
+	return &out
+}
+
 func copyAuthSession(session *models.AuthSession) *models.AuthSession {
 	if session == nil {
 		return nil
@@ -173,6 +181,149 @@ func copyTeamMember(member *models.TeamMember) *models.TeamMember {
 	return &out
 }
 
+func normalizeAccountOwnerMode(mode models.AccountOwnerMode) models.AccountOwnerMode {
+	return models.AccountOwnerMode(strings.ToLower(strings.TrimSpace(string(mode))))
+}
+
+func validAccountOwnerMode(mode models.AccountOwnerMode) bool {
+	switch normalizeAccountOwnerMode(mode) {
+	case models.AccountOwnerModeAgentOnly, models.AccountOwnerModeHumanAttached, models.AccountOwnerModeOrgManaged:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeAccountClaimState(state models.AccountClaimState) models.AccountClaimState {
+	return models.AccountClaimState(strings.ToLower(strings.TrimSpace(string(state))))
+}
+
+func validAccountClaimState(state models.AccountClaimState) bool {
+	switch normalizeAccountClaimState(state) {
+	case models.AccountClaimStateUnclaimed, models.AccountClaimStateClaimed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *InMemoryStorage) CreateAccount(ctx context.Context, account *models.Account) error {
+	_ = ctx
+	if account == nil {
+		return ErrInvalidInput
+	}
+	accountID := strings.TrimSpace(account.AccountID)
+	ownerMode := normalizeAccountOwnerMode(account.OwnerMode)
+	claimState := normalizeAccountClaimState(account.ClaimState)
+	claimTokenHash := strings.TrimSpace(account.ClaimTokenHash)
+	if accountID == "" || !validAccountOwnerMode(ownerMode) || !validAccountClaimState(claimState) {
+		return ErrInvalidInput
+	}
+
+	now := time.Now()
+	if account.CreatedAt.IsZero() {
+		account.CreatedAt = now
+	}
+	account.UpdatedAt = now
+	account.AccountID = accountID
+	account.OwnerMode = ownerMode
+	account.ClaimState = claimState
+	account.ClaimTokenHash = claimTokenHash
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.accounts[accountID]; exists {
+		return ErrEntryExists
+	}
+	if claimTokenHash != "" {
+		if existingID, exists := s.accountByClaimTokenHash[claimTokenHash]; exists && existingID != accountID {
+			return ErrEntryExists
+		}
+		s.accountByClaimTokenHash[claimTokenHash] = accountID
+	}
+	s.accounts[accountID] = copyAccount(account)
+	return nil
+}
+
+func (s *InMemoryStorage) GetAccount(ctx context.Context, accountID string) (*models.Account, error) {
+	_ = ctx
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	account, ok := s.accounts[accountID]
+	if !ok || account == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyAccount(account), nil
+}
+
+func (s *InMemoryStorage) GetAccountByClaimTokenHash(ctx context.Context, claimTokenHash string) (*models.Account, error) {
+	_ = ctx
+	claimTokenHash = strings.TrimSpace(claimTokenHash)
+	if claimTokenHash == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	accountID, ok := s.accountByClaimTokenHash[claimTokenHash]
+	if !ok {
+		return nil, ErrEntryNotFound
+	}
+	account, ok := s.accounts[accountID]
+	if !ok || account == nil {
+		return nil, ErrEntryNotFound
+	}
+	return copyAccount(account), nil
+}
+
+func (s *InMemoryStorage) UpdateAccount(ctx context.Context, account *models.Account) error {
+	_ = ctx
+	if account == nil {
+		return ErrInvalidInput
+	}
+	accountID := strings.TrimSpace(account.AccountID)
+	ownerMode := normalizeAccountOwnerMode(account.OwnerMode)
+	claimState := normalizeAccountClaimState(account.ClaimState)
+	claimTokenHash := strings.TrimSpace(account.ClaimTokenHash)
+	if accountID == "" || !validAccountOwnerMode(ownerMode) || !validAccountClaimState(claimState) {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.accounts[accountID]
+	if !ok || existing == nil {
+		return ErrEntryNotFound
+	}
+	if claimTokenHash != "" {
+		if existingID, exists := s.accountByClaimTokenHash[claimTokenHash]; exists && existingID != accountID {
+			return ErrEntryExists
+		}
+	}
+	if existing.ClaimTokenHash != "" {
+		delete(s.accountByClaimTokenHash, existing.ClaimTokenHash)
+	}
+	updated := copyAccount(existing)
+	updated.OwnerMode = ownerMode
+	updated.ClaimState = claimState
+	updated.ClaimTokenHash = claimTokenHash
+	updated.UpdatedAt = time.Now()
+	if claimTokenHash != "" {
+		s.accountByClaimTokenHash[claimTokenHash] = accountID
+	}
+	s.accounts[accountID] = updated
+	return nil
+}
+
 func (s *InMemoryStorage) EnsureUser(ctx context.Context, username string) (*models.User, error) {
 	_ = ctx
 	username = strings.TrimSpace(username)
@@ -295,6 +446,9 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	if email != "" && !validateEmail(email) {
 		return ErrInvalidInput
 	}
+	accountID := strings.TrimSpace(user.AccountID)
+	authSource := strings.TrimSpace(user.AuthSource)
+	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -311,10 +465,25 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 			return ErrEntryExists
 		}
 	}
+	if accountID != "" {
+		if _, ok := s.accounts[accountID]; !ok {
+			return ErrEntryNotFound
+		}
+	}
+	if workOSUserID != "" {
+		for _, existing := range s.users {
+			if existing != nil && strings.TrimSpace(existing.WorkOSUserID) == workOSUserID {
+				return ErrEntryExists
+			}
+		}
+	}
 
 	newUser := *user
 	newUser.Username = username
+	newUser.AccountID = accountID
 	newUser.PrimaryEmail = email
+	newUser.AuthSource = authSource
+	newUser.WorkOSUserID = workOSUserID
 	newUser.RootPath = rootPathForSlug(username)
 	if newUser.CreatedAt.IsZero() {
 		newUser.CreatedAt = now
@@ -340,6 +509,9 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	if email != "" && !validateEmail(email) {
 		return ErrInvalidInput
 	}
+	accountID := strings.TrimSpace(user.AccountID)
+	authSource := strings.TrimSpace(user.AuthSource)
+	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -355,6 +527,21 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 			return ErrEntryExists
 		}
 	}
+	if accountID != "" {
+		if _, ok := s.accounts[accountID]; !ok {
+			return ErrEntryNotFound
+		}
+	}
+	if workOSUserID != "" {
+		for existingUsername, existing := range s.users {
+			if existingUsername == username || existing == nil {
+				continue
+			}
+			if strings.TrimSpace(existing.WorkOSUserID) == workOSUserID {
+				return ErrEntryExists
+			}
+		}
+	}
 
 	if oldEmail := normalizeEmail(existing.PrimaryEmail); oldEmail != "" && oldEmail != email {
 		delete(s.userByEmail, oldEmail)
@@ -362,7 +549,10 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 
 	updated := *user
 	updated.Username = username
+	updated.AccountID = accountID
 	updated.PrimaryEmail = email
+	updated.AuthSource = authSource
+	updated.WorkOSUserID = workOSUserID
 	updated.RootPath = rootPathForSlug(username)
 	if updated.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt
@@ -1132,6 +1322,7 @@ func (s *InMemoryStorage) CreateOrganization(ctx context.Context, org *models.Or
 	if !auth.ValidateUsername(slug) || !auth.ValidateUsername(createdBy) {
 		return ErrInvalidInput
 	}
+	workOSOrganizationID := strings.TrimSpace(org.WorkOSOrganizationID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1143,11 +1334,19 @@ func (s *InMemoryStorage) CreateOrganization(ctx context.Context, org *models.Or
 	if _, ok := s.users[slug]; ok {
 		return ErrEntryExists
 	}
+	if workOSOrganizationID != "" {
+		for _, existing := range s.orgs {
+			if existing != nil && strings.TrimSpace(existing.WorkOSOrganizationID) == workOSOrganizationID {
+				return ErrEntryExists
+			}
+		}
+	}
 
 	newOrg := *org
 	newOrg.Slug = slug
 	newOrg.Name = name
 	newOrg.CreatedBy = createdBy
+	newOrg.WorkOSOrganizationID = workOSOrganizationID
 	newOrg.RootPath = rootPathForSlug(newOrg.Slug)
 	if newOrg.CreatedAt.IsZero() {
 		newOrg.CreatedAt = now
@@ -1188,6 +1387,7 @@ func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Or
 	if slug == "" || strings.TrimSpace(org.Name) == "" {
 		return ErrInvalidInput
 	}
+	workOSOrganizationID := strings.TrimSpace(org.WorkOSOrganizationID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1197,9 +1397,20 @@ func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Or
 	if !ok || existing == nil {
 		return ErrEntryNotFound
 	}
+	if workOSOrganizationID != "" {
+		for existingSlug, candidate := range s.orgs {
+			if existingSlug == slug || candidate == nil {
+				continue
+			}
+			if strings.TrimSpace(candidate.WorkOSOrganizationID) == workOSOrganizationID {
+				return ErrEntryExists
+			}
+		}
+	}
 
 	updated := *org
 	updated.Slug = slug
+	updated.WorkOSOrganizationID = workOSOrganizationID
 	updated.RootPath = rootPathForSlug(slug)
 	updated.CreatedBy = existing.CreatedBy
 	if updated.CreatedAt.IsZero() {
@@ -1259,6 +1470,7 @@ func (s *InMemoryStorage) AddOrganizationMember(ctx context.Context, member *mod
 	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) || !validOrganizationRole(role) {
 		return ErrInvalidInput
 	}
+	workOSMembershipID := strings.TrimSpace(member.WorkOSMembershipID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1276,11 +1488,21 @@ func (s *InMemoryStorage) AddOrganizationMember(ctx context.Context, member *mod
 	if _, ok := s.orgMembers[orgSlug][username]; ok {
 		return ErrEntryExists
 	}
+	if workOSMembershipID != "" {
+		for _, members := range s.orgMembers {
+			for _, existing := range members {
+				if existing != nil && strings.TrimSpace(existing.WorkOSMembershipID) == workOSMembershipID {
+					return ErrEntryExists
+				}
+			}
+		}
+	}
 
 	newMember := *member
 	newMember.OrgSlug = orgSlug
 	newMember.Username = username
 	newMember.Role = role
+	newMember.WorkOSMembershipID = workOSMembershipID
 	if newMember.CreatedAt.IsZero() {
 		newMember.CreatedAt = now
 	}
@@ -1355,6 +1577,7 @@ func (s *InMemoryStorage) UpdateOrganizationMember(ctx context.Context, member *
 	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) || !validOrganizationRole(role) {
 		return ErrInvalidInput
 	}
+	workOSMembershipID := strings.TrimSpace(member.WorkOSMembershipID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1365,11 +1588,24 @@ func (s *InMemoryStorage) UpdateOrganizationMember(ctx context.Context, member *
 	if !ok || existing == nil {
 		return ErrEntryNotFound
 	}
+	if workOSMembershipID != "" {
+		for existingOrgSlug, members := range s.orgMembers {
+			for existingUsername, candidate := range members {
+				if existingOrgSlug == orgSlug && existingUsername == username {
+					continue
+				}
+				if candidate != nil && strings.TrimSpace(candidate.WorkOSMembershipID) == workOSMembershipID {
+					return ErrEntryExists
+				}
+			}
+		}
+	}
 
 	updated := *member
 	updated.OrgSlug = orgSlug
 	updated.Username = username
 	updated.Role = role
+	updated.WorkOSMembershipID = workOSMembershipID
 	if updated.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt
 	}

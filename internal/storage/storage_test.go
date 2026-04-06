@@ -139,6 +139,15 @@ func TestDirectoryEntryAggregatesSubtreeSizes(t *testing.T) {
 	}
 }
 
+func TestWorkOSAccountStorageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runWorkOSAccountStorageRoundTrip(ctx, t, tc.factory(t))
+		})
+	}
+}
+
 func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
@@ -499,6 +508,242 @@ func runPathVisibilityStorageRoundTrip(ctx context.Context, t *testing.T, st Sto
 	}
 	if _, err := st.GetPathVisibilityRule(ctx, "/alice/docs/README.md"); err != ErrEntryNotFound {
 		t.Fatalf("GetPathVisibilityRule(after delete) = %v, want %v", err, ErrEntryNotFound)
+	}
+}
+
+func runWorkOSAccountStorageRoundTrip(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	accountID := "acct-" + suffix
+	initialClaimToken := "claim-" + suffix
+	updatedClaimToken := "claim-updated-" + suffix
+	username := "workosuser" + suffix
+	missingAccountUsername := "missingacct" + suffix
+	duplicateUserUsername := "dupworkos" + suffix
+	orgSlug := "org" + suffix
+	orgSlug2 := "orgdup" + suffix
+
+	account := &models.Account{
+		AccountID:      accountID,
+		OwnerMode:      models.AccountOwnerModeAgentOnly,
+		ClaimState:     models.AccountClaimStateUnclaimed,
+		ClaimTokenHash: initialClaimToken,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateAccount(ctx, &models.Account{
+		AccountID:      accountID + "-duplicate",
+		OwnerMode:      models.AccountOwnerModeAgentOnly,
+		ClaimState:     models.AccountClaimStateUnclaimed,
+		ClaimTokenHash: initialClaimToken,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected duplicate claim token to fail with ErrEntryExists, got %v", err)
+	}
+
+	storedAccount, err := st.GetAccount(ctx, accountID)
+	if err != nil {
+		t.Fatalf("GetAccount failed: %v", err)
+	}
+	if storedAccount.OwnerMode != models.AccountOwnerModeAgentOnly || storedAccount.ClaimState != models.AccountClaimStateUnclaimed {
+		t.Fatalf("unexpected stored account: %#v", storedAccount)
+	}
+
+	byClaim, err := st.GetAccountByClaimTokenHash(ctx, initialClaimToken)
+	if err != nil {
+		t.Fatalf("GetAccountByClaimTokenHash failed: %v", err)
+	}
+	if byClaim.AccountID != accountID {
+		t.Fatalf("expected claim token to resolve account %q, got %#v", accountID, byClaim)
+	}
+
+	storedAccount.OwnerMode = models.AccountOwnerModeHumanAttached
+	storedAccount.ClaimState = models.AccountClaimStateClaimed
+	storedAccount.ClaimTokenHash = updatedClaimToken
+	if err := st.UpdateAccount(ctx, storedAccount); err != nil {
+		t.Fatalf("UpdateAccount failed: %v", err)
+	}
+	if _, err := st.GetAccountByClaimTokenHash(ctx, initialClaimToken); err != ErrEntryNotFound {
+		t.Fatalf("expected old claim token lookup to fail, got %v", err)
+	}
+	updatedAccount, err := st.GetAccountByClaimTokenHash(ctx, updatedClaimToken)
+	if err != nil {
+		t.Fatalf("GetAccountByClaimTokenHash(updated) failed: %v", err)
+	}
+	if updatedAccount.OwnerMode != models.AccountOwnerModeHumanAttached || updatedAccount.ClaimState != models.AccountClaimStateClaimed {
+		t.Fatalf("unexpected updated account: %#v", updatedAccount)
+	}
+
+	user := &models.User{
+		Username:     username,
+		AccountID:    accountID,
+		Name:         "WorkOS User",
+		PrimaryEmail: username + "@example.com",
+		AuthSource:   "workos",
+		WorkOSUserID: "user_" + suffix,
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     duplicateUserUsername,
+		AccountID:    accountID,
+		AuthSource:   "workos",
+		WorkOSUserID: user.WorkOSUserID,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected duplicate WorkOS user id to fail, got %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:  missingAccountUsername,
+		AccountID: "missing-account-" + suffix,
+	}); err != ErrEntryNotFound {
+		t.Fatalf("expected missing account to fail with ErrEntryNotFound, got %v", err)
+	}
+
+	storedUser, err := st.GetUser(ctx, username)
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if storedUser.AccountID != accountID || storedUser.AuthSource != "workos" || storedUser.WorkOSUserID != user.WorkOSUserID {
+		t.Fatalf("unexpected stored user: %#v", storedUser)
+	}
+	if storedUser.RootPath != rootPathForSlug(username) {
+		t.Fatalf("expected user root path %q, got %q", rootPathForSlug(username), storedUser.RootPath)
+	}
+
+	users, err := st.ListUsers(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListUsers failed: %v", err)
+	}
+	foundUser := false
+	for _, candidate := range users {
+		if candidate != nil && candidate.Username == username {
+			foundUser = true
+			if candidate.AccountID != accountID || candidate.WorkOSUserID != user.WorkOSUserID {
+				t.Fatalf("unexpected list user payload: %#v", candidate)
+			}
+		}
+	}
+	if !foundUser {
+		t.Fatalf("expected %q in ListUsers result", username)
+	}
+
+	storedUser.Name = "Updated WorkOS User"
+	storedUser.WorkOSUserID = "user_updated_" + suffix
+	if err := st.UpdateUser(ctx, storedUser); err != nil {
+		t.Fatalf("UpdateUser failed: %v", err)
+	}
+	updatedUser, err := st.GetUser(ctx, username)
+	if err != nil {
+		t.Fatalf("GetUser after update failed: %v", err)
+	}
+	if updatedUser.Name != "Updated WorkOS User" || updatedUser.WorkOSUserID != "user_updated_"+suffix {
+		t.Fatalf("unexpected updated user: %#v", updatedUser)
+	}
+
+	org := &models.Organization{
+		Slug:                 orgSlug,
+		Name:                 "WorkOS Org",
+		CreatedBy:            username,
+		WorkOSOrganizationID: "org_" + suffix,
+	}
+	if err := st.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+	if err := st.CreateOrganization(ctx, &models.Organization{
+		Slug:                 orgSlug2,
+		Name:                 "Duplicate WorkOS Org",
+		CreatedBy:            username,
+		WorkOSOrganizationID: org.WorkOSOrganizationID,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected duplicate WorkOS organization id to fail, got %v", err)
+	}
+
+	storedOrg, err := st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		t.Fatalf("GetOrganization failed: %v", err)
+	}
+	if storedOrg.WorkOSOrganizationID != org.WorkOSOrganizationID {
+		t.Fatalf("unexpected stored org: %#v", storedOrg)
+	}
+	if storedOrg.RootPath != rootPathForSlug(orgSlug) {
+		t.Fatalf("expected org root path %q, got %q", rootPathForSlug(orgSlug), storedOrg.RootPath)
+	}
+
+	storedOrg.WorkOSOrganizationID = "org_updated_" + suffix
+	if err := st.UpdateOrganization(ctx, storedOrg); err != nil {
+		t.Fatalf("UpdateOrganization failed: %v", err)
+	}
+	updatedOrg, err := st.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		t.Fatalf("GetOrganization after update failed: %v", err)
+	}
+	if updatedOrg.WorkOSOrganizationID != "org_updated_"+suffix {
+		t.Fatalf("unexpected updated org: %#v", updatedOrg)
+	}
+
+	member := &models.OrganizationMember{
+		OrgSlug:            orgSlug,
+		Username:           username,
+		Role:               models.OrganizationRoleOwner,
+		WorkOSMembershipID: "membership_" + suffix,
+	}
+	if err := st.AddOrganizationMember(ctx, member); err != nil {
+		t.Fatalf("AddOrganizationMember failed: %v", err)
+	}
+	if err := st.CreateOrganization(ctx, &models.Organization{
+		Slug:      orgSlug2,
+		Name:      "Second Org",
+		CreatedBy: username,
+	}); err != nil {
+		t.Fatalf("CreateOrganization second org failed: %v", err)
+	}
+	if err := st.AddOrganizationMember(ctx, &models.OrganizationMember{
+		OrgSlug:            orgSlug2,
+		Username:           username,
+		Role:               models.OrganizationRoleMember,
+		WorkOSMembershipID: member.WorkOSMembershipID,
+	}); err != ErrEntryExists {
+		t.Fatalf("expected duplicate WorkOS membership id to fail, got %v", err)
+	}
+
+	storedMember, err := st.GetOrganizationMember(ctx, orgSlug, username)
+	if err != nil {
+		t.Fatalf("GetOrganizationMember failed: %v", err)
+	}
+	if storedMember.WorkOSMembershipID != member.WorkOSMembershipID {
+		t.Fatalf("unexpected stored member: %#v", storedMember)
+	}
+
+	storedMember.WorkOSMembershipID = "membership_updated_" + suffix
+	if err := st.UpdateOrganizationMember(ctx, storedMember); err != nil {
+		t.Fatalf("UpdateOrganizationMember failed: %v", err)
+	}
+	updatedMember, err := st.GetOrganizationMember(ctx, orgSlug, username)
+	if err != nil {
+		t.Fatalf("GetOrganizationMember after update failed: %v", err)
+	}
+	if updatedMember.WorkOSMembershipID != "membership_updated_"+suffix {
+		t.Fatalf("unexpected updated member: %#v", updatedMember)
+	}
+
+	orgsForUser, err := st.ListOrganizationsForUser(ctx, username)
+	if err != nil {
+		t.Fatalf("ListOrganizationsForUser failed: %v", err)
+	}
+	var listedOrg *models.Organization
+	for _, candidate := range orgsForUser {
+		if candidate != nil && candidate.Slug == orgSlug {
+			listedOrg = candidate
+			break
+		}
+	}
+	if listedOrg == nil {
+		t.Fatalf("expected %q in ListOrganizationsForUser result: %#v", orgSlug, orgsForUser)
+	}
+	if listedOrg.WorkOSOrganizationID != updatedOrg.WorkOSOrganizationID {
+		t.Fatalf("unexpected listed org payload: %#v", listedOrg)
 	}
 }
 

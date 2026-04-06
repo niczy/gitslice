@@ -69,6 +69,8 @@ type InMemoryStorage struct {
 	fileChangesByDir    map[string][]string                 // "sliceID:dirPrefix" -> []changeID (newest first)
 
 	// Accounts / Orgs
+	accounts                         map[string]*models.Account                       // accountID -> account
+	accountByClaimTokenHash          map[string]string                                // claim token hash -> accountID
 	users                            map[string]*models.User                          // username -> user
 	userByEmail                      map[string]string                                // lower(email) -> username
 	repoBindings                     map[string]*models.RepoBinding                   // bindingID -> binding
@@ -134,6 +136,8 @@ func NewInMemoryStorage() *InMemoryStorage {
 		fileChangesByPath:                make(map[string][]string),
 		fileChangesByCommit:              make(map[string][]string),
 		fileChangesByDir:                 make(map[string][]string),
+		accounts:                         make(map[string]*models.Account),
+		accountByClaimTokenHash:          make(map[string]string),
 		users:                            make(map[string]*models.User),
 		userByEmail:                      make(map[string]string),
 		repoBindings:                     make(map[string]*models.RepoBinding),
@@ -211,6 +215,8 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.fileChangesByPath = fresh.fileChangesByPath
 	s.fileChangesByCommit = fresh.fileChangesByCommit
 	s.fileChangesByDir = fresh.fileChangesByDir
+	s.accounts = fresh.accounts
+	s.accountByClaimTokenHash = fresh.accountByClaimTokenHash
 	s.users = fresh.users
 	s.userByEmail = fresh.userByEmail
 	s.repoBindings = fresh.repoBindings

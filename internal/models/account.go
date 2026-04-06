@@ -2,13 +2,42 @@ package models
 
 import "time"
 
-// User is a fake account identified only by a username.
-// There are no passwords or emails; identity is carried via request metadata.
+type AccountOwnerMode string
+
+const (
+	AccountOwnerModeAgentOnly     AccountOwnerMode = "agent_only"
+	AccountOwnerModeHumanAttached AccountOwnerMode = "human_attached"
+	AccountOwnerModeOrgManaged    AccountOwnerMode = "org_managed"
+)
+
+type AccountClaimState string
+
+const (
+	AccountClaimStateUnclaimed AccountClaimState = "unclaimed"
+	AccountClaimStateClaimed   AccountClaimState = "claimed"
+)
+
+// Account is the root local identity record. Human WorkOS identities may attach
+// later, but agent-created accounts can exist before any human auth exists.
+type Account struct {
+	AccountID      string            `json:"account_id"`
+	OwnerMode      AccountOwnerMode  `json:"owner_mode"`
+	ClaimState     AccountClaimState `json:"claim_state"`
+	ClaimTokenHash string            `json:"claim_token_hash"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+}
+
+// User is the local username-facing identity that owns a home slice and may be
+// linked to a local account and later to a WorkOS user.
 type User struct {
 	Username     string    `json:"username"`
+	AccountID    string    `json:"account_id"`
 	Name         string    `json:"name"`
 	PrimaryEmail string    `json:"primary_email"`
 	PasswordHash string    `json:"password_hash"`
+	AuthSource   string    `json:"auth_source"`
+	WorkOSUserID string    `json:"workos_user_id"`
 	RootPath     string    `json:"root_path"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -16,12 +45,13 @@ type User struct {
 
 // Organization groups users together.
 type Organization struct {
-	Slug      string    `json:"slug"`
-	Name      string    `json:"name"`
-	CreatedBy string    `json:"created_by"`
-	RootPath  string    `json:"root_path"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Slug                 string    `json:"slug"`
+	Name                 string    `json:"name"`
+	CreatedBy            string    `json:"created_by"`
+	WorkOSOrganizationID string    `json:"workos_organization_id"`
+	RootPath             string    `json:"root_path"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type OrganizationRole string
@@ -33,11 +63,12 @@ const (
 )
 
 type OrganizationMember struct {
-	OrgSlug   string           `json:"org_slug"`
-	Username  string           `json:"username"`
-	Role      OrganizationRole `json:"role"`
-	CreatedAt time.Time        `json:"created_at"`
-	UpdatedAt time.Time        `json:"updated_at"`
+	OrgSlug            string           `json:"org_slug"`
+	Username           string           `json:"username"`
+	Role               OrganizationRole `json:"role"`
+	WorkOSMembershipID string           `json:"workos_membership_id"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
 }
 
 type OrganizationInviteStatus string
