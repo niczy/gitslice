@@ -48,10 +48,11 @@ type accountServiceServer struct {
 }
 
 type authIdentity struct {
-	username     string
-	sessionID    string
-	authSource   string
-	workOSUserID string
+	username       string
+	sessionID      string
+	authSource     string
+	workOSUserID   string
+	organizationID string
 }
 
 // RegisterGRPCServer registers the account service handlers on an existing gRPC server.
@@ -448,10 +449,11 @@ func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdenti
 		return nil, err
 	}
 	return &authIdentity{
-		username:     identity.Username,
-		sessionID:    identity.SessionID,
-		authSource:   identity.AuthSource,
-		workOSUserID: identity.WorkOSUserID,
+		username:       identity.Username,
+		sessionID:      identity.SessionID,
+		authSource:     identity.AuthSource,
+		workOSUserID:   identity.WorkOSUserID,
+		organizationID: identity.OrganizationID,
 	}, nil
 }
 
@@ -461,6 +463,66 @@ type ensureWorkOSLocalIdentityResult struct {
 	createdAccount     bool
 	createdUser        bool
 	linkedExistingUser bool
+}
+
+func workOSOrganizationRole(role string) models.OrganizationRole {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case string(models.OrganizationRoleOwner):
+		return models.OrganizationRoleOwner
+	case string(models.OrganizationRoleAdmin):
+		return models.OrganizationRoleAdmin
+	default:
+		return models.OrganizationRoleMember
+	}
+}
+
+func (s *accountServiceServer) syncWorkOSOrganizationMembership(ctx context.Context, user *models.User, workOSOrganizationID, workOSRole string) error {
+	if user == nil {
+		return nil
+	}
+	workOSOrganizationID = strings.TrimSpace(workOSOrganizationID)
+	if workOSOrganizationID == "" {
+		return nil
+	}
+
+	org, err := s.st.GetOrganizationByWorkOSOrganizationID(ctx, workOSOrganizationID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil
+		}
+		return status.Error(codes.Internal, "failed to resolve linked WorkOS organization")
+	}
+
+	desiredRole := workOSOrganizationRole(workOSRole)
+	member, err := s.st.GetOrganizationMember(ctx, org.Slug, user.Username)
+	if err == storage.ErrEntryNotFound {
+		if desiredRole == models.OrganizationRoleOwner && org.CreatedBy != user.Username {
+			desiredRole = models.OrganizationRoleAdmin
+		}
+		if err := s.st.AddOrganizationMember(ctx, &models.OrganizationMember{
+			OrgSlug:  org.Slug,
+			Username: user.Username,
+			Role:     desiredRole,
+		}); err != nil {
+			return status.Error(codes.Internal, "failed to attach WorkOS organization membership")
+		}
+		return nil
+	}
+	if err != nil {
+		return status.Error(codes.Internal, "failed to load linked organization membership")
+	}
+
+	nextRole := normalizeOrganizationRole(member.Role)
+	if nextRole == models.OrganizationRoleOwner {
+		return nil
+	}
+	if desiredRole == models.OrganizationRoleAdmin && nextRole != models.OrganizationRoleAdmin {
+		member.Role = models.OrganizationRoleAdmin
+		if err := s.st.UpdateOrganizationMember(ctx, member); err != nil {
+			return status.Error(codes.Internal, "failed to update WorkOS organization membership")
+		}
+	}
+	return nil
 }
 
 func sanitizeUsernameCandidate(raw string) string {
@@ -1772,6 +1834,9 @@ func (s *accountServiceServer) EnsureWorkOSLocalIdentity(ctx context.Context, re
 	if err != nil {
 		return nil, err
 	}
+	if err := s.syncWorkOSOrganizationMembership(ctx, result.user, claims.OrganizationID, claims.Role); err != nil {
+		return nil, err
+	}
 	return ensureWorkOSLocalIdentityResultToProto(result), nil
 }
 
@@ -1900,6 +1965,9 @@ func (s *accountServiceServer) CreateOrganization(ctx context.Context, req *acco
 		Slug:      slug,
 		Name:      name,
 		CreatedBy: identity.username,
+	}
+	if identity.authSource == "workos" && strings.TrimSpace(identity.organizationID) != "" {
+		org.WorkOSOrganizationID = strings.TrimSpace(identity.organizationID)
 	}
 	if err := s.st.CreateOrganization(ctx, org); err != nil {
 		switch err {

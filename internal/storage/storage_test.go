@@ -684,6 +684,13 @@ func runWorkOSAccountStorageRoundTrip(ctx context.Context, t *testing.T, st Stor
 	if storedOrg.WorkOSOrganizationID != org.WorkOSOrganizationID {
 		t.Fatalf("unexpected stored org: %#v", storedOrg)
 	}
+	byWorkOSOrgID, err := st.GetOrganizationByWorkOSOrganizationID(ctx, org.WorkOSOrganizationID)
+	if err != nil {
+		t.Fatalf("GetOrganizationByWorkOSOrganizationID failed: %v", err)
+	}
+	if byWorkOSOrgID.Slug != orgSlug {
+		t.Fatalf("unexpected GetOrganizationByWorkOSOrganizationID result: %#v", byWorkOSOrgID)
+	}
 	if storedOrg.RootPath != rootPathForSlug(orgSlug) {
 		t.Fatalf("expected org root path %q, got %q", rootPathForSlug(orgSlug), storedOrg.RootPath)
 	}
@@ -698,6 +705,16 @@ func runWorkOSAccountStorageRoundTrip(ctx context.Context, t *testing.T, st Stor
 	}
 	if updatedOrg.WorkOSOrganizationID != "org_updated_"+suffix {
 		t.Fatalf("unexpected updated org: %#v", updatedOrg)
+	}
+	if _, err := st.GetOrganizationByWorkOSOrganizationID(ctx, org.WorkOSOrganizationID); err != ErrEntryNotFound {
+		t.Fatalf("expected old WorkOS organization id lookup to fail, got %v", err)
+	}
+	updatedByWorkOSOrgID, err := st.GetOrganizationByWorkOSOrganizationID(ctx, updatedOrg.WorkOSOrganizationID)
+	if err != nil {
+		t.Fatalf("GetOrganizationByWorkOSOrganizationID(updated) failed: %v", err)
+	}
+	if updatedByWorkOSOrgID.Slug != orgSlug {
+		t.Fatalf("unexpected updated GetOrganizationByWorkOSOrganizationID result: %#v", updatedByWorkOSOrgID)
 	}
 
 	member := &models.OrganizationMember{

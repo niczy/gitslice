@@ -4742,6 +4742,32 @@ func (s *PostgresNativeStorage) GetOrganization(ctx context.Context, orgSlug str
 	return &org, nil
 }
 
+func (s *PostgresNativeStorage) GetOrganizationByWorkOSOrganizationID(ctx context.Context, workOSOrganizationID string) (*models.Organization, error) {
+	ctx = ensureCtx(ctx)
+	workOSOrganizationID = strings.TrimSpace(workOSOrganizationID)
+	if workOSOrganizationID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	var org models.Organization
+	err := s.pool.QueryRow(ctx, `
+		SELECT slug, name, created_by, COALESCE(workos_organization_id, ''), COALESCE(root_path, ''), created_at, updated_at
+		FROM organizations
+		WHERE workos_organization_id = $1
+	`, workOSOrganizationID).
+		Scan(&org.Slug, &org.Name, &org.CreatedBy, &org.WorkOSOrganizationID, &org.RootPath, &org.CreatedAt, &org.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	if org.RootPath == "" {
+		org.RootPath = rootPathForSlug(org.Slug)
+	}
+	return &org, nil
+}
+
 func (s *PostgresNativeStorage) UpdateOrganization(ctx context.Context, org *models.Organization) error {
 	ctx = ensureCtx(ctx)
 	if org == nil {

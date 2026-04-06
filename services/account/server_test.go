@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -436,6 +437,106 @@ func TestDeleteAuthMethodRejectsRemovingOnlyHumanMethod(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkOSLocalIdentityLinksMatchingWorkOSOrganizationMembership(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	srv := &accountServiceServer{st: st}
+
+	ownerSignup, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "orgowner",
+		Email:    "owner@example.com",
+		Password: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("owner Signup failed: %v", err)
+	}
+	if _, err := srv.CreateOrganization(bearerCtx(ctx, ownerSignup.GetAccessToken()), &accountv1.CreateOrganizationRequest{
+		Slug: "acme",
+		Name: "Acme",
+	}); err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+	org, err := st.GetOrganization(ctx, "acme")
+	if err != nil {
+		t.Fatalf("GetOrganization failed: %v", err)
+	}
+	org.WorkOSOrganizationID = "org_workos_123"
+	if err := st.UpdateOrganization(ctx, org); err != nil {
+		t.Fatalf("UpdateOrganization failed: %v", err)
+	}
+
+	token := signAccountWorkOSTokenWithClaims(t, privateKey, "client_test_123", "user_workos_123", "sess_workos_123", "org_workos_123", "admin")
+	resp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		PreferredUsername: "alice",
+		Name:              "Alice",
+		PrimaryEmail:      "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+
+	member, err := st.GetOrganizationMember(ctx, "acme", resp.GetUser().GetUsername())
+	if err != nil {
+		t.Fatalf("GetOrganizationMember failed: %v", err)
+	}
+	if member.Role != models.OrganizationRoleAdmin {
+		t.Fatalf("expected admin membership, got %#v", member)
+	}
+
+	orgs, err := srv.ListOrganizations(workOSBearerCtx(ctx, token), &accountv1.ListOrganizationsRequest{})
+	if err != nil {
+		t.Fatalf("ListOrganizations failed: %v", err)
+	}
+	if len(orgs.GetOrganizations()) != 1 || orgs.GetOrganizations()[0].GetSlug() != "acme" {
+		t.Fatalf("unexpected organizations: %#v", orgs.GetOrganizations())
+	}
+}
+
+func TestCreateOrganizationUsesWorkOSOrganizationContext(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	token := signAccountWorkOSTokenWithClaims(t, privateKey, "client_test_123", "user_creator_123", "sess_workos_123", "org_workos_456", "admin")
+	identityResp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		PreferredUsername: "creator",
+		Name:              "Creator",
+		PrimaryEmail:      "creator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if identityResp.GetUser().GetUsername() == "" {
+		t.Fatalf("expected local user username, got %#v", identityResp)
+	}
+
+	created, err := srv.CreateOrganization(workOSBearerCtx(ctx, token), &accountv1.CreateOrganizationRequest{
+		Slug: "workos-linked",
+		Name: "WorkOS Linked",
+	})
+	if err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+	stored, err := srv.st.GetOrganization(ctx, created.GetSlug())
+	if err != nil {
+		t.Fatalf("GetOrganization failed: %v", err)
+	}
+	if stored.WorkOSOrganizationID != "org_workos_456" {
+		t.Fatalf("expected WorkOS organization id to be linked, got %#v", stored)
+	}
+}
+
 func startAccountWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
 	t.Helper()
 
@@ -460,17 +561,28 @@ func startAccountWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Ser
 }
 
 func signAccountWorkOSToken(t *testing.T, privateKey *rsa.PrivateKey, audience, subject, sessionID string) string {
+	return signAccountWorkOSTokenWithClaims(t, privateKey, audience, subject, sessionID, "", "")
+}
+
+func signAccountWorkOSTokenWithClaims(t *testing.T, privateKey *rsa.PrivateKey, audience, subject, sessionID, organizationID, role string) string {
 	t.Helper()
 
 	now := time.Now()
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+	claims := jwt.MapClaims{
 		"aud": []string{audience},
 		"exp": now.Add(10 * time.Minute).Unix(),
 		"iat": now.Unix(),
 		"iss": "https://api.workos.com/",
 		"sub": subject,
 		"sid": sessionID,
-	})
+	}
+	if strings.TrimSpace(organizationID) != "" {
+		claims["org_id"] = strings.TrimSpace(organizationID)
+	}
+	if strings.TrimSpace(role) != "" {
+		claims["role"] = strings.TrimSpace(role)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = "test-kid"
 	signed, err := token.SignedString(privateKey)
 	if err != nil {

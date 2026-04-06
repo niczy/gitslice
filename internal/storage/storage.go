@@ -194,6 +194,7 @@ type Storage interface {
 
 	CreateOrganization(ctx context.Context, org *models.Organization) error
 	GetOrganization(ctx context.Context, orgSlug string) (*models.Organization, error)
+	GetOrganizationByWorkOSOrganizationID(ctx context.Context, workOSOrganizationID string) (*models.Organization, error)
 	UpdateOrganization(ctx context.Context, org *models.Organization) error
 	DeleteOrganization(ctx context.Context, orgSlug string) error
 	AddOrganizationMember(ctx context.Context, member *models.OrganizationMember) error
