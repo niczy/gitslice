@@ -2,11 +2,14 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +18,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	agentsession "github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	accountservice "github.com/niczy/gitslice/services/account"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
 	fileservice "github.com/niczy/gitslice/services/file"
@@ -1923,6 +1929,7 @@ func startGRPCServer(t *testing.T, st storage.Storage) string {
 	}
 
 	srv := grpc.NewServer()
+	accountservice.RegisterGRPCServer(srv, st)
 	sliceservice.RegisterGRPCServer(srv, st)
 	fileservice.RegisterGRPCServer(srv, st)
 	filesystemservice.RegisterGRPCServer(srv, st)
@@ -1940,6 +1947,111 @@ func startGRPCServer(t *testing.T, st storage.Storage) string {
 	})
 
 	return lis.Addr().String()
+}
+
+func TestGatewayFilesystemWorkspaceCreateAcceptsLinkedWorkOSToken(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startGatewayWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_123",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		Name:         "Alice",
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "workos",
+		WorkOSUserID: "user_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice"); err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	workOSToken := signGatewayWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
+
+	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"workos-gw-ws","name":"WorkOS Workspace"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+workOSToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/fs/workspaces failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		WorkspaceID string `json:"workspaceId"`
+		Name        string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode workspace response: %v", err)
+	}
+	if payload.WorkspaceID != "workos-gw-ws" || payload.Name != "WorkOS Workspace" {
+		t.Fatalf("unexpected workspace payload: %#v", payload)
+	}
+}
+
+func startGatewayWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{{
+				"kid": "test-kid",
+				"kty": "RSA",
+				"alg": "RS256",
+				"use": "sig",
+				"n":   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	return privateKey, server
+}
+
+func signGatewayWorkOSToken(t *testing.T, privateKey *rsa.PrivateKey, audience, subject, sessionID string) string {
+	t.Helper()
+
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"aud": []string{audience},
+		"exp": now.Add(10 * time.Minute).Unix(),
+		"iat": now.Unix(),
+		"iss": "https://api.workos.com/",
+		"sub": subject,
+		"sid": sessionID,
+	})
+	token.Header["kid"] = "test-kid"
+	signed, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("SignedString failed: %v", err)
+	}
+	return signed
 }
 
 func startGatewayServer(t *testing.T, grpcAddr string) string {

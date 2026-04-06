@@ -159,6 +159,7 @@ type Storage interface {
 	EnsureUser(ctx context.Context, username string) (*models.User, error)
 	GetUser(ctx context.Context, username string) (*models.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
+	GetUserByWorkOSUserID(ctx context.Context, workOSUserID string) (*models.User, error)
 	ListUsers(ctx context.Context, limit, offset int) ([]*models.User, error)
 	CreateUser(ctx context.Context, user *models.User) error
 	UpdateUser(ctx context.Context, user *models.User) error

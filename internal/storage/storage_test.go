@@ -611,6 +611,13 @@ func runWorkOSAccountStorageRoundTrip(ctx context.Context, t *testing.T, st Stor
 	if storedUser.RootPath != rootPathForSlug(username) {
 		t.Fatalf("expected user root path %q, got %q", rootPathForSlug(username), storedUser.RootPath)
 	}
+	byWorkOSUserID, err := st.GetUserByWorkOSUserID(ctx, user.WorkOSUserID)
+	if err != nil {
+		t.Fatalf("GetUserByWorkOSUserID failed: %v", err)
+	}
+	if byWorkOSUserID.Username != username {
+		t.Fatalf("unexpected GetUserByWorkOSUserID result: %#v", byWorkOSUserID)
+	}
 
 	users, err := st.ListUsers(ctx, 10, 0)
 	if err != nil {
@@ -640,6 +647,16 @@ func runWorkOSAccountStorageRoundTrip(ctx context.Context, t *testing.T, st Stor
 	}
 	if updatedUser.Name != "Updated WorkOS User" || updatedUser.WorkOSUserID != "user_updated_"+suffix {
 		t.Fatalf("unexpected updated user: %#v", updatedUser)
+	}
+	if _, err := st.GetUserByWorkOSUserID(ctx, user.WorkOSUserID); err != ErrEntryNotFound {
+		t.Fatalf("expected old WorkOS user id lookup to fail, got %v", err)
+	}
+	updatedByWorkOSUserID, err := st.GetUserByWorkOSUserID(ctx, updatedUser.WorkOSUserID)
+	if err != nil {
+		t.Fatalf("GetUserByWorkOSUserID(updated) failed: %v", err)
+	}
+	if updatedByWorkOSUserID.Username != username {
+		t.Fatalf("unexpected updated GetUserByWorkOSUserID result: %#v", updatedByWorkOSUserID)
 	}
 
 	org := &models.Organization{

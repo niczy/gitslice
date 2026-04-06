@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -46,8 +47,10 @@ type accountServiceServer struct {
 }
 
 type authIdentity struct {
-	username  string
-	sessionID string
+	username     string
+	sessionID    string
+	authSource   string
+	workOSUserID string
 }
 
 // RegisterGRPCServer registers the account service handlers on an existing gRPC server.
@@ -399,23 +402,16 @@ func buildAgentKeyChallengePayload(challengeID, keyID, username string, expiresA
 }
 
 func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdentity, error) {
-	if token := auth.TokenFromGRPCContext(ctx); token != "" {
-		session, err := s.st.GetAuthSessionByToken(ctx, token)
-		if err != nil {
-			return nil, status.Error(codes.Unauthenticated, "invalid session token")
-		}
-		_ = s.st.TouchAuthSession(ctx, session.SessionID, time.Now())
-		return &authIdentity{username: session.Username, sessionID: session.SessionID}, nil
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
 	}
-
-	username := auth.UsernameFromGRPCContext(ctx)
-	if username == "" {
-		return nil, status.Error(codes.Unauthenticated, "login required")
-	}
-	if _, err := s.st.EnsureUser(ctx, username); err != nil {
-		return nil, status.Error(codes.InvalidArgument, "invalid user")
-	}
-	return &authIdentity{username: username}, nil
+	return &authIdentity{
+		username:     identity.Username,
+		sessionID:    identity.SessionID,
+		authSource:   identity.AuthSource,
+		workOSUserID: identity.WorkOSUserID,
+	}, nil
 }
 
 func (s *accountServiceServer) createSession(ctx context.Context, username string) (*models.AuthSession, error) {

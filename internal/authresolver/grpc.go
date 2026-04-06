@@ -13,8 +13,11 @@ import (
 )
 
 type Identity struct {
-	Username  string
-	SessionID string
+	Username       string
+	SessionID      string
+	AuthSource     string
+	WorkOSUserID   string
+	OrganizationID string
 }
 
 func OptionalGRPCIdentity(ctx context.Context, st storage.Storage) (*Identity, error) {
@@ -22,19 +25,27 @@ func OptionalGRPCIdentity(ctx context.Context, st storage.Storage) (*Identity, e
 		session, err := st.GetAuthSessionByToken(ctx, token)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
+				workOSIdentity, workOSErr := resolveWorkOSIdentity(ctx, st, token)
+				if workOSErr == nil {
+					return workOSIdentity, nil
+				}
+				if status.Code(workOSErr) != codes.Unimplemented {
+					return nil, workOSErr
+				}
 				return nil, status.Error(codes.Unauthenticated, "invalid session token")
 			}
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve session token: %v", err))
 		}
 		_ = st.TouchAuthSession(ctx, session.SessionID, time.Now())
 		return &Identity{
-			Username:  session.Username,
-			SessionID: session.SessionID,
+			Username:   session.Username,
+			SessionID:  session.SessionID,
+			AuthSource: "local",
 		}, nil
 	}
 
 	if username := auth.UsernameFromGRPCContext(ctx); username != "" {
-		return &Identity{Username: username}, nil
+		return &Identity{Username: username, AuthSource: "local"}, nil
 	}
 
 	return nil, nil
