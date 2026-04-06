@@ -50,7 +50,7 @@ func printAuthHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  keygen   Generate a local ed25519 agent keypair")
 	fmt.Println("  signup   Sign up with an agent private key and store bearer credentials")
-	fmt.Println("  login    Log in with an enrolled agent private key or --device")
+	fmt.Println("  login    Log in with an enrolled agent private key or browser sign-in via --device")
 	fmt.Println("  ensure   Ensure the CLI is authenticated, optionally by logging in with --key")
 	fmt.Println("  status   Show the current stored auth state")
 	fmt.Println("  logout   Clear stored bearer credentials or legacy auth")

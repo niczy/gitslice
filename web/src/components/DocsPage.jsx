@@ -418,7 +418,7 @@ gs doctor --json
 gs context --json`}</code>
             </pre>
             <ul className="docs-bullet-list">
-              <li>Use <code>gs login</code> to start the OAuth device flow for the CLI when a human is present.</li>
+              <li>Use <code>gs login</code> or <code>gs auth login --device</code> to start browser-approved human CLI auth.</li>
               <li>Use <code>gs auth signup</code> and <code>gs auth login --key</code> for non-interactive agent auth.</li>
               <li>Use <code>gs auth claim-token</code> to create a one-time URL that lets a human attach WorkOS sign-in to an agent-created account.</li>
               <li><code>gs auth status --json</code>, <code>gs doctor --json</code>, and <code>gs context --json</code> expose stored auth metadata including the session and enrolled agent key ID.</li>

@@ -460,7 +460,7 @@ Search index maintenance:
 
 ## Accounts / Organizations
 
-This repo uses lightweight account sign-in: the web app supports OAuth via Auth.js (Google/GitHub), the CLI supports OAuth device login, and agents can sign up or log in non-interactively with enrolled `ed25519` keys. Requests include the signed-in user in metadata.
+This repo uses WorkOS-backed human web sign-in, browser-approved CLI device login for humans, and enrolled `ed25519` keys for non-interactive agent auth. Requests include the signed-in user in metadata.
 
 - The root slice (`root_slice`) is publicly viewable.
 - Non-root slices are only visible/accessible to their owners.
@@ -493,7 +493,7 @@ instead of storing them in the VM env files.
 CLI usage:
 
 ```bash
-# Start OAuth device login and store refreshable credentials in ~/.gitslice/credentials.json
+# Start browser-approved device login and store refreshable credentials in ~/.gitslice/credentials.json
 gs login
 
 # Agent-first signup/login with an ed25519 keypair

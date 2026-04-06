@@ -150,20 +150,20 @@ func handleAuthSignup(ctx context.Context, cli *CLI, args []string) {
 func handleAuthLogin(ctx context.Context, cli *CLI, args []string) {
 	fs := newCommandFlagSet("auth login")
 	keyPath := fs.String("key", "", "Path to the agent private key PEM")
-	device := fs.Bool("device", false, "Use interactive browser/device login")
+	device := fs.Bool("device", false, "Use interactive browser sign-in for human login")
 	parseFlagSetInterspersed(fs, args)
 	if *device {
 		if strings.TrimSpace(*keyPath) != "" {
 			commandFatal("INVALID_ARGUMENT", "Choose either --key or --device for auth login.", false, "")
 		}
 		if cliStructuredJSON || cliNonInteractive {
-			commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Use gs auth login --key <private-key-path> in agent-driven flows.", false, "gs auth login --key <private-key-path>")
+			commandFatal("INTERACTIVE_REQUIRED", "Device login uses an interactive browser sign-in. Use gs auth login --key <private-key-path> in agent-driven flows.", false, "gs auth login --key <private-key-path>")
 		}
 		startDeviceLogin(ctx, cli)
 		return
 	}
 	if strings.TrimSpace(*keyPath) == "" {
-		commandUsage("Usage: gs auth login --key <private-key-path> [--json]\n   or: gs auth login --device")
+		commandUsage("Usage: gs auth login --key <private-key-path> [--json]\n   or: gs auth login --device   # browser sign-in for humans")
 		return
 	}
 
@@ -184,7 +184,7 @@ func handleAuthLogin(ctx context.Context, cli *CLI, args []string) {
 func handleAuthEnsure(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string, args []string) {
 	fs := newCommandFlagSet("auth ensure")
 	keyPath := fs.String("key", "", "Path to an enrolled agent private key used when auth is missing")
-	device := fs.Bool("device", false, "Use interactive browser/device login when auth is missing")
+	device := fs.Bool("device", false, "Use interactive browser sign-in when auth is missing")
 	parseFlagSetInterspersed(fs, args)
 	if fs.NArg() != 0 {
 		commandUsage("Usage: gs auth ensure [--key <private-key-path>] [--device] [--json]")
@@ -228,7 +228,7 @@ func handleAuthEnsure(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string
 			ensured = true
 		case *device:
 			if cliStructuredJSON || cliNonInteractive {
-				commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Use gs auth ensure --key <private-key-path> in agent-driven flows.", false, "gs auth ensure --key <private-key-path>")
+				commandFatal("INTERACTIVE_REQUIRED", "Device login uses an interactive browser sign-in. Use gs auth ensure --key <private-key-path> in agent-driven flows.", false, "gs auth ensure --key <private-key-path>")
 			}
 			startDeviceLogin(ctx, cli)
 			authConfig, err = resolveAuthConfig(apiKeyFlag, userFlag)
