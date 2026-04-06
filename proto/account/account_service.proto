@@ -734,6 +734,7 @@ message EnsureWorkOSLocalIdentityRequest {
   string name = 2;
   string primary_email = 3;
   string claim_token = 4;
+  bool issue_local_session = 5;
 }
 
 message EnsureWorkOSLocalIdentityResponse {
@@ -743,6 +744,7 @@ message EnsureWorkOSLocalIdentityResponse {
   bool created_user = 4;
   bool linked_existing_user = 5;
   bool claimed_account = 6;
+  AuthResponse local_auth = 7;
 }
 
 message UpdateMeRequest {

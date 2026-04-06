@@ -464,6 +464,7 @@ type ensureWorkOSLocalIdentityResult struct {
 	createdUser        bool
 	linkedExistingUser bool
 	claimedAccount     bool
+	localSession       *models.AuthSession
 }
 
 func hashClaimToken(value string) string {
@@ -2028,7 +2029,25 @@ func (s *accountServiceServer) EnsureWorkOSLocalIdentity(ctx context.Context, re
 	if err := s.syncWorkOSOrganizationMembership(ctx, result.user, claims.OrganizationID, claims.Role); err != nil {
 		return nil, err
 	}
-	return ensureWorkOSLocalIdentityResultToProto(result), nil
+	if req.GetIssueLocalSession() {
+		session, err := s.createRefreshableSession(ctx, result.user.Username, "")
+		if err != nil {
+			if stErr, ok := status.FromError(err); ok {
+				return nil, stErr.Err()
+			}
+			return nil, status.Error(codes.Internal, "failed to create local session")
+		}
+		result.localSession = session
+	}
+	resp := ensureWorkOSLocalIdentityResultToProto(result)
+	if result.localSession != nil {
+		localAuth, err := s.buildAuthResponse(ctx, result.user, result.localSession)
+		if err != nil {
+			return nil, err
+		}
+		resp.LocalAuth = localAuth
+	}
+	return resp, nil
 }
 
 func (s *accountServiceServer) UpdateMe(ctx context.Context, req *accountv1.UpdateMeRequest) (*accountv1.User, error) {

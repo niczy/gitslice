@@ -221,6 +221,51 @@ func TestEnsureWorkOSLocalIdentityCreatesNewLocalUser(t *testing.T) {
 	assertHomeSliceProvisioned(t, ctx, srv.st, "alice-workos")
 }
 
+func TestEnsureWorkOSLocalIdentityCanIssueRefreshableLocalSession(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_issue_123", "sess_workos_123")
+
+	resp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		PreferredUsername: "alice-local-session",
+		Name:              "Alice Local Session",
+		PrimaryEmail:      "alice-local@example.com",
+		IssueLocalSession: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	localAuth := resp.GetLocalAuth()
+	if localAuth == nil {
+		t.Fatalf("expected local auth response, got %#v", resp)
+	}
+	if localAuth.GetAccessToken() == "" || localAuth.GetRefreshToken() == "" {
+		t.Fatalf("expected refreshable local auth tokens, got %#v", localAuth)
+	}
+	if localAuth.GetSession() == nil || localAuth.GetSession().GetId() == "" {
+		t.Fatalf("expected local session metadata, got %#v", localAuth)
+	}
+	if localAuth.GetUser().GetUsername() != "alice-local-session" {
+		t.Fatalf("unexpected local auth user: %#v", localAuth)
+	}
+	if _, err := srv.ListSessions(bearerCtx(ctx, localAuth.GetAccessToken()), &accountv1.ListSessionsRequest{}); err != nil {
+		t.Fatalf("issued local access token should be usable, got %v", err)
+	}
+	refreshResp, err := srv.RefreshAccessToken(ctx, &accountv1.RefreshAccessTokenRequest{RefreshToken: localAuth.GetRefreshToken()})
+	if err != nil {
+		t.Fatalf("RefreshAccessToken failed: %v", err)
+	}
+	if refreshResp.GetAccessToken() == "" || refreshResp.GetAccessToken() == localAuth.GetAccessToken() {
+		t.Fatalf("expected rotated local access token, got %#v", refreshResp)
+	}
+}
+
 func TestEnsureWorkOSLocalIdentityRequiresClaimTokenForAgentOnlyAccount(t *testing.T) {
 	t.Setenv("AUTH_PROVIDER", "workos")
 	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
