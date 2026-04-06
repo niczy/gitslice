@@ -3,7 +3,7 @@
 ## Implementation Status
 
 - Current status: `not started`
-- Last updated: `2026-04-05`
+- Last updated: `2026-04-06`
 
 ---
 
@@ -11,11 +11,13 @@
 
 Integrate WorkOS as the primary human authentication system for the web product while keeping Gitslice as the source of truth for:
 
-- local user records
+- local accounts and user records
 - home slice provisioning
 - organizations, teams, and invites
 - agent-key auth
 - CLI-specific auth flows
+
+The key design constraint is that **accounts may be created by agents before any human identity exists**. WorkOS must attach to local Gitslice accounts; it must not be the only way accounts come into existence.
 
 The intent is to replace the current split human web auth surface with a production-grade managed identity layer without regressing agent workflows.
 
@@ -50,7 +52,7 @@ WorkOS is a good fit for the human-facing identity layer:
 - invitations
 - future SSO support
 
-Agent-key auth should remain local to Gitslice.
+Agent-key auth should remain local to Gitslice, and agent-created accounts must remain claimable by humans later.
 
 ---
 
@@ -61,21 +63,29 @@ Agent-key auth should remain local to Gitslice.
    - Human CLI auth may use WorkOS later.
 
 2. **Gitslice remains the application account system**
-   - Local users still exist in Postgres.
+   - Local accounts and users still exist in Postgres.
    - Local usernames remain first-class.
    - Home slices still provision in Gitslice.
 
-3. **Agent-key auth stays local**
+3. **Local account existence does not depend on WorkOS**
+   - Agents can create accounts before any human signs in.
+   - WorkOS attaches human identity to an existing local account or helps create one.
+
+4. **Agent-key auth stays local**
    - `gs auth signup --key`
    - `gs auth login --key`
    - agent-key enrollment/revocation
    - these should not depend on WorkOS.
 
-4. **Do not migrate everything at once**
+5. **Human identity is attachable later**
+   - A human can claim or attach to an agent-created account.
+   - Linking must be explicit and secure.
+
+6. **Do not migrate everything at once**
    - First replace web human sign-in.
    - Then integrate organizations and account management.
 
-5. **Keep the current infra model**
+7. **Keep the current infra model**
    - web on Cloudflare Worker
    - core API on the VM
    - staging on `agenttools.dev` / `api.agenttools.dev`
@@ -90,6 +100,7 @@ Agent-key auth should remain local to Gitslice.
 - Do not move org authorization fully into WorkOS in the first phase.
 - Do not replace Gitslice authorization with WorkOS FGA in v1.
 - Do not attempt a backward-compatible migration for old auth cookies if it complicates rollout; there is no production traffic requirement.
+- Do not require a human WorkOS identity before an agent can start using Gitslice.
 
 ---
 
@@ -151,24 +162,44 @@ This should be unified.
 3. Worker exchanges code for WorkOS session credentials.
 4. Worker stores the app-facing session state in cookies.
 5. Worker attaches a WorkOS bearer access token to API requests or forwards the session state in a controlled way.
-6. Go core verifies the WorkOS JWT and resolves a local Gitslice user.
-7. If this is the first login, Gitslice provisions the local user row and `home.<username>`.
+6. Go core verifies the WorkOS JWT and resolves a local Gitslice account/user.
+7. If this is the first login for that human identity, Gitslice either:
+   - attaches the human to an existing local account, or
+   - provisions a new local account/user and `home.<username>`.
 
-## Local User Mapping
+## Agent-First Account Creation
+
+1. Agent generates a local keypair.
+2. Agent runs `gs auth signup --key ...`.
+3. Gitslice creates a local account/user immediately.
+4. Gitslice provisions the home slice immediately.
+5. The account starts in an `agent_only` or unlinked state.
+6. Later, a human can attach WorkOS identity to that account through an explicit linking flow.
+
+## Local Account and User Mapping
 
 Add local identity links:
 
+- `users.account_id`
 - `users.workos_user_id`
 - `users.auth_source`
 - `organizations.workos_organization_id`
 - `memberships.workos_membership_id`
 
+Add account-level ownership/linkage state:
+
+- `accounts.id`
+- `accounts.owner_mode` = `agent_only | human_attached | org_managed`
+- `accounts.claim_state`
+- `accounts.claim_token_hash` or equivalent one-time claim mechanism if needed
+
 The local username remains stable and must not be recomputed on every WorkOS login.
 
 Recommended rule:
 
-- if email matches an existing local user, attach WorkOS to that user
-- otherwise create a local user once and persist the chosen username
+- if explicit account claim or link proof is presented, attach WorkOS to that account
+- otherwise, if email matches an existing local user and policy allows it, attach WorkOS to that user
+- otherwise create a local account/user once and persist the chosen username
 
 ## Organizations
 
@@ -194,6 +225,7 @@ Keep current behavior:
 Possible later extension:
 
 - add WorkOS CLI auth for humans only
+- add a CLI-assisted account-claim flow if humans need to attach to agent-created accounts outside the web app
 
 ---
 
@@ -202,13 +234,26 @@ Possible later extension:
 ### Human users
 
 - WorkOS manages primary human sign-in methods
-- Gitslice stores local user and org metadata
+- Gitslice stores local account, user, and org metadata
 - Go backend trusts verified WorkOS access tokens
 
 ### Agent users
 
 - Gitslice-managed only
 - not dependent on WorkOS
+- may exist before any human identity exists
+
+### Account ownership states
+
+- `agent_only`
+  - created by agent-key signup
+  - no human identity linked yet
+- `human_attached`
+  - at least one WorkOS identity linked
+- `org_managed`
+  - owned or administered through local org policy
+
+The account state should be explicit in the data model so linking and authorization rules stay predictable.
 
 ### Web session transport
 
@@ -282,6 +327,28 @@ Never derive the username fresh on every login.
 
 ---
 
+## Account Claim / Human Attachment
+
+This is the second major product decision to lock up front.
+
+Recommended:
+
+- do **not** auto-attach a WorkOS user to an agent-created account based only on email similarity
+- support explicit linking through one of:
+  - a one-time claim token generated from an authenticated agent/local session
+  - an existing authenticated local bearer session in the browser
+  - explicit org admin approval for org-managed accounts
+
+Optional low-friction rule:
+
+- allow verified-email auto-attach only when there is exactly one matching unclaimed local account and policy is explicitly enabled
+
+Default safer rule:
+
+- explicit claim or explicit link proof required
+
+---
+
 ## Risks
 
 ### 1. Split-brain auth during migration
@@ -303,7 +370,17 @@ Mitigation:
 - exact-match only
 - fail closed when ambiguous
 
-### 3. Org duplication
+### 3. Account hijacking during human attachment
+
+If a human can claim an agent-created account too easily, the agent-first model becomes unsafe.
+
+Mitigation:
+
+- explicit claim token or existing authenticated local session
+- no loose email-based claiming by default
+- audit account-link events
+
+### 4. Org duplication
 
 If WorkOS orgs and local orgs are both editable without clear ownership rules, data drift will follow.
 
@@ -312,7 +389,7 @@ Mitigation:
 - phase 1 uses local orgs as the system of record
 - WorkOS org IDs are linked metadata
 
-### 4. Worker/runtime integration drift
+### 5. Worker/runtime integration drift
 
 The Worker and Go backend need a clean contract for login, refresh, logout, and session inspection.
 
@@ -330,10 +407,11 @@ Because there is no meaningful production traffic, the migration can be direct r
 Recommended path:
 
 1. build WorkOS integration behind config
-2. validate in staging end to end
-3. switch production web auth to WorkOS
-4. keep dev-login only for local/dev fallback
-5. keep agent-key auth untouched
+2. model local account ownership and claim state
+3. validate in staging end to end
+4. switch production web auth to WorkOS
+5. keep dev-login only for local/dev fallback
+6. keep agent-key auth untouched
 
 No need to preserve old production auth cookies or old OAuth callback behavior if the cutover path is clean.
 
@@ -354,7 +432,9 @@ Scope:
 
 - add `AUTH_PROVIDER` config with values like `local` and `workos`
 - add WorkOS config surface to worker and core
-- add local data model fields for WorkOS IDs on users/orgs/memberships
+- add local data model fields for:
+  - account ownership state
+  - WorkOS IDs on users/orgs/memberships
 - keep current auth behavior as default
 
 Changes:
@@ -366,6 +446,7 @@ Changes:
 Exit criteria:
 
 - repo can build with WorkOS config present
+- local account/ownership schema exists
 - no behavior change yet
 
 ### PR2 - Worker-side WorkOS Bootstrap
@@ -408,6 +489,7 @@ Exit criteria:
 Scope:
 
 - on first WorkOS login, find or create a local user
+- resolve or create the owning local account
 - persist `workos_user_id`
 - ensure home slice exists
 - define and enforce username creation/attachment rules
@@ -415,6 +497,7 @@ Scope:
 Changes:
 
 - account service linkage helpers
+- account lookup by claim/link state
 - storage lookup by WorkOS ID
 - home slice provisioning on WorkOS login
 
@@ -422,7 +505,26 @@ Exit criteria:
 
 - first-time WorkOS user lands in a valid local account with `home.<username>`
 
-### PR5 - Replace Web Sign-In Surface
+### PR5 - Agent-Created Account Claim Flow
+
+Scope:
+
+- add explicit human attachment flow for agent-created accounts
+- support safe account claim or link semantics
+- define audit trail for claim/link events
+
+Changes:
+
+- account claim token or equivalent secure linking primitive
+- worker/web claim flow
+- backend claim validation
+
+Exit criteria:
+
+- a human can securely attach WorkOS identity to an existing agent-created account
+- ambiguous or unauthorized attachment is rejected
+
+### PR6 - Replace Web Sign-In Surface
 
 Scope:
 
@@ -440,7 +542,7 @@ Exit criteria:
 
 - normal staging web sign-in works only through WorkOS for human users
 
-### PR6 - Web Account Management
+### PR7 - Web Account Management
 
 Scope:
 
@@ -459,7 +561,7 @@ Exit criteria:
 
 - user can inspect sessions, update profile fields, and delete account from the web UI
 
-### PR7 - Linked Auth Methods Implementation
+### PR8 - Linked Auth Methods Implementation
 
 Scope:
 
@@ -477,7 +579,7 @@ Exit criteria:
 
 - linked auth methods are real, not proto-only
 
-### PR8 - WorkOS Organizations Linkage
+### PR9 - WorkOS Organizations Linkage
 
 Scope:
 
@@ -494,7 +596,7 @@ Exit criteria:
 
 - signed-in WorkOS users can be associated with the correct local org context
 
-### PR9 - Optional Human CLI Auth via WorkOS
+### PR10 - Optional Human CLI Auth via WorkOS
 
 Scope:
 
@@ -510,7 +612,7 @@ Exit criteria:
 
 - humans can authenticate the CLI through WorkOS without affecting agent-key flows
 
-### PR10 - Cleanup + Remove Legacy Human Web Auth
+### PR11 - Cleanup + Remove Legacy Human Web Auth
 
 Scope:
 
@@ -544,6 +646,8 @@ Exit criteria:
 
 ### Workflow / integration
 
+- agent-first signup provisions a usable local account and home slice
+- human claim attaches to the correct existing account
 - first login provisions home slice
 - returning login reuses same local account
 - session revoke works
@@ -551,6 +655,7 @@ Exit criteria:
 
 ### Web e2e
 
+- account claim flow
 - login redirect
 - callback completion
 - session persistence
@@ -571,6 +676,8 @@ Exit criteria:
 ## Success Criteria
 
 - human users can sign in on the web through WorkOS
+- agent-created accounts can exist before any human identity exists
+- humans can securely attach to agent-created accounts
 - first login creates or links a stable local Gitslice user
 - home slice provisioning still happens automatically
 - web no longer depends on dev username login in production
@@ -587,5 +694,6 @@ Start with:
 1. `PR1 - Auth Provider Abstraction + Config`
 2. `PR2 - Worker-side WorkOS Bootstrap`
 3. `PR3 - Core API WorkOS JWT Verification`
+4. `PR4 - Local User Provisioning + Account Linkage`
 
-That gets the auth boundary right before touching organizations or the broader account UX.
+That gets the auth boundary and account model right before touching claim flows, organizations, or the broader account UX.
