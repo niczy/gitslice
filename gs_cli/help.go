@@ -55,10 +55,12 @@ func printAuthHelp() {
 	fmt.Println("  status   Show the current stored auth state")
 	fmt.Println("  logout   Clear stored bearer credentials or legacy auth")
 	fmt.Println("  keys     Manage enrolled agent keys")
+	fmt.Println("  claim-token Create a one-time account claim URL for attaching a human sign-in")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs auth keygen --out ~/.config/gitslice/agent.pem")
 	fmt.Println("  gs auth signup --username nic --email nic@example.com --name \"Nic\" --key ~/.config/gitslice/agent.pem --json")
 	fmt.Println("  gs auth login --key ~/.config/gitslice/agent.pem --json")
+	fmt.Println("  gs auth claim-token --json")
 	fmt.Println("  gs auth ensure --key ~/.config/gitslice/agent.pem --json")
 	fmt.Println("  gs auth status --json")
 }

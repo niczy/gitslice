@@ -500,6 +500,7 @@ gs login
 gs auth keygen --out ~/.config/gitslice/agent_ed25519
 gs auth signup --username your_name --email you@example.com --name "Your Name" --key ~/.config/gitslice/agent_ed25519
 gs auth login --key ~/.config/gitslice/agent_ed25519
+gs auth claim-token --json
 
 # Check the current stored login and auth metadata
 gs auth status --json

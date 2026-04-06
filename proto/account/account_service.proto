@@ -150,6 +150,13 @@ service AccountService {
     };
   }
 
+  rpc CreateAccountClaimToken(CreateAccountClaimTokenRequest) returns (CreateAccountClaimTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/account/claim-token"
+      body: "*"
+    };
+  }
+
   // Users
   rpc GetMe(GetMeRequest) returns (User) {
     option (google.api.http) = {
@@ -712,12 +719,21 @@ message DeleteAgentKeyRequest {
   string key_id = 1;
 }
 
+message CreateAccountClaimTokenRequest {}
+
+message CreateAccountClaimTokenResponse {
+  string account_id = 1;
+  string claim_token = 2;
+  string claim_url = 3;
+}
+
 message GetMeRequest {}
 
 message EnsureWorkOSLocalIdentityRequest {
   string preferred_username = 1;
   string name = 2;
   string primary_email = 3;
+  string claim_token = 4;
 }
 
 message EnsureWorkOSLocalIdentityResponse {
@@ -726,6 +742,7 @@ message EnsureWorkOSLocalIdentityResponse {
   bool created_account = 3;
   bool created_user = 4;
   bool linked_existing_user = 5;
+  bool claimed_account = 6;
 }
 
 message UpdateMeRequest {

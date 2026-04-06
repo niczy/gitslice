@@ -378,7 +378,7 @@ async function authenticateWorkOSSession(request, authContext) {
   }
 }
 
-async function ensureWorkOSLocalIdentity(request, accessToken, session) {
+async function ensureWorkOSLocalIdentity(request, accessToken, session, claimToken = '') {
   if (!session?.user?.workosUserId || !accessToken) {
     return session;
   }
@@ -394,6 +394,7 @@ async function ensureWorkOSLocalIdentity(request, accessToken, session) {
       preferredUsername: session.user.derivedUsername || '',
       name: session.user.name || '',
       primaryEmail: session.user.email || '',
+      claimToken: String(claimToken || '').trim(),
     }),
   });
 
@@ -700,6 +701,34 @@ async function handleWorkOSLogoutRequest(request, authContext) {
   ]);
 }
 
+async function handleWorkOSClaimAccountRequest(request, authContext) {
+  const url = new URL(request.url);
+  const claimToken = String(url.searchParams.get('token') || '').trim();
+  const callbackURL = normalizeReturnTo(request, url.searchParams.get('callbackUrl'), '/browser');
+  if (!claimToken) {
+    return Response.json({ error: 'claim token is required' }, { status: 400 });
+  }
+
+  const { session, accessToken, clearCookie } = await authenticateWorkOSSession(request, authContext);
+  if (!session || !accessToken) {
+    const signinURL = new URL('/auth/signin/workos', request.url);
+    signinURL.searchParams.set('callbackUrl', url.toString());
+    const response = redirectWithCookies(signinURL.toString(), []);
+    if (clearCookie) {
+      response.headers.append('Set-Cookie', serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0));
+    }
+    return response;
+  }
+
+  try {
+    await ensureWorkOSLocalIdentity(request, accessToken, session, claimToken);
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : 'Failed to claim account' }, { status: 400 });
+  }
+
+  return redirectWithCookies(callbackURL, []);
+}
+
 export async function handleAuthRequest(request) {
   const authContext = createAuthContext(request);
   if (authContext.startupError) {
@@ -712,6 +741,9 @@ export async function handleAuthRequest(request) {
     }
     if (pathname === 'callback/workos') {
       return handleWorkOSCallbackRequest(request, authContext);
+    }
+    if (pathname === 'claim-account') {
+      return handleWorkOSClaimAccountRequest(request, authContext);
     }
     if (pathname === 'signout') {
       return handleWorkOSLogoutRequest(request, authContext);

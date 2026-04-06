@@ -221,7 +221,7 @@ func TestEnsureWorkOSLocalIdentityCreatesNewLocalUser(t *testing.T) {
 	assertHomeSliceProvisioned(t, ctx, srv.st, "alice-workos")
 }
 
-func TestEnsureWorkOSLocalIdentityLinksExistingEmailUser(t *testing.T) {
+func TestEnsureWorkOSLocalIdentityRequiresClaimTokenForAgentOnlyAccount(t *testing.T) {
 	t.Setenv("AUTH_PROVIDER", "workos")
 	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
 
@@ -249,34 +249,20 @@ func TestEnsureWorkOSLocalIdentityLinksExistingEmailUser(t *testing.T) {
 	srv := &accountServiceServer{st: st}
 	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_link_123", "sess_workos_123")
 
-	resp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+	_, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
 		Name:         "Alice Human",
 		PrimaryEmail: "alice@example.com",
 	})
-	if err != nil {
-		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
-	}
-	if resp.GetCreatedUser() || resp.GetCreatedAccount() || !resp.GetLinkedExistingUser() {
-		t.Fatalf("unexpected response flags: %#v", resp)
-	}
-	if resp.GetUser().GetUsername() != "agentalice" {
-		t.Fatalf("unexpected username: %#v", resp)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected failed precondition, got %v", err)
 	}
 	linkedUser, err := st.GetUser(ctx, "agentalice")
 	if err != nil {
 		t.Fatalf("GetUser failed: %v", err)
 	}
-	if linkedUser.WorkOSUserID != "user_link_123" || linkedUser.AuthSource != "workos" {
-		t.Fatalf("unexpected linked user: %#v", linkedUser)
+	if linkedUser.WorkOSUserID != "" || linkedUser.AuthSource != "" {
+		t.Fatalf("expected user to remain unlinked, got %#v", linkedUser)
 	}
-	linkedAccount, err := st.GetAccount(ctx, account.AccountID)
-	if err != nil {
-		t.Fatalf("GetAccount failed: %v", err)
-	}
-	if linkedAccount.OwnerMode != models.AccountOwnerModeHumanAttached || linkedAccount.ClaimState != models.AccountClaimStateClaimed {
-		t.Fatalf("unexpected linked account: %#v", linkedAccount)
-	}
-	assertHomeSliceProvisioned(t, ctx, st, "agentalice")
 }
 
 func TestEnsureWorkOSLocalIdentityIsIdempotentForLinkedUser(t *testing.T) {
@@ -328,6 +314,104 @@ func TestEnsureWorkOSLocalIdentityIsIdempotentForLinkedUser(t *testing.T) {
 	if second.GetCreatedUser() || second.GetCreatedAccount() || second.GetLinkedExistingUser() {
 		t.Fatalf("expected idempotent second ensure, got %#v", second)
 	}
+}
+
+func TestCreateAccountClaimTokenReturnsClaimURL(t *testing.T) {
+	t.Setenv("PUBLIC_WEB_BASE_URL", "https://gitslice.io")
+
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+	authResp, err := srv.SignupWithAgentKey(ctx, &accountv1.SignupWithAgentKeyRequest{
+		Username:  "agentclaim",
+		Email:     "agentclaim@example.com",
+		Name:      "Agent Claim",
+		Algorithm: "ed25519",
+		PublicKey: publicKey,
+		KeyName:   "claim-runner",
+	})
+	if err != nil {
+		t.Fatalf("SignupWithAgentKey failed: %v", err)
+	}
+
+	resp, err := srv.CreateAccountClaimToken(bearerCtx(ctx, authResp.GetAccessToken()), &accountv1.CreateAccountClaimTokenRequest{})
+	if err != nil {
+		t.Fatalf("CreateAccountClaimToken failed: %v", err)
+	}
+	if resp.GetAccountId() == "" || resp.GetClaimToken() == "" {
+		t.Fatalf("expected claim token response, got %#v", resp)
+	}
+	if !strings.HasPrefix(resp.GetClaimUrl(), "https://gitslice.io/auth/claim-account?token=") {
+		t.Fatalf("unexpected claim url: %q", resp.GetClaimUrl())
+	}
+	account, err := srv.st.GetAccount(ctx, resp.GetAccountId())
+	if err != nil {
+		t.Fatalf("GetAccount failed: %v", err)
+	}
+	if account.ClaimTokenHash != hashClaimToken(resp.GetClaimToken()) {
+		t.Fatalf("expected stored claim token hash, got %#v", account)
+	}
+}
+
+func TestEnsureWorkOSLocalIdentityClaimsAgentAccountWithClaimToken(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:      "acct_agent_123",
+		OwnerMode:      models.AccountOwnerModeAgentOnly,
+		ClaimState:     models.AccountClaimStateUnclaimed,
+		ClaimTokenHash: hashClaimToken("claim_token_123"),
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "agentalice",
+		AccountID:    account.AccountID,
+		Name:         "Agent Alice",
+		PrimaryEmail: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_link_123", "sess_workos_123")
+
+	resp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		Name:         "Alice Human",
+		PrimaryEmail: "alice@example.com",
+		ClaimToken:   "claim_token_123",
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if !resp.GetClaimedAccount() || !resp.GetLinkedExistingUser() {
+		t.Fatalf("expected claimed linked user response, got %#v", resp)
+	}
+	linkedUser, err := st.GetUser(ctx, "agentalice")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if linkedUser.WorkOSUserID != "user_link_123" || linkedUser.AuthSource != "workos" {
+		t.Fatalf("unexpected linked user: %#v", linkedUser)
+	}
+	linkedAccount, err := st.GetAccount(ctx, account.AccountID)
+	if err != nil {
+		t.Fatalf("GetAccount failed: %v", err)
+	}
+	if linkedAccount.OwnerMode != models.AccountOwnerModeHumanAttached || linkedAccount.ClaimState != models.AccountClaimStateClaimed || linkedAccount.ClaimTokenHash != "" {
+		t.Fatalf("unexpected linked account: %#v", linkedAccount)
+	}
+	assertHomeSliceProvisioned(t, ctx, st, "agentalice")
 }
 
 func TestListAuthMethodsSynthesizesPasswordAndWorkOSMethods(t *testing.T) {
@@ -1064,8 +1148,15 @@ func TestSignupWithAgentKeyFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser failed: %v", err)
 	}
-	if user.PrimaryEmail != "agentsignup@example.com" {
+	if user.PrimaryEmail != "agentsignup@example.com" || user.AccountID == "" {
 		t.Fatalf("unexpected user: %#v", user)
+	}
+	account, err := srv.st.GetAccount(ctx, user.AccountID)
+	if err != nil {
+		t.Fatalf("GetAccount failed: %v", err)
+	}
+	if account.OwnerMode != models.AccountOwnerModeAgentOnly || account.ClaimState != models.AccountClaimStateUnclaimed {
+		t.Fatalf("unexpected account: %#v", account)
 	}
 
 	keys, err := srv.st.ListAgentKeysByUser(ctx, "agentsignup")

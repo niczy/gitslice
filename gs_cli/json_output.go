@@ -90,6 +90,12 @@ type jsonAuthKeyRevokeOutput struct {
 	Status string `json:"status"`
 }
 
+type jsonAuthClaimTokenOutput struct {
+	AccountID  string `json:"account_id"`
+	ClaimToken string `json:"claim_token"`
+	ClaimURL   string `json:"claim_url"`
+}
+
 type jsonChangesetCreateOutput struct {
 	ChangesetID   string   `json:"changeset_id"`
 	ChangesetHash string   `json:"changeset_hash"`
@@ -746,6 +752,17 @@ func buildAuthKeysListOutput(resp *accountv1.ListAgentKeysResponse) jsonAuthKeys
 	}
 	out.Total = len(out.Keys)
 	return out
+}
+
+func buildAuthClaimTokenOutput(resp *accountv1.CreateAccountClaimTokenResponse) jsonAuthClaimTokenOutput {
+	if resp == nil {
+		return jsonAuthClaimTokenOutput{}
+	}
+	return jsonAuthClaimTokenOutput{
+		AccountID:  strings.TrimSpace(resp.GetAccountId()),
+		ClaimToken: strings.TrimSpace(resp.GetClaimToken()),
+		ClaimURL:   strings.TrimSpace(resp.GetClaimUrl()),
+	}
 }
 
 func buildChangesetOutputFromInfo(info *slicev1.ChangesetInfo) jsonChangesetCreateOutput {
