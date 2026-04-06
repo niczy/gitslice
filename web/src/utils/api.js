@@ -58,6 +58,77 @@ export async function fetchRepoBindings() {
   return payload?.bindings || [];
 }
 
+export async function fetchCurrentUser() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/users/me`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load profile'));
+  }
+  return response.json();
+}
+
+export async function updateCurrentUser({ name = '', primaryEmail = '' } = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/users/me`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name,
+      primaryEmail,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to update profile'));
+  }
+  return response.json();
+}
+
+export async function deleteCurrentUser() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/users/me`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to delete account'));
+  }
+}
+
+export async function fetchAuthSessions() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/sessions`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load sessions'));
+  }
+  const payload = await response.json();
+  return payload?.sessions || [];
+}
+
+export async function deleteAuthSession(sessionId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to revoke session'));
+  }
+}
+
+export async function fetchOrganizations() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/orgs`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load organizations'));
+  }
+  const payload = await response.json();
+  return payload?.organizations || [];
+}
+
+export async function createOrganization({ name = '' } = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/orgs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to create organization'));
+  }
+  return response.json();
+}
+
 export async function searchWorkspaceFiles(workspaceId, { query, glob = '', regex = false } = {}) {
   const params = new URLSearchParams();
   params.set('query', String(query || '').trim());

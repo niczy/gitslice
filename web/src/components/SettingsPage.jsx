@@ -3,12 +3,23 @@ import { useEffect, useState } from 'react';
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
 import { Card, CardContent } from './ui/card.jsx';
-import { createAgentKey, fetchAgentKeys, fetchRepoBindings, revokeAgentKey } from '../utils/api.js';
+import {
+  createAgentKey,
+  deleteAuthSession,
+  fetchAgentKeys,
+  fetchAuthSessions,
+  fetchRepoBindings,
+  revokeAgentKey,
+} from '../utils/api.js';
 
 export default function SettingsPage({ username, authSessionSource, onOpenProfile, onLogout }) {
   const [bindings, setBindings] = useState([]);
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsError, setBindingsError] = useState('');
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState('');
+  const [revokingSessionId, setRevokingSessionId] = useState('');
   const [agentKeys, setAgentKeys] = useState([]);
   const [agentKeysLoading, setAgentKeysLoading] = useState(false);
   const [agentKeysError, setAgentKeysError] = useState('');
@@ -24,6 +35,9 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setBindings([]);
       setBindingsLoading(false);
       setBindingsError('');
+      setSessions([]);
+      setSessionsLoading(false);
+      setSessionsError('');
       setAgentKeys([]);
       setAgentKeysLoading(false);
       setAgentKeysError('');
@@ -34,6 +48,8 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
 
     setBindingsLoading(true);
     setBindingsError('');
+    setSessionsLoading(true);
+    setSessionsError('');
     setAgentKeysLoading(true);
     setAgentKeysError('');
     fetchRepoBindings()
@@ -51,6 +67,23 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       .finally(() => {
         if (!cancelled) {
           setBindingsLoading(false);
+        }
+      });
+    fetchAuthSessions()
+      .then((nextSessions) => {
+        if (!cancelled) {
+          setSessions(nextSessions);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSessions([]);
+          setSessionsError(err?.message || 'Unable to load sessions.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSessionsLoading(false);
         }
       });
     fetchAgentKeys()
@@ -87,6 +120,37 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setAgentKeysError(err?.message || 'Unable to load agent keys.');
     } finally {
       setAgentKeysLoading(false);
+    }
+  }
+
+  async function refreshSessions() {
+    setSessionsLoading(true);
+    setSessionsError('');
+    try {
+      const nextSessions = await fetchAuthSessions();
+      setSessions(nextSessions);
+    } catch (err) {
+      setSessions([]);
+      setSessionsError(err?.message || 'Unable to load sessions.');
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
+
+  async function handleSessionRevoke(sessionId, current) {
+    setSessionsError('');
+    setRevokingSessionId(sessionId);
+    try {
+      await deleteAuthSession(sessionId);
+      if (current) {
+        await onLogout?.();
+        return;
+      }
+      await refreshSessions();
+    } catch (err) {
+      setSessionsError(err?.message || 'Unable to revoke session.');
+    } finally {
+      setRevokingSessionId('');
     }
   }
 
@@ -152,11 +216,80 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                 </div>
                 <div className="auth-actions">
                   <Button type="button" onClick={onOpenProfile}>Open Profile Details</Button>
+                  <Button type="button" variant="ghost" onClick={refreshSessions}>Refresh sessions</Button>
                   <Button type="button" variant="ghost" onClick={onLogout}>Logout</Button>
                 </div>
               </CardContent>
             </Card>
 
+            <Card className="border-border/70">
+              <CardContent className="space-y-4 pt-6">
+                <div className="space-y-2">
+                  <h3>Gitslice sessions</h3>
+                  <p className="status">
+                    Local CLI, device, and dev sessions live here.
+                    {authSessionSource === 'workos' ? ' Your browser sign-in is managed by WorkOS separately.' : ''}
+                  </p>
+                </div>
+                {sessionsLoading && <div className="panel-empty">Loading sessions…</div>}
+                {!sessionsLoading && sessionsError && <div className="panel-error">{sessionsError}</div>}
+                {!sessionsLoading && !sessionsError && sessions.length === 0 && (
+                  <div className="panel-empty" data-testid="settings-sessions-empty">
+                    No Gitslice sessions yet.
+                  </div>
+                )}
+                {!sessionsLoading && !sessionsError && sessions.length > 0 && (
+                  <div className="space-y-3" data-testid="settings-sessions">
+                    {sessions.map((session) => (
+                      <div key={session.id} className="rounded-lg border border-border/70 bg-background/40 p-3">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div className="kv flex-1">
+                            <div className="kv-row">
+                              <span className="kv-key">Session ID</span>
+                              <span className="kv-val break-all">{session.id}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Device</span>
+                              <span className="kv-val">{session.device_info || session.deviceInfo || 'unknown'}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Last seen</span>
+                              <span className="kv-val">{session.last_seen_at || session.lastSeenAt || 'unknown'}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Agent key</span>
+                              <span className="kv-val">{session.agent_key_id || session.agentKeyId || 'none'}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={session.current ? 'secondary' : 'outline'}>
+                              {session.current ? 'Current' : 'Active'}
+                            </Badge>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              disabled={revokingSessionId === session.id}
+                              onClick={() => handleSessionRevoke(session.id, Boolean(session.current))}
+                              data-testid={`settings-session-revoke-${session.id}`}
+                            >
+                              {revokingSessionId === session.id
+                                ? 'Revoking…'
+                                : session.current
+                                  ? 'Revoke and sign out'
+                                  : 'Revoke'}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
             <Card className="border-border/70">
               <CardContent className="space-y-4 pt-6">
                 <div className="space-y-2">
@@ -206,98 +339,98 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                 )}
               </CardContent>
             </Card>
-          </div>
 
-          <Card className="border-border/70">
-            <CardContent className="space-y-4 pt-6">
-              <div className="space-y-2">
-                <h3>Agent keys</h3>
-                <p className="status">Enroll public keys for non-interactive <code>gs auth login --key</code> flows, then revoke them here when a machine should lose access.</p>
-              </div>
-
-              <form className="grid gap-4 rounded-lg border border-border/70 bg-background/40 p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]" data-testid="settings-agent-key-form" onSubmit={handleAgentKeyCreate}>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-foreground">Key name</span>
-                  <input
-                    className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/40"
-                    data-testid="settings-agent-key-name"
-                    placeholder="codex-laptop"
-                    value={agentKeyName}
-                    onChange={(event) => setAgentKeyName(event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-foreground">Public key</span>
-                  <textarea
-                    className="min-h-28 w-full rounded-md border border-border bg-background px-3 py-3 text-sm text-foreground outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/40"
-                    data-testid="settings-agent-key-public-key"
-                    placeholder="Paste the .pub file generated by gs auth keygen"
-                    value={agentKeyPublicKey}
-                    onChange={(event) => setAgentKeyPublicKey(event.target.value)}
-                  />
-                </label>
-                <div className="flex items-end">
-                  <Button data-testid="settings-agent-key-submit" type="submit" disabled={agentKeySaving}>
-                    {agentKeySaving ? 'Adding…' : 'Add key'}
-                  </Button>
+            <Card className="border-border/70">
+              <CardContent className="space-y-4 pt-6">
+                <div className="space-y-2">
+                  <h3>Agent keys</h3>
+                  <p className="status">Enroll public keys for non-interactive <code>gs auth login --key</code> flows, then revoke them here when a machine should lose access.</p>
                 </div>
-              </form>
-              {agentKeyFormError && <div className="panel-error">{agentKeyFormError}</div>}
 
-              {agentKeysLoading && <div className="panel-empty">Loading agent keys…</div>}
-              {!agentKeysLoading && agentKeysError && <div className="panel-error">{agentKeysError}</div>}
-              {!agentKeysLoading && !agentKeysError && agentKeys.length === 0 && (
-                <div className="panel-empty" data-testid="settings-agent-keys-empty">
-                  No agent keys yet. Run <code>gs auth keygen --out ~/.config/gitslice/agent_ed25519</code> and paste the generated <code>.pub</code> file here.
-                </div>
-              )}
-              {!agentKeysLoading && !agentKeysError && agentKeys.length > 0 && (
-                <div className="space-y-3" data-testid="settings-agent-keys">
-                  {agentKeys.map((key) => (
-                    <div key={key.id} className="rounded-lg border border-border/70 bg-background/40 p-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                        <div className="kv flex-1">
-                          <div className="kv-row">
-                            <span className="kv-key">Name</span>
-                            <span className="kv-val">{key.name}</span>
+                <form className="grid gap-4 rounded-lg border border-border/70 bg-background/40 p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]" data-testid="settings-agent-key-form" onSubmit={handleAgentKeyCreate}>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-foreground">Key name</span>
+                    <input
+                      className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/40"
+                      data-testid="settings-agent-key-name"
+                      placeholder="codex-laptop"
+                      value={agentKeyName}
+                      onChange={(event) => setAgentKeyName(event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-foreground">Public key</span>
+                    <textarea
+                      className="min-h-28 w-full rounded-md border border-border bg-background px-3 py-3 text-sm text-foreground outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/40"
+                      data-testid="settings-agent-key-public-key"
+                      placeholder="Paste the .pub file generated by gs auth keygen"
+                      value={agentKeyPublicKey}
+                      onChange={(event) => setAgentKeyPublicKey(event.target.value)}
+                    />
+                  </label>
+                  <div className="flex items-end">
+                    <Button data-testid="settings-agent-key-submit" type="submit" disabled={agentKeySaving}>
+                      {agentKeySaving ? 'Adding…' : 'Add key'}
+                    </Button>
+                  </div>
+                </form>
+                {agentKeyFormError && <div className="panel-error">{agentKeyFormError}</div>}
+
+                {agentKeysLoading && <div className="panel-empty">Loading agent keys…</div>}
+                {!agentKeysLoading && agentKeysError && <div className="panel-error">{agentKeysError}</div>}
+                {!agentKeysLoading && !agentKeysError && agentKeys.length === 0 && (
+                  <div className="panel-empty" data-testid="settings-agent-keys-empty">
+                    No agent keys yet. Run <code>gs auth keygen --out ~/.config/gitslice/agent_ed25519</code> and paste the generated <code>.pub</code> file here.
+                  </div>
+                )}
+                {!agentKeysLoading && !agentKeysError && agentKeys.length > 0 && (
+                  <div className="space-y-3" data-testid="settings-agent-keys">
+                    {agentKeys.map((key) => (
+                      <div key={key.id} className="rounded-lg border border-border/70 bg-background/40 p-3">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div className="kv flex-1">
+                            <div className="kv-row">
+                              <span className="kv-key">Name</span>
+                              <span className="kv-val">{key.name}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Key ID</span>
+                              <span className="kv-val">{key.id}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Fingerprint</span>
+                              <span className="kv-val break-all">{key.fingerprint}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">Last used</span>
+                              <span className="kv-val">{key.last_used_at || 'never'}</span>
+                            </div>
+                            <div className="kv-row">
+                              <span className="kv-key">State</span>
+                              <span className="kv-val">{key.revoked ? 'revoked' : 'active'}</span>
+                            </div>
                           </div>
-                          <div className="kv-row">
-                            <span className="kv-key">Key ID</span>
-                            <span className="kv-val">{key.id}</span>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={key.revoked ? 'outline' : 'secondary'}>{key.revoked ? 'Revoked' : 'Active'}</Badge>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              disabled={key.revoked || revokingKeyId === key.id}
+                              onClick={() => handleAgentKeyRevoke(key.id)}
+                              data-testid={`settings-agent-key-revoke-${key.id}`}
+                            >
+                              {revokingKeyId === key.id ? 'Revoking…' : 'Revoke'}
+                            </Button>
                           </div>
-                          <div className="kv-row">
-                            <span className="kv-key">Fingerprint</span>
-                            <span className="kv-val break-all">{key.fingerprint}</span>
-                          </div>
-                          <div className="kv-row">
-                            <span className="kv-key">Last used</span>
-                            <span className="kv-val">{key.last_used_at || 'never'}</span>
-                          </div>
-                          <div className="kv-row">
-                            <span className="kv-key">State</span>
-                            <span className="kv-val">{key.revoked ? 'revoked' : 'active'}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={key.revoked ? 'outline' : 'secondary'}>{key.revoked ? 'Revoked' : 'Active'}</Badge>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="sm"
-                            disabled={key.revoked || revokingKeyId === key.id}
-                            onClick={() => handleAgentKeyRevoke(key.id)}
-                            data-testid={`settings-agent-key-revoke-${key.id}`}
-                          >
-                            {revokingKeyId === key.id ? 'Revoking…' : 'Revoke'}
-                          </Button>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         </>
       )}
     </section>
