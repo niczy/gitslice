@@ -165,7 +165,7 @@ func (v *Verifier) VerifyAccessToken(ctx context.Context, tokenString string) (*
 	if !v.isAllowedIssuer(claims.Issuer) {
 		return nil, ErrInvalidToken
 	}
-	if v.clientID != "" && !containsAudience(claims.Audience, v.clientID) {
+	if !v.isAllowedAudience(claims) {
 		return nil, ErrInvalidToken
 	}
 	if claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) {
@@ -182,6 +182,22 @@ func (v *Verifier) isAllowedIssuer(issuer string) bool {
 	}
 	_, ok := v.issuers[issuer]
 	return ok
+}
+
+func (v *Verifier) isAllowedAudience(claims *Claims) bool {
+	if claims == nil {
+		return false
+	}
+	if strings.TrimSpace(v.clientID) == "" {
+		return true
+	}
+	if containsAudience(claims.Audience, v.clientID) {
+		return true
+	}
+	if len(claims.Audience) == 0 && normalizeIssuer(claims.Issuer) == userManagementIssuer(defaultIssuer, v.clientID) {
+		return true
+	}
+	return false
 }
 
 func normalizeIssuer(value string) string {

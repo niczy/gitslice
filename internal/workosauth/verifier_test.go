@@ -99,6 +99,39 @@ func TestVerifierAcceptsClientScopedUserManagementIssuer(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsClientScopedIssuerWithoutAudience(t *testing.T) {
+	t.Parallel()
+
+	privateKey, jwksServer := startJWKSFixture(t)
+	verifier, err := NewVerifier(VerifierConfig{
+		ClientID: "client_test_123",
+		JWKSURL:  jwksServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier failed: %v", err)
+	}
+
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "https://api.workos.com/user_management/client_test_123",
+			Subject:   "user_123",
+		},
+		SessionID: "sess_123",
+	})
+	token.Header["kid"] = "test-kid"
+
+	tokenString, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("SignedString failed: %v", err)
+	}
+	if _, err := verifier.VerifyAccessToken(context.Background(), tokenString); err != nil {
+		t.Fatalf("VerifyAccessToken failed for client-scoped issuer without audience: %v", err)
+	}
+}
+
 func startJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
 	t.Helper()
 
