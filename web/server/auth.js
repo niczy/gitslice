@@ -229,6 +229,18 @@ function buildWorkOSSessionPayload(authResponse) {
   };
 }
 
+function buildWorkOSSessionPayloadFromAuthenticatedSession(authResponse) {
+  if (!authResponse?.authenticated) {
+    return null;
+  }
+  return buildWorkOSSessionPayload({
+    user: authResponse.user,
+    sessionId: authResponse.sessionId || '',
+    organizationId: authResponse.organizationId || '',
+    authenticationMethod: authResponse.authenticationMethod || '',
+  });
+}
+
 function createWorkOSAuthContext(authSecret, request) {
   const clientId = String(process.env.WORKOS_CLIENT_ID || '').trim();
   const apiKey = String(process.env.WORKOS_API_KEY || '').trim();
@@ -334,36 +346,86 @@ function redirectWithCookies(location, cookies = []) {
   return new Response(null, { status: 302, headers });
 }
 
+function logWorkOSDebug(message, extra = {}) {
+  if (String(process.env.DEPLOY_ENV || '').trim().toLowerCase() === 'production') {
+    return;
+  }
+  try {
+    console.error(`[workos-auth] ${message}`, JSON.stringify(extra));
+  } catch {
+    console.error(`[workos-auth] ${message}`);
+  }
+}
+
 async function authenticateWorkOSSession(request, authContext) {
   if (!authContext?.workos || !authContext?.workosCookiePassword) {
-    return { session: null, accessToken: '', sessionId: '', clearCookie: false };
+    return { session: null, accessToken: '', sessionId: '', clearCookie: false, setCookie: '' };
   }
   const sealedSession = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_SESSION_COOKIE);
   if (!sealedSession) {
-    return { session: null, accessToken: '', sessionId: '', clearCookie: false };
+    return { session: null, accessToken: '', sessionId: '', clearCookie: false, setCookie: '' };
   }
 
   try {
-    const authResponse = await authContext.workos.userManagement.authenticateWithSessionCookie({
+    const cookieSession = authContext.workos.userManagement.loadSealedSession({
       sessionData: sealedSession,
       cookiePassword: authContext.workosCookiePassword,
     });
+    let authResponse = await cookieSession.authenticate();
+    let setCookie = '';
+    if (!authResponse.authenticated && authResponse.reason === 'invalid_jwt') {
+      const refreshed = await cookieSession.refresh({
+        cookiePassword: authContext.workosCookiePassword,
+      });
+      if (refreshed.authenticated && refreshed.sealedSession) {
+        authResponse = {
+          authenticated: true,
+          sessionId: refreshed.sessionId || '',
+          organizationId: refreshed.organizationId || '',
+          authenticationMethod: refreshed.authenticationMethod || '',
+          user: refreshed.user,
+          accessToken: refreshed.session?.accessToken || '',
+        };
+        setCookie = serializeCookie(
+          request,
+          WORKOS_SESSION_COOKIE,
+          refreshed.sealedSession,
+          WORKOS_SESSION_COOKIE_MAX_AGE,
+        );
+      } else {
+        logWorkOSDebug('refresh failed', { reason: refreshed.reason || '' });
+        return {
+          session: null,
+          accessToken: '',
+          sessionId: '',
+          clearCookie: refreshed.reason !== 'no_session_cookie_provided',
+          setCookie: '',
+        };
+      }
+    }
     if (!authResponse.authenticated) {
+      logWorkOSDebug('authenticate failed', { reason: authResponse.reason || '' });
       return {
         session: null,
         accessToken: '',
         sessionId: '',
         clearCookie: authResponse.reason !== 'no_session_cookie_provided',
+        setCookie: '',
       };
     }
     return {
-      session: buildWorkOSSessionPayload(authResponse),
-      accessToken: authResponse.accessToken,
+      session: buildWorkOSSessionPayloadFromAuthenticatedSession(authResponse),
+      accessToken: authResponse.accessToken || '',
       sessionId: authResponse.sessionId || '',
       clearCookie: false,
+      setCookie,
     };
-  } catch {
-    return { session: null, accessToken: '', sessionId: '', clearCookie: true };
+  } catch (error) {
+    logWorkOSDebug('session authenticate threw', {
+      error: error instanceof Error ? error.message : String(error || ''),
+      name: error instanceof Error ? error.name : '',
+    });
+    return { session: null, accessToken: '', sessionId: '', clearCookie: true, setCookie: '' };
   }
 }
 
@@ -415,12 +477,21 @@ async function ensureWorkOSLocalIdentity(request, accessToken, session, claimTok
 }
 
 export async function getProxyAuthorizationHeader(request) {
+  const { authorization } = await getProxyAuthorizationResult(request);
+  return authorization;
+}
+
+export async function getProxyAuthorizationResult(request) {
   const authContext = createAuthContext(request);
   if (authContext.authProvider !== 'workos' || authContext.startupError) {
-    return '';
+    return { authorization: '', setCookie: '', clearCookie: false };
   }
-  const { accessToken } = await authenticateWorkOSSession(request, authContext);
-  return accessToken ? `Bearer ${accessToken}` : '';
+  const { accessToken, setCookie, clearCookie } = await authenticateWorkOSSession(request, authContext);
+  return {
+    authorization: accessToken ? `Bearer ${accessToken}` : '',
+    setCookie,
+    clearCookie,
+  };
 }
 
 export async function loadSession(request) {
@@ -475,10 +546,12 @@ export async function handleSessionRequest(request) {
   if (authContext.authProvider === 'workos') {
     let session = null;
     let clearCookie = false;
+    let setCookie = '';
     if (!authContext.startupError) {
       try {
         const authSession = await authenticateWorkOSSession(request, authContext);
         clearCookie = authSession.clearCookie;
+        setCookie = authSession.setCookie || '';
         if (authSession.session) {
           session = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session);
         }
@@ -502,6 +575,9 @@ export async function handleSessionRequest(request) {
     }
 
     const response = session ? Response.json(session) : Response.json({ error: 'Not signed in' }, { status: 401 });
+    if (setCookie) {
+      response.headers.append('Set-Cookie', setCookie);
+    }
     if (clearCookie) {
       response.headers.append('Set-Cookie', serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0));
     }
