@@ -18,6 +18,21 @@ function validateUsername(value) {
   return '';
 }
 
+function formatOAuthErrorMessage(authProvider, errorCode, detail) {
+  const code = String(errorCode || '').trim();
+  const safeDetail = String(detail || '').trim();
+  if (String(authProvider || '').trim().toLowerCase() === 'workos') {
+    if (safeDetail) {
+      return `WorkOS sign-in failed: ${safeDetail}`;
+    }
+    if (code) {
+      return `WorkOS sign-in failed: ${code.replace(/[_-]+/g, ' ')}.`;
+    }
+    return 'WorkOS sign-in failed or was cancelled. Try again.';
+  }
+  return 'Human browser sign-in is unavailable in this environment. Use a username instead.';
+}
+
 // ---------------------------------------------------------------------------
 // Login Page Component
 // ---------------------------------------------------------------------------
@@ -25,6 +40,7 @@ function validateUsername(value) {
 export default function LoginPage({
   authProvider = 'local',
   allowDevLogin = true,
+  initialOAuthError = '',
   onLogin,
   onOAuthLogin,
   onLoggedIn,
@@ -32,23 +48,29 @@ export default function LoginPage({
 }) {
   const [value, setValue] = useState(() => currentUsername());
   const [usernameError, setUsernameError] = useState('');
-  const [oauthError, setOAuthError] = useState('');
+  const [oauthError, setOAuthError] = useState(() => String(initialOAuthError || '').trim());
   const [loading, setLoading] = useState(false);
   const isWorkOS = String(authProvider || '').trim().toLowerCase() === 'workos';
   const showPrimarySignIn = isWorkOS;
+
+  useEffect(() => {
+    const nextError = String(initialOAuthError || '').trim();
+    if (nextError) {
+      setOAuthError(nextError);
+    }
+  }, [initialOAuthError]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
     const params = new URLSearchParams(window.location.search);
-    if (params.get('error')) {
-      setOAuthError(isWorkOS
-        ? 'WorkOS sign-in failed or was cancelled. Try again.'
-        : 'Human browser sign-in is unavailable in this environment. Use a username instead.');
+    const errorCode = params.get('error');
+    if (errorCode) {
+      setOAuthError(formatOAuthErrorMessage(authProvider, errorCode, params.get('detail')));
       window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}`);
     }
-  }, [isWorkOS]);
+  }, [authProvider, isWorkOS]);
 
   const inlineValidation = useMemo(() => validateUsername(value), [value]);
   const signInTitle = 'Continue with WorkOS';

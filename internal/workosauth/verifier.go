@@ -96,12 +96,7 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 		cacheTTL = defaultJWKSCacheTTL
 	}
 
-	issuers := map[string]struct{}{
-		defaultIssuer: {},
-	}
-	if authKitDomain := normalizeIssuer(cfg.AuthKitDomain); authKitDomain != "" {
-		issuers[authKitDomain] = struct{}{}
-	}
+	issuers := allowedIssuers(clientID, cfg.AuthKitDomain)
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
@@ -116,6 +111,31 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 		cacheTTL:   cacheTTL,
 		keys:       make(map[string]*rsa.PublicKey),
 	}, nil
+}
+
+func allowedIssuers(clientID, authKitDomain string) map[string]struct{} {
+	issuers := map[string]struct{}{
+		defaultIssuer: {},
+	}
+	if userManagementIssuer := userManagementIssuer(defaultIssuer, clientID); userManagementIssuer != "" {
+		issuers[userManagementIssuer] = struct{}{}
+	}
+	if authKitIssuer := normalizeIssuer(authKitDomain); authKitIssuer != "" {
+		issuers[authKitIssuer] = struct{}{}
+		if userManagementIssuer := userManagementIssuer(authKitIssuer, clientID); userManagementIssuer != "" {
+			issuers[userManagementIssuer] = struct{}{}
+		}
+	}
+	return issuers
+}
+
+func userManagementIssuer(baseIssuer, clientID string) string {
+	baseIssuer = normalizeIssuer(baseIssuer)
+	clientID = strings.TrimSpace(clientID)
+	if baseIssuer == "" || clientID == "" {
+		return ""
+	}
+	return normalizeIssuer(baseIssuer + "user_management/" + clientID)
 }
 
 func (v *Verifier) VerifyAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
@@ -145,7 +165,7 @@ func (v *Verifier) VerifyAccessToken(ctx context.Context, tokenString string) (*
 	if !v.isAllowedIssuer(claims.Issuer) {
 		return nil, ErrInvalidToken
 	}
-	if v.clientID != "" && !containsAudience(claims.Audience, v.clientID) {
+	if !v.isAllowedAudience(claims) {
 		return nil, ErrInvalidToken
 	}
 	if claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) {
@@ -162,6 +182,22 @@ func (v *Verifier) isAllowedIssuer(issuer string) bool {
 	}
 	_, ok := v.issuers[issuer]
 	return ok
+}
+
+func (v *Verifier) isAllowedAudience(claims *Claims) bool {
+	if claims == nil {
+		return false
+	}
+	if strings.TrimSpace(v.clientID) == "" {
+		return true
+	}
+	if containsAudience(claims.Audience, v.clientID) {
+		return true
+	}
+	if len(claims.Audience) == 0 && normalizeIssuer(claims.Issuer) == userManagementIssuer(defaultIssuer, v.clientID) {
+		return true
+	}
+	return false
 }
 
 func normalizeIssuer(value string) string {

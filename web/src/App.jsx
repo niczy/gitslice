@@ -46,6 +46,7 @@ function App({
   initialRoute,
   initialAuthConfig = { authProvider: 'local', allowDevLogin: true },
   initialSession = null,
+  initialSessionError = '',
   routerNavigate,
 }) {
   const queryClient = useQueryClient();
@@ -306,6 +307,7 @@ function App({
           <LoginPage
             authProvider={initialAuthConfig.authProvider}
             allowDevLogin={initialAuthConfig.allowDevLogin}
+            initialOAuthError={initialSessionError}
             onLogin={doLogin}
             onOAuthLogin={doOAuthLogin}
             onCancel={() => navigate('landing')}
