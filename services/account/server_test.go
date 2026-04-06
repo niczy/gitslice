@@ -192,6 +192,143 @@ func TestGetMeAcceptsLinkedWorkOSToken(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkOSLocalIdentityCreatesNewLocalUser(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_new_123", "sess_workos_123")
+
+	resp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		PreferredUsername: "alice-workos",
+		Name:              "Alice WorkOS",
+		PrimaryEmail:      "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if !resp.GetCreatedAccount() || !resp.GetCreatedUser() || resp.GetLinkedExistingUser() {
+		t.Fatalf("unexpected response flags: %#v", resp)
+	}
+	if resp.GetUser().GetUsername() != "alice-workos" {
+		t.Fatalf("unexpected username: %#v", resp)
+	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "alice-workos")
+}
+
+func TestEnsureWorkOSLocalIdentityLinksExistingEmailUser(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_agent_123",
+		OwnerMode:  models.AccountOwnerModeAgentOnly,
+		ClaimState: models.AccountClaimStateUnclaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "agentalice",
+		AccountID:    account.AccountID,
+		Name:         "Agent Alice",
+		PrimaryEmail: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_link_123", "sess_workos_123")
+
+	resp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		Name:         "Alice Human",
+		PrimaryEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if resp.GetCreatedUser() || resp.GetCreatedAccount() || !resp.GetLinkedExistingUser() {
+		t.Fatalf("unexpected response flags: %#v", resp)
+	}
+	if resp.GetUser().GetUsername() != "agentalice" {
+		t.Fatalf("unexpected username: %#v", resp)
+	}
+	linkedUser, err := st.GetUser(ctx, "agentalice")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if linkedUser.WorkOSUserID != "user_link_123" || linkedUser.AuthSource != "workos" {
+		t.Fatalf("unexpected linked user: %#v", linkedUser)
+	}
+	linkedAccount, err := st.GetAccount(ctx, account.AccountID)
+	if err != nil {
+		t.Fatalf("GetAccount failed: %v", err)
+	}
+	if linkedAccount.OwnerMode != models.AccountOwnerModeHumanAttached || linkedAccount.ClaimState != models.AccountClaimStateClaimed {
+		t.Fatalf("unexpected linked account: %#v", linkedAccount)
+	}
+	assertHomeSliceProvisioned(t, ctx, st, "agentalice")
+}
+
+func TestEnsureWorkOSLocalIdentityIsIdempotentForLinkedUser(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
+
+	privateKey, jwksServer := startAccountWorkOSJWKSFixture(t)
+	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_123",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "workos",
+		WorkOSUserID: "user_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
+
+	first, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		Name:         "Alice",
+		PrimaryEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("first EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	second, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		Name:         "Alice",
+		PrimaryEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("second EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if first.GetUser().GetUsername() != "alice" || second.GetUser().GetUsername() != "alice" {
+		t.Fatalf("unexpected usernames: first=%#v second=%#v", first, second)
+	}
+	if second.GetCreatedUser() || second.GetCreatedAccount() || second.GetLinkedExistingUser() {
+		t.Fatalf("expected idempotent second ensure, got %#v", second)
+	}
+}
+
 func startAccountWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
 	t.Helper()
 

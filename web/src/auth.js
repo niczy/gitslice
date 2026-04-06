@@ -19,10 +19,11 @@ function normalizeSession(session) {
 }
 
 export function getSignedInUsername() {
-  if (cachedSession?.source === 'workos') {
-    return String(cachedSession?.user?.localUsername || '').trim();
-  }
   return cachedSession?.user?.username || '';
+}
+
+export function getSignedInAuthSource() {
+  return String(cachedSession?.source || '').trim();
 }
 
 export function getCachedSession() {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -412,6 +413,315 @@ func (s *accountServiceServer) resolveIdentity(ctx context.Context) (*authIdenti
 		authSource:   identity.AuthSource,
 		workOSUserID: identity.WorkOSUserID,
 	}, nil
+}
+
+type ensureWorkOSLocalIdentityResult struct {
+	user               *models.User
+	account            *models.Account
+	createdAccount     bool
+	createdUser        bool
+	linkedExistingUser bool
+}
+
+func sanitizeUsernameCandidate(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		raw = "user"
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	value := strings.Trim(b.String(), "-")
+	if value == "" {
+		value = "user"
+	}
+	if value[0] < 'a' || value[0] > 'z' {
+		if value[0] < '0' || value[0] > '9' {
+			value = "u-" + value
+		}
+	}
+	if len(value) > 32 {
+		value = strings.TrimRight(value[:32], "-")
+	}
+	if len(value) >= 3 && auth.ValidateUsername(value) {
+		return value
+	}
+	for len(value) < 3 {
+		value += "x"
+	}
+	if len(value) > 32 {
+		value = value[:32]
+	}
+	if !auth.ValidateUsername(value) {
+		return "user"
+	}
+	return value
+}
+
+func workOSUsernameBase(req *accountv1.EnsureWorkOSLocalIdentityRequest, claimsSubject string) string {
+	if req != nil {
+		if preferredRaw := strings.TrimSpace(req.GetPreferredUsername()); preferredRaw != "" {
+			preferred := sanitizeUsernameCandidate(preferredRaw)
+			return preferred
+		}
+		if nameRaw := strings.TrimSpace(req.GetName()); nameRaw != "" {
+			name := sanitizeUsernameCandidate(nameRaw)
+			return name
+		}
+		if email := normalizeEmail(req.GetPrimaryEmail()); email != "" {
+			if local := sanitizeUsernameCandidate(strings.Split(email, "@")[0]); local != "" {
+				return local
+			}
+		}
+	}
+	return sanitizeUsernameCandidate(claimsSubject)
+}
+
+func usernameCandidateWithSuffix(base string, suffix int) string {
+	base = sanitizeUsernameCandidate(base)
+	if suffix <= 0 {
+		return base
+	}
+	suffixText := "-" + strconv.Itoa(suffix+1)
+	maxBaseLen := 32 - len(suffixText)
+	if maxBaseLen < 3 {
+		maxBaseLen = 3
+	}
+	if len(base) > maxBaseLen {
+		base = strings.TrimRight(base[:maxBaseLen], "-")
+	}
+	if len(base) < 3 {
+		base = sanitizeUsernameCandidate(base + "xxx")
+		if len(base) > maxBaseLen {
+			base = base[:maxBaseLen]
+		}
+	}
+	return base + suffixText
+}
+
+func (s *accountServiceServer) createHumanAttachedAccount(ctx context.Context) (*models.Account, bool, error) {
+	for i := 0; i < 5; i++ {
+		accountID, err := randomToken("acct_", 16)
+		if err != nil {
+			return nil, false, err
+		}
+		account := &models.Account{
+			AccountID:  accountID,
+			OwnerMode:  models.AccountOwnerModeHumanAttached,
+			ClaimState: models.AccountClaimStateClaimed,
+		}
+		if err := s.st.CreateAccount(ctx, account); err == nil {
+			created, err := s.st.GetAccount(ctx, accountID)
+			return created, true, err
+		} else if err != storage.ErrEntryExists {
+			return nil, false, err
+		}
+	}
+	return nil, false, status.Error(codes.Aborted, "failed to create account")
+}
+
+func (s *accountServiceServer) ensureUserAccountLinkedToHuman(ctx context.Context, user *models.User) (*models.Account, bool, error) {
+	createdAccount := false
+	var account *models.Account
+	var err error
+	if strings.TrimSpace(user.AccountID) == "" {
+		account, createdAccount, err = s.createHumanAttachedAccount(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		user.AccountID = account.AccountID
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			return nil, false, err
+		}
+	} else {
+		account, err = s.st.GetAccount(ctx, user.AccountID)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	needsUpdate := account.OwnerMode != models.AccountOwnerModeHumanAttached || account.ClaimState != models.AccountClaimStateClaimed
+	if needsUpdate {
+		account.OwnerMode = models.AccountOwnerModeHumanAttached
+		account.ClaimState = models.AccountClaimStateClaimed
+		account.ClaimTokenHash = ""
+		if err := s.st.UpdateAccount(ctx, account); err != nil {
+			return nil, false, err
+		}
+		account, err = s.st.GetAccount(ctx, account.AccountID)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return account, createdAccount, nil
+}
+
+func applyWorkOSUserHints(user *models.User, workOSUserID, name, email string) bool {
+	updated := false
+	workOSUserID = strings.TrimSpace(workOSUserID)
+	name = strings.TrimSpace(name)
+	email = normalizeEmail(email)
+
+	if workOSUserID != "" && user.WorkOSUserID != workOSUserID {
+		user.WorkOSUserID = workOSUserID
+		updated = true
+	}
+	if user.AuthSource != "workos" {
+		user.AuthSource = "workos"
+		updated = true
+	}
+	if name != "" && user.Name == "" {
+		user.Name = name
+		updated = true
+	}
+	if email != "" && validateEmail(email) && user.PrimaryEmail == "" {
+		user.PrimaryEmail = email
+		updated = true
+	}
+	return updated
+}
+
+func (s *accountServiceServer) ensureWorkOSLocalIdentity(ctx context.Context, claimsSubject, displayName, primaryEmail string, req *accountv1.EnsureWorkOSLocalIdentityRequest) (*ensureWorkOSLocalIdentityResult, error) {
+	if strings.TrimSpace(claimsSubject) == "" {
+		return nil, status.Error(codes.InvalidArgument, "missing WorkOS subject")
+	}
+	displayName = strings.TrimSpace(displayName)
+	primaryEmail = normalizeEmail(primaryEmail)
+
+	if linkedUser, err := s.st.GetUserByWorkOSUserID(ctx, claimsSubject); err == nil {
+		account, createdAccount, err := s.ensureUserAccountLinkedToHuman(ctx, linkedUser)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to ensure linked account")
+		}
+		if applyWorkOSUserHints(linkedUser, claimsSubject, displayName, primaryEmail) {
+			if err := s.st.UpdateUser(ctx, linkedUser); err != nil {
+				if err == storage.ErrEntryExists {
+					return nil, status.Error(codes.AlreadyExists, "email already in use")
+				}
+				return nil, status.Error(codes.Internal, "failed to update linked user")
+			}
+			linkedUser, err = s.st.GetUser(ctx, linkedUser.Username)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to load linked user")
+			}
+		}
+		if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, linkedUser.Username); err != nil {
+			return nil, status.Error(codes.Internal, "failed to provision home slice")
+		}
+		return &ensureWorkOSLocalIdentityResult{
+			user:           linkedUser,
+			account:        account,
+			createdAccount: createdAccount,
+		}, nil
+	} else if err != storage.ErrEntryNotFound {
+		return nil, status.Error(codes.Internal, "failed to resolve linked WorkOS user")
+	}
+
+	if primaryEmail != "" && validateEmail(primaryEmail) {
+		if existingUser, err := s.st.GetUserByEmail(ctx, primaryEmail); err == nil {
+			if existingUser.WorkOSUserID != "" && existingUser.WorkOSUserID != claimsSubject {
+				return nil, status.Error(codes.AlreadyExists, "email already linked to another WorkOS user")
+			}
+			account, createdAccount, err := s.ensureUserAccountLinkedToHuman(ctx, existingUser)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to ensure existing account")
+			}
+			if applyWorkOSUserHints(existingUser, claimsSubject, displayName, primaryEmail) {
+				if err := s.st.UpdateUser(ctx, existingUser); err != nil {
+					if err == storage.ErrEntryExists {
+						return nil, status.Error(codes.AlreadyExists, "email already in use")
+					}
+					return nil, status.Error(codes.Internal, "failed to link existing user")
+				}
+				existingUser, err = s.st.GetUser(ctx, existingUser.Username)
+				if err != nil {
+					return nil, status.Error(codes.Internal, "failed to reload linked user")
+				}
+			}
+			if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, existingUser.Username); err != nil {
+				return nil, status.Error(codes.Internal, "failed to provision home slice")
+			}
+			return &ensureWorkOSLocalIdentityResult{
+				user:               existingUser,
+				account:            account,
+				createdAccount:     createdAccount,
+				linkedExistingUser: true,
+			}, nil
+		} else if err != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, "failed to resolve local user by email")
+		}
+	}
+
+	account, createdAccount, err := s.createHumanAttachedAccount(ctx)
+	if err != nil {
+		if stErr, ok := status.FromError(err); ok {
+			return nil, stErr.Err()
+		}
+		return nil, status.Error(codes.Internal, "failed to create local account")
+	}
+
+	baseUsername := workOSUsernameBase(req, claimsSubject)
+	for i := 0; i < 100; i++ {
+		username := usernameCandidateWithSuffix(baseUsername, i)
+		user := &models.User{
+			Username:     username,
+			AccountID:    account.AccountID,
+			Name:         displayName,
+			PrimaryEmail: primaryEmail,
+			AuthSource:   "workos",
+			WorkOSUserID: claimsSubject,
+		}
+		if err := s.st.CreateUser(ctx, user); err == nil {
+			if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
+				return nil, status.Error(codes.Internal, "failed to provision home slice")
+			}
+			createdUser, err := s.st.GetUser(ctx, username)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to load created user")
+			}
+			return &ensureWorkOSLocalIdentityResult{
+				user:           createdUser,
+				account:        account,
+				createdAccount: createdAccount,
+				createdUser:    true,
+			}, nil
+		} else if err != storage.ErrEntryExists {
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.Internal, "failed to attach account to created user")
+			}
+			return nil, status.Error(codes.Internal, "failed to create local user")
+		}
+	}
+
+	return nil, status.Error(codes.Aborted, "failed to allocate local username")
+}
+
+func ensureWorkOSLocalIdentityResultToProto(result *ensureWorkOSLocalIdentityResult) *accountv1.EnsureWorkOSLocalIdentityResponse {
+	if result == nil {
+		return nil
+	}
+	accountID := ""
+	if result.account != nil {
+		accountID = result.account.AccountID
+	}
+	return &accountv1.EnsureWorkOSLocalIdentityResponse{
+		User:               userToProto(result.user),
+		AccountId:          accountID,
+		CreatedAccount:     result.createdAccount,
+		CreatedUser:        result.createdUser,
+		LinkedExistingUser: result.linkedExistingUser,
+	}
 }
 
 func (s *accountServiceServer) createSession(ctx context.Context, username string) (*models.AuthSession, error) {
@@ -1267,6 +1577,28 @@ func (s *accountServiceServer) GetMe(ctx context.Context, req *accountv1.GetMeRe
 		return nil, status.Error(codes.Internal, "failed to load user")
 	}
 	return userToProto(user), nil
+}
+
+func (s *accountServiceServer) EnsureWorkOSLocalIdentity(ctx context.Context, req *accountv1.EnsureWorkOSLocalIdentityRequest) (*accountv1.EnsureWorkOSLocalIdentityResponse, error) {
+	claims, err := authresolver.ResolveGRPCWorkOSClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	displayName := ""
+	if req != nil {
+		displayName = strings.TrimSpace(req.GetName())
+	}
+	primaryEmail := strings.TrimSpace(claims.Email)
+	if primaryEmail == "" && req != nil {
+		primaryEmail = req.GetPrimaryEmail()
+	}
+
+	result, err := s.ensureWorkOSLocalIdentity(ctx, claims.Subject, displayName, primaryEmail, req)
+	if err != nil {
+		return nil, err
+	}
+	return ensureWorkOSLocalIdentityResultToProto(result), nil
 }
 
 func (s *accountServiceServer) UpdateMe(ctx context.Context, req *accountv1.UpdateMeRequest) (*accountv1.User, error) {

@@ -157,6 +157,13 @@ service AccountService {
     };
   }
 
+  rpc EnsureWorkOSLocalIdentity(EnsureWorkOSLocalIdentityRequest) returns (EnsureWorkOSLocalIdentityResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/workos/ensure-local-identity"
+      body: "*"
+    };
+  }
+
   rpc UpdateMe(UpdateMeRequest) returns (User) {
     option (google.api.http) = {
       patch: "/v1/users/me"
@@ -706,6 +713,20 @@ message DeleteAgentKeyRequest {
 }
 
 message GetMeRequest {}
+
+message EnsureWorkOSLocalIdentityRequest {
+  string preferred_username = 1;
+  string name = 2;
+  string primary_email = 3;
+}
+
+message EnsureWorkOSLocalIdentityResponse {
+  User user = 1;
+  string account_id = 2;
+  bool created_account = 3;
+  bool created_user = 4;
+  bool linked_existing_user = 5;
+}
 
 message UpdateMeRequest {
   string name = 1;

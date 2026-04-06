@@ -2,7 +2,7 @@
 // API and authentication helpers
 // ---------------------------------------------------------------------------
 
-import { getSignedInUsername } from '../auth.js';
+import { getSignedInAuthSource, getSignedInUsername } from '../auth.js';
 
 // Browser data requests stay same-origin so auth cookies continue to work
 // when the web tier proxies API traffic to a different origin.
@@ -14,8 +14,9 @@ export function currentUsername() {
 
 export function fetchWithAuth(url, options = {}) {
   const headers = new Headers(options.headers || {});
+  const authSource = getSignedInAuthSource();
   const username = currentUsername();
-  if (username) {
+  if (username && authSource !== 'workos') {
     headers.set('Authorization', `User ${username}`);
   }
   return fetch(url, { ...options, credentials: 'include', headers });
