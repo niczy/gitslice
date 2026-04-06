@@ -15,7 +15,6 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@auth/core": "^0.37.4",
     "@radix-ui/react-slot": "^1.2.4",
     "@react-router/cloudflare": "7.13.2",
     "@react-router/node": "7.13.2",

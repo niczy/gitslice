@@ -32,7 +32,7 @@ export default defineConfig({
       timeout: 120 * 1000,
     },
     {
-      command: `AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret PUBLIC_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_PROXY_TARGET=${E2E_API_BASE_URL} npm run build && HOST=127.0.0.1 PORT=${E2E_WEB_PORT} AUTH_SECRET=test-auth-secret AUTH_GITHUB_ID=test-github-id AUTH_GITHUB_SECRET=test-github-secret PUBLIC_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_PROXY_TARGET=${E2E_API_BASE_URL} npm run start`,
+      command: `AUTH_SECRET=test-auth-secret ALLOW_DEV_LOGIN=1 PUBLIC_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_PROXY_TARGET=${E2E_API_BASE_URL} npm run build && HOST=127.0.0.1 PORT=${E2E_WEB_PORT} AUTH_SECRET=test-auth-secret ALLOW_DEV_LOGIN=1 PUBLIC_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_BASE_URL=${E2E_API_BASE_URL} VITE_FILE_API_PROXY_TARGET=${E2E_API_BASE_URL} npm run start`,
       port: parseInt(E2E_WEB_PORT, 10),
       reuseExistingServer: !process.env.CI,
       timeout: 60 * 1000,

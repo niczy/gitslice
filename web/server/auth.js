@@ -1,6 +1,3 @@
-import { Auth } from '@auth/core';
-import GitHub from '@auth/core/providers/github';
-import Google from '@auth/core/providers/google';
 import { WorkOS } from '@workos-inc/node';
 import {
   decodeBase64URLUTF8,
@@ -178,54 +175,6 @@ function buildWorkOSSessionPayload(authResponse) {
   };
 }
 
-function createLocalAuthContext(authSecret) {
-  const providers = [];
-  if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
-    providers.push(
-      Google({
-        clientId: process.env.AUTH_GOOGLE_ID,
-        clientSecret: process.env.AUTH_GOOGLE_SECRET,
-      }),
-    );
-  }
-  if (process.env.AUTH_GITHUB_ID && process.env.AUTH_GITHUB_SECRET) {
-    providers.push(
-      GitHub({
-        clientId: process.env.AUTH_GITHUB_ID,
-        clientSecret: process.env.AUTH_GITHUB_SECRET,
-      }),
-    );
-  }
-
-  return {
-    authProvider: 'local',
-    startupError: '',
-    authSecret,
-    authConfig: {
-      trustHost: true,
-      secret: authSecret,
-      basePath: '/auth',
-      session: { strategy: 'jwt' },
-      providers,
-      callbacks: {
-        async jwt({ token, profile }) {
-          if (profile) {
-            token.username = buildUsernameFromProfile(profile);
-          }
-          return token;
-        },
-        async session({ session, token }) {
-          if (!session.user) {
-            session.user = {};
-          }
-          session.user.username = token.username;
-          return session;
-        },
-      },
-    },
-  };
-}
-
 function createWorkOSAuthContext(authSecret, request) {
   const clientId = String(process.env.WORKOS_CLIENT_ID || '').trim();
   const apiKey = String(process.env.WORKOS_API_KEY || '').trim();
@@ -258,7 +207,11 @@ export function createAuthContext(request) {
   if (getAuthProvider() === 'workos') {
     return createWorkOSAuthContext(authSecret, request);
   }
-  return createLocalAuthContext(authSecret);
+  return {
+    authProvider: 'local',
+    startupError: '',
+    authSecret,
+  };
 }
 
 function encodeBase64URL(value) {
@@ -325,24 +278,6 @@ function redirectWithCookies(location, cookies = []) {
     }
   }
   return new Response(null, { status: 302, headers });
-}
-
-export async function loadAuthJsSession(request, authConfig) {
-  if (!authConfig) {
-    return null;
-  }
-  const sessionURL = new URL('/auth/session', request.url);
-  const response = await Auth(
-    new Request(sessionURL, {
-      method: 'GET',
-      headers: request.headers,
-    }),
-    authConfig,
-  );
-  if (!response.ok) {
-    return null;
-  }
-  return response.json();
 }
 
 async function authenticateWorkOSSession(request, authContext) {
@@ -461,20 +396,6 @@ export async function loadSession(request) {
     }
     return ensureWorkOSLocalIdentity(request, accessToken, session);
   }
-
-  const authSession = await loadAuthJsSession(request, authContext.authConfig);
-  const oauthUsername = String(authSession?.user?.username || '').trim();
-  if (oauthUsername) {
-    return {
-      ...authSession,
-      source: 'oauth',
-      user: {
-        ...(authSession?.user || {}),
-        username: oauthUsername,
-      },
-    };
-  }
-
   const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authContext.authSecret);
   if (!devUsername) {
     return null;
@@ -750,10 +671,7 @@ export async function handleAuthRequest(request) {
     }
     return Response.json({ error: 'WorkOS auth route not found' }, { status: 404 });
   }
-  if (!authContext.authConfig) {
-    return Response.json({ error: 'Auth is not configured' }, { status: 500 });
-  }
-  return Auth(request, authContext.authConfig);
+  return Response.json({ error: 'Auth route not found' }, { status: 404 });
 }
 
 export function renderDevicePage({ userCode, startupError }) {

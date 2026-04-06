@@ -205,7 +205,7 @@ function App({
     setAuthSessionSource('');
     navigate('landing', '', '', { replace: true });
     await queryClient.invalidateQueries({ queryKey: ['web-session'] });
-    if (authSessionSource === 'oauth' || authSessionSource === 'workos') {
+    if (authSessionSource === 'workos') {
       startOAuthSignOut();
     }
   }, [authSessionSource, navigate, queryClient]);

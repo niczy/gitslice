@@ -204,16 +204,28 @@ sync_worker_secret() {
 }
 
 sync_worker_secrets() {
+  local auth_provider=""
+  auth_provider="$(printf '%s' "${AUTH_PROVIDER:-local}" | tr '[:upper:]' '[:lower:]')"
+
   if [ -z "${AUTH_SECRET:-}" ]; then
     echo "AUTH_SECRET must be set in the resolved env file for web deploys" >&2
     exit 1
   fi
 
+  if [ "$auth_provider" = "workos" ]; then
+    if [ -z "${WORKOS_CLIENT_ID:-}" ] || [ -z "${WORKOS_API_KEY:-}" ] || [ -z "${WORKOS_COOKIE_PASSWORD:-}" ]; then
+      echo "WORKOS_CLIENT_ID, WORKOS_API_KEY, and WORKOS_COOKIE_PASSWORD must be set when AUTH_PROVIDER=workos" >&2
+      exit 1
+    fi
+  fi
+
   sync_worker_secret "AUTH_SECRET" "${AUTH_SECRET:-}"
-  sync_worker_secret "AUTH_GOOGLE_ID" "${AUTH_GOOGLE_ID:-}"
-  sync_worker_secret "AUTH_GOOGLE_SECRET" "${AUTH_GOOGLE_SECRET:-}"
-  sync_worker_secret "AUTH_GITHUB_ID" "${AUTH_GITHUB_ID:-}"
-  sync_worker_secret "AUTH_GITHUB_SECRET" "${AUTH_GITHUB_SECRET:-}"
+  sync_worker_secret "WORKOS_CLIENT_ID" "${WORKOS_CLIENT_ID:-}"
+  sync_worker_secret "WORKOS_API_KEY" "${WORKOS_API_KEY:-}"
+  sync_worker_secret "WORKOS_REDIRECT_URI" "${WORKOS_REDIRECT_URI:-}"
+  sync_worker_secret "WORKOS_JWKS_URL" "${WORKOS_JWKS_URL:-}"
+  sync_worker_secret "WORKOS_COOKIE_PASSWORD" "${WORKOS_COOKIE_PASSWORD:-}"
+  sync_worker_secret "WORKOS_AUTHKIT_DOMAIN" "${WORKOS_AUTHKIT_DOMAIN:-}"
 }
 
 validate_api_env() {

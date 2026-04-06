@@ -35,6 +35,7 @@ export default function LoginPage({
   const [oauthError, setOAuthError] = useState('');
   const [loading, setLoading] = useState(false);
   const isWorkOS = String(authProvider || '').trim().toLowerCase() === 'workos';
+  const showPrimarySignIn = isWorkOS;
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -42,23 +43,21 @@ export default function LoginPage({
     }
     const params = new URLSearchParams(window.location.search);
     if (params.get('error')) {
-      setOAuthError(
-        isWorkOS
-          ? 'WorkOS sign-in failed or was cancelled. Try again.'
-          : 'OAuth sign-in failed or was cancelled. Try again or use a username.',
-      );
+      setOAuthError(isWorkOS
+        ? 'WorkOS sign-in failed or was cancelled. Try again.'
+        : 'Human browser sign-in is unavailable in this environment. Use a username instead.');
       window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}`);
     }
   }, [isWorkOS]);
 
   const inlineValidation = useMemo(() => validateUsername(value), [value]);
-  const signInTitle = isWorkOS ? 'Continue with WorkOS' : 'Continue with OAuth';
+  const signInTitle = 'Continue with WorkOS';
   const signInDescription = isWorkOS
     ? 'Recommended for normal usage. WorkOS handles the human sign-in flow.'
-    : 'Best for normal usage across devices.';
+    : 'Human browser sign-in is disabled in this environment.';
   const signInBody = isWorkOS
     ? 'Use the hosted WorkOS sign-in flow to continue. Social login, passwords, and future SSO live there.'
-    : 'We use your provider identity to create your account and sign you in. We never receive your provider password.';
+    : 'Use the explicit username fallback below for local or development testing.';
 
   return (
     <section className="section auth-page" data-testid="login-page">
@@ -73,22 +72,17 @@ export default function LoginPage({
       </div>
 
       <div className={`auth-layout grid gap-4 ${allowDevLogin ? 'lg:grid-cols-2' : 'lg:grid-cols-1'}`}>
-        <Card className="auth-card auth-card--oauth border-border/70">
-          <CardHeader>
-            <Badge className="auth-priority-badge w-fit">Recommended</Badge>
-            <CardTitle className="auth-card-title text-xl">{signInTitle}</CardTitle>
-            <CardDescription className="auth-card-subtitle">{signInDescription}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="auth-trust-text">
-              {signInBody}
-              {!isWorkOS && (
-                <>
-                  <a href="https://authjs.dev/reference/core/adapters#privacy" target="_blank" rel="noreferrer"> Privacy details</a>.
-                </>
-              )}
-            </p>
-            {isWorkOS ? (
+        {showPrimarySignIn && (
+          <Card className="auth-card auth-card--oauth border-border/70">
+            <CardHeader>
+              <Badge className="auth-priority-badge w-fit">Recommended</Badge>
+              <CardTitle className="auth-card-title text-xl">{signInTitle}</CardTitle>
+              <CardDescription className="auth-card-subtitle">{signInDescription}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="auth-trust-text">
+                {signInBody}
+              </p>
               <Button
                 type="button"
                 variant="outline"
@@ -98,21 +92,10 @@ export default function LoginPage({
                 <span className="auth-provider-logo" aria-hidden="true">W</span>
                 <span>Continue with WorkOS</span>
               </Button>
-            ) : (
-              <div className="auth-provider-list space-y-2">
-                <Button type="button" variant="outline" className="auth-provider auth-provider--google w-full justify-start" onClick={() => onOAuthLogin?.('google')}>
-                  <span className="auth-provider-logo" aria-hidden="true">G</span>
-                  <span>Continue with Google</span>
-                </Button>
-                <Button type="button" variant="outline" className="auth-provider auth-provider--github w-full justify-start" onClick={() => onOAuthLogin?.('github')}>
-                  <span className="auth-provider-logo" aria-hidden="true">GH</span>
-                  <span>Continue with GitHub</span>
-                </Button>
-              </div>
-            )}
-            {oauthError && <div className="panel-error" role="alert">{oauthError}</div>}
-          </CardContent>
-        </Card>
+              {oauthError && <div className="panel-error" role="alert">{oauthError}</div>}
+            </CardContent>
+          </Card>
+        )}
 
         {allowDevLogin && (
           <form
