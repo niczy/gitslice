@@ -199,7 +199,7 @@ test.describe('Cookie-backed web auth', () => {
   });
 
   test('settings shows and revokes local gitslice sessions', async ({ page }) => {
-    const username = `websessions${Date.now()}`;
+    const username = `sessacct${Date.now()}`;
     let sessions = [
       {
         id: 'sess-current',
@@ -259,7 +259,7 @@ test.describe('Cookie-backed web auth', () => {
   });
 
   test('profile can update local fields and delete the local account', async ({ page }) => {
-    const username = `webprofile${Date.now()}`;
+    const username = `acctusr${Date.now()}`;
     let currentUser = {
       id: username,
       username,
