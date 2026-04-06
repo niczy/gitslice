@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/storage"
 	"github.com/niczy/gitslice/internal/workosauth"
 	"google.golang.org/grpc/codes"
@@ -22,21 +23,9 @@ var (
 )
 
 func resolveWorkOSIdentity(ctx context.Context, st storage.Storage, token string) (*Identity, error) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("AUTH_PROVIDER")), "workos") {
-		return nil, status.Error(codes.Unimplemented, "workos auth disabled")
-	}
-
-	verifier, err := workOSVerifierFromEnv()
+	claims, err := verifyWorkOSAccessToken(ctx, token)
 	if err != nil {
-		if errors.Is(err, workosauth.ErrNotConfigured) {
-			return nil, status.Error(codes.Internal, "workos auth is not configured")
-		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to initialize WorkOS auth: %v", err))
-	}
-
-	claims, err := verifier.VerifyAccessToken(ctx, token)
-	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, "invalid WorkOS access token")
+		return nil, err
 	}
 
 	user, err := st.GetUserByWorkOSUserID(ctx, claims.Subject)
@@ -54,6 +43,14 @@ func resolveWorkOSIdentity(ctx context.Context, st storage.Storage, token string
 		WorkOSUserID:   claims.Subject,
 		OrganizationID: strings.TrimSpace(claims.OrganizationID),
 	}, nil
+}
+
+func ResolveGRPCWorkOSClaims(ctx context.Context) (*workosauth.Claims, error) {
+	token := auth.TokenFromGRPCContext(ctx)
+	if token == "" {
+		return nil, status.Error(codes.Unauthenticated, "WorkOS login required")
+	}
+	return verifyWorkOSAccessToken(ctx, token)
 }
 
 func workOSVerifierFromEnv() (*workosauth.Verifier, error) {
@@ -78,4 +75,24 @@ func workOSVerifierFromEnv() (*workosauth.Verifier, error) {
 	workOSVerifierCache = verifier
 	workOSVerifierErr = err
 	return verifier, err
+}
+
+func verifyWorkOSAccessToken(ctx context.Context, token string) (*workosauth.Claims, error) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("AUTH_PROVIDER")), "workos") {
+		return nil, status.Error(codes.Unimplemented, "workos auth disabled")
+	}
+
+	verifier, err := workOSVerifierFromEnv()
+	if err != nil {
+		if errors.Is(err, workosauth.ErrNotConfigured) {
+			return nil, status.Error(codes.Internal, "workos auth is not configured")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to initialize WorkOS auth: %v", err))
+	}
+
+	claims, err := verifier.VerifyAccessToken(ctx, token)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, "invalid WorkOS access token")
+	}
+	return claims, nil
 }

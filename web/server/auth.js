@@ -334,6 +334,52 @@ async function authenticateWorkOSSession(request, authContext) {
   }
 }
 
+async function ensureWorkOSLocalIdentity(request, accessToken, session) {
+  if (!session?.user?.workosUserId || !accessToken) {
+    return session;
+  }
+
+  const response = await fetch(new URL('/v1/auth/workos/ensure-local-identity', getGatewayTarget()), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      preferredUsername: session.user.derivedUsername || '',
+      name: session.user.name || '',
+      primaryEmail: session.user.email || '',
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const payload = await response.json();
+      detail = String(payload?.message || payload?.error || '').trim();
+    } catch {
+      detail = '';
+    }
+    throw new Error(detail || `failed to ensure local WorkOS identity (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const localUsername = String(payload?.user?.username || '').trim();
+  return {
+    ...session,
+    accountId: String(payload?.accountId || '').trim(),
+    linkedExistingUser: Boolean(payload?.linkedExistingUser),
+    user: {
+      ...(session.user || {}),
+      username: localUsername,
+      localUsername,
+      name: String(payload?.user?.name || session.user?.name || '').trim(),
+      email: String(payload?.user?.primaryEmail || session.user?.email || '').trim(),
+    },
+  };
+}
+
 export async function getProxyAuthorizationHeader(request) {
   const authContext = createAuthContext(request);
   if (authContext.authProvider !== 'workos' || authContext.startupError) {
@@ -349,8 +395,11 @@ export async function loadSession(request) {
     return null;
   }
   if (authContext.authProvider === 'workos') {
-    const { session } = await authenticateWorkOSSession(request, authContext);
-    return session;
+    const { session, accessToken } = await authenticateWorkOSSession(request, authContext);
+    if (!session) {
+      return null;
+    }
+    return ensureWorkOSLocalIdentity(request, accessToken, session);
   }
 
   const authSession = await loadAuthJsSession(request, authContext.authConfig);
@@ -388,10 +437,19 @@ export async function handleSessionRequest(request) {
   }
 
   if (authContext.authProvider === 'workos') {
-    const { session, clearCookie } = await authenticateWorkOSSession(request, authContext);
-    const response = session
-      ? Response.json(session)
-      : Response.json({ error: 'Not signed in' }, { status: 401 });
+    let session = null;
+    let clearCookie = false;
+    try {
+      const authSession = await authenticateWorkOSSession(request, authContext);
+      clearCookie = authSession.clearCookie;
+      if (authSession.session) {
+        session = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session);
+      }
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : 'Failed to load WorkOS session' }, { status: 500 });
+    }
+
+    const response = session ? Response.json(session) : Response.json({ error: 'Not signed in' }, { status: 401 });
     if (clearCookie) {
       response.headers.append('Set-Cookie', serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0));
     }
