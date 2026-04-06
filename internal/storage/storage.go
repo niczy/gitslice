@@ -152,6 +152,10 @@ type Storage interface {
 	GetDirectorySummary(ctx context.Context, sliceID, pathPrefix string) (*models.DirectoryChangeSummary, error)
 
 	// Accounts / Organizations (fake auth: identity is a username).
+	CreateAccount(ctx context.Context, account *models.Account) error
+	GetAccount(ctx context.Context, accountID string) (*models.Account, error)
+	GetAccountByClaimTokenHash(ctx context.Context, claimTokenHash string) (*models.Account, error)
+	UpdateAccount(ctx context.Context, account *models.Account) error
 	EnsureUser(ctx context.Context, username string) (*models.User, error)
 	GetUser(ctx context.Context, username string) (*models.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
