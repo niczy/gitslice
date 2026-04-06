@@ -1597,6 +1597,18 @@ func TestCLIAgentKeySignupLoginAndManageFlow(t *testing.T) {
 		t.Fatalf("expected agent-key signup metadata, got: %+v", signupResp)
 	}
 
+	claimOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "claim-token", "--json")
+	if err != nil {
+		t.Fatalf("auth claim-token failed: %v\nOutput:\n%s", err, claimOutput)
+	}
+	var claimResp authClaimTokenJSON
+	if err := json.Unmarshal([]byte(claimOutput), &claimResp); err != nil {
+		t.Fatalf("Unmarshal claim-token output failed: %v\nOutput:\n%s", err, claimOutput)
+	}
+	if claimResp.AccountID == "" || claimResp.ClaimToken == "" || !strings.Contains(claimResp.ClaimURL, "/auth/claim-account?token=") {
+		t.Fatalf("unexpected claim-token response: %+v", claimResp)
+	}
+
 	statusOutput, err := runCLIWithDirInputEnvNoLegacyUser("", "", env, "auth", "status", "--json")
 	if err != nil {
 		t.Fatalf("auth status failed: %v\nOutput:\n%s", err, statusOutput)

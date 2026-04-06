@@ -53,6 +53,19 @@ func handleAuthCommand(ctx context.Context, cli *CLI, apiKeyFlag, userFlag strin
 			commandFatal("AUTH_REQUIRED", "Authentication required. Run gs auth login --key <private-key-path> or gs login first.", false, "gs auth login --key <private-key-path>")
 		}
 		handleAuthKeys(withCLIAuth(withCLIDeviceInfo(ctx), authConfig), cli, args[1:])
+	case "claim-token":
+		authConfig, err := resolveAuthConfig(apiKeyFlag, userFlag)
+		if err != nil {
+			commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
+		}
+		authConfig, err = ensureCLIAuthReady(ctx, cli, authConfig)
+		if err != nil {
+			commandFatalf("AUTH_REFRESH_FAILED", true, "gs auth login --key <private-key-path>", "Failed to refresh stored auth: %v", err)
+		}
+		if strings.TrimSpace(authConfig.Authorization) == "" {
+			commandFatal("AUTH_REQUIRED", "Authentication required. Run gs auth login --key <private-key-path> or gs login first.", false, "gs auth login --key <private-key-path>")
+		}
+		handleAuthClaimToken(withCLIAuth(withCLIDeviceInfo(ctx), authConfig), cli, args[1:])
 	default:
 		printAuthHelp()
 	}
@@ -377,4 +390,20 @@ func handleAuthKeysRevoke(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 	fmt.Printf("Revoked agent key: %s\n", keyID)
+}
+
+func handleAuthClaimToken(ctx context.Context, cli *CLI, args []string) {
+	if len(args) != 0 {
+		commandUsage("Usage: gs auth claim-token [--json]")
+		return
+	}
+	resp, err := cli.accountClient.CreateAccountClaimToken(ctx, &accountv1.CreateAccountClaimTokenRequest{})
+	if err != nil {
+		commandFatalf("AUTH_CLAIM_TOKEN_FAILED", false, "", "Failed to create account claim token: %v", err)
+	}
+	if cliStructuredJSON {
+		writeJSONOutput(buildAuthClaimTokenOutput(resp))
+		return
+	}
+	fmt.Printf("Account claim URL: %s\n", strings.TrimSpace(resp.GetClaimUrl()))
 }

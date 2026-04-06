@@ -338,6 +338,12 @@ type authKeysListJSON struct {
 	Keys  []authKeyJSON `json:"keys"`
 }
 
+type authClaimTokenJSON struct {
+	AccountID  string `json:"account_id"`
+	ClaimToken string `json:"claim_token"`
+	ClaimURL   string `json:"claim_url"`
+}
+
 type authKeyRevokeJSON struct {
 	KeyID  string `json:"key_id"`
 	Status string `json:"status"`

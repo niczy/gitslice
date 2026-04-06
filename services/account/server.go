@@ -463,6 +463,16 @@ type ensureWorkOSLocalIdentityResult struct {
 	createdAccount     bool
 	createdUser        bool
 	linkedExistingUser bool
+	claimedAccount     bool
+}
+
+func hashClaimToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func workOSOrganizationRole(role string) models.OrganizationRole {
@@ -633,6 +643,51 @@ func (s *accountServiceServer) createHumanAttachedAccount(ctx context.Context) (
 	return nil, false, status.Error(codes.Aborted, "failed to create account")
 }
 
+func (s *accountServiceServer) createAgentOnlyAccount(ctx context.Context) (*models.Account, bool, error) {
+	for i := 0; i < 5; i++ {
+		accountID, err := randomToken("acct_", 16)
+		if err != nil {
+			return nil, false, err
+		}
+		account := &models.Account{
+			AccountID:  accountID,
+			OwnerMode:  models.AccountOwnerModeAgentOnly,
+			ClaimState: models.AccountClaimStateUnclaimed,
+		}
+		if err := s.st.CreateAccount(ctx, account); err == nil {
+			created, err := s.st.GetAccount(ctx, accountID)
+			return created, true, err
+		} else if err != storage.ErrEntryExists {
+			return nil, false, err
+		}
+	}
+	return nil, false, status.Error(codes.Aborted, "failed to create claimable account")
+}
+
+func (s *accountServiceServer) ensureUserHasClaimableAccount(ctx context.Context, user *models.User) (*models.Account, bool, error) {
+	createdAccount := false
+	var (
+		account *models.Account
+		err     error
+	)
+	if strings.TrimSpace(user.AccountID) == "" {
+		account, createdAccount, err = s.createAgentOnlyAccount(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		user.AccountID = account.AccountID
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			return nil, false, err
+		}
+	} else {
+		account, err = s.st.GetAccount(ctx, user.AccountID)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return account, createdAccount, nil
+}
+
 func (s *accountServiceServer) ensureUserAccountLinkedToHuman(ctx context.Context, user *models.User) (*models.Account, bool, error) {
 	createdAccount := false
 	var account *models.Account
@@ -669,6 +724,24 @@ func (s *accountServiceServer) ensureUserAccountLinkedToHuman(ctx context.Contex
 	return account, createdAccount, nil
 }
 
+func (s *accountServiceServer) usersForAccount(ctx context.Context, accountID string) ([]*models.User, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, storage.ErrInvalidInput
+	}
+	users, err := s.st.ListUsers(ctx, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*models.User, 0, 1)
+	for _, user := range users {
+		if user != nil && strings.TrimSpace(user.AccountID) == accountID {
+			out = append(out, user)
+		}
+	}
+	return out, nil
+}
+
 func applyWorkOSUserHints(user *models.User, workOSUserID, name, email string) bool {
 	updated := false
 	workOSUserID = strings.TrimSpace(workOSUserID)
@@ -700,6 +773,70 @@ func (s *accountServiceServer) ensureWorkOSLocalIdentity(ctx context.Context, cl
 	}
 	displayName = strings.TrimSpace(displayName)
 	primaryEmail = normalizeEmail(primaryEmail)
+	claimToken := ""
+	if req != nil {
+		claimToken = strings.TrimSpace(req.GetClaimToken())
+	}
+
+	if claimToken != "" {
+		claimTokenHash := hashClaimToken(claimToken)
+		account, err := s.st.GetAccountByClaimTokenHash(ctx, claimTokenHash)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.NotFound, "account claim token not found")
+			}
+			return nil, status.Error(codes.Internal, "failed to resolve account claim token")
+		}
+		accountUsers, err := s.usersForAccount(ctx, account.AccountID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to list account users")
+		}
+		if len(accountUsers) != 1 {
+			return nil, status.Error(codes.FailedPrecondition, "account claim requires exactly one local user")
+		}
+		targetUser := accountUsers[0]
+		if linkedUser, err := s.st.GetUserByWorkOSUserID(ctx, claimsSubject); err == nil {
+			if linkedUser.Username != targetUser.Username {
+				return nil, status.Error(codes.AlreadyExists, "WorkOS user is already linked to another account")
+			}
+		} else if err != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, "failed to resolve linked WorkOS user")
+		}
+		if targetUser.WorkOSUserID != "" && targetUser.WorkOSUserID != claimsSubject {
+			return nil, status.Error(codes.AlreadyExists, "account is already linked to another WorkOS user")
+		}
+		if applyWorkOSUserHints(targetUser, claimsSubject, displayName, primaryEmail) {
+			if err := s.st.UpdateUser(ctx, targetUser); err != nil {
+				if err == storage.ErrEntryExists {
+					return nil, status.Error(codes.AlreadyExists, "email already in use")
+				}
+				return nil, status.Error(codes.Internal, "failed to attach WorkOS identity")
+			}
+			targetUser, err = s.st.GetUser(ctx, targetUser.Username)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to reload claimed user")
+			}
+		}
+		account.OwnerMode = models.AccountOwnerModeHumanAttached
+		account.ClaimState = models.AccountClaimStateClaimed
+		account.ClaimTokenHash = ""
+		if err := s.st.UpdateAccount(ctx, account); err != nil {
+			return nil, status.Error(codes.Internal, "failed to finalize claimed account")
+		}
+		account, err = s.st.GetAccount(ctx, account.AccountID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to reload claimed account")
+		}
+		if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, targetUser.Username); err != nil {
+			return nil, status.Error(codes.Internal, "failed to provision home slice")
+		}
+		return &ensureWorkOSLocalIdentityResult{
+			user:               targetUser,
+			account:            account,
+			linkedExistingUser: true,
+			claimedAccount:     true,
+		}, nil
+	}
 
 	if linkedUser, err := s.st.GetUserByWorkOSUserID(ctx, claimsSubject); err == nil {
 		account, createdAccount, err := s.ensureUserAccountLinkedToHuman(ctx, linkedUser)
@@ -732,6 +869,15 @@ func (s *accountServiceServer) ensureWorkOSLocalIdentity(ctx context.Context, cl
 
 	if primaryEmail != "" && validateEmail(primaryEmail) {
 		if existingUser, err := s.st.GetUserByEmail(ctx, primaryEmail); err == nil {
+			if strings.TrimSpace(existingUser.AccountID) != "" {
+				if existingAccount, accountErr := s.st.GetAccount(ctx, existingUser.AccountID); accountErr == nil {
+					if existingAccount.OwnerMode == models.AccountOwnerModeAgentOnly {
+						return nil, status.Error(codes.FailedPrecondition, "account claim token required to attach to an agent-created account")
+					}
+				} else if accountErr != storage.ErrEntryNotFound {
+					return nil, status.Error(codes.Internal, "failed to resolve existing account")
+				}
+			}
 			if existingUser.WorkOSUserID != "" && existingUser.WorkOSUserID != claimsSubject {
 				return nil, status.Error(codes.AlreadyExists, "email already linked to another WorkOS user")
 			}
@@ -823,6 +969,7 @@ func ensureWorkOSLocalIdentityResultToProto(result *ensureWorkOSLocalIdentityRes
 		CreatedAccount:     result.createdAccount,
 		CreatedUser:        result.createdUser,
 		LinkedExistingUser: result.linkedExistingUser,
+		ClaimedAccount:     result.claimedAccount,
 	}
 }
 
@@ -1080,10 +1227,18 @@ func (s *accountServiceServer) SignupWithAgentKey(ctx context.Context, req *acco
 		return nil, status.Error(codes.Aborted, "failed to create agent key")
 	}
 
+	user, err := s.st.GetUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load created user")
+	}
+	if _, _, err := s.ensureUserHasClaimableAccount(ctx, user); err != nil {
+		return nil, status.Error(codes.Internal, "failed to create claimable account")
+	}
+
 	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
 		return nil, status.Error(codes.Internal, "failed to provision home slice")
 	}
-	user, err := s.st.GetUser(ctx, username)
+	user, err = s.st.GetUser(ctx, username)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to load user")
 	}
@@ -1798,6 +1953,42 @@ func (s *accountServiceServer) CompleteAgentKeyLogin(ctx context.Context, req *a
 		return nil, status.Error(codes.Internal, "failed to create session")
 	}
 	return s.buildAuthResponse(ctx, user, session)
+}
+
+func (s *accountServiceServer) CreateAccountClaimToken(ctx context.Context, req *accountv1.CreateAccountClaimTokenRequest) (*accountv1.CreateAccountClaimTokenResponse, error) {
+	identity, err := s.resolveIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.st.GetUser(ctx, identity.username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	account, _, err := s.ensureUserHasClaimableAccount(ctx, user)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to resolve account")
+	}
+	if account.OwnerMode != models.AccountOwnerModeAgentOnly {
+		return nil, status.Error(codes.FailedPrecondition, "account is already linked to a human identity")
+	}
+	claimToken, err := randomToken("claim_", 18)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to create account claim token")
+	}
+	account.ClaimState = models.AccountClaimStateUnclaimed
+	account.ClaimTokenHash = hashClaimToken(claimToken)
+	if err := s.st.UpdateAccount(ctx, account); err != nil {
+		return nil, status.Error(codes.Internal, "failed to store account claim token")
+	}
+	claimURL := publicWebBaseURL() + "/auth/claim-account?token=" + url.QueryEscape(claimToken) + "&callbackUrl=" + url.QueryEscape("/browser")
+	return &accountv1.CreateAccountClaimTokenResponse{
+		AccountId:  account.AccountID,
+		ClaimToken: claimToken,
+		ClaimUrl:   claimURL,
+	}, nil
 }
 
 func (s *accountServiceServer) GetMe(ctx context.Context, req *accountv1.GetMeRequest) (*accountv1.User, error) {
