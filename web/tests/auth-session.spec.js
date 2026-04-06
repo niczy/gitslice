@@ -197,4 +197,163 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByTestId('settings-agent-keys')).toContainText(/revoked/i);
     await expect(page.getByTestId('settings-agent-key-revoke-agk-ci')).toBeDisabled();
   });
+
+  test('settings shows and revokes local gitslice sessions', async ({ page }) => {
+    const username = `websessions${Date.now()}`;
+    let sessions = [
+      {
+        id: 'sess-current',
+        user_id: username,
+        device_info: 'Firefox on macOS',
+        last_seen_at: '2026-04-05T12:00:00Z',
+        current: true,
+        agent_key_id: '',
+      },
+      {
+        id: 'sess-cli',
+        user_id: username,
+        device_info: 'gs auth login --device',
+        last_seen_at: '2026-04-05T11:00:00Z',
+        current: false,
+        agent_key_id: '',
+      },
+    ];
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+
+    await page.route('**/v1/repos/bindings', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ bindings: [] }),
+      });
+    });
+    await page.route('**/v1/auth/sessions', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ sessions }),
+      });
+    });
+    await page.route('**/v1/auth/sessions/*', async (route) => {
+      const revokedId = route.request().url().split('/').pop();
+      sessions = sessions.filter((session) => session.id !== revokedId);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: '{}',
+      });
+    });
+
+    await page.getByTestId('topbar-settings').click();
+    await expect(page.getByTestId('settings-page')).toBeVisible();
+    await expect(page.getByTestId('settings-sessions')).toContainText('Firefox on macOS');
+    await expect(page.getByTestId('settings-sessions')).toContainText('gs auth login --device');
+    await expect(page.getByTestId('settings-sessions')).toContainText(/current/i);
+
+    await page.getByTestId('settings-session-revoke-sess-cli').click();
+    await expect(page.getByTestId('settings-sessions')).not.toContainText('gs auth login --device');
+  });
+
+  test('profile can update local fields and delete the local account', async ({ page }) => {
+    const username = `webprofile${Date.now()}`;
+    let currentUser = {
+      id: username,
+      username,
+      name: 'Original Name',
+      primary_email: 'original@example.com',
+      created_at: '2026-04-05T10:00:00Z',
+    };
+    let organizations = [
+      {
+        id: 'org-1',
+        slug: 'acme',
+        name: 'Acme',
+        owner_user_id: username,
+      },
+    ];
+    let deleted = false;
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+
+    await page.route('**/v1/users/me', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(currentUser),
+        });
+        return;
+      }
+      if (route.request().method() === 'PATCH') {
+        const payload = JSON.parse(route.request().postData() || '{}');
+        currentUser = {
+          ...currentUser,
+          name: payload.name,
+          primary_email: payload.primaryEmail,
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(currentUser),
+        });
+        return;
+      }
+      if (route.request().method() === 'DELETE') {
+        deleted = true;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: '{}',
+        });
+      }
+    });
+    await page.route('**/v1/orgs', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ organizations }),
+        });
+        return;
+      }
+      if (route.request().method() === 'POST') {
+        const payload = JSON.parse(route.request().postData() || '{}');
+        organizations = [...organizations, {
+          id: 'org-2',
+          slug: 'new-org',
+          name: payload.name,
+          owner_user_id: username,
+        }];
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(organizations[organizations.length - 1]),
+        });
+      }
+    });
+
+    await page.getByTestId('topbar-settings').click();
+    await page.getByRole('button', { name: /open profile details/i }).click();
+    await expect(page.getByTestId('profile-page')).toBeVisible();
+    await expect(page.getByLabel(/^Name$/)).toHaveValue('Original Name');
+    await expect(page.getByLabel(/^Primary email$/)).toHaveValue('original@example.com');
+    await expect(page.locator('.org-name', { hasText: 'Acme' })).toBeVisible();
+
+    await page.getByLabel(/^Name$/).fill('Updated Name');
+    await page.getByLabel(/^Primary email$/).fill('updated@example.com');
+    await page.getByRole('button', { name: /save profile/i }).click();
+    await expect(page.getByText(/profile updated/i)).toBeVisible();
+
+    await page.getByLabel(/type your username to confirm/i).fill(username);
+    await page.getByRole('button', { name: /delete account/i }).click();
+    await expect.poll(() => deleted).toBe(true);
+    await expect(page).toHaveURL(/\/$/);
+  });
 });
