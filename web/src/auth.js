@@ -1,8 +1,10 @@
 let cachedSession = null;
 
 function normalizeSession(session) {
+  const source = String(session?.source || '').trim() || 'oauth';
   const username = String(session?.user?.username || '').trim();
-  if (!username) {
+  const workosUserId = String(session?.user?.workosUserId || session?.user?.id || '').trim();
+  if (!username && !(source === 'workos' && workosUserId)) {
     return null;
   }
   return {
@@ -10,12 +12,16 @@ function normalizeSession(session) {
     user: {
       ...(session?.user || {}),
       username,
+      workosUserId,
     },
-    source: String(session?.source || '').trim() || 'oauth',
+    source,
   };
 }
 
 export function getSignedInUsername() {
+  if (cachedSession?.source === 'workos') {
+    return String(cachedSession?.user?.localUsername || '').trim();
+  }
   return cachedSession?.user?.username || '';
 }
 

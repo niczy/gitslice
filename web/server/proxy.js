@@ -1,4 +1,5 @@
 import { getConfiguredAPIBaseURL } from '../shared/runtime.js';
+import { getAuthProvider, getProxyAuthorizationHeader } from './auth.js';
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
@@ -15,6 +16,12 @@ export async function proxyRequest(request, suffix = '') {
   const headers = new Headers(request.headers);
   headers.set('x-forwarded-host', new URL(request.url).host);
   headers.set('x-forwarded-proto', new URL(request.url).protocol.replace(':', ''));
+  if (!headers.has('Authorization') && getAuthProvider() === 'workos') {
+    const authHeader = await getProxyAuthorizationHeader(request);
+    if (authHeader) {
+      headers.set('Authorization', authHeader);
+    }
+  }
 
   try {
     return await fetch(targetURL, {
