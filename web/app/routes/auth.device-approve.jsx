@@ -1,4 +1,4 @@
-import { createAuthContext, loadSession } from '../../server/auth.js';
+import { createAuthContext, getProxyAuthorizationHeader, loadSession } from '../../server/auth.js';
 import { getConfiguredAPIBaseURL } from '../../shared/runtime.js';
 
 function getGatewayTarget() {
@@ -11,10 +11,14 @@ export async function action({ request }) {
     return Response.json({ error: startupError || 'Auth is not configured' }, { status: 500 });
   }
 
-  const session = await loadSession(request);
-  const username = String(session?.user?.username || '').trim();
-  if (!username) {
-    return Response.json({ error: 'Sign in required' }, { status: 401 });
+  let authorization = await getProxyAuthorizationHeader(request);
+  if (!authorization) {
+    const session = await loadSession(request);
+    const username = String(session?.user?.username || '').trim();
+    if (!username) {
+      return Response.json({ error: 'Sign in required' }, { status: 401 });
+    }
+    authorization = `User ${username}`;
   }
 
   let payload;
@@ -34,7 +38,7 @@ export async function action({ request }) {
     response = await fetch(new URL('/v1/auth/device/approve', getGatewayTarget()), {
       method: 'POST',
       headers: {
-        Authorization: `User ${username}`,
+        Authorization: authorization,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ userCode }),

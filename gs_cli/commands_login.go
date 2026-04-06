@@ -29,7 +29,7 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 			return
 		}
 		if cliStructuredJSON || cliNonInteractive {
-			commandFatal("INTERACTIVE_REQUIRED", "Device login is interactive. Run gs auth login --key <private-key-path> for agent-friendly auth.", false, "gs auth login --key <private-key-path>")
+			commandFatal("INTERACTIVE_REQUIRED", "Device login uses an interactive browser sign-in. Run gs auth login --key <private-key-path> for agent-friendly auth.", false, "gs auth login --key <private-key-path>")
 		}
 		startDeviceLogin(ctx, cli)
 		return
@@ -169,7 +169,7 @@ func startDeviceLogin(ctx context.Context, cli *CLI) {
 	}
 	fmt.Printf("If browser doesn't open, visit: %s\n", verificationURI)
 	fmt.Printf("Enter code: %s\n", strings.TrimSpace(startResp.GetUserCode()))
-	fmt.Print("Waiting for authorization...")
+	fmt.Print("Waiting for browser approval...")
 
 	pollInterval := time.Duration(startResp.GetPollIntervalSeconds()) * time.Second
 	if pollInterval <= 0 {
