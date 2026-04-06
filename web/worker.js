@@ -14,6 +14,7 @@ function ensureProcessEnv(env) {
     NODE_ENV: String(env?.NODE_ENV || processLike.env.NODE_ENV || 'production'),
     WEB_DEPLOY_TARGET: 'cloudflare_worker',
     WEB_COMPAT_RUNTIME: 'worker',
+    AUTH_PROVIDER: String(env?.AUTH_PROVIDER || processLike.env.AUTH_PROVIDER || 'local'),
     PUBLIC_WEB_BASE_URL: String(env?.PUBLIC_WEB_BASE_URL || processLike.env.PUBLIC_WEB_BASE_URL || ''),
     PUBLIC_API_BASE_URL: String(env?.PUBLIC_API_BASE_URL || processLike.env.PUBLIC_API_BASE_URL || ''),
     VITE_FILE_API_BASE_URL: String(env?.VITE_FILE_API_BASE_URL || processLike.env.VITE_FILE_API_BASE_URL || ''),
@@ -28,6 +29,12 @@ function ensureProcessEnv(env) {
     AUTH_GOOGLE_SECRET: String(env?.AUTH_GOOGLE_SECRET || processLike.env.AUTH_GOOGLE_SECRET || ''),
     AUTH_GITHUB_ID: String(env?.AUTH_GITHUB_ID || processLike.env.AUTH_GITHUB_ID || ''),
     AUTH_GITHUB_SECRET: String(env?.AUTH_GITHUB_SECRET || processLike.env.AUTH_GITHUB_SECRET || ''),
+    WORKOS_CLIENT_ID: String(env?.WORKOS_CLIENT_ID || processLike.env.WORKOS_CLIENT_ID || ''),
+    WORKOS_API_KEY: String(env?.WORKOS_API_KEY || processLike.env.WORKOS_API_KEY || ''),
+    WORKOS_REDIRECT_URI: String(env?.WORKOS_REDIRECT_URI || processLike.env.WORKOS_REDIRECT_URI || ''),
+    WORKOS_JWKS_URL: String(env?.WORKOS_JWKS_URL || processLike.env.WORKOS_JWKS_URL || ''),
+    WORKOS_COOKIE_PASSWORD: String(env?.WORKOS_COOKIE_PASSWORD || processLike.env.WORKOS_COOKIE_PASSWORD || ''),
+    WORKOS_AUTHKIT_DOMAIN: String(env?.WORKOS_AUTHKIT_DOMAIN || processLike.env.WORKOS_AUTHKIT_DOMAIN || ''),
   });
 }
 

@@ -1,6 +1,7 @@
 import { Auth } from '@auth/core';
 import GitHub from '@auth/core/providers/github';
 import Google from '@auth/core/providers/google';
+import { WorkOS } from '@workos-inc/node';
 import {
   decodeBase64URLUTF8,
   encodeBase64URLUTF8,
@@ -11,10 +12,18 @@ import {
 } from '../shared/runtime.js';
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
+const WORKOS_SESSION_COOKIE = 'gs_workos_session';
+const WORKOS_STATE_COOKIE = 'gs_workos_state';
+const WORKOS_STATE_COOKIE_MAX_AGE = 60 * 10;
+const WORKOS_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
+}
+
+export function getAuthProvider() {
+  return String(process.env.AUTH_PROVIDER || 'local').trim().toLowerCase() || 'local';
 }
 
 function buildUsernameFromProfile(profile) {
@@ -41,12 +50,91 @@ function buildUsernameFromProfile(profile) {
   return `${trimmed}${randomHex(2)}`.slice(0, 8);
 }
 
-export function createAuthContext() {
-  const authSecret = process.env.AUTH_SECRET;
-  if (!authSecret) {
-    return { startupError: 'AUTH_SECRET is not configured' };
+function getWorkOSRedirectURI(request) {
+  const configured = String(process.env.WORKOS_REDIRECT_URI || '').trim();
+  if (configured) {
+    return configured;
   }
+  if (!request) {
+    return '';
+  }
+  return new URL('/auth/callback/workos', request.url).toString();
+}
 
+function buildCookieSessionDisplayName(user) {
+  const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
+  return fullName || String(user?.email || user?.id || '').trim();
+}
+
+async function signPayload(payload, authSecret) {
+  const encoded = encodeBase64URL(JSON.stringify(payload));
+  const signature = await signHMACSHA256Base64URL(authSecret, encoded);
+  return `${encoded}.${signature}`;
+}
+
+async function verifySignedPayload(rawValue, authSecret) {
+  if (!rawValue || !authSecret) {
+    return null;
+  }
+  const [payload, signature] = String(rawValue).split('.');
+  if (!payload || !signature) {
+    return null;
+  }
+  const expected = await signHMACSHA256Base64URL(authSecret, payload);
+  if (!timingSafeEqualText(signature, expected)) {
+    return null;
+  }
+  try {
+    return JSON.parse(decodeBase64URL(payload));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeReturnTo(request, rawValue, fallbackPath = '/login') {
+  const fallbackURL = new URL(fallbackPath, request.url);
+  const candidate = String(rawValue || '').trim();
+  if (!candidate) {
+    return fallbackURL.toString();
+  }
+  try {
+    const resolved = new URL(candidate, request.url);
+    if (resolved.origin !== fallbackURL.origin) {
+      return fallbackURL.toString();
+    }
+    return resolved.toString();
+  } catch {
+    return fallbackURL.toString();
+  }
+}
+
+function buildWorkOSSessionPayload(authResponse) {
+  const user = authResponse?.user;
+  if (!user?.id) {
+    return null;
+  }
+  return {
+    user: {
+      id: user.id,
+      email: user.email,
+      name: buildCookieSessionDisplayName(user),
+      username: '',
+      workosUserId: user.id,
+      derivedUsername: buildUsernameFromProfile({
+        id: user.id,
+        email: user.email,
+        name: buildCookieSessionDisplayName(user),
+      }),
+      profilePictureUrl: user.profilePictureUrl || '',
+    },
+    source: 'workos',
+    sessionId: authResponse.sessionId || '',
+    organizationId: authResponse.organizationId || '',
+    authenticationMethod: authResponse.authenticationMethod || '',
+  };
+}
+
+function createLocalAuthContext(authSecret) {
   const providers = [];
   if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
     providers.push(
@@ -66,6 +154,7 @@ export function createAuthContext() {
   }
 
   return {
+    authProvider: 'local',
     startupError: '',
     authSecret,
     authConfig: {
@@ -93,6 +182,41 @@ export function createAuthContext() {
   };
 }
 
+function createWorkOSAuthContext(authSecret, request) {
+  const clientId = String(process.env.WORKOS_CLIENT_ID || '').trim();
+  const apiKey = String(process.env.WORKOS_API_KEY || '').trim();
+  const redirectURI = getWorkOSRedirectURI(request);
+  const cookiePassword = String(process.env.WORKOS_COOKIE_PASSWORD || '').trim();
+  if (!clientId || !apiKey || !redirectURI || !cookiePassword) {
+    return {
+      authProvider: 'workos',
+      startupError: 'WorkOS auth is not fully configured',
+      authSecret,
+    };
+  }
+  return {
+    authProvider: 'workos',
+    startupError: '',
+    authSecret,
+    workos: new WorkOS(apiKey, { clientId }),
+    workosClientId: clientId,
+    workosRedirectURI: redirectURI,
+    workosCookiePassword: cookiePassword,
+    workosAuthKitDomain: String(process.env.WORKOS_AUTHKIT_DOMAIN || '').trim(),
+  };
+}
+
+export function createAuthContext(request) {
+  const authSecret = process.env.AUTH_SECRET;
+  if (!authSecret) {
+    return { authProvider: getAuthProvider(), startupError: 'AUTH_SECRET is not configured' };
+  }
+  if (getAuthProvider() === 'workos') {
+    return createWorkOSAuthContext(authSecret, request);
+  }
+  return createLocalAuthContext(authSecret);
+}
+
 function encodeBase64URL(value) {
   return encodeBase64URLUTF8(value);
 }
@@ -102,30 +226,13 @@ function decodeBase64URL(value) {
 }
 
 async function signDevSession(username, authSecret) {
-  const payload = encodeBase64URL(JSON.stringify({ username }));
-  const signature = await signHMACSHA256Base64URL(authSecret, payload);
-  return `${payload}.${signature}`;
+  return signPayload({ username }, authSecret);
 }
 
 async function verifyDevSession(rawValue, authSecret) {
-  if (!rawValue || !authSecret) {
-    return '';
-  }
-  const [payload, signature] = String(rawValue).split('.');
-  if (!payload || !signature) {
-    return '';
-  }
-  const expected = await signHMACSHA256Base64URL(authSecret, payload);
-  if (!timingSafeEqualText(signature, expected)) {
-    return '';
-  }
-  try {
-    const parsed = JSON.parse(decodeBase64URL(payload));
-    const username = String(parsed?.username || '').trim();
-    return USERNAME_PATTERN.test(username) ? username : '';
-  } catch {
-    return '';
-  }
+  const parsed = await verifySignedPayload(rawValue, authSecret);
+  const username = String(parsed?.username || '').trim();
+  return USERNAME_PATTERN.test(username) ? username : '';
 }
 
 function escapeHTML(value) {
@@ -166,6 +273,16 @@ function parseCookieHeader(value) {
   return cookies;
 }
 
+function redirectWithCookies(location, cookies = []) {
+  const headers = new Headers({ Location: location });
+  for (const cookie of cookies) {
+    if (cookie) {
+      headers.append('Set-Cookie', cookie);
+    }
+  }
+  return new Response(null, { status: 302, headers });
+}
+
 export async function loadAuthJsSession(request, authConfig) {
   if (!authConfig) {
     return null;
@@ -184,13 +301,59 @@ export async function loadAuthJsSession(request, authConfig) {
   return response.json();
 }
 
-export async function loadSession(request) {
-  const { authConfig, authSecret } = createAuthContext();
-  if (!authSecret) {
-    return null;
+async function authenticateWorkOSSession(request, authContext) {
+  if (!authContext?.workos || !authContext?.workosCookiePassword) {
+    return { session: null, accessToken: '', sessionId: '', clearCookie: false };
+  }
+  const sealedSession = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_SESSION_COOKIE);
+  if (!sealedSession) {
+    return { session: null, accessToken: '', sessionId: '', clearCookie: false };
   }
 
-  const authSession = await loadAuthJsSession(request, authConfig);
+  try {
+    const authResponse = await authContext.workos.userManagement.authenticateWithSessionCookie({
+      sessionData: sealedSession,
+      cookiePassword: authContext.workosCookiePassword,
+    });
+    if (!authResponse.authenticated) {
+      return {
+        session: null,
+        accessToken: '',
+        sessionId: '',
+        clearCookie: authResponse.reason !== 'no_session_cookie_provided',
+      };
+    }
+    return {
+      session: buildWorkOSSessionPayload(authResponse),
+      accessToken: authResponse.accessToken,
+      sessionId: authResponse.sessionId || '',
+      clearCookie: false,
+    };
+  } catch {
+    return { session: null, accessToken: '', sessionId: '', clearCookie: true };
+  }
+}
+
+export async function getProxyAuthorizationHeader(request) {
+  const authContext = createAuthContext(request);
+  if (authContext.authProvider !== 'workos' || authContext.startupError) {
+    return '';
+  }
+  const { accessToken } = await authenticateWorkOSSession(request, authContext);
+  return accessToken ? `Bearer ${accessToken}` : '';
+}
+
+export async function loadSession(request) {
+  const authContext = createAuthContext(request);
+  if (!authContext?.authSecret) {
+    return null;
+  }
+  if (authContext.authProvider === 'workos') {
+    const { session } = await authenticateWorkOSSession(request, authContext);
+    return session;
+  }
+
+  const authSession = await loadAuthJsSession(request, authContext.authConfig);
   const oauthUsername = String(authSession?.user?.username || '').trim();
   if (oauthUsername) {
     return {
@@ -203,7 +366,7 @@ export async function loadSession(request) {
     };
   }
 
-  const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authSecret);
+  const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authContext.authSecret);
   if (!devUsername) {
     return null;
   }
@@ -219,10 +382,22 @@ export async function loadSession(request) {
 }
 
 export async function handleSessionRequest(request) {
-  const { startupError } = createAuthContext();
-  if (startupError) {
-    return Response.json({ error: startupError }, { status: 500 });
+  const authContext = createAuthContext(request);
+  if (authContext.startupError) {
+    return Response.json({ error: authContext.startupError }, { status: 500 });
   }
+
+  if (authContext.authProvider === 'workos') {
+    const { session, clearCookie } = await authenticateWorkOSSession(request, authContext);
+    const response = session
+      ? Response.json(session)
+      : Response.json({ error: 'Not signed in' }, { status: 401 });
+    if (clearCookie) {
+      response.headers.append('Set-Cookie', serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0));
+    }
+    return response;
+  }
+
   const session = await loadSession(request);
   if (!session?.user?.username) {
     return Response.json({ error: 'Not signed in' }, { status: 401 });
@@ -297,12 +472,117 @@ export function handleDevLogoutRequest(request) {
   });
 }
 
-export async function handleAuthRequest(request) {
-  const { authConfig, startupError } = createAuthContext();
-  if (startupError || !authConfig) {
-    return Response.json({ error: startupError || 'Auth is not configured' }, { status: 500 });
+async function handleWorkOSSignInRequest(request, authContext) {
+  const url = new URL(request.url);
+  const callbackURL = normalizeReturnTo(request, url.searchParams.get('callbackUrl'), '/login');
+  const state = randomHex(16);
+  const stateCookie = await signPayload({ state, callbackUrl: callbackURL }, authContext.authSecret);
+  const redirectURL = authContext.workos.userManagement.getAuthorizationUrl({
+    provider: 'authkit',
+    clientId: authContext.workosClientId,
+    redirectUri: authContext.workosRedirectURI,
+    state,
+  });
+  return redirectWithCookies(redirectURL, [
+    serializeCookie(request, WORKOS_STATE_COOKIE, stateCookie, WORKOS_STATE_COOKIE_MAX_AGE),
+  ]);
+}
+
+async function handleWorkOSCallbackRequest(request, authContext) {
+  const url = new URL(request.url);
+  const signedState = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_STATE_COOKIE);
+  const statePayload = await verifySignedPayload(signedState, authContext.authSecret);
+  const callbackURL = normalizeReturnTo(request, statePayload?.callbackUrl, '/login');
+  const clearStateCookie = serializeCookie(request, WORKOS_STATE_COOKIE, '', 0);
+  const errorCode = String(url.searchParams.get('error') || '').trim();
+  const returnedState = String(url.searchParams.get('state') || '').trim();
+  const code = String(url.searchParams.get('code') || '').trim();
+
+  if (errorCode || !statePayload?.state || !returnedState || returnedState !== String(statePayload.state)) {
+    const failureURL = new URL(callbackURL);
+    failureURL.searchParams.set('error', errorCode || 'workos_callback_failed');
+    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
   }
-  return Auth(request, authConfig);
+  if (!code) {
+    const failureURL = new URL(callbackURL);
+    failureURL.searchParams.set('error', 'workos_code_missing');
+    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
+  }
+
+  let authResponse;
+  try {
+    authResponse = await authContext.workos.userManagement.authenticateWithCode({
+      clientId: authContext.workosClientId,
+      code,
+      redirectUri: authContext.workosRedirectURI,
+      ipAddress: String(request.headers.get('cf-connecting-ip') || '').trim(),
+      userAgent: String(request.headers.get('user-agent') || '').trim(),
+      session: {
+        sealSession: true,
+        cookiePassword: authContext.workosCookiePassword,
+      },
+    });
+  } catch {
+    const failureURL = new URL(callbackURL);
+    failureURL.searchParams.set('error', 'workos_authenticate_failed');
+    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
+  }
+
+  const sealedSession = String(authResponse?.sealedSession || '').trim();
+  if (!sealedSession) {
+    const failureURL = new URL(callbackURL);
+    failureURL.searchParams.set('error', 'workos_session_missing');
+    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
+  }
+
+  return redirectWithCookies(callbackURL, [
+    clearStateCookie,
+    serializeCookie(request, WORKOS_SESSION_COOKIE, sealedSession, WORKOS_SESSION_COOKIE_MAX_AGE),
+  ]);
+}
+
+async function handleWorkOSLogoutRequest(request, authContext) {
+  const returnTo = normalizeReturnTo(request, new URL(request.url).searchParams.get('callbackUrl'), '/');
+  const sealedSession = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_SESSION_COOKIE);
+  let redirectURL = returnTo;
+  if (sealedSession) {
+    try {
+      const cookieSession = authContext.workos.userManagement.loadSealedSession({
+        sessionData: sealedSession,
+        cookiePassword: authContext.workosCookiePassword,
+      });
+      redirectURL = await cookieSession.getLogoutUrl({ returnTo });
+    } catch {
+      redirectURL = returnTo;
+    }
+  }
+  return redirectWithCookies(redirectURL, [
+    serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0),
+  ]);
+}
+
+export async function handleAuthRequest(request) {
+  const authContext = createAuthContext(request);
+  if (authContext.startupError) {
+    return Response.json({ error: authContext.startupError || 'Auth is not configured' }, { status: 500 });
+  }
+  if (authContext.authProvider === 'workos') {
+    const pathname = new URL(request.url).pathname.replace(/^\/auth\/?/, '');
+    if (pathname === 'signin/workos') {
+      return handleWorkOSSignInRequest(request, authContext);
+    }
+    if (pathname === 'callback/workos') {
+      return handleWorkOSCallbackRequest(request, authContext);
+    }
+    if (pathname === 'signout') {
+      return handleWorkOSLogoutRequest(request, authContext);
+    }
+    return Response.json({ error: 'WorkOS auth route not found' }, { status: 404 });
+  }
+  if (!authContext.authConfig) {
+    return Response.json({ error: 'Auth is not configured' }, { status: 500 });
+  }
+  return Auth(request, authContext.authConfig);
 }
 
 export function renderDevicePage({ userCode, startupError }) {
