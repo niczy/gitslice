@@ -2,8 +2,25 @@
 
 ## Implementation Status
 
-- Current status: `not started`
+- Current status: `in progress`
 - Last updated: `2026-04-06`
+
+Completed:
+
+- `PR1 - Auth Provider Abstraction + Config`
+- `PR2 - Worker-side WorkOS Bootstrap`
+- `PR3 - Core API WorkOS JWT Verification`
+- `PR4 - Local User Provisioning + Account Linkage`
+- `PR6 - Replace Web Sign-In Surface`
+- `PR7 - Web Account Management`
+- `PR8 - Linked Auth Methods Implementation`
+
+Still pending:
+
+- `PR5 - Agent-Created Account Claim Flow`
+- `PR9 - WorkOS Organizations Linkage`
+- `PR10 - Optional Human CLI Auth via WorkOS`
+- `PR11 - Cleanup + Remove Legacy Human Web Auth`
 
 ---
 
@@ -425,6 +442,7 @@ No need to preserve old production auth cookies or old OAuth callback behavior i
 - Do not add standalone `/v1/*` HTTP handlers for account routes when they belong in `AccountService`.
 - Worker auth callback/session routes are acceptable in the web app because they are part of the web auth runtime.
 - Complete one PR at a time and keep each PR mergeable.
+- PR numbering is retained for planning continuity even though `PR6` through `PR8` landed before `PR5`.
 
 ### PR1 - Auth Provider Abstraction + Config
 
@@ -524,6 +542,11 @@ Exit criteria:
 - a human can securely attach WorkOS identity to an existing agent-created account
 - ambiguous or unauthorized attachment is rejected
 
+Current status:
+
+- scaffolding for account ownership and claim state has landed
+- explicit claim/link flow is still missing
+
 ### PR6 - Replace Web Sign-In Surface
 
 Scope:
@@ -596,6 +619,10 @@ Exit criteria:
 
 - signed-in WorkOS users can be associated with the correct local org context
 
+Current status:
+
+- actively in progress
+
 ### PR10 - Optional Human CLI Auth via WorkOS
 
 Scope:
@@ -611,6 +638,10 @@ Changes:
 Exit criteria:
 
 - humans can authenticate the CLI through WorkOS without affecting agent-key flows
+
+Current status:
+
+- pending after organization linkage
 
 ### PR11 - Cleanup + Remove Legacy Human Web Auth
 
@@ -632,6 +663,10 @@ Exit criteria:
 - human web auth is WorkOS-based end to end
 - agent-key auth still works
 - staging and production rollout docs are updated
+
+Current status:
+
+- pending after CLI hardening
 
 ---
 
