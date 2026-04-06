@@ -1404,6 +1404,32 @@ func (s *InMemoryStorage) GetOrganization(ctx context.Context, orgSlug string) (
 	return &copy, nil
 }
 
+func (s *InMemoryStorage) GetOrganizationByWorkOSOrganizationID(ctx context.Context, workOSOrganizationID string) (*models.Organization, error) {
+	_ = ctx
+	workOSOrganizationID = strings.TrimSpace(workOSOrganizationID)
+	if workOSOrganizationID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, org := range s.orgs {
+		if org == nil {
+			continue
+		}
+		if strings.TrimSpace(org.WorkOSOrganizationID) != workOSOrganizationID {
+			continue
+		}
+		copy := *org
+		if copy.RootPath == "" {
+			copy.RootPath = rootPathForSlug(copy.Slug)
+		}
+		return &copy, nil
+	}
+	return nil, ErrEntryNotFound
+}
+
 func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Organization) error {
 	_ = ctx
 	if org == nil {
