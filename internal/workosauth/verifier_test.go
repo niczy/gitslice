@@ -74,6 +74,31 @@ func TestVerifierAcceptsCustomAuthKitIssuer(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsClientScopedUserManagementIssuer(t *testing.T) {
+	t.Parallel()
+
+	privateKey, jwksServer := startJWKSFixture(t)
+	verifier, err := NewVerifier(VerifierConfig{
+		ClientID: "client_test_123",
+		JWKSURL:  jwksServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier failed: %v", err)
+	}
+
+	tokenString := signFixtureTokenWithIssuer(
+		t,
+		privateKey,
+		"client_test_123",
+		"user_123",
+		"sess_123",
+		"https://api.workos.com/user_management/client_test_123",
+	)
+	if _, err := verifier.VerifyAccessToken(context.Background(), tokenString); err != nil {
+		t.Fatalf("VerifyAccessToken failed for client-scoped issuer: %v", err)
+	}
+}
+
 func startJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
 	t.Helper()
 

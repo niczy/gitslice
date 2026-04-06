@@ -66,7 +66,7 @@ export async function fetchOAuthSession() {
 }
 
 export function startOAuthSignIn() {
-  const callbackUrl = `${window.location.origin}/login`;
+  const callbackUrl = `${window.location.origin}/browser`;
   const url = new URL('/auth/signin/workos', window.location.origin);
   url.searchParams.set('callbackUrl', callbackUrl);
   window.location.assign(url.toString());

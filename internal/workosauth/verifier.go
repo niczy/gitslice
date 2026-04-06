@@ -96,12 +96,7 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 		cacheTTL = defaultJWKSCacheTTL
 	}
 
-	issuers := map[string]struct{}{
-		defaultIssuer: {},
-	}
-	if authKitDomain := normalizeIssuer(cfg.AuthKitDomain); authKitDomain != "" {
-		issuers[authKitDomain] = struct{}{}
-	}
+	issuers := allowedIssuers(clientID, cfg.AuthKitDomain)
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
@@ -116,6 +111,31 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 		cacheTTL:   cacheTTL,
 		keys:       make(map[string]*rsa.PublicKey),
 	}, nil
+}
+
+func allowedIssuers(clientID, authKitDomain string) map[string]struct{} {
+	issuers := map[string]struct{}{
+		defaultIssuer: {},
+	}
+	if userManagementIssuer := userManagementIssuer(defaultIssuer, clientID); userManagementIssuer != "" {
+		issuers[userManagementIssuer] = struct{}{}
+	}
+	if authKitIssuer := normalizeIssuer(authKitDomain); authKitIssuer != "" {
+		issuers[authKitIssuer] = struct{}{}
+		if userManagementIssuer := userManagementIssuer(authKitIssuer, clientID); userManagementIssuer != "" {
+			issuers[userManagementIssuer] = struct{}{}
+		}
+	}
+	return issuers
+}
+
+func userManagementIssuer(baseIssuer, clientID string) string {
+	baseIssuer = normalizeIssuer(baseIssuer)
+	clientID = strings.TrimSpace(clientID)
+	if baseIssuer == "" || clientID == "" {
+		return ""
+	}
+	return normalizeIssuer(baseIssuer + "user_management/" + clientID)
 }
 
 func (v *Verifier) VerifyAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
