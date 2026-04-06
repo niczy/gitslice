@@ -40,6 +40,7 @@ function formatOAuthErrorMessage(authProvider, errorCode, detail) {
 export default function LoginPage({
   authProvider = 'local',
   allowDevLogin = true,
+  initialOAuthError = '',
   onLogin,
   onOAuthLogin,
   onLoggedIn,
@@ -47,10 +48,17 @@ export default function LoginPage({
 }) {
   const [value, setValue] = useState(() => currentUsername());
   const [usernameError, setUsernameError] = useState('');
-  const [oauthError, setOAuthError] = useState('');
+  const [oauthError, setOAuthError] = useState(() => String(initialOAuthError || '').trim());
   const [loading, setLoading] = useState(false);
   const isWorkOS = String(authProvider || '').trim().toLowerCase() === 'workos';
   const showPrimarySignIn = isWorkOS;
+
+  useEffect(() => {
+    const nextError = String(initialOAuthError || '').trim();
+    if (nextError) {
+      setOAuthError(nextError);
+    }
+  }, [initialOAuthError]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {

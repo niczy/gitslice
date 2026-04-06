@@ -274,9 +274,11 @@ sync_worker_secrets() {
 }
 
 validate_api_env() {
+  local auth_provider=""
   local object_store_type=""
   local storage_type=""
   local missing=()
+  auth_provider="$(printf '%s' "${AUTH_PROVIDER:-local}" | tr '[:upper:]' '[:lower:]')"
   storage_type="$(printf '%s' "${STORAGE_TYPE:-postgres}" | tr '[:upper:]' '[:lower:]')"
   object_store_type="$(printf '%s' "${OBJECT_STORE_TYPE:-r2}" | tr '[:upper:]' '[:lower:]')"
 
@@ -313,6 +315,10 @@ validate_api_env() {
       exit 1
       ;;
   esac
+
+  if [ "$auth_provider" = "workos" ]; then
+    [ -n "${WORKOS_CLIENT_ID:-}" ] || missing+=("WORKOS_CLIENT_ID")
+  fi
 
   if [ "${#missing[@]}" -gt 0 ]; then
     echo "Missing required api env values in $resolved_env_file: ${missing[*]}" >&2

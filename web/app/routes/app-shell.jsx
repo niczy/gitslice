@@ -6,14 +6,22 @@ import { parseLocation } from '../../src/utils/routing.js';
 import { getPublicAuthConfig, loadSession } from '../../server/auth.js';
 
 export async function loader({ request }) {
+  let session = null;
+  let sessionError = '';
+  try {
+    session = await loadSession(request);
+  } catch (error) {
+    sessionError = error instanceof Error ? error.message : 'Failed to load browser session.';
+  }
   return {
-    session: await loadSession(request),
+    session,
+    sessionError,
     authConfig: getPublicAuthConfig(request),
   };
 }
 
 export default function AppShellRoute() {
-  const { session, authConfig } = useLoaderData();
+  const { session, sessionError, authConfig } = useLoaderData();
   const location = useLocation();
   const navigate = useNavigate();
   const routeInfo = parseLocation(location);
@@ -27,6 +35,7 @@ export default function AppShellRoute() {
       initialRoute={routeInfo}
       initialAuthConfig={authConfig || { authProvider: 'local', allowDevLogin: true }}
       initialSession={session || null}
+      initialSessionError={sessionError || ''}
       routerNavigate={navigate}
     />
   );
