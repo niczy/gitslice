@@ -14,6 +14,7 @@ const WORKOS_STATE_COOKIE = 'gs_workos_state';
 const WORKOS_STATE_COOKIE_MAX_AGE = 60 * 10;
 const WORKOS_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
+const MAX_AUTH_ERROR_DETAIL_LENGTH = 240;
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
@@ -146,6 +147,59 @@ function normalizeReturnTo(request, rawValue, fallbackPath = '/login') {
     return resolved.toString();
   } catch {
     return fallbackURL.toString();
+  }
+}
+
+function sanitizeAuthErrorCode(rawValue) {
+  return String(rawValue || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+}
+
+function sanitizeAuthErrorDetail(rawValue) {
+  const value = String(rawValue || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!value) {
+    return '';
+  }
+  return value.slice(0, MAX_AUTH_ERROR_DETAIL_LENGTH);
+}
+
+function buildWorkOSProviderFailure(url) {
+  const code = sanitizeAuthErrorCode(url.searchParams.get('error')) || 'workos_callback_failed';
+  const description = sanitizeAuthErrorDetail(url.searchParams.get('error_description'));
+  const detail = description || code.replace(/[_-]+/g, ' ');
+  return { code, detail };
+}
+
+function buildWorkOSAuthenticateFailure(error) {
+  const code = sanitizeAuthErrorCode(
+    error?.code
+      || error?.error
+      || error?.rawData?.error
+      || error?.cause?.code
+      || 'workos_authenticate_failed',
+  ) || 'workos_authenticate_failed';
+  const detail = sanitizeAuthErrorDetail(
+    error?.description
+      || error?.rawData?.error_description
+      || error?.rawData?.message
+      || error?.cause?.message
+      || error?.message,
+  );
+  return { code, detail };
+}
+
+function appendAuthFailure(failureURL, code, detail = '') {
+  failureURL.searchParams.set('error', sanitizeAuthErrorCode(code) || 'auth_failed');
+  const safeDetail = sanitizeAuthErrorDetail(detail);
+  if (safeDetail) {
+    failureURL.searchParams.set('detail', safeDetail);
   }
 }
 
@@ -559,14 +613,20 @@ async function handleWorkOSCallbackRequest(request, authContext) {
   const returnedState = String(url.searchParams.get('state') || '').trim();
   const code = String(url.searchParams.get('code') || '').trim();
 
-  if (errorCode || !statePayload?.state || !returnedState || returnedState !== String(statePayload.state)) {
+  if (errorCode) {
     const failureURL = new URL(callbackURL);
-    failureURL.searchParams.set('error', errorCode || 'workos_callback_failed');
+    const failure = buildWorkOSProviderFailure(url);
+    appendAuthFailure(failureURL, failure.code, failure.detail);
+    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
+  }
+  if (!statePayload?.state || !returnedState || returnedState !== String(statePayload.state)) {
+    const failureURL = new URL(callbackURL);
+    appendAuthFailure(failureURL, 'workos_callback_failed', 'State verification failed. Start the WorkOS sign-in flow again.');
     return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
   }
   if (!code) {
     const failureURL = new URL(callbackURL);
-    failureURL.searchParams.set('error', 'workos_code_missing');
+    appendAuthFailure(failureURL, 'workos_code_missing', 'WorkOS did not return an authorization code.');
     return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
   }
 
@@ -583,16 +643,17 @@ async function handleWorkOSCallbackRequest(request, authContext) {
         cookiePassword: authContext.workosCookiePassword,
       },
     });
-  } catch {
+  } catch (error) {
     const failureURL = new URL(callbackURL);
-    failureURL.searchParams.set('error', 'workos_authenticate_failed');
+    const failure = buildWorkOSAuthenticateFailure(error);
+    appendAuthFailure(failureURL, failure.code, failure.detail);
     return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
   }
 
   const sealedSession = String(authResponse?.sealedSession || '').trim();
   if (!sealedSession) {
     const failureURL = new URL(callbackURL);
-    failureURL.searchParams.set('error', 'workos_session_missing');
+    appendAuthFailure(failureURL, 'workos_session_missing', 'WorkOS returned no sealed session.');
     return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
   }
 
