@@ -90,7 +90,7 @@ func TestCLINonJSONErrorWritesOnlyStderr(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("expected non-JSON error command to keep stdout empty, got:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "Device login is interactive.") {
+	if !strings.Contains(stderr, "interactive browser sign-in") {
 		t.Fatalf("expected stderr guidance for non-interactive login failure, got:\n%s", stderr)
 	}
 }
