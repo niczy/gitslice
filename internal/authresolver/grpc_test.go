@@ -70,7 +70,7 @@ func TestRequireGRPCIdentityRejectsInvalidBearerSessionToken(t *testing.T) {
 	}
 }
 
-func TestRequireGRPCIdentityAcceptsLinkedWorkOSToken(t *testing.T) {
+func TestRequireGRPCIdentityRejectsLinkedWorkOSToken(t *testing.T) {
 	resetWorkOSVerifierCacheForTest()
 
 	privateKey, jwksServer := startWorkOSJWKSFixture(t)
@@ -97,12 +97,9 @@ func TestRequireGRPCIdentityAcceptsLinkedWorkOSToken(t *testing.T) {
 	token := signWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
 
-	identity, err := RequireGRPCIdentity(ctx, st)
-	if err != nil {
-		t.Fatalf("RequireGRPCIdentity failed: %v", err)
-	}
-	if identity.Username != "alice" || identity.AuthSource != "workos" || identity.WorkOSUserID != "user_123" || identity.SessionID != "sess_workos_123" {
-		t.Fatalf("unexpected identity: %#v", identity)
+	_, err := RequireGRPCIdentity(ctx, st)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected direct WorkOS bearer to be exchange-only, got %v", err)
 	}
 }
 

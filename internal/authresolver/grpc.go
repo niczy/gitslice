@@ -25,13 +25,6 @@ func OptionalGRPCIdentity(ctx context.Context, st storage.Storage) (*Identity, e
 		session, err := st.GetAuthSessionByToken(ctx, token)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
-				workOSIdentity, workOSErr := resolveWorkOSIdentity(ctx, st, token)
-				if workOSErr == nil {
-					return workOSIdentity, nil
-				}
-				if status.Code(workOSErr) != codes.Unimplemented {
-					return nil, workOSErr
-				}
 				return nil, status.Error(codes.Unauthenticated, "invalid session token")
 			}
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve session token: %v", err))

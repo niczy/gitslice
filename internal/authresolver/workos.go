@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/niczy/gitslice/internal/auth"
-	"github.com/niczy/gitslice/internal/storage"
 	"github.com/niczy/gitslice/internal/workosauth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -21,29 +20,6 @@ var (
 	workOSVerifierCache *workosauth.Verifier
 	workOSVerifierErr   error
 )
-
-func resolveWorkOSIdentity(ctx context.Context, st storage.Storage, token string) (*Identity, error) {
-	claims, err := verifyWorkOSAccessToken(ctx, token)
-	if err != nil {
-		return nil, err
-	}
-
-	user, err := st.GetUserByWorkOSUserID(ctx, claims.Subject)
-	if err != nil {
-		if errors.Is(err, storage.ErrEntryNotFound) {
-			return nil, status.Error(codes.Unauthenticated, "WorkOS user is not linked")
-		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve linked WorkOS user: %v", err))
-	}
-
-	return &Identity{
-		Username:       user.Username,
-		SessionID:      strings.TrimSpace(claims.SessionID),
-		AuthSource:     "workos",
-		WorkOSUserID:   claims.Subject,
-		OrganizationID: strings.TrimSpace(claims.OrganizationID),
-	}, nil
-}
 
 func ResolveGRPCWorkOSClaims(ctx context.Context) (*workosauth.Claims, error) {
 	token := auth.TokenFromGRPCContext(ctx)
