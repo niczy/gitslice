@@ -266,6 +266,8 @@ For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gits
 - `AUTH_SECRET`
 - `WORKOS_*` when testing WorkOS
 
+When using WorkOS webhooks, point WorkOS at `/v1/auth/workos/webhook` on the API host and set `WORKOS_WEBHOOK_SECRET` in the API env file. Gitslice currently handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the WorkOS ID.
+
 For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_JWKS_URL`, `WORKOS_AUTHKIT_DOMAIN`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:
 
 ```bash
@@ -469,6 +471,7 @@ AUTH_SECRET=replace-with-long-random-string
 WORKOS_CLIENT_ID=client_...
 WORKOS_API_KEY=sk_...
 WORKOS_COOKIE_PASSWORD=replace-with-long-random-string
+WORKOS_WEBHOOK_SECRET=whsec_...
 ```
 
 For local setup, copy the template and fill in values:

@@ -3,13 +3,17 @@ package accountservice
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +23,7 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	accountv1 "github.com/niczy/gitslice/proto/account"
+	httpbody "google.golang.org/genproto/googleapis/api/httpbody"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -34,6 +39,16 @@ func userCtx(ctx context.Context, username string) context.Context {
 
 func workOSBearerCtx(ctx context.Context, token string) context.Context {
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+token))
+}
+
+func workOSWebhookCtx(ctx context.Context, payload []byte, secret string, at time.Time) context.Context {
+	timestamp := strconv.FormatInt(at.UnixMilli(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	signature := hex.EncodeToString(mac.Sum(nil))
+	return metadata.NewIncomingContext(ctx, metadata.Pairs("workos-signature", "t="+timestamp+",v1="+signature))
 }
 
 func assertHomeSliceProvisioned(t *testing.T, ctx context.Context, st storage.Storage, username string) {
@@ -756,6 +771,94 @@ func TestEnsureWorkOSLocalIdentityLinksMatchingWorkOSOrganizationMembership(t *t
 	}
 	if len(orgs.GetOrganizations()) != 1 || orgs.GetOrganizations()[0].GetSlug() != "acme" {
 		t.Fatalf("unexpected organizations: %#v", orgs.GetOrganizations())
+	}
+}
+
+func TestHandleWorkOSWebhookUpdatesAndDeletesLinkedUser(t *testing.T) {
+	const webhookSecret = "whsec_test_123"
+	t.Setenv("WORKOS_WEBHOOK_SECRET", webhookSecret)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_workos_webhook",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		Name:         "Old Name",
+		PrimaryEmail: "old@example.com",
+		AuthSource:   "workos",
+		WorkOSUserID: "user_workos_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID:  "sess-workos-webhook",
+		Username:   "alice",
+		Token:      "gs_workos_webhook",
+		CreatedAt:  time.Now(),
+		LastSeenAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+
+	updatePayload := []byte(`{"event":"user.updated","data":{"object":"user","id":"user_workos_123","email":"new@example.com","first_name":"Alice","last_name":"Updated"}}`)
+	updateResp, err := srv.HandleWorkOSWebhook(workOSWebhookCtx(ctx, updatePayload, webhookSecret, time.Now()), &httpbody.HttpBody{
+		ContentType: "application/json",
+		Data:        updatePayload,
+	})
+	if err != nil {
+		t.Fatalf("HandleWorkOSWebhook update failed: %v", err)
+	}
+	if updateResp.GetAction() != "updated_user" || updateResp.GetUsername() != "alice" {
+		t.Fatalf("unexpected update response: %#v", updateResp)
+	}
+	updatedUser, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser after update failed: %v", err)
+	}
+	if updatedUser.PrimaryEmail != "new@example.com" || updatedUser.Name != "Alice Updated" {
+		t.Fatalf("expected WorkOS profile sync, got %#v", updatedUser)
+	}
+
+	deletePayload := []byte(`{"event":"user.deleted","data":{"object":"user","id":"user_workos_123","email":"new@example.com"}}`)
+	deleteResp, err := srv.HandleWorkOSWebhook(workOSWebhookCtx(ctx, deletePayload, webhookSecret, time.Now()), &httpbody.HttpBody{
+		ContentType: "application/json",
+		Data:        deletePayload,
+	})
+	if err != nil {
+		t.Fatalf("HandleWorkOSWebhook delete failed: %v", err)
+	}
+	if deleteResp.GetAction() != "unlinked_user" || deleteResp.GetRevokedSessions() != 1 {
+		t.Fatalf("unexpected delete response: %#v", deleteResp)
+	}
+	if _, err := st.GetAuthSessionByToken(ctx, "gs_workos_webhook"); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected WorkOS-linked session to be revoked, got %v", err)
+	}
+	unlinkedUser, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser after delete failed: %v", err)
+	}
+	if unlinkedUser.WorkOSUserID != "" || unlinkedUser.AuthSource != "local" {
+		t.Fatalf("expected WorkOS user to be unlinked, got %#v", unlinkedUser)
+	}
+}
+
+func TestHandleWorkOSWebhookRejectsInvalidSignature(t *testing.T) {
+	t.Setenv("WORKOS_WEBHOOK_SECRET", "whsec_test_123")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("workos-signature", "t=1775580000000,v1=invalid"))
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	_, err := srv.HandleWorkOSWebhook(ctx, &httpbody.HttpBody{Data: []byte(`{"event":"user.updated","data":{"id":"user_123"}}`)})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected invalid signature to be rejected, got %v", err)
 	}
 }
 

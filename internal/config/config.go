@@ -72,6 +72,7 @@ type Config struct {
 	WorkOSJWKSURL        string
 	WorkOSCookiePassword string
 	WorkOSAuthKitDomain  string
+	WorkOSWebhookSecret  string
 
 	// E2B runtime provider settings for agent sessions.
 	E2BAPIURL                string
@@ -151,6 +152,7 @@ func LoadConfig() (*Config, error) {
 		WorkOSJWKSURL:           getEnv("WORKOS_JWKS_URL", ""),
 		WorkOSCookiePassword:    getEnv("WORKOS_COOKIE_PASSWORD", ""),
 		WorkOSAuthKitDomain:     getEnv("WORKOS_AUTHKIT_DOMAIN", ""),
+		WorkOSWebhookSecret:     getEnv("WORKOS_WEBHOOK_SECRET", ""),
 		E2BAPIURL:               getEnv("E2B_API_URL", ""),
 		E2BDomain:               getEnv("E2B_DOMAIN", "e2b.app"),
 		E2BAPIKey:               getEnv("E2B_API_KEY", ""),

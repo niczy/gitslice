@@ -3,10 +3,12 @@ package accountservice
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/url"
 	"os"
 	"regexp"
@@ -21,6 +23,7 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	"golang.org/x/crypto/bcrypt"
+	httpbody "google.golang.org/genproto/googleapis/api/httpbody"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -37,6 +40,7 @@ const (
 	agentKeyChallengeTTL    = 5 * time.Minute
 	devicePollInterval      = 5 * time.Second
 	defaultPublicWebBaseURL = "http://localhost:4173"
+	workOSWebhookTolerance  = 3 * time.Minute
 )
 
 var orgSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,39}$`)
@@ -142,6 +146,69 @@ func deviceInfoFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+func workOSSignatureFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"workos-signature", "WorkOS-Signature"} {
+		vals := md.Get(key)
+		if len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
+		}
+	}
+	return ""
+}
+
+func verifyWorkOSWebhookSignature(payload []byte, sigHeader, secret string, now time.Time) error {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return status.Error(codes.FailedPrecondition, "WORKOS_WEBHOOK_SECRET is not configured")
+	}
+	sigHeader = strings.TrimSpace(sigHeader)
+	if sigHeader == "" {
+		return status.Error(codes.Unauthenticated, "missing WorkOS signature")
+	}
+
+	var timestamp, signature string
+	for _, part := range strings.Split(sigHeader, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "t":
+			timestamp = strings.TrimSpace(value)
+		case "v1":
+			signature = strings.TrimSpace(value)
+		}
+	}
+	if timestamp == "" || signature == "" {
+		return status.Error(codes.Unauthenticated, "invalid WorkOS signature header")
+	}
+	tsMillis, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return status.Error(codes.Unauthenticated, "invalid WorkOS signature timestamp")
+	}
+	signedAt := time.UnixMilli(tsMillis)
+	if now.Sub(signedAt) > workOSWebhookTolerance || signedAt.Sub(now) > workOSWebhookTolerance {
+		return status.Error(codes.Unauthenticated, "WorkOS signature timestamp is outside tolerance")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	provided, err := hex.DecodeString(signature)
+	if err != nil {
+		return status.Error(codes.Unauthenticated, "invalid WorkOS signature")
+	}
+	if !hmac.Equal(mac.Sum(nil), provided) {
+		return status.Error(codes.Unauthenticated, "invalid WorkOS signature")
+	}
+	return nil
 }
 
 func publicWebBaseURL() string {
@@ -465,6 +532,18 @@ type ensureWorkOSLocalIdentityResult struct {
 	linkedExistingUser bool
 	claimedAccount     bool
 	localSession       *models.AuthSession
+}
+
+type workOSWebhookEnvelope struct {
+	Event string `json:"event"`
+	Data  struct {
+		ID        string `json:"id"`
+		Object    string `json:"object"`
+		UserID    string `json:"user_id"`
+		Email     string `json:"email"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	} `json:"data"`
 }
 
 func hashClaimToken(value string) string {
@@ -2103,6 +2182,91 @@ func (s *accountServiceServer) EnsureWorkOSLocalIdentity(ctx context.Context, re
 			return nil, err
 		}
 		resp.LocalAuth = localAuth
+	}
+	return resp, nil
+}
+
+func (s *accountServiceServer) HandleWorkOSWebhook(ctx context.Context, req *httpbody.HttpBody) (*accountv1.HandleWorkOSWebhookResponse, error) {
+	if req == nil || len(req.GetData()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "webhook payload is required")
+	}
+	payload := req.GetData()
+	if err := verifyWorkOSWebhookSignature(payload, workOSSignatureFromContext(ctx), os.Getenv("WORKOS_WEBHOOK_SECRET"), time.Now()); err != nil {
+		return nil, err
+	}
+
+	var event workOSWebhookEnvelope
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid WorkOS webhook payload")
+	}
+	eventName := strings.TrimSpace(event.Event)
+	workOSUserID := strings.TrimSpace(event.Data.ID)
+	if workOSUserID == "" {
+		workOSUserID = strings.TrimSpace(event.Data.UserID)
+	}
+	resp := &accountv1.HandleWorkOSWebhookResponse{
+		Event:        eventName,
+		WorkosUserId: workOSUserID,
+		Action:       "ignored",
+	}
+	if workOSUserID == "" {
+		return resp, nil
+	}
+
+	user, err := s.st.GetUserByWorkOSUserID(ctx, workOSUserID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return resp, nil
+		}
+		return nil, status.Error(codes.Internal, "failed to load WorkOS-linked user")
+	}
+	resp.Username = user.Username
+
+	switch eventName {
+	case "user.updated":
+		updated := false
+		if email := normalizeEmail(event.Data.Email); email != "" && email != user.PrimaryEmail {
+			user.PrimaryEmail = email
+			updated = true
+		}
+		if name := strings.TrimSpace(strings.Join([]string{event.Data.FirstName, event.Data.LastName}, " ")); name != "" && name != user.Name {
+			user.Name = name
+			updated = true
+		}
+		if !updated {
+			resp.Action = "noop"
+			return resp, nil
+		}
+		user.UpdatedAt = time.Now()
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			return nil, status.Error(codes.Internal, "failed to update WorkOS-linked user")
+		}
+		resp.Action = "updated_user"
+	case "user.deleted":
+		sessions, err := s.st.ListAuthSessionsByUser(ctx, user.Username)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to list sessions")
+		}
+		revoked := 0
+		for _, session := range sessions {
+			if session == nil || strings.TrimSpace(session.SessionID) == "" {
+				continue
+			}
+			if err := s.st.RevokeAuthSession(ctx, user.Username, session.SessionID); err != nil && err != storage.ErrEntryNotFound {
+				return nil, status.Error(codes.Internal, "failed to revoke sessions")
+			}
+			revoked++
+		}
+		user.WorkOSUserID = ""
+		if user.AuthSource == "workos" {
+			user.AuthSource = "local"
+		}
+		user.UpdatedAt = time.Now()
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			return nil, status.Error(codes.Internal, "failed to unlink WorkOS user")
+		}
+		resp.Action = "unlinked_user"
+		resp.RevokedSessions = int32(revoked)
 	}
 	return resp, nil
 }

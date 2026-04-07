@@ -5,6 +5,7 @@ package account.v1;
 option go_package = "github.com/niczy/gitslice/proto/account;accountv1";
 
 import "google/api/annotations.proto";
+import "google/api/httpbody.proto";
 import "google/protobuf/empty.proto";
 
 service AccountService {
@@ -173,6 +174,13 @@ service AccountService {
   rpc EnsureWorkOSLocalIdentity(EnsureWorkOSLocalIdentityRequest) returns (EnsureWorkOSLocalIdentityResponse) {
     option (google.api.http) = {
       post: "/v1/auth/workos/ensure-local-identity"
+      body: "*"
+    };
+  }
+
+  rpc HandleWorkOSWebhook(google.api.HttpBody) returns (HandleWorkOSWebhookResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/workos/webhook"
       body: "*"
     };
   }
@@ -766,6 +774,14 @@ message EnsureWorkOSLocalIdentityResponse {
   bool linked_existing_user = 5;
   bool claimed_account = 6;
   AuthResponse local_auth = 7;
+}
+
+message HandleWorkOSWebhookResponse {
+  string event = 1;
+  string workos_user_id = 2;
+  string username = 3;
+  string action = 4;
+  int32 revoked_sessions = 5;
 }
 
 message UpdateMeRequest {
