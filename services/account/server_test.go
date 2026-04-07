@@ -118,6 +118,121 @@ func TestSignupLoginAndSessionLifecycle(t *testing.T) {
 	assertHomeSliceProvisioned(t, ctx, srv.st, "devonly")
 }
 
+func TestGetAuthContextReportsCredentialSource(t *testing.T) {
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	anonymous, err := srv.GetAuthContext(ctx, &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		t.Fatalf("GetAuthContext anonymous failed: %v", err)
+	}
+	if anonymous.GetAuthenticated() {
+		t.Fatalf("expected anonymous auth context, got %#v", anonymous)
+	}
+
+	signupResp, err := srv.Signup(ctx, &accountv1.SignupRequest{
+		Username: "alice",
+		Email:    "alice@example.com",
+		Password: "password123",
+		Name:     "Alice",
+	})
+	if err != nil {
+		t.Fatalf("Signup failed: %v", err)
+	}
+	localCtx, err := srv.GetAuthContext(bearerCtx(ctx, signupResp.GetAccessToken()), &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		t.Fatalf("GetAuthContext local session failed: %v", err)
+	}
+	if !localCtx.GetAuthenticated() || localCtx.GetUsername() != "alice" || localCtx.GetSessionId() == "" || localCtx.GetAuthSource() != "local_session" {
+		t.Fatalf("unexpected local auth context: %#v", localCtx)
+	}
+
+	agentAccessExpiresAt := time.Now().Add(time.Hour)
+	agentRefreshExpiresAt := time.Now().Add(24 * time.Hour)
+	if err := srv.st.CreateAgentKey(ctx, &models.AgentKey{
+		KeyID:       "agent-key-1",
+		Username:    "alice",
+		Name:        "test agent",
+		Algorithm:   "ed25519",
+		PublicKey:   []byte("public-key"),
+		Fingerprint: "fingerprint-agent-key-1",
+	}); err != nil {
+		t.Fatalf("CreateAgentKey failed: %v", err)
+	}
+	if err := srv.st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID:             "sess-agent",
+		Username:              "alice",
+		AgentKeyID:            "agent-key-1",
+		Token:                 "gs_agent_session",
+		RefreshToken:          "gsr_agent_session",
+		CreatedAt:             time.Now(),
+		LastSeenAt:            time.Now(),
+		AccessTokenExpiresAt:  &agentAccessExpiresAt,
+		RefreshTokenExpiresAt: &agentRefreshExpiresAt,
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+	agentCtx, err := srv.GetAuthContext(bearerCtx(ctx, "gs_agent_session"), &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		t.Fatalf("GetAuthContext agent session failed: %v", err)
+	}
+	if agentCtx.GetAuthSource() != "agent_key" || agentCtx.GetAgentKeyId() != "agent-key-1" {
+		t.Fatalf("unexpected agent auth context: %#v", agentCtx)
+	}
+	if agentCtx.GetAccessTokenExpiresAt() == "" || agentCtx.GetRefreshTokenExpiresAt() == "" {
+		t.Fatalf("expected token expiry metadata: %#v", agentCtx)
+	}
+
+	legacyCtx, err := srv.GetAuthContext(userCtx(ctx, "alice"), &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		t.Fatalf("GetAuthContext legacy user failed: %v", err)
+	}
+	if legacyCtx.GetAuthSource() != "legacy_user" || legacyCtx.GetSessionId() != "" {
+		t.Fatalf("unexpected legacy auth context: %#v", legacyCtx)
+	}
+}
+
+func TestGetAuthContextReportsWorkOSLinkage(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_workos_123",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "workos",
+		WorkOSUserID: "user_workos_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	session := &models.AuthSession{
+		SessionID:  "sess-workos-local",
+		Username:   "alice",
+		Token:      "gs_workos_local",
+		CreatedAt:  time.Now(),
+		LastSeenAt: time.Now(),
+	}
+	if err := st.CreateAuthSession(ctx, session); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+
+	authCtx, err := srv.GetAuthContext(bearerCtx(ctx, session.Token), &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		t.Fatalf("GetAuthContext failed: %v", err)
+	}
+	if !authCtx.GetWorkosLinked() || authCtx.GetWorkosUserId() != "user_workos_123" || authCtx.GetAccountId() != account.AccountID {
+		t.Fatalf("unexpected WorkOS-linked auth context: %#v", authCtx)
+	}
+}
+
 func TestResetPasswordFlow(t *testing.T) {
 	ctx := context.Background()
 	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
