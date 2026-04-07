@@ -148,7 +148,7 @@ func TestResetPasswordFlow(t *testing.T) {
 	}
 }
 
-func TestGetMeAcceptsLinkedWorkOSToken(t *testing.T) {
+func TestGetMeRejectsDirectWorkOSBearerToken(t *testing.T) {
 	t.Setenv("AUTH_PROVIDER", "workos")
 	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
 
@@ -184,12 +184,8 @@ func TestGetMeAcceptsLinkedWorkOSToken(t *testing.T) {
 	srv := &accountServiceServer{st: st}
 	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
 
-	me, err := srv.GetMe(workOSBearerCtx(ctx, token), &accountv1.GetMeRequest{})
-	if err != nil {
-		t.Fatalf("GetMe failed: %v", err)
-	}
-	if me.GetUsername() != "alice" || me.GetPrimaryEmail() != "alice@example.com" {
-		t.Fatalf("unexpected user: %#v", me)
+	if _, err := srv.GetMe(workOSBearerCtx(ctx, token), &accountv1.GetMeRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected direct WorkOS bearer to be exchange-only, got %v", err)
 	}
 }
 
@@ -492,8 +488,19 @@ func TestListAuthMethodsSynthesizesPasswordAndWorkOSMethods(t *testing.T) {
 	}
 	srv := &accountServiceServer{st: st}
 	token := signAccountWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
+	identityResp, err := srv.EnsureWorkOSLocalIdentity(workOSBearerCtx(ctx, token), &accountv1.EnsureWorkOSLocalIdentityRequest{
+		PreferredUsername: "alice",
+		PrimaryEmail:      "alice@example.com",
+		IssueLocalSession: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if identityResp.GetLocalAuth().GetAccessToken() == "" {
+		t.Fatalf("expected local auth token")
+	}
 
-	resp, err := srv.ListAuthMethods(workOSBearerCtx(ctx, token), &accountv1.ListAuthMethodsRequest{})
+	resp, err := srv.ListAuthMethods(bearerCtx(ctx, identityResp.GetLocalAuth().GetAccessToken()), &accountv1.ListAuthMethodsRequest{})
 	if err != nil {
 		t.Fatalf("ListAuthMethods failed: %v", err)
 	}
@@ -605,9 +612,13 @@ func TestEnsureWorkOSLocalIdentityLinksMatchingWorkOSOrganizationMembership(t *t
 		PreferredUsername: "alice",
 		Name:              "Alice",
 		PrimaryEmail:      "alice@example.com",
+		IssueLocalSession: true,
 	})
 	if err != nil {
 		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
+	}
+	if resp.GetLocalAuth().GetAccessToken() == "" {
+		t.Fatalf("expected local auth from WorkOS exchange, got %#v", resp)
 	}
 
 	member, err := st.GetOrganizationMember(ctx, "acme", resp.GetUser().GetUsername())
@@ -618,7 +629,7 @@ func TestEnsureWorkOSLocalIdentityLinksMatchingWorkOSOrganizationMembership(t *t
 		t.Fatalf("expected admin membership, got %#v", member)
 	}
 
-	orgs, err := srv.ListOrganizations(workOSBearerCtx(ctx, token), &accountv1.ListOrganizationsRequest{})
+	orgs, err := srv.ListOrganizations(bearerCtx(ctx, resp.GetLocalAuth().GetAccessToken()), &accountv1.ListOrganizationsRequest{})
 	if err != nil {
 		t.Fatalf("ListOrganizations failed: %v", err)
 	}
@@ -627,7 +638,7 @@ func TestEnsureWorkOSLocalIdentityLinksMatchingWorkOSOrganizationMembership(t *t
 	}
 }
 
-func TestCreateOrganizationUsesWorkOSOrganizationContext(t *testing.T) {
+func TestCreateOrganizationUsesLocalSessionAfterWorkOSExchange(t *testing.T) {
 	t.Setenv("AUTH_PROVIDER", "workos")
 	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
 
@@ -642,6 +653,7 @@ func TestCreateOrganizationUsesWorkOSOrganizationContext(t *testing.T) {
 		PreferredUsername: "creator",
 		Name:              "Creator",
 		PrimaryEmail:      "creator@example.com",
+		IssueLocalSession: true,
 	})
 	if err != nil {
 		t.Fatalf("EnsureWorkOSLocalIdentity failed: %v", err)
@@ -649,8 +661,11 @@ func TestCreateOrganizationUsesWorkOSOrganizationContext(t *testing.T) {
 	if identityResp.GetUser().GetUsername() == "" {
 		t.Fatalf("expected local user username, got %#v", identityResp)
 	}
+	if identityResp.GetLocalAuth().GetAccessToken() == "" {
+		t.Fatalf("expected local auth from WorkOS exchange, got %#v", identityResp)
+	}
 
-	created, err := srv.CreateOrganization(workOSBearerCtx(ctx, token), &accountv1.CreateOrganizationRequest{
+	created, err := srv.CreateOrganization(bearerCtx(ctx, identityResp.GetLocalAuth().GetAccessToken()), &accountv1.CreateOrganizationRequest{
 		Slug: "workos-linked",
 		Name: "WorkOS Linked",
 	})
@@ -661,8 +676,8 @@ func TestCreateOrganizationUsesWorkOSOrganizationContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganization failed: %v", err)
 	}
-	if stored.WorkOSOrganizationID != "org_workos_456" {
-		t.Fatalf("expected WorkOS organization id to be linked, got %#v", stored)
+	if stored.WorkOSOrganizationID != "" {
+		t.Fatalf("expected local API session to avoid implicit WorkOS organization binding, got %#v", stored)
 	}
 }
 

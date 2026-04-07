@@ -1949,7 +1949,7 @@ func startGRPCServer(t *testing.T, st storage.Storage) string {
 	return lis.Addr().String()
 }
 
-func TestGatewayFilesystemWorkspaceCreateAcceptsLinkedWorkOSToken(t *testing.T) {
+func TestGatewayFilesystemWorkspaceCreateUsesExchangedWorkOSLocalSession(t *testing.T) {
 	t.Setenv("AUTH_PROVIDER", "workos")
 	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
 
@@ -1984,11 +1984,38 @@ func TestGatewayFilesystemWorkspaceCreateAcceptsLinkedWorkOSToken(t *testing.T) 
 	gatewayURL := startGatewayServer(t, grpcAddr)
 	workOSToken := signGatewayWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
 
+	exchangeReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/auth/workos/ensure-local-identity", strings.NewReader(`{"preferredUsername":"alice","name":"Alice","primaryEmail":"alice@example.com","issueLocalSession":true}`))
+	if err != nil {
+		t.Fatalf("new exchange request: %v", err)
+	}
+	exchangeReq.Header.Set("Authorization", "Bearer "+workOSToken)
+	exchangeReq.Header.Set("Content-Type", "application/json")
+	exchangeResp, err := http.DefaultClient.Do(exchangeReq)
+	if err != nil {
+		t.Fatalf("POST /v1/auth/workos/ensure-local-identity failed: %v", err)
+	}
+	defer exchangeResp.Body.Close()
+	if exchangeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(exchangeResp.Body)
+		t.Fatalf("unexpected exchange status %d: %s", exchangeResp.StatusCode, string(body))
+	}
+	var exchangePayload struct {
+		LocalAuth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"localAuth"`
+	}
+	if err := json.NewDecoder(exchangeResp.Body).Decode(&exchangePayload); err != nil {
+		t.Fatalf("decode exchange response: %v", err)
+	}
+	if exchangePayload.LocalAuth.AccessToken == "" {
+		t.Fatalf("exchange response missing local access token: %#v", exchangePayload)
+	}
+
 	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"workos-gw-ws","name":"WorkOS Workspace"}`))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+workOSToken)
+	req.Header.Set("Authorization", "Bearer "+exchangePayload.LocalAuth.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
