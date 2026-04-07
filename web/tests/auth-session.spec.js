@@ -24,7 +24,7 @@ test.describe('Cookie-backed web auth', () => {
 
     await page.getByTestId('topbar-settings').click();
     await expect(page.getByTestId('settings-page')).toBeVisible();
-    await expect(page.getByText(/auth mode/i)).toBeVisible();
+    await expect(page.getByText(/browser sign-in/i)).toBeVisible();
     await expect(page.getByText(/^dev$/i)).toBeVisible();
 
     await page.getByTestId('topbar-repos').click();
@@ -238,6 +238,21 @@ test.describe('Cookie-backed web auth', () => {
         body: JSON.stringify({ sessions }),
       });
     });
+    await page.route('**/v1/auth/context', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          authenticated: true,
+          username,
+          session_id: 'sess-current',
+          auth_source: 'local_session',
+          workos_linked: true,
+          workos_user_id: 'user_workos_test',
+          account_id: 'acct_test',
+        }),
+      });
+    });
     await page.route('**/v1/auth/sessions/*', async (route) => {
       const revokedId = route.request().url().split('/').pop();
       sessions = sessions.filter((session) => session.id !== revokedId);
@@ -250,6 +265,10 @@ test.describe('Cookie-backed web auth', () => {
 
     await page.getByTestId('topbar-settings').click();
     await expect(page.getByTestId('settings-page')).toBeVisible();
+    await expect(page.getByTestId('settings-auth-context')).toContainText('API credential');
+    await expect(page.getByTestId('settings-auth-context')).toContainText('local_session');
+    await expect(page.getByTestId('settings-auth-context')).toContainText('WorkOS linked');
+    await expect(page.getByTestId('settings-auth-context')).toContainText('yes');
     await expect(page.getByTestId('settings-sessions')).toContainText('Firefox on macOS');
     await expect(page.getByTestId('settings-sessions')).toContainText('gs auth login --device');
     await expect(page.getByTestId('settings-sessions')).toContainText(/current/i);

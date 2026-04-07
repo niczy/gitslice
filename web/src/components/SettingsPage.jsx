@@ -8,6 +8,7 @@ import {
   deleteAuthMethod,
   deleteAuthSession,
   fetchAgentKeys,
+  fetchAuthContext,
   fetchAuthMethods,
   fetchAuthSessions,
   fetchRepoBindings,
@@ -41,6 +42,9 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
   const [authMethodsError, setAuthMethodsError] = useState('');
   const [linkingWorkOS, setLinkingWorkOS] = useState(false);
   const [removingMethodId, setRemovingMethodId] = useState('');
+  const [authContext, setAuthContext] = useState(null);
+  const [authContextLoading, setAuthContextLoading] = useState(false);
+  const [authContextError, setAuthContextError] = useState('');
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState('');
@@ -63,6 +67,9 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setAuthMethods([]);
       setAuthMethodsLoading(false);
       setAuthMethodsError('');
+      setAuthContext(null);
+      setAuthContextLoading(false);
+      setAuthContextError('');
       setSessions([]);
       setSessionsLoading(false);
       setSessionsError('');
@@ -78,6 +85,8 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
     setBindingsError('');
     setAuthMethodsLoading(true);
     setAuthMethodsError('');
+    setAuthContextLoading(true);
+    setAuthContextError('');
     setSessionsLoading(true);
     setSessionsError('');
     setAgentKeysLoading(true);
@@ -114,6 +123,23 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       .finally(() => {
         if (!cancelled) {
           setAuthMethodsLoading(false);
+        }
+      });
+    fetchAuthContext()
+      .then((nextContext) => {
+        if (!cancelled) {
+          setAuthContext(nextContext);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setAuthContext(null);
+          setAuthContextError(err?.message || 'Unable to load auth context.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthContextLoading(false);
         }
       });
     fetchAuthSessions()
@@ -195,6 +221,20 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setAuthMethodsError(err?.message || 'Unable to load auth methods.');
     } finally {
       setAuthMethodsLoading(false);
+    }
+  }
+
+  async function refreshAuthContext() {
+    setAuthContextLoading(true);
+    setAuthContextError('');
+    try {
+      const nextContext = await fetchAuthContext();
+      setAuthContext(nextContext);
+    } catch (err) {
+      setAuthContext(null);
+      setAuthContextError(err?.message || 'Unable to load auth context.');
+    } finally {
+      setAuthContextLoading(false);
     }
   }
 
@@ -291,18 +331,51 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
           <div className="grid gap-4 md:grid-cols-2">
             <Card className="border-border/70">
               <CardContent className="space-y-4 pt-6">
-                <div className="kv">
+                <div className="kv" data-testid="settings-auth-context">
                   <div className="kv-row">
                     <span className="kv-key">Signed in as</span>
                     <span className="kv-val">{username}</span>
                   </div>
                   <div className="kv-row">
-                    <span className="kv-key">Auth mode</span>
+                    <span className="kv-key">Browser sign-in</span>
                     <span className="kv-val">{authSessionSource || 'unknown'}</span>
                   </div>
+                  {authContextLoading && (
+                    <div className="kv-row">
+                      <span className="kv-key">API credential</span>
+                      <span className="kv-val">loading…</span>
+                    </div>
+                  )}
+                  {!authContextLoading && authContextError && (
+                    <div className="kv-row">
+                      <span className="kv-key">API credential</span>
+                      <span className="kv-val text-destructive">{authContextError}</span>
+                    </div>
+                  )}
+                  {!authContextLoading && !authContextError && authContext && (
+                    <>
+                      <div className="kv-row">
+                        <span className="kv-key">API credential</span>
+                        <span className="kv-val">{authContext.auth_source || authContext.authSource || 'unknown'}</span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-key">Session ID</span>
+                        <span className="kv-val break-all">{authContext.session_id || authContext.sessionId || 'none'}</span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-key">Agent key</span>
+                        <span className="kv-val">{authContext.agent_key_id || authContext.agentKeyId || 'none'}</span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-key">WorkOS linked</span>
+                        <span className="kv-val">{authContext.workos_linked || authContext.workosLinked ? 'yes' : 'no'}</span>
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div className="auth-actions">
                   <Button type="button" onClick={onOpenProfile}>Open Profile Details</Button>
+                  <Button type="button" variant="ghost" onClick={refreshAuthContext}>Refresh auth context</Button>
                   <Button type="button" variant="ghost" onClick={refreshAuthMethods}>Refresh auth methods</Button>
                   <Button type="button" variant="ghost" onClick={refreshSessions}>Refresh sessions</Button>
                   <Button type="button" variant="ghost" onClick={onLogout}>Logout</Button>
@@ -386,8 +459,7 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                 <div className="space-y-2">
                   <h3>Gitslice sessions</h3>
                   <p className="status">
-                    Local CLI, device, and dev sessions live here.
-                    {authSessionSource === 'workos' ? ' Your browser sign-in is managed by WorkOS separately.' : ''}
+                    Web, CLI, device, and agent sessions use local Gitslice API credentials here.
                   </p>
                 </div>
                 {sessionsLoading && <div className="panel-empty">Loading sessions…</div>}
