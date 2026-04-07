@@ -23,7 +23,8 @@ type Config struct {
 	DeployEnv string
 
 	// Auth provider controls the human auth integration mode.
-	AuthProvider string
+	AuthProvider        string
+	AllowLegacyUserAuth bool
 
 	// Storage type (memory, postgres, postgres_native)
 	StorageType string
@@ -126,6 +127,7 @@ func LoadConfig() (*Config, error) {
 		GatewayPort:             getEnv("GATEWAY_PORT", corePort),
 		DeployEnv:               getEnv("DEPLOY_ENV", ""),
 		AuthProvider:            getEnv("AUTH_PROVIDER", "local"),
+		AllowLegacyUserAuth:     getEnvBool("ALLOW_LEGACY_USER_AUTH", false),
 		StorageType:             getEnv("STORAGE_TYPE", "memory"),
 		PostgresDSN:             getEnv("POSTGRES_DSN", ""),
 		PostgresMaxConns:        postgresMaxConns,

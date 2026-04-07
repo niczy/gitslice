@@ -9,6 +9,7 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("DEPLOY_ENV", "staging")
 	t.Setenv("CORE_BIND_ADDR", "127.0.0.1")
 	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("ALLOW_LEGACY_USER_AUTH", "1")
 	t.Setenv("STORAGE_TYPE", "postgres")
 	t.Setenv("POSTGRES_DSN", "postgres://user:pass@localhost:5432/gitslice?sslmode=disable")
 	t.Setenv("POSTGRES_MAX_CONNS", "25")
@@ -31,6 +32,9 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 	if cfg.AuthProvider != "workos" {
 		t.Fatalf("expected auth provider workos, got %q", cfg.AuthProvider)
+	}
+	if !cfg.AllowLegacyUserAuth {
+		t.Fatalf("expected legacy user auth override to load")
 	}
 	if cfg.CoreBindAddr != "127.0.0.1" {
 		t.Fatalf("expected core bind addr 127.0.0.1, got %q", cfg.CoreBindAddr)

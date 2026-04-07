@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 
@@ -26,6 +27,30 @@ func ValidateUsername(username string) bool {
 	return usernameRE.MatchString(username)
 }
 
+// LegacyUserAuthAllowed gates the historical `Authorization: User <username>`
+// shortcut. It remains available by default for local/dev tests, but production
+// has to opt in explicitly.
+func LegacyUserAuthAllowed() bool {
+	if truthyEnv("ALLOW_LEGACY_USER_AUTH") || truthyEnv("ALLOW_DEV_LOGIN") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("DEPLOY_ENV"))) {
+	case "prod", "production":
+		return false
+	default:
+		return true
+	}
+}
+
+func truthyEnv(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // UsernameFromAuthorizationHeader extracts a username from an Authorization header.
 // Supported forms:
 //   - "User <username>"
@@ -35,6 +60,9 @@ func UsernameFromAuthorizationHeader(value string) string {
 		return ""
 	}
 	if strings.HasPrefix(value, userAuthScheme) {
+		if !LegacyUserAuthAllowed() {
+			return ""
+		}
 		u := strings.TrimSpace(strings.TrimPrefix(value, userAuthScheme))
 		if ValidateUsername(u) {
 			return u

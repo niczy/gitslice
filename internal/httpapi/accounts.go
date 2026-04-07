@@ -58,8 +58,9 @@ type meResponse struct {
 	Now           int64                  `json:"now"`
 }
 
-// Login is "fake": it just validates/creates the user. Authentication is still carried
-// by sending `Authorization: User <username>` on subsequent requests.
+// Login is a local/dev helper: it validates/creates the user and expects
+// subsequent requests to send `Authorization: User <username>`. Production
+// disables that legacy auth shortcut unless explicitly overridden.
 func (a *AccountsAPI) Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)

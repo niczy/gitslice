@@ -37,6 +37,40 @@ func TestRequireGRPCIdentityAcceptsUserHeader(t *testing.T) {
 	}
 }
 
+func TestRequireGRPCIdentityRejectsUserHeaderInProduction(t *testing.T) {
+	t.Setenv("DEPLOY_ENV", "production")
+
+	st := storage.NewInMemoryStorage()
+	if _, err := st.EnsureUser(context.Background(), "alice"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	_, err := RequireGRPCIdentity(ctx, st)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected production legacy user auth to be rejected, got %v", err)
+	}
+}
+
+func TestRequireGRPCIdentityAllowsExplicitProductionUserHeader(t *testing.T) {
+	t.Setenv("DEPLOY_ENV", "production")
+	t.Setenv("ALLOW_LEGACY_USER_AUTH", "1")
+
+	st := storage.NewInMemoryStorage()
+	if _, err := st.EnsureUser(context.Background(), "alice"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	identity, err := RequireGRPCIdentity(ctx, st)
+	if err != nil {
+		t.Fatalf("RequireGRPCIdentity failed: %v", err)
+	}
+	if identity.Username != "alice" {
+		t.Fatalf("unexpected username: %q", identity.Username)
+	}
+}
+
 func TestRequireGRPCIdentityAcceptsBearerSessionToken(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 	if _, err := st.EnsureUser(context.Background(), "alice"); err != nil {
