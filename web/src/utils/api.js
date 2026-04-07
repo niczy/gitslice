@@ -99,6 +99,14 @@ export async function fetchAuthSessions() {
   return payload?.sessions || [];
 }
 
+export async function fetchAuthContext() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/context`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load auth context'));
+  }
+  return response.json();
+}
+
 export async function deleteAuthSession(sessionId) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
