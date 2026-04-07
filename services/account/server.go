@@ -1039,7 +1039,7 @@ func (s *accountServiceServer) createRefreshableSession(ctx context.Context, use
 	return nil, status.Error(codes.Aborted, "failed to create refreshable session")
 }
 
-func (s *accountServiceServer) rotateAccessToken(ctx context.Context, session *models.AuthSession) (*models.AuthSession, error) {
+func (s *accountServiceServer) rotateSessionTokens(ctx context.Context, session *models.AuthSession) (*models.AuthSession, error) {
 	if session == nil || strings.TrimSpace(session.SessionID) == "" {
 		return nil, status.Error(codes.InvalidArgument, "session is required")
 	}
@@ -1048,19 +1048,26 @@ func (s *accountServiceServer) rotateAccessToken(ctx context.Context, session *m
 		if err != nil {
 			return nil, err
 		}
+		refreshToken, err := randomToken("gsr_", 24)
+		if err != nil {
+			return nil, err
+		}
 		accessTokenExpiresAt := time.Now().Add(accessTokenTTL)
-		err = s.st.UpdateAuthSessionTokens(ctx, session.SessionID, accessToken, &accessTokenExpiresAt, session.RefreshToken, session.RefreshTokenExpiresAt)
+		refreshTokenExpiresAt := time.Now().Add(refreshTokenTTL)
+		err = s.st.UpdateAuthSessionTokens(ctx, session.SessionID, accessToken, &accessTokenExpiresAt, refreshToken, &refreshTokenExpiresAt)
 		if err == nil {
 			sessionCopy := *session
 			sessionCopy.Token = accessToken
+			sessionCopy.RefreshToken = refreshToken
 			sessionCopy.AccessTokenExpiresAt = &accessTokenExpiresAt
+			sessionCopy.RefreshTokenExpiresAt = &refreshTokenExpiresAt
 			return &sessionCopy, nil
 		}
 		if err != storage.ErrEntryExists {
 			return nil, err
 		}
 	}
-	return nil, status.Error(codes.Aborted, "failed to rotate access token")
+	return nil, status.Error(codes.Aborted, "failed to rotate session tokens")
 }
 
 func (s *accountServiceServer) buildAuthResponse(ctx context.Context, user *models.User, session *models.AuthSession) (*accountv1.AuthResponse, error) {
@@ -1505,7 +1512,7 @@ func (s *accountServiceServer) RefreshAccessToken(ctx context.Context, req *acco
 		}
 		return nil, status.Error(codes.Internal, "failed to resolve refresh token")
 	}
-	session, err = s.rotateAccessToken(ctx, session)
+	session, err = s.rotateSessionTokens(ctx, session)
 	if err != nil {
 		if stErr, ok := status.FromError(err); ok {
 			return nil, stErr.Err()

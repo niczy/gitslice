@@ -375,6 +375,12 @@ func TestEnsureWorkOSLocalIdentityCanIssueRefreshableLocalSession(t *testing.T) 
 	if refreshResp.GetAccessToken() == "" || refreshResp.GetAccessToken() == localAuth.GetAccessToken() {
 		t.Fatalf("expected rotated local access token, got %#v", refreshResp)
 	}
+	if refreshResp.GetRefreshToken() == "" || refreshResp.GetRefreshToken() == localAuth.GetRefreshToken() {
+		t.Fatalf("expected rotated local refresh token, got %#v", refreshResp)
+	}
+	if _, err := srv.RefreshAccessToken(ctx, &accountv1.RefreshAccessTokenRequest{RefreshToken: localAuth.GetRefreshToken()}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected old local refresh token to be invalid after rotation, got %v", err)
+	}
 }
 
 func TestEnsureWorkOSLocalIdentityRequiresClaimTokenForAgentOnlyAccount(t *testing.T) {
@@ -920,8 +926,8 @@ func TestDeviceAuthorizationFlowAndRefresh(t *testing.T) {
 	if refreshResp.GetAccessToken() == "" || refreshResp.GetAccessToken() == oldAccessToken {
 		t.Fatalf("expected rotated access token, got %#v", refreshResp)
 	}
-	if refreshResp.GetRefreshToken() != approvedResp.GetAuth().GetRefreshToken() {
-		t.Fatalf("expected refresh token to remain stable, got %#v", refreshResp)
+	if refreshResp.GetRefreshToken() == "" || refreshResp.GetRefreshToken() == approvedResp.GetAuth().GetRefreshToken() {
+		t.Fatalf("expected rotated refresh token, got %#v", refreshResp)
 	}
 
 	if _, err := srv.ListSessions(bearerCtx(ctx, oldAccessToken), &accountv1.ListSessionsRequest{}); status.Code(err) != codes.Unauthenticated {
@@ -929,6 +935,9 @@ func TestDeviceAuthorizationFlowAndRefresh(t *testing.T) {
 	}
 	if _, err := srv.ListSessions(bearerCtx(ctx, refreshResp.GetAccessToken()), &accountv1.ListSessionsRequest{}); err != nil {
 		t.Fatalf("refreshed access token should be usable, got %v", err)
+	}
+	if _, err := srv.RefreshAccessToken(ctx, &accountv1.RefreshAccessTokenRequest{RefreshToken: approvedResp.GetAuth().GetRefreshToken()}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected old refresh token to be invalid after rotation, got %v", err)
 	}
 }
 
