@@ -1728,6 +1728,56 @@ func (s *accountServiceServer) ListSessions(ctx context.Context, req *accountv1.
 	return &accountv1.ListSessionsResponse{Sessions: out}, nil
 }
 
+func (s *accountServiceServer) GetAuthContext(ctx context.Context, req *accountv1.GetAuthContextRequest) (*accountv1.GetAuthContextResponse, error) {
+	identity, err := authresolver.OptionalGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	if identity == nil || strings.TrimSpace(identity.Username) == "" {
+		return &accountv1.GetAuthContextResponse{}, nil
+	}
+
+	resp := &accountv1.GetAuthContextResponse{
+		Authenticated: true,
+		Username:      identity.Username,
+		SessionId:     identity.SessionID,
+		AuthSource:    "legacy_user",
+	}
+
+	if identity.SessionID != "" {
+		session, err := s.st.GetAuthSession(ctx, identity.SessionID)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.Unauthenticated, "session not found")
+			}
+			return nil, status.Error(codes.Internal, "failed to load auth session")
+		}
+		resp.AuthSource = "local_session"
+		resp.AgentKeyId = session.AgentKeyID
+		if session.AgentKeyID != "" {
+			resp.AuthSource = "agent_key"
+		}
+		if session.AccessTokenExpiresAt != nil {
+			resp.AccessTokenExpiresAt = session.AccessTokenExpiresAt.Format(timeRFC3339)
+		}
+		if session.RefreshTokenExpiresAt != nil {
+			resp.RefreshTokenExpiresAt = session.RefreshTokenExpiresAt.Format(timeRFC3339)
+		}
+	}
+
+	user, err := s.st.GetUser(ctx, identity.Username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return resp, nil
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	resp.AccountId = user.AccountID
+	resp.WorkosUserId = user.WorkOSUserID
+	resp.WorkosLinked = strings.TrimSpace(user.WorkOSUserID) != ""
+	return resp, nil
+}
+
 func (s *accountServiceServer) DeleteSession(ctx context.Context, req *accountv1.DeleteSessionRequest) (*emptypb.Empty, error) {
 	identity, err := s.resolveIdentity(ctx)
 	if err != nil {
