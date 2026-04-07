@@ -266,6 +266,8 @@ For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gits
 - `AUTH_SECRET`
 - `WORKOS_*` when testing WorkOS
 
+The legacy `Authorization: User <username>` shortcut is disabled automatically when `DEPLOY_ENV=production`; set `ALLOW_LEGACY_USER_AUTH=1` only for explicit debugging or controlled dev/staging compatibility.
+
 When using WorkOS webhooks, point WorkOS at `/v1/auth/workos/webhook` on the API host and set `WORKOS_WEBHOOK_SECRET` in the API env file. Gitslice currently handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the WorkOS ID.
 
 For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_JWKS_URL`, `WORKOS_AUTHKIT_DOMAIN`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:
@@ -392,7 +394,7 @@ Register a Cloudflare-backed environment profile:
 
 ```bash
 curl -X POST "$GATEWAY_BASE_URL/v1/environments" \
-  -H "Authorization: User <admin-username>" \
+  -H "Authorization: Bearer <access-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name":"cfc-canary",
@@ -468,6 +470,7 @@ Web auth environment variables (see `web/.env.example`):
 VITE_WEB_AGENT_REAL_RUNTIME=1
 AUTH_PROVIDER=workos
 AUTH_SECRET=replace-with-long-random-string
+ALLOW_LEGACY_USER_AUTH=
 WORKOS_CLIENT_ID=client_...
 WORKOS_API_KEY=sk_...
 WORKOS_COOKIE_PASSWORD=replace-with-long-random-string

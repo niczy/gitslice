@@ -112,6 +112,7 @@ function buildCoreEnv(target, fileEnv) {
     CORE_BIND_ADDR: fileEnv.CORE_BIND_ADDR || defaults.CORE_BIND_ADDR,
     CORE_SERVICE_PORT: fileEnv.CORE_SERVICE_PORT || defaults.CORE_SERVICE_PORT,
     AUTH_PROVIDER: fileEnv.AUTH_PROVIDER || "local",
+    ALLOW_LEGACY_USER_AUTH: fileEnv.ALLOW_LEGACY_USER_AUTH || "",
     STORAGE_TYPE: fileEnv.STORAGE_TYPE || defaults.STORAGE_TYPE,
     POSTGRES_DSN: fileEnv.POSTGRES_DSN || fileEnv.NEON_DB || defaults.POSTGRES_DSN,
     POSTGRES_MAX_CONNS: fileEnv.POSTGRES_MAX_CONNS || "",
