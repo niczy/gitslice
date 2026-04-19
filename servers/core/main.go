@@ -15,6 +15,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/gateway"
+	"github.com/niczy/gitslice/internal/gitlayer"
 	"github.com/niczy/gitslice/internal/httpapi"
 	"github.com/niczy/gitslice/internal/storage"
 	accountservice "github.com/niczy/gitslice/services/account"
@@ -157,6 +158,7 @@ func main() {
 
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
+	httpMux.Handle("/git/", gitlayer.NewHandler(st, ""))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.
 	httpMux.Handle("/", gateway.WithNoBodyWriteGuard(gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux))))
