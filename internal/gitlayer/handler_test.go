@@ -2,6 +2,7 @@ package gitlayer
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -83,6 +84,90 @@ func TestHandlerSupportsGitCloneFromSlice(t *testing.T) {
 	}
 }
 
+func TestHandlerImportsGitPushToSlice(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is not available")
+	}
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{
+		ID:         "push-slice",
+		Name:       "Push Slice",
+		Slug:       "push-slice",
+		Visibility: models.VisibilityPrivate,
+		Owners:     []string{"alice"},
+		CreatedBy:  "alice",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	writeTestFile(t, ctx, st, slice.ID, "README.md", []byte("old\n"), false, "")
+	writeTestFile(t, ctx, st, slice.ID, "stale.txt", []byte("delete me\n"), false, "")
+
+	handler := NewHandler(st, filepath.Join(t.TempDir(), "cache"))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: User alice", "clone", server.URL+"/git/push-slice.git", cloneDir)
+	if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	if err := os.Remove(filepath.Join(cloneDir, "stale.txt")); err != nil {
+		t.Fatalf("remove stale: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cloneDir, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cloneDir, "bin/run.sh"), []byte("#!/bin/sh\necho pushed\n"), 0o755); err != nil {
+		t.Fatalf("write executable: %v", err)
+	}
+	if err := os.Symlink("../README.md", filepath.Join(cloneDir, "bin/readme-link")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	runGitTest(t, ctx, cloneDir, "config", "user.name", "Alice")
+	runGitTest(t, ctx, cloneDir, "config", "user.email", "alice@example.com")
+	runGitTest(t, ctx, cloneDir, "add", "-A")
+	runGitTest(t, ctx, cloneDir, "commit", "-m", "push slice updates")
+	runGitTest(t, ctx, cloneDir, "-c", "http.extraHeader=Authorization: User alice", "push", "origin", "HEAD:main")
+
+	readme, err := storage.ReadSliceFileContent(ctx, st, slice.ID, "README.md")
+	if err != nil {
+		t.Fatalf("read pushed README: %v", err)
+	}
+	if got, want := string(readme.Content), "new\n"; got != want {
+		t.Fatalf("README content = %q, want %q", got, want)
+	}
+	if _, err := st.GetEntryByPath(ctx, slice.ID, "stale.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("stale entry error = %v, want ErrEntryNotFound", err)
+	}
+	scriptEntry, err := st.GetEntryByPath(ctx, slice.ID, "bin/run.sh")
+	if err != nil {
+		t.Fatalf("get script entry: %v", err)
+	}
+	if !scriptEntry.Executable {
+		t.Fatal("pushed executable bit was not imported")
+	}
+	linkEntry, err := st.GetEntryByPath(ctx, slice.ID, "bin/readme-link")
+	if err != nil {
+		t.Fatalf("get symlink entry: %v", err)
+	}
+	if linkEntry.SymlinkTarget != "../README.md" {
+		t.Fatalf("symlink target = %q, want ../README.md", linkEntry.SymlinkTarget)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata: %v", err)
+	}
+	if !strings.HasPrefix(meta.HeadCommitHash, "git-") {
+		t.Fatalf("head commit = %q, want git-imported commit", meta.HeadCommitHash)
+	}
+}
+
 func TestHandlerRejectsUnauthenticatedPrivateClone(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -130,5 +215,18 @@ func writeTestFile(t *testing.T, ctx context.Context, st storage.Storage, sliceI
 	}
 	if err := st.AddFileToSlice(ctx, filePath, sliceID); err != nil {
 		t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+	}
+}
+
+func runGitTest(t *testing.T, ctx context.Context, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
 }

@@ -79,8 +79,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch service {
 	case "git-upload-pack":
 	case "git-receive-pack":
-		http.Error(w, "git push is not enabled on this server", http.StatusForbidden)
-		return
 	default:
 		http.Error(w, "unsupported git service", http.StatusBadRequest)
 		return
@@ -98,6 +96,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !canReadSlice(slice, id) {
 		http.Error(w, "not authorized for slice", http.StatusForbidden)
+		return
+	}
+	if service == "git-receive-pack" && !canWriteSlice(slice, id) {
+		http.Error(w, "not authorized to modify slice", http.StatusForbidden)
+		return
+	}
+
+	if service == "git-receive-pack" {
+		if err := h.serveReceivePack(w, r, slice, id, parsed.suffix); err != nil {
+			log.Printf("gitlayer: git receive-pack failed for %s: %v", slice.ID, err)
+			http.Error(w, "git push failed", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -277,7 +287,10 @@ func (h *Handler) ensureBareRepo(ctx context.Context, slice *models.Slice) (stri
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.ensureBareRepoLocked(ctx, slice)
+}
 
+func (h *Handler) ensureBareRepoLocked(ctx context.Context, slice *models.Slice) (string, string, error) {
 	if err := os.MkdirAll(h.cacheDir, 0o755); err != nil {
 		return "", "", err
 	}
@@ -341,7 +354,7 @@ func (h *Handler) ensureBareRepo(ctx context.Context, slice *models.Slice) (stri
 	if _, err := runGit(ctx, "", "--git-dir="+bareTmp, "symbolic-ref", "HEAD", "refs/heads/"+defaultBranch); err != nil {
 		return "", "", err
 	}
-	if _, err := runGit(ctx, "", "--git-dir="+bareTmp, "config", "http.receivepack", "false"); err != nil {
+	if _, err := runGit(ctx, "", "--git-dir="+bareTmp, "config", "http.receivepack", "true"); err != nil {
 		return "", "", err
 	}
 	gitHead, err := gitHead(ctx, bareTmp)
@@ -365,6 +378,56 @@ func (h *Handler) ensureBareRepo(ctx context.Context, slice *models.Slice) (stri
 }
 
 func (h *Handler) serveBackend(w http.ResponseWriter, r *http.Request, repoName, suffix string) error {
+	payload, err := h.runBackend(r, repoName, suffix)
+	if err != nil {
+		return err
+	}
+	return writeCGIResponse(w, payload)
+}
+
+func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice *models.Slice, id *identity, suffix string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	repoPath, repoName, err := h.ensureBareRepoLocked(r.Context(), slice)
+	if err != nil {
+		return fmt.Errorf("prepare bare repo: %w", err)
+	}
+	before, _ := readCachedGitHead(repoPath)
+	if before == "" {
+		before, _ = gitHead(r.Context(), repoPath)
+	}
+
+	payload, err := h.runBackend(r, repoName, suffix)
+	if err != nil {
+		return err
+	}
+	statusCode := cgiStatusCode(payload)
+	if statusCode >= 200 && statusCode < 300 && r.Method == http.MethodPost {
+		after, headErr := gitHead(r.Context(), repoPath)
+		if headErr != nil {
+			return fmt.Errorf("resolve pushed head: %w", headErr)
+		}
+		if strings.TrimSpace(after) != "" && after != before {
+			if err := h.importBareRepo(r.Context(), slice, repoPath, after, id.username); err != nil {
+				return err
+			}
+			meta, err := h.st.GetSliceMetadata(r.Context(), slice.ID)
+			if err != nil {
+				return fmt.Errorf("load imported slice metadata: %w", err)
+			}
+			if err := os.WriteFile(filepath.Join(repoPath, sourceHeadFilename), []byte(strings.TrimSpace(meta.HeadCommitHash)+"\n"), 0o644); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(repoPath, gitHeadFilename), []byte(after+"\n"), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return writeCGIResponse(w, payload)
+}
+
+func (h *Handler) runBackend(r *http.Request, repoName, suffix string) ([]byte, error) {
 	pathInfo := "/" + repoName
 	if suffix != "/" {
 		pathInfo += suffix
@@ -388,9 +451,27 @@ func (h *Handler) serveBackend(w http.ResponseWriter, r *http.Request, repoName,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return writeCGIResponse(w, stdout.Bytes())
+	return stdout.Bytes(), nil
+}
+
+func cgiStatusCode(payload []byte) int {
+	reader := bufio.NewReader(bytes.NewReader(payload))
+	tp := textproto.NewReader(reader)
+	headers, err := tp.ReadMIMEHeader()
+	if err != nil {
+		return http.StatusInternalServerError
+	}
+	if statusValue := strings.TrimSpace(headers.Get("Status")); statusValue != "" {
+		parts := strings.Fields(statusValue)
+		if len(parts) > 0 {
+			if parsed, parseErr := strconv.Atoi(parts[0]); parseErr == nil {
+				return parsed
+			}
+		}
+	}
+	return http.StatusOK
 }
 
 func writeCGIResponse(w http.ResponseWriter, payload []byte) error {
@@ -495,6 +576,14 @@ func gitHead(ctx context.Context, bareRepo string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func readCachedGitHead(repoPath string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(repoPath, gitHeadFilename))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func cacheRepoName(sliceID string) string {
