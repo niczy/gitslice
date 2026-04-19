@@ -638,6 +638,11 @@ Both API origins route the public gRPC service paths to the core server:
 - `/filesystem.v1.FilesystemService/`
 - `/agent.v1.AgentService/`
 
+Both API origins also proxy HTTP gateway traffic under `/v1/` and Git smart
+HTTP traffic under `/git/`. The `/git/` locations disable request buffering and
+allow large request bodies so `git push` can stream packfiles through Cloudflare
+and Nginx to the core service.
+
 To copy referenced objects from the current store into a target R2 namespace before cutover:
 
 ```bash
