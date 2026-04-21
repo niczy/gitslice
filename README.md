@@ -643,6 +643,39 @@ HTTP traffic under `/git/`. The `/git/` locations disable request buffering and
 allow large request bodies so `git push` can stream packfiles through Cloudflare
 and Nginx to the core service.
 
+### Git Smart HTTP
+
+Git access is slice-oriented: one Git repository maps to one slice.
+
+Use:
+
+```text
+https://api.<domain>/git/<slice>.git
+```
+
+`<slice>` is the slice slug or slice ID.
+
+Examples:
+
+```bash
+# Clone a slice from staging with a bearer token.
+git -c http.extraHeader="Authorization: Bearer $GS_API_KEY" \
+  clone https://api.agenttools.dev/git/my-slice.git
+
+# Push back to the same slice.
+cd my-slice
+git add -A
+git commit -m "update slice"
+git -c http.extraHeader="Authorization: Bearer $GS_API_KEY" \
+  push origin HEAD:main
+```
+
+Notes:
+- The Git URL uses `slice`, not `workspace`.
+- Private slices require authentication for clone/fetch.
+- Push requires write access to the target slice.
+- Staging still accepts `Authorization: User <username>` when legacy user auth is enabled, but bearer tokens are the intended path.
+
 To copy referenced objects from the current store into a target R2 namespace before cutover:
 
 ```bash
