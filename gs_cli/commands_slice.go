@@ -135,7 +135,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 1 {
-		commandUsage("Usage: gs slice checkout|clone <slice-id-or-slug> [--commit <commit-hash>] [--files] [--json]")
+		commandUsage("Usage: gs slice checkout|clone <slice-id-or-ref> [--commit <commit-hash>] [--files] [--json]")
 		return
 	}
 

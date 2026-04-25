@@ -50,7 +50,7 @@ func TestHandlerSupportsGitCloneFromSlice(t *testing.T) {
 		"git",
 		"-c", "http.extraHeader=Authorization: User alice",
 		"clone",
-		server.URL+"/git/clone-slice.git",
+		server.URL+"/git/alice/clone-slice.git",
 		cloneDir,
 	)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -112,7 +112,7 @@ func TestHandlerImportsGitPushToSlice(t *testing.T) {
 	defer server.Close()
 
 	cloneDir := filepath.Join(t.TempDir(), "clone")
-	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: User alice", "clone", server.URL+"/git/push-slice.git", cloneDir)
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: User alice", "clone", server.URL+"/git/alice/push-slice.git", cloneDir)
 	if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("new\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestHandlerRejectsUnauthenticatedPrivateClone(t *testing.T) {
 	server := httptest.NewServer(NewHandler(st, filepath.Join(t.TempDir(), "cache")))
 	defer server.Close()
 
-	resp, err := server.Client().Get(server.URL + "/git/private-slice.git/info/refs?service=git-upload-pack")
+	resp, err := server.Client().Get(server.URL + "/git/alice/private-slice.git/info/refs?service=git-upload-pack")
 	if err != nil {
 		t.Fatalf("GET info/refs failed: %v", err)
 	}

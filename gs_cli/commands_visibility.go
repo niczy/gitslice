@@ -55,7 +55,7 @@ func handleSliceVisibilityGet(ctx context.Context, cli *CLI, args []string) {
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs slice visibility get <slice-id-or-slug> [--json]")
+		commandUsage("Usage: gs slice visibility get <slice-id-or-ref> [--json]")
 		return
 	}
 
@@ -92,7 +92,7 @@ func handleSliceVisibilitySet(ctx context.Context, cli *CLI, args []string) {
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs slice visibility set <slice-id-or-slug> <public|private> [--propagate unchanged|public|private] [--json]")
+		commandUsage("Usage: gs slice visibility set <slice-id-or-ref> <public|private> [--propagate unchanged|public|private] [--json]")
 		return
 	}
 

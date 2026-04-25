@@ -1221,7 +1221,7 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	if slice.Name != "my-slice" {
 		t.Fatalf("stored name mismatch: %q", slice.Name)
 	}
-	if slice.Slug != "tester/my-slice" {
+	if slice.Slug != "my-slice" {
 		t.Fatalf("stored slug mismatch: %q", slice.Slug)
 	}
 }
@@ -1366,7 +1366,7 @@ func TestRenameSlice(t *testing.T) {
 	if updated.Name != "new-name" {
 		t.Fatalf("stored name not updated: %q", updated.Name)
 	}
-	if updated.Slug != "tester/old-name" {
+	if updated.Slug != "old-name" {
 		t.Fatalf("stored slug should stay stable, got %q", updated.Slug)
 	}
 }
@@ -1498,6 +1498,32 @@ func TestGetSliceBySlug(t *testing.T) {
 	}
 	if resp.Slug != "tester/my-project" {
 		t.Fatalf("expected slug %q, got %q", "tester/my-project", resp.Slug)
+	}
+}
+
+func TestGetSliceBySlugUsesAuthenticatedOwnerNamespaceForLocalSlug(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	for _, slice := range []*models.Slice{
+		{ID: "sl-slug-tester", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"},
+		{ID: "sl-slug-other", Name: "my-project", Owners: []string{"other"}, CreatedBy: "other"},
+	} {
+		if err := st.CreateSlice(ctx, slice); err != nil {
+			t.Fatalf("failed to create slice %s: %v", slice.ID, err)
+		}
+	}
+
+	srv := NewService(st)
+	resp, err := srv.GetSliceBySlug(ctx, &slicev1.GetSliceBySlugRequest{Slug: "my-project"})
+	if err != nil {
+		t.Fatalf("GetSliceBySlug local failed: %v", err)
+	}
+	if got, want := resp.GetSliceId(), "sl-slug-tester"; got != want {
+		t.Fatalf("slice id = %q, want %q", got, want)
+	}
+	if got, want := resp.GetSlug(), "tester/my-project"; got != want {
+		t.Fatalf("slug = %q, want %q", got, want)
 	}
 }
 

@@ -305,14 +305,14 @@ gs slice checkout home.<username>
 gs changeset list --status merged
 ```
 
-`gs slice create` keeps a free-form display name and also returns a stable slug. `gs slice checkout` accepts either the slice ID or that slug.
+`gs slice create` keeps a free-form display name and also returns a stable slice ref. Slice slugs are only unique within the owning user namespace, so external refs use `owner/slug`. `gs slice checkout` accepts either the slice ID or that ref.
 Plain `gs slice checkout` is the primary local path. It is fast, skips local git metadata entirely, and supports local status, diff, restore, sync, and publish directly from the recorded `.gs/index`.
 
 For the normal local workflow, list your slices, check one out, inspect local changes, and publish through the tracked changeset:
 
 ```bash
 gs slice list
-gs slice checkout <slice-id-or-slug>
+gs slice checkout <slice-id-or-ref>
 gs slice status
 gs slice status --remote
 gs slice diff --summary
@@ -650,17 +650,17 @@ Git access is slice-oriented: one Git repository maps to one slice.
 Use:
 
 ```text
-https://api.<domain>/git/<slice>.git
+https://api.<domain>/git/<owner>/<slice>.git
 ```
 
-`<slice>` is the slice slug or slice ID.
+`<slice>` is the local slice slug inside the owner's namespace. Use `owner/slug` for Git and other external refs.
 
 Examples:
 
 ```bash
 # Clone a slice from staging with a bearer token.
 git -c http.extraHeader="Authorization: Bearer $GS_API_KEY" \
-  clone https://api.agenttools.dev/git/my-slice.git
+  clone https://api.agenttools.dev/git/alice/my-slice.git
 
 # Push back to the same slice.
 cd my-slice
