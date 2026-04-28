@@ -218,7 +218,7 @@ func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() > 1 {
-		commandUsage("Usage: gs slice tree [path] [--slice <slice-id-or-slug>] [--commit <hash>] [--depth <n>] [--json]")
+		commandUsage("Usage: gs slice tree [path] [--slice <slice-id-or-ref>] [--commit <hash>] [--depth <n>] [--json]")
 		return
 	}
 
@@ -271,7 +271,7 @@ func handleSliceDelete(ctx context.Context, cli *CLI, args []string) {
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	if fs.NArg() != 1 {
-		commandUsage("Usage: gs slice delete <slice-id-or-slug> [--force] [--json]")
+		commandUsage("Usage: gs slice delete <slice-id-or-ref> [--force] [--json]")
 		return
 	}
 

@@ -85,7 +85,7 @@ func printSliceHelp() {
 	fmt.Println("  bind      Bind the current directory to a slice without checking files out")
 	fmt.Println("  ensure    Ensure a focused slice exists for a stable name")
 	fmt.Println("  create    Create a focused slice from one or more published folders")
-	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or slug (--files)")
+	fmt.Println("  checkout  Checkout a slice to working directory using its slice ID or ref (--files)")
 	fmt.Println("  clone     Alias for checkout")
 	fmt.Println("  status    Show the current slice checkout status (local by default; add --remote for remote head)")
 	fmt.Println("  visibility Inspect or change slice visibility")

@@ -13,10 +13,10 @@ import (
 func resolveSliceRef(ctx context.Context, cli *CLI, input string) (string, error) {
 	slug := strings.TrimSpace(input)
 	if slug == "" {
-		return "", fmt.Errorf("slice ID or slug is required")
+		return "", fmt.Errorf("slice ID or ref is required")
 	}
 
-	// Slugs are namespaced (`owner/slug`), so prefer slug resolution before
+	// Qualified refs use `owner/slug`, so prefer slug resolution before
 	// treating slash-containing refs as literal slice IDs.
 	if strings.Contains(slug, "/") {
 		resp, err := cli.sliceClient.GetSliceBySlug(ctx, &slicev1.GetSliceBySlugRequest{Slug: slug})

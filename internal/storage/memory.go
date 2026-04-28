@@ -307,14 +307,18 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 			if candidate == "" {
 				return ErrInvalidInput
 			}
-			if _, err := s.getSliceBySlugLocked(candidate); errors.Is(err, ErrSliceNotFound) {
+			if _, err := s.getSliceByOwnerAndSlugLocked(slice.CreatedBy, candidate); errors.Is(err, ErrSliceNotFound) {
 				slice.Slug = candidate
 				break
 			}
 		}
 	} else {
-		slice.Slug = strings.TrimSpace(slice.Slug)
-		if _, err := s.getSliceBySlugLocked(slice.Slug); err == nil {
+		normalizedSlug, err := normalizeStoredSliceSlug(slice, slice.Slug)
+		if err != nil {
+			return err
+		}
+		slice.Slug = normalizedSlug
+		if _, err := s.getSliceByOwnerAndSlugLocked(slice.CreatedBy, slice.Slug); err == nil {
 			return ErrSliceAlreadyExists
 		}
 	}
@@ -914,13 +918,44 @@ func (s *InMemoryStorage) GetSliceBySlug(ctx context.Context, slug string) (*mod
 }
 
 func (s *InMemoryStorage) getSliceBySlugLocked(slug string) (*models.Slice, error) {
-	for _, slice := range s.slices {
-		if slice.Slug == slug {
-			copy := *slice
-			return &copy, nil
-		}
+	slug = strings.TrimSpace(slug)
+	if owner, local, ok := SplitQualifiedSliceRef(slug); ok {
+		return s.getSliceByOwnerAndSlugLocked(owner, local)
 	}
 
+	var match *models.Slice
+	for _, slice := range s.slices {
+		if slice.Slug == slug {
+			if match != nil && match.ID != slice.ID {
+				return nil, ErrSliceNotFound
+			}
+			copy := *slice
+			match = &copy
+		}
+	}
+	if match != nil {
+		return match, nil
+	}
+	return nil, ErrSliceNotFound
+}
+
+func (s *InMemoryStorage) GetSliceByOwnerAndSlug(ctx context.Context, owner, slug string) (*models.Slice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.getSliceByOwnerAndSlugLocked(owner, slug)
+}
+
+func (s *InMemoryStorage) getSliceByOwnerAndSlugLocked(owner, slug string) (*models.Slice, error) {
+	owner = strings.TrimSpace(owner)
+	slug = strings.TrimSpace(slug)
+	for _, slice := range s.slices {
+		if slice.CreatedBy != owner || slice.Slug != slug {
+			continue
+		}
+		copy := *slice
+		return &copy, nil
+	}
 	return nil, ErrSliceNotFound
 }
 

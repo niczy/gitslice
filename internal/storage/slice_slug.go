@@ -55,12 +55,7 @@ func defaultSliceSlug(slice *models.Slice) string {
 	if slice.IsRoot {
 		return "root"
 	}
-	owner := strings.TrimSpace(slice.CreatedBy)
-	base := defaultSliceSlugBase(slice)
-	if owner == "" {
-		return base
-	}
-	return fmt.Sprintf("%s/%s", owner, base)
+	return defaultSliceSlugBase(slice)
 }
 
 func sliceSlugCandidate(slice *models.Slice, n int) string {
@@ -69,4 +64,60 @@ func sliceSlugCandidate(slice *models.Slice, n int) string {
 		return base
 	}
 	return fmt.Sprintf("%s-%d", base, n)
+}
+
+func SplitQualifiedSliceRef(ref string) (owner, slug string, ok bool) {
+	ref = strings.Trim(strings.TrimSpace(ref), "/")
+	if ref == "" {
+		return "", "", false
+	}
+	parts := strings.Split(ref, "/")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	owner = strings.TrimSpace(parts[0])
+	slug = strings.TrimSpace(parts[1])
+	if owner == "" || slug == "" {
+		return "", "", false
+	}
+	return owner, slug, true
+}
+
+func QualifiedSliceSlug(slice *models.Slice) string {
+	if slice == nil {
+		return ""
+	}
+	slug := strings.TrimSpace(slice.Slug)
+	if slug == "" {
+		slug = defaultSliceSlug(slice)
+	}
+	if slug == "" {
+		return ""
+	}
+	if slice.IsRoot {
+		return slug
+	}
+	owner := strings.TrimSpace(slice.CreatedBy)
+	if owner == "" {
+		return slug
+	}
+	return owner + "/" + slug
+}
+
+func normalizeStoredSliceSlug(slice *models.Slice, raw string) (string, error) {
+	slug := strings.Trim(strings.TrimSpace(raw), "/")
+	if slug == "" {
+		return "", nil
+	}
+	if owner, local, ok := SplitQualifiedSliceRef(slug); ok {
+		expectedOwner := strings.TrimSpace(slice.CreatedBy)
+		if expectedOwner != "" && owner != expectedOwner {
+			return "", ErrInvalidInput
+		}
+		slug = local
+	}
+	if strings.Contains(slug, "/") || strings.Contains(slug, `\`) {
+		return "", ErrInvalidInput
+	}
+	return slug, nil
 }

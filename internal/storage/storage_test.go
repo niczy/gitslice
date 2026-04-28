@@ -1236,8 +1236,8 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if renamedSlice.Name != "Renamed" {
 		t.Fatalf("expected name %q, got %q", "Renamed", renamedSlice.Name)
 	}
-	if renamedSlice.Slug != "alice/alpha" {
-		t.Fatalf("expected slug to remain stable, got %q", renamedSlice.Slug)
+	if renamedSlice.Slug != "alpha" {
+		t.Fatalf("expected local slug to remain stable, got %q", renamedSlice.Slug)
 	}
 	if err := st.UpdateSliceName(ctx, "nonexistent-slice-"+suffix, "X"); err != ErrSliceNotFound {
 		t.Fatalf("expected ErrSliceNotFound, got %v", err)
@@ -1262,6 +1262,37 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if foundBySlug.ID != slice.ID {
 		t.Fatalf("GetSliceBySlug returned wrong slice: %s", foundBySlug.ID)
+	}
+	foundByOwnerSlug, err := st.GetSliceByOwnerAndSlug(ctx, "alice", "alpha")
+	if err != nil {
+		t.Fatalf("GetSliceByOwnerAndSlug failed: %v", err)
+	}
+	if foundByOwnerSlug.ID != slice.ID {
+		t.Fatalf("GetSliceByOwnerAndSlug returned wrong slice: %s", foundByOwnerSlug.ID)
+	}
+
+	peerSlice := &models.Slice{
+		ID:        "peer-slice-" + suffix,
+		Name:      "Alpha",
+		Files:     []string{},
+		Owners:    []string{"bob"},
+		CreatedBy: "bob",
+	}
+	if err := st.CreateSlice(ctx, peerSlice); err != nil {
+		t.Fatalf("CreateSlice peer failed: %v", err)
+	}
+	if peerSlice.Slug != "alpha" {
+		t.Fatalf("expected peer local slug %q, got %q", "alpha", peerSlice.Slug)
+	}
+	if _, err := st.GetSliceBySlug(ctx, "alpha"); err != ErrSliceNotFound {
+		t.Fatalf("expected bare local slug lookup to be ambiguous, got %v", err)
+	}
+	foundPeer, err := st.GetSliceBySlug(ctx, "bob/alpha")
+	if err != nil {
+		t.Fatalf("GetSliceBySlug peer failed: %v", err)
+	}
+	if foundPeer.ID != peerSlice.ID {
+		t.Fatalf("GetSliceBySlug peer returned wrong slice: %s", foundPeer.ID)
 	}
 
 	// Entries

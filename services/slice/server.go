@@ -150,6 +150,34 @@ func canManageSliceVisibility(slice *models.Slice, username string) bool {
 	return false
 }
 
+func externalSliceSlug(slice *models.Slice) string {
+	return storage.QualifiedSliceSlug(slice)
+}
+
+func (s *sliceServiceServer) resolveSliceByRef(ctx context.Context, ref string) (*models.Slice, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, storage.ErrInvalidInput
+	}
+	if owner, slug, ok := storage.SplitQualifiedSliceRef(ref); ok {
+		return s.storage.GetSliceByOwnerAndSlug(ctx, owner, slug)
+	}
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if username != "" {
+		slice, err := s.storage.GetSliceByOwnerAndSlug(ctx, username, ref)
+		if err == nil {
+			return slice, nil
+		}
+		if !errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, err
+		}
+	}
+	return s.storage.GetSliceBySlug(ctx, ref)
+}
+
 func addSliceVisibilityTarget(targets map[string]models.PathVisibilityEntryType, rawPath string, entryType models.PathVisibilityEntryType) {
 	cleaned := common.CleanRelativePath(rawPath)
 	if cleaned == "" {
@@ -2765,7 +2793,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		Status:     "created",
 		Files:      selectedFiles,
 		Name:       sliceName,
-		Slug:       newSlice.Slug,
+		Slug:       externalSliceSlug(newSlice),
 		Visibility: modelVisibilityToProto(newSlice.Visibility),
 	}, nil
 }
@@ -2800,7 +2828,7 @@ func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.Renam
 	return &slicev1.RenameSliceResponse{
 		SliceId: req.SliceId,
 		Name:    req.NewName,
-		Slug:    slice.Slug,
+		Slug:    externalSliceSlug(slice),
 	}, nil
 }
 
@@ -2858,7 +2886,7 @@ func (s *sliceServiceServer) DeleteSlice(ctx context.Context, req *slicev1.Delet
 
 	return &slicev1.DeleteSliceResponse{
 		SliceId: slice.ID,
-		Slug:    slice.Slug,
+		Slug:    externalSliceSlug(slice),
 		Status:  "deleted",
 	}, nil
 }
@@ -2896,7 +2924,7 @@ func (s *sliceServiceServer) GetSliceByName(ctx context.Context, req *slicev1.Ge
 		ParentSliceId: slice.ParentSlice,
 		Files:         slice.Files,
 		Environment:   slice.Environment,
-		Slug:          slice.Slug,
+		Slug:          externalSliceSlug(slice),
 		Visibility:    modelVisibilityToProto(slice.Visibility),
 	}, nil
 }
@@ -2908,7 +2936,7 @@ func (s *sliceServiceServer) GetSliceBySlug(ctx context.Context, req *slicev1.Ge
 		return nil, status.Error(codes.InvalidArgument, "slug cannot be empty")
 	}
 
-	slice, err := s.storage.GetSliceBySlug(ctx, strings.TrimSpace(req.Slug))
+	slice, err := s.resolveSliceByRef(ctx, req.GetSlug())
 	if err != nil {
 		if errors.Is(err, storage.ErrSliceNotFound) {
 			return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found with slug: %s", req.Slug))
@@ -2934,7 +2962,7 @@ func (s *sliceServiceServer) GetSliceBySlug(ctx context.Context, req *slicev1.Ge
 		ParentSliceId: slice.ParentSlice,
 		Files:         slice.Files,
 		Environment:   slice.Environment,
-		Slug:          slice.Slug,
+		Slug:          externalSliceSlug(slice),
 		Visibility:    modelVisibilityToProto(slice.Visibility),
 	}, nil
 }

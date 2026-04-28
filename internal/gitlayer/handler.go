@@ -49,8 +49,8 @@ type identity struct {
 }
 
 type route struct {
-	sliceName string
-	suffix    string
+	sliceRef string
+	suffix   string
 }
 
 func NewHandler(st storage.Storage, cacheDir string) *Handler {
@@ -84,7 +84,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slice, err := h.resolveSlice(r.Context(), parsed.sliceName)
+	slice, err := h.resolveSlice(r.Context(), parsed.sliceRef)
 	if err != nil {
 		writeStatusError(w, err)
 		return
@@ -134,7 +134,7 @@ func parseRoute(u *url.URL) (*route, error) {
 	if rel == u.EscapedPath() || rel == "" {
 		return nil, fmt.Errorf("git repository path is required")
 	}
-	idx := strings.Index(rel, ".git")
+	idx := strings.LastIndex(rel, ".git")
 	if idx < 0 {
 		return nil, fmt.Errorf("git repository path must end with .git")
 	}
@@ -151,9 +151,18 @@ func parseRoute(u *url.URL) (*route, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid git repository suffix")
 	}
-	name = strings.TrimSpace(name)
-	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+	name = strings.Trim(strings.TrimSpace(name), "/")
+	if name == "" || strings.Contains(name, "\\") {
 		return nil, fmt.Errorf("invalid git repository name")
+	}
+	parts := strings.Split(name, "/")
+	if len(parts) > 2 {
+		return nil, fmt.Errorf("invalid git repository name")
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" || part == "." || part == ".." {
+			return nil, fmt.Errorf("invalid git repository name")
+		}
 	}
 	if suffix == "" {
 		suffix = "/"
@@ -161,7 +170,7 @@ func parseRoute(u *url.URL) (*route, error) {
 	if !strings.HasPrefix(suffix, "/") {
 		suffix = "/" + suffix
 	}
-	return &route{sliceName: name, suffix: suffix}, nil
+	return &route{sliceRef: name, suffix: suffix}, nil
 }
 
 func gitService(r *http.Request, suffix string) string {
@@ -181,17 +190,17 @@ func gitService(r *http.Request, suffix string) string {
 	return ""
 }
 
-func (h *Handler) resolveSlice(ctx context.Context, name string) (*models.Slice, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
+func (h *Handler) resolveSlice(ctx context.Context, ref string) (*models.Slice, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "slice is required")
 	}
-	if slice, err := h.st.GetSliceBySlug(ctx, name); err == nil {
+	if slice, err := h.st.GetSliceBySlug(ctx, ref); err == nil {
 		return slice, nil
 	} else if err != storage.ErrSliceNotFound {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load slice by slug: %v", err))
 	}
-	slice, err := h.st.GetSlice(ctx, name)
+	slice, err := h.st.GetSlice(ctx, ref)
 	if err != nil {
 		if err == storage.ErrSliceNotFound {
 			return nil, status.Error(codes.NotFound, "slice not found")

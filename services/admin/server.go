@@ -790,7 +790,7 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 		response.Slices = append(response.Slices, &adminv1.SliceInfo{
 			SliceId:     slice.ID,
 			Name:        slice.Name,
-			Slug:        slice.Slug,
+			Slug:        storage.QualifiedSliceSlug(slice),
 			Description: slice.Description,
 			Owners:      slice.Owners,
 			CreatedAt:   slice.CreatedAt.Unix(),

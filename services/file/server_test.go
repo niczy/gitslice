@@ -329,7 +329,7 @@ func TestListPublicEntriesHidesPrivateSiblings(t *testing.T) {
 
 	svc := newFileServiceServer(st)
 	resp, err := svc.ListPublicEntries(context.Background(), &filev1.ListPublicEntriesRequest{
-		SliceSlug: storedSlice.Slug,
+		SliceSlug: storage.QualifiedSliceSlug(storedSlice),
 		Path:      "docs",
 	})
 	if err != nil {
@@ -389,7 +389,7 @@ func TestListPublicEntriesAllowsAncestorTraversalForPublicDescendant(t *testing.
 
 	svc := newFileServiceServer(st)
 	rootResp, err := svc.ListPublicEntries(context.Background(), &filev1.ListPublicEntriesRequest{
-		SliceSlug: storedSlice.Slug,
+		SliceSlug: storage.QualifiedSliceSlug(storedSlice),
 	})
 	if err != nil {
 		t.Fatalf("ListPublicEntries(root) failed: %v", err)
@@ -402,7 +402,7 @@ func TestListPublicEntriesAllowsAncestorTraversalForPublicDescendant(t *testing.
 	}
 
 	nestedResp, err := svc.ListPublicEntries(context.Background(), &filev1.ListPublicEntriesRequest{
-		SliceSlug: storedSlice.Slug,
+		SliceSlug: storage.QualifiedSliceSlug(storedSlice),
 		Path:      "docs",
 	})
 	if err != nil {
