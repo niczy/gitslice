@@ -5,7 +5,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ENV_NAME=""
 APP_NAME=""
-ENV_FILE=""
 PM2_BIN="${PM2_BIN:-}"
 PM2_NODE_BIN="${PM2_NODE_BIN:-}"
 
@@ -15,7 +14,7 @@ log() {
 
 usage() {
   cat <<'EOF'
-Usage: ops/deploy.sh --env <staging|production> --app <web|api> [--env-file <path>]
+Usage: ops/deploy.sh --env <staging|production> --app <web|api>
 
 Deploys a specific application using the environment file for that deployment
 target.
@@ -24,11 +23,10 @@ Examples:
   ./ops/deploy.sh --env staging --app web
   ./ops/deploy.sh --env production --app web
   ./ops/deploy.sh --env staging --app api
-  ./ops/deploy.sh --env staging --app web --env-file ops/staging/.env
 
 Default env files:
-  staging:    ops/staging/.env
-  production: ops/.env.production (fallback: ops/.env)
+  staging:    ops/.env.staging
+  production: ops/.env.production
 EOF
 }
 
@@ -51,17 +49,8 @@ default_core_service_port() {
 }
 
 resolve_env_file() {
-  if [ -n "$ENV_FILE" ]; then
-    printf '%s\n' "$ENV_FILE"
-    return 0
-  fi
-
   case "$ENV_NAME" in
     staging)
-      if [ -f "$REPO_ROOT/ops/staging/.env" ]; then
-        printf '%s\n' "$REPO_ROOT/ops/staging/.env"
-        return 0
-      fi
       if [ -f "$REPO_ROOT/ops/.env.staging" ]; then
         printf '%s\n' "$REPO_ROOT/ops/.env.staging"
         return 0
@@ -70,10 +59,6 @@ resolve_env_file() {
     production)
       if [ -f "$REPO_ROOT/ops/.env.production" ]; then
         printf '%s\n' "$REPO_ROOT/ops/.env.production"
-        return 0
-      fi
-      if [ -f "$REPO_ROOT/ops/.env" ]; then
-        printf '%s\n' "$REPO_ROOT/ops/.env"
         return 0
       fi
       ;;
@@ -337,7 +322,7 @@ validate_api_env() {
 
   if [ "${#missing[@]}" -gt 0 ]; then
     echo "Missing required api env values in $resolved_env_file: ${missing[*]}" >&2
-    echo "Populate them in the env file or override with --env-file before deploying ${ENV_NAME} api." >&2
+    echo "Populate them in $resolved_env_file before deploying ${ENV_NAME} api." >&2
     exit 1
   fi
 }
@@ -374,17 +359,14 @@ deploy_web() {
 
 deploy_api() {
   local app_name=""
-  local env_var_name=""
   local bind_addr=""
   local port=""
   case "$ENV_NAME" in
     staging)
       app_name="gitslice-core-staging"
-      env_var_name="STAGING_ENV_FILE"
       ;;
     production)
       app_name="gitslice-core-production"
-      env_var_name="PRODUCTION_ENV_FILE"
       ;;
     *)
       echo "Unsupported deploy environment for api: $ENV_NAME" >&2
@@ -407,7 +389,6 @@ deploy_api() {
 
   log "Restarting ${app_name} via PM2"
   (
-    export "$env_var_name=$resolved_env_file"
     cd "$REPO_ROOT"
     run_pm2 startOrRestart ops/ecosystem.config.cjs --only "$app_name" --update-env >/dev/null
   )
@@ -438,15 +419,6 @@ while [ $# -gt 0 ]; do
         exit 1
       fi
       APP_NAME="$2"
-      shift 2
-      ;;
-    --env-file)
-      if [ $# -lt 2 ]; then
-        echo "--env-file requires a value" >&2
-        usage >&2
-        exit 1
-      fi
-      ENV_FILE="$2"
       shift 2
       ;;
     -h|--help)

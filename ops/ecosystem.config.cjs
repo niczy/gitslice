@@ -3,20 +3,8 @@ const path = require("node:path");
 
 const repoRoot = "/home/nic/workspace/gitslice";
 const opsDir = path.join(repoRoot, "ops");
-const legacyProdEnvPath = path.join(opsDir, ".env");
 const productionEnvPath = path.join(opsDir, ".env.production");
-const preferredStagingEnvPath = path.join(opsDir, "staging", ".env");
-const legacyStagingEnvPath = path.join(opsDir, ".env.staging");
-const productionEnvPathOverride = process.env.PRODUCTION_ENV_FILE || "";
-const stagingEnvPathOverride = process.env.STAGING_ENV_FILE || "";
-const resolvedProductionEnvPath =
-  productionEnvPathOverride ||
-  (fs.existsSync(productionEnvPath) ? productionEnvPath : legacyProdEnvPath);
-const stagingEnvPath =
-  stagingEnvPathOverride ||
-  (fs.existsSync(preferredStagingEnvPath)
-  ? preferredStagingEnvPath
-  : legacyStagingEnvPath);
+const stagingEnvPath = path.join(opsDir, ".env.staging");
 
 function loadEnvFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
@@ -59,7 +47,7 @@ function resolveEnvConfig(target, defaults) {
     return env;
   }
 
-  const env = loadEnvFile(resolvedProductionEnvPath) || {};
+  const env = loadEnvFile(productionEnvPath) || {};
   return Object.keys(env).length === 0 ? defaults : env;
 }
 

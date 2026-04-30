@@ -228,10 +228,10 @@ On the shared VM, keep separate env files:
 
 ```bash
 cp ops/.env.example ops/.env.production
-cp ops/.env.example ops/staging/.env
+cp ops/.env.example ops/.env.staging
 ```
 
-Then adjust staging-specific values in `ops/staging/.env`:
+Then adjust staging-specific values in `ops/.env.staging`:
 - `DEPLOY_ENV=staging`
 - `CORE_SERVICE_PORT=50052`
 - `PUBLIC_WEB_BASE_URL=https://agenttools.dev`
@@ -272,8 +272,8 @@ environment file and exports `CLOUDFLARE_API_TOKEN` before running Wrangler:
 ```
 
 By default the wrapper reads:
-- staging: `ops/staging/.env`
-- production: `ops/.env.production` (fallback: `ops/.env`)
+- staging: `ops/.env.staging`
+- production: `ops/.env.production`
 
 `--app api` rebuilds `core_server`, restarts the matching PM2 app
 (`gitslice-core-staging` or `gitslice-core-production`), and waits for the
@@ -509,8 +509,7 @@ cp web/.env.example web/.env
 
 For local Node SSR fallback outside the normal VM deploy path, put the same
 `AUTH_*` values in the environment file for that target (`ops/.env.production`
-or `ops/staging/.env`, falling back to the legacy `ops/.env` for production
-only). For the normal Worker deploy path, set auth secrets with Wrangler
+or `ops/.env.staging`). For the normal Worker deploy path, set auth secrets with Wrangler
 instead of storing them in the VM env files.
 
 
@@ -622,8 +621,7 @@ pm2 save
 
 The PM2 ecosystem now reads:
 - `ops/.env.production` for `gitslice-core-production`
-- `ops/staging/.env` for `gitslice-core-staging`
-- falling back to the legacy `ops/.env` only for production if `ops/.env.production` is absent
+- `ops/.env.staging` for `gitslice-core-staging`
 
 The PM2 ecosystem is now VM-core-only. It supervises `gitslice-core-production`
 and `gitslice-core-staging` only. The public web app runs on Cloudflare Worker,
@@ -767,7 +765,7 @@ For repeatable shared-VM verification, use the deploy helper:
 
 It checks:
 - local production core health on `127.0.0.1:50051`
-- local staging core health on `127.0.0.1:50052` when `ops/staging/.env` exists
+- local staging core health on `127.0.0.1:50052` when `ops/.env.staging` exists
 - public `gitslice.io` and `api.gitslice.io`
 - public `agenttools.dev` and `api.agenttools.dev` when staging is configured
 - presence of required R2 config for each configured environment
