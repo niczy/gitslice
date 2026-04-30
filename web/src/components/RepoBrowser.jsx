@@ -1,4 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Edit3,
+  FileCode2,
+  FileText,
+  Folder,
+  FolderOpen,
+  History,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Settings,
+  X,
+} from 'lucide-react';
 import { apiBaseUrl, fetchWithAuth, searchWorkspaceFiles } from '../utils/api.js';
 import { formatBytes } from '../utils/format.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
@@ -96,6 +114,7 @@ export default function RepoBrowser({
     ? { path: initialBrowserState.file, type: 'file' }
     : { path: '', type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 900));
+  const [insightOpen, setInsightOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 1180));
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -118,6 +137,15 @@ export default function RepoBrowser({
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
   const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
+  const selectedFileName = useMemo(() => selectedFile?.split('/').pop() || 'No file selected', [selectedFile]);
+  const selectedFileExtension = useMemo(() => getFileExtension(selectedFile) || 'folder', [selectedFile]);
+  const selectedFileLineCount = useMemo(() => {
+    if (!selectedFile || !fileContent) {
+      return 0;
+    }
+    return fileContent.split('\n').length;
+  }, [fileContent, selectedFile]);
+  const selectedFileMode = previewMeta.mode === 'text' ? 'source' : previewMeta.mode;
 
   const rawSliceId = currentSliceId;
 
@@ -583,9 +611,10 @@ export default function RepoBrowser({
                 }
                 onActionDone?.();
               }}
-            >
-              {isEditingFile ? 'Cancel' : '✏️ Edit'}
-            </Button>
+              >
+                {isEditingFile ? <X size={15} aria-hidden="true" /> : <Edit3 size={15} aria-hidden="true" />}
+                {isEditingFile ? 'Cancel' : 'Edit'}
+              </Button>
             {isEditingFile && (
               <Button
                 type="button"
@@ -596,7 +625,8 @@ export default function RepoBrowser({
                   onActionDone?.();
                 }}
               >
-                ✅ Confirm
+                <Check size={15} aria-hidden="true" />
+                Confirm
               </Button>
             )}
           </>
@@ -612,7 +642,8 @@ export default function RepoBrowser({
           data-testid="history-toggle"
           title={showHistory ? 'Show file content' : 'Show commit history'}
         >
-          {showHistory ? '📄 Content' : '📜 History'}
+          {showHistory ? <FileText size={15} aria-hidden="true" /> : <History size={15} aria-hidden="true" />}
+          {showHistory ? 'Content' : 'History'}
         </Button>
       </>
     );
@@ -910,8 +941,16 @@ export default function RepoBrowser({
                 style={{ paddingLeft: `${depth * 14 + 8}px` }}
                 onClick={() => handleEntryClick(entry)}
               >
-                <span className="tree-caret">{entryKind === 'directory' ? (isExpanded ? '▼' : '▶') : '•'}</span>
-                <span className="entry-icon">{entryKind === 'directory' ? '📁' : '📄'}</span>
+                <span className="tree-caret" aria-hidden="true">
+                  {entryKind === 'directory'
+                    ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
+                    : <span className="tree-caret-dot" />}
+                </span>
+                <span className="entry-icon" aria-hidden="true">
+                  {entryKind === 'directory'
+                    ? (isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />)
+                    : <FileText size={15} />}
+                </span>
                 <span className="entry-name">{entryLabel}</span>
                 {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
               </Button>
@@ -926,7 +965,7 @@ export default function RepoBrowser({
   return (
     <section className="repo-browser">
       <div className="repo-main">
-        <div className={`repo-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
+        <div className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${insightOpen ? '' : ' insight-collapsed'}`}>
           <div
             className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
             onClick={() => setSidebarOpen(false)}
@@ -943,6 +982,20 @@ export default function RepoBrowser({
                   onRefresh={onRefreshSlices}
                   className="slice-dropdown--sidebar"
                 />
+                {canShowSettings && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
+                    onClick={viewingSettings ? openFilesView : openSettingsView}
+                    aria-label={viewingSettings ? 'Show files' : 'Open slice settings'}
+                    title={viewingSettings ? 'Show files' : 'Slice settings'}
+                    data-testid="repo-view-settings"
+                  >
+                    <Settings size={16} aria-hidden="true" />
+                  </Button>
+                )}
                 <div className="panel-header-actions">
                   <span
                     className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
@@ -961,7 +1014,7 @@ export default function RepoBrowser({
                     aria-label="Close sidebar"
                     title="Close sidebar"
                   >
-                    ✕
+                    <PanelLeftClose size={16} aria-hidden="true" />
                   </Button>
                 </div>
               </div>
@@ -1071,7 +1124,7 @@ export default function RepoBrowser({
                     title="Open file tree"
                     data-testid="sidebar-toggle"
                   >
-                    ☰
+                    <PanelLeftOpen size={17} aria-hidden="true" />
                   </Button>
                 )}
                 <div className="breadcrumbs">
@@ -1106,20 +1159,21 @@ export default function RepoBrowser({
                   >
                     Files
                   </Button>
-                  {canShowSettings && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className={`code-view-tab ${viewingSettings ? 'active' : ''}`}
-                      onClick={openSettingsView}
-                      data-testid="repo-view-settings"
-                    >
-                      Settings
-                    </Button>
-                  )}
                 </div>
                 {!viewingSettings && selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
                 {!isCompactHeader && renderFileActions()}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={`insight-toggle ${insightOpen ? 'active' : ''}`}
+                  onClick={() => setInsightOpen((value) => !value)}
+                  aria-label={insightOpen ? 'Collapse file insight' : 'Expand file insight'}
+                  title={insightOpen ? 'Collapse file insight' : 'Expand file insight'}
+                  data-testid="insight-toggle"
+                >
+                  {insightOpen ? <PanelRightClose size={17} aria-hidden="true" /> : <PanelRightOpen size={17} aria-hidden="true" />}
+                </Button>
                 {isCompactHeader && !viewingSettings && selectedFile && (
                   <div className="header-actions-menu" ref={actionMenuRef}>
                     <Button
@@ -1131,7 +1185,7 @@ export default function RepoBrowser({
                       aria-expanded={isActionMenuOpen}
                       title="More actions"
                     >
-                      ☰
+                      <Menu size={16} aria-hidden="true" />
                     </Button>
                     {isActionMenuOpen && (
                       <div className="header-actions-menu-dropdown" role="menu">
@@ -1234,6 +1288,74 @@ export default function RepoBrowser({
               )}
             </div>
           </div>
+          <aside className={`repo-insight ${insightOpen ? 'open' : 'closed'}`} aria-label="File insight" aria-hidden={!insightOpen}>
+            <div className="repo-insight-scroll">
+              <div className="repo-insight-hero" aria-hidden="true">
+                <div className="repo-insight-parchment">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <div className="repo-insight-code">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+              <div className="repo-insight-section">
+                <h2>File Insight</h2>
+                <dl className="repo-insight-meta">
+                  <div>
+                    <dt>Identity</dt>
+                    <dd>{selectedFileName}</dd>
+                  </div>
+                  <div className="repo-insight-pair">
+                    <div>
+                      <dt>Type</dt>
+                      <dd>{selectedFile ? selectedFileExtension.toUpperCase() : 'None'}</dd>
+                    </div>
+                    <div>
+                      <dt>Size</dt>
+                      <dd>{selectedFile ? formatBytes(fileContent.length) : '—'}</dd>
+                    </div>
+                  </div>
+                  <div className="repo-insight-pair">
+                    <div>
+                      <dt>Lines</dt>
+                      <dd>{selectedFile ? selectedFileLineCount : '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>Mode</dt>
+                      <dd>{selectedFile ? selectedFileMode : 'Browse'}</dd>
+                    </div>
+                  </div>
+                </dl>
+              </div>
+              <div className="repo-insight-section">
+                <h3>Current Slice</h3>
+                <p className="repo-insight-copy">{currentSliceDisplayName || 'Choose a slice'}</p>
+                <div className="repo-insight-note">
+                  <FileCode2 size={16} aria-hidden="true" />
+                  <span>{sliceHash ? 'Historical snapshot' : 'Live workspace'}</span>
+                </div>
+              </div>
+              <div className="repo-insight-section repo-insight-history">
+                <h3>Annotation History</h3>
+                {selectedFile ? (
+                  <>
+                    <p>Previewing <strong>{selectedFileName}</strong></p>
+                    {fileHistory.length > 0 && (
+                      <p>{fileHistory.length} recorded change{fileHistory.length === 1 ? '' : 's'} loaded.</p>
+                    )}
+                  </>
+                ) : (
+                  <p>Select a file to reveal its metadata.</p>
+                )}
+              </div>
+            </div>
+          </aside>
         </div>
       </div>
     </section>

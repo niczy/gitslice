@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Noto+Serif:ital,wght@0,400;0,700;0,900;1,400&amp;family=Public+Sans:wght@300;400;600&amp;family=Noto+Sans+Mono:wght@400;500&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+                  "outline-variant": "#c3c6d5",
+                  "on-error-container": "#93000a",
+                  "error": "#ba1a1a",
+                  "surface": "#faf9fa",
+                  "on-secondary-fixed-variant": "#42474b",
+                  "on-primary-container": "#e7ebff",
+                  "surface-bright": "#faf9fa",
+                  "primary-fixed": "#d9e2ff",
+                  "on-surface-variant": "#434653",
+                  "on-error": "#ffffff",
+                  "error-container": "#ffdad6",
+                  "secondary-container": "#dfe3e8",
+                  "on-primary-fixed-variant": "#00419d",
+                  "secondary-fixed": "#dfe3e8",
+                  "on-background": "#1b1c1d",
+                  "secondary": "#5a5f63",
+                  "primary-container": "#3366cc",
+                  "on-tertiary-fixed": "#211b00",
+                  "surface-container-high": "#e9e8e9",
+                  "inverse-on-surface": "#f2f0f1",
+                  "surface-container-low": "#f5f3f4",
+                  "background": "#faf9fa",
+                  "on-tertiary-fixed-variant": "#524600",
+                  "on-tertiary-container": "#4a3f00",
+                  "tertiary-fixed-dim": "#dcc661",
+                  "on-tertiary": "#ffffff",
+                  "tertiary-container": "#bfab49",
+                  "outline": "#737784",
+                  "tertiary-fixed": "#f9e37a",
+                  "on-primary-fixed": "#001946",
+                  "on-secondary-fixed": "#171c20",
+                  "surface-tint": "#2259bf",
+                  "surface-container-highest": "#e3e2e3",
+                  "surface-container": "#efedee",
+                  "primary-fixed-dim": "#b1c5ff",
+                  "surface-variant": "#e3e2e3",
+                  "surface-dim": "#dbdadb",
+                  "secondary-fixed-dim": "#c2c7cc",
+                  "on-primary": "#ffffff",
+                  "tertiary": "#6d5e00",
+                  "on-secondary-container": "#606569",
+                  "primary": "#094cb2",
+                  "on-surface": "#1b1c1d",
+                  "on-secondary": "#ffffff",
+                  "inverse-surface": "#303031",
+                  "inverse-primary": "#b1c5ff",
+                  "surface-container-lowest": "#ffffff"
+          },
+          "borderRadius": {
+                  "DEFAULT": "0.125rem",
+                  "lg": "0.25rem",
+                  "xl": "0.5rem",
+                  "full": "0.75rem"
+          },
+          "fontFamily": {
+                  "headline": ["Noto Serif"],
+                  "display": ["Noto Serif"],
+                  "body": ["Inter"],
+                  "label": ["Public Sans"],
+                  "mono": ["Noto Sans Mono"]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+      font-size: 20px;
+    }
+    .syntax-keyword { color: #094cb2; font-weight: 500; }
+    .syntax-string { color: #6d5e00; }
+    .syntax-comment { color: #737784; font-style: italic; }
+    .syntax-function { color: #2259bf; }
+    .syntax-number { color: #bfab49; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #dbdadb; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #c3c6d5; }
+  </style>
+</head>
+<body class="bg-background text-on-background font-body selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- TopAppBar Anchor -->
+<header class="bg-white/80 dark:bg-slate-950/80 backdrop-blur-md fixed top-0 z-50 flex justify-between items-center w-full px-8 py-4 border-b border-outline-variant/10">
+<div class="flex items-center gap-8">
+<h1 class="text-2xl font-serif font-black text-slate-900 dark:text-slate-50 tracking-tight">Alexandria</h1>
+<nav class="hidden md:flex items-center gap-6">
+<a class="font-serif text-slate-900 dark:text-slate-100 leading-relaxed text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-300 transition-colors duration-200" href="#">Archives</a>
+<a class="font-serif text-slate-900 dark:text-slate-100 leading-relaxed text-blue-700 dark:text-blue-400 border-b-2 border-blue-700 dark:border-blue-400 pb-1" href="#">Curate</a>
+<a class="font-serif text-slate-900 dark:text-slate-100 leading-relaxed text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-300 transition-colors duration-200" href="#">Scholarship</a>
+<a class="font-serif text-slate-900 dark:text-slate-100 leading-relaxed text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-300 transition-colors duration-200" href="#">Editor</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative hidden lg:block">
+<input class="bg-surface-container-low border-none rounded-full px-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary" placeholder="Search manuscript..." type="text"/>
+</div>
+<button class="p-2 rounded-full hover:bg-slate-50 transition-colors duration-200">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 rounded-full hover:bg-slate-50 transition-colors duration-200">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden bg-surface-container">
+<img alt="Scholarly Profile" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA8TadLOMt7joHYjQL989Epo1sVa5Owrswr8_C9w72IMD4MHIljzHJcaOHJmPqUT_D4yTkroi7ZawJzoDjPB4SlxspsdYYyBCFJw3wLkOPlRpvMfDG1X4T8DhwlTahxslECl75xmQMX-6uR5ZbcggR-RL2e7k5GPT_dSiQELPhJ1DLAdkZOmJHGtre6EVu1oBVcqJEyB7h9mLm1Zh9WwyromgrFMwuvMwgweF7wcXvgekIJRMp-cGvGvDNaHwHuKrbW8KDWXjLX0dSj"/>
+</div>
+</div>
+</header>
+<main class="pt-16 flex h-screen overflow-hidden">
+<!-- SideNavBar (Hierarchical Folder Tree) -->
+<aside class="fixed left-0 top-16 h-[calc(100vh-4rem)] flex flex-col p-4 bg-slate-50 dark:bg-slate-900 w-64 border-r border-outline-variant/10 z-40">
+<div class="mb-6 px-2">
+<h2 class="font-serif font-bold text-slate-900 dark:text-slate-100 text-lg">Collections</h2>
+<p class="font-sans text-[10px] tracking-widest uppercase text-slate-500 dark:text-slate-400 mt-1">Archival Management</p>
+</div>
+<button class="mb-6 bg-gradient-to-r from-primary to-primary-container text-white rounded-lg py-2.5 px-4 font-label font-semibold text-xs tracking-wider uppercase hover:opacity-90 transition-opacity flex items-center justify-center gap-2 shadow-lg shadow-primary/20">
+<span class="material-symbols-outlined text-[18px]">add</span>
+<span>New File</span>
+</button>
+<nav class="flex-1 space-y-1 overflow-y-auto font-body">
+<!-- Root Level Folder (Expanded) -->
+<div class="space-y-1">
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[16px] text-slate-400 mr-1">keyboard_arrow_down</span>
+<span class="material-symbols-outlined text-[18px] text-primary mr-2" style="font-variation-settings: 'FILL' 1;">folder_open</span>
+<span class="text-xs font-medium text-slate-700 dark:text-slate-300">Manuscripts</span>
+</div>
+<!-- Level 2 -->
+<div class="pl-5 space-y-1">
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[16px] text-slate-400 mr-1">keyboard_arrow_right</span>
+<span class="material-symbols-outlined text-[18px] text-slate-500 mr-2">folder</span>
+<span class="text-xs text-slate-600 dark:text-slate-400">Poetry</span>
+</div>
+<div class="flex items-center py-1.5 px-2 rounded bg-primary/10 dark:bg-primary/20 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[16px] text-primary mr-1">keyboard_arrow_down</span>
+<span class="material-symbols-outlined text-[18px] text-primary mr-2" style="font-variation-settings: 'FILL' 1;">folder_open</span>
+<span class="text-xs text-primary font-semibold">Fiction</span>
+</div>
+<!-- Level 3 (Files) -->
+<div class="pl-5 space-y-0.5">
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[18px] text-slate-400 mr-2">description</span>
+<span class="text-[11px] text-slate-600 dark:text-slate-400">the_raven.txt</span>
+</div>
+<div class="flex items-center py-1.5 px-2 rounded bg-surface-container-high cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[18px] text-tertiary mr-2" style="font-variation-settings: 'FILL' 1;">data_object</span>
+<span class="text-[11px] text-on-surface font-medium">epic_of_alexandria.json</span>
+</div>
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[18px] text-slate-400 mr-2">terminal</span>
+<span class="text-[11px] text-slate-600 dark:text-slate-400">index.js</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Other Root Folders -->
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[16px] text-slate-400 mr-1">keyboard_arrow_right</span>
+<span class="material-symbols-outlined text-[18px] text-slate-500 mr-2">folder</span>
+<span class="text-xs text-slate-700 dark:text-slate-300">Correspondence</span>
+</div>
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[16px] text-slate-400 mr-1">keyboard_arrow_right</span>
+<span class="material-symbols-outlined text-[18px] text-slate-500 mr-2">folder</span>
+<span class="text-xs text-slate-700 dark:text-slate-300">Assets</span>
+</div>
+<div class="flex items-center py-1.5 px-2 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors">
+<span class="material-symbols-outlined text-[16px] text-slate-400 mr-1 invisible">keyboard_arrow_right</span>
+<span class="material-symbols-outlined text-[18px] text-slate-500 mr-2">policy</span>
+<span class="text-xs text-slate-700 dark:text-slate-300">LICENSE</span>
+</div>
+</nav>
+<div class="mt-6 pt-6 border-t border-outline-variant/10">
+<div class="flex items-center gap-3 px-2 text-slate-500 dark:text-slate-400 py-2 hover:text-primary cursor-pointer transition-colors">
+<span class="material-symbols-outlined">analytics</span>
+<span class="font-sans text-[10px] tracking-widest uppercase">Insights</span>
+</div>
+<div class="flex items-center gap-3 px-2 text-slate-500 dark:text-slate-400 py-2 hover:text-primary cursor-pointer transition-colors">
+<span class="material-symbols-outlined">history_edu</span>
+<span class="font-sans text-[10px] tracking-widest uppercase">Version Control</span>
+</div>
+</div>
+</aside>
+<!-- Central Code Editor Area -->
+<section class="ml-64 mr-80 flex-1 flex flex-col bg-surface-container-lowest">
+<!-- Tabs -->
+<div class="flex bg-surface-container-low h-10 items-center overflow-x-auto">
+<div class="flex items-center gap-2 px-4 h-full bg-surface-container-lowest border-t-2 border-primary min-w-[160px]">
+<span class="material-symbols-outlined text-[16px] text-tertiary">data_object</span>
+<span class="text-xs font-label">epic_of_alexandria.json</span>
+<span class="material-symbols-outlined text-[14px] ml-auto cursor-pointer hover:text-error">close</span>
+</div>
+<div class="flex items-center gap-2 px-4 h-full text-on-surface-variant hover:bg-surface-container min-w-[160px] cursor-pointer">
+<span class="material-symbols-outlined text-[16px]">terminal</span>
+<span class="text-xs font-label">index.js</span>
+<span class="material-symbols-outlined text-[14px] ml-auto opacity-0 group-hover:opacity-100">close</span>
+</div>
+<div class="flex items-center gap-2 px-4 h-full text-on-surface-variant hover:bg-surface-container min-w-[160px] cursor-pointer">
+<span class="material-symbols-outlined text-[16px]">history_edu</span>
+<span class="text-xs font-label">preface.txt</span>
+</div>
+</div>
+<!-- Editor Content -->
+<div class="flex-1 overflow-auto flex font-mono text-[13px] leading-[1.6] bg-white">
+<!-- Line Numbers -->
+<div class="w-12 bg-surface-container-lowest text-right pr-3 py-4 text-outline select-none border-r border-outline-variant/10">
+<div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div><div>10</div><div>11</div><div>12</div><div>13</div><div>14</div><div>15</div><div>16</div><div>17</div><div>18</div><div>19</div><div>20</div><div>21</div><div>22</div><div>23</div><div>24</div><div>25</div>
+</div>
+<!-- Code Content -->
+<div class="flex-1 py-4 px-6 overflow-x-auto whitespace-pre">
+<span class="syntax-comment">// Alexandria Manuscript Digital Fragment v4.02</span>
+<span class="syntax-comment">// The curation of human knowledge, transcribed as structure.</span>
+
+{
+  <span class="syntax-string">"manuscript"</span>: <span class="syntax-string">"The Library's Echo"</span>,
+  <span class="syntax-string">"author"</span>: <span class="syntax-string">"A. Curator"</span>,
+  <span class="syntax-string">"era"</span>: <span class="syntax-string">"Post-Information"</span>,
+  <span class="syntax-string">"sections"</span>: [
+    {
+      <span class="syntax-string">"title"</span>: <span class="syntax-string">"The Digital Silence"</span>,
+      <span class="syntax-string">"lines"</span>: <span class="syntax-number">402</span>,
+      <span class="syntax-string">"content"</span>: <span class="syntax-function">function</span>() {
+        <span class="syntax-keyword">const</span> archive = <span class="syntax-keyword">new</span> <span class="syntax-function">Vault</span>();
+        <span class="syntax-keyword">return</span> archive.<span class="syntax-function">retrieve</span>(<span class="syntax-string">"Lost_Wisdom_01"</span>);
+      }
+    },
+    {
+      <span class="syntax-string">"title"</span>: <span class="syntax-string">"Ink and Carbon"</span>,
+      <span class="syntax-string">"tags"</span>: [<span class="syntax-string">"historical"</span>, <span class="syntax-string">"preservation"</span>],
+      <span class="syntax-string">"integrity_check"</span>: <span class="syntax-number">0.998</span>,
+      <span class="syntax-string">"status"</span>: <span class="syntax-string">"RESTORED"</span>
+    }
+  ],
+  <span class="syntax-string">"metadata"</span>: {
+    <span class="syntax-string">"checksum"</span>: <span class="syntax-string">"0xDEADBEEF42"</span>,
+    <span class="syntax-string">"revisions"</span>: <span class="syntax-number">12</span>
+  }
+}
+        </div>
+</div>
+<!-- Editor Footer -->
+<div class="h-8 bg-surface-container text-[10px] px-4 flex items-center justify-between font-label text-on-surface-variant uppercase tracking-widest border-t border-outline-variant/20">
+<div class="flex items-center gap-4">
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">code</span> JSON</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">schedule</span> UTF-8</span>
+</div>
+<div class="flex items-center gap-4">
+<span>Ln 14, Col 22</span>
+<span>Spaces: 2</span>
+<span class="text-primary font-bold">Read-Only Mode Off</span>
+</div>
+</div>
+</section>
+<!-- Properties Pane (Right) -->
+<aside class="fixed right-0 top-16 h-[calc(100vh-4rem)] w-80 bg-surface-container-low border-l border-outline-variant/10 p-6 flex flex-col gap-6">
+<div>
+<h3 class="font-serif font-bold text-lg mb-4 text-on-surface">Manuscript Insight</h3>
+<div class="aspect-video w-full rounded-lg bg-surface-container-high overflow-hidden relative group cursor-zoom-in mb-4">
+<img alt="Mountain View" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC69fxGiz6heDLPMD9xUK-qVppHBDUm-X5CtmyBVMm0S9U8FaHE8V_9DlOdh9eH-cWMts45MpnTMOh8u1ss4per2WmYr06YMAgy_BWP1hJwFt5FnLf_M16w2L_XGbEB2xblyaJkh0FNObLnhYfSkAQO8CsNsZeieOBawKWI6g2clkfgMKUbVIxs6kSkL1idr51JJxSXhc8UbQsLsQfbGtNxaUrzKa-2rQ2TTTkHXNuvJ7srgLr_ofXeOo4GXOZrxTzqCAIK5z_U428c"/>
+<div class="absolute inset-0 bg-black/10 group-hover:bg-black/0 transition-colors"></div>
+</div>
+<div class="space-y-4">
+<div class="flex flex-col">
+<span class="font-label text-[10px] uppercase tracking-widest text-outline mb-1">File Identity</span>
+<span class="text-sm font-medium">epic_of_alexandria.json</span>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="flex flex-col">
+<span class="font-label text-[10px] uppercase tracking-widest text-outline mb-1">Type</span>
+<span class="text-xs font-mono text-tertiary">Schema/Data</span>
+</div>
+<div class="flex flex-col">
+<span class="font-label text-[10px] uppercase tracking-widest text-outline mb-1">Size</span>
+<span class="text-xs font-mono">1.2 MB</span>
+</div>
+</div>
+<div class="h-px bg-outline-variant/30 w-full"></div>
+<div class="space-y-3">
+<div class="flex items-center justify-between">
+<span class="text-xs font-body text-on-surface-variant">Lines of Code</span>
+<span class="text-xs font-mono font-bold">248</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-xs font-body text-on-surface-variant">Last Commit</span>
+<span class="text-xs font-body italic text-secondary">2 hours ago</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-xs font-body text-on-surface-variant">Contributor</span>
+<span class="text-xs font-body font-medium flex items-center gap-1">
+<span class="w-4 h-4 rounded-full bg-primary-container text-[8px] flex items-center justify-center text-white">AC</span>
+                Archivist_01
+              </span>
+</div>
+</div>
+</div>
+</div>
+<div class="mt-auto">
+<h4 class="font-serif font-bold text-sm mb-3">Annotation History</h4>
+<div class="space-y-2">
+<div class="p-3 bg-surface-container rounded text-[11px] leading-relaxed border-l-2 border-tertiary">
+<p class="text-on-surface mb-1">"Verified the JSON structure against the 18th-century folio indexing rules."</p>
+<span class="text-outline">May 12, 2024 · Scholarly Note</span>
+</div>
+<div class="p-3 bg-surface-container rounded text-[11px] leading-relaxed border-l-2 border-primary">
+<p class="text-on-surface mb-1">"Applied semantic tagging to the 'Digital Silence' section."</p>
+<span class="text-outline">May 10, 2024 · Revision</span>
+</div>
+</div>
+</div>
+</aside>
+</main>
+<!-- Mobile Bottom Nav -->
+<footer class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-outline-variant/10 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] flex justify-around p-3 z-50">
+<button class="flex flex-col items-center gap-1 text-primary">
+<span class="material-symbols-outlined">folder_open</span>
+<span class="text-[10px] font-label">Explore</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-outline">
+<span class="material-symbols-outlined">history_edu</span>
+<span class="text-[10px] font-label">History</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-outline">
+<span class="material-symbols-outlined">analytics</span>
+<span class="text-[10px] font-label">Stats</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-outline">
+<span class="material-symbols-outlined">settings</span>
+<span class="text-[10px] font-label">Settings</span>
+</button>
+</footer>
+</body></html>

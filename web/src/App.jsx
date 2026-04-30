@@ -50,17 +50,19 @@ function App({
   routerNavigate,
 }) {
   const queryClient = useQueryClient();
-  const [activePage, setActivePage] = useState(() => initialRoute.page);
+  const initialUsername = initialSession?.user?.username || currentUsername();
+  const initialPage = initialRoute.page === 'landing' && initialUsername ? 'browser' : initialRoute.page;
+  const [activePage, setActivePage] = useState(() => initialPage);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
   const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
   const [unknownRoute, setUnknownRoute] = useState(() => initialRoute.unknownPath || '');
   const [returnToPage, setReturnToPage] = useState('browser');
   const [returnToCommitHash, setReturnToCommitHash] = useState('');
   const [returnToChangesetId, setReturnToChangesetId] = useState('');
-  const [username, setUsername] = useState(() => initialSession?.user?.username || currentUsername());
+  const [username, setUsername] = useState(() => initialUsername);
   const [authSessionSource, setAuthSessionSource] = useState(() => initialSession?.source || '');
-  const [browserMounted, setBrowserMounted] = useState(() => initialRoute.page === 'browser');
-  const [currentSliceId, setCurrentSliceId] = useState(() => getHomeSliceId(initialSession?.user?.username || currentUsername()));
+  const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser');
+  const [currentSliceId, setCurrentSliceId] = useState(() => getHomeSliceId(initialUsername));
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
   const previousUsernameRef = useRef(username);
   const hasExplicitSliceSelectionRef = useRef(false);
@@ -248,6 +250,12 @@ function App({
         : 'unauthorized';
 
   useEffect(() => {
+    if (isAuthenticated && activePage === 'landing') {
+      navigate('browser', '', '', { replace: true });
+    }
+  }, [activePage, isAuthenticated, navigate]);
+
+  useEffect(() => {
     if (activePage === 'not-found') {
       trackRouteEvent('route_not_found', {
         path: unknownRoute || '/',
@@ -296,12 +304,10 @@ function App({
     <div className={`app-shell min-h-screen bg-background text-foreground${isBrowserLayout ? ' app-shell--browser' : ''}`}>
       <AppHeader
         isAuthenticated={isAuthenticated}
-        username={username}
         authSessionSource={authSessionSource}
         githubUrl={githubUrl}
         navigate={navigate}
         onOpenRepos={openBrowserHome}
-        onLogout={doLogout}
         onLogin={openLogin}
         isNavActive={isNavActive}
       />

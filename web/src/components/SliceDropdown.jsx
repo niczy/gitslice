@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, Database, Search } from 'lucide-react';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
@@ -34,6 +35,19 @@ export default function SliceDropdown({
       return getSliceDisplayName(String(currentSliceId).slice('home.'.length));
     }
     return getSliceDisplayName(currentSliceId);
+  }, [currentSlice, currentSliceId]);
+
+  const currentSliceMeta = useMemo(() => {
+    if (!currentSlice) {
+      return currentSliceId ? 'Requested slice' : 'Choose workspace';
+    }
+    if (currentSlice.is_root) {
+      return 'Root collection';
+    }
+    if (currentSlice.slug) {
+      return currentSlice.slug;
+    }
+    return currentSlice.slice_id || 'Workspace slice';
   }, [currentSlice, currentSliceId]);
 
   const filteredSlices = useMemo(() => {
@@ -75,14 +89,21 @@ export default function SliceDropdown({
         onClick={() => setIsOpen(!isOpen)}
         data-testid="slice-dropdown-trigger"
       >
-        <span>{currentSliceLabel || 'Select slice'}</span>
-        <span className="slice-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
+        <span className="slice-dropdown-trigger-icon" aria-hidden="true">
+          <Database size={16} />
+        </span>
+        <span className="slice-dropdown-trigger-copy">
+          <span className="slice-dropdown-trigger-label">{currentSliceLabel || 'Select slice'}</span>
+          <span className="slice-dropdown-trigger-meta">{currentSliceMeta}</span>
+        </span>
+        <ChevronDown className={`slice-dropdown-arrow${isOpen ? ' open' : ''}`} size={16} aria-hidden="true" />
       </Button>
       {isOpen && (
         <div className="slice-dropdown-menu" data-testid="slice-dropdown-menu">
           <div className="slice-dropdown-header">
             <h4>Slices</h4>
             <div className="slice-search">
+              <Search size={15} aria-hidden="true" />
               <Input
                 type="text"
                 placeholder="Filter slices..."
@@ -120,6 +141,7 @@ export default function SliceDropdown({
                   <div className="slice-dropdown-item-title">
                     <span className="slice-name">{getSliceDisplayName(slice.name || slice.slice_id)}</span>
                     {slice.is_root && <Badge variant="outline" className="slice-badge">root</Badge>}
+                    {currentSliceId === slice.slice_id && <Check size={15} aria-hidden="true" />}
                   </div>
                   <div className="slice-dropdown-item-meta">
                     <span>{slice.slug || slice.slice_id}</span>

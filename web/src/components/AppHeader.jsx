@@ -1,88 +1,37 @@
 import { UserButton } from '@clerk/react';
+import { BookOpen, Github, LibraryBig, LogIn } from 'lucide-react';
 
 import { Button } from './ui/button.jsx';
 
 export default function AppHeader({
   isAuthenticated,
-  username,
   authSessionSource,
   githubUrl,
   navigate,
   onOpenRepos,
-  onLogout,
   onLogin,
   isNavActive,
 }) {
   return (
     <header className="top-bar border-b border-border/80 bg-card/90 backdrop-blur-sm">
-      <Button type="button" variant="ghost" className="brand" onClick={() => navigate('landing')}>
-        <span className="brand-icon">◆</span>
+      <Button
+        type="button"
+        variant="ghost"
+        className="brand"
+        onClick={() => (isAuthenticated ? onOpenRepos() : navigate('landing'))}
+      >
+        <span className="brand-icon" aria-hidden="true"><LibraryBig size={18} /></span>
         <span className="brand-text">Git Slice</span>
       </Button>
       <div className="top-bar-actions">
         {isAuthenticated ? (
           <>
-            <Button
-              type="button"
-              variant={isNavActive('projects') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('projects') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-projects"
-              onClick={() => navigate('projects')}
-            >
-              Projects
-            </Button>
-            <Button
-              type="button"
-              variant={isNavActive('repos') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-repos"
-              onClick={onOpenRepos}
-            >
-              Repos
-            </Button>
-            <Button
-              type="button"
-              variant={isNavActive('settings') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('settings') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-settings"
-              onClick={() => navigate('settings')}
-            >
-              Settings
-            </Button>
-            <Button
-              type="button"
-              variant={isNavActive('docs') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('docs') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-docs-link"
-              onClick={() => navigate('docs')}
-            >
-              Docs
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className="nav-link"
-              data-testid="topbar-profile"
-              onClick={() => navigate('profile')}
-              title="Profile"
-            >
-              {username}
-            </Button>
             {authSessionSource === 'clerk' && (
               <UserButton
                 afterSignOutUrl="/"
                 showName={false}
               />
             )}
-            <Button
-              type="button"
-              variant="ghost"
-              className="nav-link"
-              data-testid="topbar-logout"
-              onClick={onLogout}
-            >
-              Logout
-            </Button>
           </>
         ) : (
           <>
@@ -93,6 +42,7 @@ export default function AppHeader({
               data-testid="topbar-repo-browser"
               onClick={() => navigate('browser')}
             >
+              <LibraryBig size={16} aria-hidden="true" />
               Repo Browser
             </Button>
             <Button
@@ -102,6 +52,7 @@ export default function AppHeader({
               data-testid="topbar-docs-link"
               onClick={() => navigate('docs')}
             >
+              <BookOpen size={16} aria-hidden="true" />
               Docs
             </Button>
             <Button
@@ -111,6 +62,7 @@ export default function AppHeader({
               data-testid="topbar-github-link"
             >
               <a href={githubUrl} target="_blank" rel="noreferrer">
+                <Github size={16} aria-hidden="true" />
                 GitHub
               </a>
             </Button>
@@ -121,6 +73,7 @@ export default function AppHeader({
               data-testid="topbar-login"
               onClick={onLogin}
             >
+              <LogIn size={16} aria-hidden="true" />
               Login
             </Button>
             <Button
