@@ -4,7 +4,8 @@ function normalizeSession(session) {
   const source = String(session?.source || '').trim() || 'workos';
   const username = String(session?.user?.username || '').trim();
   const workosUserId = String(session?.user?.workosUserId || session?.user?.id || '').trim();
-  if (!username && !(source === 'workos' && workosUserId)) {
+  const clerkUserId = String(session?.user?.clerkUserId || session?.user?.id || '').trim();
+  if (!username && !(source === 'workos' && workosUserId) && !(source === 'clerk' && clerkUserId)) {
     return null;
   }
   return {
@@ -13,6 +14,7 @@ function normalizeSession(session) {
       ...(session?.user || {}),
       username,
       workosUserId,
+      clerkUserId,
     },
     source,
   };
@@ -65,17 +67,27 @@ export async function fetchOAuthSession() {
   return setCachedSession(await response.json());
 }
 
-export function startOAuthSignIn() {
+export function startOAuthSignIn(provider = 'workos') {
+  const normalizedProvider = String(provider || 'workos').trim().toLowerCase();
   const callbackUrl = `${window.location.origin}/browser`;
-  const url = new URL('/auth/signin/workos', window.location.origin);
-  url.searchParams.set('callbackUrl', callbackUrl);
+  const url = new URL(normalizedProvider === 'clerk' ? '/sign-in' : '/auth/signin/workos', window.location.origin);
+  if (normalizedProvider === 'clerk') {
+    url.searchParams.set('redirect_url', callbackUrl);
+  } else {
+    url.searchParams.set('callbackUrl', callbackUrl);
+  }
   window.location.assign(url.toString());
 }
 
-export function startOAuthSignOut() {
+export function startOAuthSignOut(provider = 'workos') {
+  const normalizedProvider = String(provider || 'workos').trim().toLowerCase();
   const callbackUrl = `${window.location.origin}/`;
-  const url = new URL('/auth/signout', window.location.origin);
-  url.searchParams.set('callbackUrl', callbackUrl);
+  const url = new URL(normalizedProvider === 'clerk' ? '/sign-out' : '/auth/signout', window.location.origin);
+  if (normalizedProvider === 'clerk') {
+    url.searchParams.set('redirect_url', callbackUrl);
+  } else {
+    url.searchParams.set('callbackUrl', callbackUrl);
+  }
   window.location.assign(url.toString());
 }
 

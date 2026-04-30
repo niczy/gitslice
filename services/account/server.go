@@ -41,6 +41,8 @@ const (
 	devicePollInterval      = 5 * time.Second
 	defaultPublicWebBaseURL = "http://localhost:4173"
 	workOSWebhookTolerance  = 3 * time.Minute
+	bridgeTokenMaxLifetime  = 15 * time.Minute
+	bridgeTokenClockSkew    = 1 * time.Minute
 )
 
 var orgSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,39}$`)
@@ -266,7 +268,7 @@ func authMethodsForUser(user *models.User) []*accountv1.AuthMethod {
 	if user == nil {
 		return nil
 	}
-	methods := make([]*accountv1.AuthMethod, 0, 2)
+	methods := make([]*accountv1.AuthMethod, 0, 3)
 	linkedAt := user.UpdatedAt
 	if linkedAt.IsZero() {
 		linkedAt = user.CreatedAt
@@ -285,6 +287,15 @@ func authMethodsForUser(user *models.User) []*accountv1.AuthMethod {
 			"oauth:workos",
 			accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH,
 			"workos",
+			user.PrimaryEmail,
+			linkedAt,
+		))
+	}
+	if strings.TrimSpace(user.ClerkUserID) != "" {
+		methods = append(methods, authMethodToProto(
+			"oauth:clerk",
+			accountv1.AuthMethodType_AUTH_METHOD_TYPE_OAUTH,
+			"clerk",
 			user.PrimaryEmail,
 			linkedAt,
 		))
@@ -544,6 +555,18 @@ type workOSWebhookEnvelope struct {
 		FirstName string `json:"first_name"`
 		LastName  string `json:"last_name"`
 	} `json:"data"`
+}
+
+type clerkBridgeClaims struct {
+	Provider          string `json:"provider"`
+	UserID            string `json:"userId"`
+	SessionID         string `json:"sessionId"`
+	Email             string `json:"email"`
+	Name              string `json:"name"`
+	PreferredUsername string `json:"preferredUsername"`
+	ImageURL          string `json:"imageUrl"`
+	IssuedAtMs        int64  `json:"issuedAtMs"`
+	ExpiresAtMs       int64  `json:"expiresAtMs"`
 }
 
 func hashClaimToken(value string) string {
@@ -847,6 +870,104 @@ func applyWorkOSUserHints(user *models.User, workOSUserID, name, email string) b
 	return updated
 }
 
+func applyClerkUserHints(user *models.User, clerkUserID, name, email string) bool {
+	updated := false
+	clerkUserID = strings.TrimSpace(clerkUserID)
+	name = strings.TrimSpace(name)
+	email = normalizeEmail(email)
+
+	if clerkUserID != "" && user.ClerkUserID != clerkUserID {
+		user.ClerkUserID = clerkUserID
+		updated = true
+	}
+	if user.AuthSource != "clerk" {
+		user.AuthSource = "clerk"
+		updated = true
+	}
+	if name != "" && user.Name == "" {
+		user.Name = name
+		updated = true
+	}
+	if email != "" && validateEmail(email) && user.PrimaryEmail == "" {
+		user.PrimaryEmail = email
+		updated = true
+	}
+	return updated
+}
+
+func verifySignedClerkClaims(rawValue string, now time.Time) (*clerkBridgeClaims, error) {
+	secret := strings.TrimSpace(os.Getenv("AUTH_SECRET"))
+	if secret == "" {
+		return nil, status.Error(codes.FailedPrecondition, "AUTH_SECRET is not configured")
+	}
+	rawValue = strings.TrimSpace(rawValue)
+	if rawValue == "" {
+		return nil, status.Error(codes.InvalidArgument, "signed_claims is required")
+	}
+	payloadPart, signaturePart, ok := strings.Cut(rawValue, ".")
+	if !ok || strings.TrimSpace(payloadPart) == "" || strings.TrimSpace(signaturePart) == "" {
+		return nil, status.Error(codes.InvalidArgument, "invalid signed_claims format")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payloadPart))
+	expectedSignature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(signaturePart), []byte(expectedSignature)) {
+		return nil, status.Error(codes.Unauthenticated, "invalid signed Clerk claims signature")
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid signed_claims payload")
+	}
+	var claims clerkBridgeClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid signed_claims payload")
+	}
+	if strings.ToLower(strings.TrimSpace(claims.Provider)) != "clerk" {
+		return nil, status.Error(codes.InvalidArgument, "signed_claims provider must be clerk")
+	}
+	if strings.TrimSpace(claims.UserID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "signed_claims userId is required")
+	}
+	if claims.IssuedAtMs <= 0 || claims.ExpiresAtMs <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "signed_claims timestamps are required")
+	}
+	issuedAt := time.UnixMilli(claims.IssuedAtMs)
+	expiresAt := time.UnixMilli(claims.ExpiresAtMs)
+	if expiresAt.Before(issuedAt) {
+		return nil, status.Error(codes.InvalidArgument, "signed_claims expiry is invalid")
+	}
+	if expiresAt.Sub(issuedAt) > bridgeTokenMaxLifetime {
+		return nil, status.Error(codes.InvalidArgument, "signed_claims lifetime is too long")
+	}
+	if issuedAt.After(now.Add(bridgeTokenClockSkew)) {
+		return nil, status.Error(codes.Unauthenticated, "signed Clerk claims are not valid yet")
+	}
+	if !expiresAt.After(now.Add(-bridgeTokenClockSkew)) {
+		return nil, status.Error(codes.Unauthenticated, "signed Clerk claims have expired")
+	}
+	return &claims, nil
+}
+
+func clerkUsernameBase(req *accountv1.EnsureClerkLocalIdentityRequest, claims *clerkBridgeClaims) string {
+	if claims != nil {
+		if preferred := sanitizeUsernameCandidate(claims.PreferredUsername); strings.TrimSpace(claims.PreferredUsername) != "" {
+			return preferred
+		}
+		if name := sanitizeUsernameCandidate(claims.Name); strings.TrimSpace(claims.Name) != "" {
+			return name
+		}
+		if email := normalizeEmail(claims.Email); email != "" {
+			if local := sanitizeUsernameCandidate(strings.Split(email, "@")[0]); local != "" {
+				return local
+			}
+		}
+		return sanitizeUsernameCandidate(claims.UserID)
+	}
+	return "user"
+}
+
 func (s *accountServiceServer) ensureWorkOSLocalIdentity(ctx context.Context, claimsSubject, displayName, primaryEmail string, req *accountv1.EnsureWorkOSLocalIdentityRequest) (*ensureWorkOSLocalIdentityResult, error) {
 	if strings.TrimSpace(claimsSubject) == "" {
 		return nil, status.Error(codes.InvalidArgument, "missing WorkOS subject")
@@ -1044,6 +1165,213 @@ func ensureWorkOSLocalIdentityResultToProto(result *ensureWorkOSLocalIdentityRes
 		accountID = result.account.AccountID
 	}
 	return &accountv1.EnsureWorkOSLocalIdentityResponse{
+		User:               userToProto(result.user),
+		AccountId:          accountID,
+		CreatedAccount:     result.createdAccount,
+		CreatedUser:        result.createdUser,
+		LinkedExistingUser: result.linkedExistingUser,
+		ClaimedAccount:     result.claimedAccount,
+	}
+}
+
+func (s *accountServiceServer) ensureClerkLocalIdentity(ctx context.Context, claims *clerkBridgeClaims, req *accountv1.EnsureClerkLocalIdentityRequest) (*ensureWorkOSLocalIdentityResult, error) {
+	if claims == nil || strings.TrimSpace(claims.UserID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "missing Clerk user id")
+	}
+
+	displayName := strings.TrimSpace(claims.Name)
+	primaryEmail := normalizeEmail(claims.Email)
+	claimToken := ""
+	if req != nil {
+		claimToken = strings.TrimSpace(req.GetClaimToken())
+	}
+
+	if claimToken != "" {
+		claimTokenHash := hashClaimToken(claimToken)
+		account, err := s.st.GetAccountByClaimTokenHash(ctx, claimTokenHash)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.NotFound, "account claim token not found")
+			}
+			return nil, status.Error(codes.Internal, "failed to resolve account claim token")
+		}
+		accountUsers, err := s.usersForAccount(ctx, account.AccountID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to list account users")
+		}
+		if len(accountUsers) != 1 {
+			return nil, status.Error(codes.FailedPrecondition, "account claim requires exactly one local user")
+		}
+		targetUser := accountUsers[0]
+		if linkedUser, err := s.st.GetUserByClerkUserID(ctx, claims.UserID); err == nil {
+			if linkedUser.Username != targetUser.Username {
+				return nil, status.Error(codes.AlreadyExists, "Clerk user is already linked to another account")
+			}
+		} else if err != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, "failed to resolve linked Clerk user")
+		}
+		if targetUser.ClerkUserID != "" && targetUser.ClerkUserID != claims.UserID {
+			return nil, status.Error(codes.AlreadyExists, "account is already linked to another Clerk user")
+		}
+		if applyClerkUserHints(targetUser, claims.UserID, displayName, primaryEmail) {
+			if err := s.st.UpdateUser(ctx, targetUser); err != nil {
+				if err == storage.ErrEntryExists {
+					return nil, status.Error(codes.AlreadyExists, "email already in use")
+				}
+				return nil, status.Error(codes.Internal, "failed to attach Clerk identity")
+			}
+			targetUser, err = s.st.GetUser(ctx, targetUser.Username)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to reload claimed user")
+			}
+		}
+		account.OwnerMode = models.AccountOwnerModeHumanAttached
+		account.ClaimState = models.AccountClaimStateClaimed
+		account.ClaimTokenHash = ""
+		if err := s.st.UpdateAccount(ctx, account); err != nil {
+			return nil, status.Error(codes.Internal, "failed to finalize claimed account")
+		}
+		account, err = s.st.GetAccount(ctx, account.AccountID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to reload claimed account")
+		}
+		if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, targetUser.Username); err != nil {
+			return nil, status.Error(codes.Internal, "failed to provision home slice")
+		}
+		return &ensureWorkOSLocalIdentityResult{
+			user:               targetUser,
+			account:            account,
+			linkedExistingUser: true,
+			claimedAccount:     true,
+		}, nil
+	}
+
+	if linkedUser, err := s.st.GetUserByClerkUserID(ctx, claims.UserID); err == nil {
+		account, createdAccount, err := s.ensureUserAccountLinkedToHuman(ctx, linkedUser)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to ensure linked account")
+		}
+		if applyClerkUserHints(linkedUser, claims.UserID, displayName, primaryEmail) {
+			if err := s.st.UpdateUser(ctx, linkedUser); err != nil {
+				if err == storage.ErrEntryExists {
+					return nil, status.Error(codes.AlreadyExists, "email already in use")
+				}
+				return nil, status.Error(codes.Internal, "failed to update linked user")
+			}
+			linkedUser, err = s.st.GetUser(ctx, linkedUser.Username)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to load linked user")
+			}
+		}
+		if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, linkedUser.Username); err != nil {
+			return nil, status.Error(codes.Internal, "failed to provision home slice")
+		}
+		return &ensureWorkOSLocalIdentityResult{
+			user:           linkedUser,
+			account:        account,
+			createdAccount: createdAccount,
+		}, nil
+	} else if err != storage.ErrEntryNotFound {
+		return nil, status.Error(codes.Internal, "failed to resolve linked Clerk user")
+	}
+
+	if primaryEmail != "" && validateEmail(primaryEmail) {
+		if existingUser, err := s.st.GetUserByEmail(ctx, primaryEmail); err == nil {
+			if strings.TrimSpace(existingUser.AccountID) != "" {
+				if existingAccount, accountErr := s.st.GetAccount(ctx, existingUser.AccountID); accountErr == nil {
+					if existingAccount.OwnerMode == models.AccountOwnerModeAgentOnly {
+						return nil, status.Error(codes.FailedPrecondition, "account claim token required to attach to an agent-created account")
+					}
+				} else if accountErr != storage.ErrEntryNotFound {
+					return nil, status.Error(codes.Internal, "failed to resolve existing account")
+				}
+			}
+			if existingUser.ClerkUserID != "" && existingUser.ClerkUserID != claims.UserID {
+				return nil, status.Error(codes.AlreadyExists, "email already linked to another Clerk user")
+			}
+			account, createdAccount, err := s.ensureUserAccountLinkedToHuman(ctx, existingUser)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to ensure existing account")
+			}
+			if applyClerkUserHints(existingUser, claims.UserID, displayName, primaryEmail) {
+				if err := s.st.UpdateUser(ctx, existingUser); err != nil {
+					if err == storage.ErrEntryExists {
+						return nil, status.Error(codes.AlreadyExists, "email already in use")
+					}
+					return nil, status.Error(codes.Internal, "failed to link existing user")
+				}
+				existingUser, err = s.st.GetUser(ctx, existingUser.Username)
+				if err != nil {
+					return nil, status.Error(codes.Internal, "failed to reload linked user")
+				}
+			}
+			if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, existingUser.Username); err != nil {
+				return nil, status.Error(codes.Internal, "failed to provision home slice")
+			}
+			return &ensureWorkOSLocalIdentityResult{
+				user:               existingUser,
+				account:            account,
+				createdAccount:     createdAccount,
+				linkedExistingUser: true,
+			}, nil
+		} else if err != storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, "failed to resolve local user by email")
+		}
+	}
+
+	account, createdAccount, err := s.createHumanAttachedAccount(ctx)
+	if err != nil {
+		if stErr, ok := status.FromError(err); ok {
+			return nil, stErr.Err()
+		}
+		return nil, status.Error(codes.Internal, "failed to create local account")
+	}
+
+	baseUsername := clerkUsernameBase(req, claims)
+	for i := 0; i < 100; i++ {
+		username := usernameCandidateWithSuffix(baseUsername, i)
+		user := &models.User{
+			Username:     username,
+			AccountID:    account.AccountID,
+			Name:         displayName,
+			PrimaryEmail: primaryEmail,
+			AuthSource:   "clerk",
+			ClerkUserID:  claims.UserID,
+		}
+		if err := s.st.CreateUser(ctx, user); err == nil {
+			if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
+				return nil, status.Error(codes.Internal, "failed to provision home slice")
+			}
+			createdUser, err := s.st.GetUser(ctx, username)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to load created user")
+			}
+			return &ensureWorkOSLocalIdentityResult{
+				user:           createdUser,
+				account:        account,
+				createdAccount: createdAccount,
+				createdUser:    true,
+			}, nil
+		} else if err != storage.ErrEntryExists {
+			if err == storage.ErrEntryNotFound {
+				return nil, status.Error(codes.Internal, "failed to attach account to created user")
+			}
+			return nil, status.Error(codes.Internal, "failed to create local user")
+		}
+	}
+
+	return nil, status.Error(codes.Aborted, "failed to allocate local username")
+}
+
+func ensureClerkLocalIdentityResultToProto(result *ensureWorkOSLocalIdentityResult) *accountv1.EnsureClerkLocalIdentityResponse {
+	if result == nil {
+		return nil
+	}
+	accountID := ""
+	if result.account != nil {
+		accountID = result.account.AccountID
+	}
+	return &accountv1.EnsureClerkLocalIdentityResponse{
 		User:               userToProto(result.user),
 		AccountId:          accountID,
 		CreatedAccount:     result.createdAccount,
@@ -1764,23 +2092,46 @@ func (s *accountServiceServer) DeleteAuthMethod(ctx context.Context, req *accoun
 		if strings.TrimSpace(user.PasswordHash) == "" {
 			return nil, status.Error(codes.NotFound, "password auth method not found")
 		}
-		if strings.TrimSpace(user.WorkOSUserID) == "" {
+		if strings.TrimSpace(user.WorkOSUserID) == "" && strings.TrimSpace(user.ClerkUserID) == "" {
 			return nil, status.Error(codes.FailedPrecondition, "cannot remove the only human sign-in method")
 		}
 		user.PasswordHash = ""
 		if user.AuthSource == "" {
-			user.AuthSource = "workos"
+			if strings.TrimSpace(user.ClerkUserID) != "" {
+				user.AuthSource = "clerk"
+			} else {
+				user.AuthSource = "workos"
+			}
 		}
 	case "oauth:workos":
 		if strings.TrimSpace(user.WorkOSUserID) == "" {
 			return nil, status.Error(codes.NotFound, "WorkOS auth method not found")
 		}
-		if strings.TrimSpace(user.PasswordHash) == "" {
+		if strings.TrimSpace(user.PasswordHash) == "" && strings.TrimSpace(user.ClerkUserID) == "" {
 			return nil, status.Error(codes.FailedPrecondition, "cannot remove the only human sign-in method")
 		}
 		user.WorkOSUserID = ""
 		if user.AuthSource == "workos" {
-			user.AuthSource = "local"
+			if strings.TrimSpace(user.ClerkUserID) != "" {
+				user.AuthSource = "clerk"
+			} else {
+				user.AuthSource = "local"
+			}
+		}
+	case "oauth:clerk":
+		if strings.TrimSpace(user.ClerkUserID) == "" {
+			return nil, status.Error(codes.NotFound, "Clerk auth method not found")
+		}
+		if strings.TrimSpace(user.PasswordHash) == "" && strings.TrimSpace(user.WorkOSUserID) == "" {
+			return nil, status.Error(codes.FailedPrecondition, "cannot remove the only human sign-in method")
+		}
+		user.ClerkUserID = ""
+		if user.AuthSource == "clerk" {
+			if strings.TrimSpace(user.WorkOSUserID) != "" {
+				user.AuthSource = "workos"
+			} else {
+				user.AuthSource = "local"
+			}
 		}
 	default:
 		return nil, status.Error(codes.NotFound, "auth method not found")
@@ -1861,6 +2212,8 @@ func (s *accountServiceServer) GetAuthContext(ctx context.Context, req *accountv
 	resp.AccountId = user.AccountID
 	resp.WorkosUserId = user.WorkOSUserID
 	resp.WorkosLinked = strings.TrimSpace(user.WorkOSUserID) != ""
+	resp.ClerkUserId = user.ClerkUserID
+	resp.ClerkLinked = strings.TrimSpace(user.ClerkUserID) != ""
 	return resp, nil
 }
 
@@ -2176,6 +2529,39 @@ func (s *accountServiceServer) EnsureWorkOSLocalIdentity(ctx context.Context, re
 		result.localSession = session
 	}
 	resp := ensureWorkOSLocalIdentityResultToProto(result)
+	if result.localSession != nil {
+		localAuth, err := s.buildAuthResponse(ctx, result.user, result.localSession)
+		if err != nil {
+			return nil, err
+		}
+		resp.LocalAuth = localAuth
+	}
+	return resp, nil
+}
+
+func (s *accountServiceServer) EnsureClerkLocalIdentity(ctx context.Context, req *accountv1.EnsureClerkLocalIdentityRequest) (*accountv1.EnsureClerkLocalIdentityResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	claims, err := verifySignedClerkClaims(req.GetSignedClaims(), time.Now())
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.ensureClerkLocalIdentity(ctx, claims, req)
+	if err != nil {
+		return nil, err
+	}
+	if req.GetIssueLocalSession() {
+		session, err := s.createRefreshableSession(ctx, result.user.Username, "")
+		if err != nil {
+			if stErr, ok := status.FromError(err); ok {
+				return nil, stErr.Err()
+			}
+			return nil, status.Error(codes.Internal, "failed to create local session")
+		}
+		result.localSession = session
+	}
+	resp := ensureClerkLocalIdentityResultToProto(result)
 	if result.localSession != nil {
 		localAuth, err := s.buildAuthResponse(ctx, result.user, result.localSession)
 		if err != nil {

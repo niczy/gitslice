@@ -370,6 +370,10 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                         <span className="kv-key">WorkOS linked</span>
                         <span className="kv-val">{authContext.workos_linked || authContext.workosLinked ? 'yes' : 'no'}</span>
                       </div>
+                      <div className="kv-row">
+                        <span className="kv-key">Clerk linked</span>
+                        <span className="kv-val">{authContext.clerk_linked || authContext.clerkLinked ? 'yes' : 'no'}</span>
+                      </div>
                     </>
                   )}
                 </div>
@@ -388,7 +392,7 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
                 <div className="space-y-2">
                   <h3>Linked sign-in methods</h3>
                   <p className="status">
-                    WorkOS is the primary human sign-in path. Local password methods still appear here when they exist.
+                    Provider-backed human sign-in methods and local password fallbacks appear here when they exist.
                   </p>
                 </div>
                 {authMethodsLoading && <div className="panel-empty">Loading auth methods…</div>}

@@ -1,6 +1,9 @@
 import { index, route } from '@react-router/dev/routes';
 
 export default [
+  route('sign-in', 'routes/sign-in.jsx'),
+  route('sign-up', 'routes/sign-up.jsx'),
+  route('sign-out', 'routes/sign-out.jsx'),
   route('auth/session', 'routes/auth.session.jsx'),
   route('auth/dev-login', 'routes/auth.dev-login.jsx'),
   route('auth/dev-logout', 'routes/auth.dev-logout.jsx'),

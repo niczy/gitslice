@@ -17,7 +17,7 @@ const (
 	AccountClaimStateClaimed   AccountClaimState = "claimed"
 )
 
-// Account is the root local identity record. Human WorkOS identities may attach
+// Account is the root local identity record. Human identities from external IdPs may attach
 // later, but agent-created accounts can exist before any human auth exists.
 type Account struct {
 	AccountID      string            `json:"account_id"`
@@ -29,7 +29,7 @@ type Account struct {
 }
 
 // User is the local username-facing identity that owns a home slice and may be
-// linked to a local account and later to a WorkOS user.
+// linked to a local account and later to one or more external human auth systems.
 type User struct {
 	Username     string    `json:"username"`
 	AccountID    string    `json:"account_id"`
@@ -38,6 +38,7 @@ type User struct {
 	PasswordHash string    `json:"password_hash"`
 	AuthSource   string    `json:"auth_source"`
 	WorkOSUserID string    `json:"workos_user_id"`
+	ClerkUserID  string    `json:"clerk_user_id"`
 	RootPath     string    `json:"root_path"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
