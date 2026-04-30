@@ -9,12 +9,8 @@ LOG_DIR="$(cd "$REPO_ROOT" && mkdir -p "$RAW_LOG_DIR" && cd "$RAW_LOG_DIR" && pw
 WEB_LOG="$LOG_DIR/web_preview.log"
 CORE_LOG="$LOG_DIR/core_server.log"
 PM2_ECOSYSTEM_FILE="$REPO_ROOT/ops/ecosystem.config.cjs"
-PRODUCTION_ENV_FILE="${PRODUCTION_ENV_FILE:-$REPO_ROOT/ops/.env.production}"
-LEGACY_PRODUCTION_ENV_FILE="$REPO_ROOT/ops/.env"
-STAGING_ENV_FILE="${STAGING_ENV_FILE:-$REPO_ROOT/ops/.env.staging}"
-if [ ! -f "$STAGING_ENV_FILE" ] && [ -f "$REPO_ROOT/ops/staging/.env" ]; then
-  STAGING_ENV_FILE="$REPO_ROOT/ops/staging/.env"
-fi
+PRODUCTION_ENV_FILE="$REPO_ROOT/ops/.env.production"
+STAGING_ENV_FILE="$REPO_ROOT/ops/.env.staging"
 DEPLOY_ENV="${DEPLOY_ENV:-production}"
 CORE_BIND_ADDR="${CORE_BIND_ADDR:-127.0.0.1}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
@@ -51,10 +47,6 @@ log() {
 resolve_production_env_file() {
   if [ -f "$PRODUCTION_ENV_FILE" ]; then
     printf '%s\n' "$PRODUCTION_ENV_FILE"
-    return 0
-  fi
-  if [ -f "$LEGACY_PRODUCTION_ENV_FILE" ]; then
-    printf '%s\n' "$LEGACY_PRODUCTION_ENV_FILE"
     return 0
   fi
   return 1
