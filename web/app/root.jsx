@@ -6,11 +6,53 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useLoaderData,
 } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ClerkProvider } from '@clerk/react-router';
+import { clerkMiddleware, rootAuthLoader } from '@clerk/react-router/server';
 
 import '../src/index.css';
 import '../src/styles.css';
+
+function getClerkEnv() {
+  const authProvider = String(process.env.AUTH_PROVIDER || 'local').trim().toLowerCase();
+  const secretKey = String(process.env.CLERK_SECRET_KEY || '').trim();
+  const publishableKey = String(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '').trim();
+  return {
+    enabled: authProvider === 'clerk' && Boolean(secretKey && publishableKey),
+    secretKey,
+    publishableKey,
+  };
+}
+
+export const middleware = [
+  async (args, next) => {
+    const clerk = getClerkEnv();
+    if (!clerk.enabled) {
+      return next();
+    }
+    return clerkMiddleware({
+      secretKey: clerk.secretKey,
+      publishableKey: clerk.publishableKey,
+      signInUrl: '/sign-in',
+      signUpUrl: '/sign-up',
+    })(args, next);
+  },
+];
+
+export async function loader(args) {
+  const clerk = getClerkEnv();
+  if (!clerk.enabled) {
+    return {};
+  }
+  return rootAuthLoader(args, {
+    secretKey: clerk.secretKey,
+    publishableKey: clerk.publishableKey,
+    signInUrl: '/sign-in',
+    signUpUrl: '/sign-up',
+  });
+}
 
 function createQueryClient() {
   return new QueryClient({
@@ -45,6 +87,14 @@ export function Layout({ children }) {
 }
 
 export default function Root() {
+  const loaderData = useLoaderData();
+  if (loaderData?.clerkState) {
+    return (
+      <ClerkProvider loaderData={loaderData}>
+        <Outlet />
+      </ClerkProvider>
+    );
+  }
   return <Outlet />;
 }
 

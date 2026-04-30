@@ -1,12 +1,16 @@
+import { UserButton } from '@clerk/react';
+
 import { Button } from './ui/button.jsx';
 
 export default function AppHeader({
   isAuthenticated,
   username,
+  authSessionSource,
   githubUrl,
   navigate,
   onOpenRepos,
   onLogout,
+  onLogin,
   isNavActive,
 }) {
   return (
@@ -64,6 +68,12 @@ export default function AppHeader({
             >
               {username}
             </Button>
+            {authSessionSource === 'clerk' && (
+              <UserButton
+                afterSignOutUrl="/"
+                showName={false}
+              />
+            )}
             <Button
               type="button"
               variant="ghost"
@@ -109,7 +119,7 @@ export default function AppHeader({
               variant={isNavActive('login') ? 'secondary' : 'ghost'}
               className={`nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
               data-testid="topbar-login"
-              onClick={() => navigate('login')}
+              onClick={onLogin}
             >
               Login
             </Button>

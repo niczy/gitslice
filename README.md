@@ -284,9 +284,10 @@ must contain the core runtime settings for that target. In particular, when
 it will restart the API process.
 
 For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gitslice/web/.dev.vars.example) to `.dev.vars` and set:
-- `AUTH_PROVIDER=workos` when validating the WorkOS path
+- `AUTH_PROVIDER=clerk` for the default Clerk path, or `AUTH_PROVIDER=workos` when validating WorkOS
 - `ALLOW_DEV_LOGIN=1` only if you want username/dev login available as an explicit local fallback
 - `AUTH_SECRET`
+- `CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY` when testing Clerk
 - `WORKOS_*` when testing WorkOS
 
 The legacy `Authorization: User <username>` shortcut is disabled automatically when `DEPLOY_ENV=production`; set `ALLOW_LEGACY_USER_AUTH=1` only for explicit debugging or controlled dev/staging compatibility.

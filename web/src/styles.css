@@ -4161,6 +4161,40 @@ body {
   gap: 14px;
 }
 
+.clerk-profile-section {
+  max-width: 960px;
+  margin: 18px auto 0;
+  display: grid;
+  gap: 12px;
+}
+
+.clerk-profile-section-header {
+  display: grid;
+  gap: 4px;
+}
+
+.clerk-profile-section-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.clerk-profile-section-header p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.clerk-profile-surface {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.clerk-profile-surface .cl-rootBox,
+.clerk-profile-surface .cl-cardBox,
+.clerk-profile-surface .cl-userProfile-root {
+  width: 100%;
+  max-width: 100%;
+}
+
 .kv {
   display: grid;
   gap: 8px;

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@clerk/backend": "^3.4.2",
+    "@clerk/react": "^6.4.7",
     "@clerk/react-router": "^3.1.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@react-router/cloudflare": "7.13.2",
