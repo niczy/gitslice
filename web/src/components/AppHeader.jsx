@@ -8,8 +8,6 @@ export default function AppHeader({
   authSessionSource,
   githubUrl,
   navigate,
-  onOpenRepos,
-  onLogout,
   onLogin,
   isNavActive,
 }) {
@@ -22,24 +20,6 @@ export default function AppHeader({
       <div className="top-bar-actions">
         {isAuthenticated ? (
           <>
-            <Button
-              type="button"
-              variant={isNavActive('projects') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('projects') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-projects"
-              onClick={() => navigate('projects')}
-            >
-              Projects
-            </Button>
-            <Button
-              type="button"
-              variant={isNavActive('repos') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-repos"
-              onClick={onOpenRepos}
-            >
-              Repos
-            </Button>
             <Button
               type="button"
               variant={isNavActive('settings') ? 'secondary' : 'ghost'}
@@ -74,15 +54,6 @@ export default function AppHeader({
                 showName={false}
               />
             )}
-            <Button
-              type="button"
-              variant="ghost"
-              className="nav-link"
-              data-testid="topbar-logout"
-              onClick={onLogout}
-            >
-              Logout
-            </Button>
           </>
         ) : (
           <>

@@ -27,7 +27,7 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByText(/browser sign-in/i)).toBeVisible();
     await expect(page.getByText(/^dev$/i)).toBeVisible();
 
-    await page.getByTestId('topbar-repos').click();
+    await page.goto('/browser');
     await expect(page).toHaveURL(/\/browser(\?.*)?$/);
     await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester1/i);
 

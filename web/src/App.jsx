@@ -300,8 +300,6 @@ function App({
         authSessionSource={authSessionSource}
         githubUrl={githubUrl}
         navigate={navigate}
-        onOpenRepos={openBrowserHome}
-        onLogout={doLogout}
         onLogin={openLogin}
         isNavActive={isNavActive}
       />
