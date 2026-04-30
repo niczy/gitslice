@@ -26,6 +26,15 @@ function ensureProcessEnv(env) {
         '',
     ),
     AUTH_SECRET: String(env?.AUTH_SECRET || processLike.env.AUTH_SECRET || ''),
+    CLERK_PUBLISHABLE_KEY: String(env?.CLERK_PUBLISHABLE_KEY || processLike.env.CLERK_PUBLISHABLE_KEY || ''),
+    VITE_CLERK_PUBLISHABLE_KEY: String(
+      env?.VITE_CLERK_PUBLISHABLE_KEY ||
+        env?.CLERK_PUBLISHABLE_KEY ||
+        processLike.env.VITE_CLERK_PUBLISHABLE_KEY ||
+        '',
+    ),
+    CLERK_SECRET_KEY: String(env?.CLERK_SECRET_KEY || processLike.env.CLERK_SECRET_KEY || ''),
+    CLERK_JWT_KEY: String(env?.CLERK_JWT_KEY || processLike.env.CLERK_JWT_KEY || ''),
     WORKOS_CLIENT_ID: String(env?.WORKOS_CLIENT_ID || processLike.env.WORKOS_CLIENT_ID || ''),
     WORKOS_API_KEY: String(env?.WORKOS_API_KEY || processLike.env.WORKOS_API_KEY || ''),
     WORKOS_REDIRECT_URI: String(env?.WORKOS_REDIRECT_URI || processLike.env.WORKOS_REDIRECT_URI || ''),

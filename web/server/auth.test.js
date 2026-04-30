@@ -22,6 +22,14 @@ function configureWorkOSEnv() {
   process.env.WORKOS_REDIRECT_URI = 'https://agenttools.dev/auth/callback/workos';
 }
 
+function configureClerkEnv() {
+  process.env.AUTH_SECRET = 'test-auth-secret';
+  process.env.AUTH_PROVIDER = 'clerk';
+  process.env.CLERK_SECRET_KEY = 'sk_test_clerk';
+  process.env.CLERK_PUBLISHABLE_KEY = 'pk_test_clerk';
+  process.env.PUBLIC_WEB_BASE_URL = 'https://agenttools.dev';
+}
+
 async function createLocalSessionCookie(payload) {
   const value = await __test.createLocalSessionCookieValue(payload, process.env.AUTH_SECRET);
   return `gs_local_session=${value}`;
@@ -123,4 +131,38 @@ test('getProxyAuthorizationResult clears malformed local session cookies', async
   assert.equal(authResult.rejectUnauthenticated, true);
   assert.ok(authResult.setCookies.some((value) => value.startsWith('gs_local_session=')));
   assert.ok(authResult.setCookies.some((value) => value.includes('Max-Age=0')));
+});
+
+test('handleSessionRequest returns a cached local session for Clerk users', async () => {
+  configureClerkEnv();
+  global.fetch = async () => {
+    throw new Error('unexpected fetch');
+  };
+
+  const future = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  const refreshFuture = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const cookie = await createLocalSessionCookie({
+    source: 'clerk',
+    sessionId: 'sess_clerk_cached',
+    accessToken: 'access_clerk_cached',
+    refreshToken: 'refresh_clerk_cached',
+    accessTokenExpiresAt: future,
+    refreshTokenExpiresAt: refreshFuture,
+    user: {
+      username: 'nic',
+      name: 'Nic',
+      email: 'nic@example.com',
+      clerkUserId: 'user_clerk_123',
+    },
+  });
+
+  const response = await handleSessionRequest(new Request('https://agenttools.dev/auth/session', {
+    headers: { cookie },
+  }));
+  assert.equal(response.status, 200);
+  const session = await response.json();
+  assert.equal(session.source, 'clerk');
+  assert.equal(session.apiAuthSource, 'local_session');
+  assert.equal(session.user.username, 'nic');
+  assert.equal(session.user.clerkUserId, 'user_clerk_123');
 });

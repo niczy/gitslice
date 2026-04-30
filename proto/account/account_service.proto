@@ -178,6 +178,13 @@ service AccountService {
     };
   }
 
+  rpc EnsureClerkLocalIdentity(EnsureClerkLocalIdentityRequest) returns (EnsureClerkLocalIdentityResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/clerk/ensure-local-identity"
+      body: "*"
+    };
+  }
+
   rpc HandleWorkOSWebhook(google.api.HttpBody) returns (HandleWorkOSWebhookResponse) {
     option (google.api.http) = {
       post: "/v1/auth/workos/webhook"
@@ -700,6 +707,8 @@ message GetAuthContextResponse {
   string account_id = 8;
   string access_token_expires_at = 9;
   string refresh_token_expires_at = 10;
+  bool clerk_linked = 11;
+  string clerk_user_id = 12;
 }
 
 message DeleteSessionRequest {
@@ -767,6 +776,22 @@ message EnsureWorkOSLocalIdentityRequest {
 }
 
 message EnsureWorkOSLocalIdentityResponse {
+  User user = 1;
+  string account_id = 2;
+  bool created_account = 3;
+  bool created_user = 4;
+  bool linked_existing_user = 5;
+  bool claimed_account = 6;
+  AuthResponse local_auth = 7;
+}
+
+message EnsureClerkLocalIdentityRequest {
+  string signed_claims = 1;
+  string claim_token = 2;
+  bool issue_local_session = 3;
+}
+
+message EnsureClerkLocalIdentityResponse {
   User user = 1;
   string account_id = 2;
   bool created_account = 3;

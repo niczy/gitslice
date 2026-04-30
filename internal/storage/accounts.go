@@ -422,6 +422,32 @@ func (s *InMemoryStorage) GetUserByWorkOSUserID(ctx context.Context, workOSUserI
 	return nil, ErrEntryNotFound
 }
 
+func (s *InMemoryStorage) GetUserByClerkUserID(ctx context.Context, clerkUserID string) (*models.User, error) {
+	_ = ctx
+	clerkUserID = strings.TrimSpace(clerkUserID)
+	if clerkUserID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, user := range s.users {
+		if user == nil {
+			continue
+		}
+		if strings.TrimSpace(user.ClerkUserID) != clerkUserID {
+			continue
+		}
+		if user.RootPath == "" {
+			user.RootPath = rootPathForSlug(user.Username)
+		}
+		return copyUser(user), nil
+	}
+
+	return nil, ErrEntryNotFound
+}
+
 func (s *InMemoryStorage) ListUsers(ctx context.Context, limit, offset int) ([]*models.User, error) {
 	_ = ctx
 	if offset < 0 {
@@ -475,6 +501,7 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	accountID := strings.TrimSpace(user.AccountID)
 	authSource := strings.TrimSpace(user.AuthSource)
 	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
+	clerkUserID := strings.TrimSpace(user.ClerkUserID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -503,6 +530,13 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 			}
 		}
 	}
+	if clerkUserID != "" {
+		for _, existing := range s.users {
+			if existing != nil && strings.TrimSpace(existing.ClerkUserID) == clerkUserID {
+				return ErrEntryExists
+			}
+		}
+	}
 
 	newUser := *user
 	newUser.Username = username
@@ -510,6 +544,7 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	newUser.PrimaryEmail = email
 	newUser.AuthSource = authSource
 	newUser.WorkOSUserID = workOSUserID
+	newUser.ClerkUserID = clerkUserID
 	newUser.RootPath = rootPathForSlug(username)
 	if newUser.CreatedAt.IsZero() {
 		newUser.CreatedAt = now
@@ -538,6 +573,7 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	accountID := strings.TrimSpace(user.AccountID)
 	authSource := strings.TrimSpace(user.AuthSource)
 	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
+	clerkUserID := strings.TrimSpace(user.ClerkUserID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -568,6 +604,16 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 			}
 		}
 	}
+	if clerkUserID != "" {
+		for existingUsername, existing := range s.users {
+			if existingUsername == username || existing == nil {
+				continue
+			}
+			if strings.TrimSpace(existing.ClerkUserID) == clerkUserID {
+				return ErrEntryExists
+			}
+		}
+	}
 
 	if oldEmail := normalizeEmail(existing.PrimaryEmail); oldEmail != "" && oldEmail != email {
 		delete(s.userByEmail, oldEmail)
@@ -579,6 +625,7 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	updated.PrimaryEmail = email
 	updated.AuthSource = authSource
 	updated.WorkOSUserID = workOSUserID
+	updated.ClerkUserID = clerkUserID
 	updated.RootPath = rootPathForSlug(username)
 	if updated.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt

@@ -16,7 +16,7 @@ export function fetchWithAuth(url, options = {}) {
   const headers = new Headers(options.headers || {});
   const authSource = getSignedInAuthSource();
   const username = currentUsername();
-  if (username && authSource !== 'workos') {
+  if (username && authSource !== 'workos' && authSource !== 'clerk') {
     headers.set('Authorization', `User ${username}`);
   }
   return fetch(url, { ...options, credentials: 'include', headers });

@@ -21,14 +21,16 @@ function validateUsername(value) {
 function formatOAuthErrorMessage(authProvider, errorCode, detail) {
   const code = String(errorCode || '').trim();
   const safeDetail = String(detail || '').trim();
-  if (String(authProvider || '').trim().toLowerCase() === 'workos') {
+  const provider = String(authProvider || '').trim().toLowerCase();
+  if (provider === 'workos' || provider === 'clerk') {
+    const providerLabel = provider === 'clerk' ? 'Clerk' : 'WorkOS';
     if (safeDetail) {
-      return `WorkOS sign-in failed: ${safeDetail}`;
+      return `${providerLabel} sign-in failed: ${safeDetail}`;
     }
     if (code) {
-      return `WorkOS sign-in failed: ${code.replace(/[_-]+/g, ' ')}.`;
+      return `${providerLabel} sign-in failed: ${code.replace(/[_-]+/g, ' ')}.`;
     }
-    return 'WorkOS sign-in failed or was cancelled. Try again.';
+    return `${providerLabel} sign-in failed or was cancelled. Try again.`;
   }
   return 'Human browser sign-in is unavailable in this environment. Use a username instead.';
 }
@@ -50,8 +52,10 @@ export default function LoginPage({
   const [usernameError, setUsernameError] = useState('');
   const [oauthError, setOAuthError] = useState(() => String(initialOAuthError || '').trim());
   const [loading, setLoading] = useState(false);
-  const isWorkOS = String(authProvider || '').trim().toLowerCase() === 'workos';
-  const showPrimarySignIn = isWorkOS;
+  const normalizedProvider = String(authProvider || '').trim().toLowerCase();
+  const isProviderSignIn = normalizedProvider === 'workos' || normalizedProvider === 'clerk';
+  const providerLabel = normalizedProvider === 'clerk' ? 'Clerk' : 'WorkOS';
+  const showPrimarySignIn = isProviderSignIn;
 
   useEffect(() => {
     const nextError = String(initialOAuthError || '').trim();
@@ -70,15 +74,15 @@ export default function LoginPage({
       setOAuthError(formatOAuthErrorMessage(authProvider, errorCode, params.get('detail')));
       window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}`);
     }
-  }, [authProvider, isWorkOS]);
+  }, [authProvider, isProviderSignIn]);
 
   const inlineValidation = useMemo(() => validateUsername(value), [value]);
-  const signInTitle = 'Continue with WorkOS';
-  const signInDescription = isWorkOS
-    ? 'Recommended for normal usage. WorkOS handles the human sign-in flow.'
+  const signInTitle = `Continue with ${providerLabel}`;
+  const signInDescription = isProviderSignIn
+    ? `Recommended for normal usage. ${providerLabel} handles the human sign-in flow.`
     : 'Human browser sign-in is disabled in this environment.';
-  const signInBody = isWorkOS
-    ? 'Use the hosted WorkOS sign-in flow to continue. Social login, passwords, and future SSO live there.'
+  const signInBody = isProviderSignIn
+    ? `Use the hosted ${providerLabel} sign-in flow to continue. Social login, passwords, and future SSO live there.`
     : 'Use the explicit username fallback below for local or development testing.';
 
   return (
@@ -109,10 +113,10 @@ export default function LoginPage({
                 type="button"
                 variant="outline"
                 className="auth-provider w-full justify-start"
-                onClick={() => onOAuthLogin?.('workos')}
+                onClick={() => onOAuthLogin?.(normalizedProvider)}
               >
-                <span className="auth-provider-logo" aria-hidden="true">W</span>
-                <span>Continue with WorkOS</span>
+                <span className="auth-provider-logo" aria-hidden="true">{providerLabel.slice(0, 1)}</span>
+                <span>{`Continue with ${providerLabel}`}</span>
               </Button>
               {oauthError && <div className="panel-error" role="alert">{oauthError}</div>}
             </CardContent>

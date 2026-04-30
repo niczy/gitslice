@@ -17,7 +17,7 @@ export async function proxyRequest(request, suffix = '') {
   headers.set('x-forwarded-host', new URL(request.url).host);
   headers.set('x-forwarded-proto', new URL(request.url).protocol.replace(':', ''));
   const responseCookies = [];
-  if (!headers.has('Authorization') && getAuthProvider() === 'workos') {
+  if (!headers.has('Authorization') && ['workos', 'clerk'].includes(getAuthProvider())) {
     const authResult = await getProxyAuthorizationResult(request);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {

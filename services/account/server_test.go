@@ -51,6 +51,20 @@ func workOSWebhookCtx(ctx context.Context, payload []byte, secret string, at tim
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("workos-signature", "t="+timestamp+",v1="+signature))
 }
 
+func signClerkBridgeClaims(t *testing.T, secret string, claims clerkBridgeClaims) string {
+	t.Helper()
+
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("json.Marshal(clerkBridgeClaims) failed: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(encoded))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return encoded + "." + signature
+}
+
 func assertHomeSliceProvisioned(t *testing.T, ctx context.Context, st storage.Storage, username string) {
 	t.Helper()
 
@@ -248,6 +262,52 @@ func TestGetAuthContextReportsWorkOSLinkage(t *testing.T) {
 	}
 }
 
+func TestGetAuthContextReportsClerkLinkage(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_clerk_123",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "clerk-user",
+		AccountID:    account.AccountID,
+		Name:         "Clerk User",
+		PrimaryEmail: "clerk@example.com",
+		AuthSource:   "clerk",
+		ClerkUserID:  "user_clerk_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	accessExpiresAt := time.Now().Add(time.Hour)
+	refreshExpiresAt := time.Now().Add(24 * time.Hour)
+	if err := st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID:             "sess-clerk-local",
+		Username:              "clerk-user",
+		Token:                 "gs_clerk_local",
+		RefreshToken:          "gsr_clerk_local",
+		CreatedAt:             time.Now(),
+		LastSeenAt:            time.Now(),
+		AccessTokenExpiresAt:  &accessExpiresAt,
+		RefreshTokenExpiresAt: &refreshExpiresAt,
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+
+	srv := &accountServiceServer{st: st}
+	authCtx, err := srv.GetAuthContext(bearerCtx(ctx, "gs_clerk_local"), &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		t.Fatalf("GetAuthContext failed: %v", err)
+	}
+	if !authCtx.GetClerkLinked() || authCtx.GetClerkUserId() != "user_clerk_123" || authCtx.GetAccountId() != account.AccountID {
+		t.Fatalf("unexpected Clerk-linked auth context: %#v", authCtx)
+	}
+}
+
 func TestResetPasswordFlow(t *testing.T) {
 	ctx := context.Background()
 	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
@@ -345,6 +405,39 @@ func TestEnsureWorkOSLocalIdentityCreatesNewLocalUser(t *testing.T) {
 		t.Fatalf("unexpected username: %#v", resp)
 	}
 	assertHomeSliceProvisioned(t, ctx, srv.st, "alice-workos")
+}
+
+func TestEnsureClerkLocalIdentityCreatesNewLocalUser(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "clerk")
+	t.Setenv("AUTH_SECRET", "test-auth-secret")
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+	now := time.Now()
+	signedClaims := signClerkBridgeClaims(t, "test-auth-secret", clerkBridgeClaims{
+		Provider:          "clerk",
+		UserID:            "user_clerk_new_123",
+		SessionID:         "sess_clerk_123",
+		Email:             "alice.clerk@example.com",
+		Name:              "Alice Clerk",
+		PreferredUsername: "alice-clerk",
+		IssuedAtMs:        now.UnixMilli(),
+		ExpiresAtMs:       now.Add(2 * time.Minute).UnixMilli(),
+	})
+
+	resp, err := srv.EnsureClerkLocalIdentity(ctx, &accountv1.EnsureClerkLocalIdentityRequest{
+		SignedClaims:      signedClaims,
+		IssueLocalSession: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureClerkLocalIdentity failed: %v", err)
+	}
+	if resp.GetUser().GetUsername() != "alice-clerk" {
+		t.Fatalf("expected created username alice-clerk, got %#v", resp.GetUser())
+	}
+	if resp.GetLocalAuth() == nil || resp.GetLocalAuth().GetAccessToken() == "" {
+		t.Fatalf("expected local auth session from Clerk exchange, got %#v", resp)
+	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "alice-clerk")
 }
 
 func TestEnsureWorkOSLocalIdentityCanIssueRefreshableLocalSession(t *testing.T) {
@@ -648,6 +741,38 @@ func TestListAuthMethodsSynthesizesPasswordAndWorkOSMethods(t *testing.T) {
 	}
 	if resp.GetMethods()[0].GetId() != "oauth:workos" && resp.GetMethods()[1].GetId() != "oauth:workos" {
 		t.Fatalf("expected WorkOS method, got %#v", resp.GetMethods())
+	}
+}
+
+func TestListAuthMethodsSynthesizesClerkMethods(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "clerk-methods",
+		Name:         "Clerk Methods",
+		PrimaryEmail: "clerk-methods@example.com",
+		PasswordHash: "hashed-password",
+		AuthSource:   "clerk",
+		ClerkUserID:  "user_clerk_methods",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+	resp, err := srv.ListAuthMethods(userCtx(ctx, "clerk-methods"), &accountv1.ListAuthMethodsRequest{})
+	if err != nil {
+		t.Fatalf("ListAuthMethods failed: %v", err)
+	}
+	if len(resp.GetMethods()) != 2 {
+		t.Fatalf("expected password + Clerk methods, got %#v", resp.GetMethods())
+	}
+	foundClerk := false
+	for _, method := range resp.GetMethods() {
+		if method.GetId() == "oauth:clerk" && method.GetProvider() == "clerk" {
+			foundClerk = true
+		}
+	}
+	if !foundClerk {
+		t.Fatalf("expected Clerk auth method, got %#v", resp.GetMethods())
 	}
 }
 

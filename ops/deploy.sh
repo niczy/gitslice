@@ -221,6 +221,8 @@ const vars = { ...(envConfig.vars || {}) };
 const workerVars = {
   AUTH_PROVIDER: process.env.AUTH_PROVIDER || '',
   ALLOW_DEV_LOGIN: process.env.ALLOW_DEV_LOGIN || '',
+  CLERK_PUBLISHABLE_KEY: process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '',
+  VITE_CLERK_PUBLISHABLE_KEY: process.env.VITE_CLERK_PUBLISHABLE_KEY || process.env.CLERK_PUBLISHABLE_KEY || '',
   WORKOS_CLIENT_ID: process.env.WORKOS_CLIENT_ID || '',
   WORKOS_REDIRECT_URI: process.env.WORKOS_REDIRECT_URI || '',
   WORKOS_JWKS_URL: process.env.WORKOS_JWKS_URL || '',
@@ -267,8 +269,16 @@ sync_worker_secrets() {
       exit 1
     fi
   fi
+  if [ "$auth_provider" = "clerk" ]; then
+    if [ -z "${CLERK_PUBLISHABLE_KEY:-}" ] || [ -z "${CLERK_SECRET_KEY:-}" ]; then
+      echo "CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY must be set when AUTH_PROVIDER=clerk" >&2
+      exit 1
+    fi
+  fi
 
   sync_worker_secret "AUTH_SECRET" "${AUTH_SECRET:-}"
+  sync_worker_secret "CLERK_SECRET_KEY" "${CLERK_SECRET_KEY:-}"
+  sync_worker_secret "CLERK_JWT_KEY" "${CLERK_JWT_KEY:-}"
   sync_worker_secret "WORKOS_API_KEY" "${WORKOS_API_KEY:-}"
   sync_worker_secret "WORKOS_COOKIE_PASSWORD" "${WORKOS_COOKIE_PASSWORD:-}"
 }
@@ -318,6 +328,11 @@ validate_api_env() {
 
   if [ "$auth_provider" = "workos" ]; then
     [ -n "${WORKOS_CLIENT_ID:-}" ] || missing+=("WORKOS_CLIENT_ID")
+  fi
+  if [ "$auth_provider" = "clerk" ]; then
+    [ -n "${AUTH_SECRET:-}" ] || missing+=("AUTH_SECRET")
+    [ -n "${CLERK_SECRET_KEY:-}" ] || missing+=("CLERK_SECRET_KEY")
+    [ -n "${CLERK_PUBLISHABLE_KEY:-}" ] || missing+=("CLERK_PUBLISHABLE_KEY")
   fi
 
   if [ "${#missing[@]}" -gt 0 ]; then

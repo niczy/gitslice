@@ -190,9 +190,9 @@ type PostgresTargetSummary struct {
 
 func (c *Config) Validate() error {
 	switch strings.ToLower(strings.TrimSpace(c.AuthProvider)) {
-	case "", "local", "workos":
+	case "", "local", "workos", "clerk":
 	default:
-		return fmt.Errorf("AUTH_PROVIDER must be one of: local, workos")
+		return fmt.Errorf("AUTH_PROVIDER must be one of: local, workos, clerk")
 	}
 	if !strings.EqualFold(c.StorageType, "postgres") {
 		return nil
