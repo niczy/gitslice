@@ -1,4 +1,5 @@
 import { createRequestHandler } from '@react-router/cloudflare';
+import { RouterContextProvider } from 'react-router';
 import * as build from './build/server/index.js';
 
 function ensureProcessEnv(env) {
@@ -44,9 +45,23 @@ function ensureProcessEnv(env) {
   });
 }
 
+function createLoadContext({ request, context }) {
+  const loadContext = new RouterContextProvider();
+  Object.assign(loadContext, {
+    cloudflare: {
+      ...context.cloudflare,
+      cf: request.cf,
+    },
+    env: context.cloudflare.env,
+    cf: request.cf,
+  });
+  return loadContext;
+}
+
 const handleAppRequest = createRequestHandler({
   build,
   mode: process.env.NODE_ENV || 'production',
+  getLoadContext: createLoadContext,
 });
 
 function toMutableRequest(request, { stripIfNoneMatch = false } = {}) {

@@ -14,7 +14,7 @@ log() {
 
 usage() {
   cat <<'EOF'
-Usage: ops/deploy.sh --env <staging|production> --app <web|api>
+Usage: ops/deploy.sh --env <staging|production> --app <web|api|all>
 
 Deploys a specific application using the environment file for that deployment
 target.
@@ -23,6 +23,7 @@ Examples:
   ./ops/deploy.sh --env staging --app web
   ./ops/deploy.sh --env production --app web
   ./ops/deploy.sh --env staging --app api
+  ./ops/deploy.sh --env staging --app all
 
 Default env files:
   staging:    ops/.env.staging
@@ -263,7 +264,6 @@ sync_worker_secrets() {
 
   sync_worker_secret "AUTH_SECRET" "${AUTH_SECRET:-}"
   sync_worker_secret "CLERK_SECRET_KEY" "${CLERK_SECRET_KEY:-}"
-  sync_worker_secret "CLERK_JWT_KEY" "${CLERK_JWT_KEY:-}"
   sync_worker_secret "WORKOS_API_KEY" "${WORKOS_API_KEY:-}"
   sync_worker_secret "WORKOS_COOKIE_PASSWORD" "${WORKOS_COOKIE_PASSWORD:-}"
 }
@@ -351,6 +351,10 @@ deploy_web() {
   log "Deploying web app for $ENV_NAME"
   (
     cd "$REPO_ROOT/web"
+    if [ ! -d node_modules ] || ! npm ls --depth=0 >/dev/null 2>&1; then
+      log "Installing web dependencies..."
+      npm ci
+    fi
     npm run build
     npx wrangler deploy --config "$worker_config" --env "$ENV_NAME"
   )
@@ -401,6 +405,12 @@ deploy_api() {
   log "API deploy finished for $ENV_NAME on ${bind_addr}:${port}"
 }
 
+verify_target_deploy() {
+  log "Verifying ${ENV_NAME} deployment"
+  "$REPO_ROOT/ops/verify_deploy.sh" --env "$ENV_NAME"
+  log "${ENV_NAME} deployment verification passed"
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --env)
@@ -448,9 +458,9 @@ case "$ENV_NAME" in
 esac
 
 case "$APP_NAME" in
-  web|api) ;;
+  web|api|all) ;;
   *)
-    echo "Unsupported --app value: $APP_NAME (supported: web, api)" >&2
+    echo "Unsupported --app value: $APP_NAME (supported: web, api, all)" >&2
     usage >&2
     exit 1
     ;;
@@ -475,5 +485,10 @@ case "$APP_NAME" in
     ;;
   api)
     deploy_api
+    ;;
+  all)
+    deploy_api
+    deploy_web
+    verify_target_deploy
     ;;
 esac
