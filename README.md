@@ -180,8 +180,9 @@ OBJECT_STORE_TYPE=filesystem \
 OBJECT_STORE_DIR="$PWD/.objectstore" \
 CORE_SERVICE_PORT=50051 ./core_server
 
-# Install the latest CLI from GitHub
-go install github.com/niczy/gitslice/gs@latest
+# Install the latest CLI from GitHub.
+# Requires Go, git, and protoc.
+curl -fsSL https://raw.githubusercontent.com/niczy/gitslice/main/install-gs.sh | sh
 
 # Run CLI (override addresses if needed)
 ./bin/gs --help
