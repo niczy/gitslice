@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
@@ -34,6 +35,7 @@ func TestConflictDetection(t *testing.T) {
 			t.Fatalf("CreateSliceFromFolder(%s): %v", sid, err)
 		}
 	}
+	seedBenchmarkSliceFileState(t, ctx, sliceB, sharedFile, []byte("slice B content\n"))
 
 	// Both slices create a changeset touching the same file.
 	csA, err := benchSliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
@@ -101,12 +103,12 @@ done:
 }
 
 // TestConflictResolution verifies that after a conflict is resolved via the
-// admin service, the preferred slice can merge while the other remains blocked.
+// admin service, both slices share normalized content and can merge.
 //
 // The setup directly pre-registers both slices as owners of the same file,
 // which is the correct way to model the "two teams claim the same directory"
-// scenario.  The admin then resolves the conflict in favour of B, after which
-// B can merge and A is blocked.
+// scenario. The admin then resolves the conflict in favour of B by normalizing
+// A to B's content.
 func TestConflictResolution(t *testing.T) {
 	ctx := userCtx(context.Background())
 	ts := time.Now().UnixNano()
@@ -128,6 +130,8 @@ func TestConflictResolution(t *testing.T) {
 			t.Fatalf("CreateSlice(%s): %v", sid, err)
 		}
 	}
+	seedBenchmarkSliceFileState(t, ctx, sliceA, sharedFile, []byte("slice A content\n"))
+	seedBenchmarkSliceFileState(t, ctx, sliceB, sharedFile, []byte("slice B content\n"))
 
 	// Confirm the conflict is visible via the admin API.
 	conflictsResp, err := benchAdminClient.GetConflicts(ctx, &adminv1.ConflictsRequest{})
@@ -171,11 +175,12 @@ func TestConflictResolution(t *testing.T) {
 		t.Fatalf("expected B to succeed after resolution, got %v", mergeB.Status)
 	}
 
-	// A should now conflict (B merged and owns the file).
+	// A is no longer content-conflicted because resolution normalized all owners
+	// to B's content.
 	csA, err := benchSliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
 		SliceId:       sliceA,
 		ModifiedFiles: []string{sharedFile},
-		Message:       "change from A (should conflict)",
+		Message:       "change from A after normalization",
 	})
 	if err != nil {
 		t.Fatalf("CreateChangeset(A): %v", err)
@@ -184,8 +189,8 @@ func TestConflictResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeChangeset(A): %v", err)
 	}
-	if mergeA.Status != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
-		t.Fatalf("expected A to conflict after B took ownership, got %v", mergeA.Status)
+	if mergeA.Status != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected A to succeed after conflict normalization, got %v", mergeA.Status)
 	}
 }
 
@@ -200,7 +205,7 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 	hotFile := fmt.Sprintf("hotfile/shared-%d.go", ts)
 
 	type csEntry struct {
-		sliceID    string
+		sliceID     string
 		changesetID string
 	}
 	entries := make([]csEntry, numSlices)
@@ -217,6 +222,7 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateSliceFromFolder(%s): %v", sid, err)
 		}
+		seedBenchmarkSliceFileState(t, ctx, sid, hotFile, []byte(fmt.Sprintf("hot change from slice %d\n", i)))
 
 		csResp, err := benchSliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
 			SliceId:       sid,
@@ -258,6 +264,7 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 
 	successCount := 0
 	conflictCount := 0
+	locked := make([]result, 0)
 	errorCount := 0
 	for r := range results {
 		if r.err != nil {
@@ -270,14 +277,36 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 			successCount++
 		case slicev1.MergeStatus_MERGE_STATUS_CONFLICT:
 			conflictCount++
+		case slicev1.MergeStatus_MERGE_STATUS_LOCKED:
+			locked = append(locked, r)
 		default:
 			t.Logf("merge %d unexpected status: %v", r.idx, r.status)
 			errorCount++
 		}
 	}
 
-	t.Logf("Hot-file concurrent merge results: success=%d conflict=%d error=%d",
-		successCount, conflictCount, errorCount)
+	for _, r := range locked {
+		resp, err := benchSliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{
+			ChangesetId: entries[r.idx].changesetID,
+		})
+		if err != nil {
+			t.Logf("retry merge %d error: %v", r.idx, err)
+			errorCount++
+			continue
+		}
+		switch resp.GetStatus() {
+		case slicev1.MergeStatus_MERGE_STATUS_SUCCESS:
+			successCount++
+		case slicev1.MergeStatus_MERGE_STATUS_CONFLICT:
+			conflictCount++
+		default:
+			t.Logf("retry merge %d unexpected status: %v", r.idx, resp.GetStatus())
+			errorCount++
+		}
+	}
+
+	t.Logf("Hot-file concurrent merge results: success=%d conflict=%d locked=%d error=%d",
+		successCount, conflictCount, len(locked), errorCount)
 
 	if errorCount > 0 {
 		t.Errorf("unexpected errors during concurrent hot-file merges: %d", errorCount)
@@ -287,5 +316,23 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 	}
 	if conflictCount != numSlices-1 {
 		t.Errorf("expected %d conflicts, got %d", numSlices-1, conflictCount)
+	}
+}
+
+func seedBenchmarkSliceFileState(t *testing.T, ctx context.Context, sliceID, filePath string, content []byte) {
+	t.Helper()
+	manifest, err := storage.WriteSliceFileManifest(ctx, benchStorage, sliceID, filePath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest(%s, %s): %v", sliceID, filePath, err)
+	}
+	if err := benchStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     manifest.TotalSize,
+		Hash:     manifest.Hash,
+	}); err != nil {
+		t.Fatalf("AddEntry(%s, %s): %v", sliceID, filePath, err)
 	}
 }

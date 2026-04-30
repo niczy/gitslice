@@ -146,7 +146,15 @@ func handleSliceRestore(ctx context.Context, cli *CLI, args []string) {
 		if err := restoreTrackedCheckoutFile(ctx, cli, checkoutIndex, cache, tracked); err != nil {
 			commandFatalf("RESTORE_FAILED", false, "", "Failed to restore %s: %v", entry.Path, err)
 		}
+		if err := refreshRestoredCheckoutFileMetadata(checkoutIndex, tracked.Path); err != nil {
+			commandFatalf("RESTORE_FAILED", false, "", "Failed to refresh checkout metadata for %s: %v", entry.Path, err)
+		}
 		restoredTracked++
+	}
+	if restoredTracked > 0 {
+		if err := writeCheckoutIndex(".", checkoutIndex); err != nil {
+			commandFatalf("RESTORE_FAILED", false, "", "Failed to update checkout metadata: %v", err)
+		}
 	}
 	if err := removeEmptyCheckoutDirs("."); err != nil {
 		commandFatalf("RESTORE_FAILED", false, "", "Failed to clean up empty directories: %v", err)
@@ -358,6 +366,24 @@ func restoreTrackedCheckoutFile(
 		}
 	}
 	return os.WriteFile(targetPath, content, mode)
+}
+
+func refreshRestoredCheckoutFileMetadata(index *localCheckoutIndex, path string) error {
+	if index == nil {
+		return nil
+	}
+	for i := range index.Files {
+		if index.Files[i].Path != path {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(".", path))
+		if err != nil {
+			return err
+		}
+		populateTrackedFileLocalMetadata(&index.Files[i], info)
+		return nil
+	}
+	return nil
 }
 
 func buildCheckoutStatePatch(path string, before, after checkoutFileState) (string, int, int, bool) {

@@ -1,4 +1,4 @@
-.PHONY: install proto build build-core build-cli start-servers stop-servers test clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-core build-cli start-servers start-servers-memory start-servers-postgres start-servers-postgres-file start-servers-postgres-r2 restart-servers restart-servers-memory restart-servers-postgres restart-servers-postgres-file restart-servers-postgres-r2 stop-servers dev-status test clean install_gs web-install web-build web-test-e2e setup-googleapis
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
@@ -7,8 +7,7 @@ GOOGLEAPIS_DIR := third_party/googleapis
 # This commit is from 2024-05-13, matching our genproto dependency date
 GOOGLEAPIS_COMMIT := 0d38cae77aba1a9da2b4d5f27c3eabf7e48cf0e3
 CORE_SERVICE_PORT ?= 50051
-WEB_PORTS ?= 5173 4173 5174
-STOP_SERVER_PORTS := $(CORE_SERVICE_PORT) $(WEB_PORTS)
+WEB_PORT ?= 5173
 VITE_FILE_API_PROXY_TARGET ?= http://localhost:$(CORE_SERVICE_PORT)
 
 install:
@@ -59,39 +58,29 @@ build-core: proto
 build-cli: proto
 	go build -o gs_cli/gs_cli ./gs_cli/
 
-start-servers: build
-	@$(MAKE) stop-servers
-	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) ./core_server &
-	cd web && VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) npm run dev &
-	@echo "Services started (core gRPC + HTTP on :$(CORE_SERVICE_PORT), web). Press Ctrl+C to stop."
+start-servers start-servers-memory:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage memory
+
+start-servers-postgres start-servers-postgres-file:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage postgres --object-store filesystem
+
+start-servers-postgres-r2:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage postgres --object-store r2
+
+restart-servers restart-servers-memory:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/restart-servers.sh --storage memory
+
+restart-servers-postgres restart-servers-postgres-file:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/restart-servers.sh --storage postgres --object-store filesystem
+
+restart-servers-postgres-r2:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/restart-servers.sh --storage postgres --object-store r2
 
 stop-servers:
-	@tool=""; \
-	if command -v lsof >/dev/null 2>&1; then \
-		tool="lsof"; \
-	elif command -v ss >/dev/null 2>&1; then \
-		tool="ss"; \
-	elif command -v netstat >/dev/null 2>&1; then \
-		tool="netstat"; \
-	elif command -v fuser >/dev/null 2>&1; then \
-		tool="fuser"; \
-	else \
-		echo "Warning: no supported port-inspection tool found (lsof/ss/netstat/fuser). Skipping stop-servers."; \
-		exit 0; \
-	fi; \
-	for port in $(STOP_SERVER_PORTS); do \
-		pids=""; \
-		case "$$tool" in \
-			lsof) pids=$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true) ;; \
-			ss) pids=$$(ss -ltnp "sport = :$$port" 2>/dev/null | awk -F'pid=' 'NF>1 {for (i=2;i<=NF;i++){split($$i,a,\","); if (a[1] ~ /^[0-9]+$$/) print a[1]}}' | sort -u | tr '\n' ' ') ;; \
-			netstat) pids=$$(netstat -ltnp 2>/dev/null | awk -v p=":$$port" '$$4 ~ p {split($$7,a,"/"); if (a[1] ~ /^[0-9]+$$/) print a[1]}' | sort -u | tr '\n' ' ') ;; \
-			fuser) pids=$$(fuser -n tcp $$port 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$$' | sort -u | tr '\n' ' ') ;; \
-		esac; \
-		if [ -n "$$pids" ]; then \
-			echo "Stopping processes on port $$port: $$pids"; \
-			kill $$pids 2>/dev/null || true; \
-		fi; \
-	done
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) dev/stop-servers.sh
+
+dev-status:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) dev/dev-servers.sh status
 
 test: install proto
 	go test ./...

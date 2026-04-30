@@ -133,6 +133,29 @@ go build -o gs_cli/gs_cli ./gs_cli/
 ### Run
 
 ```bash
+# Start local dev servers with in-memory storage
+make start-servers
+
+# Start local dev servers with Postgres metadata + filesystem object storage
+POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable' \
+  make start-servers-postgres-file
+
+# For local Postgres DSNs, the dev script creates the database if missing.
+# Core then runs the embedded schema migrations during storage startup.
+
+# Start local dev servers with Postgres metadata + R2 object storage
+POSTGRES_DSN='postgres://...' \
+R2_ENDPOINT='https://<account-id>.r2.cloudflarestorage.com' \
+R2_BUCKET='gitslice-dev' \
+R2_PREFIX='dev' \
+R2_ACCESS_KEY_ID='...' \
+R2_SECRET_ACCESS_KEY='...' \
+  make start-servers-postgres-r2
+
+# Restart or stop local dev servers
+make restart-servers
+make stop-servers
+
 # Run core server (gRPC + gateway on :50051)
 CORE_SERVICE_PORT=50051 ./core_server
 
