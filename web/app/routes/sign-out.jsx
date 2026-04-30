@@ -1,24 +1,49 @@
+import { handleDevLogoutRequest } from '../../server/auth.js';
 import { useEffect } from 'react';
 import { useLoaderData } from 'react-router';
-import { ClerkProvider, useClerk } from '@clerk/react-router';
+import { ClerkLoaded, ClerkLoading, useClerk } from '@clerk/react';
 
 export async function loader({ request }) {
   const url = new URL(request.url);
-  return {
-    publishableKey: String(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '').trim(),
+  const secretKey = String(process.env.CLERK_SECRET_KEY || '').trim();
+  const publishableKey = String(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '').trim();
+  const localLogoutResponse = handleDevLogoutRequest(request);
+  const headers = new Headers();
+  for (const cookie of localLogoutResponse.headers.getSetCookie?.() || []) {
+    headers.append('Set-Cookie', cookie);
+  }
+  return Response.json({
+    configured: Boolean(secretKey && publishableKey),
     redirectURL: String(url.searchParams.get('redirect_url') || '/').trim() || '/',
-  };
+  }, { headers });
+}
+
+export function headers({ loaderHeaders }) {
+  const setCookie = loaderHeaders.getSetCookie?.() || [];
+  return setCookie.length > 0 ? { 'Set-Cookie': setCookie } : {};
 }
 
 function ClerkSignOutEffect({ redirectURL }) {
   const clerk = useClerk();
 
   useEffect(() => {
-    clerk.signOut({ redirectUrl: redirectURL }).catch(() => {
+    const fallback = window.setTimeout(() => {
       if (typeof window !== 'undefined') {
         window.location.assign(redirectURL);
       }
+    }, 5000);
+
+    Promise.resolve(clerk.signOut({ redirectUrl: redirectURL })).catch(() => {
+      if (typeof window !== 'undefined') {
+        window.location.assign(redirectURL);
+      }
+    }).finally(() => {
+      window.clearTimeout(fallback);
     });
+
+    return () => {
+      window.clearTimeout(fallback);
+    };
   }, [clerk, redirectURL]);
 
   return (
@@ -29,8 +54,8 @@ function ClerkSignOutEffect({ redirectURL }) {
 }
 
 export default function ClerkSignOutRoute() {
-  const { publishableKey, redirectURL } = useLoaderData();
-  if (!publishableKey) {
+  const { configured, redirectURL } = useLoaderData();
+  if (!configured) {
     return (
       <main className="section">
         <div className="panel-empty">Signing out…</div>
@@ -38,8 +63,15 @@ export default function ClerkSignOutRoute() {
     );
   }
   return (
-    <ClerkProvider publishableKey={publishableKey}>
-      <ClerkSignOutEffect redirectURL={redirectURL} />
-    </ClerkProvider>
+    <>
+      <ClerkLoading>
+        <main className="section">
+          <div className="panel-empty">Signing out…</div>
+        </main>
+      </ClerkLoading>
+      <ClerkLoaded>
+        <ClerkSignOutEffect redirectURL={redirectURL} />
+      </ClerkLoaded>
+    </>
   );
 }

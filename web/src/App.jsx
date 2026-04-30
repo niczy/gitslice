@@ -224,6 +224,15 @@ function App({
     startOAuthSignIn(providerId);
   }, []);
 
+  const openLogin = useCallback(() => {
+    const provider = String(initialAuthConfig.authProvider || '').trim().toLowerCase();
+    if (provider === 'workos' || provider === 'clerk') {
+      startOAuthSignIn(provider);
+      return;
+    }
+    navigate('login');
+  }, [initialAuthConfig.authProvider, navigate]);
+
   const isAuthenticated = Boolean(username);
   const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
   const isAdminUser = (username || '').toLowerCase() === 'admin';
@@ -258,8 +267,8 @@ function App({
     setReturnToPage(activePage);
     setReturnToCommitHash(diffCommitHash);
     setReturnToChangesetId(diffChangesetId);
-    navigate('login');
-  }, [activePage, diffChangesetId, diffCommitHash, navigate]);
+    openLogin();
+  }, [activePage, diffChangesetId, diffCommitHash, openLogin]);
 
   const isNavActive = (item) => {
     if (item === 'repos') {
@@ -288,10 +297,12 @@ function App({
       <AppHeader
         isAuthenticated={isAuthenticated}
         username={username}
+        authSessionSource={authSessionSource}
         githubUrl={githubUrl}
         navigate={navigate}
         onOpenRepos={openBrowserHome}
         onLogout={doLogout}
+        onLogin={openLogin}
         isNavActive={isNavActive}
       />
 
@@ -329,7 +340,12 @@ function App({
           />
         )}
         {activePage === 'profile' && routeAccessState === 'allowed' && (
-          <ProfilePage username={username} onLogout={doLogout} onRequireLogin={() => navigate('login')} />
+          <ProfilePage
+            username={username}
+            authSessionSource={authSessionSource}
+            onLogout={doLogout}
+            onRequireLogin={openLogin}
+          />
         )}
         {activePage === 'settings' && routeAccessState === 'allowed' && (
           <SettingsPage

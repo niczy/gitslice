@@ -1,6 +1,8 @@
 import { index, route } from '@react-router/dev/routes';
 
 export default [
+  route('sign-in/sso-callback', 'routes/sign-in.sso-callback.jsx'),
+  route('sign-up/sso-callback', 'routes/sign-up.sso-callback.jsx'),
   route('sign-in', 'routes/sign-in.jsx'),
   route('sign-up', 'routes/sign-up.jsx'),
   route('sign-out', 'routes/sign-out.jsx'),

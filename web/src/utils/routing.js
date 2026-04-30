@@ -84,7 +84,7 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
   if (pathname === '/docs') {
     return { page: 'docs', commitHash: '', changesetId: '' };
   }
-  if (pathname === '/profile') {
+  if (pathname === '/profile' || pathname.startsWith('/profile/')) {
     return { page: 'profile', commitHash: '', changesetId: '' };
   }
   if (pathname === '/projects') {
