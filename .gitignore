@@ -44,6 +44,7 @@ web/node_modules/
 web/dist/
 web/build/
 web/.dev.vars
+web/.react-router/
 web/.wrangler/
 web/playwright-report/
 web/test-results/

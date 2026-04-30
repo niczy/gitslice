@@ -27,6 +27,43 @@ func addTestDirectoryRecords(t *testing.T, workdir string, index *localCheckoutI
 	}
 }
 
+func TestCheckoutTrackedFileMatchesRecreatedSameContent(t *testing.T) {
+	workdir := t.TempDir()
+	path := filepath.Join(workdir, "README.md")
+	content := []byte("same content\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write original file: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat original file: %v", err)
+	}
+	tracked := checkoutTrackedFile{
+		Path: "README.md",
+		Hash: storage.HashFileManifestContent(content, false, ""),
+	}
+	populateTrackedFileLocalMetadata(&tracked, info)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove original file: %v", err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("recreate file: %v", err)
+	}
+	recreatedInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat recreated file: %v", err)
+	}
+
+	matches, err := checkoutTrackedFileMatches(path, recreatedInfo, tracked)
+	if err != nil {
+		t.Fatalf("checkoutTrackedFileMatches failed: %v", err)
+	}
+	if !matches {
+		t.Fatalf("expected recreated file with same content and mode to match checkout index")
+	}
+}
+
 func TestDetectNoGitModifiedFiles(t *testing.T) {
 	workdir := t.TempDir()
 

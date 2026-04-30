@@ -497,8 +497,13 @@ func checkoutTrackedFileMatches(fullPath string, info os.FileInfo, original chec
 
 	currentDevice, currentInode := fileStatDeviceInode(info)
 	if original.Device != 0 && original.Inode != 0 && currentDevice != 0 && currentInode != 0 {
-		if currentDevice != original.Device || currentInode != original.Inode {
-			return false, nil
+		if currentDevice == original.Device &&
+			currentInode == original.Inode &&
+			original.ModifiedTimeUnixNano != 0 &&
+			info.Size() == original.Size &&
+			info.ModTime().UnixNano() == original.ModifiedTimeUnixNano &&
+			(original.ChangeTimeUnixNano == 0 || fileChangeTimeUnixNano(info) == original.ChangeTimeUnixNano) {
+			return true, nil
 		}
 	}
 
