@@ -209,6 +209,7 @@ DEPLOY_ENV=production|staging
 CORE_BIND_ADDR=127.0.0.1
 PUBLIC_WEB_BASE_URL=https://gitslice.io
 PUBLIC_API_BASE_URL=https://api.gitslice.io
+# Optional; leave blank to inherit PUBLIC_API_BASE_URL.
 VITE_FILE_API_BASE_URL=
 WEB_DEPLOY_TARGET=cloudflare_worker
 WEB_COMPAT_RUNTIME=worker
@@ -269,6 +270,7 @@ environment file and exports `CLOUDFLARE_API_TOKEN` before running Wrangler:
 ./ops/deploy.sh --env production --app web
 ./ops/deploy.sh --env staging --app api
 ./ops/deploy.sh --env production --app api
+./ops/deploy.sh --env staging --app all
 ```
 
 By default the wrapper reads:
@@ -283,6 +285,14 @@ must contain the core runtime settings for that target. In particular, when
 `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` to be set before
 it will restart the API process.
 
+`--app all` deploys the API first, then the web Worker, then runs
+`ops/verify_deploy.sh --env <target>` so you can do a one-shot target deploy
+and verification:
+
+```bash
+./ops/deploy.sh --env staging --app all
+```
+
 For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gitslice/web/.dev.vars.example) to `.dev.vars` and set:
 - `AUTH_PROVIDER=clerk` for the default Clerk path, or `AUTH_PROVIDER=workos` when validating WorkOS
 - `ALLOW_DEV_LOGIN=1` only if you want username/dev login available as an explicit local fallback
@@ -295,6 +305,10 @@ The legacy `Authorization: User <username>` shortcut is disabled automatically w
 When using WorkOS webhooks, point WorkOS at `/v1/auth/workos/webhook` on the API host and set `WORKOS_WEBHOOK_SECRET` in the API env file. Gitslice currently handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the WorkOS ID.
 
 For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_JWKS_URL`, `WORKOS_AUTHKIT_DOMAIN`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:
+
+When `AUTH_PROVIDER=clerk`, the deploy wrapper requires both
+`CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the env file and syncs the
+Clerk secret to Wrangler during web deploys.
 
 ```bash
 cd web
@@ -761,6 +775,7 @@ For repeatable shared-VM verification, use the deploy helper:
 ```bash
 ./ops/verify_deploy.sh --local-only
 ./ops/verify_deploy.sh
+./ops/verify_deploy.sh --env staging
 ```
 
 It checks:

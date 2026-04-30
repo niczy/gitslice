@@ -12,7 +12,7 @@ log() {
 
 usage() {
   cat <<'EOF'
-Usage: ops/verify_deploy.sh [--local-only | --public-only]
+Usage: ops/verify_deploy.sh [--env <staging|production|all>] [--local-only | --public-only]
 
 Verifies the split Worker + VM deployment topology:
   - local production/staging core health
@@ -20,6 +20,8 @@ Verifies the split Worker + VM deployment topology:
   - R2 config presence for each configured environment
 EOF
 }
+
+VERIFY_ENV="all"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,6 +32,15 @@ while [ $# -gt 0 ]; do
     --public-only)
       MODE="public"
       shift
+      ;;
+    --env)
+      if [ $# -lt 2 ]; then
+        echo "--env requires a value" >&2
+        usage >&2
+        exit 1
+      fi
+      VERIFY_ENV="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -42,6 +53,20 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+case "$VERIFY_ENV" in
+  all|staging|production) ;;
+  *)
+    echo "Unsupported --env value: $VERIFY_ENV" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
+should_verify_target() {
+  local role="$1"
+  [ "$VERIFY_ENV" = "all" ] || [ "$VERIFY_ENV" = "$role" ]
+}
 
 resolve_production_env_file() {
   if [ -f "$PRODUCTION_ENV_FILE" ]; then
@@ -133,18 +158,22 @@ if [ -f "$STAGING_ENV_FILE" ]; then
 fi
 
 if [ "$MODE" != "public" ]; then
-  verify_local_target "production" "$production_env_file" "50051"
-  verify_r2_target "production" "$production_env_file"
-  if [ -n "$staging_env_file" ]; then
+  if should_verify_target "production"; then
+    verify_local_target "production" "$production_env_file" "50051"
+    verify_r2_target "production" "$production_env_file"
+  fi
+  if should_verify_target "staging" && [ -n "$staging_env_file" ]; then
     verify_local_target "staging" "$staging_env_file" "50052"
     verify_r2_target "staging" "$staging_env_file"
   fi
 fi
 
 if [ "$MODE" != "local" ]; then
-  check_url "production web" "https://gitslice.io/"
-  check_url "production API" "https://api.gitslice.io/v1/global/state"
-  if [ -n "$staging_env_file" ]; then
+  if should_verify_target "production"; then
+    check_url "production web" "https://gitslice.io/"
+    check_url "production API" "https://api.gitslice.io/v1/global/state"
+  fi
+  if should_verify_target "staging" && [ -n "$staging_env_file" ]; then
     check_url "staging web" "https://agenttools.dev/"
     check_url "staging API" "https://api.agenttools.dev/v1/global/state"
   fi
