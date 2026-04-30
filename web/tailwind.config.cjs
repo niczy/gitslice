@@ -41,10 +41,13 @@ module.exports = {
         sm: 'calc(var(--radius) - 4px)',
       },
       boxShadow: {
-        soft: '0 12px 28px -16px rgba(1, 23, 31, 0.45)',
+        soft: '0 18px 40px -32px rgba(27, 28, 29, 0.18)',
       },
       fontFamily: {
-        sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        serif: ['"Noto Serif"', 'Georgia', 'serif'],
+        label: ['"Public Sans"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['"Noto Sans Mono"', '"SFMono-Regular"', 'Consolas', 'monospace'],
       },
     },
   },

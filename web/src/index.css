@@ -1,26 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500;600&family=Noto+Serif:wght@400;700;900&family=Public+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: 196 100% 98%;
-  --foreground: 208 64% 12%;
-  --card: 0 0% 100%;
-  --card-foreground: 208 64% 12%;
-  --primary: 12 85% 54%;
+  --background: 330 9% 98%;
+  --foreground: 210 4% 11%;
+  --card: 330 5% 95%;
+  --card-foreground: 210 4% 11%;
+  --primary: 215 90% 37%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 193 44% 92%;
-  --secondary-foreground: 208 64% 12%;
-  --muted: 192 38% 94%;
-  --muted-foreground: 207 18% 35%;
-  --accent: 186 86% 39%;
+  --secondary: 330 5% 92%;
+  --secondary-foreground: 210 4% 11%;
+  --muted: 330 4% 90%;
+  --muted-foreground: 220 10% 40%;
+  --accent: 230 56% 50%;
   --accent-foreground: 0 0% 100%;
   --destructive: 0 72% 52%;
   --destructive-foreground: 0 0% 100%;
-  --border: 194 32% 82%;
-  --input: 194 32% 82%;
-  --ring: 186 86% 39%;
-  --radius: 0.8rem;
+  --border: 230 12% 80%;
+  --input: 230 12% 80%;
+  --ring: 215 90% 37%;
+  --radius: 0.5rem;
 }
 
 body {
