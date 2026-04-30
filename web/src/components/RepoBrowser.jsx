@@ -1047,13 +1047,19 @@ export default function RepoBrowser({
                   <div className="panel-empty">{searchDisabledReason}</div>
                 )}
               </section>
-              <h2 className="sidebar-panel-title">File tree</h2>
-              {error && <div className="panel-error">{error}</div>}
-              {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
-              {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
-                <div className="panel-empty">No entries found.</div>
-              )}
-              {canLoad && renderTree('')}
+              <section className="repo-tree-panel" data-testid="repo-tree-panel">
+                <div className="repo-tree-panel-head">
+                  <h2 className="sidebar-panel-title">File tree</h2>
+                </div>
+                <div className="repo-tree-panel-body">
+                  {error && <div className="panel-error">{error}</div>}
+                  {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
+                  {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
+                    <div className="panel-empty">No entries found.</div>
+                  )}
+                  {canLoad && renderTree('')}
+                </div>
+              </section>
             </div>
           </aside>
 
