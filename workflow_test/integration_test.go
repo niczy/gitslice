@@ -211,8 +211,8 @@ func buildCLIBinary() (string, error) {
 		return "", err
 	}
 
-	binaryPath := filepath.Join(tmpDir, "gs_cli")
-	cmd := exec.Command("go", "build", "-o", binaryPath, "./gs_cli")
+	binaryPath := filepath.Join(tmpDir, "gs")
+	cmd := exec.Command("go", "build", "-o", binaryPath, "./gs")
 	cmd.Dir = ".."
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build failed: %w\nOutput:\n%s", err, string(output))

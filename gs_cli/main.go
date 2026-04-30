@@ -1,4 +1,4 @@
-package main
+package gscli
 
 import (
 	"context"
@@ -52,7 +52,7 @@ type CLI struct {
 	filesystemClient filesystemv1.FilesystemServiceClient
 }
 
-func main() {
+func Main() {
 	flag.Parse()
 	args := configureCLIBehavior(flag.Args())
 	if len(args) < 1 {

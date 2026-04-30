@@ -56,7 +56,7 @@ build-core: proto
 	go build -o core_server ./servers/core
 
 build-cli: proto
-	go build -o gs_cli/gs_cli ./gs_cli/
+	go build -o bin/gs ./gs/
 
 start-servers start-servers-memory:
 	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage memory
@@ -90,12 +90,12 @@ test: install proto
 	cd servers/core && go test ./...
 
 clean:
-	rm -f core_server slice_service_server admin_service_server gateway_service_server gs_cli/gs_cli
+	rm -f core_server slice_service_server admin_service_server gateway_service_server bin/gs
 	find proto -name "*.pb.go" -delete
 	find proto -name "*.pb.gw.go" -delete
 
 install_gs: build-cli
-	cp gs_cli/gs_cli $(GOPATH)/bin/gs
+	cp bin/gs $(GOPATH)/bin/gs
 
 web-install:
 	cd web && npm ci

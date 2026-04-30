@@ -50,7 +50,7 @@ jobs:
 
     - name: Test CLI help
       run: |
-        timeout 2s ./gs_cli || true
+        timeout 2s ./bin/gs || true
 
     - name: Run workflow tests (stub)
       run: |
