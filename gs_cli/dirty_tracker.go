@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -423,6 +424,17 @@ func handleCheckoutWatcher(args []string) {
 	defer stop()
 	if err := runCheckoutDirtyTracker(ctx, absRoot, strings.TrimSpace(*generation), strings.TrimSpace(*sliceID), strings.TrimSpace(*commitHash)); err != nil {
 		log.Fatalf("dirty tracker failed: %v", err)
+	}
+}
+
+func newCheckoutWatcherCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "__watch-checkout [options]",
+		Hidden:             true,
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			handleCheckoutWatcher(args)
+		},
 	}
 }
 
