@@ -12,13 +12,38 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func newSliceCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                "slice <command> [options]",
+		Short:              "Manage slices",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			args = configureCLIBehavior(args)
+			configureCLIOutputMode(args)
+			if len(args) > 0 && args[0] == "checkouts" {
+				handleSliceCheckouts(args[1:])
+				return
+			}
+			runAuthenticatedCLICommand(args, 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+				handleSliceCommand(ctx, cli, args)
+			})
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printSliceHelp()
+	})
+	return cmd
+}
 
 func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {

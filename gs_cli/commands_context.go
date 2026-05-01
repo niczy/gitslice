@@ -5,10 +5,23 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"github.com/spf13/cobra"
 )
+
+func newContextCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "context [options]",
+		Short:              "Print agent-friendly current auth/checkout/changeset context",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runAuthenticatedCLICommand(args, 24*time.Hour, handleContext)
+		},
+	}
+}
 
 func handleContext(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")

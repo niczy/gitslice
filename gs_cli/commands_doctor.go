@@ -5,10 +5,23 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"github.com/spf13/cobra"
 )
+
+func newDoctorCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "doctor [options]",
+		Short:              "Check auth, slice binding, cache, and service health",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runAuthenticatedCLICommand(args, 24*time.Hour, handleDoctor)
+		},
+	}
+}
 
 func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")

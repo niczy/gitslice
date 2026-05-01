@@ -179,6 +179,31 @@ func newCLIFromFlags() (*CLI, error) {
 	return NewCLI(*accountServerAddr, *sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
 }
 
+type authenticatedCLIHandler func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string)
+
+func runAuthenticatedCLICommand(args []string, timeout time.Duration, handler authenticatedCLIHandler) {
+	args = configureCLIBehavior(args)
+	configureCLIOutputMode(args)
+
+	cli, err := newCLIFromFlags()
+	if err != nil {
+		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
+	}
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
+	if err != nil {
+		commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve auth: %v", err)
+	}
+	authConfig, err = ensureCLIAuthReady(ctx, cli, authConfig)
+	if err != nil {
+		commandFatalf("AUTH_REFRESH_FAILED", true, "", "Failed to refresh stored auth: %v", err)
+	}
+	handler(withCLIAuth(ctx, authConfig), cli, authConfig, args)
+}
+
 func handleDetachedJobRunner(args []string) {
 	if len(args) < 3 || strings.TrimSpace(args[0]) == "" || args[1] != "--" {
 		commandFatal("INVALID_ARGUMENT", "Usage: gs __run-job <job-id> -- <command...>", false, "")

@@ -117,7 +117,7 @@ func TestRootCommandDelegatesHelpToLegacyHelp(t *testing.T) {
 
 func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
-	for _, name := range []string{"cache", "jobs", "__watch-checkout", "__run-job", "auth", "login", "logout"} {
+	for _, name := range []string{"cache", "jobs", "__watch-checkout", "__run-job", "auth", "login", "logout", "file", "doctor", "context", "slice"} {
 		child, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%q) failed: %v", name, err)
@@ -178,6 +178,20 @@ func TestRootCommandKeepsLeadingGlobalFlagsCompatibleForLocalCommands(t *testing
 	}
 	if !cliNonInteractive {
 		t.Fatal("expected leading --non-interactive to be honored")
+	}
+}
+
+func TestRootCommandKeepsSliceCheckoutsLocalOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"slice", "checkouts"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "Tracked checkouts: 0") {
+		t.Fatalf("expected local checkout summary, got: %s", output)
 	}
 }
 

@@ -6,10 +6,29 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	filev1 "github.com/niczy/gitslice/proto/file"
+	"github.com/spf13/cobra"
 )
+
+func newFileCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                "file <command> [options]",
+		Short:              "Browse files and file history",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runAuthenticatedCLICommand(args, 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+				handleFileCommand(ctx, cli, args)
+			})
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printFileHelp()
+	})
+	return cmd
+}
 
 func handleFileCommand(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
