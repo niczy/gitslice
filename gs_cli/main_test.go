@@ -117,7 +117,13 @@ func TestRootCommandDelegatesHelpToLegacyHelp(t *testing.T) {
 
 func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
-	for _, name := range []string{"cache", "jobs", "__watch-checkout", "__run-job", "auth", "login", "logout", "file", "doctor", "context", "slice"} {
+	for _, name := range []string{
+		"cache", "jobs", "__watch-checkout", "__run-job",
+		"auth", "login", "logout",
+		"file", "doctor", "context", "slice",
+		"changeset", "conflict", "import", "repo", "fs",
+		"status", "init", "log", "root",
+	} {
 		child, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%q) failed: %v", name, err)

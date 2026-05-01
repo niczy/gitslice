@@ -204,6 +204,72 @@ func runAuthenticatedCLICommand(args []string, timeout time.Duration, handler au
 	handler(withCLIAuth(ctx, authConfig), cli, authConfig, args)
 }
 
+func newAuthenticatedCobraCommand(use, short string, timeout time.Duration, handler authenticatedCLIHandler) *cobra.Command {
+	return &cobra.Command{
+		Use:                use,
+		Short:              short,
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runAuthenticatedCLICommand(args, timeout, handler)
+		},
+	}
+}
+
+func newChangesetCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("changeset <command> [options]", "Manage change lists", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleChangesetCommand(ctx, cli, args)
+	})
+}
+
+func newConflictCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("conflict <command> [options]", "Detect and resolve conflicts", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleConflictCommand(ctx, cli, args)
+	})
+}
+
+func newImportCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("import <command> [options]", "Import external repositories", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleImportCommand(ctx, cli, args)
+	})
+}
+
+func newRepoCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("repo <command> [options]", "Bind remote repositories into your home slice", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleRepoCommand(ctx, cli, args)
+	})
+}
+
+func newFilesystemCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("fs <command> [options]", "Remote home filesystem operations", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleFilesystemCommand(ctx, cli, authConfig, args)
+	})
+}
+
+func newStatusCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("status [options]", "Alias for slice status", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleStatus(ctx, cli, args)
+	})
+}
+
+func newInitCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("init <slice-id> [options]", "Alias for slice bind", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleInit(ctx, cli, args)
+	})
+}
+
+func newLogCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("log [<slice-id>] [options]", "Alias for slice history", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleLog(ctx, cli, args)
+	})
+}
+
+func newRootSliceCommand() *cobra.Command {
+	return newAuthenticatedCobraCommand("root [options]", "Alias for slice root", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		configureCLIOutputMode(args)
+		handleRootSlice(ctx, cli)
+	})
+}
+
 func handleDetachedJobRunner(args []string) {
 	if len(args) < 3 || strings.TrimSpace(args[0]) == "" || args[1] != "--" {
 		commandFatal("INVALID_ARGUMENT", "Usage: gs __run-job <job-id> -- <command...>", false, "")

@@ -37,6 +37,15 @@ func NewRootCommand(args []string) *cobra.Command {
 			newDoctorCommand(),
 			newContextCommand(),
 			newSliceCommand(),
+			newChangesetCommand(),
+			newConflictCommand(),
+			newImportCommand(),
+			newRepoCommand(),
+			newFilesystemCommand(),
+			newStatusCommand(),
+			newInitCommand(),
+			newLogCommand(),
+			newRootSliceCommand(),
 		)
 	}
 	cmd.SetArgs(args)
