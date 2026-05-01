@@ -53,8 +53,14 @@ type CLI struct {
 }
 
 func Main() {
-	flag.Parse()
-	args := configureCLIBehavior(flag.Args())
+	cmd := NewRootCommand(os.Args[1:])
+	if err := cmd.Execute(); err != nil {
+		commandFatalf("CLI_EXEC_FAILED", false, "", "%v", err)
+	}
+}
+
+func runLegacyCommand(args []string) {
+	args = configureCLIBehavior(args)
 	if len(args) < 1 {
 		printHelp()
 		return
