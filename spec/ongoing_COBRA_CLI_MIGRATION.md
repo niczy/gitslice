@@ -4,7 +4,7 @@
 
 - Current status: `ongoing`
 - Last updated: `2026-05-01`
-- Current PR: PR 2, local-only commands
+- Current PR: PR 3, auth commands
 
 ## Goal
 
@@ -102,8 +102,9 @@ Scope:
 - Add command tests for help, JSON mode, and non-interactive behavior.
 
 Acceptance:
-- `gs auth status --json` works.
-- `gs login --non-interactive` fails without opening an interactive flow when auth is missing.
+- `gs auth status --json` works. DONE in PR 3.
+- `gs logout --json` works. DONE in PR 3.
+- `gs login --non-interactive --json` fails without opening an interactive flow when auth is missing. DONE in PR 3.
 
 ### PR 4: Read-Heavy Service Commands
 
