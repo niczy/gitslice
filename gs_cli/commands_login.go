@@ -15,25 +15,41 @@ import (
 )
 
 func newLoginCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "login [status|<username>]",
 		Short:              "Log in or show the current login",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runLoginCommand(args)
 		},
 	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printLoginHelp()
+	})
+	return cmd
 }
 
 func newLogoutCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "logout",
 		Short:              "Clear stored CLI auth",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runLogoutCommand(args)
 		},
 	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printLogoutHelp()
+	})
+	return cmd
 }
 
 func runLoginCommand(args []string) {

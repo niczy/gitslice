@@ -24,6 +24,10 @@ func newAuthCommand() *cobra.Command {
 		Short:              "Manage CLI auth, agent keys, and key-based login",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runAuthCommand(args)
 		},
 	}

@@ -56,13 +56,25 @@ func shouldRegisterLocalCobraCommands(args []string) bool {
 	return len(args) == 0 || args[0] == "" || args[0][0] != '-'
 }
 
+func isHelpRequest(args []string) bool {
+	return len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")
+}
+
 func runCobraRoot(args []string) {
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+	if isHelpRequest(args) {
 		printHelp()
 		return
 	}
 	if err := flag.CommandLine.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	runLegacyCommand(flag.Args())
+	remaining := flag.Args()
+	if len(remaining) == 0 {
+		printHelp()
+		return
+	}
+	remaining = configureCLIBehavior(remaining)
+	if err := NewRootCommand(remaining).Execute(); err != nil {
+		commandFatal("INVALID_ARGUMENT", err.Error(), false, "gs --help")
+	}
 }

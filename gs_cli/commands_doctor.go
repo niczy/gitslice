@@ -13,14 +13,22 @@ import (
 )
 
 func newDoctorCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "doctor [options]",
 		Short:              "Check auth, slice binding, cache, and service health",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runAuthenticatedCLICommand(args, 24*time.Hour, handleDoctor)
 		},
 	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printDoctorHelp()
+	})
+	return cmd
 }
 
 func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {

@@ -28,6 +28,10 @@ func newSliceCommand() *cobra.Command {
 		Short:              "Manage slices",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			args = configureCLIBehavior(args)
 			configureCLIOutputMode(args)
 			if len(args) > 0 && args[0] == "checkouts" {
