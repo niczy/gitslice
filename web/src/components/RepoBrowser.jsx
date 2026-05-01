@@ -3,11 +3,12 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Circle,
   Edit3,
-  FileCode2,
   FileText,
   Folder,
   FolderOpen,
+  GitBranch,
   History,
   Menu,
   PanelLeftClose,
@@ -17,7 +18,7 @@ import {
   Settings,
   X,
 } from 'lucide-react';
-import { apiBaseUrl, fetchWithAuth, searchWorkspaceFiles } from '../utils/api.js';
+import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
 import { formatBytes } from '../utils/format.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
@@ -25,7 +26,6 @@ import { decodeBase64, highlightCode } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { buildBrowserPath, parseLocation } from '../utils/routing.js';
-import SliceDropdown from './SliceDropdown.jsx';
 import SliceSettings from './SliceSettings.jsx';
 import { Button } from './ui/button.jsx';
 
@@ -88,6 +88,7 @@ export default function RepoBrowser({
   slicesLoading,
   slicesError,
   onRefreshSlices,
+  openFileRequest,
 }) {
   // Parse initial browser state from the current route on mount.
   const initialBrowserState = useMemo(() => {
@@ -122,18 +123,13 @@ export default function RepoBrowser({
   const [activeView, setActiveView] = useState('files');
   const [isCompactHeader, setIsCompactHeader] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth <= 920));
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchGlob, setSearchGlob] = useState('');
-  const [searchRegex, setSearchRegex] = useState(false);
-  const [searchMatches, setSearchMatches] = useState([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState('');
-  const [hasSearched, setHasSearched] = useState(false);
+  const [sliceFilter, setSliceFilter] = useState('');
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
   const hasAppliedInitialSliceRef = useRef(false);
   const actionMenuRef = useRef(null);
+  const handledOpenFileRequestTokenRef = useRef(null);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
   const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
@@ -146,6 +142,12 @@ export default function RepoBrowser({
     return fileContent.split('\n').length;
   }, [fileContent, selectedFile]);
   const selectedFileMode = previewMeta.mode === 'text' ? 'source' : previewMeta.mode;
+  const pendingDraftCount = Object.keys(fileDrafts).length;
+  const pendingDraftEntries = useMemo(() => Object.entries(fileDrafts).map(([path, content]) => ({
+    path,
+    name: path.split('/').pop() || path,
+    size: typeof content === 'string' ? content.length : 0,
+  })), [fileDrafts]);
 
   const rawSliceId = currentSliceId;
 
@@ -202,23 +204,6 @@ export default function RepoBrowser({
   }, [slices, sliceId]);
 
   const canLoad = sliceId !== '' && (sliceId === 'root_slice' || Boolean(String(authUsername || '').trim()));
-  const canSearchRemotely = canLoad && !sliceHash && !currentSlice?.is_root && Boolean(String(authUsername || '').trim());
-
-  const searchDisabledReason = useMemo(() => {
-    if (!canLoad) {
-      return 'Choose a slice to search files.';
-    }
-    if (!String(authUsername || '').trim()) {
-      return 'Sign in to search a workspace.';
-    }
-    if (sliceHash) {
-      return 'Search is available on the live slice, not historical snapshots.';
-    }
-    if (currentSlice?.is_root) {
-      return 'Search is available on signed-in home and custom slices.';
-    }
-    return '';
-  }, [authUsername, canLoad, currentSlice?.is_root, sliceHash]);
 
   const currentSliceLabel = useMemo(() => {
     return currentSlice?.name || sliceId;
@@ -227,6 +212,30 @@ export default function RepoBrowser({
   const currentSliceDisplayName = useMemo(() => {
     return getSliceDisplayName(currentSliceLabel);
   }, [currentSliceLabel]);
+
+  const filteredSlices = useMemo(() => {
+    const query = sliceFilter.trim().toLowerCase();
+    if (!query) {
+      return slices;
+    }
+    return slices.filter((slice) => {
+      const name = getSliceDisplayName(slice.name || slice.slice_id).toLowerCase();
+      const id = String(slice.slice_id || '').toLowerCase();
+      const slug = String(slice.slug || '').toLowerCase();
+      const description = String(slice.description || '').toLowerCase();
+      return name.includes(query) || id.includes(query) || slug.includes(query) || description.includes(query);
+    });
+  }, [sliceFilter, slices]);
+
+  const sliceInitials = useMemo(() => {
+    const source = currentSliceDisplayName || authUsername || 'GS';
+    return source
+      .split(/[\s._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join('') || 'GS';
+  }, [authUsername, currentSliceDisplayName]);
 
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = activeView === 'settings' && canShowSettings;
@@ -355,16 +364,6 @@ export default function RepoBrowser({
     setIsEditingFile(false);
     setFileError('');
     setFocusedEntry({ path: '', type: 'directory' });
-  }, [sliceId, sliceHash]);
-
-  useEffect(() => {
-    setSearchQuery('');
-    setSearchGlob('');
-    setSearchRegex(false);
-    setSearchMatches([]);
-    setSearchLoading(false);
-    setSearchError('');
-    setHasSearched(false);
   }, [sliceId, sliceHash]);
 
   const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
@@ -545,48 +544,16 @@ export default function RepoBrowser({
     }
   }, [buildEntriesUrl, buildFileUrl, canLoad, expandedPaths, fileDrafts, normalizeWorkspaceResultPath, treeEntries]);
 
-  const handleSearchSubmit = useCallback(async (event) => {
-    event.preventDefault();
-    if (!canSearchRemotely) {
+  useEffect(() => {
+    if (!isActive || !openFileRequest?.path) {
       return;
     }
-
-    const query = String(searchQuery || '').trim();
-    if (!query) {
-      setSearchError('Enter a search query.');
-      setSearchMatches([]);
-      setHasSearched(false);
+    if (handledOpenFileRequestTokenRef.current === openFileRequest.token) {
       return;
     }
-
-    setSearchLoading(true);
-    setSearchError('');
-    try {
-      const payload = await searchWorkspaceFiles(sliceId, {
-        query,
-        glob: searchGlob,
-        regex: searchRegex,
-      });
-      setSearchMatches((payload?.matches || []).map((match) => ({
-        path: match?.path ?? '',
-        line_number: match?.line_number ?? match?.lineNumber ?? 0,
-        line: match?.line ?? '',
-      })));
-      setHasSearched(true);
-    } catch (err) {
-      setSearchMatches([]);
-      setSearchError(err?.message || 'Unable to search files.');
-      setHasSearched(true);
-    } finally {
-      setSearchLoading(false);
-    }
-  }, [canSearchRemotely, searchGlob, searchQuery, searchRegex, sliceId]);
-
-  const clearSearchResults = useCallback(() => {
-    setSearchMatches([]);
-    setSearchError('');
-    setHasSearched(false);
-  }, []);
+    handledOpenFileRequestTokenRef.current = openFileRequest.token;
+    openFilePath(openFileRequest.path);
+  }, [isActive, openFilePath, openFileRequest]);
 
   const renderFileActions = (onActionDone) => {
     if (viewingSettings || !selectedFile) {
@@ -618,15 +585,15 @@ export default function RepoBrowser({
             {isEditingFile && (
               <Button
                 type="button"
-                variant="secondary"
-                className="history-toggle active"
+                variant="default"
+                className="history-toggle browser-commit-button"
                 onClick={() => {
                   confirmFileEdit();
                   onActionDone?.();
                 }}
               >
                 <Check size={15} aria-hidden="true" />
-                Confirm
+                Commit Changes
               </Button>
             )}
           </>
@@ -937,7 +904,7 @@ export default function RepoBrowser({
               <Button
                 type="button"
                 variant="ghost"
-                className={`tree-entry ${entryKind}`}
+                className={`tree-entry ${entryKind}${focusedEntry?.path === entry.path ? ' active' : ''}`}
                 style={{ paddingLeft: `${depth * 14 + 8}px` }}
                 onClick={() => handleEntryClick(entry)}
               >
@@ -972,31 +939,97 @@ export default function RepoBrowser({
           />
           <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
             <div className="sidebar-content">
-              <div className="sidebar-slice-switcher">
-                <SliceDropdown
-                  slices={slices}
-                  currentSliceId={currentSliceId}
-                  onSelectSlice={onSliceChange}
-                  loading={slicesLoading}
-                  error={slicesError}
-                  onRefresh={onRefreshSlices}
-                  className="slice-dropdown--sidebar"
+              <section className="sidebar-slice-section" aria-label="Slices">
+                <div className="sidebar-section-heading">
+                  <span>Slices</span>
+                  <div className="panel-header-actions">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="slice-refresh-button"
+                      onClick={onRefreshSlices}
+                    >
+                      Refresh
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="sidebar-toggle"
+                      onClick={() => setSidebarOpen(false)}
+                      aria-label="Close sidebar"
+                      title="Close sidebar"
+                    >
+                      <PanelLeftClose size={16} aria-hidden="true" />
+                    </Button>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="current-slice-trigger"
+                  onClick={() => setSliceFilter('')}
+                  data-testid="slice-dropdown-trigger"
+                >
+                  <span className="slice-nav-name">{currentSliceDisplayName || 'Select slice'}</span>
+                  <span className="slice-nav-meta">{currentSlice?.slug || sliceId || 'Choose workspace'}</span>
+                </Button>
+                <input
+                  type="search"
+                  className="slice-list-filter"
+                  placeholder="Filter slices"
+                  value={sliceFilter}
+                  onChange={(event) => setSliceFilter(event.target.value)}
+                  data-testid="slice-list-filter"
                 />
-                {canShowSettings && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
-                    onClick={viewingSettings ? openFilesView : openSettingsView}
-                    aria-label={viewingSettings ? 'Show files' : 'Open slice settings'}
-                    title={viewingSettings ? 'Show files' : 'Slice settings'}
-                    data-testid="repo-view-settings"
-                  >
-                    <Settings size={16} aria-hidden="true" />
-                  </Button>
+                {slicesLoading && <div className="panel-empty">Loading slices...</div>}
+                {slicesError && <div className="panel-error">{slicesError}</div>}
+                {!slicesLoading && !slicesError && filteredSlices.length === 0 && (
+                  <div className="panel-empty">No slices match this filter.</div>
                 )}
-                <div className="panel-header-actions">
+                {!slicesLoading && !slicesError && filteredSlices.length > 0 && (
+                  <ul className="slice-nav-list" data-testid="slice-list">
+                    {filteredSlices.map((slice) => {
+                      const isSelected = slice.slice_id === sliceId || slice.slice_id === currentSliceId;
+                      return (
+                        <li key={slice.slice_id}>
+                          <div className={`slice-nav-row${isSelected ? ' active' : ''}`}>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="slice-nav-item"
+                              onClick={() => onSliceChange(slice.slice_id)}
+                              data-testid="slice-dropdown-item"
+                            >
+                              <span className="slice-nav-name">{getSliceDisplayName(slice.name || slice.slice_id)}</span>
+                              <span className="slice-nav-meta">{slice.slug || slice.slice_id}</span>
+                            </Button>
+                            {isSelected && canShowSettings && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
+                                onClick={viewingSettings ? openFilesView : openSettingsView}
+                                aria-label={viewingSettings ? 'Show files' : 'Open slice settings'}
+                                title={viewingSettings ? 'Show files' : 'Slice settings'}
+                                data-testid="repo-view-settings"
+                              >
+                                <Settings size={16} aria-hidden="true" />
+                              </Button>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+
+              <section className="sidebar-tree-section" aria-label="Selected slice files">
+                <div className="sidebar-section-heading">
+                  <span>File Tree ({currentSliceDisplayName || 'Slice'})</span>
                   <span
                     className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
                     role="status"
@@ -1005,108 +1038,25 @@ export default function RepoBrowser({
                   >
                     <span className="tree-loading-dot" aria-hidden="true" />
                   </span>
+                </div>
+                {canShowSettings && viewingSettings && (
                   <Button
                     type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="sidebar-toggle"
-                    onClick={() => setSidebarOpen(false)}
-                    aria-label="Close sidebar"
-                    title="Close sidebar"
+                    variant="secondary"
+                    className="browser-header-secondary sidebar-files-return"
+                    onClick={openFilesView}
+                    data-testid="repo-view-settings"
                   >
-                    <PanelLeftClose size={16} aria-hidden="true" />
+                    Show files
                   </Button>
-                </div>
-              </div>
-              <section className="repo-search-panel" data-testid="repo-search-panel">
-                <div className="repo-search-panel-head">
-                  <h2 className="sidebar-panel-title">Search</h2>
-                  {hasSearched && !searchLoading && !searchError && (
-                    <span className="repo-search-count">
-                      {searchMatches.length} match{searchMatches.length === 1 ? '' : 'es'}
-                    </span>
-                  )}
-                </div>
-                {canSearchRemotely ? (
-                  <>
-                    <form className="repo-search-form" data-testid="repo-search-form" onSubmit={handleSearchSubmit}>
-                      <input
-                        type="search"
-                        className="repo-search-input"
-                        placeholder="Search this slice"
-                        value={searchQuery}
-                        onChange={(event) => setSearchQuery(event.target.value)}
-                        data-testid="repo-search-query"
-                      />
-                      <input
-                        type="text"
-                        className="repo-search-input repo-search-glob"
-                        placeholder="Optional glob, e.g. src/**/*.js"
-                        value={searchGlob}
-                        onChange={(event) => setSearchGlob(event.target.value)}
-                        data-testid="repo-search-glob"
-                      />
-                      <label className="repo-search-toggle">
-                        <input
-                          type="checkbox"
-                          checked={searchRegex}
-                          onChange={(event) => setSearchRegex(event.target.checked)}
-                          data-testid="repo-search-regex"
-                        />
-                        Regex
-                      </label>
-                      <div className="repo-search-actions">
-                        <Button
-                          type="submit"
-                          variant="secondary"
-                          disabled={searchLoading}
-                          data-testid="repo-search-submit"
-                        >
-                          {searchLoading ? 'Searching...' : 'Search'}
-                        </Button>
-                        {(hasSearched || searchError) && (
-                          <Button type="button" variant="ghost" onClick={clearSearchResults}>
-                            Clear
-                          </Button>
-                        )}
-                      </div>
-                    </form>
-                    {searchError && <div className="panel-error">{searchError}</div>}
-                    {!searchError && searchLoading && <div className="repo-search-state">Searching indexed workspace files…</div>}
-                    {hasSearched && !searchLoading && !searchError && searchMatches.length === 0 && (
-                      <div className="panel-empty">No matches found for this query.</div>
-                    )}
-                    {searchMatches.length > 0 && (
-                      <ul className="repo-search-results" data-testid="repo-search-results">
-                        {searchMatches.map((match, index) => (
-                          <li key={`${match.path}-${match.line_number}-${index}`}>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="repo-search-result"
-                              onClick={() => openFilePath(match.path)}
-                              data-testid="repo-search-result"
-                            >
-                              <span className="repo-search-result-path">{match.path}</span>
-                              <span className="repo-search-result-meta">Line {match.line_number || 1}</span>
-                              <code className="repo-search-result-line">{match.line}</code>
-                            </Button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </>
-                ) : (
-                  <div className="panel-empty">{searchDisabledReason}</div>
                 )}
+                {error && <div className="panel-error">{error}</div>}
+                {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
+                {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
+                  <div className="panel-empty">No entries found.</div>
+                )}
+                {canLoad && renderTree('')}
               </section>
-              <h2 className="sidebar-panel-title">File tree</h2>
-              {error && <div className="panel-error">{error}</div>}
-              {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
-              {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
-                <div className="panel-empty">No entries found.</div>
-              )}
-              {canLoad && renderTree('')}
             </div>
           </aside>
 
@@ -1149,17 +1099,17 @@ export default function RepoBrowser({
                 </div>
               </div>
               <div className="code-header-actions">
-                <div className="code-view-tabs">
+                {viewingSettings && (
                   <Button
                     type="button"
-                    variant="ghost"
-                    className={`code-view-tab ${!viewingSettings ? 'active' : ''}`}
+                    variant="secondary"
+                    className="browser-header-secondary"
                     onClick={openFilesView}
                     data-testid="repo-view-files"
                   >
                     Files
                   </Button>
-                </div>
+                )}
                 {!viewingSettings && selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
                 {!isCompactHeader && renderFileActions()}
                 <Button
@@ -1290,26 +1240,51 @@ export default function RepoBrowser({
           </div>
           <aside className={`repo-insight ${insightOpen ? 'open' : 'closed'}`} aria-label="File insight" aria-hidden={!insightOpen}>
             <div className="repo-insight-scroll">
-              <div className="repo-insight-hero" aria-hidden="true">
-                <div className="repo-insight-parchment">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </div>
-                <div className="repo-insight-code">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </div>
+              <div className="repo-insight-header">
+                <h2>Details</h2>
+                <span className="repo-insight-status">
+                  <Circle size={8} fill="currentColor" aria-hidden="true" />
+                  {sliceHash ? 'Snapshot' : 'Live'}
+                </span>
               </div>
-              <div className="repo-insight-section">
-                <h2>File Insight</h2>
+
+              <section className="inspector-card inspector-status-card" aria-label="Slice status">
+                <div className="slice-avatar" aria-hidden="true">{sliceInitials}</div>
+                <div className="slice-status-copy">
+                  <span className="inspector-label">Slice Status</span>
+                  <strong>{currentSliceDisplayName || 'Choose a slice'}</strong>
+                  <span>{sliceHash ? 'Historical snapshot' : 'Live workspace'}</span>
+                </div>
+              </section>
+
+              <section className="repo-insight-section">
+                <div className="inspector-section-title">
+                  <h3>Pending Changes</h3>
+                  <span>{pendingDraftCount}</span>
+                </div>
+                {pendingDraftEntries.length > 0 ? (
+                  <ul className="inspector-change-list">
+                    {pendingDraftEntries.slice(0, 4).map((draft) => (
+                      <li key={draft.path}>
+                        <Edit3 size={14} aria-hidden="true" />
+                        <span>{draft.name}</span>
+                        <small>{formatBytes(draft.size)}</small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : selectedFile ? (
+                  <p className="repo-insight-copy">{selectedFileName} has no pending edits.</p>
+                ) : (
+                  <p className="repo-insight-copy">Select a file to inspect changes.</p>
+                )}
+              </section>
+
+              <section className="repo-insight-section">
+                <h3>Properties</h3>
                 <dl className="repo-insight-meta">
                   <div>
-                    <dt>Identity</dt>
-                    <dd>{selectedFileName}</dd>
+                    <dt>File</dt>
+                    <dd>{selectedFile || 'No file selected'}</dd>
                   </div>
                   <div className="repo-insight-pair">
                     <div>
@@ -1332,28 +1307,31 @@ export default function RepoBrowser({
                     </div>
                   </div>
                 </dl>
-              </div>
-              <div className="repo-insight-section">
-                <h3>Current Slice</h3>
-                <p className="repo-insight-copy">{currentSliceDisplayName || 'Choose a slice'}</p>
-                <div className="repo-insight-note">
-                  <FileCode2 size={16} aria-hidden="true" />
-                  <span>{sliceHash ? 'Historical snapshot' : 'Live workspace'}</span>
+              </section>
+
+              <section className="repo-insight-section repo-insight-history">
+                <div className="inspector-section-title">
+                  <h3>History</h3>
+                  <GitBranch size={14} aria-hidden="true" />
                 </div>
-              </div>
-              <div className="repo-insight-section repo-insight-history">
-                <h3>Annotation History</h3>
-                {selectedFile ? (
-                  <>
-                    <p>Previewing <strong>{selectedFileName}</strong></p>
-                    {fileHistory.length > 0 && (
-                      <p>{fileHistory.length} recorded change{fileHistory.length === 1 ? '' : 's'} loaded.</p>
-                    )}
-                  </>
+                {fileHistory.length > 0 ? (
+                  <ul className="inspector-history-list">
+                    {fileHistory.slice(0, 3).map((change) => (
+                      <li key={change.id}>
+                        <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
+                          {formatChangeType(change.change_type)}
+                        </span>
+                        <p>{change.message || 'No message'}</p>
+                        <small>{formatTimestamp(change.timestamp)}</small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : selectedFile ? (
+                  <p>Open history to load recent changes for {selectedFileName}.</p>
                 ) : (
                   <p>Select a file to reveal its metadata.</p>
                 )}
-              </div>
+              </section>
             </div>
           </aside>
         </div>
