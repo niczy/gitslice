@@ -14,6 +14,7 @@ import (
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -183,6 +184,17 @@ func handleDetachedJobRunner(args []string) {
 		return
 	}
 	os.Exit(runDetachedCLIJob(strings.TrimSpace(args[0]), args[2:]))
+}
+
+func newDetachedJobRunnerCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "__run-job <job-id> -- <command...>",
+		Hidden:             true,
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			handleDetachedJobRunner(args)
+		},
+	}
 }
 
 func configureCLIBehavior(args []string) []string {

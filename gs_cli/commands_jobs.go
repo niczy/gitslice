@@ -6,7 +6,57 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
+
+func newJobsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "jobs <command> [options]",
+		Short: "Inspect detached CLI jobs for long-running commands",
+		Run: func(cmd *cobra.Command, args []string) {
+			printJobsHelp()
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printJobsHelp()
+	})
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:                "list [options]",
+			Short:              "List detached CLI jobs",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleJobsList(args)
+			},
+		},
+		&cobra.Command{
+			Use:                "get <job-id> [options]",
+			Short:              "Show a detached job",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleJobsGet(args)
+			},
+		},
+		&cobra.Command{
+			Use:                "wait <job-id> [options]",
+			Short:              "Wait for a detached job to finish",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleJobsWait(args)
+			},
+		},
+		&cobra.Command{
+			Use:                "logs <job-id> [options]",
+			Short:              "Print stdout/stderr captured for a detached job",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleJobsLogs(args)
+			},
+		},
+	)
+	return cmd
+}
 
 func handleJobsCommand(args []string) {
 	if len(args) == 0 {

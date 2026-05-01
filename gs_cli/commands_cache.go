@@ -3,7 +3,57 @@ package gscli
 import (
 	"fmt"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
+
+func newCacheCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cache <command> [options]",
+		Short: "Inspect and clean local checkout/cache state",
+		Run: func(cmd *cobra.Command, args []string) {
+			printCacheHelp()
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printCacheHelp()
+	})
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:                "stats [options]",
+			Short:              "Show local cache size and tracked checkout summary",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				cache, err := NewCacheManager()
+				if err != nil {
+					commandFatalf("CACHE_INIT_FAILED", false, "", "Failed to initialize cache manager: %v", err)
+				}
+				handleCacheStats(cache, args)
+			},
+		},
+		&cobra.Command{
+			Use:                "prune [options]",
+			Short:              "Remove stale tracked checkout records",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleCachePrune(args)
+			},
+		},
+		&cobra.Command{
+			Use:                "clear [options]",
+			Short:              "Remove cached objects and/or tracked checkout records",
+			DisableFlagParsing: true,
+			Run: func(cmd *cobra.Command, args []string) {
+				cache, err := NewCacheManager()
+				if err != nil {
+					commandFatalf("CACHE_INIT_FAILED", false, "", "Failed to initialize cache manager: %v", err)
+				}
+				handleCacheClear(cache, args)
+			},
+		},
+	)
+	return cmd
+}
 
 func handleCacheCommand(args []string) {
 	if len(args) < 1 {

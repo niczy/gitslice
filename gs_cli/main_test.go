@@ -2,6 +2,7 @@ package gscli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -111,6 +112,92 @@ func TestRootCommandDelegatesHelpToLegacyHelp(t *testing.T) {
 	}
 	if !strings.Contains(output, "Commands:") {
 		t.Fatalf("expected command list in help output, got: %s", output)
+	}
+}
+
+func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
+	cmd := NewRootCommand(nil)
+	for _, name := range []string{"cache", "jobs", "__watch-checkout", "__run-job"} {
+		child, _, err := cmd.Find([]string{name})
+		if err != nil {
+			t.Fatalf("Find(%q) failed: %v", name, err)
+		}
+		if child == nil || child.Name() != name {
+			t.Fatalf("expected %q command to be registered, got %#v", name, child)
+		}
+	}
+}
+
+func TestRootCommandRunsLocalOnlyCacheCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"cache", "stats", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var decoded struct {
+		CacheRoot string `json:"cache_root"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode cache stats JSON: %v\n%s", err, output)
+	}
+	if !strings.Contains(decoded.CacheRoot, home) {
+		t.Fatalf("expected cache root under temp HOME %q, got %q", home, decoded.CacheRoot)
+	}
+}
+
+func TestRootCommandKeepsLeadingGlobalFlagsCompatibleForLocalCommands(t *testing.T) {
+	originalFlag := *nonInteractive
+	originalMode := cliNonInteractive
+	defer func() {
+		*nonInteractive = originalFlag
+		cliNonInteractive = originalMode
+	}()
+	*nonInteractive = false
+	cliNonInteractive = false
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"--non-interactive", "cache", "stats", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var decoded struct {
+		CacheRoot string `json:"cache_root"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode cache stats JSON: %v\n%s", err, output)
+	}
+	if !strings.Contains(decoded.CacheRoot, home) {
+		t.Fatalf("expected cache root under temp HOME %q, got %q", home, decoded.CacheRoot)
+	}
+	if !cliNonInteractive {
+		t.Fatal("expected leading --non-interactive to be honored")
+	}
+}
+
+func TestRootCommandRunsLocalOnlyJobsCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"jobs", "list", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var decoded struct {
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode jobs list JSON: %v\n%s", err, output)
+	}
+	if decoded.Total != 0 {
+		t.Fatalf("expected no jobs in temp HOME, got %d", decoded.Total)
 	}
 }
 

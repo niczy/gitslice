@@ -14,12 +14,30 @@ func NewRootCommand(args []string) *cobra.Command {
 		SilenceErrors:      true,
 		SilenceUsage:       true,
 		DisableFlagParsing: true,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			runCobraRoot(args)
 		},
 	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printHelp()
+	})
+	if shouldRegisterLocalCobraCommands(args) {
+		cmd.AddCommand(
+			newCacheCommand(),
+			newJobsCommand(),
+			newCheckoutWatcherCommand(),
+			newDetachedJobRunnerCommand(),
+		)
+	}
 	cmd.SetArgs(args)
 	return cmd
+}
+
+func shouldRegisterLocalCobraCommands(args []string) bool {
+	return len(args) == 0 || args[0] == "" || args[0][0] != '-'
 }
 
 func runCobraRoot(args []string) {

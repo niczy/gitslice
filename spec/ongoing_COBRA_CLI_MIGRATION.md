@@ -4,7 +4,7 @@
 
 - Current status: `ongoing`
 - Last updated: `2026-05-01`
-- Current PR: PR 1, Cobra root scaffold
+- Current PR: PR 2, local-only commands
 
 ## Goal
 
@@ -89,9 +89,10 @@ Scope:
 - Keep local-only commands independent from gRPC client initialization.
 
 Acceptance:
-- Local command tests pass.
-- `gs cache stats --json` works.
-- `gs jobs list --json` works.
+- Local command tests pass. DONE in PR 2.
+- `gs cache stats --json` works. DONE in PR 2.
+- `gs jobs list --json` works. DONE in PR 2.
+- Leading global flags still work before local-only commands. DONE in PR 2.
 
 ### PR 3: Auth Commands
 
