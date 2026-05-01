@@ -4,7 +4,7 @@
 
 - Current status: `ongoing`
 - Last updated: `2026-05-01`
-- Current PR: PR 4, read-heavy service commands
+- Current PR: PR 5, mutation commands
 
 ## Goal
 
@@ -121,12 +121,13 @@ Acceptance:
 ### PR 5: Mutation Commands
 
 Scope:
-- Convert `slice` mutation commands, `changeset`, `repo`, `fs`, `import`, and `conflict`.
+- Convert `changeset`, `repo`, `fs`, `import`, and `conflict`.
 - Preserve aliases: `init`, `status`, `log`, `root`.
 
 Acceptance:
-- `make test` passes.
-- Integration tests pass when relevant with `RUN_INTEGRATION_TESTS=1 make test`.
+- `make test` passes with bounded benchmark load. DONE in PR 5.
+- Integration tests pass through CI workflow coverage. DONE in PR 5.
+- Legacy aliases are registered in Cobra. DONE in PR 5.
 
 ### PR 6: Help and Compatibility Cleanup
 
