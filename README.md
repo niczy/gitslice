@@ -6,8 +6,9 @@
 
 ```
 .
-├── gs_cli/                # CLI client implementation
+├── gs/                    # Installable CLI command
 │   └── main.go
+├── gs_cli/                # CLI client implementation
 ├── internal/              # Storage and shared implementations
 │   ├── gateway/
 │   └── storage/
@@ -127,7 +128,7 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 go build -o core_server ./servers/core/
 
 # Build CLI
-go build -o gs_cli/gs_cli ./gs_cli/
+go build -o bin/gs ./gs/
 ```
 
 ### Run
@@ -179,8 +180,12 @@ OBJECT_STORE_TYPE=filesystem \
 OBJECT_STORE_DIR="$PWD/.objectstore" \
 CORE_SERVICE_PORT=50051 ./core_server
 
+# Install the latest CLI from GitHub.
+# Requires Go, git, and protoc.
+curl -fsSL https://raw.githubusercontent.com/niczy/gitslice/main/install-gs.sh | sh
+
 # Run CLI (override addresses if needed)
-./gs_cli --help
+./bin/gs --help
 ```
 
 ### Deployment Topology

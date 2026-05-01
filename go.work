@@ -2,9 +2,6 @@ go 1.24
 
 use (
 	.
-	./services/admin
-	./services/file
-	./services/slice
 	./servers/core
 	./stubs/cloudstore
 	./stubs/googleapi

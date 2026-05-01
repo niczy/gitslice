@@ -108,7 +108,7 @@ export default function DocsPage({ onBrowseRepo }) {
             <p>Start with the CLI or an agent key</p>
           </div>
           <pre className="code-block">
-            <code>{`go install github.com/niczy/gitslice/gs@latest
+            <code>{`curl -fsSL https://raw.githubusercontent.com/niczy/gitslice/main/install-gs.sh | sh
 gs auth keygen --out ~/.config/gitslice/agent_ed25519
 gs auth login --key ~/.config/gitslice/agent_ed25519`}</code>
           </pre>
