@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { buildLegacyRedirectPath, buildPath } from './utils/routing.js';
-import { apiBaseUrl, currentUsername } from './utils/api.js';
+import { apiBaseUrl, currentUsername, searchWorkspaceFiles } from './utils/api.js';
 import { signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 import { useWebSession } from './hooks/useWebSession.js';
 import { useSlicesQuery } from './hooks/useSlices.js';
@@ -64,6 +64,14 @@ function App({
   const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser');
   const [currentSliceId, setCurrentSliceId] = useState(() => getHomeSliceId(initialUsername));
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
+  const [browserSearchQuery, setBrowserSearchQuery] = useState('');
+  const [browserSearchGlob, setBrowserSearchGlob] = useState('');
+  const [browserSearchRegex, setBrowserSearchRegex] = useState(false);
+  const [browserSearchMatches, setBrowserSearchMatches] = useState([]);
+  const [browserSearchLoading, setBrowserSearchLoading] = useState(false);
+  const [browserSearchError, setBrowserSearchError] = useState('');
+  const [browserSearchHasSearched, setBrowserSearchHasSearched] = useState(false);
+  const [browserOpenFileRequest, setBrowserOpenFileRequest] = useState(null);
   const previousUsernameRef = useRef(username);
   const hasExplicitSliceSelectionRef = useRef(false);
 
@@ -77,6 +85,7 @@ function App({
   const slices = slicesQuery.data || [];
   const slicesLoading = slicesQuery.isLoading;
   const slicesError = slicesQuery.error ? 'Unable to load slices.' : '';
+  const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId) || null;
 
   useEffect(() => {
     if (activePage === 'browser' || activePage === 'diff' || activePage === 'changeset') {
@@ -183,7 +192,54 @@ function App({
   const handleSliceChange = useCallback((sliceId) => {
     hasExplicitSliceSelectionRef.current = true;
     setCurrentSliceId(sliceId);
+    setBrowserSearchMatches([]);
+    setBrowserSearchError('');
+    setBrowserSearchHasSearched(false);
   }, []);
+
+  const handleBrowserSearchSubmit = useCallback(async (event) => {
+    event.preventDefault();
+    const query = browserSearchQuery.trim();
+    if (!query) {
+      setBrowserSearchError('Enter a search query.');
+      setBrowserSearchMatches([]);
+      setBrowserSearchHasSearched(false);
+      return;
+    }
+    if (!currentSliceId || currentSlice?.is_root) {
+      setBrowserSearchError('Choose a signed-in home or custom slice to search.');
+      setBrowserSearchMatches([]);
+      setBrowserSearchHasSearched(true);
+      return;
+    }
+
+    setBrowserSearchLoading(true);
+    setBrowserSearchError('');
+    try {
+      const payload = await searchWorkspaceFiles(currentSliceId, {
+        query,
+        glob: browserSearchGlob,
+        regex: browserSearchRegex,
+      });
+      setBrowserSearchMatches((payload?.matches || []).map((match) => ({
+        path: match?.path ?? '',
+        line_number: match?.line_number ?? match?.lineNumber ?? 0,
+        line: match?.line ?? '',
+      })));
+      setBrowserSearchHasSearched(true);
+    } catch (err) {
+      setBrowserSearchMatches([]);
+      setBrowserSearchError(err?.message || 'Unable to search files.');
+      setBrowserSearchHasSearched(true);
+    } finally {
+      setBrowserSearchLoading(false);
+    }
+  }, [browserSearchGlob, browserSearchQuery, browserSearchRegex, currentSlice?.is_root, currentSliceId]);
+
+  const openBrowserSearchResult = useCallback((path) => {
+    setBrowserOpenFileRequest({ path, token: Date.now() });
+    navigate('browser');
+  }, [navigate]);
 
   const navigateBackFromDiff = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -310,6 +366,21 @@ function App({
         onOpenRepos={openBrowserHome}
         onLogin={openLogin}
         isNavActive={isNavActive}
+        browserSearch={{
+          visible: isBrowserLayout && isAuthenticated,
+          query: browserSearchQuery,
+          glob: browserSearchGlob,
+          regex: browserSearchRegex,
+          loading: browserSearchLoading,
+          error: browserSearchError,
+          matches: browserSearchMatches,
+          empty: browserSearchHasSearched && !browserSearchLoading && !browserSearchError && browserSearchMatches.length === 0,
+          onQueryChange: setBrowserSearchQuery,
+          onGlobChange: setBrowserSearchGlob,
+          onRegexChange: setBrowserSearchRegex,
+          onSubmit: handleBrowserSearchSubmit,
+          onOpenResult: openBrowserSearchResult,
+        }}
       />
 
       <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
@@ -375,6 +446,7 @@ function App({
               slicesLoading={slicesLoading}
               slicesError={slicesError}
               onRefreshSlices={refreshSlices}
+              openFileRequest={browserOpenFileRequest}
             />
           </div>
         )}
