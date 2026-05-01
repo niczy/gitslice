@@ -30,6 +30,9 @@ func NewRootCommand(args []string) *cobra.Command {
 			newJobsCommand(),
 			newCheckoutWatcherCommand(),
 			newDetachedJobRunnerCommand(),
+			newAuthCommand(),
+			newLoginCommand(),
+			newLogoutCommand(),
 		)
 	}
 	cmd.SetArgs(args)

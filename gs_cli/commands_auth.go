@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -15,6 +17,39 @@ const (
 	authMethodDevice   = "device"
 	authMethodUsername = "username"
 )
+
+func newAuthCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                "auth <command> [options]",
+		Short:              "Manage CLI auth, agent keys, and key-based login",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runAuthCommand(args)
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printAuthHelp()
+	})
+	return cmd
+}
+
+func runAuthCommand(args []string) {
+	args = configureCLIBehavior(args)
+	configureCLIOutputMode(args)
+
+	cli, err := newCLIFromFlags()
+	if err != nil {
+		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
+	}
+	defer cli.Close()
+	runAuthCommandWithCLI(cli, args)
+}
+
+func runAuthCommandWithCLI(cli *CLI, args []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	handleAuthCommand(ctx, cli, *apiKeyFlag, *userFlag, args)
+}
 
 func handleAuthCommand(ctx context.Context, cli *CLI, apiKeyFlag, userFlag string, args []string) {
 	args, _ = consumeBoolFlag(args, "json")

@@ -89,15 +89,7 @@ func runLegacyCommand(args []string) {
 		return
 	}
 
-	if *coreServerAddr != "" {
-		*accountServerAddr = *coreServerAddr
-		*sliceServerAddr = *coreServerAddr
-		*adminServerAddr = *coreServerAddr
-		*fileServerAddr = *coreServerAddr
-		*fsServerAddr = *coreServerAddr
-	}
-
-	cli, err := NewCLI(*accountServerAddr, *sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
+	cli, err := newCLIFromFlags()
 	if err != nil {
 		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
 	}
@@ -124,9 +116,7 @@ func runLegacyCommand(args []string) {
 		return
 	}
 	if args[0] == "auth" {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer cancel()
-		handleAuthCommand(ctx, cli, *apiKeyFlag, *userFlag, args[1:])
+		runAuthCommandWithCLI(cli, args[1:])
 		return
 	}
 
@@ -176,6 +166,17 @@ func runLegacyCommand(args []string) {
 	default:
 		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown command: %s", args[0]), false, "gs --help")
 	}
+}
+
+func newCLIFromFlags() (*CLI, error) {
+	if *coreServerAddr != "" {
+		*accountServerAddr = *coreServerAddr
+		*sliceServerAddr = *coreServerAddr
+		*adminServerAddr = *coreServerAddr
+		*fileServerAddr = *coreServerAddr
+		*fsServerAddr = *coreServerAddr
+	}
+	return NewCLI(*accountServerAddr, *sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
 }
 
 func handleDetachedJobRunner(args []string) {

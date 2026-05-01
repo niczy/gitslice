@@ -117,7 +117,7 @@ func TestRootCommandDelegatesHelpToLegacyHelp(t *testing.T) {
 
 func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
-	for _, name := range []string{"cache", "jobs", "__watch-checkout", "__run-job"} {
+	for _, name := range []string{"cache", "jobs", "__watch-checkout", "__run-job", "auth", "login", "logout"} {
 		child, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%q) failed: %v", name, err)
@@ -178,6 +178,26 @@ func TestRootCommandKeepsLeadingGlobalFlagsCompatibleForLocalCommands(t *testing
 	}
 	if !cliNonInteractive {
 		t.Fatal("expected leading --non-interactive to be honored")
+	}
+}
+
+func TestRootCommandRunsAuthStatusCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"auth", "status", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var decoded struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode auth status JSON: %v\n%s", err, output)
+	}
+	if decoded.Authenticated {
+		t.Fatalf("expected temp HOME to be unauthenticated, got: %s", output)
 	}
 }
 

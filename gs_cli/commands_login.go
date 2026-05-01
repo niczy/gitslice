@@ -10,8 +10,69 @@ import (
 	"time"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
 )
+
+func newLoginCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "login [status|<username>]",
+		Short:              "Log in or show the current login",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runLoginCommand(args)
+		},
+	}
+}
+
+func newLogoutCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "logout",
+		Short:              "Clear stored CLI auth",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			runLogoutCommand(args)
+		},
+	}
+}
+
+func runLoginCommand(args []string) {
+	args = configureCLIBehavior(args)
+	configureCLIOutputMode(args)
+
+	cli, err := newCLIFromFlags()
+	if err != nil {
+		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
+	}
+	defer cli.Close()
+
+	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
+	if err != nil && len(args) == 0 {
+		commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	handleLogin(ctx, cli, authConfig, args)
+}
+
+func runLogoutCommand(args []string) {
+	args = configureCLIBehavior(args)
+	configureCLIOutputMode(args)
+
+	cli, err := newCLIFromFlags()
+	if err != nil {
+		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
+	}
+	defer cli.Close()
+
+	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
+	if err != nil {
+		commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	handleLogout(ctx, cli, authConfig, args)
+}
 
 func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []string) {
 	args, _ = consumeBoolFlag(args, "json")
