@@ -27,6 +27,7 @@ func newJobsCommand() *cobra.Command {
 			Short:              "List detached CLI jobs",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				handleJobsList(args)
 			},
 		},
@@ -35,6 +36,7 @@ func newJobsCommand() *cobra.Command {
 			Short:              "Show a detached job",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				handleJobsGet(args)
 			},
 		},
@@ -43,6 +45,7 @@ func newJobsCommand() *cobra.Command {
 			Short:              "Wait for a detached job to finish",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				handleJobsWait(args)
 			},
 		},
@@ -51,6 +54,7 @@ func newJobsCommand() *cobra.Command {
 			Short:              "Print stdout/stderr captured for a detached job",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				handleJobsLogs(args)
 			},
 		},

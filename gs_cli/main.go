@@ -223,7 +223,7 @@ func newDetachedJobRunnerCommand() *cobra.Command {
 
 func configureCLIBehavior(args []string) []string {
 	remaining, requested := consumeBoolFlag(args, "non-interactive")
-	cliNonInteractive = *nonInteractive || requested || envFlagEnabled(os.Getenv("GS_NON_INTERACTIVE"))
+	cliNonInteractive = cliNonInteractive || *nonInteractive || requested || envFlagEnabled(os.Getenv("GS_NON_INTERACTIVE"))
 	return remaining
 }
 

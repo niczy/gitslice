@@ -73,6 +73,7 @@ func runCobraRoot(args []string) {
 		printHelp()
 		return
 	}
+	configureCLIOutputMode(remaining)
 	remaining = configureCLIBehavior(remaining)
 	if err := NewRootCommand(remaining).Execute(); err != nil {
 		commandFatal("INVALID_ARGUMENT", err.Error(), false, "gs --help")
