@@ -24,6 +24,7 @@ func newCacheCommand() *cobra.Command {
 			Short:              "Show local cache size and tracked checkout summary",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				cache, err := NewCacheManager()
 				if err != nil {
 					commandFatalf("CACHE_INIT_FAILED", false, "", "Failed to initialize cache manager: %v", err)
@@ -36,6 +37,7 @@ func newCacheCommand() *cobra.Command {
 			Short:              "Remove stale tracked checkout records",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				handleCachePrune(args)
 			},
 		},
@@ -44,6 +46,7 @@ func newCacheCommand() *cobra.Command {
 			Short:              "Remove cached objects and/or tracked checkout records",
 			DisableFlagParsing: true,
 			Run: func(cmd *cobra.Command, args []string) {
+				configureCLIOutputMode(args)
 				cache, err := NewCacheManager()
 				if err != nil {
 					commandFatalf("CACHE_INIT_FAILED", false, "", "Failed to initialize cache manager: %v", err)

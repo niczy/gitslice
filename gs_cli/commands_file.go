@@ -19,6 +19,10 @@ func newFileCommand() *cobra.Command {
 		Short:              "Browse files and file history",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runAuthenticatedCLICommand(args, 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 				handleFileCommand(ctx, cli, args)
 			})

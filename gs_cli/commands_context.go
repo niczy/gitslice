@@ -13,14 +13,22 @@ import (
 )
 
 func newContextCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "context [options]",
 		Short:              "Print agent-friendly current auth/checkout/changeset context",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runAuthenticatedCLICommand(args, 24*time.Hour, handleContext)
 		},
 	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printContextHelp()
+	})
+	return cmd
 }
 
 func handleContext(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {

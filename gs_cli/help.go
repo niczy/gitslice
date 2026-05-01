@@ -144,6 +144,81 @@ func printJobsHelp() {
 	fmt.Println("  gs jobs logs job_123 --json")
 }
 
+func printDoctorHelp() {
+	fmt.Println("Usage: gs doctor [options]")
+	fmt.Println("Check auth, slice binding, cache, and service health.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json   Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs doctor --json")
+}
+
+func printContextHelp() {
+	fmt.Println("Usage: gs context [options]")
+	fmt.Println("Print agent-friendly current auth, checkout, and changeset context.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json   Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs context --json")
+}
+
+func printLoginHelp() {
+	fmt.Println("Usage: gs login [status|<username>] [options]")
+	fmt.Println("Log in with stored auth, show current auth status, or use a legacy username.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json              Print structured JSON output")
+	fmt.Println("  --non-interactive   Fail instead of opening an interactive flow")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs login status --json")
+	fmt.Println("  gs login --non-interactive --json")
+}
+
+func printLogoutHelp() {
+	fmt.Println("Usage: gs logout [options]")
+	fmt.Println("Clear stored bearer credentials or legacy auth.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json   Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs logout --json")
+}
+
+func printStatusHelp() {
+	fmt.Println("Usage: gs status [options]")
+	fmt.Println("Legacy alias for gs slice status.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json     Print structured JSON output")
+	fmt.Println("  --remote   Include remote slice status")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs status --json")
+}
+
+func printInitHelp() {
+	fmt.Println("Usage: gs init <slice-id> [options]")
+	fmt.Println("Legacy alias for gs slice bind.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json   Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs init root_slice --json")
+}
+
+func printLogHelp() {
+	fmt.Println("Usage: gs log [<slice-id>] [options]")
+	fmt.Println("Legacy alias for gs slice history.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json   Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs log --json")
+}
+
+func printRootHelp() {
+	fmt.Println("Usage: gs root [options]")
+	fmt.Println("Legacy alias for gs slice root.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --json   Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs root --json")
+}
+
 func printChangesetHelp() {
 	fmt.Println("Usage: gs changeset <command> [options]")
 	fmt.Println("\nCommands:")

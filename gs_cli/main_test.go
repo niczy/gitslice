@@ -115,6 +115,49 @@ func TestRootCommandDelegatesHelpToLegacyHelp(t *testing.T) {
 	}
 }
 
+func TestRootCommandPrintsCommandSpecificHelp(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantUsage   string
+		wantExample string
+	}{
+		{
+			name:        "context",
+			args:        []string{"context", "--help"},
+			wantUsage:   "Usage: gs context [options]",
+			wantExample: "gs context --json",
+		},
+		{
+			name:        "changeset",
+			args:        []string{"changeset", "--help"},
+			wantUsage:   "Usage: gs changeset <command> [options]",
+			wantExample: "gs changeset show --json",
+		},
+		{
+			name:        "status",
+			args:        []string{"status", "--help"},
+			wantUsage:   "Usage: gs status [options]",
+			wantExample: "gs status --json",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := NewRootCommand(tc.args).Execute(); err != nil {
+					t.Fatalf("Execute failed: %v", err)
+				}
+			})
+
+			if !strings.Contains(output, tc.wantUsage) {
+				t.Fatalf("expected command usage %q in help output, got: %s", tc.wantUsage, output)
+			}
+			if !strings.Contains(output, tc.wantExample) {
+				t.Fatalf("expected example %q in help output, got: %s", tc.wantExample, output)
+			}
+		})
+	}
+}
+
 func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
 	for _, name := range []string{

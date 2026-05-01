@@ -2,9 +2,9 @@
 
 ## Status
 
-- Current status: `ongoing`
+- Current status: `complete`
 - Last updated: `2026-05-01`
-- Current PR: PR 5, mutation commands
+- Current PR: PR 6, help and compatibility cleanup
 
 ## Goal
 
@@ -132,13 +132,13 @@ Acceptance:
 ### PR 6: Help and Compatibility Cleanup
 
 Scope:
-- Move command help text into Cobra commands.
-- Remove duplicate manual top-level routing.
-- Document final command tree in README/spec.
+- Move command help text into Cobra commands. DONE in PR 6.
+- Remove duplicate manual top-level routing. DONE in PR 6.
+- Document final command tree in README/spec. DONE in PR 6.
 
 Acceptance:
-- `gs help`, `gs --help`, and `gs <command> --help` are consistent.
-- Backward-compatible commands still work or have explicit migration notes.
+- `gs help`, `gs --help`, and `gs <command> --help` are consistent. DONE in PR 6.
+- Backward-compatible commands still work or have explicit migration notes. DONE in PR 6.
 
 ## Test Checklist After Each PR
 

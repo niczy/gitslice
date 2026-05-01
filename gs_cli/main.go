@@ -60,114 +60,6 @@ func Main() {
 	}
 }
 
-func runLegacyCommand(args []string) {
-	args = configureCLIBehavior(args)
-	if len(args) < 1 {
-		printHelp()
-		return
-	}
-	configureCLIOutputMode(args)
-
-	if args[0] == "cache" {
-		handleCacheCommand(args[1:])
-		return
-	}
-	if args[0] == "jobs" {
-		handleJobsCommand(args[1:])
-		return
-	}
-	if args[0] == "__watch-checkout" {
-		handleCheckoutWatcher(args[1:])
-		return
-	}
-	if args[0] == "__run-job" {
-		handleDetachedJobRunner(args[1:])
-		return
-	}
-	if args[0] == "slice" && len(args) > 1 && args[1] == "checkouts" {
-		handleSliceCheckouts(args[2:])
-		return
-	}
-
-	cli, err := newCLIFromFlags()
-	if err != nil {
-		commandFatalf("CLI_INIT_FAILED", true, "", "Failed to initialize CLI: %v", err)
-	}
-	defer cli.Close()
-
-	if args[0] == "login" {
-		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
-		if err != nil && len(args) == 1 {
-			commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer cancel()
-		handleLogin(ctx, cli, authConfig, args[1:])
-		return
-	}
-	if args[0] == "logout" {
-		authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
-		if err != nil {
-			commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve current auth: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		handleLogout(ctx, cli, authConfig, args[1:])
-		return
-	}
-	if args[0] == "auth" {
-		runAuthCommandWithCLI(cli, args[1:])
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
-	defer cancel()
-	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
-	if err != nil {
-		commandFatalf("AUTH_RESOLUTION_FAILED", false, "", "Failed to resolve auth: %v", err)
-	}
-	authConfig, err = ensureCLIAuthReady(ctx, cli, authConfig)
-	if err != nil {
-		commandFatalf("AUTH_REFRESH_FAILED", true, "", "Failed to refresh stored auth: %v", err)
-	}
-	ctx = withCLIAuth(ctx, authConfig)
-
-	switch args[0] {
-	case "slice":
-		handleSliceCommand(ctx, cli, args[1:])
-	case "changeset":
-		handleChangesetCommand(ctx, cli, args[1:])
-	case "status":
-		handleStatus(ctx, cli, args[1:])
-	case "init":
-		handleInit(ctx, cli, args[1:])
-	case "log":
-		handleLog(ctx, cli, args[1:])
-	case "conflict":
-		handleConflictCommand(ctx, cli, args[1:])
-	case "root":
-		handleRootSlice(ctx, cli)
-	case "import":
-		handleImportCommand(ctx, cli, args[1:])
-	case "repo":
-		handleRepoCommand(ctx, cli, args[1:])
-	case "file":
-		handleFileCommand(ctx, cli, args[1:])
-	case "fs":
-		handleFilesystemCommand(ctx, cli, authConfig, args[1:])
-	case "cache":
-		handleCacheCommand(args[1:])
-	case "jobs":
-		handleJobsCommand(args[1:])
-	case "doctor":
-		handleDoctor(ctx, cli, authConfig, args[1:])
-	case "context":
-		handleContext(ctx, cli, authConfig, args[1:])
-	default:
-		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown command: %s", args[0]), false, "gs --help")
-	}
-}
-
 func newCLIFromFlags() (*CLI, error) {
 	if *coreServerAddr != "" {
 		*accountServerAddr = *coreServerAddr
@@ -210,64 +102,104 @@ func newAuthenticatedCobraCommand(use, short string, timeout time.Duration, hand
 		Short:              short,
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
+			if isHelpRequest(args) {
+				_ = cmd.Help()
+				return
+			}
 			runAuthenticatedCLICommand(args, timeout, handler)
 		},
 	}
 }
 
 func newChangesetCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("changeset <command> [options]", "Manage change lists", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("changeset <command> [options]", "Manage change lists", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleChangesetCommand(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printChangesetHelp()
+	})
+	return cmd
 }
 
 func newConflictCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("conflict <command> [options]", "Detect and resolve conflicts", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("conflict <command> [options]", "Detect and resolve conflicts", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleConflictCommand(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printConflictHelp()
+	})
+	return cmd
 }
 
 func newImportCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("import <command> [options]", "Import external repositories", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("import <command> [options]", "Import external repositories", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleImportCommand(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printImportHelp()
+	})
+	return cmd
 }
 
 func newRepoCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("repo <command> [options]", "Bind remote repositories into your home slice", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("repo <command> [options]", "Bind remote repositories into your home slice", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleRepoCommand(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printRepoHelp()
+	})
+	return cmd
 }
 
 func newFilesystemCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("fs <command> [options]", "Remote home filesystem operations", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("fs <command> [options]", "Remote home filesystem operations", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleFilesystemCommand(ctx, cli, authConfig, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printFilesystemHelp()
+	})
+	return cmd
 }
 
 func newStatusCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("status [options]", "Alias for slice status", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("status [options]", "Alias for slice status", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleStatus(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printStatusHelp()
+	})
+	return cmd
 }
 
 func newInitCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("init <slice-id> [options]", "Alias for slice bind", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("init <slice-id> [options]", "Alias for slice bind", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleInit(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printInitHelp()
+	})
+	return cmd
 }
 
 func newLogCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("log [<slice-id>] [options]", "Alias for slice history", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("log [<slice-id>] [options]", "Alias for slice history", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		handleLog(ctx, cli, args)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printLogHelp()
+	})
+	return cmd
 }
 
 func newRootSliceCommand() *cobra.Command {
-	return newAuthenticatedCobraCommand("root [options]", "Alias for slice root", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+	cmd := newAuthenticatedCobraCommand("root [options]", "Alias for slice root", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 		configureCLIOutputMode(args)
 		handleRootSlice(ctx, cli)
 	})
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printRootHelp()
+	})
+	return cmd
 }
 
 func handleDetachedJobRunner(args []string) {
@@ -291,7 +223,7 @@ func newDetachedJobRunnerCommand() *cobra.Command {
 
 func configureCLIBehavior(args []string) []string {
 	remaining, requested := consumeBoolFlag(args, "non-interactive")
-	cliNonInteractive = *nonInteractive || requested || envFlagEnabled(os.Getenv("GS_NON_INTERACTIVE"))
+	cliNonInteractive = cliNonInteractive || *nonInteractive || requested || envFlagEnabled(os.Getenv("GS_NON_INTERACTIVE"))
 	return remaining
 }
 
