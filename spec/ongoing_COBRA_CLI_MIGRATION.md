@@ -4,7 +4,7 @@
 
 - Current status: `ongoing`
 - Last updated: `2026-05-01`
-- Current PR: PR 3, auth commands
+- Current PR: PR 4, read-heavy service commands
 
 ## Goal
 
@@ -109,12 +109,14 @@ Acceptance:
 ### PR 4: Read-Heavy Service Commands
 
 Scope:
-- Convert `doctor`, `context`, `file`, and read-only `slice` commands.
+- Convert `doctor`, `context`, `file`, and `slice` command wrappers.
 - Introduce shared Cobra helpers for connection and auth initialization.
+- Preserve local-only `slice checkouts` behavior without auth/gRPC initialization.
 
 Acceptance:
-- Existing unit tests pass.
-- A server-backed smoke test can run `gs context --json` and `gs doctor --json`.
+- Existing unit tests pass. DONE in PR 4.
+- A server-backed smoke test can run `gs context --json` and `gs doctor --json`. DONE in PR 4.
+- `gs slice checkouts` remains local-only. DONE in PR 4.
 
 ### PR 5: Mutation Commands
 
