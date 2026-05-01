@@ -1,6 +1,12 @@
 package gscli
 
-import "testing"
+import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestNewCLIReusesConnectionsForSameAddress(t *testing.T) {
 	addr := "passthrough:///shared-target"
@@ -91,4 +97,48 @@ func TestConfigureCLIBehaviorHonorsEnvAndGlobalFlag(t *testing.T) {
 	if len(args) != 1 || args[0] != "context" {
 		t.Fatalf("unexpected remaining args from flag case: %#v", args)
 	}
+}
+
+func TestRootCommandDelegatesHelpToLegacyHelp(t *testing.T) {
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"help"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "Usage: gs <command> [options]") {
+		t.Fatalf("expected legacy usage in help output, got: %s", output)
+	}
+	if !strings.Contains(output, "Commands:") {
+		t.Fatalf("expected command list in help output, got: %s", output)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdout: %v", err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = original
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, reader); err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
+	return buf.String()
 }

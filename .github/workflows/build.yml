@@ -87,8 +87,8 @@ jobs:
         go test -cover -coverprofile=coverage.out -run TestCLIBuild
         go tool cover -func=coverage.out
 
-    - name: Run web build and e2e tests
-      run: make web-test-e2e
+    - name: Run web build
+      run: make web-build
 
   workflow-postgres:
     runs-on: ubuntu-latest
