@@ -94,6 +94,7 @@ export default function RepoBrowser({
   slices,
   currentSliceId,
   authUsername,
+  publicApiBaseUrl = '',
   onSliceChange,
   onNavigateToDiff,
   refreshHistoryToken,
@@ -1444,6 +1445,8 @@ export default function RepoBrowser({
               <SliceSettings
                 sliceId={sliceId}
                 sliceName={currentSliceLabel}
+                slice={currentSlice}
+                publicApiBaseUrl={publicApiBaseUrl}
               />
             </div>
           </div>

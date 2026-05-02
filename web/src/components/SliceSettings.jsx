@@ -77,6 +77,30 @@ function buildPublicUrl(sliceId, path, entryType) {
   return `${window.location.origin}${basePath}${suffix}?${params.toString()}`;
 }
 
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function encodeGitSlug(slug) {
+  return String(slug || '')
+    .split('/')
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/');
+}
+
+function buildGitEndpoint({ slice, publicApiBaseUrl }) {
+  const slug = String(slice?.slug || '').trim();
+  if (!slug) {
+    return '';
+  }
+  const baseUrl = normalizeBaseUrl(publicApiBaseUrl) || (typeof window !== 'undefined' ? window.location.origin : '');
+  if (!baseUrl) {
+    return '';
+  }
+  return `${baseUrl}/git/${encodeGitSlug(slug)}.git`;
+}
+
 async function copyToClipboard(text) {
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -96,7 +120,7 @@ async function copyToClipboard(text) {
   document.body.removeChild(textarea);
 }
 
-export default function SliceSettings({ sliceId, sliceName }) {
+export default function SliceSettings({ sliceId, sliceName, slice = null, publicApiBaseUrl = '' }) {
   const [sliceVisibility, setSliceVisibility] = useState('private');
   const [slicePropagationMode, setSlicePropagationMode] = useState('unchanged');
   const [sliceVisibilityLoading, setSliceVisibilityLoading] = useState(true);
@@ -108,6 +132,10 @@ export default function SliceSettings({ sliceId, sliceName }) {
   const [copyError, setCopyError] = useState('');
 
   const slicePublicUrl = useMemo(() => buildPublicUrl(sliceId, '', 'directory'), [sliceId]);
+  const gitEndpoint = useMemo(
+    () => buildGitEndpoint({ slice, publicApiBaseUrl }),
+    [publicApiBaseUrl, slice],
+  );
 
   useEffect(() => {
     if (!sliceId) {
@@ -208,6 +236,42 @@ export default function SliceSettings({ sliceId, sliceName }) {
       </div>
 
       <div className="slice-settings-grid">
+        <Card className="border-border/70">
+          <CardContent className="pt-6">
+            <div className="slice-settings-card-header">
+              <div>
+                <h4>Git endpoint</h4>
+                <p>Use this endpoint as the Git remote for this slice.</p>
+              </div>
+            </div>
+
+            <div className="visibility-link-block">
+              <label className="visibility-field">
+                <span>Git remote URL</span>
+                <input
+                  readOnly
+                  value={gitEndpoint || 'Git endpoint unavailable'}
+                  data-testid="slice-git-endpoint-url"
+                />
+              </label>
+              <div className="visibility-link-actions">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!gitEndpoint}
+                  onClick={() => copyUrl('git', gitEndpoint)}
+                  data-testid="slice-git-endpoint-copy-url"
+                >
+                  {copiedTarget === 'git' ? 'Copied' : 'Copy Git endpoint'}
+                </Button>
+                <span className="slice-settings-note">
+                  Private slices require an authenticated Git client.
+                </span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card className="border-border/70">
           <CardContent className="pt-6">
             <div className="slice-settings-card-header">
