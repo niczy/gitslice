@@ -75,6 +75,7 @@ export function getPublicAuthConfig(request) {
   return {
     authProvider: String(authContext?.authProvider || getAuthProvider()).trim().toLowerCase() || 'local',
     allowDevLogin: isDevLoginEnabled(request, authContext),
+    publicApiBaseUrl: getGatewayTarget(),
   };
 }
 

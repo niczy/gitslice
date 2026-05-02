@@ -439,6 +439,7 @@ function App({
               slices={slices}
               currentSliceId={currentSliceId}
               authUsername={username}
+              publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
               onSliceChange={handleSliceChange}
               onNavigateToDiff={navigateToDiff}
               refreshHistoryToken={historyRefreshToken}
