@@ -2760,6 +2760,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enumerate parent slice entries: %v", err))
 	}
+	if err := validateFolderSelectionsExist(parentSlice, parentEntries, folderSelections); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	selectedFiles := collectSliceFilesForFolders(parentSlice, parentEntries, folderSelections)
 
 	newSlice := &models.Slice{
@@ -3216,6 +3219,66 @@ func buildSliceFolderMounts(selections []sliceFolderSelection) []models.SliceFol
 		})
 	}
 	return mounts
+}
+
+func validateFolderSelectionsExist(parentSlice *models.Slice, entries []*models.DirectoryEntry, selections []sliceFolderSelection) error {
+	for _, selection := range selections {
+		if selection.storedPath == "" {
+			continue
+		}
+		exists, exactFile := folderSelectionExists(parentSlice, entries, selection.storedPath)
+		if exists {
+			continue
+		}
+		if exactFile {
+			return fmt.Errorf("folder path %q is a file", selection.displayPath)
+		}
+		return fmt.Errorf("folder path %q does not exist in parent slice", selection.displayPath)
+	}
+	return nil
+}
+
+func folderSelectionExists(parentSlice *models.Slice, entries []*models.DirectoryEntry, storedPath string) (exists bool, exactFile bool) {
+	matches := func(rawPath string) (exact bool, descendant bool) {
+		cleaned := common.CleanRelativePath(rawPath)
+		if cleaned == "" {
+			return false, false
+		}
+		return cleaned == storedPath, strings.HasPrefix(cleaned, storedPath+"/")
+	}
+
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		exact, descendant := matches(entry.Path)
+		if descendant {
+			return true, false
+		}
+		if !exact {
+			continue
+		}
+		if entry.Type == "directory" {
+			return true, false
+		}
+		if entry.Type == "file" {
+			exactFile = true
+		}
+	}
+
+	if parentSlice != nil {
+		for _, rawPath := range parentSlice.Files {
+			exact, descendant := matches(rawPath)
+			if descendant {
+				return true, false
+			}
+			if exact {
+				exactFile = true
+			}
+		}
+	}
+
+	return false, exactFile
 }
 
 func (s *sliceServiceServer) enqueueRootPromotion(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {

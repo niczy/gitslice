@@ -728,6 +728,49 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 	}
 }
 
+func TestSliceMountAliasesSkipMissingBackingFolders(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "stale-mounts",
+		Name:      "stale-mounts",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "missing/folder", Alias: "missing"},
+			{SourcePath: "docs", Alias: "docs"},
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID("stale-mounts", "docs"),
+		Path:     "docs",
+		Type:     "directory",
+		ParentID: "stale-mounts",
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: "stale-mounts"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(resp.GetEntries()); got != 1 {
+		t.Fatalf("expected only existing mount, got %d entries: %#v", got, resp.GetEntries())
+	}
+	if got := resp.GetEntries()[0].GetPath(); got != "docs" {
+		t.Fatalf("expected docs mount, got %q", got)
+	}
+}
+
 func TestSliceMountRootEntriesUseFullAliasName(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

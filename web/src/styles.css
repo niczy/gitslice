@@ -3031,7 +3031,7 @@ body {
 
 .slice-settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -6231,7 +6231,7 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .sidebar-slice-section {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   padding-bottom: 14px;
   border-bottom: 1px solid var(--np-border-soft);
 }
@@ -6273,98 +6273,91 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .slice-nav-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .app-shell--browser .slice-nav-row.active {
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 28px;
 }
 
 .app-shell--browser .slice-nav-item {
-  display: grid;
-  justify-items: start;
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start !important;
+  justify-content: center !important;
   min-width: 0;
-  min-height: 38px;
+  min-height: 34px;
   width: 100%;
-  padding: 5px 8px;
-  border-radius: 4px;
-  color: var(--np-text);
+  padding: 4px 6px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--np-muted) !important;
+  cursor: pointer;
   text-align: left;
-}
-
-.app-shell--browser .current-slice-trigger {
-  display: grid;
-  justify-items: start;
-  width: 100%;
-  min-height: 40px;
-  margin-bottom: 8px;
-  padding: 6px 8px 6px 10px;
-  border: 1px solid var(--np-border-soft);
-  border-left: 3px solid var(--np-primary);
-  border-radius: 4px;
-  background: var(--np-surface);
-  color: var(--np-primary);
-  text-align: left;
-}
-
-.app-shell--browser .current-slice-trigger:hover {
-  background: var(--np-container);
-  transform: none;
+  --tw-ring-color: transparent;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
 }
 
 .app-shell--browser .slice-nav-row.active .slice-nav-item {
-  background: var(--np-container);
-  box-shadow: inset 2px 0 var(--np-primary);
-  color: var(--np-primary);
+  color: var(--np-primary) !important;
 }
 
 .app-shell--browser .slice-nav-item:hover {
-  background: var(--np-container);
-  color: var(--np-primary);
+  background: transparent !important;
+  color: var(--np-primary) !important;
   transform: none;
+}
+
+.app-shell--browser .slice-nav-item:focus,
+.app-shell--browser .slice-nav-item:active,
+.app-shell--browser .slice-nav-item:focus-visible {
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
 }
 
 .app-shell--browser .slice-nav-name,
 .app-shell--browser .slice-nav-meta {
   max-width: 100%;
   overflow: hidden;
+  cursor: pointer;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .app-shell--browser .slice-nav-name {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 650;
   line-height: 16px;
 }
 
 .app-shell--browser .slice-nav-meta {
-  color: var(--np-muted);
+  color: color-mix(in srgb, var(--np-muted) 72%, white);
   font-size: 11px;
   font-weight: 500;
   line-height: 14px;
 }
 
-.app-shell--browser .slice-refresh-button {
-  height: 28px;
-  min-height: 28px;
-  padding: 0 8px;
-  border-radius: 4px;
+.app-shell--browser .slice-nav-row.active .slice-nav-meta {
   color: var(--np-muted);
-  font-size: 12px;
-  font-weight: 700;
 }
 
-.app-shell--browser .slice-refresh-button:hover {
-  background: var(--np-container);
-  color: var(--np-primary);
-}
-
-.app-shell--browser .sidebar-files-return {
-  width: 100%;
-  margin-bottom: 8px;
+.app-shell--browser .sidebar-slice-section .slice-settings-toggle {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
 }
 
 .app-shell--browser .sidebar-tree-section > .tree-list {
@@ -6601,6 +6594,55 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .code-content {
   padding: 24px;
   background: var(--np-surface);
+}
+
+.app-shell--browser .slice-settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(27, 28, 29, 0.28);
+}
+
+.app-shell--browser .slice-settings-modal {
+  position: relative;
+  width: min(1120px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+  box-shadow: 0 18px 40px rgba(4, 27, 60, 0.18);
+}
+
+.app-shell--browser .slice-settings-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+  color: var(--np-muted);
+  box-shadow: none;
+}
+
+.app-shell--browser .slice-settings-modal-close:hover {
+  background: var(--np-container);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings {
+  min-height: 0;
+  max-height: min(820px, calc(100vh - 48px));
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 24px;
 }
 
 .app-shell--browser .file-preview,

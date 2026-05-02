@@ -1260,6 +1260,36 @@ func TestCreateSliceUsesFolderPathAsDefaultName(t *testing.T) {
 	}
 }
 
+func TestCreateSliceFromFolderRejectsMissingFolder(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	if err := st.AddFileToSlice(ctx, "docs/README.md", "root_slice"); err != nil {
+		t.Fatalf("failed to add root file: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	_, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: "root_slice",
+		NewSliceId:    "missing-folder-slice",
+		FolderPath:    "does-not-exist",
+		Name:          "missing-folder",
+		Description:   "missing folder test",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for missing folder, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected missing folder message, got %v", err)
+	}
+	if _, getErr := st.GetSlice(ctx, "missing-folder-slice"); !errors.Is(getErr, storage.ErrSliceNotFound) {
+		t.Fatalf("missing folder slice should not be created, got %v", getErr)
+	}
+}
+
 func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

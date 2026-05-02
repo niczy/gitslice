@@ -87,7 +87,6 @@ export default function RepoBrowser({
   isActive,
   slicesLoading,
   slicesError,
-  onRefreshSlices,
   openFileRequest,
 }) {
   // Parse initial browser state from the current route on mount.
@@ -120,7 +119,7 @@ export default function RepoBrowser({
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
-  const [activeView, setActiveView] = useState('files');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isCompactHeader, setIsCompactHeader] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth <= 920));
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
   const [sliceFilter, setSliceFilter] = useState('');
@@ -238,26 +237,38 @@ export default function RepoBrowser({
   }, [authUsername, currentSliceDisplayName]);
 
   const canShowSettings = canLoad && !currentSlice?.is_root;
-  const viewingSettings = activeView === 'settings' && canShowSettings;
+  const viewingSettings = isSettingsOpen && canShowSettings;
 
   const openFilesView = useCallback(() => {
-    setActiveView('files');
+    setIsSettingsOpen(false);
   }, []);
 
   const openSettingsView = useCallback(() => {
-    setActiveView('settings');
-    setShowHistory(false);
+    setIsSettingsOpen(true);
   }, []);
 
   useEffect(() => {
-    if (!canShowSettings && activeView === 'settings') {
-      setActiveView('files');
+    if (!canShowSettings && isSettingsOpen) {
+      setIsSettingsOpen(false);
     }
-  }, [canShowSettings, activeView]);
+  }, [canShowSettings, isSettingsOpen]);
 
   useEffect(() => {
-    setActiveView('files');
+    setIsSettingsOpen(false);
   }, [sliceId, sliceHash]);
+
+  useEffect(() => {
+    if (!viewingSettings || typeof window === 'undefined') {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsSettingsOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [viewingSettings]);
 
   const breadcrumbs = useMemo(() => {
     const slicePrefix = currentSliceLabel || 'slice';
@@ -468,7 +479,7 @@ export default function RepoBrowser({
       setSidebarOpen(false);
     }
 
-    setActiveView('files');
+    setIsSettingsOpen(false);
     setSelectedFile(normalizedPath);
     setFileContent('');
     setEncodedFileContent('');
@@ -556,7 +567,7 @@ export default function RepoBrowser({
   }, [isActive, openFilePath, openFileRequest]);
 
   const renderFileActions = (onActionDone) => {
-    if (viewingSettings || !selectedFile) {
+    if (!selectedFile) {
       return null;
     }
 
@@ -946,15 +957,6 @@ export default function RepoBrowser({
                     <Button
                       type="button"
                       variant="ghost"
-                      size="sm"
-                      className="slice-refresh-button"
-                      onClick={onRefreshSlices}
-                    >
-                      Refresh
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
                       size="icon"
                       className="sidebar-toggle"
                       onClick={() => setSidebarOpen(false)}
@@ -965,16 +967,6 @@ export default function RepoBrowser({
                     </Button>
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="current-slice-trigger"
-                  onClick={() => setSliceFilter('')}
-                  data-testid="slice-dropdown-trigger"
-                >
-                  <span className="slice-nav-name">{currentSliceDisplayName || 'Select slice'}</span>
-                  <span className="slice-nav-meta">{currentSlice?.slug || sliceId || 'Choose workspace'}</span>
-                </Button>
                 <input
                   type="search"
                   className="slice-list-filter"
@@ -1012,8 +1004,8 @@ export default function RepoBrowser({
                                 size="icon"
                                 className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
                                 onClick={viewingSettings ? openFilesView : openSettingsView}
-                                aria-label={viewingSettings ? 'Show files' : 'Open slice settings'}
-                                title={viewingSettings ? 'Show files' : 'Slice settings'}
+                                aria-label={viewingSettings ? 'Close slice settings' : 'Open slice settings'}
+                                title={viewingSettings ? 'Close slice settings' : 'Slice settings'}
                                 data-testid="repo-view-settings"
                               >
                                 <Settings size={16} aria-hidden="true" />
@@ -1039,17 +1031,6 @@ export default function RepoBrowser({
                     <span className="tree-loading-dot" aria-hidden="true" />
                   </span>
                 </div>
-                {canShowSettings && viewingSettings && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="browser-header-secondary sidebar-files-return"
-                    onClick={openFilesView}
-                    data-testid="repo-view-settings"
-                  >
-                    Show files
-                  </Button>
-                )}
                 {error && <div className="panel-error">{error}</div>}
                 {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
                 {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
@@ -1099,18 +1080,7 @@ export default function RepoBrowser({
                 </div>
               </div>
               <div className="code-header-actions">
-                {viewingSettings && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="browser-header-secondary"
-                    onClick={openFilesView}
-                    data-testid="repo-view-files"
-                  >
-                    Files
-                  </Button>
-                )}
-                {!viewingSettings && selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
+                {selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
                 {!isCompactHeader && renderFileActions()}
                 <Button
                   type="button"
@@ -1124,7 +1094,7 @@ export default function RepoBrowser({
                 >
                   {insightOpen ? <PanelRightClose size={17} aria-hidden="true" /> : <PanelRightOpen size={17} aria-hidden="true" />}
                 </Button>
-                {isCompactHeader && !viewingSettings && selectedFile && (
+                {isCompactHeader && selectedFile && (
                   <div className="header-actions-menu" ref={actionMenuRef}>
                     <Button
                       type="button"
@@ -1148,17 +1118,9 @@ export default function RepoBrowser({
               </div>
             </div>
             <div className="code-content">
-              {viewingSettings && (
-                <SliceSettings
-                  sliceId={sliceId}
-                  sliceName={currentSliceLabel}
-                  selectedPath={focusedEntry?.path || ''}
-                  selectedPathType={focusedEntry?.type || 'directory'}
-                />
-              )}
-              {!viewingSettings && !selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-              {!viewingSettings && selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
-              {!viewingSettings && selectedFile && !showHistory && (
+              {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
+              {selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
+              {selectedFile && !showHistory && (
                 !fileError && (
                   isEditingFile ? (
                     <textarea
@@ -1189,7 +1151,7 @@ export default function RepoBrowser({
                   )
                 )
               )}
-              {!viewingSettings && selectedFile && showHistory && (
+              {selectedFile && showHistory && (
                 <div className="history-panel" data-testid="history-panel">
                   {historyLoading && <div className="history-loading">Loading history...</div>}
                   {historyError && <div className="panel-error">{historyError}</div>}
@@ -1335,6 +1297,37 @@ export default function RepoBrowser({
             </div>
           </aside>
         </div>
+        {viewingSettings && (
+          <div
+            className="slice-settings-modal-backdrop"
+            role="presentation"
+            onClick={openFilesView}
+          >
+            <div
+              className="slice-settings-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Slice settings"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="slice-settings-modal-close"
+                onClick={openFilesView}
+                aria-label="Close slice settings"
+                title="Close slice settings"
+              >
+                <X size={17} aria-hidden="true" />
+              </Button>
+              <SliceSettings
+                sliceId={sliceId}
+                sliceName={currentSliceLabel}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
