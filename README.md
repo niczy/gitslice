@@ -562,6 +562,11 @@ gs fs upload ./project /your_name/project
 gs fs download /your_name/project ./project-copy
 ```
 
+`gs fs upload` and `gs fs sync --direction push` skip common dependency,
+build, and cache directories by default (`node_modules`, `.git`, `dist`,
+`build`, `.next`, and similar paths). Add a `.gsignore` file for project-specific
+excludes, or pass `--include-ignored` to upload every regular file.
+
 ## Development
 
 ### Adding New Proto Definitions

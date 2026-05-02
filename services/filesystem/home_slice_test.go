@@ -142,6 +142,7 @@ func TestHomeSliceAbsolutePathLifecycle(t *testing.T) {
 		t.Fatalf("unexpected glob response: %#v", globResp)
 	}
 
+	waitForSearchIndexForTest(t, svc)
 	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: homeID,
 		Query:       "hello",
@@ -210,6 +211,7 @@ func TestHomeSliceRegexSearchUsesIndexedWorkspaceArtifact(t *testing.T) {
 		t.Fatalf("WriteFile(todo) failed: %v", err)
 	}
 
+	waitForSearchIndexForTest(t, svc)
 	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: homeID,
 		Query:       "hello.*world",
@@ -233,11 +235,21 @@ func TestHomeSliceRegexSearchUsesIndexedWorkspaceArtifact(t *testing.T) {
 		Glob:        "/tester/**/*.md",
 		Regex:       true,
 	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected Search(regex corrupt artifact) to report index not ready, got response=%#v err=%v", searchResp, err)
+	}
+	waitForSearchIndexForTest(t, svc)
+	searchResp, err = svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: homeID,
+		Query:       "hello.*world",
+		Glob:        "/tester/**/*.md",
+		Regex:       true,
+	})
 	if err != nil {
-		t.Fatalf("Search(regex fallback) failed: %v", err)
+		t.Fatalf("Search(regex repaired index) failed: %v", err)
 	}
 	if len(searchResp.GetMatches()) != 1 || searchResp.GetMatches()[0].GetPath() != "/tester/docs/README.md" {
-		t.Fatalf("unexpected regex fallback response: %#v", searchResp)
+		t.Fatalf("unexpected regex repaired index response: %#v", searchResp)
 	}
 	after := snapshotFilesystemMetrics()
 

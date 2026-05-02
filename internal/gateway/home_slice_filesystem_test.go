@@ -86,24 +86,18 @@ func TestGatewayFilesystemHomeSliceAbsolutePaths(t *testing.T) {
 	searchValues := url.Values{}
 	searchValues.Set("query", "hello")
 	searchValues.Set("glob", "/tester/**/*.md")
-	searchReq, err := http.NewRequest(
-		http.MethodGet,
-		gatewayURL+"/v1/fs/workspaces/"+url.PathEscape(homeID)+":search?"+searchValues.Encode(),
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("new search request: %v", err)
-	}
-	searchReq.Header.Set("Authorization", "User tester")
-	searchResp, err := client.Do(searchReq)
-	if err != nil {
-		t.Fatalf("search request failed: %v", err)
-	}
-	if searchResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(searchResp.Body)
-		searchResp.Body.Close()
-		t.Fatalf("unexpected search status %d: %s", searchResp.StatusCode, string(body))
-	}
+	searchResp := doSearchRequestEventuallyOK(t, client, func() (*http.Request, error) {
+		searchReq, err := http.NewRequest(
+			http.MethodGet,
+			gatewayURL+"/v1/fs/workspaces/"+url.PathEscape(homeID)+":search?"+searchValues.Encode(),
+			nil,
+		)
+		if err != nil {
+			return nil, err
+		}
+		searchReq.Header.Set("Authorization", "User tester")
+		return searchReq, nil
+	})
 
 	var searchPayload struct {
 		Glob    string `json:"glob"`

@@ -21,12 +21,13 @@ func BuildFileBlob(content []byte, weighter BigramWeighter, mode SparseMode) (*F
 	if !IsIndexableText(content) {
 		return nil, ErrNonIndexableText
 	}
+	_, _ = weighter, mode
 	return &FileBlob{
 		Version:           CurrentBlobVersion,
 		SearchContentHash: SearchContentHash(content),
 		ByteSize:          uint64(len(content)),
 		LineOffsets:       BuildLineOffsets(content),
-		NGrams:            UniqueNGramValues(BuildSparseNGrams(content, weighter, mode)),
+		NGrams:            BuildContentNGrams(content),
 	}, nil
 }
 

@@ -10,7 +10,7 @@ import (
 
 var sliceArtifactMagic = [8]byte{'g', 's', 'i', 'd', 'x', 's', 'a', '1'}
 
-const CurrentArtifactVersion uint32 = 1
+const CurrentArtifactVersion uint32 = 2
 
 type ArtifactInputFile struct {
 	Path              string

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
@@ -37,6 +38,19 @@ func authContext(username string) context.Context {
 
 func bearerAuthContext(token string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
+}
+
+func waitForSearchIndexForTest(t *testing.T, svc filesystemv1.FilesystemServiceServer) {
+	t.Helper()
+	impl, ok := svc.(*filesystemServiceServer)
+	if !ok {
+		t.Fatalf("unexpected filesystem service type %T", svc)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := impl.waitForQueuedSearchIndexing(ctx); err != nil {
+		t.Fatalf("wait for search index: %v", err)
+	}
 }
 
 func uploadManifestForTest(filePath string, content []byte) *filesystemv1.UploadFileManifest {
@@ -484,6 +498,7 @@ func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
 		t.Fatalf("SetPathVisibility(private file) failed: %v", err)
 	}
 
+	waitForSearchIndexForTest(t, svc)
 	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: "ws-search-visibility",
 		Query:       "needle",
@@ -673,6 +688,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
+	waitForSearchIndexForTest(t, svc)
 	artifact := mustWorkspaceSearchArtifact(t, st, "ws-search")
 	if artifact.CommitHash != writeResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q, got %q", writeResp.GetCommitHash(), artifact.CommitHash)
@@ -689,6 +705,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MoveFile failed: %v", err)
 	}
+	waitForSearchIndexForTest(t, svc)
 	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
 	if artifact.CommitHash != moveResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after move, got %q", moveResp.GetCommitHash(), artifact.CommitHash)
@@ -705,6 +722,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CopyFile failed: %v", err)
 	}
+	waitForSearchIndexForTest(t, svc)
 	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
 	if artifact.CommitHash != copyResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after copy, got %q", copyResp.GetCommitHash(), artifact.CommitHash)
@@ -724,6 +742,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteFile(binary) failed: %v", err)
 	}
+	waitForSearchIndexForTest(t, svc)
 	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
 	if artifact.CommitHash != binaryResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after binary write, got %q", binaryResp.GetCommitHash(), artifact.CommitHash)
@@ -739,6 +758,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteFile(GUIDE) failed: %v", err)
 	}
+	waitForSearchIndexForTest(t, svc)
 	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
 	if artifact.CommitHash != deleteResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after delete, got %q", deleteResp.GetCommitHash(), artifact.CommitHash)
@@ -754,6 +774,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteFile(copy) failed: %v", err)
 	}
+	waitForSearchIndexForTest(t, svc)
 	artifact = mustWorkspaceSearchArtifact(t, st, "ws-search")
 	if artifact.CommitHash != deleteResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after second delete, got %q", deleteResp.GetCommitHash(), artifact.CommitHash)
@@ -780,6 +801,7 @@ func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
 		t.Fatalf("ImportRepo failed: %v", err)
 	}
 
+	waitForSearchIndexForTest(t, svc)
 	artifact := mustWorkspaceSearchArtifact(t, st, homeslice.IDForUsername("tester"))
 	if artifact.CommitHash != importResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after import, got %q", importResp.GetCommitHash(), artifact.CommitHash)
@@ -805,6 +827,7 @@ func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
 		t.Fatalf("PullRepoBinding failed: %v", err)
 	}
 
+	waitForSearchIndexForTest(t, svc)
 	artifact = mustWorkspaceSearchArtifact(t, st, homeslice.IDForUsername("tester"))
 	if artifact.CommitHash != pullResp.GetCommitHash() {
 		t.Fatalf("expected artifact commit %q after pull, got %q", pullResp.GetCommitHash(), artifact.CommitHash)
@@ -1827,6 +1850,7 @@ func TestWorkspaceBatchAndPosixOperations(t *testing.T) {
 		t.Fatalf("unexpected glob results: %#v", globResp.GetPaths())
 	}
 
+	waitForSearchIndexForTest(t, svc)
 	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: "ws-batch",
 		Query:       "hello",

@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-const CurrentBlobVersion uint32 = 1
+const CurrentBlobVersion uint32 = 2
 
 var ErrNonIndexableText = errors.New("content is not indexable text")
 
@@ -37,6 +37,17 @@ func DefaultWeighter() BigramWeighter {
 func SearchContentHash(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+func BuildContentNGrams(content []byte) []string {
+	if len(content) < 2 {
+		return nil
+	}
+	values := make([]string, 0, len(content)-1)
+	for i := 0; i < len(content)-1; i++ {
+		values = append(values, string(content[i:i+2]))
+	}
+	return uniqueSortedStrings(values)
 }
 
 func IsBinaryContent(content []byte) bool {
