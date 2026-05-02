@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"os"
 	"regexp"
@@ -14,6 +15,7 @@ const (
 	authorizationHeaderKey = "authorization"
 	userAuthScheme         = "User "
 	bearerAuthScheme       = "Bearer "
+	basicAuthScheme        = "Basic "
 )
 
 var usernameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$`)
@@ -86,6 +88,33 @@ func TokenFromAuthorizationHeader(value string) string {
 	return ""
 }
 
+// BasicCredentialsFromAuthorizationHeader extracts HTTP Basic credentials.
+func BasicCredentialsFromAuthorizationHeader(value string) (username, password string, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || !strings.HasPrefix(strings.ToLower(value), strings.ToLower(basicAuthScheme)) {
+		return "", "", false
+	}
+	payload := strings.TrimSpace(value[len(basicAuthScheme):])
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
+}
+
+// TokenFromBasicAuthorizationHeader treats the HTTP Basic password as a token.
+func TokenFromBasicAuthorizationHeader(value string) string {
+	_, password, ok := BasicCredentialsFromAuthorizationHeader(value)
+	if !ok {
+		return ""
+	}
+	return password
+}
+
 // UsernameFromGRPCContext reads the incoming gRPC metadata Authorization header.
 func UsernameFromGRPCContext(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -130,4 +159,12 @@ func TokenFromHTTPRequest(r *http.Request) string {
 		return ""
 	}
 	return TokenFromAuthorizationHeader(r.Header.Get("Authorization"))
+}
+
+// TokenFromHTTPBasicPassword reads a bearer-style token from the HTTP Basic password.
+func TokenFromHTTPBasicPassword(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return TokenFromBasicAuthorizationHeader(r.Header.Get("Authorization"))
 }

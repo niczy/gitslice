@@ -14,6 +14,7 @@ func printHelp() {
 	fmt.Println("  5. legacy username auth (--user, GS_USERNAME, ~/.gitslice/user)")
 	fmt.Println("\nCommands:")
 	fmt.Println("  auth       Manage CLI auth, agent keys, and key-based login")
+	fmt.Println("  git        Git integration helpers")
 	fmt.Println("  slice       Manage slices")
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
@@ -34,6 +35,7 @@ func printHelp() {
 	fmt.Println("  root       Alias for slice root")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs auth status --json")
+	fmt.Println("  git config --global credential.https://api.agenttools.dev.helper \"!gs git credential\"")
 	fmt.Println("  gs context --json")
 	fmt.Println("  gs slice checkout home.nic --json")
 	fmt.Println("  gs slice status --json")
@@ -42,6 +44,15 @@ func printHelp() {
 	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --detach --json")
 	fmt.Println("  gs jobs wait job_123 --json")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
+}
+
+func printGitHelp() {
+	fmt.Println("Usage: gs git <command> [options]")
+	fmt.Println("\nCommands:")
+	fmt.Println("  credential  Print credentials for Git's credential helper protocol")
+	fmt.Println("\nExamples:")
+	fmt.Println("  git config --global credential.https://api.agenttools.dev.helper \"!gs git credential\"")
+	fmt.Println("  gs git credential get")
 }
 
 func printAuthHelp() {

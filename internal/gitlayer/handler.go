@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -20,9 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gitrepo"
 	"github.com/niczy/gitslice/internal/models"
@@ -41,11 +39,6 @@ type Handler struct {
 	st       storage.Storage
 	cacheDir string
 	mu       sync.Mutex
-}
-
-type identity struct {
-	username string
-	source   string
 }
 
 type route struct {
@@ -89,16 +82,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatusError(w, err)
 		return
 	}
-	id, err := h.optionalIdentity(r.Context(), r)
+	id, err := authresolver.OptionalHTTPIdentity(r.Context(), h.st, r)
 	if err != nil {
-		writeStatusError(w, err)
+		writeGitAuthError(w, err)
 		return
 	}
 	if !canReadSlice(slice, id) {
+		if id == nil || strings.TrimSpace(id.Username) == "" {
+			writeGitAuthChallenge(w, "authentication required")
+			return
+		}
 		http.Error(w, "not authorized for slice", http.StatusForbidden)
 		return
 	}
 	if service == "git-receive-pack" && !canWriteSlice(slice, id) {
+		if id == nil || strings.TrimSpace(id.Username) == "" {
+			writeGitAuthChallenge(w, "authentication required")
+			return
+		}
 		http.Error(w, "not authorized to modify slice", http.StatusForbidden)
 		return
 	}
@@ -210,80 +211,47 @@ func (h *Handler) resolveSlice(ctx context.Context, ref string) (*models.Slice, 
 	return slice, nil
 }
 
-func (h *Handler) optionalIdentity(ctx context.Context, r *http.Request) (*identity, error) {
-	if token := bearerOrBasicToken(r); token != "" {
-		session, err := h.st.GetAuthSessionByToken(ctx, token)
-		if err != nil {
-			if err == storage.ErrEntryNotFound {
-				return nil, status.Error(codes.Unauthenticated, "invalid session token")
-			}
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve session token: %v", err))
-		}
-		_ = h.st.TouchAuthSession(ctx, session.SessionID, time.Now())
-		return &identity{username: session.Username, source: "session"}, nil
-	}
-	if username := auth.UsernameFromHTTPRequest(r); username != "" {
-		return &identity{username: username, source: "legacy"}, nil
-	}
-	return nil, nil
-}
-
-func bearerOrBasicToken(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	if token := auth.TokenFromAuthorizationHeader(header); token != "" {
-		return token
-	}
-	if !strings.HasPrefix(strings.ToLower(header), "basic ") {
-		return ""
-	}
-	payload := strings.TrimSpace(header[len("basic "):])
-	decoded, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return ""
-	}
-	parts := strings.SplitN(string(decoded), ":", 2)
-	if len(parts) != 2 {
-		return ""
-	}
-	return strings.TrimSpace(parts[1])
-}
-
-func canReadSlice(slice *models.Slice, id *identity) bool {
+func canReadSlice(slice *models.Slice, id *authresolver.Identity) bool {
 	if slice == nil {
 		return false
 	}
 	if slice.Visibility == models.VisibilityPublic {
 		return true
 	}
-	if id == nil || strings.TrimSpace(id.username) == "" {
+	username := ""
+	if id != nil {
+		username = strings.TrimSpace(id.Username)
+	}
+	if username == "" {
 		return false
 	}
 	if slice.IsRoot {
 		return true
 	}
-	if slice.CreatedBy == id.username {
+	if slice.CreatedBy == username {
 		return true
 	}
 	for _, owner := range slice.Owners {
-		if owner == id.username {
+		if owner == username {
 			return true
 		}
 	}
 	return false
 }
 
-func canWriteSlice(slice *models.Slice, id *identity) bool {
-	if slice == nil || id == nil || strings.TrimSpace(id.username) == "" || slice.IsRoot {
+func canWriteSlice(slice *models.Slice, id *authresolver.Identity) bool {
+	username := ""
+	if id != nil {
+		username = strings.TrimSpace(id.Username)
+	}
+	if slice == nil || username == "" || slice.IsRoot {
 		return false
 	}
-	if slice.CreatedBy == id.username {
+	if slice.CreatedBy == username {
 		return true
 	}
 	for _, owner := range slice.Owners {
-		if owner == id.username {
+		if owner == username {
 			return true
 		}
 	}
@@ -394,7 +362,7 @@ func (h *Handler) serveBackend(w http.ResponseWriter, r *http.Request, repoName,
 	return writeCGIResponse(w, payload)
 }
 
-func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice *models.Slice, id *identity, suffix string) error {
+func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice *models.Slice, id *authresolver.Identity, suffix string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -418,7 +386,7 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice
 			return fmt.Errorf("resolve pushed head: %w", headErr)
 		}
 		if strings.TrimSpace(after) != "" && after != before {
-			if err := h.importBareRepo(r.Context(), slice, repoPath, after, id.username); err != nil {
+			if err := h.importBareRepo(r.Context(), slice, repoPath, after, id.Username); err != nil {
 				return err
 			}
 			meta, err := h.st.GetSliceMetadata(r.Context(), slice.ID)
@@ -628,4 +596,17 @@ func writeStatusError(w http.ResponseWriter, err error) {
 	default:
 		http.Error(w, status.Convert(err).Message(), http.StatusInternalServerError)
 	}
+}
+
+func writeGitAuthError(w http.ResponseWriter, err error) {
+	if status.Code(err) == codes.Unauthenticated {
+		writeGitAuthChallenge(w, "authentication required")
+		return
+	}
+	writeStatusError(w, err)
+}
+
+func writeGitAuthChallenge(w http.ResponseWriter, message string) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="Gitslice Git"`)
+	http.Error(w, message, http.StatusUnauthorized)
 }

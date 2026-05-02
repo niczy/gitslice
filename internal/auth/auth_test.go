@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestUsernameFromAuthorizationHeaderAllowsLegacyUserAuthByDefault(t *testing.T) {
 	if got := UsernameFromAuthorizationHeader("User alice"); got != "alice" {
@@ -31,5 +34,19 @@ func TestUsernameFromAuthorizationHeaderAllowsProductionDevLoginOverride(t *test
 
 	if got := UsernameFromAuthorizationHeader("User alice"); got != "alice" {
 		t.Fatalf("expected dev login override to allow legacy user auth, got %q", got)
+	}
+}
+
+func TestTokenFromBasicAuthorizationHeaderUsesPassword(t *testing.T) {
+	header := "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:token-123"))
+
+	if got := TokenFromBasicAuthorizationHeader(header); got != "token-123" {
+		t.Fatalf("expected Basic password token, got %q", got)
+	}
+}
+
+func TestTokenFromBasicAuthorizationHeaderRejectsInvalidPayload(t *testing.T) {
+	if got := TokenFromBasicAuthorizationHeader("Basic not-base64"); got != "" {
+		t.Fatalf("expected invalid Basic payload to be ignored, got %q", got)
 	}
 }

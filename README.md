@@ -704,7 +704,13 @@ https://api.<domain>/git/<owner>/<slice>.git
 Examples:
 
 ```bash
-# Clone a slice from staging with a bearer token.
+# Configure Git to use the stored `gs login` / `gs auth login` credentials.
+git config --global credential.https://api.agenttools.dev.helper "!gs git credential"
+
+# Clone a slice from staging. Git will ask the helper for a fresh token.
+git clone https://api.agenttools.dev/git/alice/my-slice.git
+
+# Or clone with an explicit bearer token.
 git -c http.extraHeader="Authorization: Bearer $GS_API_KEY" \
   clone https://api.agenttools.dev/git/alice/my-slice.git
 
@@ -718,6 +724,7 @@ git -c http.extraHeader="Authorization: Bearer $GS_API_KEY" \
 
 Notes:
 - The Git URL uses `slice`, not `workspace`.
+- Git accepts bearer tokens directly, or HTTP Basic auth where the password is a bearer token.
 - Private slices require authentication for clone/fetch.
 - Push requires write access to the target slice.
 - Staging still accepts `Authorization: User <username>` when legacy user auth is enabled, but bearer tokens are the intended path.
