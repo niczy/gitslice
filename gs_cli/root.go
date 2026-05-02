@@ -31,6 +31,7 @@ func NewRootCommand(args []string) *cobra.Command {
 			newCheckoutWatcherCommand(),
 			newDetachedJobRunnerCommand(),
 			newAuthCommand(),
+			newGitCommand(),
 			newLoginCommand(),
 			newLogoutCommand(),
 			newFileCommand(),

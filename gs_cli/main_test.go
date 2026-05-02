@@ -162,7 +162,7 @@ func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
 	for _, name := range []string{
 		"cache", "jobs", "__watch-checkout", "__run-job",
-		"auth", "login", "logout",
+		"auth", "git", "login", "logout",
 		"file", "doctor", "context", "slice",
 		"changeset", "conflict", "import", "repo", "fs",
 		"status", "init", "log", "root",
@@ -174,6 +174,31 @@ func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 		if child == nil || child.Name() != name {
 			t.Fatalf("expected %q command to be registered, got %#v", name, child)
 		}
+	}
+}
+
+func TestGitCredentialOutputUsesBearerToken(t *testing.T) {
+	var buf bytes.Buffer
+	err := writeGitCredential(&buf, cliAuth{
+		Authorization: "Bearer token-123",
+		Username:      "alice",
+	})
+	if err != nil {
+		t.Fatalf("writeGitCredential failed: %v", err)
+	}
+	if got, want := buf.String(), "username=alice\npassword=token-123\n\n"; got != want {
+		t.Fatalf("credential output = %q, want %q", got, want)
+	}
+}
+
+func TestGitCredentialOutputRejectsLegacyAuth(t *testing.T) {
+	var buf bytes.Buffer
+	err := writeGitCredential(&buf, cliAuth{
+		Authorization: "User alice",
+		Username:      "alice",
+	})
+	if err == nil {
+		t.Fatal("expected legacy auth to be rejected")
 	}
 }
 

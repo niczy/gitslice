@@ -2,7 +2,9 @@ package gitlayer
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -36,6 +38,7 @@ func TestHandlerSupportsGitCloneFromSlice(t *testing.T) {
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
+	token := createTestAuthSession(t, ctx, st, "alice")
 	writeTestFile(t, ctx, st, slice.ID, "README.md", []byte("# hello from slice\n"), false, "")
 	writeTestFile(t, ctx, st, slice.ID, "bin/run.sh", []byte("#!/bin/sh\necho hi\n"), true, "")
 	writeTestFile(t, ctx, st, slice.ID, "docs/latest", []byte("README.md"), false, "README.md")
@@ -48,7 +51,7 @@ func TestHandlerSupportsGitCloneFromSlice(t *testing.T) {
 	cmd := exec.CommandContext(
 		ctx,
 		"git",
-		"-c", "http.extraHeader=Authorization: User alice",
+		"-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token),
 		"clone",
 		server.URL+"/git/alice/clone-slice.git",
 		cloneDir,
@@ -104,6 +107,7 @@ func TestHandlerImportsGitPushToSlice(t *testing.T) {
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
+	token := createTestAuthSession(t, ctx, st, "alice")
 	writeTestFile(t, ctx, st, slice.ID, "README.md", []byte("old\n"), false, "")
 	writeTestFile(t, ctx, st, slice.ID, "stale.txt", []byte("delete me\n"), false, "")
 
@@ -112,7 +116,7 @@ func TestHandlerImportsGitPushToSlice(t *testing.T) {
 	defer server.Close()
 
 	cloneDir := filepath.Join(t.TempDir(), "clone")
-	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: User alice", "clone", server.URL+"/git/alice/push-slice.git", cloneDir)
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "clone", server.URL+"/git/alice/push-slice.git", cloneDir)
 	if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("new\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
@@ -133,7 +137,7 @@ func TestHandlerImportsGitPushToSlice(t *testing.T) {
 	runGitTest(t, ctx, cloneDir, "config", "user.email", "alice@example.com")
 	runGitTest(t, ctx, cloneDir, "add", "-A")
 	runGitTest(t, ctx, cloneDir, "commit", "-m", "push slice updates")
-	runGitTest(t, ctx, cloneDir, "-c", "http.extraHeader=Authorization: User alice", "push", "origin", "HEAD:main")
+	runGitTest(t, ctx, cloneDir, "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "push", "origin", "HEAD:main")
 
 	readme, err := storage.ReadSliceFileContent(ctx, st, slice.ID, "README.md")
 	if err != nil {
@@ -190,6 +194,77 @@ func TestHandlerRejectsUnauthenticatedPrivateClone(t *testing.T) {
 		t.Fatalf("GET info/refs failed: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `Basic realm="Gitslice Git"`) {
+		t.Fatalf("WWW-Authenticate = %q, want Gitslice Git Basic challenge", got)
+	}
+}
+
+func TestHandlerRejectsInvalidTokenWithBasicChallenge(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:         "invalid-token-slice",
+		Name:       "Invalid Token Slice",
+		Slug:       "invalid-token-slice",
+		Visibility: models.VisibilityPrivate,
+		Owners:     []string{"alice"},
+		CreatedBy:  "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	server := httptest.NewServer(NewHandler(st, filepath.Join(t.TempDir(), "cache")))
+	defer server.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/git/alice/invalid-token-slice.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatalf("new request failed: %v", err)
+	}
+	req.Header.Set("Authorization", basicAuthHeader("alice", "bad-token"))
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET info/refs failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `Basic realm="Gitslice Git"`) {
+		t.Fatalf("WWW-Authenticate = %q, want Gitslice Git Basic challenge", got)
+	}
+}
+
+func TestHandlerRejectsAuthenticatedNonOwnerWithForbidden(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:         "forbidden-slice",
+		Name:       "Forbidden Slice",
+		Slug:       "forbidden-slice",
+		Visibility: models.VisibilityPrivate,
+		Owners:     []string{"alice"},
+		CreatedBy:  "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	token := createTestAuthSession(t, ctx, st, "bob")
+
+	server := httptest.NewServer(NewHandler(st, filepath.Join(t.TempDir(), "cache")))
+	defer server.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/git/alice/forbidden-slice.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatalf("new request failed: %v", err)
+	}
+	req.Header.Set("Authorization", basicAuthHeader("bob", token))
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET info/refs failed: %v", err)
+	}
+	defer resp.Body.Close()
 	if resp.StatusCode != 403 {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
@@ -229,4 +304,46 @@ func runGitTest(t *testing.T, ctx context.Context, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
+}
+
+func createTestAuthSession(t *testing.T, ctx context.Context, st storage.Storage, username string) string {
+	t.Helper()
+	testName := strings.NewReplacer("/", "-", " ", "-", "_", "-").Replace(t.Name())
+	now := time.Now()
+	accountID := "acct-" + username + "-" + testName
+	if err := st.CreateAccount(ctx, &models.Account{
+		AccountID:  accountID,
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     username,
+		AccountID:    accountID,
+		PrimaryEmail: username + "@example.com",
+		AuthSource:   "test",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	token := "token-" + username + "-" + testName
+	if err := st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID:  "sess-" + username + "-" + testName,
+		Username:   username,
+		Token:      token,
+		DeviceInfo: "gitlayer-test",
+		CreatedAt:  now,
+		LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+	return token
+}
+
+func basicAuthHeader(username, password string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
 }
