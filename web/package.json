@@ -10,8 +10,8 @@
     "preview": "react-router-serve ./build/server/index.js",
     "dev:worker": "npm run build && wrangler dev --config wrangler.jsonc --env staging --local --port 4174",
     "preview:worker": "npm run build && wrangler deploy --config wrangler.jsonc --env staging --dry-run",
-    "deploy:worker:staging": "npm run build && wrangler deploy --config wrangler.jsonc --env staging",
-    "deploy:worker:production": "npm run build && wrangler deploy --config wrangler.jsonc --env production",
+    "deploy:worker:staging": "../ops/deploy.sh --env staging --app web",
+    "deploy:worker:production": "../ops/deploy.sh --env production --app web",
     "test:e2e": "playwright test"
   },
   "dependencies": {
