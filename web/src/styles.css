@@ -2252,7 +2252,7 @@ body {
 /* Repo layout */
 .repo-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: var(--repo-sidebar-width, 260px) 1fr;
   gap: 16px;
   height: calc(100dvh - 240px);
   min-height: calc(100dvh - 240px);
@@ -2276,10 +2276,55 @@ body {
 
 .repo-sidebar {
   min-width: 0;
+  position: relative;
   transition: 
     opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
     transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
     width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.repo-layout.is-resizing-sidebar,
+.repo-layout.is-resizing-sidebar .repo-sidebar,
+.repo-layout.is-resizing-sidebar .repo-code,
+.repo-layout.is-resizing-sidebar .repo-insight {
+  transition: none;
+}
+
+.repo-layout.is-resizing-sidebar,
+.repo-layout.is-resizing-sidebar * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 4;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resize-handle::after {
+  position: absolute;
+  top: 12px;
+  right: 4px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: '';
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after {
+  background: var(--accent);
+}
+
+.sidebar-resize-handle:focus-visible {
+  outline: none;
 }
 
 .repo-sidebar.open {
@@ -4322,7 +4367,7 @@ body {
 /* Tablet breakpoint */
 @media (max-width: 1024px) {
   .repo-layout {
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: var(--repo-sidebar-width, 220px) 1fr;
   }
 
   .profile-grid {
@@ -4356,6 +4401,10 @@ body {
     height: auto;
     min-height: 0;
     gap: 0;
+  }
+
+  .sidebar-resize-handle {
+    display: none;
   }
 
   .repo-sidebar {
@@ -6155,7 +6204,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .repo-layout {
-  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr) 320px;
   height: calc(100dvh - 82px);
   min-height: calc(100dvh - 82px);
   gap: 0;
@@ -6167,7 +6216,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .repo-layout.insight-collapsed {
-  grid-template-columns: 260px minmax(0, 1fr) 0;
+  grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr) 0;
 }
 
 .app-shell--browser .repo-layout.sidebar-collapsed.insight-collapsed {
@@ -6183,8 +6232,23 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .repo-sidebar {
+  position: relative;
   border-right: 1px solid var(--np-border-soft);
   background: var(--np-sidebar);
+}
+
+.app-shell--browser .repo-layout.is-resizing-sidebar {
+  transition: none;
+}
+
+.app-shell--browser .sidebar-resize-handle::after {
+  background: transparent;
+}
+
+.app-shell--browser .sidebar-resize-handle:hover::after,
+.app-shell--browser .sidebar-resize-handle:focus-visible::after,
+.app-shell--browser .repo-layout.is-resizing-sidebar .sidebar-resize-handle::after {
+  background: var(--np-primary);
 }
 
 .app-shell--browser .repo-code {
@@ -6883,7 +6947,7 @@ button[data-testid="topbar-get-started"]:hover {
 @media (max-width: 1180px) {
   .app-shell--browser .repo-layout,
   .app-shell--browser .repo-layout.insight-collapsed {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr);
   }
 
   .app-shell--browser .repo-layout.sidebar-collapsed,
