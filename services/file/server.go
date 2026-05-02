@@ -529,9 +529,16 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		if normalizedPath == "" {
 			entries := make([]*filev1.DirectoryEntry, 0, len(slice.FolderMounts))
 			seen := make(map[string]struct{}, len(slice.FolderMounts))
+			backingSliceID := sliceID
+			if slice.ParentSlice != "" {
+				backingSliceID = slice.ParentSlice
+			}
 			for _, m := range slice.FolderMounts {
 				alias := cleanPath(m.Alias)
 				if alias == "" {
+					continue
+				}
+				if !s.folderMountHasBacking(ctx, backingSliceID, slice, m) {
 					continue
 				}
 				if _, ok := seen[alias]; ok {
@@ -752,6 +759,25 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		Entries:   entries,
 		Truncated: truncated,
 	}, nil
+}
+
+func (s *fileServiceServer) folderMountHasBacking(ctx context.Context, backingSliceID string, slice *models.Slice, mount models.SliceFolderMount) bool {
+	sourcePath := cleanPath(mount.SourcePath)
+	if sourcePath == "" {
+		return false
+	}
+	if slice != nil {
+		prefix := sourcePath + "/"
+		for _, rawPath := range slice.Files {
+			cleaned := cleanPath(rawPath)
+			if strings.HasPrefix(cleaned, prefix) {
+				return true
+			}
+		}
+	}
+
+	entry, err := s.storage.GetEntryByPath(ctx, backingSliceID, sourcePath)
+	return err == nil && entry != nil && entry.Type == "directory"
 }
 
 const (

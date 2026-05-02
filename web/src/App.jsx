@@ -445,7 +445,6 @@ function App({
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
               slicesError={slicesError}
-              onRefreshSlices={refreshSlices}
               openFileRequest={browserOpenFileRequest}
             />
           </div>
