@@ -43,6 +43,19 @@ const IMAGE_MIME_TYPES = {
   avif: 'image/avif',
 };
 
+const SIDEBAR_WIDTH_MIN = 220;
+const SIDEBAR_WIDTH_MAX = 560;
+const SIDEBAR_WIDTH_DEFAULT = 260;
+const SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.browser.sidebarWidth';
+
+function clampSidebarWidth(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return SIDEBAR_WIDTH_DEFAULT;
+  }
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(numericValue)));
+}
+
 const getFileExtension = (filePath) => {
   if (!filePath || !filePath.includes('.')) {
     return '';
@@ -114,6 +127,8 @@ export default function RepoBrowser({
     ? { path: initialBrowserState.file, type: 'file' }
     : { path: '', type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 900));
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [insightOpen, setInsightOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 1180));
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
@@ -128,6 +143,8 @@ export default function RepoBrowser({
   const pendingFileRef = useRef(initialBrowserState?.file || null);
   const hasAppliedInitialSliceRef = useRef(false);
   const actionMenuRef = useRef(null);
+  const sidebarResizeRef = useRef(null);
+  const hasLoadedSidebarWidthRef = useRef(false);
   const handledOpenFileRequestTokenRef = useRef(null);
   const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
   const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
@@ -245,6 +262,94 @@ export default function RepoBrowser({
 
   const openSettingsView = useCallback(() => {
     setIsSettingsOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const storedWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+      if (storedWidth !== null) {
+        setSidebarWidth(clampSidebarWidth(storedWidth));
+      }
+    } catch {
+      // Keep the default width when localStorage is unavailable.
+    }
+    hasLoadedSidebarWidthRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !hasLoadedSidebarWidthRef.current) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+    } catch {
+      // Resizing still works for the current session.
+    }
+  }, [sidebarWidth]);
+
+  const startSidebarResize = useCallback((event) => {
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    setSidebarOpen(true);
+    sidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    setIsResizingSidebar(true);
+    event.preventDefault();
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingSidebar || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handlePointerMove = (event) => {
+      const resizeState = sidebarResizeRef.current;
+      if (!resizeState) {
+        return;
+      }
+      setSidebarWidth(clampSidebarWidth(resizeState.startWidth + event.clientX - resizeState.startX));
+    };
+
+    const stopResize = () => {
+      sidebarResizeRef.current = null;
+      setIsResizingSidebar(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+  }, [isResizingSidebar]);
+
+  const handleSidebarResizeKeyDown = useCallback((event) => {
+    const step = event.shiftKey ? 40 : 16;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setSidebarOpen(true);
+      setSidebarWidth((width) => clampSidebarWidth(width - step));
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setSidebarOpen(true);
+      setSidebarWidth((width) => clampSidebarWidth(width + step));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setSidebarOpen(true);
+      setSidebarWidth(SIDEBAR_WIDTH_MIN);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setSidebarOpen(true);
+      setSidebarWidth(SIDEBAR_WIDTH_MAX);
+    }
   }, []);
 
   useEffect(() => {
@@ -943,7 +1048,10 @@ export default function RepoBrowser({
   return (
     <section className="repo-browser">
       <div className="repo-main">
-        <div className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${insightOpen ? '' : ' insight-collapsed'}`}>
+        <div
+          className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${insightOpen ? '' : ' insight-collapsed'}${isResizingSidebar ? ' is-resizing-sidebar' : ''}`}
+          style={{ '--repo-sidebar-width': `${sidebarWidth}px` }}
+        >
           <div
             className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
             onClick={() => setSidebarOpen(false)}
@@ -1039,6 +1147,18 @@ export default function RepoBrowser({
                 {canLoad && renderTree('')}
               </section>
             </div>
+            <div
+              className="sidebar-resize-handle"
+              role="separator"
+              aria-label="Resize sidebar"
+              aria-orientation="vertical"
+              aria-valuemin={SIDEBAR_WIDTH_MIN}
+              aria-valuemax={SIDEBAR_WIDTH_MAX}
+              aria-valuenow={sidebarWidth}
+              tabIndex={sidebarOpen ? 0 : -1}
+              onPointerDown={startSidebarResize}
+              onKeyDown={handleSidebarResizeKeyDown}
+            />
           </aside>
 
           <div className="repo-code">
