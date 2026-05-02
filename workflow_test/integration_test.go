@@ -697,7 +697,7 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	}
 
 	srcFolder := fmt.Sprintf("src_%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Create src folder", "--files", srcFolder)
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Create src folder", "--files", srcFolder+"/main.go")
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("Failed to extract changeset ID from output: %s", output)
@@ -726,7 +726,7 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	}
 
 	subFolder := fmt.Sprintf("components_%d", time.Now().UnixNano())
-	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "create", "--message", "Create components subfolder", "--files", subFolder)
+	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "create", "--message", "Create components subfolder", "--files", subFolder+"/index.ts")
 	changesetID = extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("Failed to extract changeset ID from output: %s", output)
@@ -1009,8 +1009,8 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	appsFolder := "apps-" + rootSuffix
 	servicesFolder := "services-" + rootSuffix
 	docsFolder := "docs-" + rootSuffix
-	rootFolders := []string{appsFolder, servicesFolder, docsFolder}
-	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Add root folders", "--files", strings.Join(rootFolders, ","))
+	rootFiles := []string{appsFolder + "/README.md", servicesFolder + "/README.md", docsFolder + "/README.md"}
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Add root folders", "--files", strings.Join(rootFiles, ","))
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
@@ -1048,13 +1048,13 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	foundApps := false
 	for _, file := range checkoutResp.Files {
-		if file.Path == appsFolder && file.Size == 0 {
+		if file.Path == appsFolder+"/README.md" && file.Size == 0 {
 			foundApps = true
 			break
 		}
 	}
 	if !foundApps {
-		t.Fatalf("expected focused folder %q in checkout output, got: %+v", appsFolder, checkoutResp)
+		t.Fatalf("expected focused file under %q in checkout output, got: %+v", appsFolder, checkoutResp)
 	}
 
 	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", appsFolder+"/readme.md")
@@ -1080,13 +1080,13 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 	foundApps = false
 	for _, file := range checkoutResp.Files {
-		if file.Path == appsFolder && file.Size == 0 {
+		if file.Path == appsFolder+"/README.md" && file.Size == 0 {
 			foundApps = true
 			break
 		}
 	}
 	if !foundApps {
-		t.Fatalf("expected focused folder %q in slice checkout, got: %+v", appsFolder, checkoutResp)
+		t.Fatalf("expected focused file under %q in slice checkout, got: %+v", appsFolder, checkoutResp)
 	}
 
 	rootCheckoutArg := sliceIDArg("root_slice")

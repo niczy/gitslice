@@ -326,6 +326,7 @@ func printFilesystemHelp() {
 	fmt.Println("  cat ops.jsonl | gs fs batch -m \"bulk update\"")
 	fmt.Println("  gs fs search settings --glob /nic/app/** --json")
 	fmt.Println("  gs fs sync --direction push ./site /nic/site --detach --json")
+	fmt.Println("  gs fs upload ./project /nic/project --include-ignored")
 }
 
 func printSliceVisibilityHelp() {

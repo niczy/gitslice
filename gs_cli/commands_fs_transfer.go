@@ -12,22 +12,49 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
 const filesystemTransferChunkSize = 64 * 1024
+const filesystemTransferManifestBatchSize = 100
+const filesystemTransferBlockUploadBatchSize = 16
+const filesystemTransferBlockUploadConcurrency = 8
 
 type filesystemUploadFile struct {
 	localPath  string
 	remotePath string
 	manifest   *filesystemv1.UploadFileManifest
+	blocks     []filesystemUploadBlockSource
+}
+
+type filesystemUploadBlockSource struct {
+	localPath string
+	hash      string
+	offset    int64
+	size      int64
 }
 
 type filesystemUploadInventory struct {
 	files       []*filesystemUploadFile
 	directories []string
+}
+
+type filesystemUploadInventoryOptions struct {
+	includeIgnored bool
+}
+
+type filesystemUploadIgnoreRule struct {
+	pattern       string
+	directoryOnly bool
+	anchored      bool
+}
+
+type filesystemUploadIgnoreMatcher struct {
+	enabled bool
+	rules   []filesystemUploadIgnoreRule
 }
 
 func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
@@ -37,13 +64,14 @@ func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	direction := fs.String("direction", "", "Sync direction: push or pull")
 	dryRun := fs.Bool("dry-run", false, "Preview the sync without applying it")
 	detach := fs.Bool("detach", false, "Run the sync as a detached local CLI job")
+	includeIgnored := fs.Bool("include-ignored", false, "Upload files that match .gsignore or default excludes when pushing")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	detachEnabled := detachRequested || *detach
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path> [--dry-run] [--detach] [--json]\n   or: gs fs sync --direction pull </absolute/path> <local-dir> [--dry-run] [--detach] [--json]")
+		commandUsage("Usage: gs fs sync --direction <push|pull> <local-dir> </absolute/path> [--dry-run] [--detach] [--include-ignored] [--json]\n   or: gs fs sync --direction pull </absolute/path> <local-dir> [--dry-run] [--detach] [--json]")
 		return
 	}
 	if detachEnabled {
@@ -58,6 +86,9 @@ func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, arg
 	extraArgs := []string{fs.Arg(0), fs.Arg(1)}
 	if *dryRun {
 		extraArgs = append(extraArgs, "--dry-run")
+	}
+	if *includeIgnored {
+		extraArgs = append(extraArgs, "--include-ignored")
 	}
 	if jsonEnabled {
 		extraArgs = append(extraArgs, "--json")
@@ -78,13 +109,14 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 	fs := newCommandFlagSet("fs upload")
 	dryRun := fs.Bool("dry-run", false, "Preview the upload without applying it")
 	detach := fs.Bool("detach", false, "Run the upload as a detached local CLI job")
+	includeIgnored := fs.Bool("include-ignored", false, "Upload files that match .gsignore or default excludes")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 	detachEnabled := detachRequested || *detach
 
 	if fs.NArg() != 2 {
-		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--dry-run] [--detach] [--json]")
+		commandUsage("Usage: gs fs upload <local-dir> </absolute/path> [--dry-run] [--detach] [--include-ignored] [--json]")
 		return
 	}
 	if detachEnabled {
@@ -114,7 +146,9 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute path: %v", err)
 	}
 
-	inventory, err := buildFilesystemUploadInventory(localRoot, remoteBase)
+	inventory, err := buildFilesystemUploadInventory(localRoot, remoteBase, filesystemUploadInventoryOptions{
+		includeIgnored: *includeIgnored,
+	})
 	if err != nil {
 		commandFatalf("FS_UPLOAD_FAILED", false, "", "Failed to plan upload directory tree: %v", err)
 	}
@@ -136,19 +170,22 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		return
 	}
 
-	planResp, err := cli.filesystemClient.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
-		WorkspaceId: workspaceID,
-		Files:       collectFilesystemUploadManifests(inventory.files),
-	})
-	if err != nil {
-		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to plan upload directory tree: %v", err)
-	}
+	missingBlocks := make(map[string]struct{})
+	fileBatches := splitFilesystemUploadFiles(inventory.files, filesystemTransferManifestBatchSize)
+	for _, batch := range fileBatches {
+		planResp, err := cli.filesystemClient.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
+			WorkspaceId: workspaceID,
+			Files:       collectFilesystemUploadManifests(batch),
+		})
+		if err != nil {
+			commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to plan upload directory tree: %v", err)
+		}
 
-	missingBlocks := make(map[string]struct{}, len(planResp.GetMissingBlockHashes()))
-	for _, hash := range planResp.GetMissingBlockHashes() {
-		hash = strings.TrimSpace(hash)
-		if hash != "" {
-			missingBlocks[hash] = struct{}{}
+		for _, hash := range planResp.GetMissingBlockHashes() {
+			hash = strings.TrimSpace(hash)
+			if hash != "" {
+				missingBlocks[hash] = struct{}{}
+			}
 		}
 	}
 	if _, err := uploadFilesystemMissingBlocks(ctx, cli.filesystemClient, workspaceID, inventory, missingBlocks); err != nil {
@@ -313,12 +350,16 @@ func uploadFilesystemTree(
 	return filesUploaded, dirsUploaded, nil
 }
 
-func buildFilesystemUploadInventory(localRoot, remoteBase string) (*filesystemUploadInventory, error) {
+func buildFilesystemUploadInventory(localRoot, remoteBase string, options filesystemUploadInventoryOptions) (*filesystemUploadInventory, error) {
 	inventory := &filesystemUploadInventory{
 		files:       make([]*filesystemUploadFile, 0),
 		directories: make([]string, 0),
 	}
-	err := filepath.WalkDir(localRoot, func(current string, entry fs.DirEntry, walkErr error) error {
+	ignoreMatcher, err := newFilesystemUploadIgnoreMatcher(localRoot, options)
+	if err != nil {
+		return nil, err
+	}
+	err = filepath.WalkDir(localRoot, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -329,14 +370,28 @@ func buildFilesystemUploadInventory(localRoot, remoteBase string) (*filesystemUp
 		if relativePath == "." {
 			return nil
 		}
+		relativeSlash := filepath.ToSlash(relativePath)
+		if ignoreMatcher.ignored(relativeSlash, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 
-		remotePath := path.Join(remoteBase, filepath.ToSlash(relativePath))
+		remotePath := path.Join(remoteBase, relativeSlash)
 		if entry.IsDir() {
 			inventory.directories = append(inventory.directories, remotePath)
 			return nil
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 
-		manifest, err := buildFilesystemUploadManifest(remotePath, current)
+		manifest, blocks, err := buildFilesystemUploadManifest(remotePath, current)
 		if err != nil {
 			return err
 		}
@@ -344,6 +399,7 @@ func buildFilesystemUploadInventory(localRoot, remoteBase string) (*filesystemUp
 			localPath:  current,
 			remotePath: remotePath,
 			manifest:   manifest,
+			blocks:     blocks,
 		})
 		return nil
 	})
@@ -357,10 +413,160 @@ func buildFilesystemUploadInventory(localRoot, remoteBase string) (*filesystemUp
 	return inventory, nil
 }
 
-func buildFilesystemUploadManifest(remotePath, localPath string) (*filesystemv1.UploadFileManifest, error) {
+func newFilesystemUploadIgnoreMatcher(localRoot string, options filesystemUploadInventoryOptions) (*filesystemUploadIgnoreMatcher, error) {
+	if options.includeIgnored {
+		return &filesystemUploadIgnoreMatcher{}, nil
+	}
+
+	matcher := &filesystemUploadIgnoreMatcher{
+		enabled: true,
+		rules:   defaultFilesystemUploadIgnoreRules(),
+	}
+	ignorePath := filepath.Join(localRoot, ".gsignore")
+	data, err := os.ReadFile(ignorePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return matcher, nil
+		}
+		return nil, err
+	}
+	matcher.rules = append(matcher.rules, parseFilesystemUploadIgnoreRules(string(data))...)
+	return matcher, nil
+}
+
+func defaultFilesystemUploadIgnoreRules() []filesystemUploadIgnoreRule {
+	patterns := []string{
+		".git/",
+		".hg/",
+		".svn/",
+		"node_modules/",
+		".pnpm-store/",
+		".yarn/cache/",
+		".next/",
+		".nuxt/",
+		".svelte-kit/",
+		".turbo/",
+		".vite/",
+		".cache/",
+		".parcel-cache/",
+		"coverage/",
+		"dist/",
+		"build/",
+		"out/",
+		"tmp/",
+		"temp/",
+		"__pycache__/",
+		".pytest_cache/",
+		".gradle/",
+		".m2/",
+		".DS_Store",
+	}
+	rules := make([]filesystemUploadIgnoreRule, 0, len(patterns))
+	for _, pattern := range patterns {
+		rules = append(rules, newFilesystemUploadIgnoreRule(pattern))
+	}
+	return rules
+}
+
+func parseFilesystemUploadIgnoreRules(data string) []filesystemUploadIgnoreRule {
+	lines := strings.Split(data, "\n")
+	rules := make([]filesystemUploadIgnoreRule, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		rule := newFilesystemUploadIgnoreRule(line)
+		if rule.pattern != "" {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
+}
+
+func newFilesystemUploadIgnoreRule(raw string) filesystemUploadIgnoreRule {
+	pattern := filepath.ToSlash(strings.TrimSpace(raw))
+	rule := filesystemUploadIgnoreRule{}
+	if strings.HasPrefix(pattern, "/") {
+		rule.anchored = true
+		pattern = strings.TrimLeft(pattern, "/")
+	}
+	if strings.HasSuffix(pattern, "/") {
+		rule.directoryOnly = true
+		pattern = strings.TrimRight(pattern, "/")
+	}
+	rule.pattern = strings.TrimSpace(path.Clean(pattern))
+	if rule.pattern == "." {
+		rule.pattern = ""
+	}
+	return rule
+}
+
+func (m *filesystemUploadIgnoreMatcher) ignored(relativePath string, isDir bool) bool {
+	if m == nil || !m.enabled {
+		return false
+	}
+	relativePath = strings.Trim(strings.TrimSpace(filepath.ToSlash(relativePath)), "/")
+	if relativePath == "" || relativePath == "." {
+		return false
+	}
+	for _, rule := range m.rules {
+		if rule.matches(relativePath, isDir) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r filesystemUploadIgnoreRule) matches(relativePath string, isDir bool) bool {
+	if r.pattern == "" {
+		return false
+	}
+	if r.directoryOnly && !isDir && !pathContainsDirectory(relativePath, r.pattern) {
+		return false
+	}
+	if r.anchored {
+		return filesystemUploadPatternMatches(r.pattern, relativePath) || strings.HasPrefix(relativePath, r.pattern+"/")
+	}
+	if !strings.Contains(r.pattern, "/") {
+		for _, segment := range strings.Split(relativePath, "/") {
+			if filesystemUploadPatternMatches(r.pattern, segment) {
+				return true
+			}
+		}
+		return false
+	}
+	if filesystemUploadPatternMatches(r.pattern, relativePath) || strings.HasPrefix(relativePath, r.pattern+"/") {
+		return true
+	}
+	suffix := "/" + r.pattern
+	return strings.Contains(relativePath, suffix+"/") || strings.HasSuffix(relativePath, suffix)
+}
+
+func pathContainsDirectory(relativePath, directoryPattern string) bool {
+	segments := strings.Split(relativePath, "/")
+	for index := 0; index < len(segments)-1; index++ {
+		if filesystemUploadPatternMatches(directoryPattern, segments[index]) {
+			return true
+		}
+	}
+	if len(segments) > 0 && filesystemUploadPatternMatches(directoryPattern, segments[0]) {
+		return true
+	}
+	return strings.Contains(relativePath, directoryPattern+"/")
+}
+
+func filesystemUploadPatternMatches(pattern, value string) bool {
+	if matched, err := path.Match(pattern, value); err == nil && matched {
+		return true
+	}
+	return pattern == value
+}
+
+func buildFilesystemUploadManifest(remotePath, localPath string) (*filesystemv1.UploadFileManifest, []filesystemUploadBlockSource, error) {
 	file, err := os.Open(filepath.Clean(localPath))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer file.Close()
 
@@ -369,30 +575,40 @@ func buildFilesystemUploadManifest(remotePath, localPath string) (*filesystemv1.
 		Path:   remotePath,
 		Blocks: make([]*filesystemv1.UploadBlockRef, 0),
 	}
+	blocks := make([]filesystemUploadBlockSource, 0)
 	buffer := make([]byte, storage.DefaultFileBlockSize)
+	var offset int64
 	for {
 		readBytes, err := file.Read(buffer)
 		if readBytes > 0 {
 			chunk := buffer[:readBytes]
 			if _, err := hasher.Write(chunk); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			blockHash := sha256.Sum256(chunk)
+			hash := hex.EncodeToString(blockHash[:])
 			manifest.Blocks = append(manifest.Blocks, &filesystemv1.UploadBlockRef{
-				Hash: hex.EncodeToString(blockHash[:]),
+				Hash: hash,
 				Size: int64(readBytes),
 			})
+			blocks = append(blocks, filesystemUploadBlockSource{
+				localPath: localPath,
+				hash:      hash,
+				offset:    offset,
+				size:      int64(readBytes),
+			})
 			manifest.Size += int64(readBytes)
+			offset += int64(readBytes)
 		}
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	manifest.Hash = hex.EncodeToString(hasher.Sum(nil))
-	return manifest, nil
+	return manifest, blocks, nil
 }
 
 func collectFilesystemUploadManifests(files []*filesystemUploadFile) []*filesystemv1.UploadFileManifest {
@@ -406,6 +622,25 @@ func collectFilesystemUploadManifests(files []*filesystemUploadFile) []*filesyst
 	return manifests
 }
 
+func splitFilesystemUploadFiles(files []*filesystemUploadFile, batchSize int) [][]*filesystemUploadFile {
+	if len(files) == 0 {
+		return nil
+	}
+	if batchSize <= 0 || batchSize >= len(files) {
+		return [][]*filesystemUploadFile{files}
+	}
+
+	batches := make([][]*filesystemUploadFile, 0, (len(files)+batchSize-1)/batchSize)
+	for start := 0; start < len(files); start += batchSize {
+		end := start + batchSize
+		if end > len(files) {
+			end = len(files)
+		}
+		batches = append(batches, files[start:end])
+	}
+	return batches
+}
+
 func uploadFilesystemMissingBlocks(
 	ctx context.Context,
 	client filesystemv1.FilesystemServiceClient,
@@ -416,69 +651,174 @@ func uploadFilesystemMissingBlocks(
 	if len(missing) == 0 {
 		return &filesystemv1.UploadBlocksResponse{WorkspaceId: workspaceID}, nil
 	}
+
+	sources := collectFilesystemUploadBlockSources(inventory, missing)
+	resp := &filesystemv1.UploadBlocksResponse{WorkspaceId: workspaceID}
+	if len(sources) == 0 {
+		return resp, nil
+	}
+
+	batches := splitFilesystemUploadBlockSources(sources, filesystemTransferBlockUploadBatchSize)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sem := make(chan struct{}, filesystemTransferBlockUploadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	sentHashes := make([]string, 0, len(sources))
+
+	for _, batch := range batches {
+		batch := batch
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			batchResp, err := uploadFilesystemBlockSourceBatch(ctx, client, workspaceID, batch)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+					cancel()
+				}
+				return
+			}
+			resp.BlocksReceived += batchResp.GetBlocksReceived()
+			resp.BytesReceived += batchResp.GetBytesReceived()
+			resp.BlocksWritten += batchResp.GetBlocksWritten()
+			resp.BlocksReused += batchResp.GetBlocksReused()
+			for _, source := range batch {
+				sentHashes = append(sentHashes, source.hash)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	for _, hash := range sentHashes {
+		delete(missing, hash)
+	}
+	return resp, nil
+}
+
+func collectFilesystemUploadBlockSources(inventory *filesystemUploadInventory, missing map[string]struct{}) []filesystemUploadBlockSource {
+	if inventory == nil || len(missing) == 0 {
+		return nil
+	}
+	sources := make([]filesystemUploadBlockSource, 0, len(missing))
+	seen := make(map[string]struct{}, len(missing))
+	for _, fileSpec := range inventory.files {
+		if fileSpec == nil {
+			continue
+		}
+		for _, source := range fileSpec.blocks {
+			if _, needed := missing[source.hash]; !needed {
+				continue
+			}
+			if _, ok := seen[source.hash]; ok {
+				continue
+			}
+			seen[source.hash] = struct{}{}
+			sources = append(sources, source)
+		}
+	}
+	return sources
+}
+
+func splitFilesystemUploadBlockSources(sources []filesystemUploadBlockSource, batchSize int) [][]filesystemUploadBlockSource {
+	if len(sources) == 0 {
+		return nil
+	}
+	if batchSize <= 0 || batchSize >= len(sources) {
+		return [][]filesystemUploadBlockSource{sources}
+	}
+
+	batches := make([][]filesystemUploadBlockSource, 0, (len(sources)+batchSize-1)/batchSize)
+	for start := 0; start < len(sources); start += batchSize {
+		end := start + batchSize
+		if end > len(sources) {
+			end = len(sources)
+		}
+		batches = append(batches, sources[start:end])
+	}
+	return batches
+}
+
+func uploadFilesystemBlockSourceBatch(
+	ctx context.Context,
+	client filesystemv1.FilesystemServiceClient,
+	workspaceID string,
+	sources []filesystemUploadBlockSource,
+) (*filesystemv1.UploadBlocksResponse, error) {
 	stream, err := client.UploadBlocks(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	sent := make(map[string]struct{}, len(missing))
-	buffer := make([]byte, storage.DefaultFileBlockSize)
-	for _, fileSpec := range inventory.files {
-		if fileSpec == nil {
+	for _, source := range sources {
+		if source.hash == "" || source.size < 0 || source.localPath == "" {
 			continue
 		}
-		if len(missing) == 0 {
-			break
-		}
-		file, err := os.Open(filepath.Clean(fileSpec.localPath))
+		chunk, err := readFilesystemUploadBlockSource(source)
 		if err != nil {
 			return nil, err
 		}
-		for {
-			readBytes, err := file.Read(buffer)
-			if readBytes > 0 {
-				chunk := append([]byte(nil), buffer[:readBytes]...)
-				blockHash := sha256.Sum256(chunk)
-				hash := hex.EncodeToString(blockHash[:])
-				if _, needed := missing[hash]; needed {
-					if _, alreadySent := sent[hash]; !alreadySent {
-						if err := stream.Send(&filesystemv1.UploadBlocksRequest{
-							Chunk: &filesystemv1.UploadBlocksRequest_Metadata{
-								Metadata: &filesystemv1.UploadBlockMetadata{
-									WorkspaceId: workspaceID,
-									Hash:        hash,
-									Size:        int64(len(chunk)),
-								},
-							},
-						}); err != nil {
-							_ = file.Close()
-							return nil, err
-						}
-						if err := stream.Send(&filesystemv1.UploadBlocksRequest{
-							Chunk: &filesystemv1.UploadBlocksRequest_Content{Content: chunk},
-						}); err != nil {
-							_ = file.Close()
-							return nil, err
-						}
-						sent[hash] = struct{}{}
-						delete(missing, hash)
-					}
-				}
-			}
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				_ = file.Close()
-				return nil, err
-			}
+		if err := stream.Send(&filesystemv1.UploadBlocksRequest{
+			Chunk: &filesystemv1.UploadBlocksRequest_Metadata{
+				Metadata: &filesystemv1.UploadBlockMetadata{
+					WorkspaceId: workspaceID,
+					Hash:        source.hash,
+					Size:        int64(len(chunk)),
+				},
+			},
+		}); err != nil {
+			return nil, err
 		}
-		if err := file.Close(); err != nil {
+		if err := stream.Send(&filesystemv1.UploadBlocksRequest{
+			Chunk: &filesystemv1.UploadBlocksRequest_Content{Content: chunk},
+		}); err != nil {
 			return nil, err
 		}
 	}
 
-	return stream.CloseAndRecv()
+	resp, err := stream.CloseAndRecv()
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func readFilesystemUploadBlockSource(source filesystemUploadBlockSource) ([]byte, error) {
+	file, err := os.Open(filepath.Clean(source.localPath))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	if source.size == 0 {
+		return nil, nil
+	}
+	if source.size > int64(storage.DefaultFileBlockSize) {
+		return nil, fmt.Errorf("upload block %s size exceeds transfer chunk size", source.hash)
+	}
+	chunk := make([]byte, int(source.size))
+	if _, err := file.ReadAt(chunk, source.offset); err != nil {
+		return nil, err
+	}
+	blockHash := sha256.Sum256(chunk)
+	if got := hex.EncodeToString(blockHash[:]); got != source.hash {
+		return nil, fmt.Errorf("upload block hash changed for %s", source.localPath)
+	}
+	return chunk, nil
 }
 
 func downloadFilesystemTree(

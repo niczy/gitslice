@@ -35,16 +35,22 @@ import (
 
 type filesystemServiceServer struct {
 	filesystemv1.UnimplementedFilesystemServiceServer
-	storage               storage.Storage
-	promotionQueueMu      sync.Mutex
-	promotionQueue        *rootpromote.Queue
-	promotionBatchWindow  time.Duration
-	promotionBatchMaxSize int
+	storage                 storage.Storage
+	promotionQueueMu        sync.Mutex
+	promotionQueue          *rootpromote.Queue
+	promotionBatchWindow    time.Duration
+	promotionBatchMaxSize   int
+	searchIndexQueueMu      sync.Mutex
+	searchIndexQueue        *workspaceSearchIndexQueue
+	searchIndexBatchWindow  time.Duration
+	searchIndexBatchMaxSize int
+	searchIndexBuildTimeout time.Duration
 }
 
 const (
 	defaultFilesystemStreamChunkSize = 256 * 1024
 	maxFilesystemStreamChunkSize     = 1024 * 1024
+	filesystemUploadWriteConcurrency = 32
 )
 
 type readFileOptions struct {
@@ -75,11 +81,18 @@ type preparedFilesystemUpload struct {
 	unchanged   bool
 }
 
+type fileManifestHashGetter interface {
+	GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error)
+}
+
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	return &filesystemServiceServer{
-		storage:               st,
-		promotionBatchWindow:  rootpromote.DefaultBatchWindow,
-		promotionBatchMaxSize: rootpromote.DefaultBatchMaxSize,
+		storage:                 st,
+		promotionBatchWindow:    rootpromote.DefaultBatchWindow,
+		promotionBatchMaxSize:   rootpromote.DefaultBatchMaxSize,
+		searchIndexBatchWindow:  rootpromote.DefaultBatchWindow,
+		searchIndexBatchMaxSize: rootpromote.DefaultBatchMaxSize,
+		searchIndexBuildTimeout: defaultWorkspaceSearchIndexTimeout,
 	}
 }
 
@@ -1435,6 +1448,7 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 		modifiedPaths = append(modifiedPaths, dirPath)
 	}
 
+	filesToWrite := make([]*preparedFilesystemUpload, 0, len(req.GetFiles()))
 	for index, spec := range req.GetFiles() {
 		prepared, err := s.prepareFilesystemUpload(ctx, workspace.ID, username, homeMode, index, spec)
 		if err != nil {
@@ -1444,16 +1458,16 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 			resp.FilesSkipped++
 			continue
 		}
+		filesToWrite = append(filesToWrite, prepared)
+	}
 
-		canonical, err := s.resolveFilesystemUploadManifest(ctx, prepared.manifest)
+	if len(filesToWrite) > 0 {
+		paths, filesWritten, err := s.finalizeFilesystemUploadFiles(ctx, workspace.ID, filesToWrite)
 		if err != nil {
-			return nil, annotateFilesystemEditError(prepared.displayPath, err)
+			return nil, err
 		}
-		if err := s.writeWorkspaceFileManifest(ctx, workspace.ID, canonical); err != nil {
-			return nil, annotateFilesystemEditError(prepared.displayPath, err)
-		}
-		resp.FilesWritten++
-		modifiedPaths = append(modifiedPaths, prepared.path)
+		resp.FilesWritten += filesWritten
+		modifiedPaths = append(modifiedPaths, paths...)
 	}
 
 	if len(modifiedPaths) == 0 {
@@ -1470,6 +1484,66 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 	}
 	resp.CommitHash = commitHash
 	return resp, nil
+}
+
+func (s *filesystemServiceServer) finalizeFilesystemUploadFiles(ctx context.Context, workspaceID string, preparedFiles []*preparedFilesystemUpload) ([]string, int32, error) {
+	if len(preparedFiles) == 0 {
+		return nil, 0, nil
+	}
+
+	workerCount := filesystemUploadWriteConcurrency
+	if len(preparedFiles) < workerCount {
+		workerCount = len(preparedFiles)
+	}
+
+	jobs := make(chan *preparedFilesystemUpload)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	modifiedPaths := make([]string, 0, len(preparedFiles))
+	var filesWritten int32
+
+	worker := func() {
+		defer wg.Done()
+		for prepared := range jobs {
+			if prepared == nil {
+				continue
+			}
+			canonical, versionedExists, err := s.resolveFilesystemUploadManifest(ctx, prepared.manifest)
+			if err != nil {
+				err = annotateFilesystemEditError(prepared.displayPath, err)
+			} else if err := s.writeWorkspaceFileManifest(ctx, workspaceID, canonical, !versionedExists); err != nil {
+				err = annotateFilesystemEditError(prepared.displayPath, err)
+			}
+
+			mu.Lock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else {
+				filesWritten++
+				modifiedPaths = append(modifiedPaths, prepared.path)
+			}
+			mu.Unlock()
+		}
+	}
+
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go worker()
+	}
+	for _, prepared := range preparedFiles {
+		jobs <- prepared
+	}
+	close(jobs)
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, 0, firstErr
+	}
+	sort.Strings(modifiedPaths)
+	return modifiedPaths, filesWritten, nil
 }
 
 func (s *filesystemServiceServer) UploadBlocks(stream filesystemv1.FilesystemService_UploadBlocksServer) error {
@@ -1643,19 +1717,9 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	}
 
 	var matches []*filesystemv1.SearchMatch
-	if req.GetRegex() {
-		regexMatches, regexErr := s.searchWorkspaceRegex(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode)
-		if regexErr != nil {
-			return nil, regexErr
-		}
-		matches = regexMatches
-	} else {
-		matches, err = s.scanWorkspaceSearch(ctx, workspace.ID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
-			return findSearchMatches(displayPath, body, query)
-		})
-		if err != nil {
-			return nil, err
-		}
+	matches, err = s.searchWorkspaceIndexed(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode, req.GetRegex())
+	if err != nil {
+		return nil, err
 	}
 
 	sort.Slice(matches, func(i, j int) bool {
@@ -2678,9 +2742,9 @@ func (s *filesystemServiceServer) prepareFilesystemUpload(ctx context.Context, w
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d]: %s", index, err.Error()))
 	}
 
-	currentManifest, err := s.storage.GetFileManifest(ctx, workspaceID, filePath)
+	currentHash, hasCurrentHash, err := s.getWorkspaceFileManifestHash(ctx, workspaceID, filePath)
 	switch {
-	case err == nil && currentManifest != nil && strings.TrimSpace(currentManifest.Hash) == strings.TrimSpace(manifest.Hash):
+	case err == nil && hasCurrentHash && strings.TrimSpace(currentHash) == strings.TrimSpace(manifest.Hash):
 		return &preparedFilesystemUpload{
 			path:        filePath,
 			displayPath: displayPath,
@@ -2696,6 +2760,26 @@ func (s *filesystemServiceServer) prepareFilesystemUpload(ctx context.Context, w
 	default:
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect current file manifest: %v", err))
 	}
+}
+
+func (s *filesystemServiceServer) getWorkspaceFileManifestHash(ctx context.Context, workspaceID, filePath string) (string, bool, error) {
+	if getter, ok := s.storage.(fileManifestHashGetter); ok {
+		hashes, err := getter.GetFileManifestHashes(ctx, workspaceID, []string{filePath})
+		if err != nil {
+			return "", false, err
+		}
+		hash, ok := hashes[common.CleanRelativePath(filePath)]
+		return strings.TrimSpace(hash), ok && strings.TrimSpace(hash) != "", nil
+	}
+
+	currentManifest, err := s.storage.GetFileManifest(ctx, workspaceID, filePath)
+	if err != nil {
+		return "", false, err
+	}
+	if currentManifest == nil || strings.TrimSpace(currentManifest.Hash) == "" {
+		return "", false, nil
+	}
+	return strings.TrimSpace(currentManifest.Hash), true, nil
 }
 
 func filesystemManifestFromProto(filePath string, spec *filesystemv1.UploadFileManifest) (*models.FileManifest, error) {
@@ -2813,22 +2897,45 @@ func cloneFilesystemManifest(manifest *models.FileManifest) *models.FileManifest
 	return clone
 }
 
-func (s *filesystemServiceServer) resolveFilesystemUploadManifest(ctx context.Context, manifest *models.FileManifest) (*models.FileManifest, error) {
+func (s *filesystemServiceServer) resolveFilesystemUploadManifest(ctx context.Context, manifest *models.FileManifest) (*models.FileManifest, bool, error) {
 	if manifest == nil {
-		return nil, status.Error(codes.InvalidArgument, "manifest is required")
+		return nil, false, status.Error(codes.InvalidArgument, "manifest is required")
 	}
 
 	versioned, err := s.storage.GetVersionedFileManifest(ctx, manifest.Hash)
 	switch {
 	case err == nil && versioned != nil:
 		if !filesystemManifestEquivalent(manifest, versioned) {
-			return nil, status.Error(codes.InvalidArgument, "manifest does not match stored content hash")
+			return nil, false, status.Error(codes.InvalidArgument, "manifest does not match stored content hash")
 		}
 		canonical := cloneFilesystemManifest(versioned)
 		canonical.Path = strings.TrimSpace(manifest.Path)
-		return canonical, nil
+		return canonical, true, nil
 	case err != nil && err != storage.ErrEntryNotFound:
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect versioned manifest: %v", err))
+		return nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to inspect versioned manifest: %v", err))
+	}
+
+	if len(manifest.Blocks) == 0 {
+		if manifest.TotalSize != 0 {
+			return nil, false, status.Error(codes.InvalidArgument, "manifest size does not match uploaded blocks")
+		}
+		if strings.TrimSpace(manifest.Hash) != hashContent(nil) {
+			return nil, false, status.Error(codes.InvalidArgument, "manifest hash does not match uploaded blocks")
+		}
+		return cloneFilesystemManifest(manifest), false, nil
+	}
+	if len(manifest.Blocks) == 1 {
+		block := manifest.Blocks[0]
+		if int64(block.Size) == manifest.TotalSize && strings.TrimSpace(block.Hash) == strings.TrimSpace(manifest.Hash) {
+			hasBlock, err := s.storage.HasBlock(ctx, block.Hash)
+			if err != nil {
+				return nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to check upload block %s: %v", block.Hash, err))
+			}
+			if !hasBlock {
+				return nil, false, status.Error(codes.FailedPrecondition, fmt.Sprintf("missing upload block %s", block.Hash))
+			}
+			return cloneFilesystemManifest(manifest), false, nil
+		}
 	}
 
 	hasher := sha256.New()
@@ -2837,29 +2944,29 @@ func (s *filesystemServiceServer) resolveFilesystemUploadManifest(ctx context.Co
 		payload, err := s.storage.GetBlock(ctx, block.Hash)
 		if err != nil {
 			if err == storage.ErrEntryNotFound {
-				return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("missing upload block %s", block.Hash))
+				return nil, false, status.Error(codes.FailedPrecondition, fmt.Sprintf("missing upload block %s", block.Hash))
 			}
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load upload block %s: %v", block.Hash, err))
+			return nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to load upload block %s: %v", block.Hash, err))
 		}
 		if len(payload) != block.Size {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("block %s size does not match manifest", block.Hash))
+			return nil, false, status.Error(codes.InvalidArgument, fmt.Sprintf("block %s size does not match manifest", block.Hash))
 		}
 		if _, err := hasher.Write(payload); err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to hash upload block %s: %v", block.Hash, err))
+			return nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to hash upload block %s: %v", block.Hash, err))
 		}
 		totalSize += int64(block.Size)
 	}
 	if totalSize != manifest.TotalSize {
-		return nil, status.Error(codes.InvalidArgument, "manifest size does not match uploaded blocks")
+		return nil, false, status.Error(codes.InvalidArgument, "manifest size does not match uploaded blocks")
 	}
 	computedHash := hex.EncodeToString(hasher.Sum(nil))
 	if computedHash != strings.TrimSpace(manifest.Hash) {
-		return nil, status.Error(codes.InvalidArgument, "manifest hash does not match uploaded blocks")
+		return nil, false, status.Error(codes.InvalidArgument, "manifest hash does not match uploaded blocks")
 	}
-	return cloneFilesystemManifest(manifest), nil
+	return cloneFilesystemManifest(manifest), false, nil
 }
 
-func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context, workspaceID string, manifest *models.FileManifest) error {
+func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context, workspaceID string, manifest *models.FileManifest, writeVersioned bool) error {
 	if manifest == nil {
 		return status.Error(codes.InvalidArgument, "manifest is required")
 	}
@@ -2877,8 +2984,10 @@ func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context
 	if err := s.storage.PutFileManifest(ctx, workspaceID, manifest.Path, manifest); err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to persist file manifest: %v", err))
 	}
-	if err := s.storage.PutVersionedFileManifest(ctx, manifest); err != nil {
-		return status.Error(codes.Internal, fmt.Sprintf("failed to persist versioned file manifest: %v", err))
+	if writeVersioned {
+		if err := s.storage.PutVersionedFileManifest(ctx, manifest); err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to persist versioned file manifest: %v", err))
+		}
 	}
 	if err := s.storage.AddFileToSlice(ctx, manifest.Path, workspaceID); err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
@@ -3178,44 +3287,44 @@ func (s *filesystemServiceServer) scanWorkspaceSearch(ctx context.Context, works
 	return matches, nil
 }
 
-func (s *filesystemServiceServer) searchWorkspaceRegex(ctx context.Context, workspaceID, headCommitHash, query, globPattern string, homeMode bool) ([]*filesystemv1.SearchMatch, error) {
-	re, err := regexp.Compile(query)
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
-	}
-
+func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, workspaceID, headCommitHash, query, globPattern string, homeMode, regex bool) ([]*filesystemv1.SearchMatch, error) {
 	artifactLoadStartedAt := time.Now()
 	artifact, artifactOutcome, artifactErr := s.loadWorkspaceSearchArtifact(ctx, workspaceID, headCommitHash)
 	if artifactOutcome != "" {
 		observeFilesystemSearchArtifactLoad(artifactOutcome, time.Since(artifactLoadStartedAt))
 	}
 	if artifactErr != nil {
-		log.Printf("filesystem: regex search falling back to scan for %s: %v", workspaceID, artifactErr)
-		observeFilesystemSearchFallback("artifact_error")
-		verifyStartedAt := time.Now()
-		defer observeFilesystemSearchVerify("regex_fallback_scan", time.Since(verifyStartedAt))
-		return s.scanWorkspaceSearch(ctx, workspaceID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
-			return findRegexSearchMatches(displayPath, body, re)
-		})
+		return nil, artifactErr
 	}
 
-	queryNode, err := searchindex.BuildRegexQuery(query, searchindex.DefaultWeighter(), searchindex.SparseModeCovering)
+	indexQuery := query
+	if !regex {
+		indexQuery = regexp.QuoteMeta(query)
+	}
+	queryNode, err := searchindex.BuildRegexQuery(indexQuery, searchindex.DefaultWeighter(), searchindex.SparseModeCovering)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
 	}
 	candidateIndexes := searchindex.CandidateFileIndexes(artifact, queryNode)
-	observeFilesystemSearchCandidates("regex_indexed", len(candidateIndexes))
+	searchMode := "text_indexed"
+	if regex {
+		searchMode = "regex_indexed"
+	}
+	observeFilesystemSearchCandidates(searchMode, len(candidateIndexes))
 	if len(candidateIndexes) == 0 {
-		observeFilesystemSearchFallback("empty_candidates")
-		verifyStartedAt := time.Now()
-		defer observeFilesystemSearchVerify("regex_fallback_scan", time.Since(verifyStartedAt))
-		return s.scanWorkspaceSearch(ctx, workspaceID, globPattern, homeMode, func(displayPath, body string) []*filesystemv1.SearchMatch {
-			return findRegexSearchMatches(displayPath, body, re)
-		})
+		return []*filesystemv1.SearchMatch{}, nil
+	}
+
+	var re *regexp.Regexp
+	if regex {
+		re, err = regexp.Compile(query)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
+		}
 	}
 
 	verifyStartedAt := time.Now()
-	defer observeFilesystemSearchVerify("regex_indexed", time.Since(verifyStartedAt))
+	defer observeFilesystemSearchVerify(searchMode, time.Since(verifyStartedAt))
 	matches := make([]*filesystemv1.SearchMatch, 0)
 	for _, fileIndex := range candidateIndexes {
 		if int(fileIndex) >= len(artifact.Files) {
@@ -3232,7 +3341,12 @@ func (s *filesystemServiceServer) searchWorkspaceRegex(ctx context.Context, work
 			}
 			return nil, err
 		}
-		matches = append(matches, findRegexSearchMatches(displayOperationPath(file.Path, homeMode), string(content.Content), re)...)
+		displayPath := displayOperationPath(file.Path, homeMode)
+		if regex {
+			matches = append(matches, findRegexSearchMatches(displayPath, string(content.Content), re)...)
+			continue
+		}
+		matches = append(matches, findSearchMatches(displayPath, string(content.Content), query)...)
 	}
 	return matches, nil
 }
@@ -3243,8 +3357,12 @@ func (s *filesystemServiceServer) loadWorkspaceSearchArtifact(ctx context.Contex
 		return searchindex.BuildSliceArtifact(workspaceID, "", nil), storage.SearchArtifactOutcomeBuilt.String(), nil
 	}
 
-	artifact, outcome, err := storage.LoadOrBuildWorkspaceSearchArtifact(ctx, s.storage, workspaceID, headCommitHash)
+	artifact, outcome, err := storage.LoadWorkspaceSearchArtifact(ctx, s.storage, workspaceID, headCommitHash)
 	if err != nil {
+		if errors.Is(err, storage.ErrSearchArtifactNotReady) {
+			s.enqueueWorkspaceSearchIndex(workspaceID, headCommitHash)
+			return nil, outcome.String(), status.Error(codes.FailedPrecondition, "search index is not ready; retry shortly")
+		}
 		return nil, "", err
 	}
 	return artifact, outcome.String(), nil
@@ -4058,9 +4176,7 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 	}); err != nil {
 		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace metadata: %v", err))
 	}
-	if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, s.storage, workspace.ID, commitHash); err != nil {
-		log.Printf("filesystem: failed to refresh search artifact for commit %s in %s: %v", commitHash, workspace.ID, err)
-	}
+	s.enqueueWorkspaceSearchIndex(workspace.ID, commitHash)
 	if err := s.recordWorkspaceFileChanges(ctx, workspace, commitHash, meta.HeadCommitHash, message, now, modifiedPaths, previousFiles, files); err != nil {
 		log.Printf("filesystem: failed to index file changes for commit %s in %s: %v", commitHash, workspace.ID, err)
 	}

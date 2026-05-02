@@ -172,6 +172,45 @@ func BuildAndStoreWorkspaceSearchArtifact(ctx context.Context, st Storage, works
 	return artifact, nil
 }
 
+func LoadWorkspaceSearchArtifact(ctx context.Context, st Storage, workspaceID, commitHash string) (*searchindex.SliceArtifact, SearchArtifactLoadOutcome, error) {
+	startedAt := time.Now()
+
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return nil, "", ErrInvalidInput
+	}
+	commitHash = strings.TrimSpace(commitHash)
+	if commitHash == "" {
+		meta, err := st.GetSliceMetadata(ctx, workspaceID)
+		if err != nil {
+			return nil, "", err
+		}
+		commitHash = strings.TrimSpace(meta.HeadCommitHash)
+	}
+	if commitHash == "" {
+		artifact := searchindex.BuildSliceArtifact(workspaceID, "", nil)
+		observeSearchArtifactLoad("workspace", SearchArtifactOutcomeHit, time.Since(startedAt))
+		return artifact, SearchArtifactOutcomeHit, nil
+	}
+
+	payload, err := st.GetWorkspaceSearchArtifact(ctx, workspaceID, searchindex.CurrentArtifactVersion)
+	if err != nil {
+		if errors.Is(err, ErrEntryNotFound) {
+			observeSearchArtifactLoad("workspace", SearchArtifactOutcomeBuilt, time.Since(startedAt))
+			return nil, SearchArtifactOutcomeBuilt, ErrSearchArtifactNotReady
+		}
+		return nil, "", err
+	}
+
+	artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
+	if decodeErr != nil || validateStoredArtifact(artifact, workspaceID, commitHash) != nil {
+		observeSearchArtifactLoad("workspace", SearchArtifactOutcomeRebuilt, time.Since(startedAt))
+		return nil, SearchArtifactOutcomeRebuilt, ErrSearchArtifactNotReady
+	}
+	observeSearchArtifactLoad("workspace", SearchArtifactOutcomeHit, time.Since(startedAt))
+	return artifact, SearchArtifactOutcomeHit, nil
+}
+
 func LoadOrBuildWorkspaceSearchArtifact(ctx context.Context, st Storage, workspaceID, commitHash string) (*searchindex.SliceArtifact, SearchArtifactLoadOutcome, error) {
 	startedAt := time.Now()
 

@@ -46,6 +46,36 @@ func mustWriteSliceManifest(tb testing.TB, ctx context.Context, st storage.Stora
 	return manifest.Hash
 }
 
+func doSearchRequestEventuallyOK(t *testing.T, client *http.Client, newReq func() (*http.Request, error)) *http.Response {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	var lastStatus int
+	var lastBody string
+	for {
+		req, err := newReq()
+		if err != nil {
+			t.Fatalf("new search request: %v", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("search request failed: %v", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			return resp
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastStatus = resp.StatusCode
+		lastBody = string(body)
+		if !strings.Contains(lastBody, "search index is not ready") || time.Now().After(deadline) {
+			t.Fatalf("unexpected search status %d: %s", lastStatus, lastBody)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestGatewayIncomingHeaderMatcherForwardsWorkOSSignature(t *testing.T) {
 	key, ok := gatewayIncomingHeaderMatcher("WorkOS-Signature")
 	if !ok || key != "workos-signature" {
@@ -628,20 +658,15 @@ func TestGatewayFilesystemBatchOperations(t *testing.T) {
 	searchValues := url.Values{}
 	searchValues.Set("query", "hello")
 	searchValues.Set("glob", "**/*.md")
-	searchReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-batch:search?"+searchValues.Encode(), nil)
-	if err != nil {
-		t.Fatalf("new search request: %v", err)
-	}
-	searchReq.Header.Set("Authorization", "User tester")
-	searchResp, err := client.Do(searchReq)
-	if err != nil {
-		t.Fatalf("search request failed: %v", err)
-	}
+	searchResp := doSearchRequestEventuallyOK(t, client, func() (*http.Request, error) {
+		searchReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/fs/workspaces/gw-batch:search?"+searchValues.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		searchReq.Header.Set("Authorization", "User tester")
+		return searchReq, nil
+	})
 	defer searchResp.Body.Close()
-	if searchResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(searchResp.Body)
-		t.Fatalf("unexpected search status %d: %s", searchResp.StatusCode, string(body))
-	}
 
 	var searchPayload struct {
 		Matches []struct {

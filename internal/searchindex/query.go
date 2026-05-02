@@ -66,7 +66,7 @@ func buildRegexQueryNode(re *syntax.Regexp, weighter BigramWeighter, mode Sparse
 		return &QueryNode{
 			Kind:    QueryNodeTerm,
 			Literal: literal,
-			NGrams:  UniqueNGramValues(BuildSparseNGrams([]byte(literal), weighter, mode)),
+			NGrams:  BuildContentNGrams([]byte(literal)),
 		}
 	case syntax.OpCapture:
 		if len(re.Sub) == 0 {
