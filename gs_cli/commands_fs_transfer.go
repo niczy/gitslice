@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
@@ -44,6 +45,14 @@ type filesystemUploadInventory struct {
 
 type filesystemUploadInventoryOptions struct {
 	includeIgnored bool
+	progress       func(filesystemUploadInventoryProgress)
+}
+
+type filesystemUploadInventoryProgress struct {
+	files       int
+	directories int
+	bytes       int64
+	currentPath string
 }
 
 type filesystemUploadIgnoreRule struct {
@@ -55,6 +64,160 @@ type filesystemUploadIgnoreRule struct {
 type filesystemUploadIgnoreMatcher struct {
 	enabled bool
 	rules   []filesystemUploadIgnoreRule
+}
+
+type filesystemUploadProgress struct {
+	enabled       bool
+	out           io.Writer
+	interval      time.Duration
+	lastInventory time.Time
+	lastPlanning  time.Time
+	lastUpload    time.Time
+}
+
+func newFilesystemUploadProgress(enabled bool, out io.Writer) *filesystemUploadProgress {
+	if out == nil {
+		out = io.Discard
+	}
+	return &filesystemUploadProgress{
+		enabled:  enabled,
+		out:      out,
+		interval: time.Second,
+	}
+}
+
+func (p *filesystemUploadProgress) startInventory(localRoot, remoteBase string) {
+	if !p.isEnabled() {
+		return
+	}
+	p.lastInventory = time.Now()
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Scanning %s for upload to %s...\n",
+		localRoot,
+		filesystemDisplayPath(remoteBase),
+	)
+}
+
+func (p *filesystemUploadProgress) reportInventory(progress filesystemUploadInventoryProgress) {
+	if !p.shouldReport(&p.lastInventory, false) {
+		return
+	}
+	p.printInventory(progress.files, progress.directories, progress.bytes)
+}
+
+func (p *filesystemUploadProgress) finishInventory(files, directories int, bytes int64) {
+	if !p.shouldReport(&p.lastInventory, true) {
+		return
+	}
+	p.printInventory(files, directories, bytes)
+}
+
+func (p *filesystemUploadProgress) printInventory(files, directories int, bytes int64) {
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Scanned %s, %s, %s.\n",
+		filesystemTransferCountLabel(files, "file", "files"),
+		filesystemTransferCountLabel(directories, "directory", "directories"),
+		filesystemTransferFormatBytes(bytes),
+	)
+}
+
+func (p *filesystemUploadProgress) startPlanning(files, batches int) {
+	if !p.isEnabled() {
+		return
+	}
+	p.lastPlanning = time.Now()
+	if files == 0 {
+		_, _ = fmt.Fprintln(p.out, "Planning upload: no files to upload.")
+		return
+	}
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Planning upload for %s in %s...\n",
+		filesystemTransferCountLabel(files, "file", "files"),
+		filesystemTransferCountLabel(batches, "batch", "batches"),
+	)
+}
+
+func (p *filesystemUploadProgress) reportPlanning(plannedFiles, totalFiles, missingBlocks int, force bool) {
+	if !p.shouldReport(&p.lastPlanning, force) {
+		return
+	}
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Planned %d/%d files; %s.\n",
+		plannedFiles,
+		totalFiles,
+		filesystemTransferCountLabel(missingBlocks, "missing block", "missing blocks"),
+	)
+}
+
+func (p *filesystemUploadProgress) finishPlanning(plannedFiles, totalFiles, missingBlocks int) {
+	p.reportPlanning(plannedFiles, totalFiles, missingBlocks, true)
+}
+
+func (p *filesystemUploadProgress) startUpload(totalBlocks int, totalBytes int64) {
+	if !p.isEnabled() {
+		return
+	}
+	p.lastUpload = time.Now()
+	if totalBlocks == 0 {
+		_, _ = fmt.Fprintln(p.out, "No missing file blocks to upload.")
+		return
+	}
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Uploading %s (%s)...\n",
+		filesystemTransferCountLabel(totalBlocks, "missing block", "missing blocks"),
+		filesystemTransferFormatBytes(totalBytes),
+	)
+}
+
+func (p *filesystemUploadProgress) reportUpload(uploadedBlocks, totalBlocks int, uploadedBytes, totalBytes int64, force bool) {
+	if totalBlocks == 0 || !p.shouldReport(&p.lastUpload, force) {
+		return
+	}
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Uploaded %d/%d blocks (%s/%s).\n",
+		uploadedBlocks,
+		totalBlocks,
+		filesystemTransferFormatBytes(uploadedBytes),
+		filesystemTransferFormatBytes(totalBytes),
+	)
+}
+
+func (p *filesystemUploadProgress) finishUpload(uploadedBlocks, totalBlocks int, uploadedBytes, totalBytes int64) {
+	p.reportUpload(uploadedBlocks, totalBlocks, uploadedBytes, totalBytes, true)
+}
+
+func (p *filesystemUploadProgress) startFinalize(files, directories int) {
+	if !p.isEnabled() {
+		return
+	}
+	_, _ = fmt.Fprintf(
+		p.out,
+		"Finalizing upload (%s, %s)...\n",
+		filesystemTransferCountLabel(files, "file", "files"),
+		filesystemTransferCountLabel(directories, "directory", "directories"),
+	)
+}
+
+func (p *filesystemUploadProgress) shouldReport(last *time.Time, force bool) bool {
+	if !p.isEnabled() {
+		return false
+	}
+	now := time.Now()
+	if force || last.IsZero() || now.Sub(*last) >= p.interval {
+		*last = now
+		return true
+	}
+	return false
+}
+
+func (p *filesystemUploadProgress) isEnabled() bool {
+	return p != nil && p.enabled && p.out != nil
 }
 
 func handleFilesystemSync(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
@@ -146,12 +309,16 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid absolute path: %v", err)
 	}
 
+	progress := newFilesystemUploadProgress(!jsonEnabled, os.Stderr)
+	progress.startInventory(localRoot, remoteBase)
 	inventory, err := buildFilesystemUploadInventory(localRoot, remoteBase, filesystemUploadInventoryOptions{
 		includeIgnored: *includeIgnored,
+		progress:       progress.reportInventory,
 	})
 	if err != nil {
 		commandFatalf("FS_UPLOAD_FAILED", false, "", "Failed to plan upload directory tree: %v", err)
 	}
+	progress.finishInventory(len(inventory.files), len(inventory.directories), filesystemUploadInventoryBytes(inventory))
 	if *dryRun {
 		out := jsonFilesystemTransferOutput{
 			Action:         "upload",
@@ -166,12 +333,19 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 			writeJSONOutput(out)
 			return
 		}
-		fmt.Printf("Would upload %d files and %d directories to %s\n", len(inventory.files), len(inventory.directories), filesystemDisplayPath(remoteBase))
+		fmt.Printf(
+			"Would upload %s and %s to %s\n",
+			filesystemTransferCountLabel(len(inventory.files), "file", "files"),
+			filesystemTransferCountLabel(len(inventory.directories), "directory", "directories"),
+			filesystemDisplayPath(remoteBase),
+		)
 		return
 	}
 
 	missingBlocks := make(map[string]struct{})
 	fileBatches := splitFilesystemUploadFiles(inventory.files, filesystemTransferManifestBatchSize)
+	progress.startPlanning(len(inventory.files), len(fileBatches))
+	filesPlanned := 0
 	for _, batch := range fileBatches {
 		planResp, err := cli.filesystemClient.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
 			WorkspaceId: workspaceID,
@@ -187,14 +361,20 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 				missingBlocks[hash] = struct{}{}
 			}
 		}
+		filesPlanned += len(batch)
+		if filesPlanned < len(inventory.files) {
+			progress.reportPlanning(filesPlanned, len(inventory.files), len(missingBlocks), false)
+		}
 	}
-	if _, err := uploadFilesystemMissingBlocks(ctx, cli.filesystemClient, workspaceID, inventory, missingBlocks); err != nil {
+	progress.finishPlanning(filesPlanned, len(inventory.files), len(missingBlocks))
+	if _, err := uploadFilesystemMissingBlocks(ctx, cli.filesystemClient, workspaceID, inventory, missingBlocks, progress); err != nil {
 		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to upload missing file blocks: %v", err)
 	}
 	if len(missingBlocks) != 0 {
 		commandFatalf("FS_UPLOAD_FAILED", true, "", "Failed to upload all missing file blocks; %d blocks still missing", len(missingBlocks))
 	}
 
+	progress.startFinalize(len(inventory.files), len(inventory.directories))
 	_, err = cli.filesystemClient.FinalizeUpload(ctx, &filesystemv1.FinalizeUploadRequest{
 		WorkspaceId: workspaceID,
 		Directories: append([]string(nil), inventory.directories...),
@@ -216,9 +396,9 @@ func handleFilesystemUpload(ctx context.Context, cli *CLI, authConfig cliAuth, a
 	}
 
 	fmt.Printf(
-		"Uploaded %d files and %d directories to %s\n",
-		len(inventory.files),
-		len(inventory.directories),
+		"Uploaded %s and %s to %s\n",
+		filesystemTransferCountLabel(len(inventory.files), "file", "files"),
+		filesystemTransferCountLabel(len(inventory.directories), "directory", "directories"),
 		filesystemDisplayPath(remoteBase),
 	)
 }
@@ -273,7 +453,13 @@ func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth,
 			writeJSONOutput(out)
 			return
 		}
-		fmt.Printf("Would download %d files and %d directories from %s to %s\n", filesPlanned, dirsPlanned, filesystemDisplayPath(remoteBase), out.LocalPath)
+		fmt.Printf(
+			"Would download %s and %s from %s to %s\n",
+			filesystemTransferCountLabel(filesPlanned, "file", "files"),
+			filesystemTransferCountLabel(dirsPlanned, "directory", "directories"),
+			filesystemDisplayPath(remoteBase),
+			out.LocalPath,
+		)
 		return
 	}
 
@@ -299,9 +485,9 @@ func handleFilesystemDownload(ctx context.Context, cli *CLI, authConfig cliAuth,
 	}
 
 	fmt.Printf(
-		"Downloaded %d files and %d directories from %s to %s\n",
-		filesDownloaded,
-		dirsDownloaded,
+		"Downloaded %s and %s from %s to %s\n",
+		filesystemTransferCountLabel(filesDownloaded, "file", "files"),
+		filesystemTransferCountLabel(dirsDownloaded, "directory", "directories"),
 		filesystemDisplayPath(remoteBase),
 		localRoot,
 	)
@@ -359,6 +545,7 @@ func buildFilesystemUploadInventory(localRoot, remoteBase string, options filesy
 	if err != nil {
 		return nil, err
 	}
+	var bytesScanned int64
 	err = filepath.WalkDir(localRoot, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -381,6 +568,14 @@ func buildFilesystemUploadInventory(localRoot, remoteBase string, options filesy
 		remotePath := path.Join(remoteBase, relativeSlash)
 		if entry.IsDir() {
 			inventory.directories = append(inventory.directories, remotePath)
+			if options.progress != nil {
+				options.progress(filesystemUploadInventoryProgress{
+					files:       len(inventory.files),
+					directories: len(inventory.directories),
+					bytes:       bytesScanned,
+					currentPath: current,
+				})
+			}
 			return nil
 		}
 		info, err := entry.Info()
@@ -395,12 +590,21 @@ func buildFilesystemUploadInventory(localRoot, remoteBase string, options filesy
 		if err != nil {
 			return err
 		}
+		bytesScanned += manifest.GetSize()
 		inventory.files = append(inventory.files, &filesystemUploadFile{
 			localPath:  current,
 			remotePath: remotePath,
 			manifest:   manifest,
 			blocks:     blocks,
 		})
+		if options.progress != nil {
+			options.progress(filesystemUploadInventoryProgress{
+				files:       len(inventory.files),
+				directories: len(inventory.directories),
+				bytes:       bytesScanned,
+				currentPath: current,
+			})
+		}
 		return nil
 	})
 	if err != nil {
@@ -647,16 +851,21 @@ func uploadFilesystemMissingBlocks(
 	workspaceID string,
 	inventory *filesystemUploadInventory,
 	missing map[string]struct{},
+	progress *filesystemUploadProgress,
 ) (*filesystemv1.UploadBlocksResponse, error) {
 	if len(missing) == 0 {
+		progress.startUpload(0, 0)
 		return &filesystemv1.UploadBlocksResponse{WorkspaceId: workspaceID}, nil
 	}
 
 	sources := collectFilesystemUploadBlockSources(inventory, missing)
 	resp := &filesystemv1.UploadBlocksResponse{WorkspaceId: workspaceID}
 	if len(sources) == 0 {
+		progress.startUpload(0, 0)
 		return resp, nil
 	}
+	totalBytes := filesystemUploadBlockSourceBytes(sources)
+	progress.startUpload(len(sources), totalBytes)
 
 	batches := splitFilesystemUploadBlockSources(sources, filesystemTransferBlockUploadBatchSize)
 	ctx, cancel := context.WithCancel(ctx)
@@ -667,6 +876,8 @@ func uploadFilesystemMissingBlocks(
 	var mu sync.Mutex
 	var firstErr error
 	sentHashes := make([]string, 0, len(sources))
+	uploadedBlocks := 0
+	uploadedBytes := int64(0)
 
 	for _, batch := range batches {
 		batch := batch
@@ -694,8 +905,13 @@ func uploadFilesystemMissingBlocks(
 			resp.BytesReceived += batchResp.GetBytesReceived()
 			resp.BlocksWritten += batchResp.GetBlocksWritten()
 			resp.BlocksReused += batchResp.GetBlocksReused()
+			uploadedBlocks += len(batch)
+			uploadedBytes += filesystemUploadBlockSourceBytes(batch)
 			for _, source := range batch {
 				sentHashes = append(sentHashes, source.hash)
+			}
+			if uploadedBlocks < len(sources) {
+				progress.reportUpload(uploadedBlocks, len(sources), uploadedBytes, totalBytes, false)
 			}
 		}()
 	}
@@ -704,6 +920,7 @@ func uploadFilesystemMissingBlocks(
 	if firstErr != nil {
 		return nil, firstErr
 	}
+	progress.finishUpload(uploadedBlocks, len(sources), uploadedBytes, totalBytes)
 	for _, hash := range sentHashes {
 		delete(missing, hash)
 	}
@@ -732,6 +949,55 @@ func collectFilesystemUploadBlockSources(inventory *filesystemUploadInventory, m
 		}
 	}
 	return sources
+}
+
+func filesystemUploadInventoryBytes(inventory *filesystemUploadInventory) int64 {
+	if inventory == nil {
+		return 0
+	}
+	var total int64
+	for _, fileSpec := range inventory.files {
+		if fileSpec == nil || fileSpec.manifest == nil {
+			continue
+		}
+		total += fileSpec.manifest.GetSize()
+	}
+	return total
+}
+
+func filesystemUploadBlockSourceBytes(sources []filesystemUploadBlockSource) int64 {
+	var total int64
+	for _, source := range sources {
+		if source.size > 0 {
+			total += source.size
+		}
+	}
+	return total
+}
+
+func filesystemTransferFormatBytes(bytes int64) string {
+	if bytes < 0 {
+		bytes = 0
+	}
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	value := float64(bytes)
+	for _, suffix := range []string{"KiB", "MiB", "GiB", "TiB"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f PiB", value/unit)
+}
+
+func filesystemTransferCountLabel(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
 }
 
 func splitFilesystemUploadBlockSources(sources []filesystemUploadBlockSource, batchSize int) [][]filesystemUploadBlockSource {

@@ -1,10 +1,12 @@
 package gscli
 
 import (
+	"bytes"
 	"flag"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/niczy/gitslice/internal/storage"
@@ -208,6 +210,78 @@ func TestCollectFilesystemUploadBlockSourcesUsesManifestOffsets(t *testing.T) {
 	}
 	if string(chunk) != string(content[storage.DefaultFileBlockSize:]) {
 		t.Fatalf("unexpected block content")
+	}
+}
+
+func TestBuildFilesystemUploadInventoryReportsProgress(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "src", "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write src/main.go: %v", err)
+	}
+
+	var events []filesystemUploadInventoryProgress
+	inventory, err := buildFilesystemUploadInventory(tmpDir, "/nicholas/app", filesystemUploadInventoryOptions{
+		progress: func(progress filesystemUploadInventoryProgress) {
+			events = append(events, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildFilesystemUploadInventory failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected inventory progress events")
+	}
+
+	last := events[len(events)-1]
+	if last.files != len(inventory.files) || last.directories != len(inventory.directories) {
+		t.Fatalf("unexpected final progress counts: %+v inventory files=%d dirs=%d", last, len(inventory.files), len(inventory.directories))
+	}
+	if got, want := last.bytes, filesystemUploadInventoryBytes(inventory); got != want {
+		t.Fatalf("unexpected final progress bytes: got %d want %d", got, want)
+	}
+	if strings.TrimSpace(last.currentPath) == "" {
+		t.Fatal("expected progress to include the current local path")
+	}
+}
+
+func TestFilesystemUploadProgressWritesHumanProgress(t *testing.T) {
+	var buf bytes.Buffer
+	progress := newFilesystemUploadProgress(true, &buf)
+	progress.startInventory("/tmp/app", "/nicholas/app")
+	progress.finishInventory(2, 1, 1536)
+	progress.startPlanning(2, 1)
+	progress.finishPlanning(2, 2, 1)
+	progress.startUpload(1, 1536)
+	progress.finishUpload(1, 1, 1536, 1536)
+	progress.startFinalize(2, 1)
+
+	got := buf.String()
+	for _, want := range []string{
+		"Scanning /tmp/app for upload to /nicholas/app",
+		"Scanned 2 files, 1 directory, 1.5 KiB.",
+		"Planning upload for 2 files in 1 batch",
+		"Planned 2/2 files; 1 missing block.",
+		"Uploading 1 missing block (1.5 KiB)",
+		"Uploaded 1/1 blocks (1.5 KiB/1.5 KiB).",
+		"Finalizing upload (2 files, 1 directory)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected progress output to contain %q, got:\n%s", want, got)
+		}
+	}
+
+	buf.Reset()
+	disabled := newFilesystemUploadProgress(false, &buf)
+	disabled.startInventory("/tmp/app", "/nicholas/app")
+	disabled.finishInventory(2, 1, 1536)
+	if buf.Len() != 0 {
+		t.Fatalf("expected disabled progress to stay silent, got %q", buf.String())
 	}
 }
 

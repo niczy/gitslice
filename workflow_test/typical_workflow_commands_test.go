@@ -1007,13 +1007,13 @@ func TestFilesystemSyncCommand(t *testing.T) {
 
 	remoteBase := fmt.Sprintf("/%s/fs-sync-%d", username, time.Now().UnixNano())
 	output := runCLIForUser("", "fs", "sync", "--direction", "push", localUpload, remoteBase)
-	if !strings.Contains(output, "Uploaded 1 files") {
+	if !strings.Contains(output, "Uploaded 1 file") || !strings.Contains(output, "Planning upload for 1 file") {
 		t.Fatalf("expected upload output, got: %s", output)
 	}
 
 	localDownload := filepath.Join(t.TempDir(), "download")
 	output = runCLIForUser("", "fs", "sync", "--direction", "pull", remoteBase, localDownload)
-	if !strings.Contains(output, "Downloaded 1 files") {
+	if !strings.Contains(output, "Downloaded 1 file") {
 		t.Fatalf("expected download output, got: %s", output)
 	}
 
