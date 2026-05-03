@@ -51,6 +51,8 @@ const (
 	defaultFilesystemStreamChunkSize = 256 * 1024
 	maxFilesystemStreamChunkSize     = 1024 * 1024
 	filesystemUploadWriteConcurrency = 32
+	filesystemInlineChangeDiffLimit  = 100
+	filesystemUploadPlanConcurrency  = 32
 )
 
 type readFileOptions struct {
@@ -81,8 +83,21 @@ type preparedFilesystemUpload struct {
 	unchanged   bool
 }
 
+type filesystemUploadPlanFile struct {
+	index    int
+	prepared *preparedFilesystemUpload
+}
+
 type fileManifestHashGetter interface {
 	GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error)
+}
+
+type existingEntryPathGetter interface {
+	GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error)
+}
+
+type fileSliceBatchAdder interface {
+	AddFilesToSlice(ctx context.Context, fileIDs []string, sliceID string) error
 }
 
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
@@ -1332,43 +1347,23 @@ func (s *filesystemServiceServer) PlanUpload(ctx context.Context, req *filesyste
 		return nil, status.Error(codes.InvalidArgument, "files is required")
 	}
 
-	missingBlocks := make(map[string]int64)
-	checkedBlocks := make(map[string]struct{})
 	skippedPaths := make([]string, 0)
-	for index, spec := range req.GetFiles() {
-		prepared, err := s.prepareFilesystemUpload(ctx, workspace.ID, username, homeMode, index, spec)
-		if err != nil {
-			return nil, err
-		}
+	preparedFiles, err := s.prepareFilesystemUploads(ctx, workspace.ID, username, homeMode, req.GetFiles())
+	if err != nil {
+		return nil, err
+	}
+	filesToPlan := make([]filesystemUploadPlanFile, 0, len(preparedFiles))
+	for index, prepared := range preparedFiles {
 		if prepared.unchanged {
 			skippedPaths = append(skippedPaths, prepared.displayPath)
 			continue
 		}
+		filesToPlan = append(filesToPlan, filesystemUploadPlanFile{index: index, prepared: prepared})
+	}
 
-		versioned, err := s.storage.GetVersionedFileManifest(ctx, prepared.manifest.Hash)
-		switch {
-		case err == nil && versioned != nil:
-			if !filesystemManifestEquivalent(prepared.manifest, versioned) {
-				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d] manifest does not match stored content hash", index))
-			}
-			continue
-		case err != nil && err != storage.ErrEntryNotFound:
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect versioned manifest: %v", err))
-		}
-
-		for _, block := range prepared.manifest.Blocks {
-			if _, seen := checkedBlocks[block.Hash]; seen {
-				continue
-			}
-			checkedBlocks[block.Hash] = struct{}{}
-			hasBlock, err := s.storage.HasBlock(ctx, block.Hash)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check block presence: %v", err))
-			}
-			if !hasBlock {
-				missingBlocks[block.Hash] = int64(block.Size)
-			}
-		}
+	missingBlocks, err := s.planFilesystemUploadMissingBlocks(ctx, filesToPlan)
+	if err != nil {
+		return nil, err
 	}
 
 	missingHashes := make([]string, 0, len(missingBlocks))
@@ -1390,6 +1385,92 @@ func (s *filesystemServiceServer) PlanUpload(ctx context.Context, req *filesyste
 	}, nil
 }
 
+func (s *filesystemServiceServer) planFilesystemUploadMissingBlocks(ctx context.Context, files []filesystemUploadPlanFile) (map[string]int64, error) {
+	missingBlocks := make(map[string]int64)
+	if len(files) == 0 {
+		return missingBlocks, nil
+	}
+
+	workerCount := filesystemUploadPlanConcurrency
+	if len(files) < workerCount {
+		workerCount = len(files)
+	}
+
+	jobs := make(chan filesystemUploadPlanFile)
+	var checkedBlocks sync.Map
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
+
+	worker := func() {
+		defer wg.Done()
+		for item := range jobs {
+			prepared := item.prepared
+			if prepared == nil || prepared.manifest == nil {
+				continue
+			}
+
+			versioned, err := s.storage.GetVersionedFileManifest(ctx, prepared.manifest.Hash)
+			switch {
+			case err == nil && versioned != nil:
+				if !filesystemManifestEquivalent(prepared.manifest, versioned) {
+					recordErr(status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d] manifest does not match stored content hash", item.index)))
+				}
+				continue
+			case err != nil && err != storage.ErrEntryNotFound:
+				recordErr(status.Error(codes.Internal, fmt.Sprintf("failed to inspect versioned manifest: %v", err)))
+				continue
+			}
+
+			for _, block := range prepared.manifest.Blocks {
+				hash := strings.TrimSpace(block.Hash)
+				if hash == "" {
+					continue
+				}
+				if _, seen := checkedBlocks.LoadOrStore(hash, struct{}{}); seen {
+					continue
+				}
+				hasBlock, err := s.storage.HasBlock(ctx, hash)
+				if err != nil {
+					recordErr(status.Error(codes.Internal, fmt.Sprintf("failed to check block presence: %v", err)))
+					continue
+				}
+				if !hasBlock {
+					mu.Lock()
+					missingBlocks[hash] = int64(block.Size)
+					mu.Unlock()
+				}
+			}
+		}
+	}
+
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go worker()
+	}
+	for _, file := range files {
+		jobs <- file
+	}
+	close(jobs)
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return missingBlocks, nil
+}
+
 func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *filesystemv1.FinalizeUploadRequest) (*filesystemv1.FinalizeUploadResponse, error) {
 	username, err := s.requireUser(ctx)
 	if err != nil {
@@ -1406,6 +1487,7 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 
 	resp := &filesystemv1.FinalizeUploadResponse{WorkspaceId: workspace.ID}
 	modifiedPaths := make([]string, 0, len(req.GetDirectories())+len(req.GetFiles()))
+	committedFileCount := int32(0)
 
 	directorySpecs := make([]string, 0, len(req.GetDirectories()))
 	directorySeen := make(map[string]struct{}, len(req.GetDirectories()))
@@ -1448,17 +1530,37 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 		modifiedPaths = append(modifiedPaths, dirPath)
 	}
 
-	filesToWrite := make([]*preparedFilesystemUpload, 0, len(req.GetFiles()))
-	for index, spec := range req.GetFiles() {
-		prepared, err := s.prepareFilesystemUpload(ctx, workspace.ID, username, homeMode, index, spec)
+	headSnapshotFiles := map[string]string{}
+	if len(req.GetFiles()) > 0 {
+		headSnapshotFiles, err = s.workspaceHeadSnapshotFiles(ctx, workspace.ID)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	recoveredIndexPaths := make([]string, 0)
+	filesToWrite := make([]*preparedFilesystemUpload, 0, len(req.GetFiles()))
+	preparedFiles, err := s.prepareFilesystemUploads(ctx, workspace.ID, username, homeMode, req.GetFiles())
+	if err != nil {
+		return nil, err
+	}
+	for _, prepared := range preparedFiles {
 		if prepared.unchanged {
 			resp.FilesSkipped++
+			if strings.TrimSpace(headSnapshotFiles[prepared.path]) != strings.TrimSpace(prepared.manifest.Hash) {
+				modifiedPaths = append(modifiedPaths, prepared.path)
+				recoveredIndexPaths = append(recoveredIndexPaths, prepared.path)
+				committedFileCount++
+			}
 			continue
 		}
 		filesToWrite = append(filesToWrite, prepared)
+	}
+
+	if len(recoveredIndexPaths) > 0 {
+		if err := addFilesToWorkspaceIndex(ctx, s.storage, workspace.ID, recoveredIndexPaths); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+		}
 	}
 
 	if len(filesToWrite) > 0 {
@@ -1467,6 +1569,7 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 			return nil, err
 		}
 		resp.FilesWritten += filesWritten
+		committedFileCount += filesWritten
 		modifiedPaths = append(modifiedPaths, paths...)
 	}
 
@@ -1476,7 +1579,7 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 
 	message := strings.TrimSpace(req.GetMessage())
 	if message == "" {
-		message = fmt.Sprintf("upload %d files", resp.GetFilesWritten())
+		message = fmt.Sprintf("upload %d files", committedFileCount)
 	}
 	commitHash, err := s.finalizeWorkspaceMutation(ctx, workspace, homeMode, message, modifiedPaths)
 	if err != nil {
@@ -1484,6 +1587,40 @@ func (s *filesystemServiceServer) FinalizeUpload(ctx context.Context, req *files
 	}
 	resp.CommitHash = commitHash
 	return resp, nil
+}
+
+func (s *filesystemServiceServer) workspaceHeadSnapshotFiles(ctx context.Context, workspaceID string) (map[string]string, error) {
+	meta, err := s.storage.GetSliceMetadata(ctx, workspaceID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load workspace metadata: %v", err))
+	}
+
+	files := map[string]string{}
+	headCommitHash := strings.TrimSpace(meta.HeadCommitHash)
+	if headCommitHash == "" {
+		return files, nil
+	}
+
+	snapshot, err := s.storage.GetCommitSnapshot(ctx, headCommitHash)
+	if err != nil {
+		if err == storage.ErrCommitNotFound {
+			return files, nil
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load head snapshot: %v", err))
+	}
+	if snapshot == nil || snapshot.Files == nil {
+		return files, nil
+	}
+
+	for filePath, fileHash := range snapshot.Files {
+		cleanedPath := common.CleanRelativePath(filePath)
+		cleanedHash := strings.TrimSpace(fileHash)
+		if cleanedPath == "" || cleanedHash == "" {
+			continue
+		}
+		files[cleanedPath] = cleanedHash
+	}
+	return files, nil
 }
 
 func (s *filesystemServiceServer) finalizeFilesystemUploadFiles(ctx context.Context, workspaceID string, preparedFiles []*preparedFilesystemUpload) ([]string, int32, error) {
@@ -1512,7 +1649,7 @@ func (s *filesystemServiceServer) finalizeFilesystemUploadFiles(ctx context.Cont
 			canonical, versionedExists, err := s.resolveFilesystemUploadManifest(ctx, prepared.manifest)
 			if err != nil {
 				err = annotateFilesystemEditError(prepared.displayPath, err)
-			} else if err := s.writeWorkspaceFileManifest(ctx, workspaceID, canonical, !versionedExists); err != nil {
+			} else if err := writeWorkspaceFileManifestWithStorage(ctx, s.storage, workspaceID, canonical, !versionedExists, false); err != nil {
 				err = annotateFilesystemEditError(prepared.displayPath, err)
 			}
 
@@ -1543,6 +1680,9 @@ func (s *filesystemServiceServer) finalizeFilesystemUploadFiles(ctx context.Cont
 		return nil, 0, firstErr
 	}
 	sort.Strings(modifiedPaths)
+	if err := addFilesToWorkspaceIndex(ctx, s.storage, workspaceID, modifiedPaths); err != nil {
+		return nil, 0, status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	}
 	return modifiedPaths, filesWritten, nil
 }
 
@@ -2725,6 +2865,63 @@ func (s *filesystemServiceServer) ensureWorkspaceFileTarget(ctx context.Context,
 }
 
 func (s *filesystemServiceServer) prepareFilesystemUpload(ctx context.Context, workspaceID, username string, homeMode bool, index int, spec *filesystemv1.UploadFileManifest) (*preparedFilesystemUpload, error) {
+	prepared, err := s.prepareFilesystemUploadSpec(username, homeMode, index, spec)
+	if err != nil {
+		return nil, err
+	}
+	currentHashes, err := s.getWorkspaceFileManifestHashes(ctx, workspaceID, []string{prepared.path})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect current file manifests: %v", err))
+	}
+	if strings.TrimSpace(currentHashes[prepared.path]) == strings.TrimSpace(prepared.manifest.Hash) {
+		prepared.unchanged = true
+		return prepared, nil
+	}
+	if err := s.ensureWorkspaceFileTarget(ctx, workspaceID, prepared.path); err != nil {
+		return nil, annotateFilesystemEditError(prepared.displayPath, err)
+	}
+	return prepared, nil
+}
+
+func (s *filesystemServiceServer) prepareFilesystemUploads(ctx context.Context, workspaceID, username string, homeMode bool, specs []*filesystemv1.UploadFileManifest) ([]*preparedFilesystemUpload, error) {
+	preparedFiles := make([]*preparedFilesystemUpload, 0, len(specs))
+	for index, spec := range specs {
+		prepared, err := s.prepareFilesystemUploadSpec(username, homeMode, index, spec)
+		if err != nil {
+			return nil, err
+		}
+		preparedFiles = append(preparedFiles, prepared)
+	}
+	if len(preparedFiles) == 0 {
+		return preparedFiles, nil
+	}
+
+	currentHashes, err := s.getWorkspaceFileManifestHashes(ctx, workspaceID, uploadPreparedPaths(preparedFiles))
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect current file manifests: %v", err))
+	}
+
+	existingEntries, haveExistingEntries, err := s.getExistingWorkspaceEntryPaths(ctx, workspaceID, uploadPreparedPaths(preparedFiles))
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect current file entries: %v", err))
+	}
+
+	for _, prepared := range preparedFiles {
+		if strings.TrimSpace(currentHashes[prepared.path]) == strings.TrimSpace(prepared.manifest.Hash) {
+			prepared.unchanged = true
+			continue
+		}
+		if haveExistingEntries && !existingEntries[prepared.path] {
+			continue
+		}
+		if err := s.ensureWorkspaceFileTarget(ctx, workspaceID, prepared.path); err != nil {
+			return nil, annotateFilesystemEditError(prepared.displayPath, err)
+		}
+	}
+	return preparedFiles, nil
+}
+
+func (s *filesystemServiceServer) prepareFilesystemUploadSpec(username string, homeMode bool, index int, spec *filesystemv1.UploadFileManifest) (*preparedFilesystemUpload, error) {
 	if spec == nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d] must not be null", index))
 	}
@@ -2733,33 +2930,16 @@ func (s *filesystemServiceServer) prepareFilesystemUpload(ctx context.Context, w
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d]: %s", index, status.Convert(err).Message()))
 	}
-	if err := s.ensureWorkspaceFileTarget(ctx, workspaceID, filePath); err != nil {
-		return nil, annotateFilesystemEditError(displayPath, err)
-	}
 
 	manifest, err := filesystemManifestFromProto(filePath, spec)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("files[%d]: %s", index, err.Error()))
 	}
-
-	currentHash, hasCurrentHash, err := s.getWorkspaceFileManifestHash(ctx, workspaceID, filePath)
-	switch {
-	case err == nil && hasCurrentHash && strings.TrimSpace(currentHash) == strings.TrimSpace(manifest.Hash):
-		return &preparedFilesystemUpload{
-			path:        filePath,
-			displayPath: displayPath,
-			manifest:    manifest,
-			unchanged:   true,
-		}, nil
-	case err == nil || err == storage.ErrEntryNotFound:
-		return &preparedFilesystemUpload{
-			path:        filePath,
-			displayPath: displayPath,
-			manifest:    manifest,
-		}, nil
-	default:
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to inspect current file manifest: %v", err))
-	}
+	return &preparedFilesystemUpload{
+		path:        filePath,
+		displayPath: displayPath,
+		manifest:    manifest,
+	}, nil
 }
 
 func (s *filesystemServiceServer) getWorkspaceFileManifestHash(ctx context.Context, workspaceID, filePath string) (string, bool, error) {
@@ -2780,6 +2960,78 @@ func (s *filesystemServiceServer) getWorkspaceFileManifestHash(ctx context.Conte
 		return "", false, nil
 	}
 	return strings.TrimSpace(currentManifest.Hash), true, nil
+}
+
+func (s *filesystemServiceServer) getWorkspaceFileManifestHashes(ctx context.Context, workspaceID string, paths []string) (map[string]string, error) {
+	normalized := normalizePromotionPaths(paths)
+	result := make(map[string]string, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+	if getter, ok := s.storage.(fileManifestHashGetter); ok {
+		hashes, err := getter.GetFileManifestHashes(ctx, workspaceID, normalized)
+		if err != nil {
+			return nil, err
+		}
+		for filePath, fileHash := range hashes {
+			cleanedPath := common.CleanRelativePath(filePath)
+			cleanedHash := strings.TrimSpace(fileHash)
+			if cleanedPath == "" || cleanedHash == "" {
+				continue
+			}
+			result[cleanedPath] = cleanedHash
+		}
+		return result, nil
+	}
+	for _, filePath := range normalized {
+		currentHash, hasCurrentHash, err := s.getWorkspaceFileManifestHash(ctx, workspaceID, filePath)
+		if err != nil {
+			if err == storage.ErrEntryNotFound {
+				continue
+			}
+			return nil, err
+		}
+		if hasCurrentHash {
+			result[filePath] = strings.TrimSpace(currentHash)
+		}
+	}
+	return result, nil
+}
+
+func supportsFileManifestHashBatch(store storage.Storage) bool {
+	_, ok := store.(fileManifestHashGetter)
+	return ok
+}
+
+func (s *filesystemServiceServer) getExistingWorkspaceEntryPaths(ctx context.Context, workspaceID string, paths []string) (map[string]bool, bool, error) {
+	normalized := normalizePromotionPaths(paths)
+	result := make(map[string]bool, len(normalized))
+	if len(normalized) == 0 {
+		return result, true, nil
+	}
+	getter, ok := s.storage.(existingEntryPathGetter)
+	if !ok {
+		return nil, false, nil
+	}
+	existing, err := getter.GetExistingEntriesByPaths(ctx, workspaceID, normalized)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, filePath := range normalized {
+		result[filePath] = existing[filePath]
+	}
+	return result, true, nil
+}
+
+func uploadPreparedPaths(preparedFiles []*preparedFilesystemUpload) []string {
+	paths := make([]string, 0, len(preparedFiles))
+	for _, prepared := range preparedFiles {
+		if prepared == nil {
+			continue
+		}
+		paths = append(paths, prepared.path)
+	}
+	return paths
 }
 
 func filesystemManifestFromProto(filePath string, spec *filesystemv1.UploadFileManifest) (*models.FileManifest, error) {
@@ -2864,17 +3116,6 @@ func filesystemManifestEquivalent(left, right *models.FileManifest) bool {
 	}
 	if left.SymlinkTarget != right.SymlinkTarget {
 		return false
-	}
-	if len(left.Blocks) != len(right.Blocks) {
-		return false
-	}
-	for index := range left.Blocks {
-		if strings.TrimSpace(left.Blocks[index].Hash) != strings.TrimSpace(right.Blocks[index].Hash) {
-			return false
-		}
-		if left.Blocks[index].Size != right.Blocks[index].Size {
-			return false
-		}
 	}
 	return true
 }
@@ -2967,10 +3208,14 @@ func (s *filesystemServiceServer) resolveFilesystemUploadManifest(ctx context.Co
 }
 
 func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context, workspaceID string, manifest *models.FileManifest, writeVersioned bool) error {
+	return writeWorkspaceFileManifestWithStorage(ctx, s.storage, workspaceID, manifest, writeVersioned, true)
+}
+
+func writeWorkspaceFileManifestWithStorage(ctx context.Context, store storage.Storage, workspaceID string, manifest *models.FileManifest, writeVersioned, updateIndex bool) error {
 	if manifest == nil {
 		return status.Error(codes.InvalidArgument, "manifest is required")
 	}
-	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+	if err := store.AddEntry(ctx, &models.DirectoryEntry{
 		ID:            common.GenerateEntryID(workspaceID, manifest.Path),
 		Path:          manifest.Path,
 		Type:          "file",
@@ -2981,18 +3226,36 @@ func (s *filesystemServiceServer) writeWorkspaceFileManifest(ctx context.Context
 	}); err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to write file entry: %v", err))
 	}
-	if err := s.storage.PutFileManifest(ctx, workspaceID, manifest.Path, manifest); err != nil {
+	if err := store.PutFileManifest(ctx, workspaceID, manifest.Path, manifest); err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("failed to persist file manifest: %v", err))
 	}
 	if writeVersioned {
-		if err := s.storage.PutVersionedFileManifest(ctx, manifest); err != nil {
+		if err := store.PutVersionedFileManifest(ctx, manifest); err != nil {
 			return status.Error(codes.Internal, fmt.Sprintf("failed to persist versioned file manifest: %v", err))
 		}
 	}
-	if err := s.storage.AddFileToSlice(ctx, manifest.Path, workspaceID); err != nil {
-		return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+	if updateIndex {
+		if err := addFilesToWorkspaceIndex(ctx, store, workspaceID, []string{manifest.Path}); err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to update workspace file index: %v", err))
+		}
 	}
 	observeFilesystemManifest(manifest)
+	return nil
+}
+
+func addFilesToWorkspaceIndex(ctx context.Context, store storage.Storage, workspaceID string, paths []string) error {
+	normalized := normalizePromotionPaths(paths)
+	if len(normalized) == 0 {
+		return nil
+	}
+	if adder, ok := store.(fileSliceBatchAdder); ok {
+		return adder.AddFilesToSlice(ctx, normalized, workspaceID)
+	}
+	for _, filePath := range normalized {
+		if err := store.AddFileToSlice(ctx, filePath, workspaceID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -4132,6 +4395,16 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		if err != nil {
 			return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace snapshot: %v", err))
 		}
+	} else if hashes, err := s.getWorkspaceFileManifestHashes(ctx, workspace.ID, changedPaths); err != nil {
+		return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to load file manifest hashes: %v", err))
+	} else if len(hashes) > 0 || supportsFileManifestHashBatch(s.storage) {
+		for _, filePath := range changedPaths {
+			if hash := strings.TrimSpace(hashes[filePath]); hash != "" {
+				files[filePath] = hash
+				continue
+			}
+			delete(files, filePath)
+		}
 	} else {
 		for _, filePath := range changedPaths {
 			manifest, err := s.storage.GetFileManifest(ctx, workspace.ID, filePath)
@@ -4240,6 +4513,16 @@ func (s *filesystemServiceServer) recordWorkspaceFileChanges(ctx context.Context
 	}
 	sort.Strings(paths)
 
+	changedPathCount := 0
+	for _, filePath := range paths {
+		oldHash := strings.TrimSpace(previousFiles[filePath])
+		newHash := strings.TrimSpace(currentFiles[filePath])
+		if oldHash != newHash {
+			changedPathCount++
+		}
+	}
+	includeLineDeltas := changedPathCount <= filesystemInlineChangeDiffLimit
+
 	for _, filePath := range paths {
 		oldHash := strings.TrimSpace(previousFiles[filePath])
 		newHash := strings.TrimSpace(currentFiles[filePath])
@@ -4255,7 +4538,10 @@ func (s *filesystemServiceServer) recordWorkspaceFileChanges(ctx context.Context
 			changeType = models.ChangeTypeDelete
 		}
 
-		_, linesAdded, linesDeleted := s.buildFilesystemDiffPatch(ctx, filePath, oldHash, newHash)
+		var linesAdded, linesDeleted int
+		if includeLineDeltas {
+			_, linesAdded, linesDeleted = s.buildFilesystemDiffPatch(ctx, filePath, oldHash, newHash)
+		}
 		changes = append(changes, &models.FileChangeRecord{
 			ID:           fmt.Sprintf("%s-%s", commitHash, filePath),
 			SliceID:      workspace.ID,

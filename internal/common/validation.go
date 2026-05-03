@@ -31,20 +31,12 @@ func ValidateFilePath(path string) error {
 		return fmt.Errorf("file path contains null byte: %s", path)
 	}
 
-	// Additional checks for suspicious patterns
-	suspiciousPatterns := []string{
-		"/etc/",
-		"/proc/",
-		"/sys/",
-		"/dev/",
-		"/root/",
-		"~",
-	}
-
-	lowerPath := strings.ToLower(cleaned)
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerPath, pattern) {
-			return fmt.Errorf("file path contains suspicious pattern: %s", path)
+	for _, segment := range strings.Split(filepath.ToSlash(cleaned), "/") {
+		switch strings.TrimSpace(segment) {
+		case "", ".", "..":
+			return fmt.Errorf("file path contains invalid segment: %s", path)
+		case "~":
+			return fmt.Errorf("file path contains home directory segment: %s", path)
 		}
 	}
 

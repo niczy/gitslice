@@ -60,8 +60,9 @@ servers/cloudflare_control_plane/.wrangler/
 logs/
 .restart_all.lock
 
-# Production environment (may contain credentials)
+# Environment files (may contain credentials)
 ops/.env
+ops/.env.*
 
 .objectstore/
 .objectstore-e2e/
