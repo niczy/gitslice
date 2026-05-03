@@ -63,6 +63,23 @@ const getFileExtension = (filePath) => {
   return filePath.split('.').pop()?.toLowerCase() || '';
 };
 
+const getEntryName = (entry) => {
+  const name = String(entry?.name || '').trim();
+  if (name) {
+    return name;
+  }
+  const path = String(entry?.path || '').replace(/^\/+|\/+$/g, '');
+  if (!path) {
+    return '/';
+  }
+  return path.split('/').pop() || path;
+};
+
+const getEntryDisplayPath = (entry) => {
+  const path = String(entry?.path || '').replace(/^\/+/, '');
+  return path ? `/${path}` : '/';
+};
+
 const getPreviewMeta = (filePath, encodedContent) => {
   const extension = getFileExtension(filePath);
   if (extension === 'pdf') {
@@ -1009,13 +1026,20 @@ export default function RepoBrowser({
   };
 
   const renderTree = (path, depth = 0) => {
-    const entries = treeEntries[path] || [];
+    const entries = [...(treeEntries[path] || [])].sort((left, right) => {
+      const leftType = normalizeEntryType(left.type);
+      const rightType = normalizeEntryType(right.type);
+      if (leftType !== rightType) {
+        return leftType === 'directory' ? -1 : 1;
+      }
+      return getEntryName(left).localeCompare(getEntryName(right), undefined, { sensitivity: 'base' });
+    });
     return (
       <ul className="tree-list">
         {entries.map((entry) => {
           const entryKind = normalizeEntryType(entry.type);
           const isExpanded = expandedPaths.includes(entry.path);
-          const entryLabel = entryKind === 'directory' ? `/${entry.path.replace(/^\/+/, '')}` : entry.name;
+          const entryLabel = getEntryName(entry);
           return (
             <li key={entry.path}>
               <Button
@@ -1023,6 +1047,7 @@ export default function RepoBrowser({
                 variant="ghost"
                 className={`tree-entry ${entryKind}${focusedEntry?.path === entry.path ? ' active' : ''}`}
                 style={{ paddingLeft: `${depth * 14 + 8}px` }}
+                title={getEntryDisplayPath(entry)}
                 onClick={() => handleEntryClick(entry)}
               >
                 <span className="tree-caret" aria-hidden="true">
