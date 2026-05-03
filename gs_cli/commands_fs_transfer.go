@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niczy/gitslice/internal/storage"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
@@ -23,6 +22,7 @@ const filesystemTransferChunkSize = 64 * 1024
 const filesystemTransferManifestBatchSize = 100
 const filesystemTransferBlockUploadBatchSize = 16
 const filesystemTransferBlockUploadConcurrency = 8
+const filesystemUploadBlockSize = 256 * 1024
 
 type filesystemUploadFile struct {
 	localPath  string
@@ -626,15 +626,17 @@ func newFilesystemUploadIgnoreMatcher(localRoot string, options filesystemUpload
 		enabled: true,
 		rules:   defaultFilesystemUploadIgnoreRules(),
 	}
-	ignorePath := filepath.Join(localRoot, ".gsignore")
-	data, err := os.ReadFile(ignorePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return matcher, nil
+	for _, ignoreName := range []string{".gitignore", ".gsignore"} {
+		ignorePath := filepath.Join(localRoot, ignoreName)
+		data, err := os.ReadFile(ignorePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
-		return nil, err
+		matcher.rules = append(matcher.rules, parseFilesystemUploadIgnoreRules(string(data))...)
 	}
-	matcher.rules = append(matcher.rules, parseFilesystemUploadIgnoreRules(string(data))...)
 	return matcher, nil
 }
 
@@ -664,6 +666,13 @@ func defaultFilesystemUploadIgnoreRules() []filesystemUploadIgnoreRule {
 		".gradle/",
 		".m2/",
 		".DS_Store",
+		".env",
+		".env.*",
+		"*.key",
+		"*.pem",
+		"*.p12",
+		"*.pfx",
+		".ssh/",
 	}
 	rules := make([]filesystemUploadIgnoreRule, 0, len(patterns))
 	for _, pattern := range patterns {
@@ -780,7 +789,7 @@ func buildFilesystemUploadManifest(remotePath, localPath string) (*filesystemv1.
 		Blocks: make([]*filesystemv1.UploadBlockRef, 0),
 	}
 	blocks := make([]filesystemUploadBlockSource, 0)
-	buffer := make([]byte, storage.DefaultFileBlockSize)
+	buffer := make([]byte, filesystemUploadBlockSize)
 	var offset int64
 	for {
 		readBytes, err := file.Read(buffer)
@@ -1073,7 +1082,7 @@ func readFilesystemUploadBlockSource(source filesystemUploadBlockSource) ([]byte
 	if source.size == 0 {
 		return nil, nil
 	}
-	if source.size > int64(storage.DefaultFileBlockSize) {
+	if source.size > int64(filesystemUploadBlockSize) {
 		return nil, fmt.Errorf("upload block %s size exceeds transfer chunk size", source.hash)
 	}
 	chunk := make([]byte, int(source.size))

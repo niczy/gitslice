@@ -1261,6 +1261,51 @@ func TestPlanUploadSkipsExistingVersionedBlocks(t *testing.T) {
 	}
 }
 
+func TestPlanUploadReusesVersionedContentWithDifferentBlockLayout(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-upload-layout",
+		Name:        "Upload Layout",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	content := bytes.Repeat([]byte("different block layout\n"), 4096)
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-upload-layout",
+		Path:        "docs/original.txt",
+		Content:     content,
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	manifest := &filesystemv1.UploadFileManifest{
+		Path: "docs/copied.txt",
+		Size: int64(len(content)),
+		Hash: hashContent(content),
+		Blocks: []*filesystemv1.UploadBlockRef{{
+			Hash: hashContent(content),
+			Size: int64(len(content)),
+		}},
+	}
+	resp, err := svc.PlanUpload(ctx, &filesystemv1.PlanUploadRequest{
+		WorkspaceId: "ws-upload-layout",
+		Files:       []*filesystemv1.UploadFileManifest{manifest},
+	})
+	if err != nil {
+		t.Fatalf("PlanUpload failed: %v", err)
+	}
+	if len(resp.GetMissingBlockHashes()) != 0 {
+		t.Fatalf("expected versioned content reuse without missing blocks, got %v", resp.GetMissingBlockHashes())
+	}
+}
+
 func TestUploadBlocksAndFinalizeUpload(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -1363,6 +1408,97 @@ func TestUploadBlocksAndFinalizeUpload(t *testing.T) {
 	}
 	if !bytes.Equal(readResp.GetContent(), content) {
 		t.Fatalf("uploaded file content mismatch")
+	}
+}
+
+func TestFinalizeUploadCommitsManifestMissingFromHeadSnapshot(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	impl := svc.(*filesystemServiceServer)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-upload-retry",
+		Name:        "Upload Retry",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	content := []byte("retry content\n")
+	protoManifest := uploadManifestForTest("docs/retry.txt", content)
+	_, payloads := storage.ChunkFile(content, storage.DefaultFileBlockSize)
+	if err := st.PutBlocks(ctx, payloads); err != nil {
+		t.Fatalf("PutBlocks failed: %v", err)
+	}
+	modelManifest, err := filesystemManifestFromProto("docs/retry.txt", protoManifest)
+	if err != nil {
+		t.Fatalf("filesystemManifestFromProto failed: %v", err)
+	}
+	if err := impl.writeWorkspaceFileManifest(ctx, "ws-upload-retry", modelManifest, true); err != nil {
+		t.Fatalf("writeWorkspaceFileManifest failed: %v", err)
+	}
+
+	finalizeResp, err := svc.FinalizeUpload(ctx, &filesystemv1.FinalizeUploadRequest{
+		WorkspaceId: "ws-upload-retry",
+		Files:       []*filesystemv1.UploadFileManifest{protoManifest},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeUpload retry failed: %v", err)
+	}
+	if finalizeResp.GetCommitHash() == "" || finalizeResp.GetFilesWritten() != 0 || finalizeResp.GetFilesSkipped() != 1 {
+		t.Fatalf("unexpected FinalizeUpload retry response: %#v", finalizeResp)
+	}
+
+	snapshot, err := st.GetCommitSnapshot(ctx, finalizeResp.GetCommitHash())
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot failed: %v", err)
+	}
+	if got, want := snapshot.Files["docs/retry.txt"], protoManifest.GetHash(); got != want {
+		t.Fatalf("snapshot did not recover uploaded file: got %q want %q", got, want)
+	}
+}
+
+func TestRecordWorkspaceFileChangesSkipsLineDeltasForBulkCommits(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	impl := svc.(*filesystemServiceServer)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-bulk-changes",
+		Name:        "Bulk Changes",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	currentFiles := make(map[string]string, filesystemInlineChangeDiffLimit+1)
+	modifiedPaths := make([]string, 0, filesystemInlineChangeDiffLimit+1)
+	for index := 0; index <= filesystemInlineChangeDiffLimit; index++ {
+		filePath := fmt.Sprintf("bulk/file-%03d.txt", index)
+		currentFiles[filePath] = fmt.Sprintf("hash-%03d", index)
+		modifiedPaths = append(modifiedPaths, filePath)
+	}
+
+	if err := impl.recordWorkspaceFileChanges(ctx, &models.Slice{ID: "ws-bulk-changes"}, "commit-bulk", "", "upload bulk", time.Now(), modifiedPaths, map[string]string{}, currentFiles); err != nil {
+		t.Fatalf("recordWorkspaceFileChanges failed: %v", err)
+	}
+	changes, err := st.GetCommitChanges(ctx, "commit-bulk")
+	if err != nil {
+		t.Fatalf("GetCommitChanges failed: %v", err)
+	}
+	if len(changes) != filesystemInlineChangeDiffLimit+1 {
+		t.Fatalf("expected %d changes, got %d", filesystemInlineChangeDiffLimit+1, len(changes))
+	}
+	for _, change := range changes {
+		if change.LinesAdded != 0 || change.LinesDeleted != 0 {
+			t.Fatalf("expected bulk change line deltas to be skipped, got %s +%d/-%d", change.Path, change.LinesAdded, change.LinesDeleted)
+		}
 	}
 }
 

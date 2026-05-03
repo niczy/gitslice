@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/niczy/gitslice/internal/storage"
 )
 
 func TestParseAbsoluteFilesystemPathArg(t *testing.T) {
@@ -175,10 +173,59 @@ func TestBuildFilesystemUploadInventoryAppliesDefaultExcludesAndGsignore(t *test
 	}
 }
 
+func TestBuildFilesystemUploadInventoryAppliesGitignoreAndSecretDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(tmpDir, "src"),
+		filepath.Join(tmpDir, ".postgres"),
+		filepath.Join(tmpDir, "ops"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	files := map[string]string{
+		"src/main.go":    "package main\n",
+		".postgres/data": "local db\n",
+		"ops/.env.local": "TOKEN=secret\n",
+		"deploy.key":     "private key\n",
+		".gitignore":     ".postgres/\nops/.env.*\n",
+		"README.md":      "hello\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(tmpDir, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	inventory, err := buildFilesystemUploadInventory(tmpDir, "/nicholas/app", filesystemUploadInventoryOptions{})
+	if err != nil {
+		t.Fatalf("buildFilesystemUploadInventory failed: %v", err)
+	}
+
+	got := make([]string, 0, len(inventory.files))
+	for _, file := range inventory.files {
+		got = append(got, file.remotePath)
+	}
+	want := []string{
+		path.Join("/nicholas/app", ".gitignore"),
+		path.Join("/nicholas/app", "README.md"),
+		path.Join("/nicholas/app", "src/main.go"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected uploaded files: got %v want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("unexpected uploaded files: got %v want %v", got, want)
+		}
+	}
+}
+
 func TestCollectFilesystemUploadBlockSourcesUsesManifestOffsets(t *testing.T) {
 	tmpDir := t.TempDir()
 	localPath := filepath.Join(tmpDir, "large.txt")
-	content := make([]byte, storage.DefaultFileBlockSize+17)
+	content := make([]byte, filesystemUploadBlockSize+17)
 	for index := range content {
 		content[index] = byte('a' + index%26)
 	}
@@ -201,14 +248,14 @@ func TestCollectFilesystemUploadBlockSourcesUsesManifestOffsets(t *testing.T) {
 	}}}
 	missing := map[string]struct{}{blocks[1].hash: {}}
 	sources := collectFilesystemUploadBlockSources(inventory, missing)
-	if len(sources) != 1 || sources[0].offset != int64(storage.DefaultFileBlockSize) {
+	if len(sources) != 1 || sources[0].offset != int64(filesystemUploadBlockSize) {
 		t.Fatalf("unexpected sources: %+v", sources)
 	}
 	chunk, err := readFilesystemUploadBlockSource(sources[0])
 	if err != nil {
 		t.Fatalf("readFilesystemUploadBlockSource failed: %v", err)
 	}
-	if string(chunk) != string(content[storage.DefaultFileBlockSize:]) {
+	if string(chunk) != string(content[filesystemUploadBlockSize:]) {
 		t.Fatalf("unexpected block content")
 	}
 }
