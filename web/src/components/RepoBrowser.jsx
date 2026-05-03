@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -47,6 +47,7 @@ const SIDEBAR_WIDTH_MIN = 220;
 const SIDEBAR_WIDTH_MAX = 560;
 const SIDEBAR_WIDTH_DEFAULT = 260;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.browser.sidebarWidth';
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function clampSidebarWidth(value) {
   const numericValue = Number(value);
@@ -144,16 +145,16 @@ export default function RepoBrowser({
   const [focusedEntry, setFocusedEntry] = useState(() => (initialBrowserState?.file
     ? { path: initialBrowserState.file, type: 'file' }
     : { path: '', type: 'directory' }));
-  const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 900));
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
-  const [insightOpen, setInsightOpen] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth > 1180));
+  const [insightOpen, setInsightOpen] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isCompactHeader, setIsCompactHeader] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth <= 920));
+  const [isCompactHeader, setIsCompactHeader] = useState(false);
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
   const [sliceFilter, setSliceFilter] = useState('');
 
@@ -177,6 +178,7 @@ export default function RepoBrowser({
   }, [fileContent, selectedFile]);
   const selectedFileMode = previewMeta.mode === 'text' ? 'source' : previewMeta.mode;
   const pendingDraftCount = Object.keys(fileDrafts).length;
+  const hasLoadedRootEntries = Object.prototype.hasOwnProperty.call(treeEntries, '');
   const pendingDraftEntries = useMemo(() => Object.entries(fileDrafts).map(([path, content]) => ({
     path,
     name: path.split('/').pop() || path,
@@ -240,7 +242,10 @@ export default function RepoBrowser({
   const canLoad = sliceId !== '' && (sliceId === 'root_slice' || Boolean(String(authUsername || '').trim()));
 
   const currentSliceLabel = useMemo(() => {
-    return currentSlice?.name || sliceId;
+    if (currentSlice?.name) {
+      return currentSlice.name;
+    }
+    return sliceId === 'root_slice' ? 'Root Slice' : sliceId;
   }, [currentSlice, sliceId]);
 
   const currentSliceDisplayName = useMemo(() => {
@@ -282,10 +287,13 @@ export default function RepoBrowser({
     setIsSettingsOpen(true);
   }, []);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
+    setSidebarOpen(window.innerWidth > 900);
+    setInsightOpen(window.innerWidth > 1180);
+    setIsCompactHeader(window.innerWidth <= 920);
     try {
       const storedWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
       if (storedWidth !== null) {
@@ -428,10 +436,12 @@ export default function RepoBrowser({
       return undefined;
     }
     const handleResize = () => {
-      setIsCompactHeader(window.innerWidth <= 920);
+      const width = window.innerWidth;
+      setIsCompactHeader(width <= 920);
+      setSidebarOpen((open) => (width > 900 ? open : false));
+      setInsightOpen((open) => (width > 1180 ? open : false));
     };
 
-    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -1167,7 +1177,7 @@ export default function RepoBrowser({
                 </div>
                 {error && <div className="panel-error">{error}</div>}
                 {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
-                {canLoad && !isLoading && !error && (treeEntries[''] || []).length === 0 && (
+                {canLoad && !isLoading && !error && hasLoadedRootEntries && (treeEntries[''] || []).length === 0 && (
                   <div className="panel-empty">No entries found.</div>
                 )}
                 {canLoad && renderTree('')}

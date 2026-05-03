@@ -42,6 +42,10 @@ function getHomeSliceId(username) {
   return trimmedUsername ? `home.${trimmedUsername}` : '';
 }
 
+function getInitialSliceId(username) {
+  return getHomeSliceId(username) || 'root_slice';
+}
+
 function App({
   initialRoute,
   initialAuthConfig = { authProvider: 'local', allowDevLogin: true },
@@ -62,7 +66,7 @@ function App({
   const [username, setUsername] = useState(() => initialUsername);
   const [authSessionSource, setAuthSessionSource] = useState(() => initialSession?.source || '');
   const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser');
-  const [currentSliceId, setCurrentSliceId] = useState(() => getHomeSliceId(initialUsername));
+  const [currentSliceId, setCurrentSliceId] = useState(() => getInitialSliceId(initialUsername));
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
   const [browserSearchQuery, setBrowserSearchQuery] = useState('');
   const [browserSearchGlob, setBrowserSearchGlob] = useState('');
@@ -149,7 +153,7 @@ function App({
     }
     previousUsernameRef.current = username;
     hasExplicitSliceSelectionRef.current = false;
-    setCurrentSliceId(getHomeSliceId(username));
+    setCurrentSliceId(getInitialSliceId(username));
   }, [username]);
 
   useEffect(() => {
@@ -185,7 +189,7 @@ function App({
 
   const openBrowserHome = useCallback(() => {
     hasExplicitSliceSelectionRef.current = false;
-    setCurrentSliceId(getHomeSliceId(username));
+    setCurrentSliceId(getInitialSliceId(username));
     navigate('browser');
   }, [navigate, username]);
 

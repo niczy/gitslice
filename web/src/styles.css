@@ -5095,7 +5095,7 @@ body {
 
 /* Alexandria editorial redesign */
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #1b1c1d;
   background: #faf9fa;
   --surface: #ffffff;
@@ -5129,7 +5129,7 @@ body {
     linear-gradient(180deg, #ffffff 0, #faf9fa 320px),
     #faf9fa;
   color: var(--text-primary);
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .app-shell {
@@ -5146,16 +5146,16 @@ body {
 }
 
 :where(h1, h2, h3, .brand-text, .section-header h1, .section-header h2, .hero h1) {
-  font-family: "Noto Serif", Georgia, serif;
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
   font-weight: 700;
 }
 
 :where(.eyebrow, .status, .sidebar-panel-title, .repo-insight-meta dt, .repo-search-count, .change-type) {
-  font-family: "Public Sans", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 :where(code, pre, .code-block, .file-preview, .file-editor, .commit-hash, .repo-search-result-line) {
-  font-family: "Noto Sans Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .top-bar {
@@ -5206,7 +5206,7 @@ body {
   border-radius: 8px;
   color: #222733;
   background: transparent;
-  font-family: "Public Sans", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-weight: 500;
 }
 
@@ -5731,7 +5731,7 @@ button[data-testid="topbar-get-started"]:hover {
 .breadcrumb {
   min-height: 34px;
   color: #2e3542;
-  font-family: "Noto Sans Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.82rem;
 }
 
@@ -5815,13 +5815,13 @@ button[data-testid="topbar-get-started"]:hover {
 
 .file-preview-markdown {
   max-width: 840px;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .file-preview-markdown h1,
 .file-preview-markdown h2 {
   border-bottom: 0;
-  font-family: "Noto Serif", Georgia, serif;
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
 }
 
 .file-preview-markdown pre {
@@ -5919,7 +5919,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .footer-copy {
-  font-family: "Noto Serif", Georgia, serif;
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
   color: #222733;
 }
 
@@ -6024,16 +6024,16 @@ button[data-testid="topbar-get-started"]:hover {
   --np-primary-strong: #0052cc;
   background: var(--np-bg);
   color: var(--np-text);
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .app-shell--browser :where(h1, h2, h3, .brand-text, .sidebar-panel-title, .repo-insight-meta dt, .footer-copy) {
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
 }
 
 .app-shell--browser :where(code, pre, .file-preview, .file-editor, .commit-hash, .repo-search-result-line, .breadcrumb) {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .app-shell--browser .top-bar {
@@ -6739,7 +6739,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .file-preview-markdown :where(h1, h2, h3) {
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .app-shell--browser .code-content > .panel-empty {
@@ -6998,4 +6998,20 @@ button[data-testid="topbar-get-started"]:hover {
   .app-shell--browser .file-editor {
     padding: 16px;
   }
+}
+
+.app-shell--browser .repo-layout,
+.app-shell--browser .repo-sidebar,
+.app-shell--browser .repo-code,
+.app-shell--browser .repo-insight {
+  transition: none !important;
+}
+
+.app-shell--browser .repo-insight.closed {
+  transform: none;
+}
+
+.app-shell--browser .repo-sidebar.open,
+.app-shell--browser .sidebar-overlay.visible {
+  animation: none !important;
 }
