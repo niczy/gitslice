@@ -941,9 +941,13 @@ export default function RepoBrowser({
     setExpandedPaths((prev) => [...prev, entry.path]);
   };
 
-  // Push current browser state to navigation history
+  // Replace the current detail URL with file/hash state without overwriting the slice home entry.
   const pushBrowserState = useCallback((file) => {
     if (typeof window === 'undefined') {
+      return;
+    }
+    const currentRoute = parseLocation(window.location);
+    if (currentRoute.page !== 'browser' || !currentRoute.browserState?.slice) {
       return;
     }
     window.history.replaceState(null, '', buildBrowserPath({
