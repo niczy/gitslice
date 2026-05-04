@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 )
@@ -286,6 +287,90 @@ func TestHandlerImportsMountedSlicePushUnderMountAlias(t *testing.T) {
 	}
 	if _, err := st.GetEntryByPath(ctx, mounted.ID, "src/hello.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
 		t.Fatalf("raw mounted slice entry error = %v, want ErrEntryNotFound", err)
+	}
+}
+
+func TestHandlerImportsRootMountedPushThroughHomeSliceAndPromotesRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is not available")
+	}
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	token := createTestAuthSession(t, ctx, st, "alice")
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	mounted := &models.Slice{
+		ID:          "home-mounted-slice",
+		Name:        "Home Mounted Slice",
+		Slug:        "home-mounted-slice",
+		Visibility:  models.VisibilityPrivate,
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "alice/git-auth-smoke", Alias: "alice/git-auth-smoke"},
+		},
+	}
+	if err := st.CreateSlice(ctx, mounted); err != nil {
+		t.Fatalf("CreateSlice(mounted) failed: %v", err)
+	}
+	writeTestFile(t, ctx, st, home.ID, "alice/git-auth-smoke/README.md", []byte("old home\n"), false, "")
+	writeTestFile(t, ctx, st, root.ID, "alice/git-auth-smoke/README.md", []byte("old root\n"), false, "")
+
+	handler := NewHandler(st, filepath.Join(t.TempDir(), "cache"))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "clone", server.URL+"/git/alice/home-mounted-slice.git", cloneDir)
+	if err := os.WriteFile(filepath.Join(cloneDir, "alice/git-auth-smoke/README.md"), []byte("new via git\n"), 0o644); err != nil {
+		t.Fatalf("write mounted README: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cloneDir, "alice/git-auth-smoke/src"), 0o755); err != nil {
+		t.Fatalf("mkdir mounted src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cloneDir, "alice/git-auth-smoke/src/new.txt"), []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write mounted new file: %v", err)
+	}
+
+	runGitTest(t, ctx, cloneDir, "config", "user.name", "Alice")
+	runGitTest(t, ctx, cloneDir, "config", "user.email", "alice@example.com")
+	runGitTest(t, ctx, cloneDir, "add", "-A")
+	runGitTest(t, ctx, cloneDir, "commit", "-m", "update home mounted slice")
+	runGitTest(t, ctx, cloneDir, "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "push", "origin", "HEAD:main")
+
+	homeReadme, err := storage.ReadSliceFileContent(ctx, st, home.ID, "alice/git-auth-smoke/README.md")
+	if err != nil {
+		t.Fatalf("read home README: %v", err)
+	}
+	if got, want := string(homeReadme.Content), "new via git\n"; got != want {
+		t.Fatalf("home README = %q, want %q", got, want)
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, home.ID, "alice/git-auth-smoke/src/new.txt"); err != nil {
+		t.Fatalf("read home new file: %v", err)
+	}
+
+	if err := handler.waitForQueuedPromotions(ctx); err != nil {
+		t.Fatalf("wait for promotion: %v", err)
+	}
+	rootReadme, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/README.md")
+	if err != nil {
+		t.Fatalf("read promoted root README: %v", err)
+	}
+	if got, want := string(rootReadme.Content), "new via git\n"; got != want {
+		t.Fatalf("root README = %q, want %q", got, want)
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/src/new.txt"); err != nil {
+		t.Fatalf("read promoted root new file: %v", err)
 	}
 }
 

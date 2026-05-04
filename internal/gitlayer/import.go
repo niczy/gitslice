@@ -16,6 +16,7 @@ import (
 
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gitrepo"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 )
@@ -90,7 +91,10 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	if slice == nil {
 		return fmt.Errorf("slice is nil")
 	}
-	projection := newGitProjection(slice)
+	projection, err := h.resolveGitProjection(ctx, slice)
+	if err != nil {
+		return err
+	}
 	targetSliceID := projection.target()
 	if targetSliceID == "" {
 		return fmt.Errorf("target slice is empty")
@@ -275,6 +279,14 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	if len(modifiedSet) == 0 {
 		return nil
 	}
+	modifiedPaths := make([]string, 0, len(modifiedSet))
+	for modifiedPath := range modifiedSet {
+		cleaned := common.CleanRelativePath(modifiedPath)
+		if cleaned != "" {
+			modifiedPaths = append(modifiedPaths, cleaned)
+		}
+	}
+	sort.Strings(modifiedPaths)
 	currentFiles, allPaths, err := h.updatedSliceSnapshot(ctx, targetSliceID, currentEntries, previousFiles, desiredTypes, desiredFiles, deletedPaths)
 	if err != nil {
 		return err
@@ -314,6 +326,11 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		log.Printf("gitlayer: failed to record file changes for commit %s in %s: %v", commitHash, targetSliceID, err)
 	}
 	h.refreshWorkspaceSearchArtifactAsync(targetSliceID, commitHash)
+	if homeslice.IsHomeSliceID(targetSliceID) {
+		if err := h.enqueueHomeSlicePromotion(ctx, targetSliceID, commitHash, modifiedPaths, commitTime); err != nil {
+			log.Printf("gitlayer: failed to enqueue home slice promotion for commit %s in %s: %v", commitHash, targetSliceID, err)
+		}
+	}
 	return nil
 }
 
