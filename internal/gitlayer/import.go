@@ -26,6 +26,21 @@ type fileManifestHashGetter interface {
 	GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error)
 }
 
+type gitPushUserError struct {
+	message string
+}
+
+func (e *gitPushUserError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
+func newGitPushUserErrorf(format string, args ...any) error {
+	return &gitPushUserError{message: fmt.Sprintf(format, args...)}
+}
+
 type sliceTreeEntry struct {
 	path  string
 	entry *models.DirectoryEntry

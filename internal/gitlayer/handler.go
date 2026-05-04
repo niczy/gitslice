@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -392,7 +393,9 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice
 		if strings.TrimSpace(after) != "" && after != before {
 			if err := h.importBareRepo(r.Context(), slice, repoPath, after, id.Username); err != nil {
 				_ = os.RemoveAll(repoPath)
-				return err
+				message := gitPushRejectionMessage(err)
+				log.Printf("gitlayer: rejected git push for %s: %v", slice.ID, err)
+				return writeReceivePackRejection(w, "refs/heads/"+defaultBranch, message)
 			}
 			sourceHead, err := h.gitSourceHead(r.Context(), newGitProjection(slice))
 			if err != nil {
@@ -407,6 +410,70 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice
 		}
 	}
 	return writeCGIResponse(w, payload)
+}
+
+func writeReceivePackRejection(w http.ResponseWriter, refName, message string) error {
+	return writeCGIResponse(w, receivePackRejectionPayload(refName, message))
+}
+
+func receivePackRejectionPayload(refName, message string) []byte {
+	refName = strings.TrimSpace(refName)
+	if refName == "" {
+		refName = "refs/heads/" + defaultBranch
+	}
+	message = sanitizeGitPushMessage(message)
+	if message == "" {
+		message = "push rejected"
+	}
+
+	status := bytes.NewBuffer(nil)
+	status.Write(pktLine([]byte("unpack ok\n")))
+	status.Write(pktLine([]byte(fmt.Sprintf("ng %s %s\n", refName, message))))
+	status.Write(flushPkt())
+
+	body := bytes.NewBuffer(nil)
+	body.Write(pktLine(append([]byte{2}, []byte("Gitslice rejected push: "+message+"\n")...)))
+	body.Write(pktLine(append([]byte{1}, status.Bytes()...)))
+	body.Write(flushPkt())
+
+	payload := bytes.NewBuffer(nil)
+	payload.WriteString("Content-Type: application/x-git-receive-pack-result\r\n\r\n")
+	payload.Write(body.Bytes())
+	return payload.Bytes()
+}
+
+func pktLine(data []byte) []byte {
+	packet := make([]byte, 4+len(data))
+	copy(packet[:4], fmt.Sprintf("%04x", len(packet)))
+	copy(packet[4:], data)
+	return packet
+}
+
+func flushPkt() []byte {
+	return []byte("0000")
+}
+
+func gitPushRejectionMessage(err error) string {
+	var userErr *gitPushUserError
+	if errors.As(err, &userErr) && strings.TrimSpace(userErr.message) != "" {
+		return userErr.message
+	}
+	if err == nil {
+		return "push rejected"
+	}
+	return "push rejected by Gitslice: " + err.Error()
+}
+
+func sanitizeGitPushMessage(message string) string {
+	message = strings.TrimSpace(message)
+	message = strings.ReplaceAll(message, "\r", " ")
+	message = strings.ReplaceAll(message, "\n", " ")
+	message = strings.Join(strings.Fields(message), " ")
+	const maxLen = 500
+	if len(message) > maxLen {
+		message = strings.TrimSpace(message[:maxLen]) + "..."
+	}
+	return message
 }
 
 func (h *Handler) runBackend(r *http.Request, repoName, suffix string) ([]byte, error) {
@@ -704,7 +771,7 @@ func (p *gitProjection) storedPathForGitFile(gitPath string) (string, error) {
 	}
 	for _, mount := range p.mounts {
 		if cleaned == mount.Alias {
-			return "", fmt.Errorf("cannot replace mounted slice root %q with a file", mount.Alias)
+			return "", newGitPushUserErrorf("cannot replace mounted folder %q with a file; add files inside this folder instead", mount.Alias)
 		}
 		prefix := mount.Alias + "/"
 		if strings.HasPrefix(cleaned, prefix) {
@@ -715,7 +782,7 @@ func (p *gitProjection) storedPathForGitFile(gitPath string) (string, error) {
 			return path.Join(mount.SourcePath, suffix), nil
 		}
 	}
-	return "", fmt.Errorf("git path %q is outside mounted slice aliases", cleaned)
+	return "", newGitPushUserErrorf("cannot add or modify %q at this slice root; mounted slices only allow changes under existing mounted folder(s): %s", cleaned, p.allowedGitRootSummary())
 }
 
 func (p *gitProjection) managesStoredPath(storedPath string) bool {
@@ -745,6 +812,22 @@ func (p *gitProjection) protectedStoredDir(storedPath string) bool {
 		}
 	}
 	return false
+}
+
+func (p *gitProjection) allowedGitRootSummary() string {
+	if !p.mounted() {
+		return "the repository root"
+	}
+	aliases := make([]string, 0, len(p.mounts))
+	for _, mount := range p.mounts {
+		if alias := common.CleanRelativePath(mount.Alias); alias != "" {
+			aliases = append(aliases, strconv.Quote(alias))
+		}
+	}
+	if len(aliases) == 0 {
+		return "none"
+	}
+	return strings.Join(aliases, ", ")
 }
 
 func writeStatusError(w http.ResponseWriter, err error) {

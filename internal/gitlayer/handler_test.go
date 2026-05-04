@@ -335,6 +335,53 @@ func TestHandlerRejectsMountedSlicePushOutsideAliases(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsMountedSliceRootPushWithHelpfulMessage(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is not available")
+	}
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	parent, _ := createMountedGitSlice(t, ctx, st)
+	token := createTestAuthSession(t, ctx, st, "alice")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/git-auth-smoke/README.md", []byte("old\n"), false, "")
+
+	handler := NewHandler(st, filepath.Join(t.TempDir(), "cache"))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "clone", server.URL+"/git/alice/mounted-slice.git", cloneDir)
+	if err := os.WriteFile(filepath.Join(cloneDir, "ROOT.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+
+	runGitTest(t, ctx, cloneDir, "config", "user.name", "Alice")
+	runGitTest(t, ctx, cloneDir, "config", "user.email", "alice@example.com")
+	runGitTest(t, ctx, cloneDir, "add", "-A")
+	runGitTest(t, ctx, cloneDir, "commit", "-m", "write slice root")
+	cmd := exec.CommandContext(ctx, "git", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "push", "origin", "HEAD:main")
+	cmd.Dir = cloneDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git push root file succeeded, want failure\n%s", string(out))
+	}
+	output := string(out)
+	for _, want := range []string{
+		"Gitslice rejected push",
+		"cannot add or modify \"ROOT.txt\" at this slice root",
+		"mounted slices only allow changes under existing mounted folder(s): \"nicholas/git-auth-smoke\"",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("git push output missing %q:\n%s", want, output)
+		}
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "ROOT.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("root content error = %v, want ErrEntryNotFound", err)
+	}
+}
+
 func TestHandlerRejectsUnauthenticatedPrivateClone(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
