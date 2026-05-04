@@ -376,7 +376,17 @@ func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID stri
 		commit = strings.TrimSpace(metadata.HeadCommitHash)
 	}
 
-	key := sliceID + "|" + commit + "|" + sliceFolderMountKey(slice)
+	cacheCommit := commit
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 && !preferSnapshots {
+		if parentMeta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && parentMeta != nil {
+			parentHead := strings.TrimSpace(parentMeta.HeadCommitHash)
+			if parentHead != "" {
+				cacheCommit = strings.TrimSpace(slice.ParentSlice) + ":" + parentHead
+			}
+		}
+	}
+
+	key := sliceID + "|" + cacheCommit + "|" + sliceFolderMountKey(slice)
 	if preferSnapshots {
 		key += "|snap"
 	} else {
@@ -427,6 +437,10 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 		commitHash = strings.TrimSpace(metadata.HeadCommitHash)
 	}
 
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 && !preferSnapshots {
+		return s.mountedBackingPaths(ctx, slice.ParentSlice, slice.FolderMounts)
+	}
+
 	// Prefer commit snapshot paths when available. This avoids listing stale
 	// file IDs that may remain in legacy metadata after deletes.
 	if preferSnapshots && commitHash != "" {
@@ -467,6 +481,110 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 		paths = append(paths, p)
 	}
 	return paths, nil
+}
+
+func (s *fileServiceServer) mountedBackingPaths(ctx context.Context, backingSliceID string, mounts []models.SliceFolderMount) ([]string, error) {
+	backingSliceID = strings.TrimSpace(backingSliceID)
+	if backingSliceID == "" || len(mounts) == 0 {
+		return []string{}, nil
+	}
+
+	paths := make([]string, 0)
+	seenEntries := make(map[string]struct{})
+	seenPaths := make(map[string]struct{})
+	for _, mount := range mounts {
+		sourcePath := common.CleanRelativePath(mount.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		rootEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, sourcePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				fallbackPaths, fallbackErr := s.mountedBackingSliceFiles(ctx, backingSliceID, sourcePath)
+				if fallbackErr != nil {
+					return nil, fallbackErr
+				}
+				for _, cleanedPath := range fallbackPaths {
+					if _, ok := seenPaths[cleanedPath]; !ok {
+						seenPaths[cleanedPath] = struct{}{}
+						paths = append(paths, cleanedPath)
+					}
+				}
+				continue
+			}
+			return nil, err
+		}
+
+		filesBefore := len(paths)
+		queue := []*models.DirectoryEntry{rootEntry}
+		for len(queue) > 0 {
+			entry := queue[0]
+			queue = queue[1:]
+			if entry == nil {
+				continue
+			}
+			entryKey := entry.ID + "\x00" + entry.Path
+			if _, ok := seenEntries[entryKey]; ok {
+				continue
+			}
+			seenEntries[entryKey] = struct{}{}
+			cleanedPath := common.CleanRelativePath(entry.Path)
+			if cleanedPath != "" && entry.Type == "file" {
+				if _, ok := seenPaths[cleanedPath]; !ok {
+					seenPaths[cleanedPath] = struct{}{}
+					paths = append(paths, cleanedPath)
+				}
+			}
+			if entry.Type != "directory" {
+				continue
+			}
+			children, err := s.storage.ListEntries(ctx, backingSliceID, entry.ID)
+			if err != nil {
+				return nil, err
+			}
+			queue = append(queue, children...)
+		}
+		if len(paths) == filesBefore {
+			fallbackPaths, fallbackErr := s.mountedBackingSliceFiles(ctx, backingSliceID, sourcePath)
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			for _, cleanedPath := range fallbackPaths {
+				if _, ok := seenPaths[cleanedPath]; !ok {
+					seenPaths[cleanedPath] = struct{}{}
+					paths = append(paths, cleanedPath)
+				}
+			}
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func (s *fileServiceServer) mountedBackingSliceFiles(ctx context.Context, backingSliceID, sourcePath string) ([]string, error) {
+	backingSlice, err := s.storage.GetSlice(ctx, backingSliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	prefix := common.CleanRelativePath(sourcePath) + "/"
+	paths := make([]string, 0)
+	for _, rawPath := range backingSlice.Files {
+		cleanedPath := common.CleanRelativePath(rawPath)
+		if cleanedPath == "" || !strings.HasPrefix(cleanedPath, prefix) {
+			continue
+		}
+		paths = append(paths, cleanedPath)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func (s *fileServiceServer) mountedBackingHasSliceFile(ctx context.Context, backingSliceID, sourcePath string) bool {
+	paths, err := s.mountedBackingSliceFiles(ctx, backingSliceID, sourcePath)
+	return err == nil && len(paths) > 0
 }
 
 func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
@@ -538,7 +656,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 				if alias == "" {
 					continue
 				}
-				if !s.folderMountHasBacking(ctx, backingSliceID, slice, m) {
+				if !s.folderMountHasBacking(ctx, backingSliceID, m) {
 					continue
 				}
 				if _, ok := seen[alias]; ok {
@@ -761,23 +879,20 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 	}, nil
 }
 
-func (s *fileServiceServer) folderMountHasBacking(ctx context.Context, backingSliceID string, slice *models.Slice, mount models.SliceFolderMount) bool {
+func (s *fileServiceServer) folderMountHasBacking(ctx context.Context, backingSliceID string, mount models.SliceFolderMount) bool {
 	sourcePath := cleanPath(mount.SourcePath)
 	if sourcePath == "" {
 		return false
 	}
-	if slice != nil {
-		prefix := sourcePath + "/"
-		for _, rawPath := range slice.Files {
-			cleaned := cleanPath(rawPath)
-			if strings.HasPrefix(cleaned, prefix) {
-				return true
-			}
-		}
-	}
 
 	entry, err := s.storage.GetEntryByPath(ctx, backingSliceID, sourcePath)
-	return err == nil && entry != nil && entry.Type == "directory"
+	if err == nil && entry != nil && entry.Type == "directory" {
+		return true
+	}
+	if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+		return false
+	}
+	return s.mountedBackingHasSliceFile(ctx, backingSliceID, sourcePath)
 }
 
 const (

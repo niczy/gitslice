@@ -210,6 +210,32 @@ func TestHandlerClonesMountedSliceWithBrowserTreeShape(t *testing.T) {
 	}
 }
 
+func TestCollectGitProjectionFilesFallsBackToBackingSliceFiles(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	parent, mounted := createMountedGitSlice(t, ctx, st)
+	if _, err := storage.WriteSliceFileManifest(ctx, st, parent.ID, "nicholas/git-auth-smoke/README.md", []byte("legacy git readme\n")); err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "nicholas/git-auth-smoke/README.md", parent.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	files, err := collectGitProjectionFiles(ctx, st, newGitProjection(mounted))
+	if err != nil {
+		t.Fatalf("collectGitProjectionFiles failed: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one projected file, got %d: %#v", len(files), files)
+	}
+	if got := files[0].Path; got != "nicholas/git-auth-smoke/README.md" {
+		t.Fatalf("projected path = %q, want mounted display path", got)
+	}
+	if got := string(files[0].Content); got != "legacy git readme\n" {
+		t.Fatalf("projected content = %q, want backing slice content", got)
+	}
+}
+
 func TestHandlerImportsMountedSlicePushUnderMountAlias(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary is not available")
