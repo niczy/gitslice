@@ -20,6 +20,12 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 )
 
+const gitSearchIndexTimeout = 10 * time.Minute
+
+type fileManifestHashGetter interface {
+	GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error)
+}
+
 type sliceTreeEntry struct {
 	path  string
 	entry *models.DirectoryEntry
@@ -140,6 +146,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 
 	modifiedSet := make(map[string]struct{})
 	deleteEntries := make([]sliceTreeEntry, 0)
+	deletedPaths := make(map[string]struct{})
 	for _, entry := range currentEntries {
 		if entry == nil || strings.TrimSpace(entry.Path) == "" {
 			continue
@@ -176,6 +183,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		if err := h.st.DeleteEntry(ctx, current.entry.ID); err != nil && err != storage.ErrEntryNotFound {
 			return err
 		}
+		deletedPaths[current.path] = struct{}{}
 		modifiedSet[current.path] = struct{}{}
 	}
 
@@ -252,7 +260,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	if len(modifiedSet) == 0 {
 		return nil
 	}
-	currentFiles, allPaths, err := h.collectSliceSnapshot(ctx, targetSliceID)
+	currentFiles, allPaths, err := h.updatedSliceSnapshot(ctx, targetSliceID, currentEntries, previousFiles, desiredTypes, desiredFiles, deletedPaths)
 	if err != nil {
 		return err
 	}
@@ -287,43 +295,148 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	}); err != nil {
 		return err
 	}
-	if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, h.st, targetSliceID, commitHash); err != nil {
-		log.Printf("gitlayer: failed to refresh search artifact for commit %s in %s: %v", commitHash, targetSliceID, err)
-	}
 	if err := h.recordFileChanges(ctx, targetSliceID, commitHash, message, author, commitTime, previousFiles, currentFiles); err != nil {
 		log.Printf("gitlayer: failed to record file changes for commit %s in %s: %v", commitHash, targetSliceID, err)
 	}
+	h.refreshWorkspaceSearchArtifactAsync(targetSliceID, commitHash)
 	return nil
 }
 
-func (h *Handler) collectSliceSnapshot(ctx context.Context, sliceID string) (map[string]string, []string, error) {
-	entries, err := collectEntries(ctx, h.st, sliceID)
-	if err != nil {
-		return nil, nil, err
-	}
+func (h *Handler) updatedSliceSnapshot(
+	ctx context.Context,
+	sliceID string,
+	entries []*models.DirectoryEntry,
+	previousFiles map[string]string,
+	desiredTypes map[string]string,
+	desiredFiles map[string]gitrepo.File,
+	deletedPaths map[string]struct{},
+) (map[string]string, []string, error) {
+	pathTypes := make(map[string]string, len(entries)+len(desiredTypes))
 	files := make(map[string]string)
-	paths := make([]string, 0, len(entries))
+	missingHashes := make([]string, 0)
+
 	for _, entry := range entries {
 		if entry == nil || strings.TrimSpace(entry.Path) == "" {
 			continue
 		}
-		paths = append(paths, entry.Path)
+		cleaned := common.CleanRelativePath(entry.Path)
+		if cleaned == "" {
+			continue
+		}
+		if _, deleted := deletedPaths[cleaned]; deleted {
+			continue
+		}
+		pathTypes[cleaned] = entry.Type
 		if entry.Type != "file" {
 			continue
 		}
-		manifest, err := h.st.GetFileManifest(ctx, sliceID, entry.Path)
+		if hash := strings.TrimSpace(previousFiles[cleaned]); hash != "" {
+			files[cleaned] = hash
+			continue
+		}
+		missingHashes = append(missingHashes, cleaned)
+	}
+
+	if len(missingHashes) > 0 {
+		hashes, err := h.fileManifestHashes(ctx, sliceID, missingHashes)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, filePath := range missingHashes {
+			if hash := strings.TrimSpace(hashes[filePath]); hash != "" {
+				files[filePath] = hash
+			}
+		}
+	}
+
+	for filePath := range deletedPaths {
+		delete(pathTypes, common.CleanRelativePath(filePath))
+		delete(files, common.CleanRelativePath(filePath))
+	}
+	for filePath, typ := range desiredTypes {
+		cleaned := common.CleanRelativePath(filePath)
+		if cleaned == "" {
+			continue
+		}
+		pathTypes[cleaned] = typ
+		if typ != "file" {
+			delete(files, cleaned)
+		}
+	}
+	for filePath, file := range desiredFiles {
+		cleaned := common.CleanRelativePath(filePath)
+		if cleaned == "" {
+			continue
+		}
+		pathTypes[cleaned] = "file"
+		files[cleaned] = storage.HashFileManifestContent(file.Content, file.Executable, file.SymlinkTarget)
+	}
+
+	paths := make([]string, 0, len(pathTypes))
+	for filePath := range pathTypes {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	return files, paths, nil
+}
+
+func (h *Handler) fileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error) {
+	if getter, ok := h.st.(fileManifestHashGetter); ok {
+		return getter.GetFileManifestHashes(ctx, sliceID, paths)
+	}
+	hashes := make(map[string]string, len(paths))
+	for _, filePath := range paths {
+		manifest, err := h.st.GetFileManifest(ctx, sliceID, filePath)
 		if err != nil {
 			if err == storage.ErrEntryNotFound {
 				continue
 			}
-			return nil, nil, err
+			return nil, err
 		}
-		if strings.TrimSpace(manifest.Hash) != "" {
-			files[entry.Path] = strings.TrimSpace(manifest.Hash)
+		if hash := strings.TrimSpace(manifest.Hash); hash != "" {
+			hashes[common.CleanRelativePath(filePath)] = hash
 		}
 	}
-	sort.Strings(paths)
-	return files, paths, nil
+	return hashes, nil
+}
+
+func (h *Handler) refreshWorkspaceSearchArtifactAsync(sliceID, commitHash string) {
+	sliceID = strings.TrimSpace(sliceID)
+	commitHash = strings.TrimSpace(commitHash)
+	if sliceID == "" || commitHash == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), gitSearchIndexTimeout)
+		defer cancel()
+		if err := h.refreshWorkspaceSearchArtifact(ctx, sliceID, commitHash); err != nil {
+			log.Printf("gitlayer: failed to refresh search artifact for commit %s in %s: %v", commitHash, sliceID, err)
+		}
+	}()
+}
+
+func (h *Handler) refreshWorkspaceSearchArtifact(ctx context.Context, sliceID, commitHash string) error {
+	current, err := h.sliceCommitIsCurrent(ctx, sliceID, commitHash)
+	if err != nil || !current {
+		return err
+	}
+	artifact, err := storage.BuildAndStoreSliceSearchArtifact(ctx, h.st, sliceID, commitHash)
+	if err != nil {
+		return err
+	}
+	current, err = h.sliceCommitIsCurrent(ctx, sliceID, commitHash)
+	if err != nil || !current {
+		return err
+	}
+	return storage.StoreWorkspaceSearchArtifact(ctx, h.st, sliceID, artifact)
+}
+
+func (h *Handler) sliceCommitIsCurrent(ctx context.Context, sliceID, commitHash string) (bool, error) {
+	meta, err := h.st.GetSliceMetadata(ctx, strings.TrimSpace(sliceID))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(meta.HeadCommitHash) == strings.TrimSpace(commitHash), nil
 }
 
 func (h *Handler) recordFileChanges(ctx context.Context, sliceID, commitHash, message, author string, timestamp time.Time, previousFiles, currentFiles map[string]string) error {
