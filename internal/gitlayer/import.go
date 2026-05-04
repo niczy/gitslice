@@ -69,7 +69,13 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	if slice == nil {
 		return fmt.Errorf("slice is nil")
 	}
-	meta, err := h.st.GetSliceMetadata(ctx, slice.ID)
+	projection := newGitProjection(slice)
+	targetSliceID := projection.target()
+	if targetSliceID == "" {
+		return fmt.Errorf("target slice is empty")
+	}
+
+	meta, err := h.st.GetSliceMetadata(ctx, targetSliceID)
 	if err != nil {
 		return err
 	}
@@ -87,12 +93,15 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		}
 	}
 
-	currentEntries, err := collectEntries(ctx, h.st, slice.ID)
+	currentEntries, err := collectEntries(ctx, h.st, targetSliceID)
 	if err != nil {
 		return err
 	}
 	desiredTypes := make(map[string]string, len(files))
 	desiredFiles := make(map[string]gitrepo.File, len(files))
+	for _, mount := range projection.mounts {
+		desiredTypes[mount.SourcePath] = "directory"
+	}
 	for _, file := range files {
 		cleanedPath, err := cleanGitPath(file.Path)
 		if err != nil {
@@ -101,20 +110,27 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		if cleanedPath == "" {
 			continue
 		}
-		if _, exists := desiredFiles[cleanedPath]; exists {
+		storedPath, err := projection.storedPathForGitFile(cleanedPath)
+		if err != nil {
+			return err
+		}
+		if storedPath == "" {
+			continue
+		}
+		if _, exists := desiredFiles[storedPath]; exists {
 			return fmt.Errorf("duplicate git path %q", cleanedPath)
 		}
-		if existing := desiredTypes[cleanedPath]; existing == "directory" {
+		if existing := desiredTypes[storedPath]; existing == "directory" {
 			return fmt.Errorf("path %q is both file and directory", cleanedPath)
 		}
-		file.Path = cleanedPath
+		file.Path = storedPath
 		if file.SymlinkTarget != "" {
 			file.Content = []byte(file.SymlinkTarget)
 			file.Executable = false
 		}
-		desiredFiles[cleanedPath] = file
-		desiredTypes[cleanedPath] = "file"
-		for dir := path.Dir(cleanedPath); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
+		desiredFiles[storedPath] = file
+		desiredTypes[storedPath] = "file"
+		for dir := path.Dir(storedPath); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
 			if existing := desiredTypes[dir]; existing == "file" {
 				return fmt.Errorf("path %q is both file and directory", dir)
 			}
@@ -126,6 +142,9 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	deleteEntries := make([]sliceTreeEntry, 0)
 	for _, entry := range currentEntries {
 		if entry == nil || strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		if !projection.managesStoredPath(entry.Path) {
 			continue
 		}
 		desiredType, keep := desiredTypes[entry.Path]
@@ -143,11 +162,14 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		if current.entry == nil {
 			continue
 		}
+		if projection.protectedStoredDir(current.path) {
+			continue
+		}
 		if current.entry.Type == "file" {
-			if err := h.st.DeleteFileManifest(ctx, slice.ID, current.path); err != nil && err != storage.ErrEntryNotFound {
+			if err := h.st.DeleteFileManifest(ctx, targetSliceID, current.path); err != nil && err != storage.ErrEntryNotFound {
 				return err
 			}
-			if err := h.st.RemoveFileFromSlice(ctx, current.path, slice.ID); err != nil {
+			if err := h.st.RemoveFileFromSlice(ctx, current.path, targetSliceID); err != nil {
 				return err
 			}
 		}
@@ -170,7 +192,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		return strings.Count(directories[i], "/") < strings.Count(directories[j], "/")
 	})
 	for _, dirPath := range directories {
-		entry, err := h.st.GetEntryByPath(ctx, slice.ID, dirPath)
+		entry, err := h.st.GetEntryByPath(ctx, targetSliceID, dirPath)
 		if err == nil && entry != nil && entry.Type == "directory" {
 			continue
 		}
@@ -181,7 +203,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 			return err
 		}
 		if err := h.st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:   common.GenerateEntryID(slice.ID, dirPath),
+			ID:   common.GenerateEntryID(targetSliceID, dirPath),
 			Path: dirPath,
 			Type: "directory",
 		}); err != nil {
@@ -198,20 +220,20 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	for _, filePath := range filePaths {
 		file := desiredFiles[filePath]
 		nextHash := storage.HashFileManifestContent(file.Content, file.Executable, file.SymlinkTarget)
-		currentEntry, err := h.st.GetEntryByPath(ctx, slice.ID, filePath)
+		currentEntry, err := h.st.GetEntryByPath(ctx, targetSliceID, filePath)
 		if err == nil && currentEntry != nil && currentEntry.Type == "file" && currentEntry.Executable == file.Executable && currentEntry.SymlinkTarget == file.SymlinkTarget {
-			if manifest, manifestErr := h.st.GetFileManifest(ctx, slice.ID, filePath); manifestErr == nil && manifest != nil && strings.TrimSpace(manifest.Hash) == nextHash {
+			if manifest, manifestErr := h.st.GetFileManifest(ctx, targetSliceID, filePath); manifestErr == nil && manifest != nil && strings.TrimSpace(manifest.Hash) == nextHash {
 				continue
 			}
 		} else if err != nil && err != storage.ErrEntryNotFound {
 			return err
 		}
-		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, h.st, slice.ID, filePath, file.Content, file.Executable, file.SymlinkTarget)
+		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, h.st, targetSliceID, filePath, file.Content, file.Executable, file.SymlinkTarget)
 		if err != nil {
 			return err
 		}
 		if err := h.st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:            common.GenerateEntryID(slice.ID, filePath),
+			ID:            common.GenerateEntryID(targetSliceID, filePath),
 			Path:          filePath,
 			Type:          "file",
 			Size:          int64(len(file.Content)),
@@ -221,7 +243,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		}); err != nil {
 			return err
 		}
-		if err := h.st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+		if err := h.st.AddFileToSlice(ctx, filePath, targetSliceID); err != nil {
 			return err
 		}
 		modifiedSet[filePath] = struct{}{}
@@ -230,7 +252,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	if len(modifiedSet) == 0 {
 		return nil
 	}
-	currentFiles, allPaths, err := h.collectSliceSnapshot(ctx, slice.ID)
+	currentFiles, allPaths, err := h.collectSliceSnapshot(ctx, targetSliceID)
 	if err != nil {
 		return err
 	}
@@ -240,7 +262,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	if commitTime.IsZero() {
 		commitTime = time.Now()
 	}
-	if err := h.st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+	if err := h.st.AddSliceCommit(ctx, targetSliceID, &models.Commit{
 		CommitHash: commitHash,
 		ParentHash: meta.HeadCommitHash,
 		Timestamp:  commitTime,
@@ -250,14 +272,14 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	}
 	if err := h.st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
 		CommitHash: commitHash,
-		SliceID:    slice.ID,
+		SliceID:    targetSliceID,
 		Files:      currentFiles,
 		Timestamp:  commitTime,
 	}); err != nil {
 		return err
 	}
-	if err := h.st.UpdateSliceMetadata(ctx, slice.ID, &models.SliceMetadata{
-		SliceID:            slice.ID,
+	if err := h.st.UpdateSliceMetadata(ctx, targetSliceID, &models.SliceMetadata{
+		SliceID:            targetSliceID,
 		HeadCommitHash:     commitHash,
 		ModifiedFiles:      allPaths,
 		LastModified:       commitTime,
@@ -265,11 +287,11 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 	}); err != nil {
 		return err
 	}
-	if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, h.st, slice.ID, commitHash); err != nil {
-		log.Printf("gitlayer: failed to refresh search artifact for commit %s in %s: %v", commitHash, slice.ID, err)
+	if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, h.st, targetSliceID, commitHash); err != nil {
+		log.Printf("gitlayer: failed to refresh search artifact for commit %s in %s: %v", commitHash, targetSliceID, err)
 	}
-	if err := h.recordFileChanges(ctx, slice.ID, commitHash, message, author, commitTime, previousFiles, currentFiles); err != nil {
-		log.Printf("gitlayer: failed to record file changes for commit %s in %s: %v", commitHash, slice.ID, err)
+	if err := h.recordFileChanges(ctx, targetSliceID, commitHash, message, author, commitTime, previousFiles, currentFiles); err != nil {
+		log.Printf("gitlayer: failed to record file changes for commit %s in %s: %v", commitHash, targetSliceID, err)
 	}
 	return nil
 }
