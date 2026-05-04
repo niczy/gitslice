@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,11 +21,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/gitrepo"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -37,15 +41,20 @@ const (
 )
 
 type Handler struct {
-	st       storage.Storage
-	cacheDir string
-	mu       sync.Mutex
+	st                    storage.Storage
+	cacheDir              string
+	mu                    sync.Mutex
+	promotionQueueMu      sync.Mutex
+	promotionQueue        *rootpromote.Queue
+	promotionBatchWindow  time.Duration
+	promotionBatchMaxSize int
 }
 
 type gitProjection struct {
-	displaySlice  *models.Slice
-	targetSliceID string
-	mounts        []models.SliceFolderMount
+	displaySlice         *models.Slice
+	targetSliceID        string
+	homePromotionSliceID string
+	mounts               []models.SliceFolderMount
 }
 
 type route struct {
@@ -59,8 +68,10 @@ func NewHandler(st storage.Storage, cacheDir string) *Handler {
 		cacheDir = filepath.Join(os.TempDir(), "gitslice-git-cache")
 	}
 	return &Handler{
-		st:       st,
-		cacheDir: cacheDir,
+		st:                    st,
+		cacheDir:              cacheDir,
+		promotionBatchWindow:  rootpromote.DefaultBatchWindow,
+		promotionBatchMaxSize: rootpromote.DefaultBatchMaxSize,
 	}
 }
 
@@ -278,7 +289,10 @@ func (h *Handler) ensureBareRepoLocked(ctx context.Context, slice *models.Slice)
 	if err := os.MkdirAll(h.cacheDir, 0o755); err != nil {
 		return "", "", err
 	}
-	projection := newGitProjection(slice)
+	projection, err := h.resolveGitProjection(ctx, slice)
+	if err != nil {
+		return "", "", err
+	}
 	sourceHead, err := h.gitSourceHead(ctx, projection)
 	if err != nil {
 		return "", "", err
@@ -392,9 +406,15 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice
 		if strings.TrimSpace(after) != "" && after != before {
 			if err := h.importBareRepo(r.Context(), slice, repoPath, after, id.Username); err != nil {
 				_ = os.RemoveAll(repoPath)
-				return err
+				message := gitPushRejectionMessage(err)
+				log.Printf("gitlayer: rejected git push for %s: %v", slice.ID, err)
+				return writeReceivePackRejection(w, "refs/heads/"+defaultBranch, message)
 			}
-			sourceHead, err := h.gitSourceHead(r.Context(), newGitProjection(slice))
+			projection, err := h.resolveGitProjection(r.Context(), slice)
+			if err != nil {
+				return fmt.Errorf("resolve imported slice projection: %w", err)
+			}
+			sourceHead, err := h.gitSourceHead(r.Context(), projection)
 			if err != nil {
 				return fmt.Errorf("load imported slice source metadata: %w", err)
 			}
@@ -407,6 +427,70 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice
 		}
 	}
 	return writeCGIResponse(w, payload)
+}
+
+func writeReceivePackRejection(w http.ResponseWriter, refName, message string) error {
+	return writeCGIResponse(w, receivePackRejectionPayload(refName, message))
+}
+
+func receivePackRejectionPayload(refName, message string) []byte {
+	refName = strings.TrimSpace(refName)
+	if refName == "" {
+		refName = "refs/heads/" + defaultBranch
+	}
+	message = sanitizeGitPushMessage(message)
+	if message == "" {
+		message = "push rejected"
+	}
+
+	status := bytes.NewBuffer(nil)
+	status.Write(pktLine([]byte("unpack ok\n")))
+	status.Write(pktLine([]byte(fmt.Sprintf("ng %s %s\n", refName, message))))
+	status.Write(flushPkt())
+
+	body := bytes.NewBuffer(nil)
+	body.Write(pktLine(append([]byte{2}, []byte("Gitslice rejected push: "+message+"\n")...)))
+	body.Write(pktLine(append([]byte{1}, status.Bytes()...)))
+	body.Write(flushPkt())
+
+	payload := bytes.NewBuffer(nil)
+	payload.WriteString("Content-Type: application/x-git-receive-pack-result\r\n\r\n")
+	payload.Write(body.Bytes())
+	return payload.Bytes()
+}
+
+func pktLine(data []byte) []byte {
+	packet := make([]byte, 4+len(data))
+	copy(packet[:4], fmt.Sprintf("%04x", len(packet)))
+	copy(packet[4:], data)
+	return packet
+}
+
+func flushPkt() []byte {
+	return []byte("0000")
+}
+
+func gitPushRejectionMessage(err error) string {
+	var userErr *gitPushUserError
+	if errors.As(err, &userErr) && strings.TrimSpace(userErr.message) != "" {
+		return userErr.message
+	}
+	if err == nil {
+		return "push rejected"
+	}
+	return "push rejected by Gitslice: " + err.Error()
+}
+
+func sanitizeGitPushMessage(message string) string {
+	message = strings.TrimSpace(message)
+	message = strings.ReplaceAll(message, "\r", " ")
+	message = strings.ReplaceAll(message, "\n", " ")
+	message = strings.Join(strings.Fields(message), " ")
+	const maxLen = 500
+	if len(message) > maxLen {
+		message = strings.TrimSpace(message[:maxLen]) + "..."
+	}
+	return message
 }
 
 func (h *Handler) runBackend(r *http.Request, repoName, suffix string) ([]byte, error) {
@@ -627,6 +711,102 @@ func newGitProjection(slice *models.Slice) *gitProjection {
 	return projection
 }
 
+func (h *Handler) resolveGitProjection(ctx context.Context, slice *models.Slice) (*gitProjection, error) {
+	projection := newGitProjection(slice)
+	if h == nil || h.st == nil || slice == nil || !projection.mounted() {
+		return projection, nil
+	}
+
+	rootSlice, err := h.st.GetRootSlice(ctx)
+	if err != nil {
+		if err == storage.ErrSliceNotFound || err == storage.ErrEntryNotFound {
+			return projection, nil
+		}
+		return nil, err
+	}
+	if rootSlice == nil || strings.TrimSpace(rootSlice.ID) == "" || strings.TrimSpace(rootSlice.ID) != strings.TrimSpace(slice.ParentSlice) {
+		return projection, nil
+	}
+
+	homeSliceID, ok, err := h.homeSliceTargetForRootMount(ctx, projection, slice)
+	if err != nil || !ok {
+		return projection, err
+	}
+	projection.targetSliceID = homeSliceID
+	projection.homePromotionSliceID = homeSliceID
+	return projection, nil
+}
+
+func (h *Handler) homeSliceTargetForRootMount(ctx context.Context, projection *gitProjection, slice *models.Slice) (string, bool, error) {
+	if h == nil || h.st == nil || projection == nil || !projection.mounted() || slice == nil {
+		return "", false, nil
+	}
+	candidates := homeProjectionCandidates(slice)
+	for _, username := range candidates {
+		homeID := homeslice.IDForUsername(username)
+		homeSlice, err := h.st.GetSlice(ctx, homeID)
+		if err != nil {
+			if err == storage.ErrSliceNotFound {
+				continue
+			}
+			return "", false, err
+		}
+		if homeSlice == nil {
+			continue
+		}
+		rootPath := h.homeRootPath(ctx, username)
+		if rootPath == "" {
+			continue
+		}
+		allUnderHomeRoot := true
+		for _, mount := range projection.mounts {
+			source := common.CleanRelativePath(mount.SourcePath)
+			if source != rootPath && !strings.HasPrefix(source, rootPath+"/") {
+				allUnderHomeRoot = false
+				break
+			}
+		}
+		if allUnderHomeRoot {
+			return homeSlice.ID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func homeProjectionCandidates(slice *models.Slice) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(slice.Owners)+1)
+	add := func(username string) {
+		username = strings.TrimSpace(username)
+		if username == "" {
+			return
+		}
+		if _, ok := seen[username]; ok {
+			return
+		}
+		seen[username] = struct{}{}
+		result = append(result, username)
+	}
+	for _, owner := range slice.Owners {
+		add(owner)
+	}
+	add(slice.CreatedBy)
+	return result
+}
+
+func (h *Handler) homeRootPath(ctx context.Context, username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	if user, err := h.st.GetUser(ctx, username); err == nil && user != nil {
+		if rootPath := common.CleanRelativePath(strings.TrimPrefix(strings.TrimSpace(user.RootPath), "/")); rootPath != "" {
+			return rootPath
+		}
+	}
+	return homeslice.RelativeRootPath(username)
+}
+
 func (p *gitProjection) mounted() bool {
 	return p != nil && len(p.mounts) > 0 && strings.TrimSpace(p.targetSliceID) != ""
 }
@@ -704,7 +884,7 @@ func (p *gitProjection) storedPathForGitFile(gitPath string) (string, error) {
 	}
 	for _, mount := range p.mounts {
 		if cleaned == mount.Alias {
-			return "", fmt.Errorf("cannot replace mounted slice root %q with a file", mount.Alias)
+			return "", newGitPushUserErrorf("cannot replace mounted folder %q with a file; add files inside this folder instead", mount.Alias)
 		}
 		prefix := mount.Alias + "/"
 		if strings.HasPrefix(cleaned, prefix) {
@@ -715,7 +895,7 @@ func (p *gitProjection) storedPathForGitFile(gitPath string) (string, error) {
 			return path.Join(mount.SourcePath, suffix), nil
 		}
 	}
-	return "", fmt.Errorf("git path %q is outside mounted slice aliases", cleaned)
+	return "", newGitPushUserErrorf("cannot add or modify %q at this slice root; mounted slices only allow changes under existing mounted folder(s): %s", cleaned, p.allowedGitRootSummary())
 }
 
 func (p *gitProjection) managesStoredPath(storedPath string) bool {
@@ -745,6 +925,22 @@ func (p *gitProjection) protectedStoredDir(storedPath string) bool {
 		}
 	}
 	return false
+}
+
+func (p *gitProjection) allowedGitRootSummary() string {
+	if !p.mounted() {
+		return "the repository root"
+	}
+	aliases := make([]string, 0, len(p.mounts))
+	for _, mount := range p.mounts {
+		if alias := common.CleanRelativePath(mount.Alias); alias != "" {
+			aliases = append(aliases, strconv.Quote(alias))
+		}
+	}
+	if len(aliases) == 0 {
+		return "none"
+	}
+	return strings.Join(aliases, ", ")
 }
 
 func writeStatusError(w http.ResponseWriter, err error) {
