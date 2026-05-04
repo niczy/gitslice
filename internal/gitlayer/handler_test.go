@@ -267,6 +267,23 @@ func TestHandlerImportsMountedSlicePushUnderMountAlias(t *testing.T) {
 	if _, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "nicholas/other/keep.txt"); err != nil {
 		t.Fatalf("outside parent file was not preserved: %v", err)
 	}
+	meta, err := st.GetSliceMetadata(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata(parent): %v", err)
+	}
+	snapshot, err := st.GetCommitSnapshot(ctx, meta.HeadCommitHash)
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot(parent head): %v", err)
+	}
+	if _, ok := snapshot.Files["nicholas/other/keep.txt"]; !ok {
+		t.Fatalf("outside parent file missing from commit snapshot: %#v", snapshot.Files)
+	}
+	if _, ok := snapshot.Files["nicholas/git-auth-smoke/stale.txt"]; ok {
+		t.Fatalf("deleted mounted file still present in commit snapshot: %#v", snapshot.Files)
+	}
+	if _, ok := snapshot.Files["nicholas/git-auth-smoke/src/hello.txt"]; !ok {
+		t.Fatalf("new mounted file missing from commit snapshot: %#v", snapshot.Files)
+	}
 	if _, err := st.GetEntryByPath(ctx, mounted.ID, "src/hello.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
 		t.Fatalf("raw mounted slice entry error = %v, want ErrEntryNotFound", err)
 	}
