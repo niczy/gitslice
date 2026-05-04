@@ -2848,6 +2848,141 @@ body {
   text-align: center;
 }
 
+.file-loading-state {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 220px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f6f8fa;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.file-loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(9, 105, 218, 0.16);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: file-loading-spin 800ms linear infinite;
+}
+
+@keyframes file-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.folder-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f6f8fa;
+}
+
+.folder-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  background: #ffffff;
+}
+
+.folder-preview-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.folder-preview-header span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.folder-preview-count {
+  flex-shrink: 0;
+  margin-top: 0;
+  font-weight: 600;
+}
+
+.folder-preview-loading {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 180px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.folder-preview-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+}
+
+.folder-preview-entry {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-preview-entry:hover {
+  background: #ffffff;
+}
+
+.folder-preview-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.folder-preview-entry.directory .folder-preview-entry-icon {
+  color: var(--accent);
+}
+
+.folder-preview-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.folder-preview-entry-meta {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
 .file-preview {
   margin: 0;
   background: #f6f8fa;
@@ -5749,7 +5884,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .repo-layout {
-  grid-template-columns: 296px minmax(0, 1fr) 304px;
+  grid-template-columns: 296px minmax(0, 1fr);
   gap: 0;
   height: calc(100dvh - 120px);
   min-height: calc(100dvh - 120px);
@@ -5757,7 +5892,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .repo-layout.sidebar-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr) 304px;
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 .repo-layout.insight-collapsed {
@@ -6603,7 +6738,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .repo-layout {
-  grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr) 320px;
+  grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr);
   height: calc(100dvh - 82px);
   min-height: calc(100dvh - 82px);
   gap: 0;
@@ -6611,7 +6746,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .repo-layout.sidebar-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr) 320px;
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 .app-shell--browser .repo-layout.insight-collapsed {
@@ -7087,7 +7222,10 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .slice-settings-modal {
   position: relative;
   width: min(1120px, 100%);
-  max-height: min(820px, calc(100vh - 48px));
+  height: min(820px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--np-border-soft);
   border-radius: 8px;
@@ -7115,18 +7253,28 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .slice-settings-modal .slice-settings {
+  flex: 1;
   min-height: 0;
-  max-height: min(820px, calc(100vh - 48px));
+  max-height: none;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 0;
   border-radius: 0;
   padding: 24px;
 }
 
+.app-shell--browser .slice-settings-modal .panel-empty {
+  min-height: 148px;
+  display: grid;
+  place-items: center;
+}
+
 .app-shell--browser .file-preview,
 .app-shell--browser .file-editor,
+.app-shell--browser .folder-preview,
 .app-shell--browser .media-preview-wrapper,
 .app-shell--browser .media-preview-pdf,
+.app-shell--browser .file-loading-state,
 .app-shell--browser .slice-settings,
 .app-shell--browser .history-panel {
   min-height: 100%;
@@ -7142,6 +7290,47 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--np-text);
   font-size: 13px;
   line-height: 20px;
+}
+
+.app-shell--browser .file-loading-state {
+  align-content: center;
+  background: var(--np-bg);
+  color: var(--np-muted);
+  font-size: 13px;
+}
+
+.app-shell--browser .file-loading-spinner {
+  border-color: color-mix(in srgb, var(--np-primary) 16%, transparent);
+  border-top-color: var(--np-primary);
+}
+
+.app-shell--browser .folder-preview {
+  background: var(--np-surface);
+}
+
+.app-shell--browser .folder-preview-header {
+  border-bottom-color: var(--np-border-soft);
+  background: var(--np-bg);
+}
+
+.app-shell--browser .folder-preview-header h3,
+.app-shell--browser .folder-preview-entry {
+  color: var(--np-text);
+}
+
+.app-shell--browser .folder-preview-header span,
+.app-shell--browser .folder-preview-loading,
+.app-shell--browser .folder-preview-entry-icon,
+.app-shell--browser .folder-preview-entry-meta {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .folder-preview-entry:hover {
+  background: var(--np-container);
+}
+
+.app-shell--browser .folder-preview-entry.directory .folder-preview-entry-icon {
+  color: var(--np-primary);
 }
 
 .app-shell--browser .file-preview:hover {

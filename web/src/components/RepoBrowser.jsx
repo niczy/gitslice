@@ -3,18 +3,14 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Circle,
   Edit3,
   FileText,
   Folder,
   FolderOpen,
-  GitBranch,
   History,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   Settings,
   X,
 } from 'lucide-react';
@@ -81,6 +77,24 @@ const getEntryDisplayPath = (entry) => {
   return path ? `/${path}` : '/';
 };
 
+const sortEntriesByTypeAndName = (entries = []) => [...entries].sort((left, right) => {
+  const leftType = normalizeEntryType(left.type);
+  const rightType = normalizeEntryType(right.type);
+  if (leftType !== rightType) {
+    return leftType === 'directory' ? -1 : 1;
+  }
+  return getEntryName(left).localeCompare(getEntryName(right), undefined, { sensitivity: 'base' });
+});
+
+const getDirectoryAncestorPaths = (path) => {
+  const parts = String(path || '').split('/').filter(Boolean);
+  const ancestors = [''];
+  for (let index = 0; index < parts.length; index += 1) {
+    ancestors.push(parts.slice(0, index + 1).join('/'));
+  }
+  return ancestors;
+};
+
 const getPreviewMeta = (filePath, encodedContent) => {
   const extension = getFileExtension(filePath);
   if (extension === 'pdf') {
@@ -119,6 +133,7 @@ export default function RepoBrowser({
   isActive,
   slicesLoading,
   openFileRequest,
+  initialBrowserData,
 }) {
   // Parse initial browser state from the current route on mount.
   const initialBrowserState = useMemo(() => {
@@ -129,25 +144,42 @@ export default function RepoBrowser({
     return route.page === 'browser' ? route.browserState || null : null;
   }, []);
 
+  const initialDataMatchesRawSlice = initialBrowserData?.selectedSliceId === currentSliceId
+    && String(initialBrowserData?.sliceHash || '') === String(initialBrowserState?.sliceHash || '');
+  const initialSelectedFilePayload = initialDataMatchesRawSlice ? initialBrowserData?.selectedFilePayload : null;
   const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
-  const [treeEntries, setTreeEntries] = useState({});
+  const [treeEntries, setTreeEntries] = useState(() => (
+    initialDataMatchesRawSlice && Array.isArray(initialBrowserData?.rootEntries)
+      ? { '': initialBrowserData.rootEntries }
+      : {}
+  ));
   const [expandedPaths, setExpandedPaths] = useState(['']);
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [fileContent, setFileContent] = useState('');
-  const [encodedFileContent, setEncodedFileContent] = useState('');
-  const [draftContent, setDraftContent] = useState('');
+  const [selectedFile, setSelectedFile] = useState(() => (
+    initialDataMatchesRawSlice && initialSelectedFilePayload ? initialBrowserData?.selectedFile || null : null
+  ));
+  const [fileContent, setFileContent] = useState(() => (
+    initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
+  ));
+  const [encodedFileContent, setEncodedFileContent] = useState(() => initialSelectedFilePayload?.content || '');
+  const [draftContent, setDraftContent] = useState(() => (
+    initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
+  ));
   const [fileDrafts, setFileDrafts] = useState({});
   const [isEditingFile, setIsEditingFile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [fileError, setFileError] = useState('');
+  const [loadingFilePath, setLoadingFilePath] = useState('');
+  const [error, setError] = useState(() => (
+    initialDataMatchesRawSlice ? initialBrowserData?.rootEntriesError || '' : ''
+  ));
+  const [fileError, setFileError] = useState(() => (
+    initialDataMatchesRawSlice ? initialBrowserData?.selectedFileError || '' : ''
+  ));
   const [focusedEntry, setFocusedEntry] = useState(() => (initialBrowserState?.file
     ? { path: initialBrowserState.file, type: 'file' }
     : { path: '', type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
-  const [insightOpen, setInsightOpen] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const [fileHistory, setFileHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -157,8 +189,9 @@ export default function RepoBrowser({
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
 
   // File to restore after root tree entries load (from URL hash)
-  const pendingFileRef = useRef(initialBrowserState?.file || null);
+  const pendingFileRef = useRef(initialDataMatchesRawSlice && initialSelectedFilePayload ? null : initialBrowserState?.file || null);
   const hasAppliedInitialSliceRef = useRef(false);
+  const hasMountedSliceRef = useRef(false);
   const actionMenuRef = useRef(null);
   const sidebarResizeRef = useRef(null);
   const hasLoadedSidebarWidthRef = useRef(false);
@@ -167,21 +200,8 @@ export default function RepoBrowser({
   const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
   const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
   const selectedFileName = useMemo(() => selectedFile?.split('/').pop() || 'No file selected', [selectedFile]);
-  const selectedFileExtension = useMemo(() => getFileExtension(selectedFile) || 'folder', [selectedFile]);
-  const selectedFileLineCount = useMemo(() => {
-    if (!selectedFile || !fileContent) {
-      return 0;
-    }
-    return fileContent.split('\n').length;
-  }, [fileContent, selectedFile]);
-  const selectedFileMode = previewMeta.mode === 'text' ? 'source' : previewMeta.mode;
-  const pendingDraftCount = Object.keys(fileDrafts).length;
   const hasLoadedRootEntries = Object.prototype.hasOwnProperty.call(treeEntries, '');
-  const pendingDraftEntries = useMemo(() => Object.entries(fileDrafts).map(([path, content]) => ({
-    path,
-    name: path.split('/').pop() || path,
-    size: typeof content === 'string' ? content.length : 0,
-  })), [fileDrafts]);
+  const isSelectedFileLoading = Boolean(selectedFile && loadingFilePath === selectedFile && !showHistory);
 
   const rawSliceId = currentSliceId;
 
@@ -226,6 +246,11 @@ export default function RepoBrowser({
     return resolveRequestedSliceId(rawSliceId) || rawSliceId;
   }, [rawSliceId, resolveRequestedSliceId]);
 
+  const initialBrowserDataMatches = useMemo(() => {
+    return initialBrowserData?.selectedSliceId === sliceId
+      && String(initialBrowserData?.sliceHash || '') === String(sliceHash || '');
+  }, [initialBrowserData, sliceHash, sliceId]);
+
   useEffect(() => {
     if (!rawSliceId || sliceId === rawSliceId) {
       return;
@@ -250,16 +275,6 @@ export default function RepoBrowser({
     return getSliceDisplayName(currentSliceLabel);
   }, [currentSliceLabel]);
 
-  const sliceInitials = useMemo(() => {
-    const source = currentSliceDisplayName || authUsername || 'GS';
-    return source
-      .split(/[\s._-]+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join('') || 'GS';
-  }, [authUsername, currentSliceDisplayName]);
-
   const canShowSettings = canLoad && !currentSlice?.is_root;
   const viewingSettings = isSettingsOpen && canShowSettings;
 
@@ -271,12 +286,26 @@ export default function RepoBrowser({
     setIsSettingsOpen(true);
   }, []);
 
+  const normalizeWorkspaceResultPath = useCallback((value) => String(value || '').replace(/^\/+/, ''), []);
+
+  const clearFilePreview = useCallback(() => {
+    setSelectedFile(null);
+    setFileContent('');
+    setEncodedFileContent('');
+    setDraftContent('');
+    setFileError('');
+    setLoadingFilePath('');
+    setShowHistory(false);
+    setFileHistory([]);
+    setHistoryError('');
+    setIsEditingFile(false);
+  }, []);
+
   useIsomorphicLayoutEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
     setSidebarOpen(window.innerWidth > 900);
-    setInsightOpen(window.innerWidth > 1180);
     setIsCompactHeader(window.innerWidth <= 920);
     try {
       const storedWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
@@ -372,6 +401,53 @@ export default function RepoBrowser({
     setIsSettingsOpen(false);
   }, [sliceId, sliceHash]);
 
+  useIsomorphicLayoutEffect(() => {
+    if (!initialBrowserDataMatches) {
+      return;
+    }
+    if (Array.isArray(initialBrowserData?.rootEntries)) {
+      setTreeEntries({ '': initialBrowserData.rootEntries });
+      setExpandedPaths(['']);
+      setError(initialBrowserData.rootEntriesError || '');
+    } else if (initialBrowserData?.rootEntriesError) {
+      setError(initialBrowserData.rootEntriesError);
+    }
+
+    const nextSelectedFile = initialBrowserData?.selectedFile || '';
+    const nextFilePayload = initialBrowserData?.selectedFilePayload || null;
+    if (nextSelectedFile && nextFilePayload?.content) {
+      const decodedContent = decodeBase64(nextFilePayload.content);
+      pendingFileRef.current = null;
+      setSelectedFile(nextSelectedFile);
+      setFocusedEntry({ path: nextSelectedFile, type: 'file' });
+      setEncodedFileContent(nextFilePayload.content);
+      setFileContent(decodedContent);
+      setDraftContent(decodedContent);
+      setFileError(initialBrowserData.selectedFileError || '');
+      setLoadingFilePath('');
+      return;
+    }
+
+    if (nextSelectedFile) {
+      pendingFileRef.current = nextSelectedFile;
+      setSelectedFile(null);
+      setFileContent('');
+      setEncodedFileContent('');
+      setDraftContent('');
+      setFileError(initialBrowserData?.selectedFileError || '');
+      setLoadingFilePath('');
+      return;
+    }
+
+    pendingFileRef.current = null;
+    setSelectedFile(null);
+    setFileContent('');
+    setEncodedFileContent('');
+    setDraftContent('');
+    setFileError('');
+    setLoadingFilePath('');
+  }, [initialBrowserData, initialBrowserDataMatches]);
+
   useEffect(() => {
     if (!viewingSettings || typeof window === 'undefined') {
       return undefined;
@@ -385,12 +461,21 @@ export default function RepoBrowser({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [viewingSettings]);
 
+  const selectedDirectoryPath = useMemo(() => {
+    if (selectedFile || focusedEntry?.type !== 'directory') {
+      return '';
+    }
+    return normalizeWorkspaceResultPath(focusedEntry.path);
+  }, [focusedEntry, normalizeWorkspaceResultPath, selectedFile]);
+
+  const activeBrowserPath = selectedFile || selectedDirectoryPath;
+
   const breadcrumbs = useMemo(() => {
     const slicePrefix = currentSliceLabel || 'slice';
-    if (!selectedFile) {
+    if (!activeBrowserPath) {
       return [{ name: slicePrefix, path: '' }];
     }
-    const parts = selectedFile.split('/');
+    const parts = activeBrowserPath.split('/');
     return [
       { name: slicePrefix, path: '' },
       ...parts.map((part, index) => ({
@@ -398,7 +483,7 @@ export default function RepoBrowser({
         path: parts.slice(0, index + 1).join('/'),
       })),
     ];
-  }, [currentSliceLabel, selectedFile]);
+  }, [activeBrowserPath, currentSliceLabel]);
 
   const visibleBreadcrumbs = useMemo(() => {
     const maxBreadcrumbs = isCompactHeader ? 3 : 5;
@@ -423,7 +508,6 @@ export default function RepoBrowser({
       const width = window.innerWidth;
       setIsCompactHeader(width <= 920);
       setSidebarOpen((open) => (width > 900 ? open : false));
-      setInsightOpen((open) => (width > 1180 ? open : false));
     };
 
     window.addEventListener('resize', handleResize);
@@ -482,6 +566,13 @@ export default function RepoBrowser({
 
   // Reset tree when slice changes
   useEffect(() => {
+    if (!hasMountedSliceRef.current) {
+      hasMountedSliceRef.current = true;
+      return;
+    }
+    if (initialBrowserDataMatches && Array.isArray(initialBrowserData?.rootEntries)) {
+      return;
+    }
     setTreeEntries({});
     setExpandedPaths(['']);
     setSelectedFile(null);
@@ -491,8 +582,9 @@ export default function RepoBrowser({
     setFileDrafts({});
     setIsEditingFile(false);
     setFileError('');
+    setLoadingFilePath('');
     setFocusedEntry({ path: '', type: 'directory' });
-  }, [sliceId, sliceHash]);
+  }, [initialBrowserData, initialBrowserDataMatches, sliceId, sliceHash]);
 
   const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
 
@@ -584,8 +676,6 @@ export default function RepoBrowser({
     }
   };
 
-  const normalizeWorkspaceResultPath = useCallback((value) => String(value || '').replace(/^\/+/, ''), []);
-
   const openFilePath = useCallback(async (targetPath) => {
     const normalizedPath = normalizeWorkspaceResultPath(targetPath);
     if (!canLoad || !normalizedPath) {
@@ -602,6 +692,7 @@ export default function RepoBrowser({
     setEncodedFileContent('');
     setDraftContent('');
     setIsLoading(true);
+    setLoadingFilePath(normalizedPath);
     setError('');
     setFileError('');
     setShowHistory(false);
@@ -669,6 +760,7 @@ export default function RepoBrowser({
       setFileError(err?.message || 'Unable to load file content.');
     } finally {
       setIsLoading(false);
+      setLoadingFilePath((path) => (path === normalizedPath ? '' : path));
     }
   }, [buildEntriesUrl, buildFileUrl, canLoad, expandedPaths, fileDrafts, normalizeWorkspaceResultPath, treeEntries]);
 
@@ -758,6 +850,9 @@ export default function RepoBrowser({
     if (!canLoad) {
       return;
     }
+    if (initialBrowserDataMatches && Array.isArray(initialBrowserData?.rootEntries) && hasLoadedRootEntries) {
+      return;
+    }
 
     let active = true;
     const controller = new AbortController();
@@ -816,6 +911,7 @@ export default function RepoBrowser({
           setExpandedPaths(pathsToExpand);
           setSelectedFile(pendingFile);
           setFocusedEntry({ path: pendingFile, type: 'file' });
+          setLoadingFilePath(pendingFile);
 
           // Load file content
           try {
@@ -835,6 +931,10 @@ export default function RepoBrowser({
               setFileContent('');
               setEncodedFileContent('');
               setFileError(e?.message || 'Unable to load file content.');
+            }
+          } finally {
+            if (active) {
+              setLoadingFilePath((path) => (path === pendingFile ? '' : path));
             }
           }
         } else {
@@ -858,10 +958,18 @@ export default function RepoBrowser({
       active = false;
       controller.abort();
     };
-  }, [canLoad, isActive, sliceId, sliceHash, refreshHistoryToken]);
+  }, [canLoad, hasLoadedRootEntries, initialBrowserData, initialBrowserDataMatches, isActive, sliceId, sliceHash, refreshHistoryToken]);
 
   useEffect(() => {
     if (!isActive || !canLoad || !selectedFile || isEditingFile) {
+      return;
+    }
+    if (
+      initialBrowserDataMatches
+      && initialBrowserData?.selectedFile === selectedFile
+      && initialBrowserData?.selectedFilePayload?.content
+      && !refreshHistoryToken
+    ) {
       return;
     }
 
@@ -869,6 +977,7 @@ export default function RepoBrowser({
     const controller = new AbortController();
 
     const refreshSelectedFile = async () => {
+      setLoadingFilePath(selectedFile);
       try {
         const response = await fetchWithAuth(buildFileUrl(selectedFile), {
           signal: controller.signal,
@@ -891,6 +1000,10 @@ export default function RepoBrowser({
           return;
         }
         setFileError(err?.message || 'Unable to load file content.');
+      } finally {
+        if (active) {
+          setLoadingFilePath((path) => (path === selectedFile ? '' : path));
+        }
       }
     };
 
@@ -900,7 +1013,7 @@ export default function RepoBrowser({
       active = false;
       controller.abort();
     };
-  }, [canLoad, isActive, isEditingFile, refreshHistoryToken, selectedFile, sliceId, sliceHash]);
+  }, [canLoad, initialBrowserData, initialBrowserDataMatches, isActive, isEditingFile, refreshHistoryToken, selectedFile, sliceId, sliceHash]);
 
   const fetchEntries = async (path) => {
     if (!canLoad) {
@@ -925,6 +1038,47 @@ export default function RepoBrowser({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const openDirectoryPath = async (targetPath, options = {}) => {
+    if (!canLoad) {
+      return;
+    }
+    const normalizedPath = normalizeWorkspaceResultPath(targetPath);
+    const shouldToggleExpansion = Boolean(options.toggleExpansion);
+    const isExpanded = expandedPaths.includes(normalizedPath);
+
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setSidebarOpen(false);
+    }
+
+    setIsSettingsOpen(false);
+    setFocusedEntry({ path: normalizedPath, type: 'directory' });
+    clearFilePreview();
+    setError('');
+
+    if (!Object.prototype.hasOwnProperty.call(treeEntries, normalizedPath)) {
+      await fetchEntries(normalizedPath);
+    }
+
+    if (shouldToggleExpansion) {
+      if (isExpanded && normalizedPath) {
+        setExpandedPaths((prev) => prev.filter((path) => path !== normalizedPath));
+        return;
+      }
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        getDirectoryAncestorPaths(normalizedPath).forEach((path) => next.add(path));
+        return Array.from(next);
+      });
+      return;
+    }
+
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      getDirectoryAncestorPaths(normalizedPath).forEach((path) => next.add(path));
+      return Array.from(next);
+    });
   };
 
   const toggleDirectory = async (entry) => {
@@ -966,11 +1120,11 @@ export default function RepoBrowser({
 
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
-    setFocusedEntry({ path: entry.path, type: entryKind });
     if (entryKind === 'directory') {
-      await toggleDirectory(entry);
+      await openDirectoryPath(entry.path, { toggleExpansion: true });
       return;
     }
+    setFocusedEntry({ path: entry.path, type: entryKind });
     await openFilePath(entry.path);
   };
 
@@ -996,42 +1150,11 @@ export default function RepoBrowser({
   };
 
   const handleBreadcrumbClick = async (path) => {
-    setFocusedEntry({ path, type: 'directory' });
-    if (path && !treeEntries[path]) {
-      await fetchEntries(path);
-    }
-
-    if (path) {
-      setExpandedPaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
-      if (path !== selectedFile) {
-        setSelectedFile(null);
-        setFileContent('');
-        setEncodedFileContent('');
-        setDraftContent('');
-        setFileError('');
-        setShowHistory(false);
-      }
-      return;
-    }
-
-    setExpandedPaths(['']);
-    setSelectedFile(null);
-    setFileContent('');
-    setEncodedFileContent('');
-    setDraftContent('');
-    setFileError('');
-    setShowHistory(false);
+    await openDirectoryPath(path);
   };
 
   const renderTree = (path, depth = 0) => {
-    const entries = [...(treeEntries[path] || [])].sort((left, right) => {
-      const leftType = normalizeEntryType(left.type);
-      const rightType = normalizeEntryType(right.type);
-      if (leftType !== rightType) {
-        return leftType === 'directory' ? -1 : 1;
-      }
-      return getEntryName(left).localeCompare(getEntryName(right), undefined, { sensitivity: 'base' });
-    });
+    const entries = sortEntriesByTypeAndName(treeEntries[path] || []);
     return (
       <ul className="tree-list">
         {entries.map((entry) => {
@@ -1069,11 +1192,29 @@ export default function RepoBrowser({
     );
   };
 
+  const selectedDirectoryEntries = useMemo(() => (
+    sortEntriesByTypeAndName(treeEntries[selectedDirectoryPath] || [])
+  ), [selectedDirectoryPath, treeEntries]);
+  const hasSelectedDirectoryEntries = Object.prototype.hasOwnProperty.call(treeEntries, selectedDirectoryPath);
+  const selectedDirectoryLabel = selectedDirectoryPath
+    ? selectedDirectoryPath.split('/').filter(Boolean).pop()
+    : currentSliceDisplayName || currentSliceLabel || 'Files';
+
+  const handleContentEntryClick = async (entry) => {
+    const entryKind = normalizeEntryType(entry.type);
+    if (entryKind === 'directory') {
+      await openDirectoryPath(entry.path);
+      return;
+    }
+    setFocusedEntry({ path: entry.path, type: 'file' });
+    await openFilePath(entry.path);
+  };
+
   return (
     <section className="repo-browser">
       <div className="repo-main">
         <div
-          className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${insightOpen ? '' : ' insight-collapsed'}${isResizingSidebar ? ' is-resizing-sidebar' : ''}`}
+          className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${isResizingSidebar ? ' is-resizing-sidebar' : ''}`}
           style={{ '--repo-sidebar-width': `${sidebarWidth}px` }}
         >
           <div
@@ -1187,18 +1328,6 @@ export default function RepoBrowser({
               <div className="code-header-actions">
                 {selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
                 {!isCompactHeader && renderFileActions()}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className={`insight-toggle ${insightOpen ? 'active' : ''}`}
-                  onClick={() => setInsightOpen((value) => !value)}
-                  aria-label={insightOpen ? 'Collapse file insight' : 'Expand file insight'}
-                  title={insightOpen ? 'Collapse file insight' : 'Expand file insight'}
-                  data-testid="insight-toggle"
-                >
-                  {insightOpen ? <PanelRightClose size={17} aria-hidden="true" /> : <PanelRightOpen size={17} aria-hidden="true" />}
-                </Button>
                 {isCompactHeader && selectedFile && (
                   <div className="header-actions-menu" ref={actionMenuRef}>
                     <Button
@@ -1223,10 +1352,64 @@ export default function RepoBrowser({
               </div>
             </div>
             <div className="code-content">
-              {!selectedFile && <div className="panel-empty">Choose a file from the tree to preview its contents.</div>}
-              {selectedFile && !showHistory && fileError && <div className="panel-error">{fileError}</div>}
+              {!selectedFile && (
+                <div className="folder-preview" data-testid="folder-preview">
+                  <div className="folder-preview-header">
+                    <div>
+                      <h3>{selectedDirectoryLabel}</h3>
+                      <span>{selectedDirectoryPath ? `/${selectedDirectoryPath}` : 'Slice root'}</span>
+                    </div>
+                    <span className="folder-preview-count">
+                      {hasSelectedDirectoryEntries ? `${selectedDirectoryEntries.length} item${selectedDirectoryEntries.length === 1 ? '' : 's'}` : 'Loading'}
+                    </span>
+                  </div>
+                  {!hasSelectedDirectoryEntries && isLoading && (
+                    <div className="folder-preview-loading" role="status" aria-live="polite">
+                      <span className="file-loading-spinner" aria-hidden="true" />
+                      <span>Loading folder...</span>
+                    </div>
+                  )}
+                  {!hasSelectedDirectoryEntries && !isLoading && error && <div className="panel-error">{error}</div>}
+                  {hasSelectedDirectoryEntries && selectedDirectoryEntries.length === 0 && (
+                    <div className="panel-empty">This folder is empty.</div>
+                  )}
+                  {hasSelectedDirectoryEntries && selectedDirectoryEntries.length > 0 && (
+                    <ul className="folder-preview-list">
+                      {selectedDirectoryEntries.map((entry) => {
+                        const entryKind = normalizeEntryType(entry.type);
+                        const entryLabel = getEntryName(entry);
+                        return (
+                          <li key={entry.path}>
+                            <button
+                              type="button"
+                              className={`folder-preview-entry ${entryKind}`}
+                              onClick={() => handleContentEntryClick(entry)}
+                              title={getEntryDisplayPath(entry)}
+                            >
+                              <span className="folder-preview-entry-icon" aria-hidden="true">
+                                {entryKind === 'directory' ? <Folder size={17} /> : <FileText size={16} />}
+                              </span>
+                              <span className="folder-preview-entry-name">{entryLabel}</span>
+                              <span className="folder-preview-entry-meta">
+                                {entryKind === 'directory' ? 'Folder' : formatBytes(entry.size)}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
+              {selectedFile && !showHistory && isSelectedFileLoading && (
+                <div className="file-loading-state" role="status" aria-live="polite" data-testid="file-loading-state">
+                  <span className="file-loading-spinner" aria-hidden="true" />
+                  <span>Loading {selectedFileName}...</span>
+                </div>
+              )}
+              {selectedFile && !showHistory && !isSelectedFileLoading && fileError && <div className="panel-error">{fileError}</div>}
               {selectedFile && !showHistory && (
-                !fileError && (
+                !isSelectedFileLoading && !fileError && (
                   isEditingFile ? (
                     <textarea
                       className="file-editor"
@@ -1305,102 +1488,6 @@ export default function RepoBrowser({
               )}
             </div>
           </div>
-          <aside className={`repo-insight ${insightOpen ? 'open' : 'closed'}`} aria-label="File insight" aria-hidden={!insightOpen}>
-            <div className="repo-insight-scroll">
-              <div className="repo-insight-header">
-                <h2>Details</h2>
-                <span className="repo-insight-status">
-                  <Circle size={8} fill="currentColor" aria-hidden="true" />
-                  {sliceHash ? 'Snapshot' : 'Live'}
-                </span>
-              </div>
-
-              <section className="inspector-card inspector-status-card" aria-label="Slice status">
-                <div className="slice-avatar" aria-hidden="true">{sliceInitials}</div>
-                <div className="slice-status-copy">
-                  <span className="inspector-label">Slice Status</span>
-                  <strong>{currentSliceDisplayName || 'Choose a slice'}</strong>
-                  <span>{sliceHash ? 'Historical snapshot' : 'Live workspace'}</span>
-                </div>
-              </section>
-
-              <section className="repo-insight-section">
-                <div className="inspector-section-title">
-                  <h3>Pending Changes</h3>
-                  <span>{pendingDraftCount}</span>
-                </div>
-                {pendingDraftEntries.length > 0 ? (
-                  <ul className="inspector-change-list">
-                    {pendingDraftEntries.slice(0, 4).map((draft) => (
-                      <li key={draft.path}>
-                        <Edit3 size={14} aria-hidden="true" />
-                        <span>{draft.name}</span>
-                        <small>{formatBytes(draft.size)}</small>
-                      </li>
-                    ))}
-                  </ul>
-                ) : selectedFile ? (
-                  <p className="repo-insight-copy">{selectedFileName} has no pending edits.</p>
-                ) : (
-                  <p className="repo-insight-copy">Select a file to inspect changes.</p>
-                )}
-              </section>
-
-              <section className="repo-insight-section">
-                <h3>Properties</h3>
-                <dl className="repo-insight-meta">
-                  <div>
-                    <dt>File</dt>
-                    <dd>{selectedFile || 'No file selected'}</dd>
-                  </div>
-                  <div className="repo-insight-pair">
-                    <div>
-                      <dt>Type</dt>
-                      <dd>{selectedFile ? selectedFileExtension.toUpperCase() : 'None'}</dd>
-                    </div>
-                    <div>
-                      <dt>Size</dt>
-                      <dd>{selectedFile ? formatBytes(fileContent.length) : '—'}</dd>
-                    </div>
-                  </div>
-                  <div className="repo-insight-pair">
-                    <div>
-                      <dt>Lines</dt>
-                      <dd>{selectedFile ? selectedFileLineCount : '—'}</dd>
-                    </div>
-                    <div>
-                      <dt>Mode</dt>
-                      <dd>{selectedFile ? selectedFileMode : 'Browse'}</dd>
-                    </div>
-                  </div>
-                </dl>
-              </section>
-
-              <section className="repo-insight-section repo-insight-history">
-                <div className="inspector-section-title">
-                  <h3>History</h3>
-                  <GitBranch size={14} aria-hidden="true" />
-                </div>
-                {fileHistory.length > 0 ? (
-                  <ul className="inspector-history-list">
-                    {fileHistory.slice(0, 3).map((change) => (
-                      <li key={change.id}>
-                        <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
-                          {formatChangeType(change.change_type)}
-                        </span>
-                        <p>{change.message || 'No message'}</p>
-                        <small>{formatTimestamp(change.timestamp)}</small>
-                      </li>
-                    ))}
-                  </ul>
-                ) : selectedFile ? (
-                  <p>Open history to load recent changes for {selectedFileName}.</p>
-                ) : (
-                  <p>Select a file to reveal its metadata.</p>
-                )}
-              </section>
-            </div>
-          </aside>
         </div>
         {viewingSettings && (
           <div
