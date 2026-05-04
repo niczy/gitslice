@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowRight, FolderTree, GitBranch, Globe2, Lock, Plus, RefreshCcw, Search, X } from 'lucide-react';
+import { ArrowRight, FolderTree, GitBranch, Globe2, Home, Lock, Plus, RefreshCcw, Search, X } from 'lucide-react';
 
 import { createSliceFromFolder } from '../utils/api.js';
 import { formatTimestamp } from '../utils/format.js';
@@ -24,8 +24,19 @@ function getSliceFileCount(slice) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
-function sortSlices(slices) {
+function isHomeSlice(slice, homeSliceId) {
+  const sliceId = String(slice?.slice_id || '').trim().toLowerCase();
+  const normalizedHomeSliceId = String(homeSliceId || '').trim().toLowerCase();
+  return Boolean(normalizedHomeSliceId && sliceId === normalizedHomeSliceId);
+}
+
+function sortSlices(slices, homeSliceId) {
   return [...slices].sort((left, right) => {
+    const leftIsHome = isHomeSlice(left, homeSliceId);
+    const rightIsHome = isHomeSlice(right, homeSliceId);
+    if (leftIsHome !== rightIsHome) {
+      return leftIsHome ? -1 : 1;
+    }
     if (left.is_root !== right.is_root) {
       return left.is_root ? -1 : 1;
     }
@@ -38,6 +49,7 @@ export default function SliceHomePage({
   slicesLoading,
   slicesError,
   isAuthenticated,
+  homeSliceId,
   onOpenSlice,
   onRefresh,
   onRequireLogin,
@@ -51,7 +63,7 @@ export default function SliceHomePage({
 
   const filteredSlices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const sorted = sortSlices(slices || []);
+    const sorted = sortSlices(slices || [], homeSliceId);
     if (!normalizedQuery) {
       return sorted;
     }
@@ -64,7 +76,7 @@ export default function SliceHomePage({
       ].map((value) => String(value || '').toLowerCase());
       return fields.some((value) => value.includes(normalizedQuery));
     });
-  }, [query, slices]);
+  }, [homeSliceId, query, slices]);
 
   const rootCount = (slices || []).filter((slice) => slice.is_root).length;
   const workspaceCount = Math.max((slices || []).length - rootCount, 0);
@@ -163,26 +175,33 @@ export default function SliceHomePage({
             {filteredSlices.map((slice) => {
               const fileCount = getSliceFileCount(slice);
               const updatedAt = getSliceUpdatedAt(slice);
+              const isHome = isHomeSlice(slice, homeSliceId);
               return (
                 <li key={slice.slice_id}>
                   <Button
                     type="button"
                     variant="ghost"
-                    className="slice-home-row"
+                    className={`slice-home-row${isHome ? ' slice-home-row--home' : ''}`}
                     onClick={() => onOpenSlice(slice.slice_id)}
                     data-testid="slice-home-row"
                   >
                     <span className="slice-home-row-icon" aria-hidden="true">
-                      <FolderTree size={17} />
+                      {isHome ? <Home size={17} /> : <FolderTree size={17} />}
                     </span>
                     <span className="slice-home-row-main">
                       <span className="slice-home-row-title">{getSliceName(slice)}</span>
                       <span className="slice-home-row-subtitle">{getSliceMeta(slice)}</span>
                     </span>
                     <span className="slice-home-row-badges">
-                      <span className="slice-home-chip">
-                        {slice.is_root ? <Globe2 size={13} aria-hidden="true" /> : <Lock size={13} aria-hidden="true" />}
-                        {slice.is_root ? 'Root' : 'Workspace'}
+                      <span className={`slice-home-chip${isHome ? ' slice-home-chip--home' : ''}`}>
+                        {isHome ? (
+                          <Home size={13} aria-hidden="true" />
+                        ) : slice.is_root ? (
+                          <Globe2 size={13} aria-hidden="true" />
+                        ) : (
+                          <Lock size={13} aria-hidden="true" />
+                        )}
+                        {isHome ? 'Home' : slice.is_root ? 'Root' : 'Workspace'}
                       </span>
                       <span className="slice-home-chip">
                         <GitBranch size={13} aria-hidden="true" />

@@ -5422,6 +5422,18 @@ button[data-testid="topbar-get-started"]:hover {
   transform: none;
 }
 
+.slice-home-row--home {
+  background:
+    linear-gradient(90deg, rgba(9, 76, 178, 0.08), rgba(255, 255, 255, 0) 64%),
+    var(--surface) !important;
+}
+
+.slice-home-row--home:hover {
+  background:
+    linear-gradient(90deg, rgba(9, 76, 178, 0.12), rgba(255, 255, 255, 0) 66%),
+    var(--surface-hover) !important;
+}
+
 .slice-home-row-icon {
   display: grid;
   width: 34px;
@@ -5431,6 +5443,11 @@ button[data-testid="topbar-get-started"]:hover {
   border-radius: 6px;
   background: var(--surface-elevated);
   color: var(--accent);
+}
+
+.slice-home-row--home .slice-home-row-icon {
+  border-color: rgba(9, 76, 178, 0.26);
+  background: #eef5ff;
 }
 
 .slice-home-row-main {
@@ -5479,6 +5496,12 @@ button[data-testid="topbar-get-started"]:hover {
   font-size: 0.76rem;
   font-weight: 650;
   white-space: nowrap;
+}
+
+.slice-home-chip--home {
+  border-color: rgba(9, 76, 178, 0.24);
+  background: #eef5ff;
+  color: var(--accent);
 }
 
 .slice-home-row-updated {
