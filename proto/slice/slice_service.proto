@@ -69,7 +69,12 @@ service SliceService {
   rpc GetRootSlice(GetRootSliceRequest) returns (GetRootSliceResponse);
 
   // Create a new slice from an existing folder
-  rpc CreateSliceFromFolder(CreateSliceFromFolderRequest) returns (CreateSliceFromFolderResponse);
+  rpc CreateSliceFromFolder(CreateSliceFromFolderRequest) returns (CreateSliceFromFolderResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices:createFromFolder"
+      body: "*"
+    };
+  }
 
   // Rename a slice (update display name)
   rpc RenameSlice(RenameSliceRequest) returns (RenameSliceResponse);

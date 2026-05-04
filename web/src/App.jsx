@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { buildLegacyRedirectPath, buildPath } from './utils/routing.js';
+import { buildBrowserPath, buildLegacyRedirectPath, buildPath } from './utils/routing.js';
 import { apiBaseUrl, currentUsername, searchWorkspaceFiles } from './utils/api.js';
 import { signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 import { useWebSession } from './hooks/useWebSession.js';
@@ -15,6 +15,7 @@ import AdminPage from './components/AdminPage.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
+import SliceHomePage from './components/SliceHomePage.jsx';
 import ProjectsPage from './components/ProjectsPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import NotFoundPage from './components/NotFoundPage.jsx';
@@ -55,6 +56,7 @@ function App({
 }) {
   const queryClient = useQueryClient();
   const initialUsername = initialSession?.user?.username || currentUsername();
+  const initialBrowserRouteSlice = initialRoute.page === 'browser' ? initialRoute.browserState?.slice || '' : '';
   const initialPage = initialRoute.page === 'landing' && initialUsername ? 'browser' : initialRoute.page;
   const [activePage, setActivePage] = useState(() => initialPage);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
@@ -65,8 +67,9 @@ function App({
   const [returnToChangesetId, setReturnToChangesetId] = useState('');
   const [username, setUsername] = useState(() => initialUsername);
   const [authSessionSource, setAuthSessionSource] = useState(() => initialSession?.source || '');
-  const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser');
-  const [currentSliceId, setCurrentSliceId] = useState(() => getInitialSliceId(initialUsername));
+  const [browserRouteSliceId, setBrowserRouteSliceId] = useState(() => initialBrowserRouteSlice);
+  const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser' && Boolean(initialBrowserRouteSlice));
+  const [currentSliceId, setCurrentSliceId] = useState(() => initialBrowserRouteSlice || getInitialSliceId(initialUsername));
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
   const [browserSearchQuery, setBrowserSearchQuery] = useState('');
   const [browserSearchGlob, setBrowserSearchGlob] = useState('');
@@ -77,7 +80,7 @@ function App({
   const [browserSearchHasSearched, setBrowserSearchHasSearched] = useState(false);
   const [browserOpenFileRequest, setBrowserOpenFileRequest] = useState(null);
   const previousUsernameRef = useRef(username);
-  const hasExplicitSliceSelectionRef = useRef(false);
+  const hasExplicitSliceSelectionRef = useRef(Boolean(initialBrowserRouteSlice));
 
   const githubUrl = 'https://github.com/niczy/gitslice';
   const docsUrl = '/docs';
@@ -91,11 +94,13 @@ function App({
   const slicesError = slicesQuery.error ? 'Unable to load slices.' : '';
   const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId) || null;
 
+  const isBrowserDetail = activePage === 'browser' && Boolean(browserRouteSliceId);
+
   useEffect(() => {
-    if (activePage === 'browser' || activePage === 'diff' || activePage === 'changeset') {
+    if (isBrowserDetail || activePage === 'diff' || activePage === 'changeset') {
       setBrowserMounted(true);
     }
-  }, [activePage]);
+  }, [activePage, isBrowserDetail]);
 
   const navigate = useCallback((page, commitHash = '', changesetId = '', options = {}) => {
     const nextPath = buildPath(page, commitHash, changesetId);
@@ -133,6 +138,16 @@ function App({
     setDiffCommitHash(initialRoute.commitHash);
     setDiffChangesetId(initialRoute.changesetId);
     setUnknownRoute(initialRoute.unknownPath || '');
+    if (initialRoute.page === 'browser') {
+      const nextRouteSliceId = initialRoute.browserState?.slice || '';
+      setBrowserRouteSliceId(nextRouteSliceId);
+      if (nextRouteSliceId) {
+        hasExplicitSliceSelectionRef.current = true;
+        setCurrentSliceId(nextRouteSliceId);
+      }
+    } else {
+      setBrowserRouteSliceId('');
+    }
   }, [initialRoute]);
 
   useEffect(() => {
@@ -187,19 +202,42 @@ function App({
     navigate('changeset', '', changesetId);
   }, [navigate]);
 
+  const openSliceDetail = useCallback((sliceId, browserState = {}) => {
+    const normalizedSliceId = String(sliceId || '').trim();
+    if (!normalizedSliceId) {
+      return;
+    }
+
+    hasExplicitSliceSelectionRef.current = true;
+    setCurrentSliceId(normalizedSliceId);
+    setBrowserRouteSliceId(normalizedSliceId);
+    setBrowserSearchMatches([]);
+    setBrowserSearchError('');
+    setBrowserSearchHasSearched(false);
+    setActivePage('browser');
+    setDiffCommitHash('');
+    setDiffChangesetId('');
+    setUnknownRoute('');
+
+    const nextPath = buildBrowserPath({
+      ...browserState,
+      slice: normalizedSliceId,
+    });
+    if (routerNavigate) {
+      routerNavigate(nextPath);
+    }
+  }, [routerNavigate]);
+
   const openBrowserHome = useCallback(() => {
     hasExplicitSliceSelectionRef.current = false;
     setCurrentSliceId(getInitialSliceId(username));
+    setBrowserRouteSliceId('');
     navigate('browser');
   }, [navigate, username]);
 
   const handleSliceChange = useCallback((sliceId) => {
-    hasExplicitSliceSelectionRef.current = true;
-    setCurrentSliceId(sliceId);
-    setBrowserSearchMatches([]);
-    setBrowserSearchError('');
-    setBrowserSearchHasSearched(false);
-  }, []);
+    openSliceDetail(sliceId);
+  }, [openSliceDetail]);
 
   const handleBrowserSearchSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -242,8 +280,8 @@ function App({
 
   const openBrowserSearchResult = useCallback((path) => {
     setBrowserOpenFileRequest({ path, token: Date.now() });
-    navigate('browser');
-  }, [navigate]);
+    openSliceDetail(currentSliceId, { file: path });
+  }, [currentSliceId, openSliceDetail]);
 
   const navigateBackFromDiff = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -296,7 +334,8 @@ function App({
   }, [initialAuthConfig.authProvider, navigate]);
 
   const isAuthenticated = Boolean(username);
-  const isBrowserLayout = activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
+  const isBrowserLayout = isBrowserDetail || activePage === 'diff' || activePage === 'changeset';
+  const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${activePage === 'browser' && !browserRouteSliceId ? ' page--slice-home' : ''}`;
   const isAdminUser = (username || '').toLowerCase() === 'admin';
   const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
@@ -371,7 +410,7 @@ function App({
         onLogin={openLogin}
         isNavActive={isNavActive}
         browserSearch={{
-          visible: isBrowserLayout && isAuthenticated,
+          visible: isBrowserDetail && isAuthenticated,
           query: browserSearchQuery,
           glob: browserSearchGlob,
           regex: browserSearchRegex,
@@ -387,7 +426,7 @@ function App({
         }}
       />
 
-      <main className={`page${isBrowserLayout ? ' page--browser' : ''}`}>
+      <main className={pageClassName}>
         {activePage === 'landing' && (
           <OverviewPage
             onBrowseRepo={openBrowserHome}
@@ -437,7 +476,19 @@ function App({
           />
         )}
 
-        {browserMounted && routeAccessState === 'allowed' && (
+        {activePage === 'browser' && !browserRouteSliceId && routeAccessState === 'allowed' && (
+          <SliceHomePage
+            slices={slices}
+            slicesLoading={slicesLoading}
+            slicesError={slicesError}
+            isAuthenticated={isAuthenticated}
+            onOpenSlice={openSliceDetail}
+            onRefresh={refreshSlices}
+            onRequireLogin={openLogin}
+          />
+        )}
+
+        {browserMounted && browserRouteSliceId && routeAccessState === 'allowed' && (
           <div style={activePage !== 'browser' ? { display: 'none' } : undefined}>
             <RepoBrowser
               slices={slices}

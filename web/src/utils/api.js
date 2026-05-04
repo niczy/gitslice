@@ -187,6 +187,36 @@ export async function searchWorkspaceFiles(workspaceId, { query, glob = '', rege
   return response.json();
 }
 
+export async function createSliceFromFolder({
+  parentSliceId = 'root_slice',
+  folderPath = '',
+  folderPaths = [],
+  newSliceId = '',
+  name = '',
+  description = '',
+} = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices:createFromFolder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      parentSliceId,
+      folderPath,
+      folderPaths,
+      newSliceId,
+      name,
+      description,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to create slice'));
+  }
+  const payload = await response.json();
+  return {
+    ...payload,
+    slice_id: payload?.slice_id ?? payload?.sliceId ?? '',
+  };
+}
+
 function decodeBase64(value) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);

@@ -104,6 +104,18 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
       browserState: parseBrowserState(locationLike?.search || ''),
     };
   }
+  if (pathname.startsWith('/browser/')) {
+    const slice = decodeSegment(pathname.slice('/browser/'.length).split('/')[0] || '');
+    return {
+      page: 'browser',
+      commitHash: '',
+      changesetId: '',
+      browserState: {
+        ...parseBrowserState(locationLike?.search || ''),
+        slice,
+      },
+    };
+  }
   if (pathname.startsWith('/diff/')) {
     return {
       page: 'diff',
@@ -129,10 +141,14 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
 export function buildBrowserPath(state = {}) {
   const params = new URLSearchParams();
   if (state.file) params.set('file', state.file);
-  if (state.slice) params.set('slice', state.slice);
   if (state.sliceHash) params.set('sliceHash', state.sliceHash);
   const query = params.toString();
-  return query ? `/browser?${query}` : '/browser';
+  const slice = String(state.slice || '').trim();
+  if (!slice) {
+    return query ? `/browser?${query}` : '/browser';
+  }
+  const path = `/browser/${encodeURIComponent(slice)}`;
+  return query ? `${path}?${query}` : path;
 }
 
 export function buildPath(page, commitHash, changesetId = '', browserState) {
