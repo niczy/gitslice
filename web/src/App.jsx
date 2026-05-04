@@ -482,6 +482,7 @@ function App({
             slicesLoading={slicesLoading}
             slicesError={slicesError}
             isAuthenticated={isAuthenticated}
+            homeSliceId={getHomeSliceId(username)}
             onOpenSlice={openSliceDetail}
             onRefresh={refreshSlices}
             onRequireLogin={openLogin}
