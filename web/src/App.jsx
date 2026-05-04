@@ -500,7 +500,6 @@ function App({
               refreshHistoryToken={historyRefreshToken}
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
-              slicesError={slicesError}
               openFileRequest={browserOpenFileRequest}
             />
           </div>

@@ -2378,6 +2378,35 @@ body {
   color: var(--text-muted);
 }
 
+.sidebar-tree-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sidebar-tree-title {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sidebar-tree-title .sidebar-panel-title {
+  margin-bottom: 0;
+}
+
+.sidebar-tree-title > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .repo-search-panel {
   margin-bottom: 16px;
   padding: 12px;
@@ -6632,8 +6661,7 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .sidebar-content {
   display: grid;
-  grid-template-rows: minmax(150px, 34%) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   padding: 12px;
   overflow: hidden;
@@ -6655,6 +6683,22 @@ button[data-testid="topbar-get-started"]:hover {
   align-items: center;
   justify-content: space-between;
   margin: 0 0 8px;
+}
+
+.app-shell--browser .sidebar-tree-header {
+  min-height: 36px;
+  margin: 0 0 12px;
+}
+
+.app-shell--browser .sidebar-tree-title {
+  gap: 1px;
+  padding-top: 1px;
+}
+
+.app-shell--browser .sidebar-tree-title > span {
+  color: var(--np-text);
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .app-shell--browser .sidebar-slice-section,
@@ -6787,7 +6831,7 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--np-muted);
 }
 
-.app-shell--browser .sidebar-slice-section .slice-settings-toggle {
+.app-shell--browser .slice-settings-toggle {
   width: 28px;
   height: 28px;
   border: 0;

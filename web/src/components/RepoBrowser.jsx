@@ -118,7 +118,6 @@ export default function RepoBrowser({
   refreshHistoryToken,
   isActive,
   slicesLoading,
-  slicesError,
   openFileRequest,
 }) {
   // Parse initial browser state from the current route on mount.
@@ -156,7 +155,6 @@ export default function RepoBrowser({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isCompactHeader, setIsCompactHeader] = useState(false);
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
-  const [sliceFilter, setSliceFilter] = useState('');
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(initialBrowserState?.file || null);
@@ -251,20 +249,6 @@ export default function RepoBrowser({
   const currentSliceDisplayName = useMemo(() => {
     return getSliceDisplayName(currentSliceLabel);
   }, [currentSliceLabel]);
-
-  const filteredSlices = useMemo(() => {
-    const query = sliceFilter.trim().toLowerCase();
-    if (!query) {
-      return slices;
-    }
-    return slices.filter((slice) => {
-      const name = getSliceDisplayName(slice.name || slice.slice_id).toLowerCase();
-      const id = String(slice.slice_id || '').toLowerCase();
-      const slug = String(slice.slug || '').toLowerCase();
-      const description = String(slice.description || '').toLowerCase();
-      return name.includes(query) || id.includes(query) || slug.includes(query) || description.includes(query);
-    });
-  }, [sliceFilter, slices]);
 
   const sliceInitials = useMemo(() => {
     const source = currentSliceDisplayName || authUsername || 'GS';
@@ -1094,10 +1078,35 @@ export default function RepoBrowser({
           />
           <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
             <div className="sidebar-content">
-              <section className="sidebar-slice-section" aria-label="Slices">
-                <div className="sidebar-section-heading">
-                  <span>Slices</span>
+              <section className="sidebar-tree-section" aria-label="Selected slice files">
+                <div className="sidebar-tree-header">
+                  <div className="sidebar-tree-title">
+                    <h2 className="sidebar-panel-title">File tree</h2>
+                    <span title={currentSliceLabel}>{currentSliceDisplayName || 'Slice'}</span>
+                  </div>
                   <div className="panel-header-actions">
+                    <span
+                      className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
+                      role="status"
+                      aria-live="polite"
+                      aria-label={isLoading ? 'Loading folders' : undefined}
+                    >
+                      <span className="tree-loading-dot" aria-hidden="true" />
+                    </span>
+                    {canShowSettings && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
+                        onClick={viewingSettings ? openFilesView : openSettingsView}
+                        aria-label={viewingSettings ? 'Close slice settings' : 'Open slice settings'}
+                        title={viewingSettings ? 'Close slice settings' : 'Slice settings'}
+                        data-testid="repo-view-settings"
+                      >
+                        <Settings size={16} aria-hidden="true" />
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="ghost"
@@ -1110,70 +1119,6 @@ export default function RepoBrowser({
                       <PanelLeftClose size={16} aria-hidden="true" />
                     </Button>
                   </div>
-                </div>
-                <input
-                  type="search"
-                  className="slice-list-filter"
-                  placeholder="Filter slices"
-                  value={sliceFilter}
-                  onChange={(event) => setSliceFilter(event.target.value)}
-                  data-testid="slice-list-filter"
-                />
-                {slicesLoading && <div className="panel-empty">Loading slices...</div>}
-                {slicesError && <div className="panel-error">{slicesError}</div>}
-                {!slicesLoading && !slicesError && filteredSlices.length === 0 && (
-                  <div className="panel-empty">No slices match this filter.</div>
-                )}
-                {!slicesLoading && !slicesError && filteredSlices.length > 0 && (
-                  <ul className="slice-nav-list" data-testid="slice-list">
-                    {filteredSlices.map((slice) => {
-                      const isSelected = slice.slice_id === sliceId || slice.slice_id === currentSliceId;
-                      return (
-                        <li key={slice.slice_id}>
-                          <div className={`slice-nav-row${isSelected ? ' active' : ''}`}>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="slice-nav-item"
-                              onClick={() => onSliceChange(slice.slice_id)}
-                              data-testid="slice-dropdown-item"
-                            >
-                              <span className="slice-nav-name">{getSliceDisplayName(slice.name || slice.slice_id)}</span>
-                              <span className="slice-nav-meta">{slice.slug || slice.slice_id}</span>
-                            </Button>
-                            {isSelected && canShowSettings && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
-                                onClick={viewingSettings ? openFilesView : openSettingsView}
-                                aria-label={viewingSettings ? 'Close slice settings' : 'Open slice settings'}
-                                title={viewingSettings ? 'Close slice settings' : 'Slice settings'}
-                                data-testid="repo-view-settings"
-                              >
-                                <Settings size={16} aria-hidden="true" />
-                              </Button>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-
-              <section className="sidebar-tree-section" aria-label="Selected slice files">
-                <div className="sidebar-section-heading">
-                  <span>File Tree ({currentSliceDisplayName || 'Slice'})</span>
-                  <span
-                    className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
-                    role="status"
-                    aria-live="polite"
-                    aria-label={isLoading ? 'Loading folders' : undefined}
-                  >
-                    <span className="tree-loading-dot" aria-hidden="true" />
-                  </span>
                 </div>
                 {error && <div className="panel-error">{error}</div>}
                 {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
