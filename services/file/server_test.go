@@ -771,6 +771,136 @@ func TestSliceMountAliasesSkipMissingBackingFolders(t *testing.T) {
 	}
 }
 
+func TestParentMountedSliceListEntriesUsesLiveBackingTree(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	parent := &models.Slice{ID: "parent-live", Name: "parent-live", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, parent); err != nil {
+		t.Fatalf("CreateSlice(parent) failed: %v", err)
+	}
+	writeParentFile := func(filePath, content string) {
+		t.Helper()
+		hash := mustWriteSliceManifest(t, ctx, st, parent.ID, filePath, []byte(content))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(parent.ID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: parent.ID,
+			Size:     int64(len(content)),
+			Hash:     hash,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, parent.ID); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+		}
+	}
+
+	writeParentFile("docs/README.md", "old")
+	fork := &models.Slice{
+		ID:          "fork-live",
+		Name:        "fork-live",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: parent.ID,
+		Files:       []string{"docs/README.md"},
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "docs", Alias: "docs"},
+		},
+	}
+	if err := st.CreateSlice(ctx, fork); err != nil {
+		t.Fatalf("CreateSlice(fork) failed: %v", err)
+	}
+
+	if err := st.DeleteEntry(ctx, common.GenerateEntryID(parent.ID, "docs/README.md")); err != nil {
+		t.Fatalf("DeleteEntry old backing file failed: %v", err)
+	}
+	if err := st.RemoveFileFromSlice(ctx, "docs/README.md", parent.ID); err != nil {
+		t.Fatalf("RemoveFileFromSlice old backing file failed: %v", err)
+	}
+	writeParentFile("docs/new.txt", "new")
+
+	svc := newFileServiceServer(st)
+	resp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: "docs",
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: fork.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(resp.GetEntries()); got != 1 {
+		t.Fatalf("expected one live backing entry, got %d: %#v", got, resp.GetEntries())
+	}
+	if got := resp.GetEntries()[0].GetPath(); got != "docs/new.txt" {
+		t.Fatalf("expected live backing file docs/new.txt, got %q", got)
+	}
+}
+
+func TestParentMountedSliceListEntriesFallsBackToBackingSliceFiles(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	parent := &models.Slice{
+		ID:        "parent-files-only",
+		Name:      "parent-files-only",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"docs/README.md"},
+	}
+	if err := st.CreateSlice(ctx, parent); err != nil {
+		t.Fatalf("CreateSlice(parent) failed: %v", err)
+	}
+
+	fork := &models.Slice{
+		ID:          "fork-files-only",
+		Name:        "fork-files-only",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: parent.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "docs", Alias: "docs"},
+		},
+	}
+	if err := st.CreateSlice(ctx, fork); err != nil {
+		t.Fatalf("CreateSlice(fork) failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	rootResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: fork.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries(root) failed: %v", err)
+	}
+	if got := len(rootResp.GetEntries()); got != 1 {
+		t.Fatalf("expected one mount alias, got %d: %#v", got, rootResp.GetEntries())
+	}
+	if got := rootResp.GetEntries()[0].GetPath(); got != "docs" {
+		t.Fatalf("expected docs mount alias, got %q", got)
+	}
+
+	docsResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: "docs",
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: fork.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries(docs) failed: %v", err)
+	}
+	if got := len(docsResp.GetEntries()); got != 1 {
+		t.Fatalf("expected one file from backing slice files, got %d: %#v", got, docsResp.GetEntries())
+	}
+	if got := docsResp.GetEntries()[0].GetPath(); got != "docs/README.md" {
+		t.Fatalf("expected docs/README.md, got %q", got)
+	}
+}
+
 func TestSliceMountRootEntriesUseFullAliasName(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

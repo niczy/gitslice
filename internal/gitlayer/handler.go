@@ -569,7 +569,7 @@ func writeCGIResponse(w http.ResponseWriter, payload []byte) error {
 
 func collectGitProjectionFiles(ctx context.Context, st storage.Storage, projection *gitProjection) ([]gitrepo.File, error) {
 	targetSliceID := projection.target()
-	entries, err := collectEntries(ctx, st, targetSliceID)
+	entries, err := collectGitProjectionEntries(ctx, st, projection)
 	if err != nil {
 		return nil, err
 	}
@@ -594,6 +594,133 @@ func collectGitProjectionFiles(ctx context.Context, st storage.Storage, projecti
 		})
 	}
 	return files, nil
+}
+
+func collectGitProjectionEntries(ctx context.Context, st storage.Storage, projection *gitProjection) ([]*models.DirectoryEntry, error) {
+	targetSliceID := projection.target()
+	if strings.TrimSpace(targetSliceID) == "" {
+		return nil, nil
+	}
+	if projection == nil || !projection.mounted() {
+		return collectEntries(ctx, st, targetSliceID)
+	}
+
+	result := make([]*models.DirectoryEntry, 0)
+	seen := make(map[string]struct{})
+	for _, mount := range projection.mounts {
+		sourcePath := common.CleanRelativePath(mount.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		rootEntry, err := st.GetEntryByPath(ctx, targetSliceID, sourcePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				fallbackEntries, fallbackErr := collectGitProjectionFileEntriesFromSlice(ctx, st, targetSliceID, sourcePath)
+				if fallbackErr != nil {
+					return nil, fallbackErr
+				}
+				for _, entry := range fallbackEntries {
+					if entry == nil {
+						continue
+					}
+					key := entry.ID + "\x00" + entry.Path
+					if _, ok := seen[key]; ok {
+						continue
+					}
+					seen[key] = struct{}{}
+					result = append(result, entry)
+				}
+				continue
+			}
+			return nil, err
+		}
+
+		filesBefore := countGitProjectionFileEntries(result)
+		queue := []*models.DirectoryEntry{rootEntry}
+		for len(queue) > 0 {
+			entry := queue[0]
+			queue = queue[1:]
+			if entry == nil {
+				continue
+			}
+			key := entry.ID + "\x00" + entry.Path
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, entry)
+			if entry.Type != "directory" {
+				continue
+			}
+			children, err := st.ListEntries(ctx, targetSliceID, entry.ID)
+			if err != nil {
+				return nil, err
+			}
+			queue = append(queue, children...)
+		}
+		if countGitProjectionFileEntries(result) == filesBefore {
+			fallbackEntries, fallbackErr := collectGitProjectionFileEntriesFromSlice(ctx, st, targetSliceID, sourcePath)
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			for _, entry := range fallbackEntries {
+				if entry == nil {
+					continue
+				}
+				key := entry.ID + "\x00" + entry.Path
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				result = append(result, entry)
+			}
+		}
+	}
+	return result, nil
+}
+
+func countGitProjectionFileEntries(entries []*models.DirectoryEntry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry != nil && entry.Type == "file" {
+			count++
+		}
+	}
+	return count
+}
+
+func collectGitProjectionFileEntriesFromSlice(ctx context.Context, st storage.Storage, targetSliceID, sourcePath string) ([]*models.DirectoryEntry, error) {
+	targetSlice, err := st.GetSlice(ctx, targetSliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	prefix := common.CleanRelativePath(sourcePath) + "/"
+	result := make([]*models.DirectoryEntry, 0)
+	for _, rawPath := range targetSlice.Files {
+		filePath := common.CleanRelativePath(rawPath)
+		if filePath == "" || !strings.HasPrefix(filePath, prefix) {
+			continue
+		}
+		entry, entryErr := st.GetEntryByPath(ctx, targetSliceID, filePath)
+		if entryErr == nil && entry != nil {
+			result = append(result, entry)
+			continue
+		}
+		if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return nil, entryErr
+		}
+		result = append(result, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(targetSliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: targetSliceID,
+		})
+	}
+	return result, nil
 }
 
 func collectEntries(ctx context.Context, st storage.Storage, sliceID string) ([]*models.DirectoryEntry, error) {

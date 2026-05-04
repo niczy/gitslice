@@ -1363,6 +1363,118 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 	}
 }
 
+func TestCheckoutMountedSliceUsesLiveBackingFolder(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	writeBackingFile := func(filePath, content string) {
+		t.Helper()
+		hash := mustWriteSliceManifest(t, ctx, st, "root_slice", filePath, []byte(content))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       "root_slice:" + filePath,
+			Path:     filePath,
+			Type:     "file",
+			ParentID: "root_slice",
+			Size:     int64(len(content)),
+			Hash:     hash,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, "root_slice"); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+		}
+	}
+
+	writeBackingFile("tester/shared/README.md", "old readme")
+	writeBackingFile("tester/other/secret.txt", "secret")
+
+	srv := NewService(st)
+	for _, sliceID := range []string{"shared-a", "shared-b"} {
+		if _, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+			ParentSliceId: "root_slice",
+			NewSliceId:    sliceID,
+			Name:          sliceID,
+			FolderPath:    "tester/shared",
+			Description:   "shared folder slice",
+		}); err != nil {
+			t.Fatalf("CreateSliceFromFolder(%s) failed: %v", sliceID, err)
+		}
+	}
+
+	writeBackingFile("tester/shared/README.md", "new readme")
+	writeBackingFile("tester/shared/src/new.txt", "new file")
+
+	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "shared-b"})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	byPath := map[string]*slicev1.FileMetadata{}
+	paths := make([]string, 0)
+	for _, meta := range checkoutResp.GetManifest().GetFileMetadata() {
+		byPath[meta.GetPath()] = meta
+		paths = append(paths, meta.GetPath())
+	}
+	if _, ok := byPath["tester/shared/src/new.txt"]; !ok {
+		t.Fatalf("checkout is missing live backing file; paths=%v", paths)
+	}
+	if _, ok := byPath["tester/other/secret.txt"]; ok {
+		t.Fatalf("checkout leaked file outside mounted folder")
+	}
+	if got := string(mustAssembleCheckoutContent(t, checkoutResp, byPath["tester/shared/README.md"])); got != "new readme" {
+		t.Fatalf("checkout README content = %q, want updated backing content", got)
+	}
+	if got := string(mustAssembleCheckoutContent(t, checkoutResp, byPath["tester/shared/src/new.txt"])); got != "new file" {
+		t.Fatalf("checkout new file content = %q, want live backing content", got)
+	}
+}
+
+func TestCheckoutMountedSliceFallsBackToBackingSliceFiles(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	if _, err := storage.WriteSliceFileManifest(ctx, st, "root_slice", "tester/legacy/README.md", []byte("legacy readme")); err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "tester/legacy/README.md", "root_slice"); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	if _, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: "root_slice",
+		NewSliceId:    "legacy-mounted",
+		Name:          "legacy-mounted",
+		FolderPath:    "tester/legacy",
+		Description:   "legacy folder slice",
+	}); err != nil {
+		t.Fatalf("CreateSliceFromFolder failed: %v", err)
+	}
+
+	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "legacy-mounted"})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	var readme *slicev1.FileMetadata
+	for _, meta := range checkoutResp.GetManifest().GetFileMetadata() {
+		if meta.GetPath() == "tester/legacy/README.md" {
+			readme = meta
+			break
+		}
+	}
+	if readme == nil {
+		t.Fatalf("checkout is missing backing slice file: %#v", checkoutResp.GetManifest().GetFileMetadata())
+	}
+	if got := string(mustAssembleCheckoutContent(t, checkoutResp, readme)); got != "legacy readme" {
+		t.Fatalf("checkout README content = %q, want backing file content", got)
+	}
+}
+
 func TestRenameSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

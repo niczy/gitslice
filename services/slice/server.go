@@ -270,6 +270,137 @@ func (s *sliceServiceServer) collectSliceEntries(ctx context.Context, sliceID st
 	return result, nil
 }
 
+func (s *sliceServiceServer) collectSliceCheckoutEntries(ctx context.Context, sliceID string, slice *models.Slice) ([]*models.DirectoryEntry, error) {
+	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
+		return s.collectSliceEntries(ctx, sliceID)
+	}
+	return s.collectMountedBackingEntries(ctx, slice.ParentSlice, slice.FolderMounts)
+}
+
+func (s *sliceServiceServer) collectMountedBackingEntries(ctx context.Context, backingSliceID string, mounts []models.SliceFolderMount) ([]*models.DirectoryEntry, error) {
+	backingSliceID = strings.TrimSpace(backingSliceID)
+	if backingSliceID == "" || len(mounts) == 0 {
+		return nil, nil
+	}
+
+	result := make([]*models.DirectoryEntry, 0)
+	seen := make(map[string]struct{})
+	for _, mount := range mounts {
+		sourcePath := common.CleanRelativePath(mount.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		rootEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, sourcePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				fallbackEntries, fallbackErr := s.collectMountedBackingFileEntriesFromSlice(ctx, backingSliceID, sourcePath)
+				if fallbackErr != nil {
+					return nil, fallbackErr
+				}
+				for _, entry := range fallbackEntries {
+					if entry == nil {
+						continue
+					}
+					key := entry.ID + "\x00" + entry.Path
+					if _, ok := seen[key]; ok {
+						continue
+					}
+					seen[key] = struct{}{}
+					result = append(result, entry)
+				}
+				continue
+			}
+			return nil, err
+		}
+
+		filesBefore := countFileEntries(result)
+		queue := []*models.DirectoryEntry{rootEntry}
+		for len(queue) > 0 {
+			entry := queue[0]
+			queue = queue[1:]
+			if entry == nil {
+				continue
+			}
+			key := entry.ID + "\x00" + entry.Path
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, entry)
+			if entry.Type != "directory" {
+				continue
+			}
+			children, err := s.storage.ListEntries(ctx, backingSliceID, entry.ID)
+			if err != nil {
+				return nil, err
+			}
+			queue = append(queue, children...)
+		}
+		if countFileEntries(result) == filesBefore {
+			fallbackEntries, fallbackErr := s.collectMountedBackingFileEntriesFromSlice(ctx, backingSliceID, sourcePath)
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			for _, entry := range fallbackEntries {
+				if entry == nil {
+					continue
+				}
+				key := entry.ID + "\x00" + entry.Path
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				result = append(result, entry)
+			}
+		}
+	}
+	return result, nil
+}
+
+func countFileEntries(entries []*models.DirectoryEntry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry != nil && entry.Type == "file" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *sliceServiceServer) collectMountedBackingFileEntriesFromSlice(ctx context.Context, backingSliceID, sourcePath string) ([]*models.DirectoryEntry, error) {
+	backingSlice, err := s.storage.GetSlice(ctx, backingSliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	prefix := common.CleanRelativePath(sourcePath) + "/"
+	result := make([]*models.DirectoryEntry, 0)
+	for _, rawPath := range backingSlice.Files {
+		filePath := common.CleanRelativePath(rawPath)
+		if filePath == "" || !strings.HasPrefix(filePath, prefix) {
+			continue
+		}
+		entry, entryErr := s.storage.GetEntryByPath(ctx, backingSliceID, filePath)
+		if entryErr == nil && entry != nil {
+			result = append(result, entry)
+			continue
+		}
+		if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return nil, entryErr
+		}
+		result = append(result, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(backingSliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: backingSliceID,
+		})
+	}
+	return result, nil
+}
+
 func (s *sliceServiceServer) resolveCheckoutEffectiveCommit(ctx context.Context, slice *models.Slice, resolvedCommit string) string {
 	effectiveCommit := strings.TrimSpace(resolvedCommit)
 	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
@@ -453,7 +584,7 @@ func (s *sliceServiceServer) prepareCheckout(
 		}
 	}
 
-	entries, err := s.collectSliceEntries(ctx, req.SliceId)
+	entries, err := s.collectSliceCheckoutEntries(ctx, req.SliceId, slice)
 	if err != nil {
 		return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
 	}
