@@ -172,6 +172,152 @@ func TestHandlerImportsGitPushToSlice(t *testing.T) {
 	}
 }
 
+func TestHandlerClonesMountedSliceWithBrowserTreeShape(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is not available")
+	}
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	parent, mounted := createMountedGitSlice(t, ctx, st)
+	token := createTestAuthSession(t, ctx, st, "alice")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/git-auth-smoke/README.md", []byte("mounted readme\n"), false, "")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/other/keep.txt", []byte("keep\n"), false, "")
+
+	handler := NewHandler(st, filepath.Join(t.TempDir(), "cache"))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "clone", server.URL+"/git/alice/mounted-slice.git", cloneDir)
+
+	content, err := os.ReadFile(filepath.Join(cloneDir, "nicholas/git-auth-smoke/README.md"))
+	if err != nil {
+		t.Fatalf("read mounted README from clone: %v", err)
+	}
+	if got, want := string(content), "mounted readme\n"; got != want {
+		t.Fatalf("mounted README content = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(cloneDir, "README.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("root README stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(cloneDir, "nicholas/other/keep.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside mount stat error = %v, want not exist", err)
+	}
+	if mounted.ParentSlice != parent.ID {
+		t.Fatalf("mounted parent = %q, want %q", mounted.ParentSlice, parent.ID)
+	}
+}
+
+func TestHandlerImportsMountedSlicePushUnderMountAlias(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is not available")
+	}
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	parent, mounted := createMountedGitSlice(t, ctx, st)
+	token := createTestAuthSession(t, ctx, st, "alice")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/git-auth-smoke/README.md", []byte("old\n"), false, "")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/git-auth-smoke/stale.txt", []byte("delete me\n"), false, "")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/other/keep.txt", []byte("keep\n"), false, "")
+
+	handler := NewHandler(st, filepath.Join(t.TempDir(), "cache"))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "clone", server.URL+"/git/alice/mounted-slice.git", cloneDir)
+	if err := os.WriteFile(filepath.Join(cloneDir, "nicholas/git-auth-smoke/README.md"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write mounted README: %v", err)
+	}
+	if err := os.Remove(filepath.Join(cloneDir, "nicholas/git-auth-smoke/stale.txt")); err != nil {
+		t.Fatalf("remove mounted stale file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cloneDir, "nicholas/git-auth-smoke/src"), 0o755); err != nil {
+		t.Fatalf("mkdir mounted src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cloneDir, "nicholas/git-auth-smoke/src/hello.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write mounted hello: %v", err)
+	}
+
+	runGitTest(t, ctx, cloneDir, "config", "user.name", "Alice")
+	runGitTest(t, ctx, cloneDir, "config", "user.email", "alice@example.com")
+	runGitTest(t, ctx, cloneDir, "add", "-A")
+	runGitTest(t, ctx, cloneDir, "commit", "-m", "update mounted slice")
+	runGitTest(t, ctx, cloneDir, "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "push", "origin", "HEAD:main")
+
+	readme, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "nicholas/git-auth-smoke/README.md")
+	if err != nil {
+		t.Fatalf("read parent mounted README: %v", err)
+	}
+	if got, want := string(readme.Content), "new\n"; got != want {
+		t.Fatalf("parent mounted README = %q, want %q", got, want)
+	}
+	hello, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "nicholas/git-auth-smoke/src/hello.txt")
+	if err != nil {
+		t.Fatalf("read parent mounted hello: %v", err)
+	}
+	if got, want := string(hello.Content), "hello\n"; got != want {
+		t.Fatalf("parent mounted hello = %q, want %q", got, want)
+	}
+	if _, err := st.GetEntryByPath(ctx, parent.ID, "nicholas/git-auth-smoke/stale.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("stale parent entry error = %v, want ErrEntryNotFound", err)
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "nicholas/other/keep.txt"); err != nil {
+		t.Fatalf("outside parent file was not preserved: %v", err)
+	}
+	if _, err := st.GetEntryByPath(ctx, mounted.ID, "src/hello.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("raw mounted slice entry error = %v, want ErrEntryNotFound", err)
+	}
+}
+
+func TestHandlerRejectsMountedSlicePushOutsideAliases(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is not available")
+	}
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	parent, _ := createMountedGitSlice(t, ctx, st)
+	token := createTestAuthSession(t, ctx, st, "alice")
+	writeTestFile(t, ctx, st, parent.ID, "nicholas/git-auth-smoke/README.md", []byte("old\n"), false, "")
+
+	handler := NewHandler(st, filepath.Join(t.TempDir(), "cache"))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGitTest(t, ctx, "", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "clone", server.URL+"/git/alice/mounted-slice.git", cloneDir)
+	if err := os.WriteFile(filepath.Join(cloneDir, "outside.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cloneDir, "nicholas/other"), 0o755); err != nil {
+		t.Fatalf("mkdir outside nested path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cloneDir, "nicholas/other/evil.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatalf("write outside nested file: %v", err)
+	}
+
+	runGitTest(t, ctx, cloneDir, "config", "user.name", "Alice")
+	runGitTest(t, ctx, cloneDir, "config", "user.email", "alice@example.com")
+	runGitTest(t, ctx, cloneDir, "add", "-A")
+	runGitTest(t, ctx, cloneDir, "commit", "-m", "write outside mount")
+	cmd := exec.CommandContext(ctx, "git", "-c", "http.extraHeader=Authorization: "+basicAuthHeader("alice", token), "push", "origin", "HEAD:main")
+	cmd.Dir = cloneDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git push outside mount succeeded, want failure\n%s", string(out))
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "outside.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("outside root content error = %v, want ErrEntryNotFound", err)
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, parent.ID, "nicholas/other/evil.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("outside nested content error = %v, want ErrEntryNotFound", err)
+	}
+}
+
 func TestHandlerRejectsUnauthenticatedPrivateClone(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -291,6 +437,45 @@ func writeTestFile(t *testing.T, ctx context.Context, st storage.Storage, sliceI
 	if err := st.AddFileToSlice(ctx, filePath, sliceID); err != nil {
 		t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
 	}
+}
+
+func createMountedGitSlice(t *testing.T, ctx context.Context, st storage.Storage) (*models.Slice, *models.Slice) {
+	t.Helper()
+	parent := &models.Slice{
+		ID:         "root-slice",
+		Name:       "Root Slice",
+		Slug:       "root-slice",
+		Visibility: models.VisibilityPrivate,
+		Owners:     []string{"alice"},
+		CreatedBy:  "alice",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		IsRoot:     true,
+	}
+	if err := st.CreateSlice(ctx, parent); err != nil {
+		t.Fatalf("CreateSlice(parent) failed: %v", err)
+	}
+	mounted := &models.Slice{
+		ID:          "mounted-slice",
+		Name:        "Mounted Slice",
+		Slug:        "mounted-slice",
+		Visibility:  models.VisibilityPrivate,
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		ParentSlice: parent.ID,
+		Files: []string{
+			"nicholas/git-auth-smoke/README.md",
+		},
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "nicholas/git-auth-smoke", Alias: "nicholas/git-auth-smoke"},
+		},
+	}
+	if err := st.CreateSlice(ctx, mounted); err != nil {
+		t.Fatalf("CreateSlice(mounted) failed: %v", err)
+	}
+	return parent, mounted
 }
 
 func runGitTest(t *testing.T, ctx context.Context, dir string, args ...string) {

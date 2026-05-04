@@ -727,6 +727,9 @@ Notes:
 - Git accepts bearer tokens directly, or HTTP Basic auth where the password is a bearer token.
 - Private slices require authentication for clone/fetch.
 - Push requires write access to the target slice.
+- Folder-mounted slices expose the same mount-alias tree as the web browser;
+  pushes may add/edit/delete files under existing aliases, but cannot add,
+  rename, or replace the mount aliases themselves.
 - Staging still accepts `Authorization: User <username>` when legacy user auth is enabled, but bearer tokens are the intended path.
 
 To copy referenced objects from the current store into a target R2 namespace before cutover:

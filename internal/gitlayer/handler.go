@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,12 @@ type Handler struct {
 	st       storage.Storage
 	cacheDir string
 	mu       sync.Mutex
+}
+
+type gitProjection struct {
+	displaySlice  *models.Slice
+	targetSliceID string
+	mounts        []models.SliceFolderMount
 }
 
 type route struct {
@@ -271,22 +278,19 @@ func (h *Handler) ensureBareRepoLocked(ctx context.Context, slice *models.Slice)
 	if err := os.MkdirAll(h.cacheDir, 0o755); err != nil {
 		return "", "", err
 	}
-	meta, err := h.st.GetSliceMetadata(ctx, slice.ID)
+	projection := newGitProjection(slice)
+	sourceHead, err := h.gitSourceHead(ctx, projection)
 	if err != nil {
 		return "", "", err
 	}
 
 	repoName := cacheRepoName(slice.ID)
 	repoPath := filepath.Join(h.cacheDir, repoName)
-	sourceHead := strings.TrimSpace(meta.HeadCommitHash)
-	if sourceHead == "" {
-		sourceHead = "empty"
-	}
 	if cachedHead, readErr := os.ReadFile(filepath.Join(repoPath, sourceHeadFilename)); readErr == nil && strings.TrimSpace(string(cachedHead)) == sourceHead {
 		return repoPath, repoName, nil
 	}
 
-	files, err := collectSliceFiles(ctx, h.st, slice.ID)
+	files, err := collectGitProjectionFiles(ctx, h.st, projection)
 	if err != nil {
 		return "", "", err
 	}
@@ -387,13 +391,14 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, slice
 		}
 		if strings.TrimSpace(after) != "" && after != before {
 			if err := h.importBareRepo(r.Context(), slice, repoPath, after, id.Username); err != nil {
+				_ = os.RemoveAll(repoPath)
 				return err
 			}
-			meta, err := h.st.GetSliceMetadata(r.Context(), slice.ID)
+			sourceHead, err := h.gitSourceHead(r.Context(), newGitProjection(slice))
 			if err != nil {
-				return fmt.Errorf("load imported slice metadata: %w", err)
+				return fmt.Errorf("load imported slice source metadata: %w", err)
 			}
-			if err := os.WriteFile(filepath.Join(repoPath, sourceHeadFilename), []byte(strings.TrimSpace(meta.HeadCommitHash)+"\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(repoPath, sourceHeadFilename), []byte(sourceHead+"\n"), 0o644); err != nil {
 				return err
 			}
 			if err := os.WriteFile(filepath.Join(repoPath, gitHeadFilename), []byte(after+"\n"), 0o644); err != nil {
@@ -478,8 +483,9 @@ func writeCGIResponse(w http.ResponseWriter, payload []byte) error {
 	return err
 }
 
-func collectSliceFiles(ctx context.Context, st storage.Storage, sliceID string) ([]gitrepo.File, error) {
-	entries, err := collectEntries(ctx, st, sliceID)
+func collectGitProjectionFiles(ctx context.Context, st storage.Storage, projection *gitProjection) ([]gitrepo.File, error) {
+	targetSliceID := projection.target()
+	entries, err := collectEntries(ctx, st, targetSliceID)
 	if err != nil {
 		return nil, err
 	}
@@ -488,12 +494,16 @@ func collectSliceFiles(ctx context.Context, st storage.Storage, sliceID string) 
 		if entry == nil || entry.Type != "file" {
 			continue
 		}
-		content, err := storage.ReadSliceFileContent(ctx, st, sliceID, entry.Path)
+		displayPath := projection.displayPathForStored(entry.Path)
+		if displayPath == "" {
+			continue
+		}
+		content, err := storage.ReadSliceFileContent(ctx, st, targetSliceID, entry.Path)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, gitrepo.File{
-			Path:          entry.Path,
+			Path:          displayPath,
 			Content:       content.Content,
 			Executable:    entry.Executable,
 			SymlinkTarget: entry.SymlinkTarget,
@@ -580,6 +590,161 @@ func cleanGitPath(raw string) (string, error) {
 		return "", err
 	}
 	return cleaned, nil
+}
+
+func newGitProjection(slice *models.Slice) *gitProjection {
+	projection := &gitProjection{
+		displaySlice: slice,
+	}
+	if slice == nil {
+		return projection
+	}
+	projection.targetSliceID = strings.TrimSpace(slice.ID)
+	if strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
+		return projection
+	}
+	projection.targetSliceID = strings.TrimSpace(slice.ParentSlice)
+	for _, mount := range slice.FolderMounts {
+		source := common.CleanRelativePath(mount.SourcePath)
+		alias := common.CleanRelativePath(mount.Alias)
+		if source == "" || alias == "" {
+			continue
+		}
+		projection.mounts = append(projection.mounts, models.SliceFolderMount{
+			SourcePath: source,
+			Alias:      alias,
+		})
+	}
+	sort.Slice(projection.mounts, func(i, j int) bool {
+		if len(projection.mounts[i].Alias) == len(projection.mounts[j].Alias) {
+			return projection.mounts[i].Alias < projection.mounts[j].Alias
+		}
+		return len(projection.mounts[i].Alias) > len(projection.mounts[j].Alias)
+	})
+	if len(projection.mounts) == 0 {
+		projection.targetSliceID = strings.TrimSpace(slice.ID)
+	}
+	return projection
+}
+
+func (p *gitProjection) mounted() bool {
+	return p != nil && len(p.mounts) > 0 && strings.TrimSpace(p.targetSliceID) != ""
+}
+
+func (p *gitProjection) target() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.targetSliceID)
+}
+
+func (p *gitProjection) cacheSignature() string {
+	if !p.mounted() {
+		return "direct"
+	}
+	parts := make([]string, 0, len(p.mounts))
+	for _, mount := range p.mounts {
+		parts = append(parts, mount.SourcePath+"=>"+mount.Alias)
+	}
+	return strings.Join(parts, "|")
+}
+
+func (h *Handler) gitSourceHead(ctx context.Context, projection *gitProjection) (string, error) {
+	if projection == nil || strings.TrimSpace(projection.targetSliceID) == "" {
+		return "empty", nil
+	}
+	targetMeta, err := h.st.GetSliceMetadata(ctx, projection.targetSliceID)
+	if err != nil {
+		return "", err
+	}
+	targetHead := strings.TrimSpace(targetMeta.HeadCommitHash)
+	if targetHead == "" {
+		targetHead = "empty"
+	}
+	displayID := ""
+	displayHead := ""
+	if projection.displaySlice != nil {
+		displayID = strings.TrimSpace(projection.displaySlice.ID)
+		if displayID != "" && displayID != projection.targetSliceID {
+			if meta, err := h.st.GetSliceMetadata(ctx, displayID); err == nil && meta != nil {
+				displayHead = strings.TrimSpace(meta.HeadCommitHash)
+			}
+		}
+	}
+	return strings.Join([]string{
+		projection.targetSliceID,
+		targetHead,
+		displayID,
+		displayHead,
+		projection.cacheSignature(),
+	}, "\n"), nil
+}
+
+func (p *gitProjection) displayPathForStored(storedPath string) string {
+	cleaned := common.CleanRelativePath(storedPath)
+	if cleaned == "" {
+		return ""
+	}
+	if !p.mounted() {
+		return cleaned
+	}
+	if !p.managesStoredPath(cleaned) {
+		return ""
+	}
+	return common.SliceDisplayPath(p.displaySlice, cleaned)
+}
+
+func (p *gitProjection) storedPathForGitFile(gitPath string) (string, error) {
+	cleaned := common.CleanRelativePath(gitPath)
+	if cleaned == "" {
+		return "", nil
+	}
+	if !p.mounted() {
+		return cleaned, nil
+	}
+	for _, mount := range p.mounts {
+		if cleaned == mount.Alias {
+			return "", fmt.Errorf("cannot replace mounted slice root %q with a file", mount.Alias)
+		}
+		prefix := mount.Alias + "/"
+		if strings.HasPrefix(cleaned, prefix) {
+			suffix := strings.TrimPrefix(cleaned, prefix)
+			if suffix == "" {
+				return "", fmt.Errorf("cannot write mounted slice root %q", mount.Alias)
+			}
+			return path.Join(mount.SourcePath, suffix), nil
+		}
+	}
+	return "", fmt.Errorf("git path %q is outside mounted slice aliases", cleaned)
+}
+
+func (p *gitProjection) managesStoredPath(storedPath string) bool {
+	cleaned := common.CleanRelativePath(storedPath)
+	if cleaned == "" {
+		return false
+	}
+	if !p.mounted() {
+		return true
+	}
+	for _, mount := range p.mounts {
+		if cleaned == mount.SourcePath || strings.HasPrefix(cleaned, mount.SourcePath+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *gitProjection) protectedStoredDir(storedPath string) bool {
+	cleaned := common.CleanRelativePath(storedPath)
+	if cleaned == "" || !p.mounted() {
+		return false
+	}
+	for _, mount := range p.mounts {
+		if cleaned == mount.SourcePath {
+			return true
+		}
+	}
+	return false
 }
 
 func writeStatusError(w http.ResponseWriter, err error) {
