@@ -63,7 +63,22 @@ These guidelines apply to the entire repository.
    ```bash
    gh pr merge <pr-number> --admin --merge
    ```
-   Or merge via the GitHub web UI after confirming all tests pass
+   Or merge via the GitHub web UI after confirming all tests pass.
+
+7. **Deploy merged main to staging and verify it:**
+   ```bash
+   git checkout main
+   git pull --ff-only
+   ./ops/deploy.sh --env staging --app all
+   ```
+   - Use the staging env file selected by `ops/deploy.sh` (`ops/.env.staging`).
+   - Treat the deploy as incomplete until the script reports deployment verification passed.
+   - After deploy, verify the public staging web and API endpoints:
+     ```bash
+     curl -sfI https://agenttools.dev/
+     curl -sf https://api.agenttools.dev/v1/global/state
+     ```
+   - If verification fails, diagnose and fix forward with a new PR instead of manually patching `main`.
 
 **Never push directly to main** - always use the PR workflow to ensure tests run before merging.
 
@@ -80,3 +95,6 @@ These guidelines apply to the entire repository.
 | Address comments | `gh pr view <pr-number> --comments` then fix and push |
 | Fix failed Actions | Fix issues, commit, and `git push` |
 | Merge PR | `gh pr merge <pr-number> --admin --merge` |
+| Update local main | `git checkout main && git pull --ff-only` |
+| Deploy staging | `./ops/deploy.sh --env staging --app all` |
+| Verify staging | `curl -sfI https://agenttools.dev/ && curl -sf https://api.agenttools.dev/v1/global/state` |
