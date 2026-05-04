@@ -144,6 +144,8 @@ function App({
       if (nextRouteSliceId) {
         hasExplicitSliceSelectionRef.current = true;
         setCurrentSliceId(nextRouteSliceId);
+      } else {
+        hasExplicitSliceSelectionRef.current = false;
       }
     } else {
       setBrowserRouteSliceId('');

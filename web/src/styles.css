@@ -5324,9 +5324,9 @@ button[data-testid="topbar-get-started"]:hover {
 
 .slice-home-toolbar {
   display: grid;
-  grid-template-columns: minmax(220px, 420px) auto;
+  grid-template-columns: minmax(220px, 420px);
   align-items: center;
-  justify-content: space-between;
+  justify-content: end;
   gap: 16px;
   padding: 12px;
   border: 1px solid var(--border);
@@ -5361,26 +5361,6 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--text-primary);
   font: inherit;
   font-size: 0.92rem;
-}
-
-.slice-home-stats {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  font-weight: 600;
-}
-
-.slice-home-stats span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-elevated);
 }
 
 .slice-home-panel {
@@ -5641,10 +5621,7 @@ button[data-testid="topbar-get-started"]:hover {
 
   .slice-home-toolbar {
     grid-template-columns: 1fr;
-  }
-
-  .slice-home-stats {
-    justify-content: flex-start;
+    justify-content: stretch;
   }
 
   .slice-home-row {

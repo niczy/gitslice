@@ -78,9 +78,6 @@ export default function SliceHomePage({
     });
   }, [homeSliceId, query, slices]);
 
-  const rootCount = (slices || []).filter((slice) => slice.is_root).length;
-  const workspaceCount = Math.max((slices || []).length - rootCount, 0);
-
   const openCreateDialog = () => {
     if (!isAuthenticated) {
       onRequireLogin?.();
@@ -149,11 +146,6 @@ export default function SliceHomePage({
             data-testid="slice-home-search"
           />
         </label>
-        <div className="slice-home-stats" aria-label="Slice summary">
-          <span>{slices.length} total</span>
-          <span>{rootCount} root</span>
-          <span>{workspaceCount} workspace</span>
-        </div>
       </div>
 
       <div className="slice-home-panel">
