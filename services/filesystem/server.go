@@ -53,8 +53,8 @@ const (
 	filesystemUploadWriteConcurrency = 32
 	filesystemInlineChangeDiffLimit  = 100
 	filesystemUploadPlanConcurrency  = 32
-	filesystemSearchVerifyBatchSize  = 16
-	filesystemSearchMaxMatches       = 500
+	filesystemSearchVerifyBatchSize  = 8
+	filesystemSearchMaxMatches       = 50
 )
 
 type readFileOptions struct {
@@ -3644,7 +3644,7 @@ func (s *filesystemServiceServer) verifyIndexedSearchCandidates(
 					results[resultIndex].err = err
 					return
 				}
-				content, err := s.readWorkspaceFileContent(ctx, workspaceID, file.Path)
+				content, err := s.readWorkspaceIndexedFileContent(ctx, workspaceID, file.Path)
 				if err != nil {
 					if status.Code(err) == codes.NotFound {
 						return
@@ -3682,6 +3682,17 @@ func (s *filesystemServiceServer) verifyIndexedSearchCandidates(
 		}
 	}
 	return matches, nil
+}
+
+func (s *filesystemServiceServer) readWorkspaceIndexedFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, workspaceID, filePath)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read file: %v", err))
+	}
+	return content, nil
 }
 
 func (s *filesystemServiceServer) loadWorkspaceSearchArtifact(ctx context.Context, workspaceID, headCommitHash string) (*searchindex.SliceArtifact, string, error) {
