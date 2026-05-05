@@ -415,7 +415,7 @@ export default function RepoBrowser({
     if (!initialBrowserDataMatches) {
       return;
     }
-    const nextSelectedFile = initialBrowserData?.selectedFile || '';
+    const nextSelectedFile = initialBrowserData?.selectedFile || initialBrowserState?.file || '';
     const nextFilePayload = initialBrowserData?.selectedFilePayload || null;
 
     if (Array.isArray(initialBrowserData?.rootEntries)) {
