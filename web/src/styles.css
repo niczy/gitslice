@@ -6675,7 +6675,9 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .file-preview-markdown {
-  max-width: 840px;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -7735,7 +7737,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .file-preview-markdown {
-  max-width: 860px;
+  max-width: none;
 }
 
 .app-shell--browser .file-preview-markdown :where(h1, h2, h3) {
