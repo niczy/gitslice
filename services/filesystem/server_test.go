@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,25 @@ func mustWorkspaceSearchArtifact(t *testing.T, st storage.Storage, workspaceID s
 		t.Fatalf("DecodeSliceArtifact(%s) failed: %v", workspaceID, err)
 	}
 	return artifact
+}
+
+type sliceSearchArtifactLoadCounter struct {
+	storage.Storage
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *sliceSearchArtifactLoadCounter) GetWorkspaceSearchArtifact(ctx context.Context, sliceID string, version uint32) ([]byte, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.Storage.GetWorkspaceSearchArtifact(ctx, sliceID, version)
+}
+
+func (c *sliceSearchArtifactLoadCounter) CallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 func searchArtifactPaths(artifact *searchindex.SliceArtifact) []string {
@@ -558,6 +578,65 @@ func TestSearchCapsLargeMatchSet(t *testing.T) {
 	}
 	if got, want := searchResp.GetMatches()[filesystemSearchMaxMatches-1].GetLineNumber(), int32(filesystemSearchMaxMatches); got != want {
 		t.Fatalf("last capped match line = %d, want %d", got, want)
+	}
+}
+
+func TestSearchCachesSliceSearchArtifactByCommit(t *testing.T) {
+	ctx := authContext("tester")
+	base := storage.NewInMemoryStorage()
+	st := &sliceSearchArtifactLoadCounter{Storage: base}
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "sl-search-cache",
+		Name:        "Search Cache Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "sl-search-cache",
+		Path:        "docs/one.txt",
+		Content:     []byte("needle one\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(one) failed: %v", err)
+	}
+
+	waitForSearchIndexForTest(t, svc)
+	for i := 0; i < 2; i++ {
+		searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+			WorkspaceId: "sl-search-cache",
+			Query:       "needle",
+		})
+		if err != nil {
+			t.Fatalf("Search(%d) failed: %v", i, err)
+		}
+		if got, want := len(searchResp.GetMatches()), 1; got != want {
+			t.Fatalf("Search(%d) matches = %d, want %d", i, got, want)
+		}
+	}
+	if got, want := st.CallCount(), 1; got != want {
+		t.Fatalf("GetWorkspaceSearchArtifact calls after repeated same-commit searches = %d, want %d", got, want)
+	}
+
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "sl-search-cache",
+		Path:        "docs/two.txt",
+		Content:     []byte("needle two\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(two) failed: %v", err)
+	}
+	waitForSearchIndexForTest(t, svc)
+	if _, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: "sl-search-cache",
+		Query:       "needle",
+	}); err != nil {
+		t.Fatalf("Search(after mutation) failed: %v", err)
+	}
+	if got, want := st.CallCount(), 2; got != want {
+		t.Fatalf("GetWorkspaceSearchArtifact calls after new slice commit = %d, want %d", got, want)
 	}
 }
 

@@ -243,6 +243,11 @@ func TestHomeSliceRegexSearchUsesIndexedWorkspaceArtifact(t *testing.T) {
 	if err := st.PutWorkspaceSearchArtifact(context.Background(), homeID, searchindex.CurrentArtifactVersion, []byte("corrupt")); err != nil {
 		t.Fatalf("PutWorkspaceSearchArtifact(corrupt) failed: %v", err)
 	}
+	// This test mutates storage directly to exercise corrupt-artifact recovery.
+	// Clear the in-process cache so the service sees the injected storage state.
+	if impl, ok := svc.(*filesystemServiceServer); ok {
+		impl.searchArtifactCache.DeleteSlice(homeID)
+	}
 	before := snapshotFilesystemMetrics()
 	searchResp, err = svc.Search(ctx, &filesystemv1.SearchRequest{
 		WorkspaceId: homeID,

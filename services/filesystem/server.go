@@ -45,6 +45,7 @@ type filesystemServiceServer struct {
 	searchIndexBatchWindow  time.Duration
 	searchIndexBatchMaxSize int
 	searchIndexBuildTimeout time.Duration
+	searchArtifactCache     *sliceSearchArtifactCache
 }
 
 const (
@@ -55,6 +56,7 @@ const (
 	filesystemUploadPlanConcurrency  = 32
 	filesystemSearchVerifyBatchSize  = 8
 	filesystemSearchMaxMatches       = 50
+	filesystemSearchArtifactCacheMax = 128
 )
 
 type readFileOptions struct {
@@ -90,6 +92,119 @@ type filesystemUploadPlanFile struct {
 	prepared *preparedFilesystemUpload
 }
 
+type sliceSearchArtifactCacheKey struct {
+	sliceID    string
+	commitHash string
+	version    uint32
+}
+
+type sliceSearchArtifactCacheEntry struct {
+	artifact *searchindex.SliceArtifact
+	access   uint64
+}
+
+type sliceSearchArtifactCache struct {
+	mu         sync.Mutex
+	maxEntries int
+	clock      uint64
+	entries    map[sliceSearchArtifactCacheKey]*sliceSearchArtifactCacheEntry
+}
+
+func newSliceSearchArtifactCache(maxEntries int) *sliceSearchArtifactCache {
+	if maxEntries <= 0 {
+		maxEntries = 1
+	}
+	return &sliceSearchArtifactCache{
+		maxEntries: maxEntries,
+		entries:    make(map[sliceSearchArtifactCacheKey]*sliceSearchArtifactCacheEntry),
+	}
+}
+
+func (c *sliceSearchArtifactCache) Get(sliceID, commitHash string) (*searchindex.SliceArtifact, bool) {
+	if c == nil {
+		return nil, false
+	}
+	key := sliceSearchArtifactCacheKey{
+		sliceID:    strings.TrimSpace(sliceID),
+		commitHash: strings.TrimSpace(commitHash),
+		version:    searchindex.CurrentArtifactVersion,
+	}
+	if key.sliceID == "" || key.commitHash == "" {
+		return nil, false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || entry == nil || entry.artifact == nil {
+		return nil, false
+	}
+	c.clock++
+	entry.access = c.clock
+	return entry.artifact, true
+}
+
+func (c *sliceSearchArtifactCache) Put(sliceID, commitHash string, artifact *searchindex.SliceArtifact) {
+	if c == nil || artifact == nil {
+		return
+	}
+	key := sliceSearchArtifactCacheKey{
+		sliceID:    strings.TrimSpace(sliceID),
+		commitHash: strings.TrimSpace(commitHash),
+		version:    artifact.Version,
+	}
+	if key.sliceID == "" || key.commitHash == "" || key.version != searchindex.CurrentArtifactVersion {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clock++
+	c.entries[key] = &sliceSearchArtifactCacheEntry{
+		artifact: artifact,
+		access:   c.clock,
+	}
+	c.evictLocked()
+}
+
+func (c *sliceSearchArtifactCache) DeleteSlice(sliceID string) {
+	if c == nil {
+		return
+	}
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.entries {
+		if key.sliceID == sliceID {
+			delete(c.entries, key)
+		}
+	}
+}
+
+func (c *sliceSearchArtifactCache) evictLocked() {
+	for len(c.entries) > c.maxEntries {
+		var oldestKey sliceSearchArtifactCacheKey
+		var oldestAccess uint64
+		first := true
+		for key, entry := range c.entries {
+			access := uint64(0)
+			if entry != nil {
+				access = entry.access
+			}
+			if first || access < oldestAccess {
+				first = false
+				oldestKey = key
+				oldestAccess = access
+			}
+		}
+		delete(c.entries, oldestKey)
+	}
+}
+
 type fileManifestHashGetter interface {
 	GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error)
 }
@@ -110,6 +225,7 @@ func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 		searchIndexBatchWindow:  rootpromote.DefaultBatchWindow,
 		searchIndexBatchMaxSize: rootpromote.DefaultBatchMaxSize,
 		searchIndexBuildTimeout: defaultWorkspaceSearchIndexTimeout,
+		searchArtifactCache:     newSliceSearchArtifactCache(filesystemSearchArtifactCacheMax),
 	}
 }
 
@@ -3552,9 +3668,9 @@ func (s *filesystemServiceServer) scanWorkspaceSearch(ctx context.Context, works
 	return matches, nil
 }
 
-func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, workspaceID, headCommitHash, query, globPattern string, homeMode, regex bool) ([]*filesystemv1.SearchMatch, error) {
+func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, sliceID, headCommitHash, query, globPattern string, homeMode, regex bool) ([]*filesystemv1.SearchMatch, error) {
 	artifactLoadStartedAt := time.Now()
-	artifact, artifactOutcome, artifactErr := s.loadWorkspaceSearchArtifact(ctx, workspaceID, headCommitHash)
+	artifact, artifactOutcome, artifactErr := s.loadSliceSearchArtifact(ctx, sliceID, headCommitHash)
 	if artifactOutcome != "" {
 		observeFilesystemSearchArtifactLoad(artifactOutcome, time.Since(artifactLoadStartedAt))
 	}
@@ -3590,7 +3706,7 @@ func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, wo
 
 	verifyStartedAt := time.Now()
 	defer observeFilesystemSearchVerify(searchMode, time.Since(verifyStartedAt))
-	return s.verifyIndexedSearchCandidates(ctx, workspaceID, artifact, candidateIndexes, globPattern, homeMode, regex, query, re)
+	return s.verifyIndexedSearchCandidates(ctx, sliceID, artifact, candidateIndexes, globPattern, homeMode, regex, query, re)
 }
 
 type searchCandidateResult struct {
@@ -3611,7 +3727,7 @@ func filesystemSearchContextError(ctx context.Context) error {
 
 func (s *filesystemServiceServer) verifyIndexedSearchCandidates(
 	ctx context.Context,
-	workspaceID string,
+	sliceID string,
 	artifact *searchindex.SliceArtifact,
 	candidateIndexes []uint32,
 	globPattern string,
@@ -3644,7 +3760,7 @@ func (s *filesystemServiceServer) verifyIndexedSearchCandidates(
 					results[resultIndex].err = err
 					return
 				}
-				content, err := s.readWorkspaceIndexedFileContent(ctx, workspaceID, file.Path)
+				content, err := s.readWorkspaceIndexedFileContent(ctx, sliceID, file.Path)
 				if err != nil {
 					if status.Code(err) == codes.NotFound {
 						return
@@ -3684,8 +3800,8 @@ func (s *filesystemServiceServer) verifyIndexedSearchCandidates(
 	return matches, nil
 }
 
-func (s *filesystemServiceServer) readWorkspaceIndexedFileContent(ctx context.Context, workspaceID, filePath string) (*models.FileContent, error) {
-	content, err := storage.ReadSliceFileContent(ctx, s.storage, workspaceID, filePath)
+func (s *filesystemServiceServer) readWorkspaceIndexedFileContent(ctx context.Context, sliceID, filePath string) (*models.FileContent, error) {
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, sliceID, filePath)
 	if err != nil {
 		if err == storage.ErrEntryNotFound {
 			return nil, status.Error(codes.NotFound, "file not found")
@@ -3695,20 +3811,26 @@ func (s *filesystemServiceServer) readWorkspaceIndexedFileContent(ctx context.Co
 	return content, nil
 }
 
-func (s *filesystemServiceServer) loadWorkspaceSearchArtifact(ctx context.Context, workspaceID, headCommitHash string) (*searchindex.SliceArtifact, string, error) {
+func (s *filesystemServiceServer) loadSliceSearchArtifact(ctx context.Context, sliceID, headCommitHash string) (*searchindex.SliceArtifact, string, error) {
+	sliceID = strings.TrimSpace(sliceID)
 	headCommitHash = strings.TrimSpace(headCommitHash)
 	if headCommitHash == "" {
-		return searchindex.BuildSliceArtifact(workspaceID, "", nil), storage.SearchArtifactOutcomeBuilt.String(), nil
+		return searchindex.BuildSliceArtifact(sliceID, "", nil), storage.SearchArtifactOutcomeBuilt.String(), nil
 	}
 
-	artifact, outcome, err := storage.LoadWorkspaceSearchArtifact(ctx, s.storage, workspaceID, headCommitHash)
+	if artifact, ok := s.searchArtifactCache.Get(sliceID, headCommitHash); ok {
+		return artifact, "cache_hit", nil
+	}
+
+	artifact, outcome, err := storage.LoadWorkspaceSearchArtifact(ctx, s.storage, sliceID, headCommitHash)
 	if err != nil {
 		if errors.Is(err, storage.ErrSearchArtifactNotReady) {
-			s.enqueueWorkspaceSearchIndex(workspaceID, headCommitHash)
+			s.enqueueWorkspaceSearchIndex(sliceID, headCommitHash)
 			return nil, outcome.String(), status.Error(codes.FailedPrecondition, "search index is not ready; retry shortly")
 		}
 		return nil, "", err
 	}
+	s.searchArtifactCache.Put(sliceID, headCommitHash, artifact)
 	return artifact, outcome.String(), nil
 }
 
