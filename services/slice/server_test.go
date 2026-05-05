@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/searchindex"
@@ -1428,6 +1429,135 @@ func TestCheckoutMountedSliceUsesLiveBackingFolder(t *testing.T) {
 	}
 	if got := string(mustAssembleCheckoutContent(t, checkoutResp, byPath["tester/shared/src/new.txt"])); got != "new file" {
 		t.Fatalf("checkout new file content = %q, want live backing content", got)
+	}
+}
+
+func TestCheckoutRootMountedSliceUsesLiveHomeBackingFolder(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+
+	hash, err := storage.WriteSliceFileManifest(ctx, st, home.ID, "tester/shared/new.txt", []byte("new from home"))
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, "tester/shared/new.txt"),
+		Path:     "tester/shared/new.txt",
+		Type:     "file",
+		ParentID: common.GenerateEntryID(home.ID, "tester/shared"),
+		Size:     int64(len("new from home")),
+		Hash:     hash.Hash,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "tester/shared/new.txt", home.ID); err != nil {
+		t.Fatalf("AddFileToSlice failed: %v", err)
+	}
+	slice := &models.Slice{
+		ID:          "root-shared-live-home",
+		Name:        "root-shared-live-home",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/shared", Alias: "tester/shared"},
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	byPath := map[string]*slicev1.FileMetadata{}
+	for _, meta := range checkoutResp.GetManifest().GetFileMetadata() {
+		byPath[meta.GetPath()] = meta
+	}
+	meta, ok := byPath["tester/shared/new.txt"]
+	if !ok {
+		t.Fatalf("checkout is missing live home file: %#v", checkoutResp.GetManifest().GetFileMetadata())
+	}
+	if got := string(mustAssembleCheckoutContent(t, checkoutResp, meta)); got != "new from home" {
+		t.Fatalf("checkout content = %q, want live home content", got)
+	}
+}
+
+func TestCheckoutRootMountedSliceUsesLiveHomeBackingSliceFilesFallback(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+
+	rootManifest, err := storage.WriteSliceFileManifest(ctx, st, root.ID, "tester/shared/fallback.txt", []byte("stale root"))
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest(root) failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(root.ID, "tester/shared/fallback.txt"),
+		Path:     "tester/shared/fallback.txt",
+		Type:     "file",
+		ParentID: common.GenerateEntryID(root.ID, "tester/shared"),
+		Size:     int64(len("stale root")),
+		Hash:     rootManifest.Hash,
+	}); err != nil {
+		t.Fatalf("AddEntry(root) failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "tester/shared/fallback.txt", root.ID); err != nil {
+		t.Fatalf("AddFileToSlice(root) failed: %v", err)
+	}
+	if _, err := storage.WriteSliceFileManifest(ctx, st, home.ID, "tester/shared/fallback.txt", []byte("live home")); err != nil {
+		t.Fatalf("WriteSliceFileManifest(home) failed: %v", err)
+	}
+	if err := st.SetSliceFiles(ctx, home.ID, []string{"tester/shared/fallback.txt"}); err != nil {
+		t.Fatalf("SetSliceFiles(home) failed: %v", err)
+	}
+
+	slice := &models.Slice{
+		ID:          "root-shared-live-home-files-fallback",
+		Name:        "root-shared-live-home-files-fallback",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/shared", Alias: "tester/shared"},
+		},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	byPath := map[string]*slicev1.FileMetadata{}
+	for _, meta := range checkoutResp.GetManifest().GetFileMetadata() {
+		byPath[meta.GetPath()] = meta
+	}
+	meta, ok := byPath["tester/shared/fallback.txt"]
+	if !ok {
+		t.Fatalf("checkout is missing live home fallback file: %#v", checkoutResp.GetManifest().GetFileMetadata())
+	}
+	if got := string(mustAssembleCheckoutContent(t, checkoutResp, meta)); got != "live home" {
+		t.Fatalf("checkout content = %q, want live home fallback content", got)
 	}
 }
 

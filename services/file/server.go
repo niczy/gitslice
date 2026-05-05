@@ -15,6 +15,7 @@ import (
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	"github.com/niczy/gitslice/internal/visibility"
@@ -245,6 +246,21 @@ func sliceBackingSliceID(sliceID string, slice *models.Slice) string {
 	return strings.TrimSpace(sliceID)
 }
 
+func (s *fileServiceServer) resolveBackingSliceID(ctx context.Context, sliceID string, slice *models.Slice, preferSnapshots bool) (string, error) {
+	backingSliceID := sliceBackingSliceID(sliceID, slice)
+	if preferSnapshots || slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
+		return backingSliceID, nil
+	}
+	liveBackingID, ok, err := homeslice.ResolveLiveBackingSliceID(ctx, s.storage, slice)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return liveBackingID, nil
+	}
+	return backingSliceID, nil
+}
+
 func (s *fileServiceServer) sliceDisplayPathExists(ctx context.Context, sliceID string, slice *models.Slice, displayPath string) (bool, bool, error) {
 	normalizedDisplayPath := cleanPath(displayPath)
 	if normalizedDisplayPath == "" {
@@ -268,7 +284,11 @@ func (s *fileServiceServer) sliceDisplayPathExists(ctx context.Context, sliceID 
 	if storedPath == "" {
 		return false, false, nil
 	}
-	entry, err := s.storage.GetEntryByPath(ctx, sliceBackingSliceID(sliceID, slice), storedPath)
+	backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, false)
+	if err != nil {
+		return false, false, err
+	}
+	entry, err := s.storage.GetEntryByPath(ctx, backingSliceID, storedPath)
 	if err == nil && entry != nil {
 		return true, entry.Type == "directory", nil
 	}
@@ -378,10 +398,16 @@ func (s *fileServiceServer) cachedSlicePathMap(ctx context.Context, sliceID stri
 
 	cacheCommit := commit
 	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 && !preferSnapshots {
-		if parentMeta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && parentMeta != nil {
-			parentHead := strings.TrimSpace(parentMeta.HeadCommitHash)
-			if parentHead != "" {
-				cacheCommit = strings.TrimSpace(slice.ParentSlice) + ":" + parentHead
+		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		if backingSliceID != "" {
+			if backingMeta, err := s.storage.GetSliceMetadata(ctx, backingSliceID); err == nil && backingMeta != nil {
+				backingHead := strings.TrimSpace(backingMeta.HeadCommitHash)
+				if backingHead != "" {
+					cacheCommit = strings.TrimSpace(backingSliceID) + ":" + backingHead
+				}
 			}
 		}
 	}
@@ -438,7 +464,11 @@ func (s *fileServiceServer) effectiveSlicePaths(ctx context.Context, sliceID str
 	}
 
 	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 && !preferSnapshots {
-		return s.mountedBackingPaths(ctx, slice.ParentSlice, slice.FolderMounts)
+		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, false)
+		if err != nil {
+			return nil, err
+		}
+		return s.mountedBackingPaths(ctx, backingSliceID, slice.FolderMounts)
 	}
 
 	// Prefer commit snapshot paths when available. This avoids listing stale
@@ -647,9 +677,9 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		if normalizedPath == "" {
 			entries := make([]*filev1.DirectoryEntry, 0, len(slice.FolderMounts))
 			seen := make(map[string]struct{}, len(slice.FolderMounts))
-			backingSliceID := sliceID
-			if slice.ParentSlice != "" {
-				backingSliceID = slice.ParentSlice
+			backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 			}
 			for _, m := range slice.FolderMounts {
 				alias := cleanPath(m.Alias)
@@ -702,9 +732,9 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 			return nil, status.Error(codes.NotFound, "path not found")
 		}
 
-		backingSliceID := sliceID
-		if slice.ParentSlice != "" {
-			backingSliceID = slice.ParentSlice
+		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 		}
 		storedParentPath := common.SliceStoredPath(slice, normalizedPath)
 		if storedParentPath == "" {
@@ -725,9 +755,9 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 	// Fast path for materialized directory trees: list direct children via directory entries
 	// instead of scanning all descendant file paths under a prefix.
 	{
-		backingSliceID := sliceID
-		if slice.ParentSlice != "" {
-			backingSliceID = slice.ParentSlice
+		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 		}
 
 		if normalizedPath == "" {
@@ -953,10 +983,10 @@ func (s *fileServiceServer) maybeSetNotModifiedHeader(ctx context.Context, respo
 	}, true
 }
 
-func (s *fileServiceServer) resolveEffectiveCommit(ctx context.Context, slice *models.Slice, resolvedCommit string) string {
+func (s *fileServiceServer) resolveEffectiveCommit(ctx context.Context, primarySliceID, resolvedCommit string) string {
 	effectiveCommit := strings.TrimSpace(resolvedCommit)
-	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
-		if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
+	if strings.TrimSpace(primarySliceID) != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+		if meta, err := s.storage.GetSliceMetadata(ctx, primarySliceID); err == nil && meta != nil {
 			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
 		}
 	}
@@ -972,7 +1002,7 @@ func (s *fileServiceServer) resolveFileMetadata(
 		return "", 0, storage.ErrEntryNotFound
 	}
 
-	effectiveCommit := s.resolveEffectiveCommit(ctx, slice, resolvedCommit)
+	effectiveCommit := s.resolveEffectiveCommit(ctx, primarySliceID, resolvedCommit)
 	if effectiveCommit != "" {
 		if snapshot, err := s.storage.GetCommitSnapshot(ctx, effectiveCommit); err == nil && snapshot != nil {
 			if h := strings.TrimSpace(snapshot.Files[storedPath]); h != "" {
@@ -992,6 +1022,23 @@ func (s *fileServiceServer) resolveFileMetadata(
 		}
 	} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
 		return "", 0, err
+	}
+
+	if strings.TrimSpace(hash) == "" || size == 0 {
+		manifest, manifestErr := s.storage.GetFileManifest(ctx, primarySliceID, storedPath)
+		if manifestErr == nil && manifest != nil {
+			if strings.TrimSpace(hash) == "" {
+				hash = strings.TrimSpace(manifest.Hash)
+			}
+			if size == 0 {
+				size = manifest.TotalSize
+			}
+		} else if manifestErr != nil && !errors.Is(manifestErr, storage.ErrEntryNotFound) {
+			return "", 0, manifestErr
+		}
+		if strings.TrimSpace(hash) != "" {
+			return strings.TrimSpace(hash), size, nil
+		}
 	}
 
 	if slice != nil && slice.ParentSlice != "" && slice.ParentSlice != primarySliceID {
@@ -1021,7 +1068,7 @@ func (s *fileServiceServer) resolveFileContent(
 		return nil, storage.ErrEntryNotFound
 	}
 
-	effectiveCommit := s.resolveEffectiveCommit(ctx, slice, resolvedCommit)
+	effectiveCommit := s.resolveEffectiveCommit(ctx, primarySliceID, resolvedCommit)
 	if effectiveCommit != "" {
 		if content, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && content != nil {
 			return content, nil
@@ -1119,9 +1166,9 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 			return nil, status.Error(codes.NotFound, "file not found")
 		}
 
-		backingSliceID := sliceID
-		if slice.ParentSlice != "" {
-			backingSliceID = slice.ParentSlice
+		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 		}
 		responsePath := common.SliceDisplayPath(slice, storedPath)
 		if responsePath == "" {
@@ -1190,7 +1237,12 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		responsePath = displayPath
 	}
 
-	hash, size, metaErr := s.resolveFileMetadata(ctx, slice, sliceID, storedPath, resolvedCommit)
+	backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
+	}
+
+	hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit)
 	if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
 	}
@@ -1198,7 +1250,7 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		return notModifiedResp, nil
 	}
 
-	content, err := s.resolveFileContent(ctx, sliceID, slice, sliceID, storedPath, resolvedCommit)
+	content, err := s.resolveFileContent(ctx, sliceID, slice, backingSliceID, storedPath, resolvedCommit)
 	if err != nil {
 		if errors.Is(err, storage.ErrEntryNotFound) {
 			if sliceHasPath(pathMap, displayPath) {

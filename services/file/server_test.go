@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	filev1 "github.com/niczy/gitslice/proto/file"
@@ -836,6 +839,154 @@ func TestParentMountedSliceListEntriesUsesLiveBackingTree(t *testing.T) {
 	}
 	if got := resp.GetEntries()[0].GetPath(); got != "docs/new.txt" {
 		t.Fatalf("expected live backing file docs/new.txt, got %q", got)
+	}
+}
+
+func TestRootMountedSliceListEntriesUsesLiveHomeBackingTree(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+	addDir := func(sliceID, dirPath string) {
+		t.Helper()
+		parentID := sliceID
+		if strings.Contains(dirPath, "/") {
+			parentPath := path.Dir(dirPath)
+			parentID = common.GenerateEntryID(sliceID, parentPath)
+		}
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(sliceID, dirPath),
+			Path:     dirPath,
+			Type:     "directory",
+			ParentID: parentID,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", dirPath, err)
+		}
+	}
+	writeHomeFile := func(filePath, content string) {
+		t.Helper()
+		hash := mustWriteSliceManifest(t, ctx, st, home.ID, filePath, []byte(content))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(home.ID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: common.GenerateEntryID(home.ID, path.Dir(filePath)),
+			Size:     int64(len(content)),
+			Hash:     hash,
+		}); err != nil {
+			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, home.ID); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+		}
+	}
+
+	addDir(home.ID, "tester/shared")
+	writeHomeFile("tester/shared/new.txt", "new from home")
+	fork := &models.Slice{
+		ID:          "root-mounted-live-home",
+		Name:        "root-mounted-live-home",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/shared", Alias: "tester/shared"},
+		},
+	}
+	if err := st.CreateSlice(ctx, fork); err != nil {
+		t.Fatalf("CreateSlice(fork) failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: "tester/shared",
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: fork.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries failed: %v", err)
+	}
+	if got := len(listResp.GetEntries()); got != 1 {
+		t.Fatalf("expected one live home entry, got %d: %#v", got, listResp.GetEntries())
+	}
+	if got := listResp.GetEntries()[0].GetPath(); got != "tester/shared/new.txt" {
+		t.Fatalf("expected live home file tester/shared/new.txt, got %q", got)
+	}
+
+	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: "tester/shared/new.txt",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: fork.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "new from home" {
+		t.Fatalf("GetFile content = %q, want live home content", got)
+	}
+}
+
+func TestRootMountedSliceGetFileUsesLiveHomeBackingSliceFilesFallback(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+
+	if _, err := storage.WriteSliceFileManifest(ctx, st, root.ID, "tester/shared/fallback.txt", []byte("stale root")); err != nil {
+		t.Fatalf("WriteSliceFileManifest(root) failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "tester/shared/fallback.txt", root.ID); err != nil {
+		t.Fatalf("AddFileToSlice(root) failed: %v", err)
+	}
+	if _, err := storage.WriteSliceFileManifest(ctx, st, home.ID, "tester/shared/fallback.txt", []byte("live home")); err != nil {
+		t.Fatalf("WriteSliceFileManifest(home) failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, "tester/shared/fallback.txt", home.ID); err != nil {
+		t.Fatalf("AddFileToSlice(home) failed: %v", err)
+	}
+
+	fork := &models.Slice{
+		ID:          "root-mounted-live-home-files-fallback",
+		Name:        "root-mounted-live-home-files-fallback",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/shared", Alias: "tester/shared"},
+		},
+	}
+	if err := st.CreateSlice(ctx, fork); err != nil {
+		t.Fatalf("CreateSlice(fork) failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+		Path: "tester/shared/fallback.txt",
+		Version: &filev1.GetFileRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: fork.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "live home" {
+		t.Fatalf("GetFile content = %q, want live home fallback content", got)
 	}
 }
 
