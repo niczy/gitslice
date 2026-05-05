@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { buildBrowserPath, buildLegacyRedirectPath, buildPath } from './utils/routing.js';
@@ -23,6 +23,8 @@ import CommitDiffPage from './components/CommitDiffPage.jsx';
 import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import RouteAccessState from './components/RouteAccessState.jsx';
 import { trackRouteEvent } from './utils/analytics.js';
+
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function getPreferredSliceId(slices, username) {
   const trimmedUsername = String(username || '').trim();
@@ -52,6 +54,7 @@ function App({
   initialAuthConfig = { authProvider: 'local', allowDevLogin: true },
   initialSession = null,
   initialSessionError = '',
+  initialBrowserData = null,
   routerNavigate,
 }) {
   const queryClient = useQueryClient();
@@ -88,10 +91,10 @@ function App({
   const supportUrl = 'https://github.com/niczy/gitslice/issues';
 
   const webSessionQuery = useWebSession(initialSession);
-  const slicesQuery = useSlicesQuery();
+  const slicesQuery = useSlicesQuery(initialBrowserData?.slices);
   const slices = slicesQuery.data || [];
   const slicesLoading = slicesQuery.isLoading;
-  const slicesError = slicesQuery.error ? 'Unable to load slices.' : '';
+  const slicesError = initialBrowserData?.slicesError || (slicesQuery.error ? 'Unable to load slices.' : '');
   const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId) || null;
 
   const isBrowserDetail = activePage === 'browser' && Boolean(browserRouteSliceId);
@@ -133,7 +136,7 @@ function App({
     }
   }, [routerNavigate]);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     setActivePage(initialRoute.page);
     setDiffCommitHash(initialRoute.commitHash);
     setDiffChangesetId(initialRoute.changesetId);
@@ -210,13 +213,9 @@ function App({
       return;
     }
 
-    hasExplicitSliceSelectionRef.current = true;
-    setCurrentSliceId(normalizedSliceId);
-    setBrowserRouteSliceId(normalizedSliceId);
     setBrowserSearchMatches([]);
     setBrowserSearchError('');
     setBrowserSearchHasSearched(false);
-    setActivePage('browser');
     setDiffCommitHash('');
     setDiffChangesetId('');
     setUnknownRoute('');
@@ -226,8 +225,15 @@ function App({
       slice: normalizedSliceId,
     });
     if (routerNavigate) {
+      hasExplicitSliceSelectionRef.current = true;
       routerNavigate(nextPath);
+      return;
     }
+
+    hasExplicitSliceSelectionRef.current = true;
+    setCurrentSliceId(normalizedSliceId);
+    setBrowserRouteSliceId(normalizedSliceId);
+    setActivePage('browser');
   }, [routerNavigate]);
 
   const openBrowserHome = useCallback(() => {
@@ -504,6 +510,7 @@ function App({
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
               openFileRequest={browserOpenFileRequest}
+              initialBrowserData={initialBrowserData}
             />
           </div>
         )}

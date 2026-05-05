@@ -11,10 +11,13 @@ async function fetchSlices() {
   return (payload.slices || []).map(normalizeSliceInfo);
 }
 
-export function useSlicesQuery() {
+export function useSlicesQuery(initialSlices) {
+  const hasInitialSlices = Array.isArray(initialSlices);
   return useQuery({
     queryKey: ['slices'],
     queryFn: fetchSlices,
+    initialData: hasInitialSlices ? initialSlices : undefined,
+    refetchOnMount: hasInitialSlices ? 'always' : true,
     staleTime: 15_000,
   });
 }

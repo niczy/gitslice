@@ -14,5 +14,7 @@ export default [
   route('auth/*', 'routes/auth.$.jsx'),
   route('v1/*', 'routes/v1.$.jsx'),
   index('routes/app-shell.jsx'),
+  route('browser', 'routes/browser.jsx'),
+  route('browser/:sliceId', 'routes/browser.$sliceId.jsx'),
   route('*', 'routes/catchall.jsx'),
 ];

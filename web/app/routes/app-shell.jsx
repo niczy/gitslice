@@ -4,6 +4,7 @@ import App from '../../src/App.jsx';
 import { setCachedSession } from '../../src/auth.js';
 import { parseLocation } from '../../src/utils/routing.js';
 import { getPublicAuthConfig, loadSession } from '../../server/auth.js';
+import { loadBrowserRouteData } from '../../server/browser-data.js';
 
 export async function loader({ request }) {
   let session = null;
@@ -13,15 +14,25 @@ export async function loader({ request }) {
   } catch (error) {
     sessionError = error instanceof Error ? error.message : 'Failed to load browser session.';
   }
-  return {
+  const requestURL = new URL(request.url);
+  const routeInfo = parseLocation(requestURL);
+  const browserRoute = await loadBrowserRouteData(request, session, routeInfo);
+  const response = Response.json({
     session,
     sessionError,
     authConfig: getPublicAuthConfig(request),
-  };
+    browserData: browserRoute.data,
+  });
+  for (const cookie of browserRoute.setCookies || []) {
+    if (cookie) {
+      response.headers.append('Set-Cookie', cookie);
+    }
+  }
+  return response;
 }
 
 export default function AppShellRoute() {
-  const { session, sessionError, authConfig } = useLoaderData();
+  const { session, sessionError, authConfig, browserData } = useLoaderData();
   const location = useLocation();
   const navigate = useNavigate();
   const routeInfo = parseLocation(location);
@@ -36,6 +47,7 @@ export default function AppShellRoute() {
       initialAuthConfig={authConfig || { authProvider: 'local', allowDevLogin: true }}
       initialSession={session || null}
       initialSessionError={sessionError || ''}
+      initialBrowserData={browserData || null}
       routerNavigate={navigate}
     />
   );
