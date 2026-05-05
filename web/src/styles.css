@@ -7571,12 +7571,25 @@ button[data-testid="topbar-get-started"]:hover {
     min-height: calc(100dvh - 82px);
   }
 
-  .app-shell--browser .sidebar-overlay.visible {
+  .app-shell--browser .sidebar-overlay {
     display: block;
     position: fixed;
     inset: 0;
     z-index: 20;
     background: rgba(15, 23, 42, 0.36);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms ease;
+  }
+
+  .app-shell--browser .sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .app-shell--browser .sidebar-overlay.dismissing {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .app-shell--browser .repo-sidebar {
@@ -7591,13 +7604,22 @@ button[data-testid="topbar-get-started"]:hover {
     max-height: none;
     border-right: 1px solid var(--np-border-soft);
     background: var(--np-sidebar);
-    box-shadow: 18px 0 40px rgba(15, 23, 42, 0.16);
+    box-shadow: 0 0 0 rgba(15, 23, 42, 0);
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    transition:
+      transform 280ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 180ms ease,
+      box-shadow 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
   }
 
   .app-shell--browser .repo-sidebar.open {
     opacity: 1;
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0);
     pointer-events: auto;
+    box-shadow: 18px 0 40px rgba(15, 23, 42, 0.16);
   }
 
   .app-shell--browser .repo-sidebar.closed {
@@ -7606,8 +7628,9 @@ button[data-testid="topbar-get-started"]:hover {
     max-width: 88vw;
     border-right: 1px solid var(--np-border-soft);
     opacity: 0;
-    transform: translateX(-100%);
+    transform: translate3d(-102%, 0, 0);
     pointer-events: none;
+    box-shadow: 0 0 0 rgba(15, 23, 42, 0);
   }
 
   .app-shell--browser .code-content {
@@ -7643,7 +7666,6 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .repo-layout,
-.app-shell--browser .repo-sidebar,
 .app-shell--browser .repo-code,
 .app-shell--browser .repo-insight {
   transition: none !important;
@@ -7656,4 +7678,11 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .repo-sidebar.open,
 .app-shell--browser .sidebar-overlay.visible {
   animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell--browser .repo-sidebar,
+  .app-shell--browser .sidebar-overlay {
+    transition: none;
+  }
 }
