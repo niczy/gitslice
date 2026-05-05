@@ -287,17 +287,35 @@ func setEnvValue(env []string, key, value string) []string {
 }
 
 func globalCLIFlagArgs() []string {
-	args := []string{
-		"--account-addr", strings.TrimSpace(*accountServerAddr),
-		"--slice-addr", strings.TrimSpace(*sliceServerAddr),
-		"--admin-addr", strings.TrimSpace(*adminServerAddr),
-		"--file-addr", strings.TrimSpace(*fileServerAddr),
-		"--fs-addr", strings.TrimSpace(*fsServerAddr),
+	settings, err := resolveEndpointSettings()
+	args := []string{}
+	if err == nil && strings.TrimSpace(settings.CoreAddr) != "" {
+		args = append(args, "--addr", strings.TrimSpace(settings.CoreAddr))
+	} else if err == nil {
+		args = append(args,
+			"--account-addr", strings.TrimSpace(settings.AccountAddr),
+			"--slice-addr", strings.TrimSpace(settings.SliceAddr),
+			"--admin-addr", strings.TrimSpace(settings.AdminAddr),
+			"--file-addr", strings.TrimSpace(settings.FileAddr),
+			"--fs-addr", strings.TrimSpace(settings.FSAddr),
+		)
+	} else {
+		args = append(args,
+			"--account-addr", strings.TrimSpace(*accountServerAddr),
+			"--slice-addr", strings.TrimSpace(*sliceServerAddr),
+			"--admin-addr", strings.TrimSpace(*adminServerAddr),
+			"--file-addr", strings.TrimSpace(*fileServerAddr),
+			"--fs-addr", strings.TrimSpace(*fsServerAddr),
+		)
+		if strings.TrimSpace(*coreServerAddr) != "" {
+			args = append(args, "--addr", strings.TrimSpace(*coreServerAddr))
+		}
 	}
-	if strings.TrimSpace(*coreServerAddr) != "" {
-		args = append(args, "--addr", strings.TrimSpace(*coreServerAddr))
+	tlsEnabled := *useTLS
+	if err == nil {
+		tlsEnabled = settings.TLS
 	}
-	if *useTLS {
+	if tlsEnabled {
 		args = append(args, "--tls")
 	}
 	if cliNonInteractive || *nonInteractive {

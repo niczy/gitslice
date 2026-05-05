@@ -585,8 +585,11 @@ excludes, or pass `--include-ignored` to upload every regular file.
 ### Running Tests
 
 ```bash
-# Run all tests (installs dependencies first)
+# Run regression tests (installs dependencies first)
 make test
+
+# Run the opt-in load/performance benchmark suite
+make test-benchmark
 
 # Run Python SDK tests
 PYTHONPATH=sdk/python python3 -m unittest discover -s sdk/python/tests
@@ -709,6 +712,9 @@ https://api.<domain>/git/<owner>/<slice>.git
 Examples:
 
 ```bash
+# Persist the staging API endpoint for gs commands and the Git credential helper.
+gs config endpoint set api.agenttools.dev:443 --tls
+
 # Configure Git to use the stored `gs login` / `gs auth login` credentials.
 git config --global credential.https://api.agenttools.dev.helper "!gs git credential"
 
@@ -778,8 +784,11 @@ For the Worker/VM split, browser-origin API traffic should use
 same-origin `/v1/*` routes on the web host, and the Worker should proxy them to
 `PUBLIC_API_BASE_URL`. CLI connectivity continues to target `api.gitslice.io:443`.
 
-For staging CLI connectivity, target `api.agenttools.dev:443` with TLS enabled.
-For the target production layout, CLI connectivity moves to `api.gitslice.io:443`.
+For staging CLI connectivity, run
+`gs config endpoint set api.agenttools.dev:443 --tls`. For the target
+production layout, run `gs config endpoint set api.gitslice.io:443 --tls`.
+One-off `--addr`, per-service address flags, and `--tls=false` still override
+the persisted endpoint for a single command.
 
 Suggested production cutover smoke checks:
 
@@ -788,7 +797,8 @@ curl -sf https://gitslice.io/ >/dev/null
 curl -sf https://api.gitslice.io/v1/global/state >/dev/null
 curl -sf https://api.agenttools.dev/v1/global/state >/dev/null
 # After exporting GS_API_KEY=... (or logging in locally):
-gs context --json --slice-addr api.gitslice.io:443 --account-addr api.gitslice.io:443 --admin-addr api.gitslice.io:443 --file-addr api.gitslice.io:443 --fs-addr api.gitslice.io:443
+gs config endpoint set api.gitslice.io:443 --tls
+gs context --json
 ```
 
 For object storage, verify a real production write/read path after cutover by

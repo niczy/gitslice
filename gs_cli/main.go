@@ -22,11 +22,11 @@ import (
 
 var (
 	coreServerAddr    = flag.String("addr", "", "Core gRPC service address (overrides account-addr/slice-addr/admin-addr/file-addr/fs-addr)")
-	accountServerAddr = flag.String("account-addr", "localhost:50051", "Account service address")
-	sliceServerAddr   = flag.String("slice-addr", "localhost:50051", "Slice service address")
-	adminServerAddr   = flag.String("admin-addr", "localhost:50051", "Admin service address")
-	fileServerAddr    = flag.String("file-addr", "localhost:50051", "File service address")
-	fsServerAddr      = flag.String("fs-addr", "localhost:50051", "Filesystem service address")
+	accountServerAddr = flag.String("account-addr", defaultGRPCServerAddr, "Account service address")
+	sliceServerAddr   = flag.String("slice-addr", defaultGRPCServerAddr, "Slice service address")
+	adminServerAddr   = flag.String("admin-addr", defaultGRPCServerAddr, "Admin service address")
+	fileServerAddr    = flag.String("file-addr", defaultGRPCServerAddr, "File service address")
+	fsServerAddr      = flag.String("fs-addr", defaultGRPCServerAddr, "Filesystem service address")
 	useTLS            = flag.Bool("tls", false, "Use TLS for gRPC connections")
 	nonInteractive    = flag.Bool("non-interactive", false, "Fail instead of opening interactive flows (also GS_NON_INTERACTIVE=1)")
 	apiKeyFlag        = flag.String("api-key", "", "Bearer API key or access token (overrides GS_API_KEY, GS_API_KEY_FILE, and ~/.gitslice/credentials.json)")
@@ -61,14 +61,11 @@ func Main() {
 }
 
 func newCLIFromFlags() (*CLI, error) {
-	if *coreServerAddr != "" {
-		*accountServerAddr = *coreServerAddr
-		*sliceServerAddr = *coreServerAddr
-		*adminServerAddr = *coreServerAddr
-		*fileServerAddr = *coreServerAddr
-		*fsServerAddr = *coreServerAddr
+	settings, err := resolveEndpointSettings()
+	if err != nil {
+		return nil, err
 	}
-	return NewCLI(*accountServerAddr, *sliceServerAddr, *adminServerAddr, *fileServerAddr, *fsServerAddr, *useTLS)
+	return NewCLI(settings.AccountAddr, settings.SliceAddr, settings.AdminAddr, settings.FileAddr, settings.FSAddr, settings.TLS)
 }
 
 type authenticatedCLIHandler func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string)
