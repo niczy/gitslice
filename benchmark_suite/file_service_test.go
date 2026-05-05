@@ -47,6 +47,7 @@ func TestFileServiceReadLoad(t *testing.T) {
 			ParentSliceId: "root_slice",
 			NewSliceId:    sid,
 			Name:          sid,
+			FolderPaths:   []string{"fsread"},
 		})
 		if err != nil {
 			t.Fatalf("write: CreateSliceFromFolder(%s): %v", sid, err)
@@ -79,10 +80,10 @@ func TestFileServiceReadLoad(t *testing.T) {
 	t.Logf("File service read load: read phase (%d workers × %d reads)...", readWorkers, readsPerWorker)
 
 	var (
-		listEntriesOK  int64
-		fileHistoryOK  int64
-		dirHistoryOK   int64
-		readErrors     int64
+		listEntriesOK int64
+		fileHistoryOK int64
+		dirHistoryOK  int64
+		readErrors    int64
 	)
 
 	var wg sync.WaitGroup
@@ -174,6 +175,7 @@ func TestFileServiceCommitChangesConsistency(t *testing.T) {
 		ParentSliceId: "root_slice",
 		NewSliceId:    sid,
 		Name:          sid,
+		FolderPaths:   []string{"cc"},
 	})
 	if err != nil {
 		t.Fatalf("CreateSliceFromFolder: %v", err)

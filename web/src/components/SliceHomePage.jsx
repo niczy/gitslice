@@ -1,8 +1,24 @@
-import { useMemo, useState } from 'react';
-import { ArrowRight, FolderTree, GitBranch, Globe2, Home, Lock, Plus, RefreshCcw, Search, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowRight,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderTree,
+  GitBranch,
+  Globe2,
+  Home,
+  Lock,
+  Plus,
+  RefreshCcw,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
 
-import { createSliceFromFolder } from '../utils/api.js';
+import { createSliceFromFolder, fetchSliceEntries } from '../utils/api.js';
 import { formatTimestamp } from '../utils/format.js';
+import { normalizeEntryType } from '../utils/normalize.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
@@ -44,6 +60,40 @@ function sortSlices(slices, homeSliceId) {
   });
 }
 
+function cleanFolderPath(value) {
+  const trimmed = String(value || '').trim();
+  const withoutRoot = trimmed.replace(/^\/+/, '').replace(/\/+$/, '');
+  return withoutRoot.split('/').filter(Boolean).join('/');
+}
+
+function validateFolderPath(value) {
+  const cleaned = cleanFolderPath(value);
+  if (!cleaned) {
+    return { path: '', error: 'At least one tracked folder is required.' };
+  }
+  if (cleaned.includes('\0')) {
+    return { path: cleaned, error: 'Folder paths cannot contain null bytes.' };
+  }
+  const invalidSegment = cleaned.split('/').find((segment) => {
+    const normalized = segment.trim();
+    return normalized === '' || normalized === '.' || normalized === '..' || normalized === '~';
+  });
+  if (invalidSegment) {
+    return { path: cleaned, error: `Folder path contains an invalid segment: ${invalidSegment}` };
+  }
+  return { path: cleaned, error: '' };
+}
+
+function getEntryName(entry) {
+  return entry?.name || String(entry?.path || '').split('/').filter(Boolean).pop() || entry?.path || '';
+}
+
+function sortDirectoryEntries(entries) {
+  return [...(entries || [])]
+    .filter((entry) => normalizeEntryType(entry?.type) === 'directory')
+    .sort((left, right) => getEntryName(left).localeCompare(getEntryName(right), undefined, { sensitivity: 'base' }));
+}
+
 export default function SliceHomePage({
   slices,
   slicesLoading,
@@ -58,6 +108,12 @@ export default function SliceHomePage({
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [sliceName, setSliceName] = useState('');
   const [sliceDescription, setSliceDescription] = useState('');
+  const [selectedFolders, setSelectedFolders] = useState([]);
+  const [folderInput, setFolderInput] = useState('');
+  const [folderSelectionError, setFolderSelectionError] = useState('');
+  const [folderBrowserEntries, setFolderBrowserEntries] = useState({});
+  const [expandedFolderPaths, setExpandedFolderPaths] = useState(['']);
+  const [loadingFolderPaths, setLoadingFolderPaths] = useState({});
   const [createError, setCreateError] = useState('');
   const [createLoading, setCreateLoading] = useState(false);
 
@@ -84,7 +140,78 @@ export default function SliceHomePage({
       return;
     }
     setCreateError('');
+    setFolderSelectionError('');
     setIsCreateOpen(true);
+  };
+
+  const closeCreateDialog = () => {
+    setIsCreateOpen(false);
+  };
+
+  const loadFolderEntries = async (path = '') => {
+    if (Object.prototype.hasOwnProperty.call(folderBrowserEntries, path)) {
+      return;
+    }
+    setLoadingFolderPaths((prev) => ({ ...prev, [path]: true }));
+    setFolderSelectionError('');
+    try {
+      const entries = await fetchSliceEntries('root_slice', path);
+      setFolderBrowserEntries((prev) => ({ ...prev, [path]: entries }));
+    } catch (error) {
+      setFolderSelectionError(error?.message || 'Unable to load folders.');
+    } finally {
+      setLoadingFolderPaths((prev) => ({ ...prev, [path]: false }));
+    }
+  };
+
+  useEffect(() => {
+    if (isCreateOpen) {
+      loadFolderEntries('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCreateOpen]);
+
+  const addFolderSelection = (rawPath) => {
+    const { path, error } = validateFolderPath(rawPath);
+    if (error) {
+      setFolderSelectionError(error);
+      return;
+    }
+
+    if (selectedFolders.includes(path)) {
+      setFolderSelectionError('That folder is already tracked.');
+      return;
+    }
+    if (selectedFolders.some((folder) => path.startsWith(`${folder}/`))) {
+      setFolderSelectionError('A parent folder is already tracked.');
+      return;
+    }
+
+    setSelectedFolders((prev) => [
+      ...prev.filter((folder) => !folder.startsWith(`${path}/`)),
+      path,
+    ]);
+    setFolderInput('');
+    setFolderSelectionError('');
+    setCreateError('');
+  };
+
+  const removeFolderSelection = (folderPath) => {
+    setSelectedFolders((prev) => prev.filter((folder) => folder !== folderPath));
+  };
+
+  const toggleFolderExpansion = async (folderPath) => {
+    const isExpanded = expandedFolderPaths.includes(folderPath);
+    if (isExpanded) {
+      setExpandedFolderPaths((prev) => prev.filter((path) => path !== folderPath));
+      return;
+    }
+    await loadFolderEntries(folderPath);
+    setExpandedFolderPaths((prev) => [...prev, folderPath]);
+  };
+
+  const handleFolderInputSubmit = () => {
+    addFolderSelection(folderInput);
   };
 
   const handleCreateSubmit = async (event) => {
@@ -94,17 +221,24 @@ export default function SliceHomePage({
       setCreateError('Slice name is required.');
       return;
     }
+    if (selectedFolders.length === 0) {
+      setCreateError('At least one tracked folder is required.');
+      return;
+    }
 
     setCreateLoading(true);
     setCreateError('');
     try {
       const created = await createSliceFromFolder({
         parentSliceId: 'root_slice',
+        folderPaths: selectedFolders,
         name,
         description: sliceDescription.trim(),
       });
       setSliceName('');
       setSliceDescription('');
+      setSelectedFolders([]);
+      setFolderInput('');
       setIsCreateOpen(false);
       await onRefresh?.();
       onOpenSlice(created.slice_id);
@@ -113,6 +247,62 @@ export default function SliceHomePage({
     } finally {
       setCreateLoading(false);
     }
+  };
+
+  const renderFolderTree = (path = '', depth = 0) => {
+    const entries = sortDirectoryEntries(folderBrowserEntries[path] || []);
+    if (!entries.length && loadingFolderPaths[path]) {
+      return (
+        <div className="slice-create-folder-loading" role="status">
+          Loading folders...
+        </div>
+      );
+    }
+    if (!entries.length) {
+      return null;
+    }
+
+    return (
+      <ul className="slice-create-folder-tree">
+        {entries.map((entry) => {
+          const folderPath = cleanFolderPath(entry.path);
+          const isExpanded = expandedFolderPaths.includes(folderPath);
+          const isSelected = selectedFolders.includes(folderPath);
+          const isCovered = selectedFolders.some((selected) => folderPath.startsWith(`${selected}/`));
+          return (
+            <li key={folderPath}>
+              <div
+                className={`slice-create-folder-row${isSelected ? ' selected' : ''}${isCovered ? ' covered' : ''}`}
+                style={{ '--folder-depth': depth }}
+              >
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="slice-create-folder-toggle"
+                  onClick={() => toggleFolderExpansion(folderPath)}
+                  aria-label={isExpanded ? `Collapse ${folderPath}` : `Expand ${folderPath}`}
+                >
+                  {isExpanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                </Button>
+                <button
+                  type="button"
+                  className="slice-create-folder-option"
+                  onClick={() => addFolderSelection(folderPath)}
+                  title={folderPath}
+                  data-testid="slice-create-folder-option"
+                >
+                  <Folder size={15} aria-hidden="true" />
+                  <span>{getEntryName(entry)}</span>
+                  <small>{folderPath}</small>
+                </button>
+              </div>
+              {isExpanded && renderFolderTree(folderPath, depth + 1)}
+            </li>
+          );
+        })}
+      </ul>
+    );
   };
 
   return (
@@ -213,7 +403,7 @@ export default function SliceHomePage({
       </div>
 
       {isCreateOpen && (
-        <div className="slice-create-backdrop" role="presentation" onClick={() => setIsCreateOpen(false)}>
+        <div className="slice-create-backdrop" role="presentation" onClick={closeCreateDialog}>
           <form
             className="slice-create-dialog"
             role="dialog"
@@ -225,14 +415,14 @@ export default function SliceHomePage({
             <div className="slice-create-header">
               <div>
                 <h2>Create slice</h2>
-                <p>Start an empty workspace slice from the current root.</p>
+                <p>Select the root folders this workspace slice should track.</p>
               </div>
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
                 className="slice-create-close"
-                onClick={() => setIsCreateOpen(false)}
+                onClick={closeCreateDialog}
                 aria-label="Close create slice dialog"
               >
                 <X size={16} aria-hidden="true" />
@@ -258,9 +448,57 @@ export default function SliceHomePage({
                 data-testid="slice-create-description"
               />
             </label>
+            <section className="slice-create-folders" aria-label="Tracked folders">
+              <div className="slice-create-section-heading">
+                <span>Tracked folders</span>
+                <small>{selectedFolders.length} selected</small>
+              </div>
+              {selectedFolders.length > 0 ? (
+                <ul className="slice-create-selected-folders" data-testid="slice-create-selected-folders">
+                  {selectedFolders.map((folderPath) => (
+                    <li key={folderPath}>
+                      <span>{folderPath}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeFolderSelection(folderPath)}
+                        aria-label={`Remove ${folderPath}`}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="slice-create-folder-empty">Choose at least one folder from the root slice.</div>
+              )}
+              <div className="slice-create-folder-input">
+                <input
+                  type="text"
+                  value={folderInput}
+                  onChange={(event) => setFolderInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleFolderInputSubmit();
+                    }
+                  }}
+                  placeholder="apps/web"
+                  data-testid="slice-create-folder-input"
+                />
+                <Button type="button" variant="secondary" onClick={handleFolderInputSubmit}>
+                  Add
+                </Button>
+              </div>
+              <div className="slice-create-folder-browser" data-testid="slice-create-folder-browser">
+                {renderFolderTree('')}
+              </div>
+              {folderSelectionError && <div className="panel-error">{folderSelectionError}</div>}
+            </section>
             {createError && <div className="panel-error">{createError}</div>}
             <div className="slice-create-actions">
-              <Button type="button" variant="ghost" onClick={() => setIsCreateOpen(false)}>
+              <Button type="button" variant="ghost" onClick={closeCreateDialog}>
                 Cancel
               </Button>
               <Button type="submit" disabled={createLoading} data-testid="slice-create-submit">

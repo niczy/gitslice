@@ -50,6 +50,10 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Failed to initialize root slice: %v\n", err)
 		os.Exit(1)
 	}
+	if err = seedBenchmarkRootFolders(ctx, benchStorage); err != nil {
+		fmt.Printf("Failed to seed benchmark root folders: %v\n", err)
+		os.Exit(1)
+	}
 
 	benchGRPCAddr, benchServer, err = startBenchGRPCServer(benchStorage)
 	if err != nil {
@@ -73,6 +77,19 @@ func TestMain(m *testing.M) {
 	_ = benchGRPCConn.Close()
 	benchServer.GracefulStop()
 	os.Exit(code)
+}
+
+func seedBenchmarkRootFolders(ctx context.Context, st storage.Storage) error {
+	for _, folder := range []string{"bench", "cc", "conflict", "fsread", "hotfile", "integrity"} {
+		seedPath := fmt.Sprintf("%s/.seed", folder)
+		if _, err := storage.WriteSliceFileManifest(ctx, st, "root_slice", seedPath, []byte("seed\n")); err != nil {
+			return err
+		}
+		if err := st.AddFileToSlice(ctx, seedPath, "root_slice"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func startBenchGRPCServer(st storage.Storage) (string, *grpc.Server, error) {

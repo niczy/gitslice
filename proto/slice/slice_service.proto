@@ -443,7 +443,8 @@ message GetRootSliceResponse {
 // Request to create a slice from an existing folder
 message CreateSliceFromFolderRequest {
   string parent_slice_id = 1;
-  string folder_path = 2;
+  reserved 2;
+  reserved "folder_path";
   string new_slice_id = 3;
   string name = 4;
   string description = 5;

@@ -2873,8 +2873,8 @@ func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetR
 }
 
 func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *slicev1.CreateSliceFromFolderRequest) (*slicev1.CreateSliceFromFolderResponse, error) {
-	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_path=%s, folder_paths=%d, new_slice_id=%s",
-		req.ParentSliceId, req.FolderPath, len(req.FolderPaths), req.NewSliceId)
+	log.Printf("CreateSliceFromFolder called: parent_slice_id=%s, folder_paths=%d, new_slice_id=%s",
+		req.ParentSliceId, len(req.FolderPaths), req.NewSliceId)
 
 	username, err := s.requireUsername(ctx)
 	if err != nil {
@@ -3242,11 +3242,7 @@ func defaultSliceNameFromFolders(folderPaths []string, fallback string) string {
 }
 
 func collectRequestedFolderPaths(req *slicev1.CreateSliceFromFolderRequest) ([]string, error) {
-	paths := make([]string, 0, len(req.GetFolderPaths())+1)
-	if raw := strings.TrimSpace(req.GetFolderPath()); raw != "" {
-		paths = append(paths, raw)
-	}
-	paths = append(paths, req.GetFolderPaths()...)
+	paths := req.GetFolderPaths()
 
 	dedup := make(map[string]struct{}, len(paths))
 	normalized := make([]string, 0, len(paths))
@@ -3263,6 +3259,9 @@ func collectRequestedFolderPaths(req *slicev1.CreateSliceFromFolderRequest) ([]s
 		}
 		dedup[cleaned] = struct{}{}
 		normalized = append(normalized, cleaned)
+	}
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("at least one folder path is required")
 	}
 	return normalized, nil
 }
