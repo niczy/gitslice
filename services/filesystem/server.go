@@ -53,6 +53,8 @@ const (
 	filesystemUploadWriteConcurrency = 32
 	filesystemInlineChangeDiffLimit  = 100
 	filesystemUploadPlanConcurrency  = 32
+	filesystemSearchVerifyBatchSize  = 16
+	filesystemSearchMaxMatches       = 500
 )
 
 type readFileOptions struct {
@@ -3588,28 +3590,96 @@ func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, wo
 
 	verifyStartedAt := time.Now()
 	defer observeFilesystemSearchVerify(searchMode, time.Since(verifyStartedAt))
-	matches := make([]*filesystemv1.SearchMatch, 0)
-	for _, fileIndex := range candidateIndexes {
-		if int(fileIndex) >= len(artifact.Files) {
-			continue
-		}
-		file := artifact.Files[fileIndex]
-		if globPattern != "" && !globMatch(globPattern, file.Path) {
-			continue
-		}
-		content, err := s.readWorkspaceFileContent(ctx, workspaceID, file.Path)
-		if err != nil {
-			if status.Code(err) == codes.NotFound {
-				continue
-			}
+	return s.verifyIndexedSearchCandidates(ctx, workspaceID, artifact, candidateIndexes, globPattern, homeMode, regex, query, re)
+}
+
+type searchCandidateResult struct {
+	matches []*filesystemv1.SearchMatch
+	err     error
+}
+
+func filesystemSearchContextError(ctx context.Context) error {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return status.Error(codes.DeadlineExceeded, "search deadline exceeded")
+	}
+	return status.Error(codes.Canceled, "search canceled")
+}
+
+func (s *filesystemServiceServer) verifyIndexedSearchCandidates(
+	ctx context.Context,
+	workspaceID string,
+	artifact *searchindex.SliceArtifact,
+	candidateIndexes []uint32,
+	globPattern string,
+	homeMode bool,
+	regex bool,
+	query string,
+	re *regexp.Regexp,
+) ([]*filesystemv1.SearchMatch, error) {
+	matches := make([]*filesystemv1.SearchMatch, 0, min(filesystemSearchMaxMatches, len(candidateIndexes)))
+	for start := 0; start < len(candidateIndexes) && len(matches) < filesystemSearchMaxMatches; start += filesystemSearchVerifyBatchSize {
+		if err := filesystemSearchContextError(ctx); err != nil {
 			return nil, err
 		}
-		displayPath := displayOperationPath(file.Path, homeMode)
-		if regex {
-			matches = append(matches, findRegexSearchMatches(displayPath, string(content.Content), re)...)
-			continue
+		end := min(start+filesystemSearchVerifyBatchSize, len(candidateIndexes))
+		batch := candidateIndexes[start:end]
+		results := make([]searchCandidateResult, len(batch))
+		var wg sync.WaitGroup
+		for i, fileIndex := range batch {
+			if int(fileIndex) >= len(artifact.Files) {
+				continue
+			}
+			file := artifact.Files[fileIndex]
+			if globPattern != "" && !globMatch(globPattern, file.Path) {
+				continue
+			}
+			wg.Add(1)
+			go func(resultIndex int, file searchindex.SliceArtifactFile) {
+				defer wg.Done()
+				if err := filesystemSearchContextError(ctx); err != nil {
+					results[resultIndex].err = err
+					return
+				}
+				content, err := s.readWorkspaceFileContent(ctx, workspaceID, file.Path)
+				if err != nil {
+					if status.Code(err) == codes.NotFound {
+						return
+					}
+					results[resultIndex].err = err
+					return
+				}
+				if err := filesystemSearchContextError(ctx); err != nil {
+					results[resultIndex].err = err
+					return
+				}
+				displayPath := displayOperationPath(file.Path, homeMode)
+				if regex {
+					results[resultIndex].matches = findRegexSearchMatches(displayPath, string(content.Content), re)
+					return
+				}
+				results[resultIndex].matches = findSearchMatches(displayPath, string(content.Content), query)
+			}(i, file)
 		}
-		matches = append(matches, findSearchMatches(displayPath, string(content.Content), query)...)
+		wg.Wait()
+
+		for _, result := range results {
+			if result.err != nil {
+				return nil, result.err
+			}
+			if len(result.matches) == 0 {
+				continue
+			}
+			remaining := filesystemSearchMaxMatches - len(matches)
+			if len(result.matches) > remaining {
+				matches = append(matches, result.matches[:remaining]...)
+				return matches, nil
+			}
+			matches = append(matches, result.matches...)
+		}
 	}
 	return matches, nil
 }

@@ -518,6 +518,49 @@ func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
 	}
 }
 
+func TestSearchCapsLargeMatchSet(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-search-cap",
+		Name:        "Search Cap Workspace",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	var body strings.Builder
+	for i := 0; i < filesystemSearchMaxMatches+25; i++ {
+		fmt.Fprintf(&body, "needle line %d\n", i)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-search-cap",
+		Path:        "docs/many.txt",
+		Content:     []byte(body.String()),
+	}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	waitForSearchIndexForTest(t, svc)
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: "ws-search-cap",
+		Query:       "needle",
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if got, want := len(searchResp.GetMatches()), filesystemSearchMaxMatches; got != want {
+		t.Fatalf("expected capped search matches = %d, got %d", want, got)
+	}
+	if got, want := searchResp.GetMatches()[filesystemSearchMaxMatches-1].GetLineNumber(), int32(filesystemSearchMaxMatches); got != want {
+		t.Fatalf("last capped match line = %d, want %d", got, want)
+	}
+}
+
 func TestWorkspaceFileLifecycle(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
