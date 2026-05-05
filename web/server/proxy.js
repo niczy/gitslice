@@ -1,5 +1,5 @@
 import { getConfiguredAPIBaseURL } from '../shared/runtime.js';
-import { getAuthProvider, getProxyAuthorizationResult } from './auth.js';
+import { clearLocalSessionCookie, getAuthProvider, getProxyAuthorizationResult } from './auth.js';
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
@@ -41,6 +41,23 @@ export async function proxyRequest(request, suffix = '') {
       body,
       redirect: 'manual',
     });
+    if (response.status === 401) {
+      const responseText = await response.clone().text();
+      if (/invalid session token/i.test(responseText)) {
+        const staleSessionHeaders = new Headers(response.headers);
+        for (const cookie of responseCookies) {
+          if (cookie) {
+            staleSessionHeaders.append('Set-Cookie', cookie);
+          }
+        }
+        staleSessionHeaders.append('Set-Cookie', clearLocalSessionCookie(request));
+        return new Response(responseText, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: staleSessionHeaders,
+        });
+      }
+    }
     const proxied = new Response(response.body, response);
     for (const cookie of responseCookies) {
       if (cookie) {

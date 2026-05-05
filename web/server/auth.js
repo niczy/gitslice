@@ -589,7 +589,7 @@ async function serializeLocalSessionCookie(request, localSession, authSecret) {
   return serializeCookie(request, LOCAL_SESSION_COOKIE, sealed, maxAge);
 }
 
-function clearLocalSessionCookie(request) {
+export function clearLocalSessionCookie(request) {
   return serializeCookie(request, LOCAL_SESSION_COOKIE, '', 0);
 }
 
