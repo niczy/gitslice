@@ -5517,16 +5517,19 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-home-panel {
-  min-height: 240px;
+  height: clamp(320px, calc(100dvh - 310px), 560px);
+  min-height: 320px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .slice-home-list {
   display: grid;
   gap: 0;
+  min-height: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -6084,7 +6087,7 @@ button[data-testid="topbar-get-started"]:hover {
 
 .slice-create-folders {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .slice-create-section-heading {
@@ -6106,7 +6109,7 @@ button[data-testid="topbar-get-started"]:hover {
 .slice-create-selected-folders {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -6117,13 +6120,14 @@ button[data-testid="topbar-get-started"]:hover {
   align-items: center;
   min-width: 0;
   max-width: 100%;
-  gap: 6px;
-  padding: 5px 5px 5px 10px;
-  border: 1px solid rgba(17, 19, 23, 0.1);
+  min-height: 26px;
+  gap: 4px;
+  padding: 2px 3px 2px 8px;
+  border: 1px solid rgba(17, 19, 23, 0.08);
   border-radius: 999px;
-  background: var(--surface-elevated);
+  background: rgba(245, 243, 244, 0.7);
   color: var(--text-primary);
-  font-size: 0.84rem;
+  font-size: 0.8rem;
   font-weight: 600;
 }
 
@@ -6132,11 +6136,28 @@ button[data-testid="topbar-get-started"]:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
-.slice-create-selected-folders button {
-  width: 26px;
-  height: 26px;
+.slice-create-folder-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0 !important;
+  border: 0;
+  border-radius: 999px;
+  color: rgba(99, 107, 122, 0.72);
+  opacity: 0.72;
+}
+
+.slice-create-folder-remove:hover {
+  background: rgba(17, 19, 23, 0.06);
+  color: var(--text-secondary);
+  opacity: 1;
+  transform: none;
+}
+
+.slice-create-folder-remove:active {
+  transform: scale(0.94);
 }
 
 .slice-create-folder-empty {
@@ -6150,19 +6171,19 @@ button[data-testid="topbar-get-started"]:hover {
 .slice-create-folder-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 6px;
 }
 
 .slice-create-folder-input input {
-  min-height: 40px;
+  min-height: 36px;
   width: 100%;
-  padding: 0 12px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-elevated);
   color: var(--text-primary);
   font: inherit;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   outline: 0;
 }
 
@@ -6173,24 +6194,24 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-create-folder-browser {
-  max-height: 240px;
+  max-height: 220px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--surface-elevated);
 }
 
 .slice-create-folder-tree {
   margin: 0;
-  padding: 4px 0;
+  padding: 2px 0;
   list-style: none;
 }
 
 .slice-create-folder-row {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
-  padding-left: calc(var(--folder-depth, 0) * 16px);
+  padding-left: calc(var(--folder-depth, 0) * 14px);
 }
 
 .slice-create-folder-row.selected .slice-create-folder-option {
@@ -6203,25 +6224,29 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-create-folder-toggle {
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 28px;
   color: var(--text-muted);
 }
 
 .slice-create-folder-option {
   min-width: 0;
-  min-height: 36px;
+  min-height: 32px;
   display: grid;
-  grid-template-columns: 20px minmax(80px, auto) minmax(0, 1fr);
+  grid-template-columns: 18px minmax(72px, auto) minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
   font: inherit;
   text-align: left;
+}
+
+.slice-create-folder-option.compact {
+  grid-template-columns: 18px minmax(0, 1fr);
 }
 
 .slice-create-folder-option:hover {
@@ -6237,13 +6262,13 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-create-folder-option span {
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   font-weight: 650;
 }
 
 .slice-create-folder-option small {
   color: var(--text-muted);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
 }
 
 .slice-create-folder-loading {
@@ -6276,6 +6301,11 @@ button[data-testid="topbar-get-started"]:hover {
     justify-content: stretch;
   }
 
+  .slice-home-panel {
+    height: clamp(300px, calc(100dvh - 360px), 520px);
+    min-height: 300px;
+  }
+
   .slice-home-row {
     grid-template-columns: 34px minmax(0, 1fr) 18px;
     min-height: 76px;
@@ -6295,6 +6325,11 @@ button[data-testid="topbar-get-started"]:hover {
 
   .slice-home-actions button {
     width: 100%;
+  }
+
+  .slice-home-panel {
+    height: clamp(280px, calc(100dvh - 390px), 460px);
+    min-height: 280px;
   }
 
   .slice-create-actions {
