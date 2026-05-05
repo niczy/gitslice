@@ -1,5 +1,5 @@
 import { getConfiguredAPIBaseURL } from '../shared/runtime.js';
-import { getAuthProvider, getProxyAuthorizationResult } from './auth.js';
+import { clearLocalSessionCookie, getAuthProvider, getProxyAuthorizationResult } from './auth.js';
 import { normalizeSliceInfo } from '../src/utils/normalize.js';
 
 function getGatewayTarget() {
@@ -42,7 +42,11 @@ async function createGatewayHeaders(request, session) {
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
     }
-    return { headers, setCookies: authResult.setCookies || [] };
+    return {
+      headers,
+      setCookies: authResult.setCookies || [],
+      rejectUnauthenticated: authResult.rejectUnauthenticated,
+    };
   }
 
   const username = String(session?.user?.username || '').trim();
@@ -72,12 +76,25 @@ async function readErrorMessage(response, fallback) {
 }
 
 async function fetchJSON(request, session, pathname, params) {
-  const { headers, setCookies } = await createGatewayHeaders(request, session);
+  const { headers, setCookies, rejectUnauthenticated } = await createGatewayHeaders(request, session);
+  if (rejectUnauthenticated) {
+    const error = new Error('Request failed: Not signed in');
+    error.setCookies = setCookies;
+    error.authExpired = true;
+    throw error;
+  }
   const response = await fetch(buildGatewayURL(pathname, request, params), {
     headers,
   });
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Request failed'));
+    const message = await readErrorMessage(response, 'Request failed');
+    const error = new Error(message);
+    error.setCookies = setCookies;
+    if (response.status === 401 && /invalid session token/i.test(message)) {
+      error.setCookies = [...setCookies, clearLocalSessionCookie(request)];
+      error.authExpired = true;
+    }
+    throw error;
   }
   return {
     payload: await response.json(),
@@ -85,15 +102,23 @@ async function fetchJSON(request, session, pathname, params) {
   };
 }
 
+function pushErrorCookies(target, error) {
+  if (Array.isArray(error?.setCookies)) {
+    target.push(...error.setCookies);
+  }
+}
+
 export async function loadBrowserRouteData(request, session, routeInfo) {
   if (routeInfo?.page !== 'browser') {
     return {
       data: null,
       setCookies: [],
+      authExpired: false,
     };
   }
 
   const setCookies = [];
+  let authExpired = false;
   const data = {
     slices: [],
     slicesError: '',
@@ -111,11 +136,13 @@ export async function loadBrowserRouteData(request, session, routeInfo) {
     setCookies.push(...cookies);
     data.slices = (payload?.slices || []).map(normalizeSliceInfo);
   } catch (error) {
+    pushErrorCookies(setCookies, error);
+    authExpired = authExpired || Boolean(error?.authExpired);
     data.slicesError = error?.message || 'Unable to load slices.';
   }
 
   if (!data.selectedSliceId) {
-    return { data, setCookies };
+    return { data, setCookies, authExpired };
   }
 
   try {
@@ -132,11 +159,13 @@ export async function loadBrowserRouteData(request, session, routeInfo) {
     setCookies.push(...cookies);
     data.rootEntries = payload?.entries || [];
   } catch (error) {
+    pushErrorCookies(setCookies, error);
+    authExpired = authExpired || Boolean(error?.authExpired);
     data.rootEntriesError = error?.message || 'Unable to load entries.';
   }
 
   if (!data.selectedFile) {
-    return { data, setCookies };
+    return { data, setCookies, authExpired };
   }
 
   try {
@@ -154,8 +183,10 @@ export async function loadBrowserRouteData(request, session, routeInfo) {
     setCookies.push(...cookies);
     data.selectedFilePayload = payload?.file || null;
   } catch (error) {
+    pushErrorCookies(setCookies, error);
+    authExpired = authExpired || Boolean(error?.authExpired);
     data.selectedFileError = error?.message || 'Unable to load file content.';
   }
 
-  return { data, setCookies };
+  return { data, setCookies, authExpired };
 }

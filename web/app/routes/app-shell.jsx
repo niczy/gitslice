@@ -17,6 +17,10 @@ export async function loader({ request }) {
   const requestURL = new URL(request.url);
   const routeInfo = parseLocation(requestURL);
   const browserRoute = await loadBrowserRouteData(request, session, routeInfo);
+  if (browserRoute.authExpired) {
+    session = null;
+    sessionError = '';
+  }
   const response = Response.json({
     session,
     sessionError,
