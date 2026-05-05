@@ -5632,6 +5632,7 @@ button[data-testid="topbar-get-started"]:hover {
   border-radius: 0 !important;
   box-shadow: none !important;
   color: var(--text-primary) !important;
+  cursor: pointer !important;
   text-align: left;
 }
 
