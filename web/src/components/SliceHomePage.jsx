@@ -12,7 +12,6 @@ import {
   Plus,
   RefreshCcw,
   Search,
-  Trash2,
   X,
 } from 'lucide-react';
 
@@ -266,9 +265,11 @@ export default function SliceHomePage({
       <ul className="slice-create-folder-tree">
         {entries.map((entry) => {
           const folderPath = cleanFolderPath(entry.path);
+          const entryName = getEntryName(entry);
           const isExpanded = expandedFolderPaths.includes(folderPath);
           const isSelected = selectedFolders.includes(folderPath);
           const isCovered = selectedFolders.some((selected) => folderPath.startsWith(`${selected}/`));
+          const showFolderPath = folderPath !== entryName;
           return (
             <li key={folderPath}>
               <div
@@ -287,14 +288,14 @@ export default function SliceHomePage({
                 </Button>
                 <button
                   type="button"
-                  className="slice-create-folder-option"
+                  className={`slice-create-folder-option${showFolderPath ? '' : ' compact'}`}
                   onClick={() => addFolderSelection(folderPath)}
                   title={folderPath}
                   data-testid="slice-create-folder-option"
                 >
                   <Folder size={15} aria-hidden="true" />
-                  <span>{getEntryName(entry)}</span>
-                  <small>{folderPath}</small>
+                  <span>{entryName}</span>
+                  {showFolderPath && <small>{folderPath}</small>}
                 </button>
               </div>
               {isExpanded && renderFolderTree(folderPath, depth + 1)}
@@ -467,10 +468,11 @@ export default function SliceHomePage({
                         type="button"
                         variant="ghost"
                         size="icon"
+                        className="slice-create-folder-remove"
                         onClick={() => removeFolderSelection(folderPath)}
                         aria-label={`Remove ${folderPath}`}
                       >
-                        <Trash2 size={14} aria-hidden="true" />
+                        <X size={12} aria-hidden="true" />
                       </Button>
                     </li>
                   ))}
