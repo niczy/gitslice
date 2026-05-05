@@ -79,6 +79,12 @@ export function getPublicAuthConfig(request) {
   };
 }
 
+export function isClerkAuthConfigured() {
+  const secretKey = String(process.env.CLERK_SECRET_KEY || '').trim();
+  const publishableKey = String(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '').trim();
+  return Boolean(secretKey && publishableKey);
+}
+
 function requireCrypto() {
   if (!globalThis.crypto?.subtle || typeof globalThis.crypto?.getRandomValues !== 'function') {
     throw new Error('Web Crypto APIs are not available in the current runtime');

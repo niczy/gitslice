@@ -1355,6 +1355,28 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 		t.Fatalf("expected checkout content %q, got %q", string(content), got)
 	}
 
+	childMeta, err := st.GetSliceMetadata(ctx, createResp.GetSliceId())
+	if err != nil {
+		t.Fatalf("GetSliceMetadata child failed: %v", err)
+	}
+	childCommits, err := st.ListSliceCommits(ctx, createResp.GetSliceId(), 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceCommits child failed: %v", err)
+	}
+	if len(childCommits) != 1 || childCommits[0].CommitHash != childMeta.HeadCommitHash {
+		t.Fatalf("expected initial child commit %q, got %#v", childMeta.HeadCommitHash, childCommits)
+	}
+	childSnapshot, err := st.GetCommitSnapshot(ctx, childMeta.HeadCommitHash)
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot child failed: %v", err)
+	}
+	if got := strings.TrimSpace(childSnapshot.Files[filePath]); got == "" {
+		t.Fatalf("expected child snapshot to include parent manifest hash for %s", filePath)
+	}
+	if _, err := storage.BuildSliceSearchArtifact(ctx, st, createResp.GetSliceId(), childMeta.HeadCommitHash); err != nil {
+		t.Fatalf("BuildSliceSearchArtifact child failed: %v", err)
+	}
+
 	childEntry, err := st.GetEntryByPath(ctx, createResp.GetSliceId(), filePath)
 	if err != nil {
 		t.Fatalf("GetEntryByPath child failed: %v", err)

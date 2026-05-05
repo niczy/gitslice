@@ -595,15 +595,18 @@ func (s *sliceServiceServer) prepareCheckout(
 		resolvedCommit = strings.TrimSpace(metadata.HeadCommitHash)
 	}
 	backingSliceID := req.SliceId
+	mountedHeadCheckout := false
 	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 {
 		backingSliceID, err = s.resolveBackingSliceID(ctx, req.SliceId, slice)
 		if err != nil {
 			return nil, nil, "", "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 		}
+		requestedCommit := strings.TrimSpace(req.GetCommitHash())
+		mountedHeadCheckout = requestedCommit == "" || strings.EqualFold(requestedCommit, "HEAD")
 	}
 
 	snapshotFiles := map[string]string(nil)
-	if effectiveCommit != "" {
+	if effectiveCommit != "" && !mountedHeadCheckout {
 		snapshot, snapshotErr := s.storage.GetCommitSnapshot(ctx, effectiveCommit)
 		if snapshotErr != nil && !errors.Is(snapshotErr, storage.ErrCommitNotFound) {
 			return nil, nil, "", "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout snapshot for %s: %v", effectiveCommit, snapshotErr))
@@ -2950,6 +2953,9 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	if err := s.hydrateSliceEntryMetadataFromParent(ctx, newSlice, parentSlice, selectedFiles); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to hydrate slice entry metadata: %v", err))
 	}
+	if err := s.initializeSliceFromFolderHead(ctx, newSlice, parentSlice, selectedFiles); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to initialize slice commit: %v", err))
+	}
 
 	return &slicev1.CreateSliceFromFolderResponse{
 		SliceId:    sliceID,
@@ -2959,6 +2965,53 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		Slug:       externalSliceSlug(newSlice),
 		Visibility: modelVisibilityToProto(newSlice.Visibility),
 	}, nil
+}
+
+func (s *sliceServiceServer) initializeSliceFromFolderHead(ctx context.Context, slice, parentSlice *models.Slice, selectedFiles []string) error {
+	if slice == nil {
+		return nil
+	}
+
+	meta, err := s.storage.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		return err
+	}
+	commitHash := strings.TrimSpace(meta.HeadCommitHash)
+	if commitHash == "" {
+		commitHash = "init-" + slice.ID
+	}
+
+	files := make(map[string]string)
+	if parentSlice != nil {
+		parentHashes, err := getFileManifestHashes(ctx, s.storage, parentSlice.ID, selectedFiles)
+		if err != nil {
+			return err
+		}
+		for _, rawPath := range normalizeModifiedFiles(selectedFiles) {
+			filePath := cleanDiffPath(rawPath)
+			hash := strings.TrimSpace(parentHashes[filePath])
+			if !isUsableContentHash(filePath, hash) {
+				continue
+			}
+			files[filePath] = hash
+		}
+	}
+
+	now := time.Now().UTC()
+	if err := s.storage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    slice.ID,
+		Files:      files,
+		Timestamp:  now,
+	}); err != nil {
+		return err
+	}
+	return s.storage.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: commitHash,
+		ParentHash: "",
+		Message:    "create slice from folder",
+		Timestamp:  now,
+	})
 }
 
 func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.RenameSliceRequest) (*slicev1.RenameSliceResponse, error) {

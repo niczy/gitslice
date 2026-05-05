@@ -56,9 +56,6 @@ func ResolveVisiblePattern(username, raw string, required bool) (string, error) 
 		}
 		return "", nil
 	}
-	if !strings.HasPrefix(pattern, "/") {
-		return "", fmt.Errorf("pattern must be absolute")
-	}
 	if strings.Contains(pattern, "\x00") {
 		return "", fmt.Errorf("pattern contains null byte")
 	}
@@ -66,15 +63,28 @@ func ResolveVisiblePattern(username, raw string, required bool) (string, error) 
 		return "", fmt.Errorf("pattern must not contain '..'")
 	}
 
-	cleaned := path.Clean(strings.ReplaceAll(pattern, "\\", "/"))
-	if cleaned == "." || cleaned == "/" {
+	normalized := strings.ReplaceAll(pattern, "\\", "/")
+	var cleaned string
+	if strings.HasPrefix(normalized, "/") {
+		cleaned = strings.TrimPrefix(path.Clean(normalized), "/")
+	} else {
+		cleaned = strings.TrimPrefix(path.Clean("/"+normalized), "/")
+		root := RelativeRootPath(username)
+		if cleaned != root && !strings.HasPrefix(cleaned, root+"/") {
+			if !strings.Contains(cleaned, "/") {
+				cleaned = path.Join(root, "**", cleaned)
+			} else {
+				cleaned = path.Join(root, cleaned)
+			}
+		}
+	}
+	if cleaned == "." || cleaned == "" {
 		return "", fmt.Errorf("pattern is required")
 	}
-	storedPattern := strings.TrimPrefix(cleaned, "/")
-	if !ownsStoredPath(username, storedPattern) {
+	if !ownsStoredPath(username, cleaned) {
 		return "", fmt.Errorf("pattern must stay under %s", VisibleRootPath(username))
 	}
-	return storedPattern, nil
+	return cleaned, nil
 }
 
 // VisiblePathForStored converts a stored home-slice path into the user-visible absolute path.

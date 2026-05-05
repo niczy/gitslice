@@ -171,7 +171,7 @@ export async function createOrganization({ name = '' } = {}) {
   return response.json();
 }
 
-export async function searchWorkspaceFiles(workspaceId, { query, glob = '', regex = false } = {}) {
+export async function searchWorkspaceFiles(workspaceId, { query, glob = '', regex = false, signal = undefined } = {}) {
   const params = new URLSearchParams();
   params.set('query', String(query || '').trim());
   if (String(glob || '').trim()) {
@@ -181,7 +181,7 @@ export async function searchWorkspaceFiles(workspaceId, { query, glob = '', rege
     params.set('regex', 'true');
   }
 
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs/workspaces/${encodeURIComponent(workspaceId)}:search?${params.toString()}`);
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/fs/workspaces/${encodeURIComponent(workspaceId)}:search?${params.toString()}`, { signal });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to search files'));
   }
