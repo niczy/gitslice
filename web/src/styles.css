@@ -7571,6 +7571,45 @@ button[data-testid="topbar-get-started"]:hover {
     min-height: calc(100dvh - 82px);
   }
 
+  .app-shell--browser .sidebar-overlay.visible {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgba(15, 23, 42, 0.36);
+  }
+
+  .app-shell--browser .repo-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 21;
+    width: 320px;
+    max-width: 88vw;
+    height: 100dvh;
+    max-height: none;
+    border-right: 1px solid var(--np-border-soft);
+    background: var(--np-sidebar);
+    box-shadow: 18px 0 40px rgba(15, 23, 42, 0.16);
+  }
+
+  .app-shell--browser .repo-sidebar.open {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  .app-shell--browser .repo-sidebar.closed {
+    display: flex;
+    width: 320px;
+    max-width: 88vw;
+    border-right: 1px solid var(--np-border-soft);
+    opacity: 0;
+    transform: translateX(-100%);
+    pointer-events: none;
+  }
+
   .app-shell--browser .code-content {
     padding: 16px;
   }
