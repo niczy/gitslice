@@ -2,6 +2,7 @@ package homeslice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,80 @@ func VisibleRootPath(username string) string {
 // RelativeRootPath returns the stored relative path used for a user's top-level directory.
 func RelativeRootPath(username string) string {
 	return strings.TrimPrefix(VisibleRootPath(username), "/")
+}
+
+// ResolveLiveBackingSliceID returns a user's home slice when a mounted slice was
+// created from root_slice paths that all live under that user's home root.
+// This lets read-side projections see the same live backing tree that the git
+// layer writes to before asynchronous root promotion catches up.
+func ResolveLiveBackingSliceID(ctx context.Context, st storage.Storage, slice *models.Slice) (string, bool, error) {
+	if st == nil || slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
+		return "", false, nil
+	}
+	rootSlice, err := st.GetRootSlice(ctx)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) || errors.Is(err, storage.ErrEntryNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if rootSlice == nil || strings.TrimSpace(rootSlice.ID) == "" || strings.TrimSpace(rootSlice.ID) != strings.TrimSpace(slice.ParentSlice) {
+		return "", false, nil
+	}
+
+	for _, username := range homeProjectionCandidates(slice) {
+		homeID := IDForUsername(username)
+		homeSlice, err := st.GetSlice(ctx, homeID)
+		if err != nil {
+			if errors.Is(err, storage.ErrSliceNotFound) {
+				continue
+			}
+			return "", false, err
+		}
+		if homeSlice == nil {
+			continue
+		}
+		rootPath := rootPathForUsername(ctx, st, username)
+		if rootPath == "" {
+			continue
+		}
+		allUnderHomeRoot := true
+		for _, mount := range slice.FolderMounts {
+			source := common.CleanRelativePath(mount.SourcePath)
+			if source != rootPath && !strings.HasPrefix(source, rootPath+"/") {
+				allUnderHomeRoot = false
+				break
+			}
+		}
+		if allUnderHomeRoot {
+			return homeSlice.ID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func homeProjectionCandidates(slice *models.Slice) []string {
+	if slice == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(slice.Owners)+1)
+	add := func(username string) {
+		username = strings.TrimSpace(username)
+		if username == "" {
+			return
+		}
+		if _, ok := seen[username]; ok {
+			return
+		}
+		seen[username] = struct{}{}
+		result = append(result, username)
+	}
+	for _, owner := range slice.Owners {
+		add(owner)
+	}
+	add(slice.CreatedBy)
+	return result
 }
 
 // EnsureUserHomeSlice provisions the user's deterministic home slice and reserves the

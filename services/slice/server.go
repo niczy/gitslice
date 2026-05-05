@@ -270,11 +270,33 @@ func (s *sliceServiceServer) collectSliceEntries(ctx context.Context, sliceID st
 	return result, nil
 }
 
+func (s *sliceServiceServer) resolveBackingSliceID(ctx context.Context, sliceID string, slice *models.Slice) (string, error) {
+	backingSliceID := strings.TrimSpace(sliceID)
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" {
+		backingSliceID = strings.TrimSpace(slice.ParentSlice)
+	}
+	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
+		return backingSliceID, nil
+	}
+	liveBackingID, ok, err := homeslice.ResolveLiveBackingSliceID(ctx, s.storage, slice)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return liveBackingID, nil
+	}
+	return backingSliceID, nil
+}
+
 func (s *sliceServiceServer) collectSliceCheckoutEntries(ctx context.Context, sliceID string, slice *models.Slice) ([]*models.DirectoryEntry, error) {
 	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
 		return s.collectSliceEntries(ctx, sliceID)
 	}
-	return s.collectMountedBackingEntries(ctx, slice.ParentSlice, slice.FolderMounts)
+	backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice)
+	if err != nil {
+		return nil, err
+	}
+	return s.collectMountedBackingEntries(ctx, backingSliceID, slice.FolderMounts)
 }
 
 func (s *sliceServiceServer) collectMountedBackingEntries(ctx context.Context, backingSliceID string, mounts []models.SliceFolderMount) ([]*models.DirectoryEntry, error) {
@@ -401,10 +423,10 @@ func (s *sliceServiceServer) collectMountedBackingFileEntriesFromSlice(ctx conte
 	return result, nil
 }
 
-func (s *sliceServiceServer) resolveCheckoutEffectiveCommit(ctx context.Context, slice *models.Slice, resolvedCommit string) string {
+func (s *sliceServiceServer) resolveCheckoutEffectiveCommit(ctx context.Context, primarySliceID, resolvedCommit string) string {
 	effectiveCommit := strings.TrimSpace(resolvedCommit)
-	if slice != nil && slice.ParentSlice != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
-		if meta, err := s.storage.GetSliceMetadata(ctx, slice.ParentSlice); err == nil && meta != nil {
+	if strings.TrimSpace(primarySliceID) != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+		if meta, err := s.storage.GetSliceMetadata(ctx, primarySliceID); err == nil && meta != nil {
 			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
 		}
 	}
@@ -432,26 +454,6 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 	size = entry.Size
 	executable = entry.Executable
 	symlinkTarget = entry.SymlinkTarget
-
-	if (size == 0 || hash == "" || symlinkTarget == "") && slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
-		parentEntry, entryErr := s.storage.GetEntryByPath(ctx, slice.ParentSlice, storedPath)
-		if entryErr == nil && parentEntry != nil {
-			if size == 0 {
-				size = parentEntry.Size
-			}
-			if hash == "" {
-				hash = strings.TrimSpace(parentEntry.Hash)
-			}
-			if !executable {
-				executable = parentEntry.Executable
-			}
-			if symlinkTarget == "" {
-				symlinkTarget = parentEntry.SymlinkTarget
-			}
-		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
-			return "", 0, nil, false, "", entryErr
-		}
-	}
 
 	if !loadBlocks {
 		return strings.TrimSpace(hash), size, nil, executable, symlinkTarget, nil
@@ -512,6 +514,26 @@ func (s *sliceServiceServer) resolveCheckoutFileMetadata(
 	if err := resolveFromSliceManifest(sliceID); err != nil {
 		return "", 0, nil, false, "", err
 	}
+
+	if (size == 0 || hash == "" || symlinkTarget == "") && slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
+		parentEntry, entryErr := s.storage.GetEntryByPath(ctx, slice.ParentSlice, storedPath)
+		if entryErr == nil && parentEntry != nil {
+			if size == 0 {
+				size = parentEntry.Size
+			}
+			if hash == "" {
+				hash = strings.TrimSpace(parentEntry.Hash)
+			}
+			if !executable {
+				executable = parentEntry.Executable
+			}
+			if symlinkTarget == "" {
+				symlinkTarget = parentEntry.SymlinkTarget
+			}
+		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return "", 0, nil, false, "", entryErr
+		}
+	}
 	if len(manifestBlocks) == 0 && slice != nil && slice.ParentSlice != "" && slice.ParentSlice != sliceID {
 		if err := resolveFromSliceManifest(slice.ParentSlice); err != nil {
 			return "", 0, nil, false, "", err
@@ -530,7 +552,7 @@ func (s *sliceServiceServer) resolveCheckoutFileContent(
 		return nil, storage.ErrEntryNotFound
 	}
 
-	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
+	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, sliceID, resolvedCommit)
 	if effectiveCommit != "" {
 		if content, err := s.storage.GetFileAtCommit(ctx, effectiveCommit, storedPath); err == nil && content != nil {
 			return content, nil
@@ -561,23 +583,30 @@ func (s *sliceServiceServer) resolveCheckoutFileContent(
 func (s *sliceServiceServer) prepareCheckout(
 	ctx context.Context,
 	req *slicev1.CheckoutRequest,
-) (*models.SliceMetadata, *models.Slice, string, []*slicev1.FileMetadata, map[string]struct{}, error) {
+) (*models.SliceMetadata, *models.Slice, string, string, []*slicev1.FileMetadata, map[string]struct{}, error) {
 	log.Printf("CheckoutSlice called: slice_id=%s, commit_hash=%s", req.SliceId, req.CommitHash)
 
 	metadata, slice, effectiveCommit, err := s.resolveCheckoutTarget(ctx, req.GetSliceId(), req.GetCommitHash())
 	if err != nil {
-		return nil, nil, "", nil, nil, err
+		return nil, nil, "", "", nil, nil, err
 	}
 	resolvedCommit := strings.TrimSpace(req.GetCommitHash())
 	if resolvedCommit == "" || strings.EqualFold(resolvedCommit, "HEAD") {
 		resolvedCommit = strings.TrimSpace(metadata.HeadCommitHash)
+	}
+	backingSliceID := req.SliceId
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 {
+		backingSliceID, err = s.resolveBackingSliceID(ctx, req.SliceId, slice)
+		if err != nil {
+			return nil, nil, "", "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
+		}
 	}
 
 	snapshotFiles := map[string]string(nil)
 	if effectiveCommit != "" {
 		snapshot, snapshotErr := s.storage.GetCommitSnapshot(ctx, effectiveCommit)
 		if snapshotErr != nil && !errors.Is(snapshotErr, storage.ErrCommitNotFound) {
-			return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout snapshot for %s: %v", effectiveCommit, snapshotErr))
+			return nil, nil, "", "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load checkout snapshot for %s: %v", effectiveCommit, snapshotErr))
 		}
 		if snapshot != nil {
 			snapshotFiles = snapshot.Files
@@ -586,7 +615,7 @@ func (s *sliceServiceServer) prepareCheckout(
 
 	entries, err := s.collectSliceCheckoutEntries(ctx, req.SliceId, slice)
 	if err != nil {
-		return nil, nil, "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
+		return nil, nil, "", "", nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slice entries: %v", err))
 	}
 
 	knownHashes := make(map[string]struct{}, len(req.GetKnownHashes()))
@@ -635,7 +664,7 @@ func (s *sliceServiceServer) prepareCheckout(
 							loadBlocks = false
 						}
 					}
-					hash, size, manifestBlocks, executable, symlinkTarget, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, req.SliceId, entry, resolvedHash, loadBlocks)
+					hash, size, manifestBlocks, executable, symlinkTarget, metaErr := s.resolveCheckoutFileMetadata(ctx, slice, backingSliceID, entry, resolvedHash, loadBlocks)
 					if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
 						firstErrMu.Lock()
 						if firstErr == nil {
@@ -672,7 +701,7 @@ func (s *sliceServiceServer) prepareCheckout(
 	firstErrMu.Lock()
 	if firstErr != nil {
 		defer firstErrMu.Unlock()
-		return nil, nil, "", nil, nil, firstErr
+		return nil, nil, "", "", nil, nil, firstErr
 	}
 	firstErrMu.Unlock()
 	sort.Slice(fileMetadata, func(i, j int) bool {
@@ -691,7 +720,7 @@ func (s *sliceServiceServer) prepareCheckout(
 		}
 	}
 
-	return metadata, slice, resolvedCommit, fileMetadata, knownHashes, nil
+	return metadata, slice, resolvedCommit, backingSliceID, fileMetadata, knownHashes, nil
 }
 
 func (s *sliceServiceServer) resolveCheckoutTarget(
@@ -726,7 +755,7 @@ func (s *sliceServiceServer) resolveCheckoutTarget(
 		}
 		return nil, nil, "", status.Error(codes.PermissionDenied, "not authorized for slice")
 	}
-	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, slice, resolvedCommit)
+	effectiveCommit := s.resolveCheckoutEffectiveCommit(ctx, sliceID, resolvedCommit)
 	return metadata, slice, effectiveCommit, nil
 }
 
@@ -792,7 +821,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 	}()
 
 	prepareStartedAt := time.Now()
-	metadata, slice, resolvedCommit, fileMetadata, knownHashes, err := s.prepareCheckout(ctx, req)
+	metadata, slice, resolvedCommit, backingSliceID, fileMetadata, knownHashes, err := s.prepareCheckout(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -830,7 +859,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			}
 		}
 		if meta.GetSize() == 0 {
-			file, err := s.resolveCheckoutFileContent(ctx, slice, req.SliceId, meta.GetFileId(), resolvedCommit)
+			file, err := s.resolveCheckoutFileContent(ctx, slice, backingSliceID, meta.GetFileId(), resolvedCommit)
 			if err != nil {
 				if errors.Is(err, storage.ErrEntryNotFound) {
 					continue
@@ -844,7 +873,7 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 			profile.addFilePayload(len(file.Content))
 			continue
 		}
-		file, err := s.resolveCheckoutFileContent(ctx, slice, req.SliceId, meta.GetFileId(), resolvedCommit)
+		file, err := s.resolveCheckoutFileContent(ctx, slice, backingSliceID, meta.GetFileId(), resolvedCommit)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
 				continue
@@ -879,7 +908,7 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 	}()
 
 	prepareStartedAt := time.Now()
-	metadata, slice, resolvedCommit, fileMetadata, knownHashes, err := s.prepareCheckout(stream.Context(), req)
+	metadata, slice, resolvedCommit, backingSliceID, fileMetadata, knownHashes, err := s.prepareCheckout(stream.Context(), req)
 	if err != nil {
 		return err
 	}
@@ -948,7 +977,7 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 				continue
 			}
 		}
-		file, err := s.resolveCheckoutFileContent(stream.Context(), slice, req.SliceId, meta.GetFileId(), resolvedCommit)
+		file, err := s.resolveCheckoutFileContent(stream.Context(), slice, backingSliceID, meta.GetFileId(), resolvedCommit)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
 				continue
