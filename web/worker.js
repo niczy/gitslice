@@ -64,6 +64,23 @@ const handleAppRequest = createRequestHandler({
   getLoadContext: createLoadContext,
 });
 
+function isVersionedBuildAsset(pathname) {
+  return /^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(pathname);
+}
+
+function withAssetCacheHeaders(request, response) {
+  const url = new URL(request.url);
+  const headers = new Headers(response.headers);
+  if (isVersionedBuildAsset(url.pathname)) {
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function toMutableRequest(request, { stripIfNoneMatch = false } = {}) {
   const headers = new Headers();
   request.headers.forEach((value, key) => {
@@ -91,7 +108,7 @@ async function tryServeAsset(request, env) {
   try {
     const response = await env.ASSETS.fetch(request.url, toMutableRequest(request, { stripIfNoneMatch: true }));
     if (response && response.status >= 200 && response.status < 400) {
-      return new Response(response.body, response);
+      return withAssetCacheHeaders(request, response);
     }
   } catch {
     // Fall through to the app handler.
