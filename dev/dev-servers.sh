@@ -22,9 +22,10 @@ if [ -f "$WEB_DEV_VARS_FILE" ]; then
   set +a
 fi
 
-STORAGE_TYPE="${STORAGE_TYPE:-memory}"
+DEFAULT_LOCAL_POSTGRES_DSN="${DEFAULT_LOCAL_POSTGRES_DSN:-postgres://$(id -un)@127.0.0.1:5432/gitslice_dev?sslmode=disable}"
+STORAGE_TYPE="${STORAGE_TYPE:-postgres}"
 OBJECT_STORE_TYPE="${OBJECT_STORE_TYPE:-filesystem}"
-POSTGRES_DSN="${POSTGRES_DSN:-}"
+POSTGRES_DSN="${POSTGRES_DSN:-$DEFAULT_LOCAL_POSTGRES_DSN}"
 OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$REPO_ROOT/.objectstore}"
 CORE_BIND_ADDR="${CORE_BIND_ADDR:-127.0.0.1}"
 CORE_SERVICE_PORT="${CORE_SERVICE_PORT:-50051}"
@@ -47,8 +48,8 @@ usage() {
 Usage: dev/dev-servers.sh <start|stop|restart|status> [options]
 
 Options:
-  --storage <memory|postgres>       Metadata storage backend. Default: memory.
-  --postgres-dsn <dsn>              Required when --storage postgres unless POSTGRES_DSN is set.
+  --storage <memory|postgres>       Metadata storage backend. Default: postgres.
+  --postgres-dsn <dsn>              Postgres DSN. Default: $DEFAULT_LOCAL_POSTGRES_DSN.
   --object-store <file|filesystem|r2>
                                     Blob object storage for Postgres. Default: filesystem.
   --object-store-dir <path>         Filesystem object store dir. Default: .objectstore.

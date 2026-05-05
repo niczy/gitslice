@@ -58,7 +58,10 @@ build-core: proto
 build-cli: proto
 	go build -o bin/gs ./gs/
 
-start-servers start-servers-memory:
+start-servers:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage postgres --object-store filesystem
+
+start-servers-memory:
 	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage memory
 
 start-servers-postgres start-servers-postgres-file:
@@ -67,7 +70,10 @@ start-servers-postgres start-servers-postgres-file:
 start-servers-postgres-r2:
 	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage postgres --object-store r2
 
-restart-servers restart-servers-memory:
+restart-servers:
+	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/restart-servers.sh --storage postgres --object-store filesystem
+
+restart-servers-memory:
 	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/restart-servers.sh --storage memory
 
 restart-servers-postgres restart-servers-postgres-file:

@@ -134,12 +134,17 @@ go build -o bin/gs ./gs/
 ### Run
 
 ```bash
-# Start local dev servers with in-memory storage
+# Start local dev servers with local Postgres metadata + filesystem object storage.
+# Defaults to postgres://$(id -un)@127.0.0.1:5432/gitslice_dev?sslmode=disable
+# and creates that local database when psql can connect to the maintenance DB.
 make start-servers
 
-# Start local dev servers with Postgres metadata + filesystem object storage
+# Start local dev servers with in-memory storage
+make start-servers-memory
+
+# Override the local Postgres DSN
 POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable' \
-  make start-servers-postgres-file
+  make start-servers
 
 # For local Postgres DSNs, the dev script creates the database if missing.
 # Core then runs the embedded schema migrations during storage startup.
