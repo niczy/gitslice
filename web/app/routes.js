@@ -15,6 +15,8 @@ export default [
   route('v1/*', 'routes/v1.$.jsx'),
   index('routes/app-shell.jsx'),
   route('browser', 'routes/browser.jsx'),
+  route('browser/:sliceId/commits', 'routes/browser.$sliceId.commits.jsx'),
+  route('browser/:sliceId/changesets', 'routes/browser.$sliceId.changesets.jsx'),
   route('browser/:sliceId', 'routes/browser.$sliceId.jsx'),
   route('*', 'routes/catchall.jsx'),
 ];

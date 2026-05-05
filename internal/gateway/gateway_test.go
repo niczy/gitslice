@@ -133,6 +133,153 @@ func TestGatewayListEntries(t *testing.T) {
 	}
 }
 
+func TestGatewaySliceActivityLists(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	slice := &models.Slice{
+		ID:        "gateway-activity",
+		Name:      "Gateway Activity",
+		Owners:    []string{"system"},
+		CreatedBy: "system",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("create slice: %v", err)
+	}
+
+	now := time.Now()
+	commits := []*models.Commit{
+		{CommitHash: "commit-old", ParentHash: "", Message: "initial import", Timestamp: now.Add(-time.Hour)},
+		{CommitHash: "commit-new", ParentHash: "commit-old", Message: "update docs", Timestamp: now},
+	}
+	for _, commit := range commits {
+		if err := st.AddSliceCommit(ctx, slice.ID, commit); err != nil {
+			t.Fatalf("add commit %s: %v", commit.CommitHash, err)
+		}
+	}
+
+	mergedAt := now.Add(2 * time.Minute)
+	changesets := []*models.Changeset{
+		{
+			ID:             "cs-pending",
+			Hash:           "hash-pending",
+			SliceID:        slice.ID,
+			BaseCommitHash: "commit-new",
+			ModifiedFiles:  []string{"README.md"},
+			Status:         models.ChangesetStatusPending,
+			Author:         "system",
+			Message:        "pending review",
+			CreatedAt:      now,
+		},
+		{
+			ID:             "cs-merged",
+			Hash:           "hash-merged",
+			SliceID:        slice.ID,
+			BaseCommitHash: "commit-old",
+			ModifiedFiles:  []string{"docs/guide.md"},
+			Status:         models.ChangesetStatusMerged,
+			Author:         "system",
+			Message:        "merged review",
+			CreatedAt:      now.Add(time.Minute),
+			MergedAt:       &mergedAt,
+		},
+	}
+	for _, changeset := range changesets {
+		if err := st.CreateChangeset(ctx, changeset); err != nil {
+			t.Fatalf("create changeset %s: %v", changeset.ID, err)
+		}
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	commitReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/slices/%s/commits?limit=10", gatewayURL, slice.ID), nil)
+	if err != nil {
+		t.Fatalf("new commits request: %v", err)
+	}
+	commitReq.Header.Set("Authorization", "User system")
+	commitResp, err := client.Do(commitReq)
+	if err != nil {
+		t.Fatalf("GET slice commits failed: %v", err)
+	}
+	defer commitResp.Body.Close()
+	if commitResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(commitResp.Body)
+		t.Fatalf("unexpected commits status %d: %s", commitResp.StatusCode, string(body))
+	}
+	var commitPayload struct {
+		Commits []struct {
+			CommitHash string `json:"commitHash"`
+			Message    string `json:"message"`
+		} `json:"commits"`
+	}
+	if err := json.NewDecoder(commitResp.Body).Decode(&commitPayload); err != nil {
+		t.Fatalf("decode commits response: %v", err)
+	}
+	if got, want := len(commitPayload.Commits), 2; got != want {
+		t.Fatalf("expected %d commits, got %d", want, got)
+	}
+	if commitPayload.Commits[0].CommitHash != "commit-new" || commitPayload.Commits[0].Message != "update docs" {
+		t.Fatalf("unexpected commits payload: %#v", commitPayload.Commits)
+	}
+
+	allChangesetsReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/slices/%s/changesets?limit=10&include_all_statuses=true", gatewayURL, slice.ID), nil)
+	if err != nil {
+		t.Fatalf("new changesets request: %v", err)
+	}
+	allChangesetsReq.Header.Set("Authorization", "User system")
+	allChangesetsResp, err := client.Do(allChangesetsReq)
+	if err != nil {
+		t.Fatalf("GET slice changesets failed: %v", err)
+	}
+	defer allChangesetsResp.Body.Close()
+	if allChangesetsResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(allChangesetsResp.Body)
+		t.Fatalf("unexpected changesets status %d: %s", allChangesetsResp.StatusCode, string(body))
+	}
+	var allChangesetsPayload struct {
+		Changesets []struct {
+			ChangesetID string `json:"changesetId"`
+			Message     string `json:"message"`
+		} `json:"changesets"`
+	}
+	if err := json.NewDecoder(allChangesetsResp.Body).Decode(&allChangesetsPayload); err != nil {
+		t.Fatalf("decode changesets response: %v", err)
+	}
+	if got, want := len(allChangesetsPayload.Changesets), 2; got != want {
+		t.Fatalf("expected %d changesets, got %d", want, got)
+	}
+
+	mergedReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/slices/%s/changesets?limit=10&status_filter=3", gatewayURL, slice.ID), nil)
+	if err != nil {
+		t.Fatalf("new merged changesets request: %v", err)
+	}
+	mergedReq.Header.Set("Authorization", "User system")
+	mergedResp, err := client.Do(mergedReq)
+	if err != nil {
+		t.Fatalf("GET merged slice changesets failed: %v", err)
+	}
+	defer mergedResp.Body.Close()
+	if mergedResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(mergedResp.Body)
+		t.Fatalf("unexpected merged changesets status %d: %s", mergedResp.StatusCode, string(body))
+	}
+	var mergedPayload struct {
+		Changesets []struct {
+			ChangesetID string `json:"changesetId"`
+		} `json:"changesets"`
+	}
+	if err := json.NewDecoder(mergedResp.Body).Decode(&mergedPayload); err != nil {
+		t.Fatalf("decode merged changesets response: %v", err)
+	}
+	if got, want := len(mergedPayload.Changesets), 1; got != want {
+		t.Fatalf("expected %d merged changeset, got %d", want, got)
+	}
+	if mergedPayload.Changesets[0].ChangesetID != "cs-merged" {
+		t.Fatalf("expected cs-merged, got %#v", mergedPayload.Changesets)
+	}
+}
+
 func TestGatewayGetFileETagAndConditional304(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

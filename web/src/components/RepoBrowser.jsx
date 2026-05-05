@@ -22,6 +22,7 @@ import { decodeBase64, highlightCode } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { buildBrowserPath, parseLocation } from '../utils/routing.js';
+import SliceDetailNav from './SliceDetailNav.jsx';
 import SliceSettings from './SliceSettings.jsx';
 import { Button } from './ui/button.jsx';
 
@@ -129,6 +130,8 @@ export default function RepoBrowser({
   publicApiBaseUrl = '',
   onSliceChange,
   onNavigateToDiff,
+  onOpenCommits,
+  onOpenChangesets,
   refreshHistoryToken,
   isActive,
   slicesLoading,
@@ -1263,7 +1266,15 @@ export default function RepoBrowser({
   const sidebarVisible = sidebarOpen || isSidebarDismissing;
 
   return (
-    <section className="repo-browser">
+    <section className="repo-browser repo-browser--with-tabs">
+      <SliceDetailNav
+        activeTab="code"
+        sliceId={sliceId}
+        sliceLabel={currentSliceDisplayName || currentSliceLabel}
+        onOpenCode={() => {}}
+        onOpenCommits={onOpenCommits}
+        onOpenChangesets={onOpenChangesets}
+      />
       <div className="repo-main">
         <div
           className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${isResizingSidebar ? ' is-resizing-sidebar' : ''}`}
