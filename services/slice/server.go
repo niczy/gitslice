@@ -2789,7 +2789,7 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 	}
 
 	var statusFilter *models.ChangesetStatus
-	if req.StatusFilter >= 0 {
+	if !req.IncludeAllStatuses && req.StatusFilter >= 0 {
 		converted := convertProtoStatusToModel(req.StatusFilter)
 		statusFilter = &converted
 	}

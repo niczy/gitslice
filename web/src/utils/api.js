@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { getSignedInAuthSource, getSignedInUsername } from '../auth.js';
+import { normalizeChangesetListResponse, normalizeCommitListResponse } from './normalize.js';
 
 // Browser data requests stay same-origin so auth cookies continue to work
 // when the web tier proxies API traffic to a different origin.
@@ -375,6 +376,55 @@ export async function createRevertChangeset(commitHash, sliceId = '') {
     throw new Error(await readErrorMessage(response, 'Unable to create revert changeset'));
   }
   return response.json();
+}
+
+export async function listSliceCommits(sliceId, { limit = 100, fromCommitHash = '' } = {}) {
+  const query = new URLSearchParams();
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
+  }
+  if (fromCommitHash) {
+    query.set('from_commit_hash', fromCommitHash);
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/commits${suffix}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load slice commits'));
+  }
+  return normalizeCommitListResponse(await response.json());
+}
+
+function changesetStatusQueryValue(statusFilter) {
+  switch (statusFilter) {
+    case 'pending':
+      return '0';
+    case 'approved':
+      return '1';
+    case 'rejected':
+      return '2';
+    case 'merged':
+      return '3';
+    default:
+      return '';
+  }
+}
+
+export async function listSliceChangesets(sliceId, { limit = 100, statusFilter = 'all' } = {}) {
+  const query = new URLSearchParams();
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
+  }
+  const statusValue = changesetStatusQueryValue(statusFilter);
+  if (statusValue) {
+    query.set('status_filter', statusValue);
+  } else {
+    query.set('include_all_statuses', 'true');
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/changesets?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load slice changesets'));
+  }
+  return normalizeChangesetListResponse(await response.json());
 }
 
 export async function getChangesetDiff(changesetId, snapshotVersion) {

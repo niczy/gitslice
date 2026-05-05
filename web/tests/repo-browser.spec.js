@@ -319,6 +319,206 @@ test.describe('Repo Browser Mobile Navigation', () => {
   });
 });
 
+test.describe('Slice Activity Pages', () => {
+  test('shows slice commits and links to the commit diff view', async ({ page }) => {
+    const username = `activity${Date.now()}`;
+    const sliceId = `home.${username}`;
+    const commitHash = 'fs-activity-commit-1';
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: sliceId,
+              name: sliceId,
+              description: 'Activity test slice',
+              owners: [username],
+              created_by: username,
+              is_root: false,
+              file_count: 3,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/commits**`, async (route) => {
+      const url = new URL(route.request().url());
+      expect(url.searchParams.get('limit')).toBe('100');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commits: [
+            {
+              commitHash,
+              parentHash: 'fs-parent',
+              timestamp: 1777955400,
+              message: 'upload docs directory',
+            },
+            {
+              commitHash: 'fs-parent',
+              parentHash: '',
+              timestamp: 1777955300,
+              message: 'initial workspace',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/commits/${commitHash}/changes`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 1,
+          files_modified: 0,
+          files_deleted: 0,
+          changes: [
+            {
+              id: 'change-1',
+              path: `${username}/docs/readme.md`,
+              change_type: 'add',
+              lines_added: 2,
+              lines_deleted: 0,
+              patch: '--- /dev/null\n+++ b/readme.md\n@@\n+hello\n+world',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await page.goto(`/browser/${sliceId}/commits`);
+
+    await expect(page.getByTestId('slice-commits-page')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-tab-commits')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('slice-commit-row').first()).toContainText('upload docs directory');
+    await expect(page.getByTestId('slice-commit-row').first()).toContainText(commitHash.slice(0, 12));
+
+    await page.getByTestId('slice-commit-row').first().click();
+    await expect(page).toHaveURL(new RegExp(`/diff/${commitHash}`));
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+  });
+
+  test('shows slice changesets with status filters and links to changeset diff', async ({ page }) => {
+    const username = `activitycs${Date.now()}`;
+    const sliceId = `home.${username}`;
+    const requests = [];
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: sliceId,
+              name: sliceId,
+              description: 'Changeset activity test slice',
+              owners: [username],
+              created_by: username,
+              is_root: false,
+              file_count: 2,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/changesets**`, async (route) => {
+      const url = new URL(route.request().url());
+      const statusFilter = url.searchParams.get('status_filter');
+      requests.push(statusFilter || `all:${url.searchParams.get('include_all_statuses')}`);
+      const allChangesets = [
+        {
+          changesetId: 'cs-pending-review',
+          changesetHash: 'hash-pending',
+          sliceId,
+          baseCommitHash: 'fs-base-1',
+          modifiedFiles: [`${username}/todo.md`],
+          status: 'PENDING',
+          author: username,
+          createdAt: 1777955400,
+          message: 'draft todo update',
+        },
+        {
+          changesetId: 'cs-merged-review',
+          changesetHash: 'hash-merged',
+          sliceId,
+          baseCommitHash: 'fs-base-2',
+          modifiedFiles: [`${username}/done.md`, `${username}/notes.md`],
+          status: 'MERGED',
+          author: username,
+          createdAt: 1777955300,
+          mergedAt: 1777955350,
+          message: 'merged notes update',
+        },
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changesets: statusFilter === '3' ? allChangesets.slice(1) : allChangesets,
+        }),
+      });
+    });
+
+    await page.route('**/v1/changesets/cs-merged-review/snapshots**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ snapshots: [] }),
+      });
+    });
+
+    await page.route('**/v1/changesets/cs-merged-review/diff**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changeset: {
+            changesetId: 'cs-merged-review',
+            sliceId,
+            status: 'MERGED',
+            author: username,
+            createdAt: 1777955300,
+            message: 'merged notes update',
+          },
+          diff: { filesAdded: 0, filesModified: 1, filesDeleted: 0 },
+          changes: [],
+        }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await page.goto(`/browser/${sliceId}/changesets`);
+
+    await expect(page.getByTestId('slice-changesets-page')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-tab-changesets')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(2);
+    expect(requests).toContain('all:true');
+
+    await page.getByTestId('changeset-filter-merged').click();
+    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(1);
+    await expect(page.getByTestId('slice-changeset-row').first()).toContainText('merged notes update');
+    expect(requests).toContain('3');
+
+    await page.getByTestId('slice-changeset-row').first().click();
+    await expect(page).toHaveURL(/\/changesets\/cs-merged-review/);
+    await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
+  });
+});
+
 test.describe('Repo Browser Settings', () => {
   test('manages slice and folder visibility with public links', async ({ page }) => {
     const username = `webvisibility${Date.now()}`;

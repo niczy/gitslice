@@ -90,6 +90,40 @@ export function normalizeChangesetSnapshotListResponse(data) {
   return snapshots.map((snapshot) => normalizeChangesetSnapshot(snapshot));
 }
 
+export function normalizeCommitInfo(commit) {
+  return {
+    ...commit,
+    commit_hash: commit?.commit_hash ?? commit?.commitHash ?? '',
+    parent_hash: commit?.parent_hash ?? commit?.parentHash ?? '',
+    timestamp: commit?.timestamp ?? commit?.createdAt ?? commit?.created_at ?? 0,
+    message: commit?.message ?? '',
+  };
+}
+
+export function normalizeCommitListResponse(data) {
+  return (data?.commits || []).map((commit) => normalizeCommitInfo(commit));
+}
+
+export function normalizeChangesetInfo(changeset) {
+  return {
+    ...changeset,
+    changeset_id: changeset?.changeset_id ?? changeset?.changesetId ?? '',
+    changeset_hash: changeset?.changeset_hash ?? changeset?.changesetHash ?? '',
+    slice_id: changeset?.slice_id ?? changeset?.sliceId ?? '',
+    base_commit_hash: changeset?.base_commit_hash ?? changeset?.baseCommitHash ?? '',
+    modified_files: changeset?.modified_files ?? changeset?.modifiedFiles ?? [],
+    status: normalizeChangesetStatus(changeset?.status),
+    author: changeset?.author ?? '',
+    message: changeset?.message ?? '',
+    created_at: changeset?.created_at ?? changeset?.createdAt ?? 0,
+    merged_at: changeset?.merged_at ?? changeset?.mergedAt ?? 0,
+  };
+}
+
+export function normalizeChangesetListResponse(data) {
+  return (data?.changesets || []).map((changeset) => normalizeChangesetInfo(changeset));
+}
+
 export function normalizeChangesetStatus(value) {
   if (value === 0 || value === 'PENDING' || value === 'pending') return 'pending';
   if (value === 1 || value === 'APPROVED' || value === 'approved') return 'approved';

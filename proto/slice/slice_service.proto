@@ -57,13 +57,21 @@ service SliceService {
   rpc RebaseChangeset(RebaseChangesetRequest) returns (RebaseChangesetResponse);
 
   // Get slice commit history
-  rpc GetSliceCommits(CommitHistoryRequest) returns (CommitHistoryResponse);
+  rpc GetSliceCommits(CommitHistoryRequest) returns (CommitHistoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/commits"
+    };
+  }
 
   // Get current slice state
   rpc GetSliceState(StateRequest) returns (StateResponse);
 
   // List pending change lists for a slice
-  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse) {
+    option (google.api.http) = {
+      get: "/v1/slices/{slice_id}/changesets"
+    };
+  }
 
   // Get root slice info
   rpc GetRootSlice(GetRootSliceRequest) returns (GetRootSliceResponse);
@@ -348,6 +356,7 @@ message ListChangesetsRequest {
   string slice_id = 1;
   ChangesetStatus status_filter = 2;
   int32 limit = 3;
+  bool include_all_statuses = 4;
 }
 
 message ListChangesetsResponse {

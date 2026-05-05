@@ -16,6 +16,8 @@ import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
 import SliceHomePage from './components/SliceHomePage.jsx';
+import SliceCommitListPage from './components/SliceCommitListPage.jsx';
+import SliceChangesetListPage from './components/SliceChangesetListPage.jsx';
 import ProjectsPage from './components/ProjectsPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import NotFoundPage from './components/NotFoundPage.jsx';
@@ -49,6 +51,10 @@ function getInitialSliceId(username) {
   return getHomeSliceId(username) || 'root_slice';
 }
 
+function isSliceScopedPage(page) {
+  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets';
+}
+
 function App({
   initialRoute,
   initialAuthConfig = { authProvider: 'local', allowDevLogin: true },
@@ -59,7 +65,7 @@ function App({
 }) {
   const queryClient = useQueryClient();
   const initialUsername = initialSession?.user?.username || currentUsername();
-  const initialBrowserRouteSlice = initialRoute.page === 'browser' ? initialRoute.browserState?.slice || '' : '';
+  const initialBrowserRouteSlice = isSliceScopedPage(initialRoute.page) ? initialRoute.browserState?.slice || '' : '';
   const initialPage = initialRoute.page === 'landing' && initialUsername ? 'browser' : initialRoute.page;
   const [activePage, setActivePage] = useState(() => initialPage);
   const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
@@ -98,6 +104,7 @@ function App({
   const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId) || null;
 
   const isBrowserDetail = activePage === 'browser' && Boolean(browserRouteSliceId);
+  const isSliceScopedDetail = isSliceScopedPage(activePage) && Boolean(browserRouteSliceId);
 
   useEffect(() => {
     if (isBrowserDetail || activePage === 'diff' || activePage === 'changeset') {
@@ -106,9 +113,11 @@ function App({
   }, [activePage, isBrowserDetail]);
 
   const navigate = useCallback((page, commitHash = '', changesetId = '', options = {}) => {
-    const nextPath = buildPath(page, commitHash, changesetId);
+    const nextPath = buildPath(page, commitHash, changesetId, options.browserState);
+    const navigateOptions = { ...options };
+    delete navigateOptions.browserState;
     if (routerNavigate) {
-      routerNavigate(nextPath, options);
+      routerNavigate(nextPath, navigateOptions);
       return;
     }
 
@@ -119,6 +128,14 @@ function App({
     } else if (page === 'changeset') {
       setDiffCommitHash('');
       setDiffChangesetId(changesetId);
+    } else if (page === 'slice-commits' || page === 'slice-changesets') {
+      const nextSliceId = options.browserState?.slice || '';
+      setDiffCommitHash('');
+      setDiffChangesetId('');
+      setBrowserRouteSliceId(nextSliceId);
+      if (nextSliceId) {
+        setCurrentSliceId(nextSliceId);
+      }
     } else {
       setDiffCommitHash('');
       setDiffChangesetId('');
@@ -141,7 +158,7 @@ function App({
     setDiffCommitHash(initialRoute.commitHash);
     setDiffChangesetId(initialRoute.changesetId);
     setUnknownRoute(initialRoute.unknownPath || '');
-    if (initialRoute.page === 'browser') {
+    if (isSliceScopedPage(initialRoute.page)) {
       const nextRouteSliceId = initialRoute.browserState?.slice || '';
       setBrowserRouteSliceId(nextRouteSliceId);
       if (nextRouteSliceId) {
@@ -235,6 +252,28 @@ function App({
     setBrowserRouteSliceId(normalizedSliceId);
     setActivePage('browser');
   }, [routerNavigate]);
+
+  const openSliceCommits = useCallback((sliceId = currentSliceId) => {
+    const normalizedSliceId = String(sliceId || '').trim();
+    if (!normalizedSliceId) {
+      return;
+    }
+    hasExplicitSliceSelectionRef.current = true;
+    setCurrentSliceId(normalizedSliceId);
+    setBrowserRouteSliceId(normalizedSliceId);
+    navigate('slice-commits', '', '', { browserState: { slice: normalizedSliceId } });
+  }, [currentSliceId, navigate]);
+
+  const openSliceChangesets = useCallback((sliceId = currentSliceId) => {
+    const normalizedSliceId = String(sliceId || '').trim();
+    if (!normalizedSliceId) {
+      return;
+    }
+    hasExplicitSliceSelectionRef.current = true;
+    setCurrentSliceId(normalizedSliceId);
+    setBrowserRouteSliceId(normalizedSliceId);
+    navigate('slice-changesets', '', '', { browserState: { slice: normalizedSliceId } });
+  }, [currentSliceId, navigate]);
 
   const openBrowserHome = useCallback(() => {
     hasExplicitSliceSelectionRef.current = false;
@@ -342,7 +381,7 @@ function App({
   }, [initialAuthConfig.authProvider, navigate]);
 
   const isAuthenticated = Boolean(username);
-  const isBrowserLayout = isBrowserDetail || activePage === 'diff' || activePage === 'changeset';
+  const isBrowserLayout = isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
   const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${activePage === 'browser' && !browserRouteSliceId ? ' page--slice-home' : ''}`;
   const isAdminUser = (username || '').toLowerCase() === 'admin';
   const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
@@ -387,7 +426,7 @@ function App({
 
   const isNavActive = (item) => {
     if (item === 'repos') {
-      return activePage === 'browser' || activePage === 'diff' || activePage === 'changeset';
+      return activePage === 'browser' || activePage === 'slice-commits' || activePage === 'slice-changesets' || activePage === 'diff' || activePage === 'changeset';
     }
     if (item === 'projects') {
       return activePage === 'projects';
@@ -506,6 +545,8 @@ function App({
               publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
               onSliceChange={handleSliceChange}
               onNavigateToDiff={navigateToDiff}
+              onOpenCommits={() => openSliceCommits(currentSliceId)}
+              onOpenChangesets={() => openSliceChangesets(currentSliceId)}
               refreshHistoryToken={historyRefreshToken}
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
@@ -513,6 +554,26 @@ function App({
               initialBrowserData={initialBrowserData}
             />
           </div>
+        )}
+
+        {activePage === 'slice-commits' && routeAccessState === 'allowed' && (
+          <SliceCommitListPage
+            sliceId={browserRouteSliceId || currentSliceId}
+            slices={slices}
+            onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
+            onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
+            onOpenCommitDiff={navigateToDiff}
+          />
+        )}
+
+        {activePage === 'slice-changesets' && routeAccessState === 'allowed' && (
+          <SliceChangesetListPage
+            sliceId={browserRouteSliceId || currentSliceId}
+            slices={slices}
+            onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
+            onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
+            onOpenChangesetDiff={navigateToChangesetDiff}
+          />
         )}
 
         {activePage === 'diff' && routeAccessState === 'allowed' && (
