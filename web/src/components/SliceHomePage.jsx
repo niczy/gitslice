@@ -318,7 +318,12 @@ export default function SliceHomePage({
             <RefreshCcw size={15} aria-hidden="true" />
             Refresh
           </Button>
-          <Button type="button" onClick={openCreateDialog} data-testid="slice-create-open">
+          <Button
+            type="button"
+            className="slice-create-button"
+            onClick={openCreateDialog}
+            data-testid="slice-create-open"
+          >
             <Plus size={16} aria-hidden="true" />
             Create slice
           </Button>
@@ -501,7 +506,12 @@ export default function SliceHomePage({
               <Button type="button" variant="ghost" onClick={closeCreateDialog}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={createLoading} data-testid="slice-create-submit">
+              <Button
+                type="submit"
+                className="slice-create-button"
+                disabled={createLoading}
+                data-testid="slice-create-submit"
+              >
                 {createLoading ? 'Creating...' : 'Create slice'}
               </Button>
             </div>
