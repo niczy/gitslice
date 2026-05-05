@@ -147,6 +147,10 @@ export default function RepoBrowser({
   const initialDataMatchesRawSlice = initialBrowserData?.selectedSliceId === currentSliceId
     && String(initialBrowserData?.sliceHash || '') === String(initialBrowserState?.sliceHash || '');
   const initialSelectedFilePayload = initialDataMatchesRawSlice ? initialBrowserData?.selectedFilePayload : null;
+  const initialSelectedFilePath = initialDataMatchesRawSlice
+    ? initialBrowserData?.selectedFile || initialBrowserState?.file || ''
+    : initialBrowserState?.file || '';
+  const hasInitialSelectedFilePayload = Boolean(initialSelectedFilePayload?.content);
   const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
   const [treeEntries, setTreeEntries] = useState(() => (
     initialDataMatchesRawSlice && Array.isArray(initialBrowserData?.rootEntries)
@@ -154,9 +158,7 @@ export default function RepoBrowser({
       : {}
   ));
   const [expandedPaths, setExpandedPaths] = useState(['']);
-  const [selectedFile, setSelectedFile] = useState(() => (
-    initialDataMatchesRawSlice && initialSelectedFilePayload ? initialBrowserData?.selectedFile || null : null
-  ));
+  const [selectedFile, setSelectedFile] = useState(() => initialSelectedFilePath || null);
   const [fileContent, setFileContent] = useState(() => (
     initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
   ));
@@ -167,15 +169,17 @@ export default function RepoBrowser({
   const [fileDrafts, setFileDrafts] = useState({});
   const [isEditingFile, setIsEditingFile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingFilePath, setLoadingFilePath] = useState('');
+  const [loadingFilePath, setLoadingFilePath] = useState(() => (
+    initialSelectedFilePath && !hasInitialSelectedFilePayload ? initialSelectedFilePath : ''
+  ));
   const [error, setError] = useState(() => (
     initialDataMatchesRawSlice ? initialBrowserData?.rootEntriesError || '' : ''
   ));
   const [fileError, setFileError] = useState(() => (
     initialDataMatchesRawSlice ? initialBrowserData?.selectedFileError || '' : ''
   ));
-  const [focusedEntry, setFocusedEntry] = useState(() => (initialBrowserState?.file
-    ? { path: initialBrowserState.file, type: 'file' }
+  const [focusedEntry, setFocusedEntry] = useState(() => (initialSelectedFilePath
+    ? { path: initialSelectedFilePath, type: 'file' }
     : { path: '', type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
@@ -189,7 +193,8 @@ export default function RepoBrowser({
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
 
   // File to restore after root tree entries load (from URL hash)
-  const pendingFileRef = useRef(initialDataMatchesRawSlice && initialSelectedFilePayload ? null : initialBrowserState?.file || null);
+  const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
+  const selectedFileRef = useRef(initialSelectedFilePath || null);
   const hasAppliedInitialSliceRef = useRef(false);
   const hasMountedSliceRef = useRef(false);
   const actionMenuRef = useRef(null);
@@ -202,6 +207,11 @@ export default function RepoBrowser({
   const selectedFileName = useMemo(() => selectedFile?.split('/').pop() || 'No file selected', [selectedFile]);
   const hasLoadedRootEntries = Object.prototype.hasOwnProperty.call(treeEntries, '');
   const isSelectedFileLoading = Boolean(selectedFile && loadingFilePath === selectedFile && !showHistory);
+  const visibleEntryError = selectedFile ? '' : error;
+
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
 
   const rawSliceId = currentSliceId;
 
@@ -405,16 +415,17 @@ export default function RepoBrowser({
     if (!initialBrowserDataMatches) {
       return;
     }
+    const nextSelectedFile = initialBrowserData?.selectedFile || '';
+    const nextFilePayload = initialBrowserData?.selectedFilePayload || null;
+
     if (Array.isArray(initialBrowserData?.rootEntries)) {
       setTreeEntries({ '': initialBrowserData.rootEntries });
       setExpandedPaths(['']);
-      setError(initialBrowserData.rootEntriesError || '');
+      setError(nextSelectedFile ? '' : initialBrowserData.rootEntriesError || '');
     } else if (initialBrowserData?.rootEntriesError) {
-      setError(initialBrowserData.rootEntriesError);
+      setError(nextSelectedFile ? '' : initialBrowserData.rootEntriesError);
     }
 
-    const nextSelectedFile = initialBrowserData?.selectedFile || '';
-    const nextFilePayload = initialBrowserData?.selectedFilePayload || null;
     if (nextSelectedFile && nextFilePayload?.content) {
       const decodedContent = decodeBase64(nextFilePayload.content);
       pendingFileRef.current = null;
@@ -425,17 +436,20 @@ export default function RepoBrowser({
       setDraftContent(decodedContent);
       setFileError(initialBrowserData.selectedFileError || '');
       setLoadingFilePath('');
+      setError('');
       return;
     }
 
     if (nextSelectedFile) {
       pendingFileRef.current = nextSelectedFile;
-      setSelectedFile(null);
+      setSelectedFile(nextSelectedFile);
+      setFocusedEntry({ path: nextSelectedFile, type: 'file' });
       setFileContent('');
       setEncodedFileContent('');
       setDraftContent('');
       setFileError(initialBrowserData?.selectedFileError || '');
-      setLoadingFilePath('');
+      setLoadingFilePath(nextSelectedFile);
+      setError('');
       return;
     }
 
@@ -575,6 +589,7 @@ export default function RepoBrowser({
     }
     setTreeEntries({});
     setExpandedPaths(['']);
+    pendingFileRef.current = null;
     setSelectedFile(null);
     setFileContent('');
     setEncodedFileContent('');
@@ -707,38 +722,43 @@ export default function RepoBrowser({
     }
 
     try {
-      if (!nextTreeEntries['']) {
-        const rootResponse = await fetchWithAuth(buildEntriesUrl(''));
-        if (!rootResponse.ok) {
-          throw new Error('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+      try {
+        if (!nextTreeEntries['']) {
+          const rootResponse = await fetchWithAuth(buildEntriesUrl(''));
+          if (!rootResponse.ok) {
+            throw new Error('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+          }
+          const rootPayload = await rootResponse.json();
+          nextTreeEntries[''] = rootPayload.entries || [];
         }
-        const rootPayload = await rootResponse.json();
-        nextTreeEntries[''] = rootPayload.entries || [];
-      }
 
-      const parts = normalizedPath.split('/');
-      for (let i = 1; i < parts.length; i += 1) {
-        const parentPath = parts.slice(0, i).join('/');
-        nextExpandedPaths.add(parentPath);
-        if (nextTreeEntries[parentPath]) {
-          continue;
+        const parts = normalizedPath.split('/');
+        for (let i = 1; i < parts.length; i += 1) {
+          const parentPath = parts.slice(0, i).join('/');
+          nextExpandedPaths.add(parentPath);
+          if (nextTreeEntries[parentPath]) {
+            continue;
+          }
+          const dirResponse = await fetchWithAuth(buildEntriesUrl(parentPath));
+          if (!dirResponse.ok) {
+            throw new Error('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+          }
+          const dirPayload = await dirResponse.json();
+          nextTreeEntries[parentPath] = dirPayload.entries || [];
         }
-        const dirResponse = await fetchWithAuth(buildEntriesUrl(parentPath));
-        if (!dirResponse.ok) {
-          throw new Error('Unable to load entries. Confirm the file gateway is running and the slice exists.');
-        }
-        const dirPayload = await dirResponse.json();
-        nextTreeEntries[parentPath] = dirPayload.entries || [];
-      }
 
-      setTreeEntries(nextTreeEntries);
-      setExpandedPaths(Array.from(nextExpandedPaths));
+        setTreeEntries(nextTreeEntries);
+        setExpandedPaths(Array.from(nextExpandedPaths));
+      } catch {
+        setError('');
+      }
 
       if (Object.prototype.hasOwnProperty.call(fileDrafts, normalizedPath)) {
         setFileContent(fileDrafts[normalizedPath]);
         setEncodedFileContent('');
         setDraftContent(fileDrafts[normalizedPath]);
         setIsEditingFile(false);
+        setError('');
         return;
       }
 
@@ -754,6 +774,7 @@ export default function RepoBrowser({
       setFileContent(decodedContent);
       setDraftContent(decodedContent);
       setIsEditingFile(false);
+      setError('');
     } catch (err) {
       setFileContent('');
       setEncodedFileContent('');
@@ -925,6 +946,7 @@ export default function RepoBrowser({
               const content = fileData?.file?.content || '';
               setEncodedFileContent(content);
               setFileContent(decodeBase64(content));
+              setError('');
             }
           } catch (e) {
             if (active && e?.name !== 'AbortError') {
@@ -944,7 +966,9 @@ export default function RepoBrowser({
         if (!active || err?.name === 'AbortError') {
           return;
         }
-        setError('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+        if (!pendingFileRef.current && !selectedFileRef.current) {
+          setError('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+        }
       } finally {
         if (active) {
           setIsLoading(false);
@@ -995,6 +1019,7 @@ export default function RepoBrowser({
         setEncodedFileContent(content);
         setFileContent(decodedContent);
         setDraftContent(decodedContent);
+        setError('');
       } catch (err) {
         if (!active || err?.name === 'AbortError') {
           return;
@@ -1034,7 +1059,9 @@ export default function RepoBrowser({
         [path]: payload.entries || [],
       }));
     } catch (err) {
-      setError('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+      if (!selectedFileRef.current) {
+        setError('Unable to load entries. Confirm the file gateway is running and the slice exists.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -1265,9 +1292,9 @@ export default function RepoBrowser({
                     </Button>
                   </div>
                 </div>
-                {error && <div className="panel-error">{error}</div>}
+                {visibleEntryError && <div className="panel-error">{visibleEntryError}</div>}
                 {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
-                {canLoad && !isLoading && !error && hasLoadedRootEntries && (treeEntries[''] || []).length === 0 && (
+                {canLoad && !isLoading && !visibleEntryError && hasLoadedRootEntries && (treeEntries[''] || []).length === 0 && (
                   <div className="panel-empty">No entries found.</div>
                 )}
                 {canLoad && renderTree('')}
@@ -1369,7 +1396,7 @@ export default function RepoBrowser({
                       <span>Loading folder...</span>
                     </div>
                   )}
-                  {!hasSelectedDirectoryEntries && !isLoading && error && <div className="panel-error">{error}</div>}
+                  {!hasSelectedDirectoryEntries && !isLoading && visibleEntryError && <div className="panel-error">{visibleEntryError}</div>}
                   {hasSelectedDirectoryEntries && selectedDirectoryEntries.length === 0 && (
                     <div className="panel-empty">This folder is empty.</div>
                   )}
