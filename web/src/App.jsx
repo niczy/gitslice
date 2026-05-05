@@ -165,6 +165,9 @@ function App({
       if (nextRouteSliceId) {
         hasExplicitSliceSelectionRef.current = true;
         setCurrentSliceId(nextRouteSliceId);
+        if (initialRoute.page === 'browser') {
+          setBrowserMounted(true);
+        }
       } else {
         hasExplicitSliceSelectionRef.current = false;
       }
@@ -244,6 +247,10 @@ function App({
     });
     if (routerNavigate) {
       hasExplicitSliceSelectionRef.current = true;
+      setCurrentSliceId(normalizedSliceId);
+      setBrowserRouteSliceId(normalizedSliceId);
+      setActivePage('browser');
+      setBrowserMounted(true);
       routerNavigate(nextPath);
       return;
     }
@@ -280,6 +287,10 @@ function App({
     hasExplicitSliceSelectionRef.current = false;
     setCurrentSliceId(getInitialSliceId(username));
     setBrowserRouteSliceId('');
+    setActivePage('browser');
+    setDiffCommitHash('');
+    setDiffChangesetId('');
+    setUnknownRoute('');
     navigate('browser');
   }, [navigate, username]);
 
