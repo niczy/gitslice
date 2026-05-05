@@ -1,7 +1,8 @@
-.PHONY: install proto build build-core build-cli start-servers start-servers-memory start-servers-postgres start-servers-postgres-file start-servers-postgres-r2 restart-servers restart-servers-memory restart-servers-postgres restart-servers-postgres-file restart-servers-postgres-r2 stop-servers dev-status test clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-core build-cli start-servers start-servers-memory start-servers-postgres start-servers-postgres-file start-servers-postgres-r2 restart-servers restart-servers-memory restart-servers-postgres restart-servers-postgres-file restart-servers-postgres-r2 stop-servers dev-status test test-benchmark clean install_gs web-install web-build web-test-e2e setup-googleapis
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
+ROOT_TEST_PACKAGES = $$(go list ./... | grep -v '/benchmark_suite$$')
 GOOGLEAPIS_DIR := third_party/googleapis
 # Pin to specific googleapis commit for reproducible builds
 # This commit is from 2024-05-13, matching our genproto dependency date
@@ -89,11 +90,14 @@ dev-status:
 	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) dev/dev-servers.sh status
 
 test: install proto
-	go test ./...
+	go test $(ROOT_TEST_PACKAGES)
 	cd services/admin && go test ./...
 	cd services/file && go test ./...
 	cd services/slice && go test ./...
 	cd servers/core && go test ./...
+
+test-benchmark: install proto
+	go test ./benchmark_suite
 
 clean:
 	rm -f core_server slice_service_server admin_service_server gateway_service_server bin/gs

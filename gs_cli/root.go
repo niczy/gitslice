@@ -32,6 +32,7 @@ func NewRootCommand(args []string) *cobra.Command {
 			newDetachedJobRunnerCommand(),
 			newAuthCommand(),
 			newGitCommand(),
+			newConfigCommand(),
 			newLoginCommand(),
 			newLogoutCommand(),
 			newFileCommand(),
@@ -69,6 +70,7 @@ func runCobraRoot(args []string) {
 	if err := flag.CommandLine.Parse(args); err != nil {
 		os.Exit(2)
 	}
+	parsedGlobalFlagNames = collectGlobalFlagNames(args)
 	remaining := flag.Args()
 	if len(remaining) == 0 {
 		printHelp()

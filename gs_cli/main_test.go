@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -135,6 +136,12 @@ func TestRootCommandPrintsCommandSpecificHelp(t *testing.T) {
 			wantExample: "gs changeset show --json",
 		},
 		{
+			name:        "config",
+			args:        []string{"config", "--help"},
+			wantUsage:   "Usage: gs config <command> [options]",
+			wantExample: "gs config endpoint set api.agenttools.dev:443 --tls",
+		},
+		{
 			name:        "status",
 			args:        []string{"status", "--help"},
 			wantUsage:   "Usage: gs status [options]",
@@ -162,7 +169,7 @@ func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
 	for _, name := range []string{
 		"cache", "jobs", "__watch-checkout", "__run-job",
-		"auth", "git", "login", "logout",
+		"auth", "git", "config", "login", "logout",
 		"file", "doctor", "context", "slice",
 		"changeset", "conflict", "import", "repo", "fs",
 		"status", "init", "log", "root",
@@ -307,6 +314,148 @@ func TestRootCommandRunsLocalOnlyJobsCommand(t *testing.T) {
 	if decoded.Total != 0 {
 		t.Fatalf("expected no jobs in temp HOME, got %d", decoded.Total)
 	}
+}
+
+func TestConfigEndpointSetPersistsAndShows(t *testing.T) {
+	resetEndpointFlagState(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"config", "endpoint", "set", "api.agenttools.dev:443", "--tls", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var saved jsonEndpointConfigOutput
+	if err := json.Unmarshal([]byte(output), &saved); err != nil {
+		t.Fatalf("decode saved endpoint JSON: %v\n%s", err, output)
+	}
+	if saved.Status != "saved" || saved.Addr != "api.agenttools.dev:443" || !saved.TLS {
+		t.Fatalf("unexpected saved endpoint output: %#v", saved)
+	}
+	if saved.ConfigPath != filepath.Join(home, ".gitslice", "config.json") {
+		t.Fatalf("unexpected config path %q", saved.ConfigPath)
+	}
+
+	cfg, present, err := readEndpointConfig()
+	if err != nil {
+		t.Fatalf("read endpoint config: %v", err)
+	}
+	if !present {
+		t.Fatal("expected endpoint config to exist")
+	}
+	if cfg.Addr != "api.agenttools.dev:443" || cfg.TLS == nil || !*cfg.TLS {
+		t.Fatalf("unexpected persisted endpoint config: %#v", cfg)
+	}
+
+	output = captureStdout(t, func() {
+		if err := NewRootCommand([]string{"config", "endpoint", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+	var shown jsonEndpointConfigOutput
+	if err := json.Unmarshal([]byte(output), &shown); err != nil {
+		t.Fatalf("decode shown endpoint JSON: %v\n%s", err, output)
+	}
+	if !shown.ConfigPresent || shown.Addr != "api.agenttools.dev:443" || !shown.TLS {
+		t.Fatalf("unexpected shown endpoint output: %#v", shown)
+	}
+}
+
+func TestConfigEndpointClearRemovesPersistedConfig(t *testing.T) {
+	resetEndpointFlagState(t)
+	t.Setenv("HOME", t.TempDir())
+	tlsEnabled := true
+	if err := writeEndpointConfig(cliEndpointConfig{Addr: "api.agenttools.dev:443", TLS: &tlsEnabled}); err != nil {
+		t.Fatalf("write endpoint config: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"config", "endpoint", "clear", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var cleared jsonEndpointConfigOutput
+	if err := json.Unmarshal([]byte(output), &cleared); err != nil {
+		t.Fatalf("decode cleared endpoint JSON: %v\n%s", err, output)
+	}
+	if cleared.Status != "cleared" || cleared.ConfigPresent || cleared.Addr != defaultGRPCServerAddr || cleared.TLS {
+		t.Fatalf("unexpected cleared endpoint output: %#v", cleared)
+	}
+	_, present, err := readEndpointConfig()
+	if err != nil {
+		t.Fatalf("read endpoint config: %v", err)
+	}
+	if present {
+		t.Fatal("expected endpoint config to be removed")
+	}
+}
+
+func TestResolveEndpointSettingsHonorsExplicitGlobalOverrides(t *testing.T) {
+	resetEndpointFlagState(t)
+	t.Setenv("HOME", t.TempDir())
+	tlsEnabled := true
+	if err := writeEndpointConfig(cliEndpointConfig{Addr: "api.agenttools.dev:443", TLS: &tlsEnabled}); err != nil {
+		t.Fatalf("write endpoint config: %v", err)
+	}
+
+	parsedGlobalFlagNames = map[string]bool{
+		"account-addr": true,
+		"tls":          true,
+	}
+	*accountServerAddr = defaultGRPCServerAddr
+	*useTLS = false
+
+	settings, err := resolveEndpointSettings()
+	if err != nil {
+		t.Fatalf("resolve endpoint settings: %v", err)
+	}
+	if settings.AccountAddr != defaultGRPCServerAddr {
+		t.Fatalf("expected explicit account addr to override config, got %q", settings.AccountAddr)
+	}
+	if settings.SliceAddr != "api.agenttools.dev:443" || settings.AdminAddr != "api.agenttools.dev:443" {
+		t.Fatalf("expected non-overridden services to use config, got %#v", settings)
+	}
+	if settings.TLS {
+		t.Fatal("expected explicit --tls=false to override persisted TLS")
+	}
+}
+
+func resetEndpointFlagState(t *testing.T) {
+	t.Helper()
+
+	originalCore := *coreServerAddr
+	originalAccount := *accountServerAddr
+	originalSlice := *sliceServerAddr
+	originalAdmin := *adminServerAddr
+	originalFile := *fileServerAddr
+	originalFS := *fsServerAddr
+	originalTLS := *useTLS
+	originalParsed := parsedGlobalFlagNames
+	originalJSON := cliStructuredJSON
+	t.Cleanup(func() {
+		*coreServerAddr = originalCore
+		*accountServerAddr = originalAccount
+		*sliceServerAddr = originalSlice
+		*adminServerAddr = originalAdmin
+		*fileServerAddr = originalFile
+		*fsServerAddr = originalFS
+		*useTLS = originalTLS
+		parsedGlobalFlagNames = originalParsed
+		cliStructuredJSON = originalJSON
+	})
+
+	*coreServerAddr = ""
+	*accountServerAddr = defaultGRPCServerAddr
+	*sliceServerAddr = defaultGRPCServerAddr
+	*adminServerAddr = defaultGRPCServerAddr
+	*fileServerAddr = defaultGRPCServerAddr
+	*fsServerAddr = defaultGRPCServerAddr
+	*useTLS = false
+	parsedGlobalFlagNames = nil
+	cliStructuredJSON = false
 }
 
 func captureStdout(t *testing.T, fn func()) string {

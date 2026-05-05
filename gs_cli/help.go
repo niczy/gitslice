@@ -15,6 +15,7 @@ func printHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  auth       Manage CLI auth, agent keys, and key-based login")
 	fmt.Println("  git        Git integration helpers")
+	fmt.Println("  config     Manage local CLI configuration")
 	fmt.Println("  slice       Manage slices")
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
@@ -34,6 +35,7 @@ func printHelp() {
 	fmt.Println("  log        Alias for slice history")
 	fmt.Println("  root       Alias for slice root")
 	fmt.Println("\nExamples:")
+	fmt.Println("  gs config endpoint set api.agenttools.dev:443 --tls")
 	fmt.Println("  gs auth status --json")
 	fmt.Println("  git config --global credential.https://api.agenttools.dev.helper \"!gs git credential\"")
 	fmt.Println("  gs context --json")
@@ -51,8 +53,24 @@ func printGitHelp() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  credential  Print credentials for Git's credential helper protocol")
 	fmt.Println("\nExamples:")
+	fmt.Println("  gs config endpoint set api.agenttools.dev:443 --tls")
 	fmt.Println("  git config --global credential.https://api.agenttools.dev.helper \"!gs git credential\"")
 	fmt.Println("  gs git credential get")
+}
+
+func printConfigHelp() {
+	fmt.Println("Usage: gs config <command> [options]")
+	fmt.Println("Most config commands support --json.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  endpoint        Show effective endpoint settings")
+	fmt.Println("  endpoint set    Persist endpoint settings in ~/.gitslice/config.json")
+	fmt.Println("  endpoint clear  Remove persisted endpoint settings")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs config endpoint")
+	fmt.Println("  gs config endpoint --json")
+	fmt.Println("  gs config endpoint set api.agenttools.dev:443 --tls")
+	fmt.Println("  gs config endpoint set api.gitslice.io:443 --tls")
+	fmt.Println("  gs config endpoint clear")
 }
 
 func printAuthHelp() {
