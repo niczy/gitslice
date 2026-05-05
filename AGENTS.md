@@ -11,6 +11,11 @@ These guidelines apply to the entire repository.
 - Agent session APIs must be exposed via gRPC service definitions with grpc-gateway HTTP bindings (no standalone net/http REST handlers for `/v1/agent-sessions`).
 - Do not commit generated protobuf outputs (`*.pb.go`, `*.pb.gw.go`); generate them locally as part of build/test workflows.
 - Keep the integration test (`workflow_test/integration_test.go`) exercising the CLI and services end to end; ensure it stays up to date when altering related behavior and run it with `RUN_INTEGRATION_TESTS=1 make test` during relevant changes.
+- For local dev server starts:
+  - Use `make restart-servers-postgres` for normal terminal sessions; it runs `dev/dev-servers.sh`, sources `web/.dev.vars`, defaults to local Postgres `gitslice_dev`, and leaves genesis population enabled for test data.
+  - When starting servers from Codex/tool shells, verify that background processes survive after the command exits. If they do not, use a persistent supervisor such as `launchctl` and make the wrapped shell source `web/.dev.vars` before starting both `core_server` and the web dev server.
+  - Local Clerk auth requires non-empty `AUTH_PROVIDER=clerk`, `CLERK_SECRET_KEY`, and either `CLERK_PUBLISHABLE_KEY` or `VITE_CLERK_PUBLISHABLE_KEY` in `web/.dev.vars`; after restart, check `http://localhost:5173/sign-in` does not show "Clerk is not fully configured."
+  - After any local restart, verify `make dev-status`, `curl -sf http://localhost:50051/health`, and `curl -sfI http://localhost:5173/`.
 - For deployment changes, keep `ops/restart_all.sh`, `ops/start_web_server.sh`, and crontab assumptions consistent:
   - `ops/restart_all.sh` must remain safe for unattended hourly runs.
   - Avoid changes that break `git pull --ff-only` based update flow.

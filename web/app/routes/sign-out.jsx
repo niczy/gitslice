@@ -1,19 +1,17 @@
-import { handleDevLogoutRequest } from '../../server/auth.js';
+import { handleDevLogoutRequest, isClerkAuthConfigured } from '../../server/auth.js';
 import { useEffect } from 'react';
 import { useLoaderData } from 'react-router';
 import { ClerkLoaded, ClerkLoading, useClerk } from '@clerk/react';
 
 export async function loader({ request }) {
   const url = new URL(request.url);
-  const secretKey = String(process.env.CLERK_SECRET_KEY || '').trim();
-  const publishableKey = String(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '').trim();
   const localLogoutResponse = handleDevLogoutRequest(request);
   const headers = new Headers();
   for (const cookie of localLogoutResponse.headers.getSetCookie?.() || []) {
     headers.append('Set-Cookie', cookie);
   }
   return Response.json({
-    configured: Boolean(secretKey && publishableKey),
+    configured: isClerkAuthConfigured(),
     redirectURL: String(url.searchParams.get('redirect_url') || '/').trim() || '/',
   }, { headers });
 }

@@ -88,6 +88,7 @@ function App({
   const [browserSearchError, setBrowserSearchError] = useState('');
   const [browserSearchHasSearched, setBrowserSearchHasSearched] = useState(false);
   const [browserOpenFileRequest, setBrowserOpenFileRequest] = useState(null);
+  const browserSearchRequestRef = useRef(0);
   const previousUsernameRef = useRef(username);
   const hasExplicitSliceSelectionRef = useRef(Boolean(initialBrowserRouteSlice));
 
@@ -286,22 +287,25 @@ function App({
     openSliceDetail(sliceId);
   }, [openSliceDetail]);
 
-  const handleBrowserSearchSubmit = useCallback(async (event) => {
-    event.preventDefault();
+  const runBrowserSearch = useCallback(async ({ showBlankError = false, signal = undefined } = {}) => {
     const query = browserSearchQuery.trim();
     if (!query) {
-      setBrowserSearchError('Enter a search query.');
+      browserSearchRequestRef.current += 1;
+      setBrowserSearchError(showBlankError ? 'Enter a search query.' : '');
       setBrowserSearchMatches([]);
       setBrowserSearchHasSearched(false);
       return;
     }
     if (!currentSliceId || currentSlice?.is_root) {
+      browserSearchRequestRef.current += 1;
       setBrowserSearchError('Choose a signed-in home or custom slice to search.');
       setBrowserSearchMatches([]);
       setBrowserSearchHasSearched(true);
       return;
     }
 
+    const requestId = browserSearchRequestRef.current + 1;
+    browserSearchRequestRef.current = requestId;
     setBrowserSearchLoading(true);
     setBrowserSearchError('');
     try {
@@ -309,21 +313,37 @@ function App({
         query,
         glob: browserSearchGlob,
         regex: browserSearchRegex,
+        signal,
       });
+      if (requestId !== browserSearchRequestRef.current) {
+        return;
+      }
       setBrowserSearchMatches((payload?.matches || []).map((match) => ({
         path: match?.path ?? '',
         line_number: match?.line_number ?? match?.lineNumber ?? 0,
         line: match?.line ?? '',
+        match_start: match?.match_start ?? match?.matchStart ?? 0,
+        match_end: match?.match_end ?? match?.matchEnd ?? 0,
       })));
       setBrowserSearchHasSearched(true);
     } catch (err) {
+      if (err?.name === 'AbortError' || requestId !== browserSearchRequestRef.current) {
+        return;
+      }
       setBrowserSearchMatches([]);
       setBrowserSearchError(err?.message || 'Unable to search files.');
       setBrowserSearchHasSearched(true);
     } finally {
-      setBrowserSearchLoading(false);
+      if (requestId === browserSearchRequestRef.current) {
+        setBrowserSearchLoading(false);
+      }
     }
   }, [browserSearchGlob, browserSearchQuery, browserSearchRegex, currentSlice?.is_root, currentSliceId]);
+
+  const handleBrowserSearchSubmit = useCallback((event) => {
+    event.preventDefault();
+    runBrowserSearch({ showBlankError: true });
+  }, [runBrowserSearch]);
 
   const openBrowserSearchResult = useCallback((path) => {
     setBrowserOpenFileRequest({ path, token: Date.now() });
@@ -394,6 +414,30 @@ function App({
       : hasRouteAuthorization
         ? 'allowed'
         : 'unauthorized';
+
+  useEffect(() => {
+    const query = browserSearchQuery.trim();
+    if (!isBrowserDetail || !isAuthenticated || !query) {
+      browserSearchRequestRef.current += 1;
+      setBrowserSearchLoading(false);
+      if (!query) {
+        setBrowserSearchMatches([]);
+        setBrowserSearchError('');
+        setBrowserSearchHasSearched(false);
+      }
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      runBrowserSearch({ signal: controller.signal });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [browserSearchGlob, browserSearchQuery, browserSearchRegex, isAuthenticated, isBrowserDetail, runBrowserSearch]);
 
   useEffect(() => {
     if (isAuthenticated && activePage === 'landing') {

@@ -1,12 +1,11 @@
 import { useLoaderData } from 'react-router';
 import { SignUp } from '@clerk/react-router';
+import { isClerkAuthConfigured } from '../../server/auth.js';
 
 export async function loader({ request }) {
   const url = new URL(request.url);
-  const secretKey = String(process.env.CLERK_SECRET_KEY || '').trim();
-  const publishableKey = String(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '').trim();
   return {
-    configured: Boolean(secretKey && publishableKey),
+    configured: isClerkAuthConfigured(),
     redirectURL: String(url.searchParams.get('redirect_url') || '/browser').trim() || '/browser',
   };
 }

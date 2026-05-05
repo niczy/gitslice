@@ -155,6 +155,21 @@ func TestHomeSliceAbsolutePathLifecycle(t *testing.T) {
 		t.Fatalf("unexpected search response: %#v", searchResp)
 	}
 
+	searchResp, err = svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: homeID,
+		Query:       "hello",
+		Glob:        "*.py",
+	})
+	if err != nil {
+		t.Fatalf("Search(relative glob) failed: %v", err)
+	}
+	if searchResp.GetGlob() != "/tester/**/*.py" {
+		t.Fatalf("relative search glob normalized to %q, want /tester/**/*.py", searchResp.GetGlob())
+	}
+	if len(searchResp.GetMatches()) != 2 || searchResp.GetMatches()[0].GetPath() != "/tester/src/lib/helper.py" {
+		t.Fatalf("unexpected relative glob search response: %#v", searchResp)
+	}
+
 	if _, err := svc.DeleteFile(ctx, &filesystemv1.DeleteFileRequest{
 		WorkspaceId: homeID,
 		Path:        "/tester/docs/guides/README.md",
