@@ -296,6 +296,8 @@ test.describe('Repo Browser Mobile Navigation', () => {
     const sidebar = page.locator('.repo-sidebar');
     await expect(sidebar).toHaveClass(/open/);
     await expect(sidebar).toHaveCSS('position', 'fixed');
+    const transitionProperty = await sidebar.evaluate((element) => getComputedStyle(element).transitionProperty);
+    expect(transitionProperty).toContain('transform');
 
     await sidebar.getByRole('button', { name: new RegExp(username) }).click();
     await expect(sidebar).toHaveClass(/open/);
@@ -305,6 +307,15 @@ test.describe('Repo Browser Mobile Navigation', () => {
 
     await expect(sidebar).toHaveClass(/open/);
     await expect(sidebar.getByRole('button', { name: /guide\.md/i })).toBeVisible();
+
+    const overlay = page.locator('.sidebar-overlay');
+    await sidebar.getByRole('button', { name: /close sidebar/i }).click();
+    await expect(sidebar).toHaveClass(/closed/);
+    await expect(sidebar).toHaveClass(/dismissing/);
+    await expect(overlay).toHaveClass(/visible/);
+    await expect(overlay).toHaveClass(/dismissing/);
+    await expect(sidebar).not.toHaveClass(/dismissing/, { timeout: 1000 });
+    await expect(overlay).not.toHaveClass(/visible/, { timeout: 1000 });
   });
 });
 

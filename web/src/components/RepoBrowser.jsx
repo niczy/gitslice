@@ -182,6 +182,7 @@ export default function RepoBrowser({
     ? { path: initialSelectedFilePath, type: 'file' }
     : { path: '', type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isSidebarDismissing, setIsSidebarDismissing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -311,6 +312,30 @@ export default function RepoBrowser({
     setIsEditingFile(false);
   }, []);
 
+  const openSidebar = useCallback(() => {
+    setIsSidebarDismissing(false);
+    setSidebarOpen(true);
+  }, []);
+
+  const closeSidebar = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setIsSidebarDismissing(true);
+    } else {
+      setIsSidebarDismissing(false);
+    }
+    setSidebarOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isSidebarDismissing || typeof window === 'undefined') {
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setIsSidebarDismissing(false);
+    }, 280);
+    return () => window.clearTimeout(timeoutId);
+  }, [isSidebarDismissing]);
+
   useIsomorphicLayoutEffect(() => {
     if (typeof window === 'undefined') {
       return;
@@ -343,14 +368,14 @@ export default function RepoBrowser({
     if (event.button !== undefined && event.button !== 0) {
       return;
     }
-    setSidebarOpen(true);
+    openSidebar();
     sidebarResizeRef.current = {
       startX: event.clientX,
       startWidth: sidebarWidth,
     };
     setIsResizingSidebar(true);
     event.preventDefault();
-  }, [sidebarWidth]);
+  }, [openSidebar, sidebarWidth]);
 
   useEffect(() => {
     if (!isResizingSidebar || typeof window === 'undefined') {
@@ -384,22 +409,22 @@ export default function RepoBrowser({
     const step = event.shiftKey ? 40 : 16;
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
-      setSidebarOpen(true);
+      openSidebar();
       setSidebarWidth((width) => clampSidebarWidth(width - step));
     } else if (event.key === 'ArrowRight') {
       event.preventDefault();
-      setSidebarOpen(true);
+      openSidebar();
       setSidebarWidth((width) => clampSidebarWidth(width + step));
     } else if (event.key === 'Home') {
       event.preventDefault();
-      setSidebarOpen(true);
+      openSidebar();
       setSidebarWidth(SIDEBAR_WIDTH_MIN);
     } else if (event.key === 'End') {
       event.preventDefault();
-      setSidebarOpen(true);
+      openSidebar();
       setSidebarWidth(SIDEBAR_WIDTH_MAX);
     }
-  }, []);
+  }, [openSidebar]);
 
   useEffect(() => {
     if (!canShowSettings && isSettingsOpen) {
@@ -521,6 +546,9 @@ export default function RepoBrowser({
     const handleResize = () => {
       const width = window.innerWidth;
       setIsCompactHeader(width <= 920);
+      if (width > 900) {
+        setIsSidebarDismissing(false);
+      }
       setSidebarOpen((open) => (width > 900 ? open : false));
     };
 
@@ -698,7 +726,7 @@ export default function RepoBrowser({
     }
 
     if (typeof window !== 'undefined' && window.innerWidth <= 900) {
-      setSidebarOpen(false);
+      closeSidebar();
     }
 
     setIsSettingsOpen(false);
@@ -783,7 +811,7 @@ export default function RepoBrowser({
       setIsLoading(false);
       setLoadingFilePath((path) => (path === normalizedPath ? '' : path));
     }
-  }, [buildEntriesUrl, buildFileUrl, canLoad, expandedPaths, fileDrafts, normalizeWorkspaceResultPath, treeEntries]);
+  }, [buildEntriesUrl, buildFileUrl, canLoad, closeSidebar, expandedPaths, fileDrafts, normalizeWorkspaceResultPath, treeEntries]);
 
   useEffect(() => {
     if (!isActive || !openFileRequest?.path) {
@@ -1232,6 +1260,7 @@ export default function RepoBrowser({
     setFocusedEntry({ path: entry.path, type: 'file' });
     await openFilePath(entry.path);
   };
+  const sidebarVisible = sidebarOpen || isSidebarDismissing;
 
   return (
     <section className="repo-browser">
@@ -1241,10 +1270,10 @@ export default function RepoBrowser({
           style={{ '--repo-sidebar-width': `${sidebarWidth}px` }}
         >
           <div
-            className={`sidebar-overlay${sidebarOpen ? ' visible' : ''}`}
-            onClick={() => setSidebarOpen(false)}
+            className={`sidebar-overlay${sidebarVisible ? ' visible' : ''}${isSidebarDismissing ? ' dismissing' : ''}`}
+            onClick={closeSidebar}
           />
-          <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
+          <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}${isSidebarDismissing ? ' dismissing' : ''}`}>
             <div className="sidebar-content">
               <section className="sidebar-tree-section" aria-label="Selected slice files">
                 <div className="sidebar-tree-header">
@@ -1280,7 +1309,7 @@ export default function RepoBrowser({
                       variant="ghost"
                       size="icon"
                       className="sidebar-toggle"
-                      onClick={() => setSidebarOpen(false)}
+                      onClick={closeSidebar}
                       aria-label="Close sidebar"
                       title="Close sidebar"
                     >
@@ -1319,7 +1348,7 @@ export default function RepoBrowser({
                     variant="ghost"
                     size="icon"
                     className="sidebar-toggle open-btn"
-                    onClick={() => setSidebarOpen(true)}
+                    onClick={openSidebar}
                     aria-label="Open sidebar"
                     title="Open file tree"
                     data-testid="sidebar-toggle"
