@@ -5457,6 +5457,24 @@ button[data-testid="topbar-get-started"]:hover {
   gap: 10px;
 }
 
+.slice-create-button {
+  border: 1px solid rgba(9, 76, 178, 0.24);
+  background: #eef5ff;
+  color: var(--accent);
+  box-shadow: none;
+}
+
+.slice-create-button:hover {
+  border-color: rgba(9, 76, 178, 0.34);
+  background: #e0ebff;
+  color: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.slice-create-button:active {
+  transform: translateY(0);
+}
+
 .slice-home-toolbar {
   display: grid;
   grid-template-columns: minmax(220px, 420px);

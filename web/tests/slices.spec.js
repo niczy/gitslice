@@ -82,8 +82,10 @@ test.describe('Slice creation', () => {
     await page.getByRole('button', { name: /login with username/i }).click();
     await expect(page).toHaveURL(/\/browser(\?.*)?$/);
 
+    await expect(page.getByTestId('slice-create-open')).not.toHaveCSS('color', 'rgb(255, 255, 255)');
     await page.getByTestId('slice-create-open').click();
     await expect(page.getByRole('dialog', { name: /create slice/i })).toBeVisible();
+    await expect(page.getByTestId('slice-create-submit')).not.toHaveCSS('color', 'rgb(255, 255, 255)');
     await page.getByTestId('slice-create-name').fill('Web work');
     await page.getByTestId('slice-create-folder-option').filter({ hasText: /^web/ }).first().click();
     await expect(page.getByTestId('slice-create-selected-folders')).toContainText('web');
