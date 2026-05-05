@@ -164,6 +164,87 @@ test.describe('Slice-specific Browsing (real server)', () => {
   });
 });
 
+test.describe('Repo Browser File Preview Layout', () => {
+  test('renders markdown previews at full code content width', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: 'root_slice',
+              name: 'Root Slice',
+              description: 'Root slice',
+              owners: ['system'],
+              created_by: 'system',
+              is_root: true,
+              file_count: 1,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/entries**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            {
+              id: 'root_slice:README.md',
+              name: 'README.md',
+              path: 'README.md',
+              type: 'FILE',
+              size: 92,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/README.md**', async (route) => {
+      const content = '# Wide markdown preview\n\nThis markdown file should use the available preview width.';
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'README.md',
+            content: Buffer.from(content, 'utf8').toString('base64'),
+          },
+        }),
+      });
+    });
+
+    await page.goto('/browser/root_slice?file=README.md');
+
+    const preview = page.locator('.file-preview-markdown');
+    await expect(preview).toContainText('Wide markdown preview');
+
+    const previewLayout = await preview.evaluate((element) => {
+      const content = element.closest('.code-content');
+      const previewStyle = window.getComputedStyle(element);
+      const contentStyle = window.getComputedStyle(content);
+      const horizontalPadding = parseFloat(contentStyle.paddingLeft) + parseFloat(contentStyle.paddingRight);
+      return {
+        boxSizing: previewStyle.boxSizing,
+        maxWidth: previewStyle.maxWidth,
+        previewWidth: element.getBoundingClientRect().width,
+        contentWidth: content.getBoundingClientRect().width - horizontalPadding,
+      };
+    });
+
+    expect(previewLayout.boxSizing).toBe('border-box');
+    expect(previewLayout.maxWidth).toBe('none');
+    expect(previewLayout.previewWidth).toBeGreaterThanOrEqual(previewLayout.contentWidth - 1);
+    expect(previewLayout.previewWidth).toBeLessThanOrEqual(previewLayout.contentWidth + 1);
+  });
+});
+
 test.describe('Repo Browser Search', () => {
   test('submits indexed workspace search and renders structured results', async ({ page }) => {
     const username = `zzsrch${Date.now()}`;
