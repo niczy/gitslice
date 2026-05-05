@@ -190,7 +190,6 @@ export async function searchWorkspaceFiles(workspaceId, { query, glob = '', rege
 
 export async function createSliceFromFolder({
   parentSliceId = 'root_slice',
-  folderPath = '',
   folderPaths = [],
   newSliceId = '',
   name = '',
@@ -201,7 +200,6 @@ export async function createSliceFromFolder({
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       parentSliceId,
-      folderPath,
       folderPaths,
       newSliceId,
       name,
@@ -216,6 +214,18 @@ export async function createSliceFromFolder({
     ...payload,
     slice_id: payload?.slice_id ?? payload?.sliceId ?? '',
   };
+}
+
+export async function fetchSliceEntries(sliceId, path = '') {
+  const encodePath = (value) => String(value || '').split('/').map(encodeURIComponent).join('/');
+  const encodedPath = path ? encodePath(path) : '';
+  const pathSuffix = encodedPath ? `/${encodedPath}` : '';
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/entries${pathSuffix}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load entries'));
+  }
+  const payload = await response.json();
+  return payload?.entries || [];
 }
 
 function decodeBase64(value) {

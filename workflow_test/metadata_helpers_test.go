@@ -22,7 +22,7 @@ func createSliceFromRoot(t *testing.T, sliceID, folderPath string) {
 
 	_, err := client.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: "root_slice",
-		FolderPath:    folderPath,
+		FolderPaths:   []string{folderPath},
 		NewSliceId:    sliceID,
 		Name:          sliceID,
 		Description:   "test slice",

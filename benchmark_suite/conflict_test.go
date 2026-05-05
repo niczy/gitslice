@@ -30,6 +30,7 @@ func TestConflictDetection(t *testing.T) {
 			ParentSliceId: "root_slice",
 			NewSliceId:    sid,
 			Name:          sid,
+			FolderPaths:   []string{"conflict"},
 		})
 		if err != nil {
 			t.Fatalf("CreateSliceFromFolder(%s): %v", sid, err)
@@ -218,6 +219,7 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 			ParentSliceId: "root_slice",
 			NewSliceId:    sid,
 			Name:          sid,
+			FolderPaths:   []string{"hotfile"},
 		})
 		if err != nil {
 			t.Fatalf("CreateSliceFromFolder(%s): %v", sid, err)

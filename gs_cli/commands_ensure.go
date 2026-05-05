@@ -70,8 +70,7 @@ func handleSliceEnsure(ctx context.Context, cli *CLI, args []string) {
 	}
 	resp, err := cli.sliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: rootResp.GetSliceId(),
-		FolderPath:    folderPaths[0],
-		FolderPaths:   folderPaths[1:],
+		FolderPaths:   folderPaths,
 		Name:          sliceName,
 		Description:   *description,
 	})

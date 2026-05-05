@@ -5988,7 +5988,9 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-create-dialog {
-  width: min(520px, 100%);
+  width: min(720px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: auto;
   display: grid;
   gap: 16px;
   padding: 20px;
@@ -6062,6 +6064,176 @@ button[data-testid="topbar-get-started"]:hover {
   box-shadow: 0 0 0 3px rgba(9, 76, 178, 0.1);
 }
 
+.slice-create-folders {
+  display: grid;
+  gap: 10px;
+}
+
+.slice-create-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.slice-create-section-heading small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.slice-create-selected-folders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slice-create-selected-folders li {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
+  padding: 5px 5px 5px 10px;
+  border: 1px solid rgba(17, 19, 23, 0.1);
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.slice-create-selected-folders span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-create-selected-folders button {
+  width: 26px;
+  height: 26px;
+}
+
+.slice-create-folder-empty {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.slice-create-folder-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.slice-create-folder-input input {
+  min-height: 40px;
+  width: 100%;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.92rem;
+  outline: 0;
+}
+
+.slice-create-folder-input input:focus {
+  border-color: var(--accent);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(9, 76, 178, 0.1);
+}
+
+.slice-create-folder-browser {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+}
+
+.slice-create-folder-tree {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.slice-create-folder-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  padding-left: calc(var(--folder-depth, 0) * 16px);
+}
+
+.slice-create-folder-row.selected .slice-create-folder-option {
+  color: var(--accent);
+  background: rgba(9, 76, 178, 0.08);
+}
+
+.slice-create-folder-row.covered .slice-create-folder-option {
+  color: var(--text-muted);
+}
+
+.slice-create-folder-toggle {
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+}
+
+.slice-create-folder-option {
+  min-width: 0;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 20px minmax(80px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.slice-create-folder-option:hover {
+  background: rgba(17, 19, 23, 0.06);
+}
+
+.slice-create-folder-option span,
+.slice-create-folder-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-create-folder-option span {
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.slice-create-folder-option small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.slice-create-folder-loading {
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
 .slice-create-actions {
   display: flex;
   justify-content: flex-end;
@@ -6110,6 +6282,16 @@ button[data-testid="topbar-get-started"]:hover {
   .slice-create-actions {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .slice-create-folder-input,
+  .slice-create-folder-option {
+    grid-template-columns: 1fr;
+  }
+
+  .slice-create-folder-option svg,
+  .slice-create-folder-option small {
+    display: none;
   }
 }
 

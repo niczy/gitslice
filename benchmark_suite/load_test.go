@@ -294,10 +294,10 @@ func runUserSession(i int) userResult {
 	t0 := time.Now()
 	_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: "root_slice",
-		FolderPath:    "",
 		NewSliceId:    sid,
 		Name:          fmt.Sprintf("Bench User %d", i),
 		Description:   "benchmark slice",
+		FolderPaths:   []string{"bench"},
 	})
 	r.createSliceMs = float64(time.Since(t0).Microseconds()) / 1000.0
 	if err != nil {
@@ -365,6 +365,7 @@ func TestIntegrity(t *testing.T) {
 				ParentSliceId: "root_slice",
 				NewSliceId:    sid,
 				Name:          sid,
+				FolderPaths:   []string{"integrity"},
 			})
 			if err != nil {
 				t.Fatalf("user %d: CreateSliceFromFolder: %v", i, err)

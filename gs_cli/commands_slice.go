@@ -132,8 +132,7 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 
 	req := &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: rootResp.GetSliceId(),
-		FolderPath:    folderPaths[0],
-		FolderPaths:   folderPaths[1:],
+		FolderPaths:   folderPaths,
 		Name:          sliceName,
 		Description:   *description,
 	}

@@ -1196,7 +1196,7 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	srv := newSliceServiceServer(st)
 	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: "root_slice",
-		FolderPath:    "o/genesis/projects/repo",
+		FolderPaths:   []string{"o/genesis/projects/repo"},
 		Name:          "my-slice",
 		Description:   "auto id test",
 	})
@@ -1227,7 +1227,7 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	}
 }
 
-func TestCreateSliceUsesFolderPathAsDefaultName(t *testing.T) {
+func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 	if err := st.InitializeRootSlice(ctx); err != nil {
@@ -1241,7 +1241,7 @@ func TestCreateSliceUsesFolderPathAsDefaultName(t *testing.T) {
 	srv := newSliceServiceServer(st)
 	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: "root_slice",
-		FolderPath:    "org/project/service",
+		FolderPaths:   []string{"org/project/service"},
 		Description:   "derive default name from folder",
 	})
 	if err != nil {
@@ -1276,7 +1276,7 @@ func TestCreateSliceFromFolderRejectsMissingFolder(t *testing.T) {
 	_, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
 		ParentSliceId: "root_slice",
 		NewSliceId:    "missing-folder-slice",
-		FolderPath:    "does-not-exist",
+		FolderPaths:   []string{"does-not-exist"},
 		Name:          "missing-folder",
 		Description:   "missing folder test",
 	})
@@ -1324,7 +1324,7 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 		ParentSliceId: "root_slice",
 		NewSliceId:    "entry-backed-slice",
 		Name:          "entry-backed-slice",
-		FolderPath:    "o/genesis/projects/repo",
+		FolderPaths:   []string{"o/genesis/projects/repo"},
 		Description:   "entry-backed root slice test",
 	})
 	if err != nil {
@@ -1398,7 +1398,7 @@ func TestCheckoutMountedSliceUsesLiveBackingFolder(t *testing.T) {
 			ParentSliceId: "root_slice",
 			NewSliceId:    sliceID,
 			Name:          sliceID,
-			FolderPath:    "tester/shared",
+			FolderPaths:   []string{"tester/shared"},
 			Description:   "shared folder slice",
 		}); err != nil {
 			t.Fatalf("CreateSliceFromFolder(%s) failed: %v", sliceID, err)
@@ -1580,7 +1580,7 @@ func TestCheckoutMountedSliceFallsBackToBackingSliceFiles(t *testing.T) {
 		ParentSliceId: "root_slice",
 		NewSliceId:    "legacy-mounted",
 		Name:          "legacy-mounted",
-		FolderPath:    "tester/legacy",
+		FolderPaths:   []string{"tester/legacy"},
 		Description:   "legacy folder slice",
 	}); err != nil {
 		t.Fatalf("CreateSliceFromFolder failed: %v", err)
@@ -1824,8 +1824,7 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 		NewSliceId:    "multi-folder-slice",
 		Name:          "multi-folder-slice",
 		Description:   "multi folder test",
-		FolderPath:    "o/genesis/projects/repo-a",
-		FolderPaths:   []string{"o/genesis/projects/repo-b"},
+		FolderPaths:   []string{"o/genesis/projects/repo-a", "o/genesis/projects/repo-b"},
 	})
 	if err != nil {
 		t.Fatalf("CreateSliceFromFolder failed: %v", err)
