@@ -1075,10 +1075,6 @@ export default function RepoBrowser({
     const shouldToggleExpansion = Boolean(options.toggleExpansion);
     const isExpanded = expandedPaths.includes(normalizedPath);
 
-    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
-      setSidebarOpen(false);
-    }
-
     setIsSettingsOpen(false);
     setFocusedEntry({ path: normalizedPath, type: 'directory' });
     clearFilePreview();

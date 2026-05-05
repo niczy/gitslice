@@ -213,6 +213,101 @@ test.describe('Repo Browser Search', () => {
   });
 });
 
+test.describe('Repo Browser Mobile Navigation', () => {
+  test('keeps the file tree drawer open while expanding folders', async ({ page }) => {
+    const username = `mobiletree${Date.now()}`;
+    const sliceId = `home.${username}`;
+
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: sliceId,
+              name: sliceId,
+              description: 'Mobile tree test slice',
+              files: ['docs/guide.md'],
+              owners: [username],
+              created_by: username,
+              is_root: false,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/entries**`, async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const decodedPath = decodeURIComponent(requestUrl.pathname.split('/entries')[1] || '').replace(/^\/+/, '');
+      const rootFolderPath = username;
+      const docsFolderPath = `${username}/docs`;
+      const entries = decodedPath === docsFolderPath
+        ? [
+            {
+              id: `${sliceId}:${docsFolderPath}/guide.md`,
+              name: 'guide.md',
+              path: `${docsFolderPath}/guide.md`,
+              type: 'ENTRY_TYPE_FILE',
+              size: 18,
+            },
+          ]
+        : decodedPath === rootFolderPath
+          ? [
+              {
+                id: `${sliceId}:${docsFolderPath}`,
+                name: 'docs',
+                path: docsFolderPath,
+                type: 'ENTRY_TYPE_DIRECTORY',
+                size: 0,
+              },
+            ]
+        : [
+            {
+              id: `${sliceId}:${rootFolderPath}`,
+              name: username,
+              path: rootFolderPath,
+              type: 'ENTRY_TYPE_DIRECTORY',
+              size: 0,
+            },
+          ];
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ entries }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await page.getByTestId('slice-home-row').first().click();
+    await expect(page).toHaveURL(new RegExp(`/browser/${sliceId.replace('.', '\\.')}`));
+
+    await expect(page.getByTestId('sidebar-toggle')).toBeVisible();
+    await page.getByTestId('sidebar-toggle').click();
+
+    const sidebar = page.locator('.repo-sidebar');
+    await expect(sidebar).toHaveClass(/open/);
+    await expect(sidebar).toHaveCSS('position', 'fixed');
+
+    await sidebar.getByRole('button', { name: new RegExp(username) }).click();
+    await expect(sidebar).toHaveClass(/open/);
+    await expect(sidebar.getByRole('button', { name: /docs/i })).toBeVisible();
+
+    await sidebar.getByRole('button', { name: /docs/i }).click();
+
+    await expect(sidebar).toHaveClass(/open/);
+    await expect(sidebar.getByRole('button', { name: /guide\.md/i })).toBeVisible();
+  });
+});
+
 test.describe('Repo Browser Settings', () => {
   test('manages slice and folder visibility with public links', async ({ page }) => {
     const username = `webvisibility${Date.now()}`;
