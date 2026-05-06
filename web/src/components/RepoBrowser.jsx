@@ -153,6 +153,9 @@ export default function RepoBrowser({
   const initialSelectedFilePath = initialDataMatchesRawSlice
     ? initialBrowserData?.selectedFile || initialBrowserState?.file || ''
     : initialBrowserState?.file || '';
+  const initialSelectedDirectoryPath = initialSelectedFilePath
+    ? ''
+    : String(initialBrowserState?.dir || '').replace(/^\/+/, '');
   const hasInitialSelectedFilePayload = Boolean(initialSelectedFilePayload?.content);
   const [sliceHash, setSliceHash] = useState(initialBrowserState?.sliceHash || '');
   const [treeEntries, setTreeEntries] = useState(() => (
@@ -183,7 +186,7 @@ export default function RepoBrowser({
   ));
   const [focusedEntry, setFocusedEntry] = useState(() => (initialSelectedFilePath
     ? { path: initialSelectedFilePath, type: 'file' }
-    : { path: '', type: 'directory' }));
+    : { path: initialSelectedDirectoryPath, type: 'directory' }));
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isSidebarDismissing, setIsSidebarDismissing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
@@ -723,7 +726,31 @@ export default function RepoBrowser({
     }
   };
 
-  const openFilePath = useCallback(async (targetPath) => {
+  const writeBrowserState = useCallback(({ file = '', dir = '' } = {}, options = {}) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const currentRoute = parseLocation(window.location);
+    if (currentRoute.page !== 'browser' || !currentRoute.browserState?.slice) {
+      return;
+    }
+
+    const nextPath = buildBrowserPath({
+      dir,
+      file,
+      slice: sliceId,
+      sliceHash,
+    });
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    if (currentPath === nextPath) {
+      return;
+    }
+
+    const method = options.replace ? 'replaceState' : 'pushState';
+    window.history[method]({ gitsliceBrowserState: true }, '', nextPath);
+  }, [sliceHash, sliceId]);
+
+  const openFilePath = useCallback(async (targetPath, options = {}) => {
     const normalizedPath = normalizeWorkspaceResultPath(targetPath);
     if (!canLoad || !normalizedPath) {
       return;
@@ -734,6 +761,7 @@ export default function RepoBrowser({
     }
 
     setIsSettingsOpen(false);
+    setFocusedEntry({ path: normalizedPath, type: 'file' });
     setSelectedFile(normalizedPath);
     setFileContent('');
     setEncodedFileContent('');
@@ -745,6 +773,9 @@ export default function RepoBrowser({
     setShowHistory(false);
     setFileHistory([]);
     setHistoryError('');
+    if (options.updateHistory !== false) {
+      writeBrowserState({ file: normalizedPath });
+    }
 
     const nextTreeEntries = { ...treeEntries };
     const nextExpandedPaths = new Set(['']);
@@ -815,7 +846,17 @@ export default function RepoBrowser({
       setIsLoading(false);
       setLoadingFilePath((path) => (path === normalizedPath ? '' : path));
     }
-  }, [buildEntriesUrl, buildFileUrl, canLoad, closeSidebar, expandedPaths, fileDrafts, normalizeWorkspaceResultPath, treeEntries]);
+  }, [
+    buildEntriesUrl,
+    buildFileUrl,
+    canLoad,
+    closeSidebar,
+    expandedPaths,
+    fileDrafts,
+    normalizeWorkspaceResultPath,
+    treeEntries,
+    writeBrowserState,
+  ]);
 
   useEffect(() => {
     if (!isActive || !openFileRequest?.path) {
@@ -1111,6 +1152,9 @@ export default function RepoBrowser({
     setFocusedEntry({ path: normalizedPath, type: 'directory' });
     clearFilePreview();
     setError('');
+    if (options.updateHistory !== false) {
+      writeBrowserState({ dir: normalizedPath });
+    }
 
     if (!Object.prototype.hasOwnProperty.call(treeEntries, normalizedPath)) {
       await fetchEntries(normalizedPath);
@@ -1136,42 +1180,46 @@ export default function RepoBrowser({
     });
   };
 
-  const toggleDirectory = async (entry) => {
-    const isExpanded = expandedPaths.includes(entry.path);
-    if (isExpanded) {
-      setExpandedPaths((prev) => prev.filter((path) => path !== entry.path));
-      return;
-    }
-
-    if (!treeEntries[entry.path]) {
-      await fetchEntries(entry.path);
-    }
-
-    setExpandedPaths((prev) => [...prev, entry.path]);
-  };
-
-  // Replace the current detail URL with file/hash state without overwriting the slice home entry.
-  const pushBrowserState = useCallback((file) => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const currentRoute = parseLocation(window.location);
-    if (currentRoute.page !== 'browser' || !currentRoute.browserState?.slice) {
-      return;
-    }
-    window.history.replaceState(null, '', buildBrowserPath({
-      file,
-      slice: sliceId,
-      sliceHash,
-    }));
-  }, [sliceId, sliceHash]);
-
-  // Update URL when browser state changes or page becomes active again
   useEffect(() => {
-    if (isActive && sliceId) {
-      pushBrowserState(selectedFile || '');
+    if (!isActive || !canLoad || selectedFile || !selectedDirectoryPath) {
+      return;
     }
-  }, [isActive, pushBrowserState, selectedFile, sliceId, sliceHash]);
+    if (Object.prototype.hasOwnProperty.call(treeEntries, selectedDirectoryPath)) {
+      return;
+    }
+    openDirectoryPath(selectedDirectoryPath, { updateHistory: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canLoad, isActive, selectedDirectoryPath, selectedFile, treeEntries]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isActive) {
+      return undefined;
+    }
+
+    const handlePopState = () => {
+      const route = parseLocation(window.location);
+      if (route.page !== 'browser') {
+        return;
+      }
+      const routeSliceId = route.browserState?.slice || '';
+      if (routeSliceId && routeSliceId !== sliceId) {
+        return;
+      }
+
+      setSliceHash(route.browserState?.sliceHash || '');
+      const nextFile = normalizeWorkspaceResultPath(route.browserState?.file || '');
+      const nextDir = normalizeWorkspaceResultPath(route.browserState?.dir || '');
+      if (nextFile) {
+        openFilePath(nextFile, { updateHistory: false });
+        return;
+      }
+      openDirectoryPath(nextDir, { updateHistory: false });
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, normalizeWorkspaceResultPath, openFilePath, sliceId]);
 
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
