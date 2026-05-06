@@ -63,7 +63,7 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
           </p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
-              Open repo browser
+              Open slices
             </Button>
             <Button type="button" variant="outline" onClick={onOpenDocs}>
               Read docs
@@ -194,7 +194,7 @@ gs fs snapshot -m "notes update"`}</code>
           <h2>Create a custom slice. Check it out fast. Use cloud edit for the rest.</h2>
         </div>
         <Button type="button" onClick={onBrowseRepo}>
-          Open repo browser
+          Open slices
         </Button>
       </section>
     </>

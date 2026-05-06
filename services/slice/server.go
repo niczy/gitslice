@@ -2917,11 +2917,14 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		return nil, status.Error(codes.PermissionDenied, "not authorized for parent slice")
 	}
 
-	folderSelections := resolveRequestedFolderSelections(parentSlice, folderPaths)
-
 	parentEntries, err := s.collectSliceEntries(ctx, parentSlice.ID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enumerate parent slice entries: %v", err))
+	}
+
+	folderSelections, err := resolveRequestedFolderSelections(parentSlice, parentEntries, folderPaths, username)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := validateFolderSelectionsExist(parentSlice, parentEntries, folderSelections); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -3324,15 +3327,45 @@ type sliceFolderSelection struct {
 	storedPath  string
 }
 
-func resolveRequestedFolderSelections(parentSlice *models.Slice, folderPaths []string) []sliceFolderSelection {
+func resolveRequestedFolderSelections(parentSlice *models.Slice, entries []*models.DirectoryEntry, folderPaths []string, username string) ([]sliceFolderSelection, error) {
 	if len(folderPaths) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	selections := make([]sliceFolderSelection, 0, len(folderPaths))
 	seenStored := make(map[string]struct{}, len(folderPaths))
+	homeRoot := ""
+	rootScoped := false
+	if parentSlice != nil && (parentSlice.IsRoot || homeslice.IsHomeSliceID(parentSlice.ID)) {
+		rootScoped = parentSlice.IsRoot
+		homeUsername := strings.TrimSpace(username)
+		if sliceUsername := homeslice.UsernameFromSliceID(parentSlice.ID); sliceUsername != "" {
+			homeUsername = sliceUsername
+		}
+		homeRoot = homeslice.RelativeRootPath(homeUsername)
+		if homeRoot == "" {
+			return nil, fmt.Errorf("home slice %q has no root path", parentSlice.ID)
+		}
+	}
 	for _, displayPath := range folderPaths {
-		storedPath := common.SliceStoredPath(parentSlice, displayPath)
+		cleanDisplayPath := common.CleanRelativePath(displayPath)
+		storedPath := common.SliceStoredPath(parentSlice, cleanDisplayPath)
+		if homeRoot != "" {
+			directExists, directExactFile := folderSelectionExists(parentSlice, entries, storedPath)
+			if rootScoped && (directExists || directExactFile) {
+				// Keep explicit paths that already exist in the published root.
+			} else if storedPath == homeRoot {
+				if !rootScoped {
+					cleanDisplayPath = path.Base(homeRoot)
+				}
+			} else if strings.HasPrefix(storedPath, homeRoot+"/") {
+				if !rootScoped {
+					cleanDisplayPath = strings.TrimPrefix(storedPath, homeRoot+"/")
+				}
+			} else {
+				storedPath = path.Join(homeRoot, cleanDisplayPath)
+			}
+		}
 		if storedPath == "" {
 			continue
 		}
@@ -3341,11 +3374,11 @@ func resolveRequestedFolderSelections(parentSlice *models.Slice, folderPaths []s
 		}
 		seenStored[storedPath] = struct{}{}
 		selections = append(selections, sliceFolderSelection{
-			displayPath: displayPath,
+			displayPath: cleanDisplayPath,
 			storedPath:  storedPath,
 		})
 	}
-	return selections
+	return selections, nil
 }
 
 func collectSliceFilesForFolders(parentSlice *models.Slice, entries []*models.DirectoryEntry, selections []sliceFolderSelection) []string {

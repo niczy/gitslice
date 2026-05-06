@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { UserButton } from '@clerk/react';
-import { BookOpen, Github, LibraryBig, LogIn, Search } from 'lucide-react';
+import { BookOpen, Github, LibraryBig, LogIn, Search, User } from 'lucide-react';
 
 import { Button } from './ui/button.jsx';
 
 const SEARCH_RESULTS_PAGE_SIZE = 50;
+
+function handleInternalLinkClick(event, action) {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.shiftKey
+  ) {
+    return;
+  }
+  event.preventDefault();
+  action();
+}
 
 function buildSearchSnippet(match) {
   const line = String(match?.line || '');
@@ -37,6 +52,7 @@ function buildSearchSnippet(match) {
 export default function AppHeader({
   isAuthenticated,
   authSessionSource,
+  username,
   githubUrl,
   navigate,
   onOpenRepos,
@@ -79,6 +95,11 @@ export default function AppHeader({
   const hiddenSearchFileCount = Math.max(0, searchFiles.length - visibleSearchFiles.length);
   const nextSearchFileCount = Math.min(SEARCH_RESULTS_PAGE_SIZE, hiddenSearchFileCount);
   const hasSearchContent = Boolean(browserSearch?.error || searchFiles.length > 0 || browserSearch?.empty || browserSearch?.loading);
+  const repoBrowserClassName = `nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`;
+  const docsClassName = `nav-link${isNavActive('docs') ? ' nav-link--active' : ''}`;
+  const loginClassName = `nav-link${isNavActive('login') ? ' nav-link--active' : ''}`;
+  const getStartedClassName = `nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`;
+  const profileClassName = `nav-link${isNavActive('profile') ? ' nav-link--active' : ''}`;
 
   useEffect(() => {
     if (!showBrowserSearch) {
@@ -269,6 +290,34 @@ export default function AppHeader({
       <div className="top-bar-actions">
         {isAuthenticated ? (
           <>
+            <Button
+              asChild
+              variant={isNavActive('repos') ? 'default' : 'secondary'}
+              className={repoBrowserClassName}
+            >
+              <a
+                href="/slices"
+                data-testid="topbar-repos"
+                onClick={(event) => handleInternalLinkClick(event, onOpenRepos)}
+              >
+                <LibraryBig size={16} aria-hidden="true" />
+                Slices
+              </a>
+            </Button>
+            <Button
+              asChild
+              variant={isNavActive('profile') ? 'secondary' : 'ghost'}
+              className={profileClassName}
+            >
+              <a
+                href="/profile"
+                data-testid="topbar-profile"
+                onClick={(event) => handleInternalLinkClick(event, () => navigate('profile'))}
+              >
+                <User size={16} aria-hidden="true" />
+                {username || 'Profile'}
+              </a>
+            </Button>
             {authSessionSource === 'clerk' && (
               <UserButton
                 afterSignOutUrl="/"
@@ -279,24 +328,32 @@ export default function AppHeader({
         ) : (
           <>
             <Button
-              type="button"
+              asChild
               variant={isNavActive('repos') ? 'default' : 'secondary'}
-              className={`nav-link${isNavActive('repos') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-repo-browser"
-              onClick={() => navigate('browser')}
+              className={repoBrowserClassName}
             >
-              <LibraryBig size={16} aria-hidden="true" />
-              Repo Browser
+              <a
+                href="/slices"
+                data-testid="topbar-repo-browser"
+                onClick={(event) => handleInternalLinkClick(event, () => navigate('browser'))}
+              >
+                <LibraryBig size={16} aria-hidden="true" />
+                Slices
+              </a>
             </Button>
             <Button
-              type="button"
+              asChild
               variant={isNavActive('docs') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('docs') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-docs-link"
-              onClick={() => navigate('docs')}
+              className={docsClassName}
             >
-              <BookOpen size={16} aria-hidden="true" />
-              Docs
+              <a
+                href="/docs"
+                data-testid="topbar-docs-link"
+                onClick={(event) => handleInternalLinkClick(event, () => navigate('docs'))}
+              >
+                <BookOpen size={16} aria-hidden="true" />
+                Docs
+              </a>
             </Button>
             <Button
               asChild
@@ -310,23 +367,31 @@ export default function AppHeader({
               </a>
             </Button>
             <Button
-              type="button"
+              asChild
               variant={isNavActive('login') ? 'secondary' : 'ghost'}
-              className={`nav-link${isNavActive('login') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-login"
-              onClick={onLogin}
+              className={loginClassName}
             >
-              <LogIn size={16} aria-hidden="true" />
-              Login
+              <a
+                href="/login"
+                data-testid="topbar-login"
+                onClick={(event) => handleInternalLinkClick(event, onLogin)}
+              >
+                <LogIn size={16} aria-hidden="true" />
+                Login
+              </a>
             </Button>
             <Button
-              type="button"
+              asChild
               variant="default"
-              className={`nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`}
-              data-testid="topbar-get-started"
-              onClick={() => navigate('landing')}
+              className={getStartedClassName}
             >
-              Get Started
+              <a
+                href="/"
+                data-testid="topbar-get-started"
+                onClick={(event) => handleInternalLinkClick(event, () => navigate('landing'))}
+              >
+                Get Started
+              </a>
             </Button>
           </>
         )}

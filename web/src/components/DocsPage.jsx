@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 
 import { extractMarkdownHeadings, renderMarkdownHtml } from '../utils/markdown.js';
 import { Badge } from './ui/badge.jsx';
@@ -57,6 +57,26 @@ export default function DocsPage({ markdown = '', onBrowseRepo }) {
     [docs.body],
   );
   const docsHtml = useMemo(() => renderMarkdownHtml(docs.body, { headingLinks: true }), [docs.body]);
+  const handleNavClick = useCallback((event, id) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.shiftKey
+    ) {
+      return;
+    }
+
+    const target = document.getElementById(id);
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    window.history.pushState(null, '', `#${id}`);
+    target.scrollIntoView({ block: 'start' });
+  }, []);
 
   return (
     <div className="docs-page">
@@ -67,7 +87,7 @@ export default function DocsPage({ markdown = '', onBrowseRepo }) {
           <p className="lede">{docs.lede}</p>
           <div className="cta-row flex flex-wrap gap-3">
             <Button type="button" onClick={onBrowseRepo}>
-              Open repo browser
+              Open slices
             </Button>
             <Button asChild variant="outline">
               <a href="/docs.md">Open docs.md</a>
@@ -93,7 +113,12 @@ gs auth login --key ~/.config/gitslice/agent_ed25519`}</code>
             <p className="docs-nav-kicker">Navigate</p>
             <nav className="docs-nav" aria-label="Documentation navigation">
               {navItems.map((item) => (
-                <a key={item.id} className="docs-nav-link" href={`#${item.id}`}>
+                <a
+                  key={item.id}
+                  className="docs-nav-link"
+                  href={`#${item.id}`}
+                  onClick={(event) => handleNavClick(event, item.id)}
+                >
                   {item.text}
                 </a>
               ))}

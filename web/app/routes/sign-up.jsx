@@ -6,7 +6,7 @@ export async function loader({ request }) {
   const url = new URL(request.url);
   return {
     configured: isClerkAuthConfigured(),
-    redirectURL: String(url.searchParams.get('redirect_url') || '/browser').trim() || '/browser',
+    redirectURL: String(url.searchParams.get('redirect_url') || '/slices').trim() || '/slices',
   };
 }
 

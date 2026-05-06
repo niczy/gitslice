@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card.jsx';
 
 export default function ProfilePage({ username, authSessionSource, onLogout }) {
   return (
-    <section className="section auth-page" data-testid="profile-page">
+    <section className="section auth-page profile-page" data-testid="profile-page">
       {authSessionSource === 'clerk' && (
         <div className="clerk-profile-section">
           <div className="clerk-profile-surface">

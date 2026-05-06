@@ -11,7 +11,7 @@ test.describe('Cookie-backed web auth', () => {
     await loginPage.goto('/login');
     await loginPage.getByLabel('Username').fill('webssrhome');
     await loginPage.getByRole('button', { name: /login with username/i }).click();
-    await expect(loginPage).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(loginPage).toHaveURL(/\/slices(\?.*)?$/);
 
     const storageState = await loginContext.storageState();
     await loginContext.close();
@@ -38,28 +38,38 @@ test.describe('Cookie-backed web auth', () => {
     await page.getByLabel('Username').fill('webtester1');
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
     await expect(page.getByTestId('topbar-profile')).toContainText('webtester1');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester1/i);
+    await expect(page.getByTestId('topbar-repos')).toContainText('Slices');
+    await expect(page.getByTestId('topbar-settings')).toHaveCount(0);
+    await expect(page.getByTestId('slice-home-page')).toBeVisible();
+    await page.getByTestId('slice-home-row').first().click();
+    await expect(page).toHaveURL(/\/slices\/home\.webtester1/);
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(/webtester1/i);
     await expect(page.getByRole('button', { name: /\+ Folder/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /\+ File/i })).toHaveCount(0);
 
-    await page.getByTestId('slice-dropdown-trigger').click();
-    await expect(page.getByTestId('slice-dropdown-item').filter({ hasText: /root_slice|root slice/i })).toHaveCount(0);
-    await page.keyboard.press('Escape');
-
-    await page.getByTestId('topbar-settings').click();
+    await page.goto('/settings');
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect(page.getByText(/browser sign-in/i)).toBeVisible();
     await expect(page.getByText(/^dev$/i)).toBeVisible();
 
     await page.getByTestId('topbar-repos').click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
-    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester1/i);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
+    await expect(page.getByTestId('slice-home-page')).toBeVisible();
+    await page.getByTestId('slice-home-row').first().click();
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(/webtester1/i);
 
     await page.reload();
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
     await expect(page.getByTestId('topbar-profile')).toContainText('webtester1');
+
+    await page.getByTestId('topbar-profile').click();
+    await expect(page).toHaveURL(/\/profile$/);
+    const profilePage = page.getByTestId('profile-page');
+    await expect(profilePage).toBeVisible();
+    const profileTop = await profilePage.evaluate((element) => element.getBoundingClientRect().top);
+    expect(profileTop).toBeLessThan(112);
   });
 
   test('stale username-style browser slice param resolves to the home slice', async ({ page }) => {
@@ -67,11 +77,11 @@ test.describe('Cookie-backed web auth', () => {
     await page.getByLabel('Username').fill('webtester2');
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
-    await page.goto('/browser?slice=webtester2');
+    await page.goto('/slices?slice=webtester2');
 
-    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/webtester2/i);
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(/webtester2/i);
     await expect(page.getByText(/Unable to load entries/i)).toHaveCount(0);
   });
 
@@ -87,8 +97,8 @@ test.describe('Cookie-backed web auth', () => {
     await page.getByLabel('Username').fill('websplit1');
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
-    await page.getByTestId('topbar-settings').click();
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
+    await page.goto('/settings');
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect.poll(() => seenBrowserRequests.length).toBeGreaterThan(0);
   });
@@ -99,7 +109,7 @@ test.describe('Cookie-backed web auth', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
     await page.route('**/v1/repos/bindings', async (route) => {
       await route.fulfill({
@@ -121,7 +131,7 @@ test.describe('Cookie-backed web auth', () => {
       });
     });
 
-    await page.getByTestId('topbar-settings').click();
+    await page.goto('/settings');
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect(page.getByRole('heading', { name: /github bindings/i })).toBeVisible();
     await expect(page.getByTestId('settings-repo-bindings')).toContainText(`/${username}/imports/demo`);
@@ -150,7 +160,7 @@ test.describe('Cookie-backed web auth', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
     await page.route('**/v1/repos/bindings', async (route) => {
       await route.fulfill({
@@ -207,7 +217,7 @@ test.describe('Cookie-backed web auth', () => {
       });
     });
 
-    await page.getByTestId('topbar-settings').click();
+    await page.goto('/settings');
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect(page.getByTestId('settings-agent-keys')).toContainText('codex-laptop');
     await expect(page.getByTestId('settings-agent-keys')).toContainText('ed25519:primary');
@@ -248,7 +258,7 @@ test.describe('Cookie-backed web auth', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
     await page.route('**/v1/repos/bindings', async (route) => {
       await route.fulfill({
@@ -289,7 +299,7 @@ test.describe('Cookie-backed web auth', () => {
       });
     });
 
-    await page.getByTestId('topbar-settings').click();
+    await page.goto('/settings');
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect(page.getByTestId('settings-auth-context')).toContainText('API credential');
     await expect(page.getByTestId('settings-auth-context')).toContainText('local_session');
@@ -325,7 +335,7 @@ test.describe('Cookie-backed web auth', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
     await page.route('**/v1/repos/bindings', async (route) => {
       await route.fulfill({
@@ -375,7 +385,7 @@ test.describe('Cookie-backed web auth', () => {
       });
     });
 
-    await page.getByTestId('topbar-settings').click();
+    await page.goto('/settings');
     await expect(page.getByTestId('settings-auth-methods')).toContainText('password');
     await expect(page.getByTestId('settings-auth-methods')).toContainText('workos');
 
@@ -405,7 +415,7 @@ test.describe('Cookie-backed web auth', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
     await page.route('**/v1/users/me', async (route) => {
       if (route.request().method() === 'GET') {
@@ -464,7 +474,7 @@ test.describe('Cookie-backed web auth', () => {
       }
     });
 
-    await page.getByTestId('topbar-settings').click();
+    await page.goto('/settings');
     await page.getByRole('button', { name: /open profile details/i }).click();
     await expect(page.getByTestId('profile-page')).toBeVisible();
     await expect(page.getByLabel(/^Name$/)).toHaveValue('Original Name');

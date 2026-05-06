@@ -7,7 +7,7 @@ async function signInWithUsername(page, username) {
   await page.goto('/login');
   await page.getByLabel('Username').fill(username);
   await page.getByRole('button', { name: /login with username/i }).click();
-  await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+  await expect(page).toHaveURL(/\/slices(\?.*)?$/);
   await expect(page.getByTestId('topbar-profile')).toContainText(username);
 }
 

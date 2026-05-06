@@ -3,8 +3,7 @@ import { test, expect } from '@playwright/test';
 
 // Helper: navigate to a genesis file and open its history panel.
 async function openGenesisHistory(page) {
-  await page.goto('/');
-  await page.getByTestId('topbar-repo-browser').click();
+  await page.goto('/slices/root_slice');
   await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
   // Open slice dropdown and ensure root_slice is selected
@@ -693,7 +692,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto('/browser');
+    await page.goto('/slices/root_slice');
     await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
     await page.getByRole('button', { name: /README\.md/i }).click();
     await expect(page.locator('.file-preview')).toContainText('line two');

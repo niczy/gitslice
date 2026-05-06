@@ -17,7 +17,7 @@ test.describe('Navigation history and URL reloading', () => {
   };
 
   const waitForBrowser = async (page) => {
-    const browserTrigger = page.getByTestId('slice-dropdown-trigger');
+    const browserTrigger = page.getByTestId('slice-detail-nav');
     for (let i = 0; i < 6; i += 1) {
       if (await browserTrigger.isVisible()) {
         return;
@@ -28,17 +28,45 @@ test.describe('Navigation history and URL reloading', () => {
     await expect(browserTrigger).toBeVisible();
   };
 
+  const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const openFolderPreviewEntry = async (page, name) => {
+    const entry = page.locator('.folder-preview-entry').filter({
+      has: page.locator('.folder-preview-entry-name').filter({ hasText: new RegExp(`^${escapeRegExp(name)}$`, 'i') }),
+    }).first();
+    await expect(entry).toBeVisible();
+    await entry.click();
+  };
+
+  const openFilePreviewEntry = async (page, name) => {
+    const entry = page.locator('.folder-preview-entry').filter({
+      has: page.locator('.folder-preview-entry-name').filter({ hasText: new RegExp(`^${escapeRegExp(name)}$`, 'i') }),
+    }).first();
+    await expect(entry).toBeVisible();
+    await entry.click();
+  };
+
+  const openGenesisReadme = async (page) => {
+    await openFolderPreviewEntry(page, 'o');
+    await openFolderPreviewEntry(page, 'genesis');
+    await openFolderPreviewEntry(page, 'projects');
+    await openFolderPreviewEntry(page, 'gitslice');
+
+    await openFilePreviewEntry(page, 'README.md');
+    await expect(page.locator('.file-preview')).toBeVisible();
+  };
+
   test('navigating to repo browser updates the URL path', async ({ page }) => {
     await page.goto('/');
-    await page.goto('/browser');
+    await page.goto('/slices/root_slice');
 
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
+    await expect(page).toHaveURL(/\/slices\/root_slice(\?.*)?$/);
   });
 
   test('navigating back to landing updates the URL path', async ({ page }) => {
-    await page.goto('/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await page.goto('/slices/root_slice');
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Click brand logo to go back to landing
     await page.getByRole('button', { name: /Git Slice/i }).click();
@@ -46,9 +74,9 @@ test.describe('Navigation history and URL reloading', () => {
     expect(new URL(page.url()).pathname).toBe('/');
   });
 
-  test('loading /browser directly opens the repo browser', async ({ page }) => {
-    await page.goto('/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+  test('loading /slices directly opens the slices home', async ({ page }) => {
+    await page.goto('/slices');
+    await expect(page.getByTestId('slice-home-page')).toBeVisible();
   });
 
   test('loading / directly opens the landing page', async ({ page }) => {
@@ -63,24 +91,24 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('legacy hash routes redirect to real paths', async ({ page }) => {
-    await page.goto('/#/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await page.goto('/#/slices');
+    await expect(page.getByTestId('slice-home-page')).toBeVisible();
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
   });
 
   test('reloading the repo browser page preserves the view', async ({ page }) => {
-    await page.goto('/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await page.goto('/slices/root_slice');
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Reload the page
     await page.reload();
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
+    await expect(page).toHaveURL(/\/slices\/root_slice(\?.*)?$/);
   });
 
   test('brand button returns to landing from the browser', async ({ page }) => {
-    await page.goto('/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await page.goto('/slices/root_slice');
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Use brand button to return to landing
     await page.getByRole('button', { name: /Git Slice/i }).click();
@@ -88,33 +116,22 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('browser route returns to browser from landing', async ({ page }) => {
-    await page.goto('/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await page.goto('/slices/root_slice');
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Back to landing via brand button
     await page.getByRole('button', { name: /Git Slice/i }).click();
     await expect(page.getByRole('heading', { level: 1, name: landingTitle })).toBeVisible();
 
     // Forward to browser via path route
-    await page.goto('/browser');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
+    await page.goto('/slices/root_slice');
+    await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
   });
 
   test('navigating to diff page updates the URL path', async ({ page }) => {
-    await page.goto('/browser');
+    await page.goto('/slices/root_slice');
 
-    // Navigate to a file with history, then to the diff page
-    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*\/o\/genesis$/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*\/o\/genesis$/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*\/o\/genesis\/projects$/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*\/o\/genesis\/projects$/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*\/o\/genesis\/projects\/gitslice$/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*\/o\/genesis\/projects\/gitslice$/i }).click();
-
-    await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
-    await page.getByRole('button', { name: /README\.md/i }).click();
-    await expect(page.locator('.file-preview')).toBeVisible();
+    await openGenesisReadme(page);
 
     await page.getByTestId('history-toggle').click();
     await expect(page.getByTestId('history-panel')).toBeVisible();
@@ -128,20 +145,9 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('reloading the diff page preserves the commit view', async ({ page }) => {
-    await page.goto('/browser');
+    await page.goto('/slices/root_slice');
 
-    // Navigate to diff page via file history
-    await page.getByRole('button', { name: /📁.*\/o$/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*\/o\/genesis$/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*\/o\/genesis$/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*\/o\/genesis\/projects$/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*\/o\/genesis\/projects$/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*\/o\/genesis\/projects\/gitslice$/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*\/o\/genesis\/projects\/gitslice$/i }).click();
-
-    await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
-    await page.getByRole('button', { name: /README\.md/i }).click();
-    await expect(page.locator('.file-preview')).toBeVisible();
+    await openGenesisReadme(page);
 
     await page.getByTestId('history-toggle').click();
     await expect(page.getByTestId('history-panel')).toBeVisible();

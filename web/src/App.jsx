@@ -424,8 +424,9 @@ function App({
   }, [initialAuthConfig.authProvider, navigate]);
 
   const isAuthenticated = Boolean(username);
-  const isBrowserLayout = activePage === 'browser' || isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
-  const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${activePage === 'browser' && !browserRouteSliceId ? ' page--slice-home' : ''}`;
+  const isSliceHomePage = activePage === 'browser' && !browserRouteSliceId;
+  const isBrowserLayout = (activePage === 'browser' && Boolean(browserRouteSliceId)) || isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
+  const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${isSliceHomePage ? ' page--slice-home' : ''}${activePage === 'profile' ? ' page--profile' : ''}`;
   const isAdminUser = (username || '').toLowerCase() === 'admin';
   const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
@@ -495,6 +496,9 @@ function App({
     if (item === 'settings') {
       return activePage === 'settings' || activePage === 'profile';
     }
+    if (item === 'profile') {
+      return activePage === 'profile';
+    }
     if (item === 'login') {
       return activePage === 'login';
     }
@@ -512,6 +516,7 @@ function App({
       <AppHeader
         isAuthenticated={isAuthenticated}
         authSessionSource={authSessionSource}
+        username={username}
         githubUrl={githubUrl}
         navigate={navigate}
         onOpenRepos={openBrowserHome}
@@ -591,6 +596,7 @@ function App({
             slicesLoading={slicesLoading}
             slicesError={slicesError}
             isAuthenticated={isAuthenticated}
+            username={username}
             homeSliceId={getHomeSliceId(username)}
             onOpenSlice={openSliceDetail}
             onRefresh={refreshSlices}

@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 // so root entries should include the "o" directory.
 
 async function openRootRepository(page) {
-  await page.goto('/browser/root_slice');
+  await page.goto('/slices/root_slice');
   await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
   await expect(page.getByTestId('folder-preview')).toBeVisible();
 }
@@ -107,7 +107,7 @@ test.describe('Slice-specific Browsing (real server)', () => {
   });
 
   test('shows not found for signed-out private slice direct URLs', async ({ page }) => {
-    const response = await page.goto('/browser/sl-private-not-visible?file=secret.txt');
+    const response = await page.goto('/slices/sl-private-not-visible?file=secret.txt');
 
     expect(response?.status()).toBe(404);
     await expect(page.getByTestId('not-found-page')).toBeVisible();
@@ -177,7 +177,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await page.goto(`/browser/${sliceId}`);
+    await page.goto(`/slices/${sliceId}`);
 
     await expect(page.getByTestId('slice-get-code-button')).toBeVisible();
     await page.getByTestId('slice-get-code-button').click();
@@ -256,7 +256,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.goto('/browser/root_slice?file=README.md');
+    await page.goto('/slices/root_slice?file=README.md');
 
     const preview = page.locator('.file-preview-markdown');
     await expect(preview).toContainText('Wide markdown preview');
@@ -278,6 +278,77 @@ test.describe('Repo Browser File Preview Layout', () => {
     expect(previewLayout.maxWidth).toBe('none');
     expect(previewLayout.previewWidth).toBeGreaterThanOrEqual(previewLayout.contentWidth - 1);
     expect(previewLayout.previewWidth).toBeLessThanOrEqual(previewLayout.contentWidth + 1);
+  });
+
+  test('shows file loading as a delayed compact status', async ({ page }) => {
+    await openRootRepository(page);
+    await openGitsliceRepositoryRoot(page);
+
+    await page.route('**/v1/slices/root_slice/files/**/README.md**', async (route) => {
+      await page.waitForTimeout(250);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'README.md',
+            size: 1234,
+            content: Buffer.from('Subtle loading fixture', 'utf8').toString('base64'),
+          },
+        }),
+      });
+    });
+
+    await page.locator('.folder-preview-list').getByRole('button', { name: /^README\.md\b/i }).click();
+
+    const fileSizeStatus = page.locator('.code-header-actions .file-size-status');
+    await expect(fileSizeStatus).toBeVisible();
+    await expect(fileSizeStatus).not.toHaveText('0 B');
+    const loadingSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
+
+    await page.waitForTimeout(100);
+    await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
+
+    const loadingState = page.getByTestId('file-loading-state');
+    await expect(loadingState).toBeVisible();
+    const loadingBox = await loadingState.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { height: rect.height, width: rect.width };
+    });
+    expect(loadingBox.height).toBeLessThan(40);
+    expect(loadingBox.width).toBeLessThan(160);
+
+    await expect(page.locator('.file-preview')).toContainText('Subtle loading fixture');
+    await expect(fileSizeStatus).toHaveText('1.2 KB');
+    const loadedSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
+    expect(Math.abs(loadedSizeWidth - loadingSizeWidth)).toBeLessThan(1);
+
+    await page.route('**/v1/slices/root_slice/files/**/go.mod**', async (route) => {
+      await page.waitForTimeout(250);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: 'go.mod',
+            size: 2048,
+            content: Buffer.from('module delayed-preview-fixture', 'utf8').toString('base64'),
+          },
+        }),
+      });
+    });
+
+    await page.evaluate(() => {
+      const file = 'o/genesis/projects/gitslice/go.mod';
+      const state = { gitsliceBrowserState: true, browserState: { slice: 'root_slice', file } };
+      window.history.pushState(state, '', `/slices/root_slice?file=${encodeURIComponent(file)}`);
+      window.dispatchEvent(new PopStateEvent('popstate', { state }));
+    });
+    await page.waitForTimeout(100);
+    const previewTextDuringLoad = await page.locator('.file-preview').textContent();
+    expect(previewTextDuringLoad.trim().length).toBeGreaterThan(0);
+    expect(previewTextDuringLoad).not.toContain('File is empty.');
+    await expect(page.locator('.file-preview')).toContainText('module delayed-preview-fixture');
   });
 
   test('keeps long mobile file breadcrumbs from overlapping', async ({ page }) => {
@@ -341,7 +412,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.goto(`/browser/root_slice?file=${encodeURIComponent(filePath)}`);
+    await page.goto(`/slices/root_slice?file=${encodeURIComponent(filePath)}`);
     await expect(page.locator('.code-header .breadcrumb')).toHaveCount(3);
 
     const layout = await page.locator('.code-header').evaluate((header) => {
@@ -377,47 +448,47 @@ test.describe('Repo Browser File Preview Layout', () => {
   });
 
   test('adds file and directory selections to browser history', async ({ page }) => {
-    await page.goto('/browser/root_slice');
+    await page.goto('/slices/root_slice');
     await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
 
     await openPreviewEntry(page, /^o\b/i);
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o$/);
     await expect(page.getByRole('heading', { name: /^o$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^genesis\b/i);
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis$/);
     await expect(page.getByRole('heading', { name: /^genesis$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^projects\b/i);
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
     await expect(page.getByRole('heading', { name: /^projects$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^gitslice\b/i);
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^README\.md\b/i);
-    await expect(page).toHaveURL(/\/browser\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
     await expect(page.getByRole('heading', { name: /^projects$/i })).toBeVisible();
   });
 
   test('adds sidebar tree file and directory selections to browser history state', async ({ page }) => {
-    await page.goto('/browser/root_slice');
+    await page.goto('/slices/root_slice');
     await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
 
     const sidebar = page.locator('.repo-sidebar');
 
     await sidebar.getByRole('button', { name: /^o\b/i }).click();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o$/);
     await expect(page.getByRole('heading', { name: /^o$/i })).toBeVisible();
     await expect.poll(
       () => page.evaluate(() => window.history.state?.browserState),
@@ -428,14 +499,14 @@ test.describe('Repo Browser File Preview Layout', () => {
     });
 
     await sidebar.getByRole('button', { name: /^genesis\b/i }).click();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis$/);
     await sidebar.getByRole('button', { name: /^projects\b/i }).click();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
     await sidebar.getByRole('button', { name: /^gitslice\b/i }).click();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
 
     await sidebar.getByRole('button', { name: /^README\.md\b/i }).click();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
     await expect.poll(
       () => page.evaluate(() => window.history.state?.browserState),
@@ -446,7 +517,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     });
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
   });
@@ -489,7 +560,7 @@ test.describe('Slice Home Page', () => {
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
     await expect(page.locator('.slice-home-row-icon')).toHaveCount(0);
     await expect(page.locator('.slice-home-row-arrow')).toHaveCount(0);
     await expect(page.getByTestId('slice-home-list')).not.toContainText(/\d+\s+files/);
@@ -521,9 +592,9 @@ test.describe('Repo Browser Search', () => {
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
     await page.getByTestId('slice-home-row').first().click();
-    await expect(page).toHaveURL(new RegExp(`/browser/home\\.${username}`));
+    await expect(page).toHaveURL(new RegExp(`/slices/home\\.${username}`));
     await expect(page.getByTestId('repo-search-panel')).toBeVisible();
 
     let sawSearchRequest = false;
@@ -637,9 +708,9 @@ test.describe('Repo Browser Mobile Navigation', () => {
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
     await page.getByTestId('slice-home-row').first().click();
-    await expect(page).toHaveURL(new RegExp(`/browser/${sliceId.replace('.', '\\.')}`));
+    await expect(page).toHaveURL(new RegExp(`/slices/${sliceId.replace('.', '\\.')}`));
 
     await expect(page.getByTestId('sidebar-toggle')).toBeVisible();
     await page.getByTestId('sidebar-toggle').click();
@@ -747,7 +818,7 @@ test.describe('Slice Activity Pages', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await page.goto(`/browser/${sliceId}/commits`);
+    await page.goto(`/slices/${sliceId}/commits`);
 
     await expect(page.getByTestId('slice-commits-page')).toBeVisible();
     await expect(page.getByTestId('slice-detail-tab-commits')).toHaveAttribute('aria-selected', 'true');
@@ -852,7 +923,7 @@ test.describe('Slice Activity Pages', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await page.goto(`/browser/${sliceId}/changesets`);
+    await page.goto(`/slices/${sliceId}/changesets`);
 
     await expect(page.getByTestId('slice-changesets-page')).toBeVisible();
     await expect(page.getByTestId('slice-detail-tab-changesets')).toHaveAttribute('aria-selected', 'true');
@@ -952,14 +1023,31 @@ test.describe('Repo Browser Settings', () => {
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
 
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
     await page.getByTestId('slice-home-row').first().click();
-    await expect(page).toHaveURL(new RegExp(`/browser/${sliceId.replace('.', '\\.')}`));
+    await expect(page).toHaveURL(new RegExp(`/slices/${sliceId.replace('.', '\\.')}`));
     await expect(page.getByTestId('slice-detail-nav')).toContainText(sliceName);
     await expect(page.getByTestId('slice-detail-nav')).not.toContainText(sliceId);
 
     await page.getByTestId('repo-view-settings').click();
     await expect(page.getByTestId('slice-settings-panel')).toBeVisible();
+    const settingsModalLayout = await page.locator('.slice-settings-modal').evaluate((modal) => {
+      const header = modal.querySelector('.slice-settings-header');
+      const close = modal.querySelector('.slice-settings-modal-close');
+      const modalRect = modal.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      const headerStyle = window.getComputedStyle(header);
+      return {
+        width: Math.round(modalRect.width),
+        closeLeft: Math.round(closeRect.left),
+        closeRight: Math.round(closeRect.right),
+        modalRight: Math.round(modalRect.right),
+        headerPaddingRight: Math.round(parseFloat(headerStyle.paddingRight) || 0),
+      };
+    });
+    expect(settingsModalLayout.width).toBeLessThanOrEqual(620);
+    expect(settingsModalLayout.headerPaddingRight).toBeGreaterThanOrEqual(40);
+    expect(settingsModalLayout.modalRight - settingsModalLayout.closeRight).toBeGreaterThanOrEqual(8);
     await expect(page.getByTestId('slice-visibility-status')).toContainText('Private');
     await expect(page.getByText('Git endpoint', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Public slice URL', { exact: true })).toHaveCount(0);

@@ -24,6 +24,10 @@ function parseBrowserState(search = '') {
   };
 }
 
+function isSliceScopedRoute(page) {
+  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets';
+}
+
 function parseLegacyHash(rawHash) {
   const hash = String(rawHash || '').replace(/^#\/?/, '');
   if (hash.startsWith('diff/')) {
@@ -50,7 +54,7 @@ function parseLegacyHash(rawHash) {
   if (hash === 'admin') {
     return { page: 'admin', commitHash: '', changesetId: '' };
   }
-  if (hash === 'browser' || hash.startsWith('browser?')) {
+  if (hash === 'browser' || hash.startsWith('browser?') || hash === 'slices' || hash.startsWith('slices?')) {
     const queryIndex = hash.indexOf('?');
     const search = queryIndex >= 0 ? hash.slice(queryIndex) : '';
     return {
@@ -97,7 +101,7 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
   if (pathname === '/admin') {
     return { page: 'admin', commitHash: '', changesetId: '' };
   }
-  if (pathname === '/browser') {
+  if (pathname === '/browser' || pathname === '/slices') {
     return {
       page: 'browser',
       commitHash: '',
@@ -105,8 +109,9 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
       browserState: parseBrowserState(locationLike?.search || ''),
     };
   }
-  if (pathname.startsWith('/browser/')) {
-    const browserPath = pathname.slice('/browser/'.length);
+  if (pathname.startsWith('/browser/') || pathname.startsWith('/slices/')) {
+    const prefix = pathname.startsWith('/slices/') ? '/slices/' : '/browser/';
+    const browserPath = pathname.slice(prefix.length);
     const [sliceSegment, viewSegment, ...extraSegments] = browserPath.split('/');
     const slice = decodeSegment(sliceSegment || '');
     if (slice && extraSegments.length === 0 && viewSegment === 'commits') {
@@ -165,7 +170,26 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
 
 export function resolveHomeRouteForUsername(routeInfo, username) {
   const user = String(username || '').trim();
-  if (!user || routeInfo?.page !== 'landing') {
+  if (!user) {
+    return routeInfo;
+  }
+  const normalizedUser = user.toLowerCase();
+  const requestedSlice = String(routeInfo?.browserState?.slice || '').trim();
+  const normalizedRequestedSlice = requestedSlice.toLowerCase();
+  if (
+    isSliceScopedRoute(routeInfo?.page)
+    && requestedSlice
+    && (normalizedRequestedSlice === normalizedUser || normalizedRequestedSlice === `home.${normalizedUser}`)
+  ) {
+    return {
+      ...routeInfo,
+      browserState: {
+        ...(routeInfo?.browserState || {}),
+        slice: `home.${normalizedUser}`,
+      },
+    };
+  }
+  if (routeInfo?.page !== 'landing') {
     return routeInfo;
   }
   return {
@@ -190,9 +214,9 @@ export function buildBrowserPath(state = {}) {
   const query = params.toString();
   const slice = String(state.slice || '').trim();
   if (!slice) {
-    return query ? `/browser?${query}` : '/browser';
+    return query ? `/slices?${query}` : '/slices';
   }
-  const path = `/browser/${encodeURIComponent(slice)}`;
+  const path = `/slices/${encodeURIComponent(slice)}`;
   return query ? `${path}?${query}` : path;
 }
 
@@ -204,10 +228,10 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
     return `/changesets/${encodeURIComponent(changesetId)}`;
   }
   if (page === 'slice-commits' && browserState?.slice) {
-    return `/browser/${encodeURIComponent(browserState.slice)}/commits`;
+    return `/slices/${encodeURIComponent(browserState.slice)}/commits`;
   }
   if (page === 'slice-changesets' && browserState?.slice) {
-    return `/browser/${encodeURIComponent(browserState.slice)}/changesets`;
+    return `/slices/${encodeURIComponent(browserState.slice)}/changesets`;
   }
   if (page === 'login') {
     return '/login';

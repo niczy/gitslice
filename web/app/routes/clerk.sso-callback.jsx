@@ -7,8 +7,8 @@ export async function loader({ request }) {
     url.searchParams.get('sign_in_force_redirect_url')
       || url.searchParams.get('sign_up_force_redirect_url')
       || url.searchParams.get('redirect_url')
-      || '/browser',
-  ).trim() || '/browser';
+      || '/slices',
+  ).trim() || '/slices';
   return { redirectURL };
 }
 
