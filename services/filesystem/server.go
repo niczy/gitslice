@@ -1930,9 +1930,15 @@ func (s *filesystemServiceServer) Glob(ctx context.Context, req *filesystemv1.Gl
 		return nil, err
 	}
 
-	entries, err := s.collectWorkspaceEntries(ctx, workspace.ID)
+	_, entries, mountedView, err := s.mountedWorkspaceView(ctx, workspace)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
+		return nil, err
+	}
+	if !mountedView {
+		entries, err = s.collectWorkspaceEntries(ctx, workspace.ID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to collect workspace entries: %v", err))
+		}
 	}
 
 	paths := make([]string, 0, len(entries))
@@ -1975,7 +1981,15 @@ func (s *filesystemServiceServer) Search(ctx context.Context, req *filesystemv1.
 	}
 
 	var matches []*filesystemv1.SearchMatch
-	matches, err = s.searchWorkspaceIndexed(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode, req.GetRegex())
+	backingSliceID, mountedEntries, mountedView, err := s.mountedWorkspaceView(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	if mountedView {
+		matches, err = s.searchMountedWorkspace(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), backingSliceID, mountedEntries, query, globPattern, homeMode, req.GetRegex())
+	} else {
+		matches, err = s.searchWorkspaceIndexed(ctx, workspace.ID, strings.TrimSpace(meta.HeadCommitHash), query, globPattern, homeMode, req.GetRegex())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -3668,6 +3682,93 @@ func (s *filesystemServiceServer) scanWorkspaceSearch(ctx context.Context, works
 	return matches, nil
 }
 
+func (s *filesystemServiceServer) searchMountedWorkspace(
+	ctx context.Context,
+	workspaceID string,
+	workspaceHeadCommitHash string,
+	backingSliceID string,
+	entries []*models.DirectoryEntry,
+	query string,
+	globPattern string,
+	homeMode bool,
+	regex bool,
+) ([]*filesystemv1.SearchMatch, error) {
+	var (
+		re  *regexp.Regexp
+		err error
+	)
+	if regex {
+		re, err = regexp.Compile(query)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid regex query: %v", err))
+		}
+	}
+
+	backingHeadCommitHash := ""
+	if backingSliceID != "" {
+		meta, err := s.storage.GetSliceMetadata(ctx, backingSliceID)
+		if err != nil && !errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load backing workspace metadata: %v", err))
+		}
+		if meta != nil {
+			backingHeadCommitHash = strings.TrimSpace(meta.HeadCommitHash)
+		}
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.TrimSpace(entries[i].Path) < strings.TrimSpace(entries[j].Path)
+	})
+
+	matches := make([]*filesystemv1.SearchMatch, 0)
+	for _, entry := range entries {
+		if len(matches) >= filesystemSearchMaxMatches {
+			break
+		}
+		if err := filesystemSearchContextError(ctx); err != nil {
+			return nil, err
+		}
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		filePath := common.CleanRelativePath(entry.Path)
+		if filePath == "" {
+			continue
+		}
+		if globPattern != "" && !globMatch(globPattern, filePath) {
+			continue
+		}
+
+		content, err := s.readMountedWorkspaceFileContent(ctx, workspaceID, workspaceHeadCommitHash, backingSliceID, backingHeadCommitHash, filePath)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				continue
+			}
+			return nil, err
+		}
+		if !searchindex.IsIndexableText(content.Content) {
+			continue
+		}
+
+		displayPath := displayOperationPath(filePath, homeMode)
+		var entryMatches []*filesystemv1.SearchMatch
+		if regex {
+			entryMatches = findRegexSearchMatches(displayPath, string(content.Content), re)
+		} else {
+			entryMatches = findSearchMatches(displayPath, string(content.Content), query)
+		}
+		if len(entryMatches) == 0 {
+			continue
+		}
+		remaining := filesystemSearchMaxMatches - len(matches)
+		if len(entryMatches) > remaining {
+			matches = append(matches, entryMatches[:remaining]...)
+			break
+		}
+		matches = append(matches, entryMatches...)
+	}
+	return matches, nil
+}
+
 func (s *filesystemServiceServer) searchWorkspaceIndexed(ctx context.Context, sliceID, headCommitHash, query, globPattern string, homeMode, regex bool) ([]*filesystemv1.SearchMatch, error) {
 	artifactLoadStartedAt := time.Now()
 	artifact, artifactOutcome, artifactErr := s.loadSliceSearchArtifact(ctx, sliceID, headCommitHash)
@@ -3809,6 +3910,42 @@ func (s *filesystemServiceServer) readWorkspaceIndexedFileContent(ctx context.Co
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read file: %v", err))
 	}
 	return content, nil
+}
+
+func (s *filesystemServiceServer) readMountedWorkspaceFileContent(ctx context.Context, workspaceID, workspaceHeadCommitHash, backingSliceID, backingHeadCommitHash, filePath string) (*models.FileContent, error) {
+	filePath = common.CleanRelativePath(filePath)
+	if filePath == "" {
+		return nil, status.Error(codes.NotFound, "file not found")
+	}
+
+	for _, candidate := range []struct {
+		commitHash string
+		sliceID    string
+	}{
+		{commitHash: strings.TrimSpace(workspaceHeadCommitHash)},
+		{sliceID: strings.TrimSpace(workspaceID)},
+		{sliceID: strings.TrimSpace(backingSliceID)},
+		{commitHash: strings.TrimSpace(backingHeadCommitHash)},
+	} {
+		var (
+			content *models.FileContent
+			err     error
+		)
+		if candidate.commitHash != "" {
+			content, err = s.storage.GetFileAtCommit(ctx, candidate.commitHash, filePath)
+		} else if candidate.sliceID != "" {
+			content, err = storage.ReadSliceFileContent(ctx, s.storage, candidate.sliceID, filePath)
+		} else {
+			continue
+		}
+		if err == nil && content != nil {
+			return content, nil
+		}
+		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) && !errors.Is(err, storage.ErrCommitNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read file: %v", err))
+		}
+	}
+	return nil, status.Error(codes.NotFound, "file not found")
 }
 
 func (s *filesystemServiceServer) loadSliceSearchArtifact(ctx context.Context, sliceID, headCommitHash string) (*searchindex.SliceArtifact, string, error) {
@@ -4842,6 +4979,146 @@ func (s *filesystemServiceServer) collectWorkspaceEntries(ctx context.Context, w
 		}
 	}
 	return dedupeEntries(result), nil
+}
+
+func (s *filesystemServiceServer) mountedWorkspaceView(ctx context.Context, workspace *models.Slice) (string, []*models.DirectoryEntry, bool, error) {
+	if workspace == nil || strings.TrimSpace(workspace.ParentSlice) == "" || len(workspace.FolderMounts) == 0 {
+		return "", nil, false, nil
+	}
+
+	backingSliceID := strings.TrimSpace(workspace.ParentSlice)
+	if liveBackingID, ok, err := homeslice.ResolveLiveBackingSliceID(ctx, s.storage, workspace); err != nil {
+		return "", nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to resolve mounted workspace backing slice: %v", err))
+	} else if ok {
+		backingSliceID = liveBackingID
+	}
+	if backingSliceID == "" {
+		return "", nil, true, nil
+	}
+
+	entries, err := s.collectMountedWorkspaceEntries(ctx, backingSliceID, workspace.FolderMounts)
+	if err != nil {
+		return "", nil, false, status.Error(codes.Internal, fmt.Sprintf("failed to collect mounted workspace entries: %v", err))
+	}
+	return backingSliceID, dedupeEntries(entries), true, nil
+}
+
+func (s *filesystemServiceServer) collectMountedWorkspaceEntries(ctx context.Context, backingSliceID string, mounts []models.SliceFolderMount) ([]*models.DirectoryEntry, error) {
+	backingSliceID = strings.TrimSpace(backingSliceID)
+	if backingSliceID == "" || len(mounts) == 0 {
+		return nil, nil
+	}
+
+	result := make([]*models.DirectoryEntry, 0)
+	seen := make(map[string]struct{})
+	for _, mount := range mounts {
+		sourcePath := common.CleanRelativePath(mount.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		rootEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, sourcePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				fallbackEntries, fallbackErr := s.collectMountedWorkspaceFileEntriesFromSlice(ctx, backingSliceID, sourcePath)
+				if fallbackErr != nil {
+					return nil, fallbackErr
+				}
+				appendMountedEntries(&result, seen, fallbackEntries)
+				continue
+			}
+			return nil, err
+		}
+
+		filesBefore := mountedFileEntryCount(result)
+		queue := []*models.DirectoryEntry{rootEntry}
+		for len(queue) > 0 {
+			entry := queue[0]
+			queue = queue[1:]
+			if entry == nil {
+				continue
+			}
+			if appendMountedEntries(&result, seen, []*models.DirectoryEntry{entry}) == 0 {
+				continue
+			}
+			if entry.Type != "directory" {
+				continue
+			}
+			children, err := s.storage.ListEntries(ctx, backingSliceID, entry.ID)
+			if err != nil {
+				return nil, err
+			}
+			queue = append(queue, children...)
+		}
+		if mountedFileEntryCount(result) == filesBefore {
+			fallbackEntries, fallbackErr := s.collectMountedWorkspaceFileEntriesFromSlice(ctx, backingSliceID, sourcePath)
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			appendMountedEntries(&result, seen, fallbackEntries)
+		}
+	}
+	return result, nil
+}
+
+func appendMountedEntries(target *[]*models.DirectoryEntry, seen map[string]struct{}, entries []*models.DirectoryEntry) int {
+	added := 0
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		key := entry.ID + "\x00" + entry.Path
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		*target = append(*target, entry)
+		added++
+	}
+	return added
+}
+
+func mountedFileEntryCount(entries []*models.DirectoryEntry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry != nil && entry.Type == "file" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *filesystemServiceServer) collectMountedWorkspaceFileEntriesFromSlice(ctx context.Context, backingSliceID, sourcePath string) ([]*models.DirectoryEntry, error) {
+	backingSlice, err := s.storage.GetSlice(ctx, backingSliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	sourcePath = common.CleanRelativePath(sourcePath)
+	result := make([]*models.DirectoryEntry, 0)
+	for _, rawPath := range backingSlice.Files {
+		filePath := common.CleanRelativePath(rawPath)
+		if filePath == "" || (filePath != sourcePath && !strings.HasPrefix(filePath, sourcePath+"/")) {
+			continue
+		}
+		entry, entryErr := s.storage.GetEntryByPath(ctx, backingSliceID, filePath)
+		if entryErr == nil && entry != nil {
+			result = append(result, entry)
+			continue
+		}
+		if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return nil, entryErr
+		}
+		result = append(result, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(backingSliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: backingSliceID,
+		})
+	}
+	return result, nil
 }
 
 func (s *filesystemServiceServer) collectWorkspaceSnapshotFiles(ctx context.Context, workspaceID string) (map[string]string, error) {

@@ -538,6 +538,80 @@ func TestSearchReturnsPrivateAndPublicMatchesForAuthorizedUser(t *testing.T) {
 	}
 }
 
+func TestSearchUsesMountedLiveBackingSlice(t *testing.T) {
+	ctx := authContext("tester")
+	st := storage.NewInMemoryStorage()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.MakeDirectory(ctx, &filesystemv1.MakeDirectoryRequest{
+		WorkspaceId: home.ID,
+		Path:        "/tester/test2",
+	}); err != nil {
+		t.Fatalf("MakeDirectory failed: %v", err)
+	}
+	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: home.ID,
+		Path:        "/tester/test2/live-api-web-smoke.txt",
+		Content:     []byte("live cross-slice API smoke\n"),
+	}); err != nil {
+		t.Fatalf("WriteFile(home live file) failed: %v", err)
+	}
+
+	mountedSlice := &models.Slice{
+		ID:          "sl-mounted-live-search",
+		Name:        "mounted-live-search",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: root.ID,
+		FolderMounts: []models.SliceFolderMount{
+			{SourcePath: "tester/test2", Alias: "tester/test2"},
+		},
+	}
+	if err := st.CreateSlice(ctx, mountedSlice); err != nil {
+		t.Fatalf("CreateSlice(mounted) failed: %v", err)
+	}
+
+	globResp, err := svc.Glob(ctx, &filesystemv1.GlobRequest{
+		WorkspaceId: mountedSlice.ID,
+		Pattern:     "tester/test2/*",
+	})
+	if err != nil {
+		t.Fatalf("Glob(mounted) failed: %v", err)
+	}
+	if got := globResp.GetPaths(); len(got) != 1 || got[0] != "tester/test2/live-api-web-smoke.txt" {
+		t.Fatalf("mounted glob paths = %#v, want tester/test2/live-api-web-smoke.txt", got)
+	}
+
+	searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
+		WorkspaceId: mountedSlice.ID,
+		Query:       "live",
+	})
+	if err != nil {
+		t.Fatalf("Search(mounted) failed: %v", err)
+	}
+	if got, want := len(searchResp.GetMatches()), 1; got != want {
+		t.Fatalf("mounted search match count = %d, want %d: %#v", got, want, searchResp.GetMatches())
+	}
+	match := searchResp.GetMatches()[0]
+	if got, want := match.GetPath(), "tester/test2/live-api-web-smoke.txt"; got != want {
+		t.Fatalf("mounted search path = %q, want %q", got, want)
+	}
+	if got, want := match.GetLine(), "live cross-slice API smoke"; got != want {
+		t.Fatalf("mounted search line = %q, want %q", got, want)
+	}
+}
+
 func TestSearchCapsLargeMatchSet(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
