@@ -401,7 +401,7 @@ function App({
   }, [initialAuthConfig.authProvider, navigate]);
 
   const isAuthenticated = Boolean(username);
-  const isBrowserLayout = isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
+  const isBrowserLayout = activePage === 'browser' || isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
   const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${activePage === 'browser' && !browserRouteSliceId ? ' page--slice-home' : ''}`;
   const isAdminUser = (username || '').toLowerCase() === 'admin';
   const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);

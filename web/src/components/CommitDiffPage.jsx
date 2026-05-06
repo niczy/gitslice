@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Undo2 } from 'lucide-react';
 import { apiBaseUrl, createRevertChangeset, fetchWithAuth } from '../utils/api.js';
 import { formatChangeType } from '../utils/format.js';
 import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.js';
@@ -368,12 +369,14 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
         <div className="changeset-actions" data-testid="diff-actions">
           <Button
             type="button"
-            className="primary changeset-action-merge"
+            variant="secondary"
+            className="diff-revert-button"
             onClick={handleRevertDiff}
             disabled={isLoading || isRevertingDiff || !commitHash}
             data-testid="diff-revert-btn"
           >
-            {isRevertingDiff ? 'Reverting…' : 'Revert diff in new changeset'}
+            <Undo2 size={15} aria-hidden="true" />
+            {isRevertingDiff ? 'Reverting...' : 'Revert'}
           </Button>
         </div>
       </div>

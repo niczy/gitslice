@@ -7192,20 +7192,54 @@ button[data-testid="topbar-get-started"]:hover {
 
 /* Neutral Precision browser revamp */
 .app-shell--browser {
-  --np-bg: #f9f9ff;
-  --np-sidebar: #f1f3ff;
-  --np-container: #e8edff;
-  --np-container-high: #e0e8ff;
+  --np-bg: #faf9fa;
+  --np-sidebar: #f8fafc;
+  --np-container: #efedee;
+  --np-container-high: #e9e8e9;
   --np-surface: #ffffff;
-  --np-border: #c3c6d6;
-  --np-border-soft: rgba(195, 198, 214, 0.72);
-  --np-text: #041b3c;
-  --np-muted: #434654;
-  --np-primary: #003d9b;
-  --np-primary-strong: #0052cc;
+  --np-border: #c3c6d5;
+  --np-border-soft: rgba(195, 198, 213, 0.62);
+  --np-text: #1b1c1d;
+  --np-muted: #434653;
+  --np-primary: #094cb2;
+  --np-primary-strong: #2259bf;
+  --np-gutter: 16px;
   background: var(--np-bg);
   color: var(--np-text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app-shell--browser :where(.primary, .ghost, .slice-create-button, .top-search-submit, .history-toggle, .browser-header-secondary, .repo-search-actions button, .repo-search-load-more, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .slice-detail-tab, .slice-activity-filter-btn, .slice-home-actions button, .diff-revert-button) {
+  gap: 8px;
+  border-radius: 4px;
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell--browser :where(.primary, .slice-create-button, .browser-commit-button) {
+  border: 1px solid var(--np-primary);
+  background: var(--np-primary);
+  color: #ffffff;
+}
+
+.app-shell--browser :where(.primary, .slice-create-button, .browser-commit-button):hover {
+  border-color: var(--np-primary-strong);
+  background: var(--np-primary-strong);
+  color: #ffffff;
+  transform: none;
+}
+
+.app-shell--browser :where(.ghost, .slice-home-actions button:not(.slice-create-button), .history-toggle, .browser-header-secondary, .repo-search-actions button, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .diff-revert-button) {
+  border: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+  color: var(--np-text);
+}
+
+.app-shell--browser :where(.ghost, .slice-home-actions button:not(.slice-create-button), .history-toggle, .browser-header-secondary, .repo-search-actions button, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .diff-revert-button):hover {
+  border-color: var(--np-border);
+  background: var(--np-container);
+  color: var(--np-primary);
+  transform: none;
 }
 
 .app-shell--browser :where(h1, h2, h3, .brand-text, .sidebar-panel-title, .repo-insight-meta dt, .footer-copy) {
@@ -7359,16 +7393,29 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .top-bar-actions :where(a, button),
 .app-shell--browser .nav-link {
   min-height: 32px;
+  padding: 0 10px;
+  border: 0 !important;
   border-radius: 4px;
+  background: transparent !important;
+  box-shadow: none !important;
   color: var(--np-muted);
   font-size: 13px;
   font-weight: 500;
+  transform: none;
 }
 
 .app-shell--browser .top-bar-actions :where(a, button):hover,
 .app-shell--browser .nav-link:hover {
-  background: var(--np-container);
-  color: var(--np-primary);
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+  transform: none;
+}
+
+.app-shell--browser .top-bar-actions .nav-link--active {
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: inset 0 -2px var(--np-primary) !important;
+  color: var(--np-primary) !important;
 }
 
 .app-shell--browser .footer {
@@ -7390,6 +7437,74 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .footer a {
   color: var(--np-primary);
   font-size: 11px;
+}
+
+.app-shell--browser .diff-top-bar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 70px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .diff-top-title {
+  min-width: 0;
+}
+
+.app-shell--browser .diff-top-title h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-shell--browser .diff-summary {
+  margin-left: 0;
+}
+
+.app-shell--browser .diff-back-btn {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--np-text) !important;
+  box-shadow: none !important;
+}
+
+.app-shell--browser .diff-back-btn:hover {
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+  transform: none;
+}
+
+.app-shell--browser .diff-view-toggle {
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+}
+
+.app-shell--browser .diff-view-btn {
+  min-height: 32px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--np-muted) !important;
+  box-shadow: none !important;
+}
+
+.app-shell--browser .diff-view-btn:not(:last-child) {
+  border-right: 1px solid var(--np-border-soft) !important;
+}
+
+.app-shell--browser .diff-view-btn:hover {
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .diff-view-btn-active,
+.app-shell--browser .diff-view-btn-active:hover {
+  background: var(--np-surface) !important;
+  color: var(--np-primary) !important;
+  box-shadow: inset 0 -2px var(--np-primary) !important;
 }
 
 .app-shell--browser .repo-layout {
@@ -7449,7 +7564,75 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .slice-activity-filter-btn.active {
   background: var(--np-surface) !important;
   color: var(--np-primary) !important;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  box-shadow: inset 0 -2px var(--np-primary);
+}
+
+.app-shell--browser .page--slice-home {
+  padding: 32px var(--np-gutter) 64px;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .slice-home {
+  width: min(1120px, 100%);
+  gap: 16px;
+}
+
+.app-shell--browser .slice-home-header h1 {
+  color: var(--np-text);
+  font-size: clamp(1.75rem, 2.4vw, 2.25rem);
+}
+
+.app-shell--browser .slice-home-header p {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .slice-home-toolbar {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.app-shell--browser .slice-home-search {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--np-container);
+  color: var(--np-muted);
+}
+
+.app-shell--browser .slice-home-search:focus-within {
+  border-color: var(--np-primary);
+  background: var(--np-surface);
+  box-shadow: 0 0 0 2px rgba(9, 76, 178, 0.1);
+}
+
+.app-shell--browser .slice-home-row {
+  min-height: 56px;
+  padding: 8px 10px !important;
+}
+
+.app-shell--browser .slice-home-panel {
+  height: auto;
+  min-height: 0;
+  max-height: min(560px, calc(100dvh - 260px));
+}
+
+.app-shell--browser .slice-home-list {
+  min-height: 0;
+}
+
+.app-shell--browser .slice-home-row--home {
+  background: rgba(9, 76, 178, 0.08) !important;
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .slice-home-row-icon,
+.app-shell--browser .slice-activity-row-icon {
+  border-color: var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-container);
+  color: var(--np-primary);
 }
 
 .app-shell--browser .slice-activity-page,
@@ -7458,12 +7641,33 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .slice-activity-panel {
-  border-color: var(--np-border-soft);
-  background: var(--np-surface);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .app-shell--browser .slice-activity-list li + li {
-  border-top-color: var(--np-border-soft);
+  border-top: 0;
+}
+
+.app-shell--browser :where(.slice-home-row, .slice-activity-row, .slice-dropdown-item, .diff-file-panel-item, .repo-search-result, .tree-entry) {
+  border: 0 !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  transform: none;
+}
+
+.app-shell--browser :where(.slice-home-row, .slice-activity-row, .slice-dropdown-item, .diff-file-panel-item, .repo-search-result, .tree-entry):hover {
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+  transform: none;
+}
+
+.app-shell--browser :where(.slice-dropdown-item.active, .diff-file-panel-item-active, .tree-entry.active) {
+  background: rgba(9, 76, 178, 0.08) !important;
+  color: var(--np-primary) !important;
+  box-shadow: inset 2px 0 var(--np-primary) !important;
 }
 
 .app-shell--browser .slice-activity-row:hover {
@@ -7814,9 +8018,8 @@ button[data-testid="topbar-get-started"]:hover {
   width: 100%;
   height: auto;
   min-height: 0;
-  border: 1px solid var(--np-border-soft);
   border-radius: 4px;
-  background: var(--np-surface);
+  background: transparent;
   box-shadow: none;
   padding: 7px 8px;
   gap: 3px;
@@ -7827,8 +8030,7 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .repo-search-result:hover,
 .app-shell--browser .repo-search-result:focus-visible {
   transform: none;
-  border-color: rgba(0, 61, 155, 0.32);
-  background: rgba(0, 61, 155, 0.07);
+  background: rgba(9, 76, 178, 0.08);
 }
 
 .app-shell--browser .repo-search-result-main {
@@ -8013,7 +8215,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .code-content {
-  padding: 24px;
+  padding: var(--np-gutter);
   background: var(--np-surface);
 }
 
@@ -8092,9 +8294,14 @@ button[data-testid="topbar-get-started"]:hover {
   box-shadow: none;
 }
 
+.app-shell--browser .folder-preview {
+  border: 0;
+  border-radius: 0;
+}
+
 .app-shell--browser .file-preview,
 .app-shell--browser .file-editor {
-  padding: 24px;
+  padding: var(--np-gutter);
   color: var(--np-text);
   font-size: 13px;
   line-height: 20px;
@@ -8118,7 +8325,12 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .folder-preview-header {
   border-bottom-color: var(--np-border-soft);
-  background: var(--np-bg);
+  background: var(--np-surface);
+  padding: 12px 2px 12px;
+}
+
+.app-shell--browser .folder-preview-list {
+  padding: 8px 0;
 }
 
 .app-shell--browser .folder-preview-header h3,
