@@ -555,6 +555,7 @@ export default function RepoBrowser({
       setSidebarOpen((open) => (width > 900 ? open : false));
     };
 
+    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -1381,7 +1382,7 @@ export default function RepoBrowser({
                         onClick={() => handleBreadcrumbClick(crumb.path)}
                         title={crumb.name === '…' ? 'Jump to parent folder' : crumb.name}
                       >
-                        {crumb.name}
+                        <span className="breadcrumb-label">{crumb.name}</span>
                         {separator && <span className="separator">{separator}</span>}
                       </Button>
                     );
