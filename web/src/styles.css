@@ -5771,6 +5771,7 @@ button[data-testid="topbar-get-started"]:hover {
   align-items: center;
   min-width: 0;
   gap: 10px;
+  position: relative;
 }
 
 .slice-detail-nav-icon {
@@ -5810,6 +5811,112 @@ button[data-testid="topbar-get-started"]:hover {
   font-size: 0.74rem;
   font-weight: 600;
   line-height: 1.2;
+}
+
+.slice-detail-get-code {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: 12px;
+}
+
+.slice-detail-get-code-button {
+  min-height: 30px !important;
+  padding: 0 10px !important;
+  border-color: var(--border) !important;
+  border-radius: 6px !important;
+  background: var(--surface-elevated) !important;
+  color: var(--text-primary) !important;
+  font-size: 0.8rem !important;
+  font-weight: 750 !important;
+}
+
+.slice-detail-get-code-button:hover {
+  background: var(--surface-hover) !important;
+  transform: none;
+}
+
+.slice-detail-get-code-popover {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(420px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+}
+
+.slice-detail-get-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.slice-detail-command-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-elevated);
+}
+
+.slice-detail-command-row code {
+  display: block;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 9px 10px;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.slice-detail-get-code-secondary {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.slice-detail-get-code-secondary > span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.slice-detail-copy-command {
+  width: 34px !important;
+  height: auto !important;
+  min-height: 34px !important;
+  border-left: 1px solid var(--border) !important;
+  border-radius: 0 !important;
+  color: var(--text-secondary) !important;
+}
+
+.slice-detail-copy-command:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-primary) !important;
+  transform: none;
+}
+
+.slice-detail-get-code-note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.slice-detail-get-code-note.error {
+  color: #b42318;
 }
 
 .slice-detail-tabs {
@@ -7527,6 +7634,8 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .slice-detail-nav-icon,
 .app-shell--browser .slice-detail-tabs,
+.app-shell--browser .slice-detail-get-code-button,
+.app-shell--browser .slice-detail-command-row,
 .app-shell--browser .slice-activity-summary,
 .app-shell--browser .slice-activity-filter,
 .app-shell--browser .slice-activity-row-icon {
@@ -7534,13 +7643,25 @@ button[data-testid="topbar-get-started"]:hover {
   background: var(--np-bg);
 }
 
+.app-shell--browser .slice-detail-get-code-popover {
+  border-color: var(--np-border-soft);
+  background: var(--np-surface);
+  box-shadow: 0 18px 44px rgba(2, 6, 23, 0.14);
+}
+
 .app-shell--browser .slice-detail-nav-name,
+.app-shell--browser .slice-detail-get-code-button,
+.app-shell--browser .slice-detail-get-code-header,
+.app-shell--browser .slice-detail-command-row code,
 .app-shell--browser .slice-activity-header h1,
 .app-shell--browser .slice-activity-row-title {
   color: var(--np-text);
 }
 
 .app-shell--browser .slice-detail-nav-id,
+.app-shell--browser .slice-detail-copy-command,
+.app-shell--browser .slice-detail-get-code-note,
+.app-shell--browser .slice-detail-get-code-secondary > span,
 .app-shell--browser .slice-activity-summary,
 .app-shell--browser .slice-activity-row-meta,
 .app-shell--browser .slice-activity-row-files,
@@ -8682,16 +8803,35 @@ button[data-testid="topbar-get-started"]:hover {
 
   .app-shell--browser .repo-browser--with-tabs .repo-layout,
   .app-shell--browser .repo-browser--with-tabs .repo-layout.sidebar-collapsed {
-    height: calc(100dvh - 168px);
-    min-height: calc(100dvh - 168px);
+    height: calc(100dvh - 206px);
+    min-height: calc(100dvh - 206px);
   }
 
   .slice-detail-nav {
     align-items: stretch;
     flex-direction: column;
     gap: 8px;
-    min-height: 86px;
+    min-height: 124px;
     padding: 8px 12px;
+  }
+
+  .slice-detail-nav-title {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .slice-detail-nav-copy {
+    flex: 1 1 min(220px, 100%);
+  }
+
+  .slice-detail-get-code {
+    margin-left: 40px;
+  }
+
+  .slice-detail-get-code-popover {
+    left: auto;
+    right: 0;
+    width: min(420px, calc(100vw - 24px));
   }
 
   .slice-detail-tabs {

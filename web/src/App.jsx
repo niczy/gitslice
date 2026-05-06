@@ -604,6 +604,7 @@ function App({
           <SliceCommitListPage
             sliceId={browserRouteSliceId || currentSliceId}
             slices={slices}
+            publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
             onOpenCommitDiff={navigateToDiff}
@@ -614,6 +615,7 @@ function App({
           <SliceChangesetListPage
             sliceId={browserRouteSliceId || currentSliceId}
             slices={slices}
+            publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
             onOpenChangesetDiff={navigateToChangesetDiff}

@@ -33,6 +33,7 @@ function statusLabel(status) {
 export default function SliceChangesetListPage({
   sliceId,
   slices,
+  publicApiBaseUrl = '',
   onOpenCode,
   onOpenCommits,
   onOpenChangesetDiff,
@@ -84,6 +85,8 @@ export default function SliceChangesetListPage({
         activeTab="changesets"
         sliceId={sliceId}
         sliceLabel={sliceLabel}
+        slice={currentSlice}
+        publicApiBaseUrl={publicApiBaseUrl}
         onOpenCode={onOpenCode}
         onOpenCommits={onOpenCommits}
         onOpenChangesets={() => {}}

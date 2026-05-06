@@ -1271,6 +1271,8 @@ export default function RepoBrowser({
         activeTab="code"
         sliceId={sliceId}
         sliceLabel={currentSliceDisplayName || currentSliceLabel}
+        slice={currentSlice}
+        publicApiBaseUrl={publicApiBaseUrl}
         onOpenCode={() => {}}
         onOpenCommits={onOpenCommits}
         onOpenChangesets={onOpenChangesets}
