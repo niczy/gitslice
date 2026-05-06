@@ -10,7 +10,6 @@ import {
   Home,
   Lock,
   Plus,
-  RefreshCcw,
   Search,
   X,
 } from 'lucide-react';
@@ -315,10 +314,6 @@ export default function SliceHomePage({
           <p>Choose a root or workspace slice, then open its files in a focused code browser.</p>
         </div>
         <div className="slice-home-actions">
-          <Button type="button" variant="secondary" onClick={onRefresh} disabled={slicesLoading}>
-            <RefreshCcw size={15} aria-hidden="true" />
-            Refresh
-          </Button>
           <Button
             type="button"
             className="slice-create-button"
