@@ -6,6 +6,16 @@ import { parseLocation, resolveHomeRouteForSession } from '../../src/utils/routi
 import { getPublicAuthConfig, loadSession } from '../../server/auth.js';
 import { loadBrowserRouteData } from '../../server/browser-data.js';
 
+function buildNotFoundRouteInfo(requestURL) {
+  const pathname = String(requestURL.pathname || '/').replace(/^\/+/, '');
+  return {
+    page: 'not-found',
+    commitHash: '',
+    changesetId: '',
+    unknownPath: `${pathname}${requestURL.search || ''}`,
+  };
+}
+
 export async function loader({ request }) {
   let session = null;
   let sessionError = '';
@@ -29,13 +39,20 @@ export async function loader({ request }) {
       setCookies: [...(browserRoute.setCookies || []), ...(fallbackBrowserRoute.setCookies || [])],
     };
   }
+  let responseStatus = 200;
+  if (browserRoute.data?.routeNotFound) {
+    routeInfo = buildNotFoundRouteInfo(requestURL);
+    responseStatus = 404;
+  }
+  const browserData = { ...(browserRoute.data || {}) };
+  delete browserData.routeNotFound;
   const response = Response.json({
     session,
     sessionError,
     routeInfo,
     authConfig: getPublicAuthConfig(request),
-    browserData: browserRoute.data,
-  });
+    browserData,
+  }, { status: responseStatus });
   for (const cookie of browserRoute.setCookies || []) {
     if (cookie) {
       response.headers.append('Set-Cookie', cookie);

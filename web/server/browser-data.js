@@ -92,6 +92,7 @@ async function fetchJSON(request, session, pathname, params) {
     const error = new Error('Request failed: Not signed in');
     error.setCookies = setCookies;
     error.authExpired = true;
+    error.status = 401;
     throw error;
   }
   const response = await fetch(buildGatewayURL(pathname, request, params), {
@@ -101,6 +102,7 @@ async function fetchJSON(request, session, pathname, params) {
     const message = await readErrorMessage(response, 'Request failed');
     const error = new Error(message);
     error.setCookies = setCookies;
+    error.status = response.status;
     if (response.status === 401 && /invalid session token/i.test(message)) {
       error.setCookies = [...setCookies, clearLocalSessionCookie(request)];
       error.authExpired = true;
@@ -122,6 +124,14 @@ function pushErrorCookies(target, error) {
 function recordRouteError(data, setCookies, error) {
   pushErrorCookies(setCookies, error);
   data.authExpired = data.authExpired || Boolean(error?.authExpired);
+}
+
+function shouldTreatBrowserRouteAsNotFound(routeInfo, sliceId, error) {
+  const requestedSlice = String(routeInfo?.browserState?.slice || '').trim();
+  if (routeInfo?.page !== 'browser' || !requestedSlice || sliceId === 'root_slice') {
+    return false;
+  }
+  return [401, 403, 404].includes(Number(error?.status));
 }
 
 function changesetStatusQueryValue(statusFilter) {
@@ -211,6 +221,7 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies) {
   } catch (error) {
     recordRouteError(data, setCookies, error);
     data.rootEntriesError = error?.message || 'Unable to load entries.';
+    data.routeNotFound = data.routeNotFound || shouldTreatBrowserRouteAsNotFound(routeInfo, data.selectedSliceId, error);
   }
 
   if (!data.selectedFile) {
