@@ -48,6 +48,15 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.getByText(/Slice detail URLs track the selected directory or file/i)).toBeVisible();
   await expect(page.locator('#quick-start .markdown-heading-link')).toHaveAttribute('href', '#quick-start');
   await expect(page.locator('#auth .markdown-heading-link')).toHaveAttribute('href', '#auth');
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await expect(docsNav).toBeInViewport();
+  await expect(page.locator('.docs-nav-shell')).toHaveCSS('position', 'sticky');
+
+  await docsNav.getByRole('link', { name: /mental model/i }).click();
+  await expect(page).toHaveURL(/#mental-model$/);
+  await expect.poll(async () => page.locator('#mental-model').evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(80);
+  await expect.poll(async () => page.locator('#mental-model').evaluate((element) => element.getBoundingClientRect().top)).toBeLessThanOrEqual(140);
 });
 
 test('serves docs.md as the docs source', async ({ page }) => {

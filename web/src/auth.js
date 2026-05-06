@@ -69,7 +69,7 @@ export async function fetchOAuthSession() {
 
 export function startOAuthSignIn(provider = 'workos') {
   const normalizedProvider = String(provider || 'workos').trim().toLowerCase();
-  const callbackUrl = `${window.location.origin}/browser`;
+  const callbackUrl = `${window.location.origin}/slices`;
   const url = new URL(normalizedProvider === 'clerk' ? '/sign-in' : '/auth/signin/workos', window.location.origin);
   if (normalizedProvider === 'clerk') {
     url.searchParams.set('redirect_url', callbackUrl);

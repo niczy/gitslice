@@ -8,8 +8,7 @@ test.describe('File size formatting (real server)', () => {
       errors.push(error.message);
     });
 
-    await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/slices/root_slice');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Open slice dropdown and ensure root_slice is selected
@@ -50,8 +49,7 @@ test.describe('File size formatting (real server)', () => {
       errors.push(error.message);
     });
 
-    await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/slices/root_slice');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Open slice dropdown and ensure root_slice is selected

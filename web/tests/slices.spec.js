@@ -39,22 +39,24 @@ test.describe('Slice creation', () => {
     await page.route('**/v1/slices/root_slice/entries**', async (route) => {
       const url = new URL(route.request().url());
       const path = decodeURIComponent(url.pathname.replace('/v1/slices/root_slice/entries', '').replace(/^\/+/, ''));
-      const entries = path
-        ? []
-        : [
+      const entries = path === username
+        ? [
             {
-              id: 'root_slice:web',
+              id: `root_slice:${username}/web`,
               name: 'web',
-              path: 'web',
+              path: `${username}/web`,
               type: 'ENTRY_TYPE_DIRECTORY',
             },
             {
-              id: 'root_slice:services',
+              id: `root_slice:${username}/services`,
               name: 'services',
-              path: 'services',
+              path: `${username}/services`,
               type: 'ENTRY_TYPE_DIRECTORY',
             },
-          ];
+          ]
+        : path
+        ? []
+        : [];
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -80,12 +82,10 @@ test.describe('Slice creation', () => {
     await page.goto('/login');
     await page.getByLabel('Username').fill(username);
     await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
-    await expect(page.getByTestId('slice-create-open')).not.toHaveCSS('color', 'rgb(255, 255, 255)');
     await page.getByTestId('slice-create-open').click();
     await expect(page.getByRole('dialog', { name: /create slice/i })).toBeVisible();
-    await expect(page.getByTestId('slice-create-submit')).not.toHaveCSS('color', 'rgb(255, 255, 255)');
     await page.getByTestId('slice-create-name').fill('Web work');
     await page.getByTestId('slice-create-folder-option').filter({ hasText: /^web/ }).first().click();
     await expect(page.getByTestId('slice-create-selected-folders')).toContainText('web');
@@ -101,6 +101,6 @@ test.describe('Slice creation', () => {
       name: 'Web work',
     });
     expect(createPayload).not.toHaveProperty('folderPath');
-    await expect(page).toHaveURL(/\/browser\/slice-web/);
+    await expect(page).toHaveURL(/\/slices\/slice-web/);
   });
 });

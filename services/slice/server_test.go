@@ -1189,7 +1189,7 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	if err := st.AddFileToSlice(ctx, "o/genesis/projects/repo/main.go", "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, "tester/o/genesis/projects/repo/main.go", "root_slice"); err != nil {
 		t.Fatalf("failed to add root file: %v", err)
 	}
 
@@ -1234,7 +1234,7 @@ func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	if err := st.AddFileToSlice(ctx, "org/project/service/main.go", "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, "tester/org/project/service/main.go", "root_slice"); err != nil {
 		t.Fatalf("failed to add root file: %v", err)
 	}
 
@@ -1258,6 +1258,56 @@ func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
 	}
 	if slice.Name != "org/project/service" {
 		t.Fatalf("stored name mismatch: got %q", slice.Name)
+	}
+}
+
+func TestCreateSliceFromRootScopesRelativeFolderPathsToUserHome(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester"); err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	root, err := st.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("GetRootSlice failed: %v", err)
+	}
+
+	filePath := "tester/shared/README.md"
+	hash := mustWriteSliceManifest(t, ctx, st, root.ID, filePath, []byte("home readme"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(root.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: common.GenerateEntryID(root.ID, "tester/shared"),
+		Size:     int64(len("home readme")),
+		Hash:     hash,
+	}); err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
+		ParentSliceId: root.ID,
+		NewSliceId:    "root-relative-slice",
+		FolderPaths:   []string{"shared"},
+		Name:          "Shared",
+	})
+	if err != nil {
+		t.Fatalf("CreateSliceFromFolder failed: %v", err)
+	}
+	if got, want := resp.GetFiles(), []string{filePath}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected selected files %v, got %v", want, got)
+	}
+
+	slice, err := st.GetSlice(ctx, resp.GetSliceId())
+	if err != nil {
+		t.Fatalf("GetSlice failed: %v", err)
+	}
+	if got, want := slice.ParentSlice, root.ID; got != want {
+		t.Fatalf("parent slice = %q, want %q", got, want)
+	}
+	if got, want := slice.FolderMounts, []models.SliceFolderMount{{SourcePath: "tester/shared", Alias: "shared"}}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("folder mounts = %#v, want %#v", got, want)
 	}
 }
 
@@ -1298,7 +1348,8 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	filePath := "o/genesis/projects/repo/README.md"
+	filePath := "tester/o/genesis/projects/repo/README.md"
+	displayPath := "o/genesis/projects/repo/README.md"
 	content := []byte("repo readme")
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
 		ID:       "root_slice:" + filePath,
@@ -1345,7 +1396,7 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 		t.Fatalf("expected 1 checkout file, got %d", got)
 	}
 	meta := checkoutResp.GetManifest().GetFileMetadata()[0]
-	if got, want := meta.GetPath(), filePath; got != want {
+	if got, want := meta.GetPath(), displayPath; got != want {
 		t.Fatalf("expected checkout path %q, got %q", want, got)
 	}
 	if got, want := meta.GetSize(), int64(len(content)); got != want {
@@ -1829,9 +1880,9 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 	}
 
 	seedFiles := map[string][]byte{
-		"o/genesis/projects/repo-a/README.md":   []byte("repo a"),
-		"o/genesis/projects/repo-a/pkg/util.go": []byte("package repoa"),
-		"o/genesis/projects/repo-b/main.go":     []byte("package main"),
+		"tester/o/genesis/projects/repo-a/README.md":   []byte("repo a"),
+		"tester/o/genesis/projects/repo-a/pkg/util.go": []byte("package repoa"),
+		"tester/o/genesis/projects/repo-b/main.go":     []byte("package main"),
 	}
 	for filePath, content := range seedFiles {
 		if err := st.AddFileToSlice(ctx, filePath, "root_slice"); err != nil {
@@ -1867,11 +1918,11 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 	for _, mount := range slice.FolderMounts {
 		mounts[mount.SourcePath] = mount.Alias
 	}
-	if mounts["o/genesis/projects/repo-a"] != "o/genesis/projects/repo-a" {
-		t.Fatalf("unexpected alias for repo-a: %q", mounts["o/genesis/projects/repo-a"])
+	if mounts["tester/o/genesis/projects/repo-a"] != "o/genesis/projects/repo-a" {
+		t.Fatalf("unexpected alias for repo-a: %q", mounts["tester/o/genesis/projects/repo-a"])
 	}
-	if mounts["o/genesis/projects/repo-b"] != "o/genesis/projects/repo-b" {
-		t.Fatalf("unexpected alias for repo-b: %q", mounts["o/genesis/projects/repo-b"])
+	if mounts["tester/o/genesis/projects/repo-b"] != "o/genesis/projects/repo-b" {
+		t.Fatalf("unexpected alias for repo-b: %q", mounts["tester/o/genesis/projects/repo-b"])
 	}
 
 	checkoutResp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{

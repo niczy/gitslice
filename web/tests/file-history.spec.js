@@ -3,8 +3,7 @@ import { test, expect } from '@playwright/test';
 // Helper: navigate from browser root to the gitslice project directory
 // and select a specific file.
 async function navigateToGenesisFile(page, fileName) {
-  await page.goto('/');
-  await page.getByTestId('topbar-repo-browser').click();
+  await page.goto('/slices/root_slice');
   await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
   // Open slice dropdown and ensure root_slice is selected
@@ -119,8 +118,7 @@ test.describe('File History (real server)', () => {
 
 test.describe('File History (Slice Mode)', () => {
   test('shows history for root_slice files', async ({ page }) => {
-    await page.goto('/');
-    await page.getByTestId('topbar-repo-browser').click();
+    await page.goto('/slices/root_slice');
     await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
 
     // Open slice dropdown and ensure root_slice is selected

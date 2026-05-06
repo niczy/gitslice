@@ -45,6 +45,7 @@ const SIDEBAR_WIDTH_MIN = 220;
 const SIDEBAR_WIDTH_MAX = 560;
 const SIDEBAR_WIDTH_DEFAULT = 260;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.browser.sidebarWidth';
+const FILE_LOADING_INDICATOR_DELAY_MS = 180;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function clampSidebarWidth(value) {
@@ -87,6 +88,29 @@ const sortEntriesByTypeAndName = (entries = []) => [...entries].sort((left, righ
   }
   return getEntryName(left).localeCompare(getEntryName(right), undefined, { sensitivity: 'base' });
 });
+
+function getNumericFileSize(value) {
+  const size = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  return Number.isFinite(size) && size >= 0 ? size : null;
+}
+
+function getFilePayloadSize(filePayload, decodedContent = '') {
+  const payloadSize = getNumericFileSize(filePayload?.size);
+  if (payloadSize !== null) {
+    return payloadSize;
+  }
+  return decodedContent ? decodedContent.length : null;
+}
+
+function getTreeFileSize(treeEntries, filePath) {
+  const normalizedPath = String(filePath || '').replace(/^\/+/, '');
+  if (!normalizedPath) {
+    return null;
+  }
+  const parentPath = normalizedPath.includes('/') ? normalizedPath.split('/').slice(0, -1).join('/') : '';
+  const entry = (treeEntries?.[parentPath] || []).find((item) => String(item?.path || '').replace(/^\/+/, '') === normalizedPath);
+  return normalizeEntryType(entry?.type) === 'file' ? getNumericFileSize(entry?.size) : null;
+}
 
 const getDirectoryAncestorPaths = (path) => {
   const parts = String(path || '').split('/').filter(Boolean);
@@ -170,6 +194,19 @@ export default function RepoBrowser({
     initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
   ));
   const [encodedFileContent, setEncodedFileContent] = useState(() => initialSelectedFilePayload?.content || '');
+  const [previewFilePath, setPreviewFilePath] = useState(() => (
+    initialSelectedFilePayload?.content ? initialSelectedFilePath : ''
+  ));
+  const [previewFileContent, setPreviewFileContent] = useState(() => (
+    initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
+  ));
+  const [previewEncodedFileContent, setPreviewEncodedFileContent] = useState(() => initialSelectedFilePayload?.content || '');
+  const [selectedFileSize, setSelectedFileSize] = useState(() => (
+    getFilePayloadSize(
+      initialSelectedFilePayload,
+      initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : '',
+    )
+  ));
   const [draftContent, setDraftContent] = useState(() => (
     initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
   ));
@@ -179,6 +216,7 @@ export default function RepoBrowser({
   const [loadingFilePath, setLoadingFilePath] = useState(() => (
     initialSelectedFilePath && !hasInitialSelectedFilePayload ? initialSelectedFilePath : ''
   ));
+  const [showFileLoadingIndicator, setShowFileLoadingIndicator] = useState(false);
   const [error, setError] = useState(() => (
     initialDataMatchesRawSlice ? initialBrowserData?.rootEntriesError || '' : ''
   ));
@@ -209,13 +247,38 @@ export default function RepoBrowser({
   const sidebarResizeRef = useRef(null);
   const hasLoadedSidebarWidthRef = useRef(false);
   const handledOpenFileRequestTokenRef = useRef(null);
-  const highlightedContent = useMemo(() => highlightCode(fileContent), [fileContent]);
-  const markdownContent = useMemo(() => renderMarkdownHtml(fileContent), [fileContent]);
-  const previewMeta = useMemo(() => getPreviewMeta(selectedFile, encodedFileContent), [selectedFile, encodedFileContent]);
-  const selectedFileName = useMemo(() => selectedFile?.split('/').pop() || 'No file selected', [selectedFile]);
+  const highlightedContent = useMemo(() => highlightCode(previewFileContent), [previewFileContent]);
+  const markdownContent = useMemo(() => renderMarkdownHtml(previewFileContent), [previewFileContent]);
+  const previewPath = previewFilePath || selectedFile || '';
+  const previewMeta = useMemo(() => getPreviewMeta(previewPath, previewEncodedFileContent), [previewEncodedFileContent, previewPath]);
+  const hasPreviewContent = Boolean(previewFilePath);
   const hasLoadedRootEntries = Object.prototype.hasOwnProperty.call(treeEntries, '');
   const isSelectedFileLoading = Boolean(selectedFile && loadingFilePath === selectedFile && !showHistory);
+  const displayedFileSize = useMemo(() => {
+    if (!selectedFile) {
+      return null;
+    }
+    if (selectedFileSize !== null) {
+      return selectedFileSize;
+    }
+    return isSelectedFileLoading ? null : fileContent.length;
+  }, [fileContent.length, isSelectedFileLoading, selectedFile, selectedFileSize]);
   const visibleEntryError = selectedFile ? '' : error;
+
+  useEffect(() => {
+    if (!isSelectedFileLoading) {
+      setShowFileLoadingIndicator(false);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setShowFileLoadingIndicator(true);
+    }, FILE_LOADING_INDICATOR_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [isSelectedFileLoading]);
 
   useEffect(() => {
     selectedFileRef.current = selectedFile;
@@ -310,6 +373,10 @@ export default function RepoBrowser({
     setSelectedFile(null);
     setFileContent('');
     setEncodedFileContent('');
+    setPreviewFilePath('');
+    setPreviewFileContent('');
+    setPreviewEncodedFileContent('');
+    setSelectedFileSize(null);
     setDraftContent('');
     setFileError('');
     setLoadingFilePath('');
@@ -465,6 +532,10 @@ export default function RepoBrowser({
       setFocusedEntry({ path: nextSelectedFile, type: 'file' });
       setEncodedFileContent(nextFilePayload.content);
       setFileContent(decodedContent);
+      setPreviewFilePath(nextSelectedFile);
+      setPreviewFileContent(decodedContent);
+      setPreviewEncodedFileContent(nextFilePayload.content);
+      setSelectedFileSize(getFilePayloadSize(nextFilePayload, decodedContent));
       setDraftContent(decodedContent);
       setFileError(initialBrowserData.selectedFileError || '');
       setLoadingFilePath('');
@@ -478,6 +549,13 @@ export default function RepoBrowser({
       setFocusedEntry({ path: nextSelectedFile, type: 'file' });
       setFileContent('');
       setEncodedFileContent('');
+      setPreviewFilePath('');
+      setPreviewFileContent('');
+      setPreviewEncodedFileContent('');
+      setSelectedFileSize(getTreeFileSize(
+        Array.isArray(initialBrowserData?.rootEntries) ? { '': initialBrowserData.rootEntries } : {},
+        nextSelectedFile,
+      ));
       setDraftContent('');
       setFileError(initialBrowserData?.selectedFileError || '');
       setLoadingFilePath(nextSelectedFile);
@@ -489,6 +567,10 @@ export default function RepoBrowser({
     setSelectedFile(null);
     setFileContent('');
     setEncodedFileContent('');
+    setPreviewFilePath('');
+    setPreviewFileContent('');
+    setPreviewEncodedFileContent('');
+    setSelectedFileSize(null);
     setDraftContent('');
     setFileError('');
     setLoadingFilePath('');
@@ -629,6 +711,10 @@ export default function RepoBrowser({
     setSelectedFile(null);
     setFileContent('');
     setEncodedFileContent('');
+    setPreviewFilePath('');
+    setPreviewFileContent('');
+    setPreviewEncodedFileContent('');
+    setSelectedFileSize(null);
     setDraftContent('');
     setFileDrafts({});
     setIsEditingFile(false);
@@ -783,6 +869,11 @@ export default function RepoBrowser({
     setIsSettingsOpen(false);
     setFocusedEntry({ path: normalizedPath, type: 'file' });
     setSelectedFile(normalizedPath);
+    setSelectedFileSize(
+      getNumericFileSize(options.size)
+        ?? getTreeFileSize(treeEntries, normalizedPath)
+        ?? (selectedFile === normalizedPath ? selectedFileSize : null),
+    );
     setFileContent('');
     setEncodedFileContent('');
     setDraftContent('');
@@ -839,6 +930,10 @@ export default function RepoBrowser({
       if (Object.prototype.hasOwnProperty.call(fileDrafts, normalizedPath)) {
         setFileContent(fileDrafts[normalizedPath]);
         setEncodedFileContent('');
+        setPreviewFilePath(normalizedPath);
+        setPreviewFileContent(fileDrafts[normalizedPath]);
+        setPreviewEncodedFileContent('');
+        setSelectedFileSize(fileDrafts[normalizedPath].length);
         setDraftContent(fileDrafts[normalizedPath]);
         setIsEditingFile(false);
         setError('');
@@ -855,12 +950,17 @@ export default function RepoBrowser({
       setEncodedFileContent(content);
       const decodedContent = decodeBase64(content);
       setFileContent(decodedContent);
+      setPreviewFilePath(normalizedPath);
+      setPreviewFileContent(decodedContent);
+      setPreviewEncodedFileContent(content);
+      setSelectedFileSize(getFilePayloadSize(filePayload?.file, decodedContent));
       setDraftContent(decodedContent);
       setIsEditingFile(false);
       setError('');
     } catch (err) {
       setFileContent('');
       setEncodedFileContent('');
+      setSelectedFileSize(null);
       setFileError(err?.message || 'Unable to load file content.');
     } finally {
       setIsLoading(false);
@@ -874,6 +974,8 @@ export default function RepoBrowser({
     expandedPaths,
     fileDrafts,
     normalizeWorkspaceResultPath,
+    selectedFile,
+    selectedFileSize,
     treeEntries,
     writeBrowserState,
   ]);
@@ -1040,6 +1142,7 @@ export default function RepoBrowser({
           setExpandedPaths(pathsToExpand);
           setSelectedFile(pendingFile);
           setFocusedEntry({ path: pendingFile, type: 'file' });
+          setSelectedFileSize(getTreeFileSize(allEntries, pendingFile));
           setLoadingFilePath(pendingFile);
 
           // Load file content
@@ -1053,13 +1156,19 @@ export default function RepoBrowser({
               setFileError('');
               const content = fileData?.file?.content || '';
               setEncodedFileContent(content);
-              setFileContent(decodeBase64(content));
+              const decodedContent = decodeBase64(content);
+              setFileContent(decodedContent);
+              setPreviewFilePath(pendingFile);
+              setPreviewFileContent(decodedContent);
+              setPreviewEncodedFileContent(content);
+              setSelectedFileSize(getFilePayloadSize(fileData?.file, decodedContent));
               setError('');
             }
           } catch (e) {
             if (active && e?.name !== 'AbortError') {
               setFileContent('');
               setEncodedFileContent('');
+              setSelectedFileSize(null);
               setFileError(e?.message || 'Unable to load file content.');
             }
           } finally {
@@ -1096,6 +1205,9 @@ export default function RepoBrowser({
     if (!isActive || !canLoad || !selectedFile || isEditingFile) {
       return;
     }
+    if (isLoading && loadingFilePath === selectedFile) {
+      return;
+    }
     if (
       initialBrowserDataMatches
       && initialBrowserData?.selectedFile === selectedFile
@@ -1126,6 +1238,10 @@ export default function RepoBrowser({
         setFileError('');
         setEncodedFileContent(content);
         setFileContent(decodedContent);
+        setPreviewFilePath(selectedFile);
+        setPreviewFileContent(decodedContent);
+        setPreviewEncodedFileContent(content);
+        setSelectedFileSize(getFilePayloadSize(payload?.file, decodedContent));
         setDraftContent(decodedContent);
         setError('');
       } catch (err) {
@@ -1146,7 +1262,7 @@ export default function RepoBrowser({
       active = false;
       controller.abort();
     };
-  }, [canLoad, initialBrowserData, initialBrowserDataMatches, isActive, isEditingFile, refreshHistoryToken, selectedFile, sliceId, sliceHash]);
+  }, [canLoad, initialBrowserData, initialBrowserDataMatches, isActive, isEditingFile, isLoading, loadingFilePath, refreshHistoryToken, selectedFile, sliceId, sliceHash]);
 
   const fetchEntries = async (path) => {
     if (!canLoad) {
@@ -1263,7 +1379,7 @@ export default function RepoBrowser({
       return;
     }
     setFocusedEntry({ path: entry.path, type: entryKind });
-    await openFilePath(entry.path);
+    await openFilePath(entry.path, { size: entry.size });
   };
 
   const confirmFileEdit = () => {
@@ -1273,6 +1389,10 @@ export default function RepoBrowser({
     setFileDrafts((prev) => ({ ...prev, [selectedFile]: draftContent }));
     setFileContent(draftContent);
     setEncodedFileContent('');
+    setPreviewFilePath(selectedFile);
+    setPreviewFileContent(draftContent);
+    setPreviewEncodedFileContent('');
+    setSelectedFileSize(draftContent.length);
     setIsEditingFile(false);
     const parentPath = selectedFile.includes('/') ? selectedFile.split('/').slice(0, -1).join('/') : '';
     setTreeEntries((prev) => {
@@ -1345,7 +1465,7 @@ export default function RepoBrowser({
       return;
     }
     setFocusedEntry({ path: entry.path, type: 'file' });
-    await openFilePath(entry.path);
+    await openFilePath(entry.path, { size: entry.size });
   };
   const sidebarVisible = sidebarOpen || isSidebarDismissing;
 
@@ -1475,7 +1595,11 @@ export default function RepoBrowser({
                 </div>
               </div>
               <div className="code-header-actions">
-                {selectedFile && !isCompactHeader && <span className="status">{formatBytes(fileContent.length)}</span>}
+                {selectedFile && !isCompactHeader && (
+                  <span className="status file-size-status">
+                    {displayedFileSize === null ? '' : formatBytes(displayedFileSize)}
+                  </span>
+                )}
                 {!isCompactHeader && renderFileActions()}
                 {isCompactHeader && selectedFile && (
                   <div className="header-actions-menu" ref={actionMenuRef}>
@@ -1492,7 +1616,9 @@ export default function RepoBrowser({
                     </Button>
                     {isActionMenuOpen && (
                       <div className="header-actions-menu-dropdown" role="menu">
-                        <span className="header-actions-menu-status">{formatBytes(fileContent.length)}</span>
+                        <span className="header-actions-menu-status">
+                          {displayedFileSize === null ? '' : formatBytes(displayedFileSize)}
+                        </span>
                         {renderFileActions(() => setIsActionMenuOpen(false))}
                       </div>
                     )}
@@ -1550,15 +1676,15 @@ export default function RepoBrowser({
                   )}
                 </div>
               )}
-              {selectedFile && !showHistory && isSelectedFileLoading && (
-                <div className="file-loading-state" role="status" aria-live="polite" data-testid="file-loading-state">
+              {selectedFile && !showHistory && isSelectedFileLoading && showFileLoadingIndicator && (
+                <div className="file-loading-state" role="status" aria-live="polite" aria-label="Loading file" data-testid="file-loading-state">
                   <span className="file-loading-spinner" aria-hidden="true" />
-                  <span>Loading {selectedFileName}...</span>
+                  <span className="visually-hidden">Loading file</span>
                 </div>
               )}
               {selectedFile && !showHistory && !isSelectedFileLoading && fileError && <div className="panel-error">{fileError}</div>}
               {selectedFile && !showHistory && (
-                !isSelectedFileLoading && !fileError && (
+                ((isSelectedFileLoading && hasPreviewContent) || (!isSelectedFileLoading && !fileError)) && (
                   isEditingFile ? (
                     <textarea
                       className="file-editor"
@@ -1568,13 +1694,13 @@ export default function RepoBrowser({
                     />
                   ) : previewMeta.mode === 'image' ? (
                     <div className="media-preview-wrapper">
-                      <img className="media-preview-image" src={previewMeta.src} alt={selectedFile} />
+                      <img className="media-preview-image" src={previewMeta.src} alt={previewPath} />
                     </div>
                   ) : previewMeta.mode === 'pdf' ? (
                     <iframe
                       className="media-preview-pdf"
                       src={previewMeta.src}
-                      title={`${selectedFile} PDF preview`}
+                      title={`${previewPath} PDF preview`}
                     />
                   ) : previewMeta.mode === 'markdown' ? (
                     <article

@@ -66,6 +66,42 @@ function cleanFolderPath(value) {
   return withoutRoot.split('/').filter(Boolean).join('/');
 }
 
+function getHomeRootPath(username, homeSliceId) {
+  const usernameRoot = cleanFolderPath(username);
+  if (usernameRoot) {
+    return usernameRoot;
+  }
+  const id = String(homeSliceId || '').trim();
+  if (id.toLowerCase().startsWith('home.')) {
+    return cleanFolderPath(id.slice('home.'.length));
+  }
+  return '';
+}
+
+function pathUnderHomeRoot(homeRootPath, relativePath) {
+  const root = cleanFolderPath(homeRootPath);
+  const relative = cleanFolderPath(relativePath);
+  if (!root) {
+    return relative;
+  }
+  return relative ? `${root}/${relative}` : root;
+}
+
+function pathRelativeToHomeRoot(homeRootPath, entryPath) {
+  const root = cleanFolderPath(homeRootPath);
+  const path = cleanFolderPath(entryPath);
+  if (!root) {
+    return path;
+  }
+  if (path === root) {
+    return '';
+  }
+  if (path.startsWith(`${root}/`)) {
+    return path.slice(root.length + 1);
+  }
+  return '';
+}
+
 function validateFolderPath(value) {
   const cleaned = cleanFolderPath(value);
   if (!cleaned) {
@@ -99,6 +135,7 @@ export default function SliceHomePage({
   slicesLoading,
   slicesError,
   isAuthenticated,
+  username,
   homeSliceId,
   onOpenSlice,
   onRefresh,
@@ -116,6 +153,8 @@ export default function SliceHomePage({
   const [loadingFolderPaths, setLoadingFolderPaths] = useState({});
   const [createError, setCreateError] = useState('');
   const [createLoading, setCreateLoading] = useState(false);
+  const homeRootPath = getHomeRootPath(username, homeSliceId);
+  const createParentSliceId = 'root_slice';
 
   const filteredSlices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -141,6 +180,9 @@ export default function SliceHomePage({
     }
     setCreateError('');
     setFolderSelectionError('');
+    setFolderBrowserEntries({});
+    setExpandedFolderPaths(['']);
+    setLoadingFolderPaths({});
     setIsCreateOpen(true);
   };
 
@@ -155,7 +197,7 @@ export default function SliceHomePage({
     setLoadingFolderPaths((prev) => ({ ...prev, [path]: true }));
     setFolderSelectionError('');
     try {
-      const entries = await fetchSliceEntries('root_slice', path);
+      const entries = await fetchSliceEntries(createParentSliceId, pathUnderHomeRoot(homeRootPath, path));
       setFolderBrowserEntries((prev) => ({ ...prev, [path]: entries }));
     } catch (error) {
       setFolderSelectionError(error?.message || 'Unable to load folders.');
@@ -230,7 +272,7 @@ export default function SliceHomePage({
     setCreateError('');
     try {
       const created = await createSliceFromFolder({
-        parentSliceId: 'root_slice',
+        parentSliceId: createParentSliceId,
         folderPaths: selectedFolders,
         name,
         description: sliceDescription.trim(),
@@ -265,7 +307,10 @@ export default function SliceHomePage({
     return (
       <ul className="slice-create-folder-tree">
         {entries.map((entry) => {
-          const folderPath = cleanFolderPath(entry.path);
+          const folderPath = pathRelativeToHomeRoot(homeRootPath, entry.path);
+          if (!folderPath) {
+            return null;
+          }
           const entryName = getEntryName(entry);
           const isExpanded = expandedFolderPaths.includes(folderPath);
           const isSelected = selectedFolders.includes(folderPath);
@@ -463,7 +508,7 @@ export default function SliceHomePage({
                   ))}
                 </ul>
               ) : (
-                <div className="slice-create-folder-empty">Choose at least one folder from the root slice.</div>
+                <div className="slice-create-folder-empty">Choose at least one folder from your home directory.</div>
               )}
               <div className="slice-create-folder-input">
                 <input
