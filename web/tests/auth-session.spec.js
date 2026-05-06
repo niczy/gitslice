@@ -5,6 +5,32 @@ const webPort = process.env.E2E_WEB_PORT || '4173';
 const webBaseURL = `http://127.0.0.1:${webPort}`;
 
 test.describe('Cookie-backed web auth', () => {
+  test('signed-in home is selected by the server before client hydration', async ({ browser, baseURL }) => {
+    const loginContext = await browser.newContext({ baseURL });
+    const loginPage = await loginContext.newPage();
+    await loginPage.goto('/login');
+    await loginPage.getByLabel('Username').fill('webssrhome');
+    await loginPage.getByRole('button', { name: /login with username/i }).click();
+    await expect(loginPage).toHaveURL(/\/browser(\?.*)?$/);
+
+    const storageState = await loginContext.storageState();
+    await loginContext.close();
+
+    const ssrContext = await browser.newContext({
+      baseURL,
+      javaScriptEnabled: false,
+      storageState,
+    });
+    const ssrPage = await ssrContext.newPage();
+    await ssrPage.goto('/');
+
+    await expect(ssrPage.getByTestId('slice-home-page')).toBeVisible();
+    await expect(ssrPage.getByRole('heading', { level: 1, name: /check out a custom slice in seconds/i })).toHaveCount(0);
+    expect(new URL(ssrPage.url()).pathname).toBe('/');
+
+    await ssrContext.close();
+  });
+
   test('username login creates a persistent cookie-backed session', async ({ page }) => {
     await page.goto('/login');
 

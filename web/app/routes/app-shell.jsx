@@ -2,7 +2,7 @@ import { useLoaderData, useLocation, useNavigate } from 'react-router';
 
 import App from '../../src/App.jsx';
 import { setCachedSession } from '../../src/auth.js';
-import { parseLocation } from '../../src/utils/routing.js';
+import { parseLocation, resolveHomeRouteForSession } from '../../src/utils/routing.js';
 import { getPublicAuthConfig, loadSession } from '../../server/auth.js';
 import { loadBrowserRouteData } from '../../server/browser-data.js';
 
@@ -15,15 +15,24 @@ export async function loader({ request }) {
     sessionError = error instanceof Error ? error.message : 'Failed to load browser session.';
   }
   const requestURL = new URL(request.url);
-  const routeInfo = parseLocation(requestURL);
-  const browserRoute = await loadBrowserRouteData(request, session, routeInfo);
+  const requestRouteInfo = parseLocation(requestURL);
+  let routeInfo = resolveHomeRouteForSession(requestRouteInfo, session);
+  let browserRoute = await loadBrowserRouteData(request, session, routeInfo);
   if (browserRoute.authExpired) {
     session = null;
     sessionError = '';
+    const fallbackRouteInfo = resolveHomeRouteForSession(requestRouteInfo, session);
+    const fallbackBrowserRoute = await loadBrowserRouteData(request, session, fallbackRouteInfo);
+    routeInfo = fallbackRouteInfo;
+    browserRoute = {
+      data: fallbackBrowserRoute.data,
+      setCookies: [...(browserRoute.setCookies || []), ...(fallbackBrowserRoute.setCookies || [])],
+    };
   }
   const response = Response.json({
     session,
     sessionError,
+    routeInfo,
     authConfig: getPublicAuthConfig(request),
     browserData: browserRoute.data,
   });
@@ -36,10 +45,11 @@ export async function loader({ request }) {
 }
 
 export default function AppShellRoute() {
-  const { session, sessionError, authConfig, browserData } = useLoaderData();
+  const { session, sessionError, routeInfo: loaderRouteInfo, authConfig, browserData } = useLoaderData();
   const location = useLocation();
   const navigate = useNavigate();
-  const routeInfo = parseLocation(location);
+  const locationRouteInfo = parseLocation(location);
+  const routeInfo = locationRouteInfo.legacyHash ? locationRouteInfo : loaderRouteInfo || locationRouteInfo;
 
   if (typeof document !== 'undefined') {
     setCachedSession(session || null);
