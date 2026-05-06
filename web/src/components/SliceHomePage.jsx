@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowRight,
   ChevronDown,
   ChevronRight,
   Folder,
-  FolderTree,
-  GitBranch,
   Globe2,
-  Home,
   Lock,
   Plus,
   Search,
@@ -33,15 +29,21 @@ function getSliceUpdatedAt(slice) {
   return slice?.updated_at || slice?.updatedAt || slice?.created_at || slice?.createdAt || 0;
 }
 
-function getSliceFileCount(slice) {
-  const value = slice?.file_count ?? slice?.fileCount;
-  return Number.isFinite(Number(value)) ? Number(value) : 0;
-}
-
 function isHomeSlice(slice, homeSliceId) {
   const sliceId = String(slice?.slice_id || '').trim().toLowerCase();
   const normalizedHomeSliceId = String(homeSliceId || '').trim().toLowerCase();
   return Boolean(normalizedHomeSliceId && sliceId === normalizedHomeSliceId);
+}
+
+function getSliceVisibility(slice) {
+  const value = slice?.visibility ?? slice?.Visibility;
+  if (value === 2 || value === 'VISIBILITY_PUBLIC' || value === 'PUBLIC' || value === 'public') {
+    return 'public';
+  }
+  if (value === 1 || value === 'VISIBILITY_PRIVATE' || value === 'PRIVATE' || value === 'private') {
+    return 'private';
+  }
+  return slice?.is_root ? 'public' : 'private';
 }
 
 function sortSlices(slices, homeSliceId) {
@@ -356,9 +358,9 @@ export default function SliceHomePage({
         {!slicesLoading && !slicesError && filteredSlices.length > 0 && (
           <ul className="slice-home-list" data-testid="slice-home-list">
             {filteredSlices.map((slice) => {
-              const fileCount = getSliceFileCount(slice);
               const updatedAt = getSliceUpdatedAt(slice);
               const isHome = isHomeSlice(slice, homeSliceId);
+              const visibility = getSliceVisibility(slice);
               return (
                 <li key={slice.slice_id}>
                   <Button
@@ -368,33 +370,21 @@ export default function SliceHomePage({
                     onClick={() => onOpenSlice(slice.slice_id)}
                     data-testid="slice-home-row"
                   >
-                    <span className="slice-home-row-icon" aria-hidden="true">
-                      {isHome ? <Home size={17} /> : <FolderTree size={17} />}
-                    </span>
                     <span className="slice-home-row-main">
                       <span className="slice-home-row-title">{getSliceName(slice)}</span>
                       <span className="slice-home-row-subtitle">{getSliceMeta(slice)}</span>
                     </span>
-                    <span className="slice-home-row-badges">
-                      <span className={`slice-home-chip${isHome ? ' slice-home-chip--home' : ''}`}>
-                        {isHome ? (
-                          <Home size={13} aria-hidden="true" />
-                        ) : slice.is_root ? (
-                          <Globe2 size={13} aria-hidden="true" />
-                        ) : (
-                          <Lock size={13} aria-hidden="true" />
-                        )}
-                        {isHome ? 'Home' : slice.is_root ? 'Root' : 'Workspace'}
-                      </span>
-                      <span className="slice-home-chip">
-                        <GitBranch size={13} aria-hidden="true" />
-                        {fileCount} files
-                      </span>
-                    </span>
                     <span className="slice-home-row-updated">
                       {updatedAt ? formatTimestamp(updatedAt) : 'No updates yet'}
                     </span>
-                    <ArrowRight size={16} aria-hidden="true" className="slice-home-row-arrow" />
+                    <span className={`slice-home-chip slice-home-chip--visibility slice-home-chip--${visibility}`}>
+                      {visibility === 'public' ? (
+                        <Globe2 size={13} aria-hidden="true" />
+                      ) : (
+                        <Lock size={13} aria-hidden="true" />
+                      )}
+                      {visibility === 'public' ? 'Public' : 'Private'}
+                    </span>
                   </Button>
                 </li>
               );

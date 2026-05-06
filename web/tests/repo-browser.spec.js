@@ -442,6 +442,67 @@ test.describe('Repo Browser File Preview Layout', () => {
   });
 });
 
+test.describe('Slice Home Page', () => {
+  test('shows visibility chips without a leading workspace icon', async ({ page }) => {
+    const username = `homeicons${Date.now()}`;
+    const privateSliceId = `home.${username}`;
+    const publicSliceId = `${username}.public`;
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: privateSliceId,
+              name: 'Private Demo',
+              slug: `${username}/private-demo`,
+              created_by: username,
+              is_root: false,
+              visibility: 1,
+            },
+            {
+              slice_id: publicSliceId,
+              name: 'Public Demo',
+              slug: `${username}/public-demo`,
+              created_by: username,
+              is_root: false,
+              visibility: 2,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await expect(page).toHaveURL(/\/browser(\?.*)?$/);
+    await expect(page.locator('.slice-home-row-icon')).toHaveCount(0);
+    await expect(page.locator('.slice-home-row-arrow')).toHaveCount(0);
+    await expect(page.getByTestId('slice-home-list')).not.toContainText(/\d+\s+files/);
+
+    const privateRow = page.getByTestId('slice-home-row').filter({ hasText: 'Private Demo' });
+    await expect(privateRow.locator('.slice-home-chip--private')).toContainText('Private');
+
+    const publicRow = page.getByTestId('slice-home-row').filter({ hasText: 'Public Demo' });
+    await expect(publicRow.locator('.slice-home-chip--public')).toContainText('Public');
+
+    const privateLayout = await privateRow.evaluate((row) => {
+      const chip = row.querySelector('.slice-home-chip--visibility');
+      const rowRect = row.getBoundingClientRect();
+      const chipRect = chip.getBoundingClientRect();
+      return {
+        rowRight: Math.round(rowRect.right),
+        chipRight: Math.round(chipRect.right),
+      };
+    });
+    expect(privateLayout.rowRight - privateLayout.chipRight).toBeLessThanOrEqual(20);
+  });
+});
+
 test.describe('Repo Browser Search', () => {
   test('submits indexed workspace search and renders structured results', async ({ page }) => {
     const username = `zzsrch${Date.now()}`;
