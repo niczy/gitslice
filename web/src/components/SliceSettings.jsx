@@ -77,6 +77,13 @@ function buildPublicUrl(sliceId, path, entryType) {
   return `${window.location.origin}${basePath}${suffix}?${params.toString()}`;
 }
 
+function buildRawSliceUrl(sliceId) {
+  if (typeof window === 'undefined' || !sliceId) {
+    return '';
+  }
+  return `${window.location.origin}/raw/slices/${encodeURIComponent(sliceId)}/path/to/file.txt`;
+}
+
 function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
@@ -132,6 +139,7 @@ export default function SliceSettings({ sliceId, sliceName, slice = null, public
   const [copyError, setCopyError] = useState('');
 
   const slicePublicUrl = useMemo(() => buildPublicUrl(sliceId, '', 'directory'), [sliceId]);
+  const rawSliceUrl = useMemo(() => buildRawSliceUrl(sliceId), [sliceId]);
   const gitEndpoint = useMemo(
     () => buildGitEndpoint({ slice, publicApiBaseUrl }),
     [publicApiBaseUrl, slice],
@@ -349,6 +357,29 @@ export default function SliceSettings({ sliceId, sliceName, slice = null, public
                     </Button>
                     <span className="slice-settings-note">
                       Anonymous readers only see content that resolves public inside this slice.
+                    </span>
+                  </div>
+                </div>
+                <div className="visibility-link-block">
+                  <label className="visibility-field">
+                    <span>Raw file URL pattern</span>
+                    <input
+                      readOnly
+                      value={rawSliceUrl}
+                      data-testid="slice-raw-url-pattern"
+                    />
+                  </label>
+                  <div className="visibility-link-actions">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => copyUrl('raw', rawSliceUrl)}
+                      data-testid="slice-raw-copy-url"
+                    >
+                      {copiedTarget === 'raw' ? 'Copied' : 'Copy raw pattern'}
+                    </Button>
+                    <span className="slice-settings-note">
+                      Replace the path with a public file path to serve bytes directly.
                     </span>
                   </div>
                 </div>
