@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { closeChangeset, getChangesetDiff, listChangesetSnapshots, mergeChangeset } from '../utils/api.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import {
@@ -13,31 +13,74 @@ import { Button } from './ui/button.jsx';
 // Changeset Diff Page Component
 // ---------------------------------------------------------------------------
 
-export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClosed }) {
-  const [payload, setPayload] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+export default function ChangesetDiffPage({
+  changesetId,
+  onBack,
+  onMerged,
+  onClosed,
+  initialChangesetId = '',
+  initialSnapshots = null,
+  initialSnapshotsError = '',
+  initialSnapshotVersion = 0,
+  initialDiffData = null,
+  initialDiffError = '',
+}) {
+  const hasInitialSnapshots = initialChangesetId === changesetId && Array.isArray(initialSnapshots);
+  const hasInitialDiff = initialChangesetId === changesetId && Boolean(initialDiffData);
+  const initialSelectedSnapshotVersion = hasInitialSnapshots
+    ? initialSnapshotVersion || initialSnapshots[0]?.version || 0
+    : 0;
+  const [payload, setPayload] = useState(() => (hasInitialDiff ? initialDiffData : null));
+  const [loadedDiffKey, setLoadedDiffKey] = useState(() => (
+    hasInitialDiff ? `${changesetId}:${initialSelectedSnapshotVersion}` : ''
+  ));
+  const [isLoading, setIsLoading] = useState(() => !hasInitialDiff && !initialDiffError);
+  const [error, setError] = useState(() => (initialChangesetId === changesetId ? initialDiffError : ''));
   const [viewMode, setViewMode] = useState('unified');
   const [actionLoading, setActionLoading] = useState('');
   const [actionError, setActionError] = useState('');
-  const [snapshots, setSnapshots] = useState([]);
-  const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
-  const [snapshotsError, setSnapshotsError] = useState('');
-  const [selectedSnapshotVersion, setSelectedSnapshotVersion] = useState(0);
+  const [snapshots, setSnapshots] = useState(() => (hasInitialSnapshots ? initialSnapshots : []));
+  const [snapshotsLoaded, setSnapshotsLoaded] = useState(() => hasInitialSnapshots);
+  const [loadedSnapshotsChangesetId, setLoadedSnapshotsChangesetId] = useState(() => (hasInitialSnapshots ? changesetId : ''));
+  const [snapshotsError, setSnapshotsError] = useState(() => (hasInitialSnapshots ? initialSnapshotsError : ''));
+  const [selectedSnapshotVersion, setSelectedSnapshotVersion] = useState(() => initialSelectedSnapshotVersion);
+  const clientRefreshSnapshotsRef = useRef('');
+  const clientRefreshDiffRef = useRef('');
 
   useEffect(() => {
+    if (
+      initialChangesetId === changesetId
+      && Array.isArray(initialSnapshots)
+      && loadedSnapshotsChangesetId !== changesetId
+    ) {
+      const nextVersion = initialSnapshotVersion || initialSnapshots[0]?.version || 0;
+      setSnapshots(initialSnapshots);
+      setSnapshotsLoaded(true);
+      setSnapshotsError(initialSnapshotsError || '');
+      setSelectedSnapshotVersion(nextVersion);
+      setLoadedSnapshotsChangesetId(changesetId);
+      return undefined;
+    }
     if (!changesetId) {
       setSnapshots([]);
       setSnapshotsLoaded(false);
       setSnapshotsError('');
       setSelectedSnapshotVersion(0);
+      setLoadedSnapshotsChangesetId('');
       return;
     }
+    if (loadedSnapshotsChangesetId === changesetId && clientRefreshSnapshotsRef.current === changesetId) {
+      return undefined;
+    }
+    const hasSeededSnapshots = loadedSnapshotsChangesetId === changesetId && snapshotsLoaded;
+    clientRefreshSnapshotsRef.current = changesetId;
 
     let active = true;
     const loadSnapshots = async () => {
-      setSnapshotsLoaded(false);
-      setSnapshotsError('');
+      if (!hasSeededSnapshots) {
+        setSnapshotsLoaded(false);
+        setSnapshotsError('');
+      }
       try {
         const response = await listChangesetSnapshots(changesetId);
         if (!active) {
@@ -46,6 +89,7 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
         const normalized = normalizeChangesetSnapshotListResponse(response);
         setSnapshots(normalized);
         setSelectedSnapshotVersion(normalized[0]?.version || 0);
+        setLoadedSnapshotsChangesetId(changesetId);
       } catch (err) {
         if (!active) {
           return;
@@ -53,6 +97,7 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
         setSnapshots([]);
         setSelectedSnapshotVersion(0);
         setSnapshotsError(err?.message || 'Unable to load snapshot versions.');
+        setLoadedSnapshotsChangesetId(changesetId);
       } finally {
         if (active) {
           setSnapshotsLoaded(true);
@@ -61,22 +106,51 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
     };
     loadSnapshots();
     return () => { active = false; };
-  }, [changesetId]);
+  }, [
+    changesetId,
+    initialChangesetId,
+    initialSnapshotVersion,
+    initialSnapshots,
+    initialSnapshotsError,
+    loadedSnapshotsChangesetId,
+  ]);
 
   useEffect(() => {
+    const nextDiffKey = `${changesetId || ''}:${selectedSnapshotVersion || 0}`;
+    if (
+      initialChangesetId === changesetId
+      && initialDiffData
+      && nextDiffKey === `${changesetId || ''}:${initialSnapshotVersion || 0}`
+      && loadedDiffKey !== nextDiffKey
+    ) {
+      setPayload(initialDiffData);
+      setError('');
+      setIsLoading(false);
+      setLoadedDiffKey(nextDiffKey);
+      return undefined;
+    }
     if (!changesetId || !snapshotsLoaded) return;
+    if (loadedDiffKey === nextDiffKey && clientRefreshDiffRef.current === nextDiffKey) {
+      return undefined;
+    }
+    const hasSeededDiff = loadedDiffKey === nextDiffKey && Boolean(payload);
+    clientRefreshDiffRef.current = nextDiffKey;
     let active = true;
     const load = async () => {
-      setIsLoading(true);
-      setError('');
+      if (!hasSeededDiff) {
+        setIsLoading(true);
+        setError('');
+      }
       try {
         const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined);
         if (active) {
           setPayload(normalizeChangesetDiffResponse(response));
+          setLoadedDiffKey(nextDiffKey);
         }
       } catch (err) {
         if (active) {
           setError(err?.message || 'Unable to load changeset diff.');
+          setLoadedDiffKey(nextDiffKey);
         }
       } finally {
         if (active) {
@@ -86,7 +160,15 @@ export default function ChangesetDiffPage({ changesetId, onBack, onMerged, onClo
     };
     load();
     return () => { active = false; };
-  }, [changesetId, selectedSnapshotVersion, snapshotsLoaded]);
+  }, [
+    changesetId,
+    initialChangesetId,
+    initialDiffData,
+    initialSnapshotVersion,
+    loadedDiffKey,
+    selectedSnapshotVersion,
+    snapshotsLoaded,
+  ]);
 
   const changeset = payload?.changeset || null;
   const selectedSnapshot = payload?.snapshot || null;

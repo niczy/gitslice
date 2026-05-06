@@ -64,6 +64,7 @@ function App({
   routerNavigate,
 }) {
   const queryClient = useQueryClient();
+  const initialRouteData = initialBrowserData || {};
   const initialUsername = initialSession?.user?.username || currentUsername();
   const initialBrowserRouteSlice = isSliceScopedPage(initialRoute.page) ? initialRoute.browserState?.slice || '' : '';
   const initialPage = initialRoute.page === 'landing' && initialUsername ? 'browser' : initialRoute.page;
@@ -98,10 +99,10 @@ function App({
   const supportUrl = 'https://github.com/niczy/gitslice/issues';
 
   const webSessionQuery = useWebSession(initialSession);
-  const slicesQuery = useSlicesQuery(initialBrowserData?.slices);
+  const slicesQuery = useSlicesQuery(initialRouteData?.slices);
   const slices = slicesQuery.data || [];
   const slicesLoading = slicesQuery.isLoading;
-  const slicesError = initialBrowserData?.slicesError || (slicesQuery.error ? 'Unable to load slices.' : '');
+  const slicesError = initialRouteData?.slicesError || (slicesQuery.error ? 'Unable to load slices.' : '');
   const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId) || null;
 
   const isBrowserDetail = activePage === 'browser' && Boolean(browserRouteSliceId);
@@ -575,6 +576,7 @@ function App({
             authSessionSource={authSessionSource}
             onOpenProfile={() => navigate('profile')}
             onLogout={doLogout}
+            initialSettingsData={initialRouteData.settings}
           />
         )}
 
@@ -618,6 +620,10 @@ function App({
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
             onOpenCommitDiff={navigateToDiff}
+            initialCommits={initialRouteData.sliceCommits}
+            initialCommitsError={initialRouteData.sliceCommitsError || ''}
+            initialCommitsHasMore={Boolean(initialRouteData.sliceCommitsHasMore)}
+            initialCommitsSliceId={initialRouteData.sliceCommitsSliceId || ''}
           />
         )}
 
@@ -628,6 +634,10 @@ function App({
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
             onOpenChangesetDiff={navigateToChangesetDiff}
+            initialChangesets={initialRouteData.sliceChangesets}
+            initialChangesetsError={initialRouteData.sliceChangesetsError || ''}
+            initialChangesetsSliceId={initialRouteData.sliceChangesetsSliceId || ''}
+            initialStatusFilter={initialRouteData.sliceChangesetsStatusFilter || 'all'}
           />
         )}
 
@@ -636,6 +646,9 @@ function App({
             commitHash={diffCommitHash}
             onBack={navigateBackFromDiff}
             onOpenChangesetDiff={navigateToChangesetDiff}
+            initialCommitHash={initialRouteData.commitDiffHash || ''}
+            initialDiffData={initialRouteData.commitDiff}
+            initialDiffError={initialRouteData.commitDiffError || ''}
           />
         )}
 
@@ -645,6 +658,12 @@ function App({
             onBack={navigateBackFromDiff}
             onMerged={handleChangesetMerged}
             onClosed={handleChangesetClosed}
+            initialChangesetId={initialRouteData.changesetId || ''}
+            initialSnapshots={initialRouteData.changesetSnapshots}
+            initialSnapshotsError={initialRouteData.changesetSnapshotsError || ''}
+            initialSnapshotVersion={initialRouteData.changesetSnapshotVersion || 0}
+            initialDiffData={initialRouteData.changesetDiff}
+            initialDiffError={initialRouteData.changesetDiffError || ''}
           />
         )}
 

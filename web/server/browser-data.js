@@ -1,6 +1,17 @@
 import { getConfiguredAPIBaseURL } from '../shared/runtime.js';
 import { clearLocalSessionCookie, getAuthProvider, getProxyAuthorizationResult } from './auth.js';
-import { normalizeSliceInfo } from '../src/utils/normalize.js';
+import {
+  normalizeChangesetDiffResponse,
+  normalizeChangesetListResponse,
+  normalizeChangesetSnapshotListResponse,
+  normalizeCommitListResponse,
+  normalizeDiffResponse,
+  normalizeSliceInfo,
+} from '../src/utils/normalize.js';
+
+const SLICE_LIST_LIMIT = 200;
+const COMMIT_PAGE_SIZE = 100;
+const CHANGESET_PAGE_SIZE = 100;
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
@@ -108,41 +119,80 @@ function pushErrorCookies(target, error) {
   }
 }
 
-export async function loadBrowserRouteData(request, session, routeInfo) {
-  if (routeInfo?.page !== 'browser') {
-    return {
-      data: null,
-      setCookies: [],
-      authExpired: false,
-    };
-  }
+function recordRouteError(data, setCookies, error) {
+  pushErrorCookies(setCookies, error);
+  data.authExpired = data.authExpired || Boolean(error?.authExpired);
+}
 
-  const setCookies = [];
-  let authExpired = false;
-  const data = {
-    slices: [],
+function changesetStatusQueryValue(statusFilter) {
+  switch (statusFilter) {
+    case 'pending':
+      return '0';
+    case 'approved':
+      return '1';
+    case 'rejected':
+      return '2';
+    case 'merged':
+      return '3';
+    default:
+      return '';
+  }
+}
+
+function createRouteData(routeInfo) {
+  return {
+    slices: null,
     slicesError: '',
-    selectedSliceId: routeInfo.browserState?.slice || '',
-    sliceHash: routeInfo.browserState?.sliceHash || '',
+    selectedSliceId: routeInfo?.browserState?.slice || '',
+    sliceHash: routeInfo?.browserState?.sliceHash || '',
     rootEntries: null,
     rootEntriesError: '',
-    selectedFile: routeInfo.browserState?.file || '',
+    selectedFile: routeInfo?.browserState?.file || '',
     selectedFilePayload: null,
     selectedFileError: '',
+    sliceCommitsSliceId: routeInfo?.page === 'slice-commits' ? routeInfo?.browserState?.slice || '' : '',
+    sliceCommits: null,
+    sliceCommitsError: '',
+    sliceCommitsHasMore: false,
+    sliceChangesetsSliceId: routeInfo?.page === 'slice-changesets' ? routeInfo?.browserState?.slice || '' : '',
+    sliceChangesetsStatusFilter: 'all',
+    sliceChangesets: null,
+    sliceChangesetsError: '',
+    commitDiffHash: routeInfo?.page === 'diff' ? routeInfo?.commitHash || '' : '',
+    commitDiff: null,
+    commitDiffError: '',
+    changesetId: routeInfo?.page === 'changeset' ? routeInfo?.changesetId || '' : '',
+    changesetSnapshots: null,
+    changesetSnapshotsError: '',
+    changesetSnapshotVersion: 0,
+    changesetDiff: null,
+    changesetDiffError: '',
+    settings: null,
   };
+}
 
-  try {
-    const { payload, setCookies: cookies } = await fetchJSON(request, session, '/v1/slices', new URLSearchParams({ limit: '200' }));
-    setCookies.push(...cookies);
-    data.slices = (payload?.slices || []).map(normalizeSliceInfo);
-  } catch (error) {
-    pushErrorCookies(setCookies, error);
-    authExpired = authExpired || Boolean(error?.authExpired);
-    data.slicesError = error?.message || 'Unable to load slices.';
-  }
+function pageNeedsSlices(page) {
+  return ['browser', 'projects', 'slice-commits', 'slice-changesets'].includes(page);
+}
 
-  if (!data.selectedSliceId) {
-    return { data, setCookies, authExpired };
+function routeNeedsSlices(routeInfo, session) {
+  return pageNeedsSlices(routeInfo?.page) || (routeInfo?.page === 'landing' && Boolean(session?.user?.username));
+}
+
+async function loadSlices(request, session, data, setCookies) {
+  const { payload, setCookies: cookies } = await fetchJSON(
+    request,
+    session,
+    '/v1/slices',
+    new URLSearchParams({ limit: String(SLICE_LIST_LIMIT) }),
+  );
+  setCookies.push(...cookies);
+  data.slices = (payload?.slices || []).map(normalizeSliceInfo);
+}
+
+async function loadBrowserData(request, session, routeInfo, data, setCookies) {
+  if (routeInfo?.page !== 'browser' || !data.selectedSliceId) {
+    return;
   }
 
   try {
@@ -159,13 +209,12 @@ export async function loadBrowserRouteData(request, session, routeInfo) {
     setCookies.push(...cookies);
     data.rootEntries = payload?.entries || [];
   } catch (error) {
-    pushErrorCookies(setCookies, error);
-    authExpired = authExpired || Boolean(error?.authExpired);
+    recordRouteError(data, setCookies, error);
     data.rootEntriesError = error?.message || 'Unable to load entries.';
   }
 
   if (!data.selectedFile) {
-    return { data, setCookies, authExpired };
+    return;
   }
 
   try {
@@ -183,10 +232,219 @@ export async function loadBrowserRouteData(request, session, routeInfo) {
     setCookies.push(...cookies);
     data.selectedFilePayload = payload?.file || null;
   } catch (error) {
-    pushErrorCookies(setCookies, error);
-    authExpired = authExpired || Boolean(error?.authExpired);
+    recordRouteError(data, setCookies, error);
     data.selectedFileError = error?.message || 'Unable to load file content.';
   }
+}
 
+async function loadSliceCommits(request, session, data, setCookies) {
+  if (!data.sliceCommitsSliceId) {
+    return;
+  }
+
+  try {
+    const { payload, setCookies: cookies } = await fetchJSON(
+      request,
+      session,
+      `/v1/slices/${encodeURIComponent(data.sliceCommitsSliceId)}/commits`,
+      new URLSearchParams({ limit: String(COMMIT_PAGE_SIZE) }),
+    );
+    setCookies.push(...cookies);
+    data.sliceCommits = normalizeCommitListResponse(payload);
+    data.sliceCommitsHasMore = data.sliceCommits.length === COMMIT_PAGE_SIZE;
+  } catch (error) {
+    recordRouteError(data, setCookies, error);
+    data.sliceCommits = null;
+    data.sliceCommitsError = error?.message || 'Unable to load commits.';
+  }
+}
+
+async function loadSliceChangesets(request, session, data, setCookies) {
+  if (!data.sliceChangesetsSliceId) {
+    return;
+  }
+
+  const params = new URLSearchParams({ limit: String(CHANGESET_PAGE_SIZE) });
+  const statusValue = changesetStatusQueryValue(data.sliceChangesetsStatusFilter);
+  if (statusValue) {
+    params.set('status_filter', statusValue);
+  } else {
+    params.set('include_all_statuses', 'true');
+  }
+
+  try {
+    const { payload, setCookies: cookies } = await fetchJSON(
+      request,
+      session,
+      `/v1/slices/${encodeURIComponent(data.sliceChangesetsSliceId)}/changesets`,
+      params,
+    );
+    setCookies.push(...cookies);
+    data.sliceChangesets = normalizeChangesetListResponse(payload);
+  } catch (error) {
+    recordRouteError(data, setCookies, error);
+    data.sliceChangesets = null;
+    data.sliceChangesetsError = error?.message || 'Unable to load changesets.';
+  }
+}
+
+async function loadCommitDiff(request, session, data, setCookies) {
+  if (!data.commitDiffHash) {
+    return;
+  }
+
+  try {
+    const { payload, setCookies: cookies } = await fetchJSON(
+      request,
+      session,
+      `/v1/commits/${encodeURIComponent(data.commitDiffHash)}/changes`,
+    );
+    setCookies.push(...cookies);
+    data.commitDiff = normalizeDiffResponse(payload);
+  } catch (error) {
+    recordRouteError(data, setCookies, error);
+    data.commitDiffError = error?.message || 'Unable to load commit changes.';
+  }
+}
+
+async function loadChangesetDiff(request, session, data, setCookies) {
+  if (!data.changesetId) {
+    return;
+  }
+
+  try {
+    const { payload, setCookies: cookies } = await fetchJSON(
+      request,
+      session,
+      `/v1/changesets/${encodeURIComponent(data.changesetId)}/snapshots`,
+      new URLSearchParams({ limit: '100' }),
+    );
+    setCookies.push(...cookies);
+    data.changesetSnapshots = normalizeChangesetSnapshotListResponse(payload);
+    data.changesetSnapshotVersion = data.changesetSnapshots[0]?.version || 0;
+  } catch (error) {
+    recordRouteError(data, setCookies, error);
+    data.changesetSnapshots = null;
+    data.changesetSnapshotsError = error?.message || 'Unable to load snapshot versions.';
+  }
+
+  try {
+    const params = new URLSearchParams();
+    if (data.changesetSnapshotVersion > 0) {
+      params.set('snapshot_version', String(data.changesetSnapshotVersion));
+    }
+    const { payload, setCookies: cookies } = await fetchJSON(
+      request,
+      session,
+      `/v1/changesets/${encodeURIComponent(data.changesetId)}/diff`,
+      params,
+    );
+    setCookies.push(...cookies);
+    data.changesetDiff = normalizeChangesetDiffResponse(payload);
+  } catch (error) {
+    recordRouteError(data, setCookies, error);
+    data.changesetDiffError = error?.message || 'Unable to load changeset diff.';
+  }
+}
+
+async function loadSettingsData(request, session, data, setCookies) {
+  const username = String(session?.user?.username || '').trim();
+  if (!username) {
+    return;
+  }
+
+  const settings = {
+    username,
+    bindings: [],
+    bindingsError: '',
+    authMethods: [],
+    authMethodsError: '',
+    authContext: null,
+    authContextError: '',
+    sessions: [],
+    sessionsError: '',
+    agentKeys: [],
+    agentKeysError: '',
+  };
+  data.settings = settings;
+
+  const loadSection = async (field, errorField, pathname, transform) => {
+    try {
+      const { payload, setCookies: cookies } = await fetchJSON(request, session, pathname);
+      setCookies.push(...cookies);
+      settings[field] = transform(payload);
+    } catch (error) {
+      recordRouteError(data, setCookies, error);
+      settings[errorField] = error?.message || 'Unable to load settings data.';
+    }
+  };
+
+  await Promise.all([
+    loadSection('bindings', 'bindingsError', '/v1/repos/bindings', (payload) => payload?.bindings || []),
+    loadSection('authMethods', 'authMethodsError', '/v1/auth/methods', (payload) => payload?.methods || []),
+    loadSection('authContext', 'authContextError', '/v1/auth/context', (payload) => payload),
+    loadSection('sessions', 'sessionsError', '/v1/auth/sessions', (payload) => payload?.sessions || []),
+    loadSection('agentKeys', 'agentKeysError', '/v1/auth/agent/keys', (payload) => payload?.keys || []),
+  ]);
+}
+
+export async function loadBrowserRouteData(request, session, routeInfo) {
+  const data = createRouteData(routeInfo);
+  const setCookies = [];
+  let authExpired = false;
+
+  if (routeNeedsSlices(routeInfo, session)) {
+    try {
+      await loadSlices(request, session, data, setCookies);
+    } catch (error) {
+      recordRouteError(data, setCookies, error);
+      data.slicesError = error?.message || 'Unable to load slices.';
+    }
+  }
+
+  const markAuthExpired = (error) => {
+    authExpired = authExpired || Boolean(error?.authExpired);
+  };
+
+  try {
+    await loadBrowserData(request, session, routeInfo, data, setCookies);
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  try {
+    await loadSliceCommits(request, session, data, setCookies);
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  try {
+    await loadSliceChangesets(request, session, data, setCookies);
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  try {
+    await loadCommitDiff(request, session, data, setCookies);
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  try {
+    await loadChangesetDiff(request, session, data, setCookies);
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  try {
+    if (routeInfo?.page === 'settings') {
+      await loadSettingsData(request, session, data, setCookies);
+    }
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  authExpired = authExpired || Boolean(data.authExpired);
+  delete data.authExpired;
   return { data, setCookies, authExpired };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, GitCommitHorizontal } from 'lucide-react';
 
 import { listSliceCommits } from '../utils/api.js';
@@ -24,12 +24,19 @@ export default function SliceCommitListPage({
   onOpenCode,
   onOpenChangesets,
   onOpenCommitDiff,
+  initialCommits,
+  initialCommitsError = '',
+  initialCommitsHasMore = false,
+  initialCommitsSliceId = '',
 }) {
-  const [commits, setCommits] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const initialMatchesSlice = initialCommitsSliceId === sliceId && Array.isArray(initialCommits);
+  const [commits, setCommits] = useState(() => (initialMatchesSlice ? initialCommits : []));
+  const [loadedSliceId, setLoadedSliceId] = useState(() => (initialMatchesSlice ? sliceId : ''));
+  const [isLoading, setIsLoading] = useState(() => !initialMatchesSlice && !initialCommitsError);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [error, setError] = useState('');
-  const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState(() => (initialMatchesSlice ? initialCommitsError : ''));
+  const [hasMore, setHasMore] = useState(() => (initialMatchesSlice ? initialCommitsHasMore : false));
+  const clientRefreshSliceRef = useRef('');
 
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
@@ -37,17 +44,32 @@ export default function SliceCommitListPage({
   const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
 
   useEffect(() => {
+    if (initialCommitsSliceId === sliceId && Array.isArray(initialCommits) && loadedSliceId !== sliceId) {
+      setCommits(initialCommits);
+      setError(initialCommitsError || '');
+      setHasMore(Boolean(initialCommitsHasMore));
+      setIsLoading(false);
+      setLoadedSliceId(sliceId);
+      return undefined;
+    }
     if (!sliceId) {
       setCommits([]);
       setIsLoading(false);
       setError('Choose a slice to view commits.');
       setHasMore(false);
+      setLoadedSliceId('');
       return undefined;
     }
+    if (loadedSliceId === sliceId && clientRefreshSliceRef.current === sliceId) {
+      return undefined;
+    }
+    clientRefreshSliceRef.current = sliceId;
 
     let active = true;
-    setIsLoading(true);
-    setError('');
+    if (loadedSliceId !== sliceId) {
+      setIsLoading(true);
+      setError('');
+    }
     setHasMore(false);
 
     listSliceCommits(sliceId, { limit: COMMIT_PAGE_SIZE })
@@ -55,12 +77,14 @@ export default function SliceCommitListPage({
         if (!active) return;
         setCommits(nextCommits);
         setHasMore(nextCommits.length === COMMIT_PAGE_SIZE);
+        setLoadedSliceId(sliceId);
       })
       .catch((err) => {
         if (!active) return;
         setCommits([]);
         setError(err?.message || 'Unable to load commits.');
         setHasMore(false);
+        setLoadedSliceId(sliceId);
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -69,7 +93,14 @@ export default function SliceCommitListPage({
     return () => {
       active = false;
     };
-  }, [sliceId]);
+  }, [
+    initialCommits,
+    initialCommitsError,
+    initialCommitsHasMore,
+    initialCommitsSliceId,
+    loadedSliceId,
+    sliceId,
+  ]);
 
   const loadMore = async () => {
     if (!sliceId || commits.length === 0 || isLoadingMore) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
@@ -33,30 +33,39 @@ function formatAuthMethodType(value) {
   }
 }
 
-export default function SettingsPage({ username, authSessionSource, onOpenProfile, onLogout }) {
-  const [bindings, setBindings] = useState([]);
+export default function SettingsPage({
+  username,
+  authSessionSource,
+  onOpenProfile,
+  onLogout,
+  initialSettingsData = null,
+}) {
+  const hasInitialSettings = initialSettingsData?.username === username;
+  const [loadedSettingsUsername, setLoadedSettingsUsername] = useState(() => (hasInitialSettings ? username : ''));
+  const [bindings, setBindings] = useState(() => (hasInitialSettings ? initialSettingsData.bindings || [] : []));
   const [bindingsLoading, setBindingsLoading] = useState(false);
-  const [bindingsError, setBindingsError] = useState('');
-  const [authMethods, setAuthMethods] = useState([]);
+  const [bindingsError, setBindingsError] = useState(() => (hasInitialSettings ? initialSettingsData.bindingsError || '' : ''));
+  const [authMethods, setAuthMethods] = useState(() => (hasInitialSettings ? initialSettingsData.authMethods || [] : []));
   const [authMethodsLoading, setAuthMethodsLoading] = useState(false);
-  const [authMethodsError, setAuthMethodsError] = useState('');
+  const [authMethodsError, setAuthMethodsError] = useState(() => (hasInitialSettings ? initialSettingsData.authMethodsError || '' : ''));
   const [linkingWorkOS, setLinkingWorkOS] = useState(false);
   const [removingMethodId, setRemovingMethodId] = useState('');
-  const [authContext, setAuthContext] = useState(null);
+  const [authContext, setAuthContext] = useState(() => (hasInitialSettings ? initialSettingsData.authContext || null : null));
   const [authContextLoading, setAuthContextLoading] = useState(false);
-  const [authContextError, setAuthContextError] = useState('');
-  const [sessions, setSessions] = useState([]);
+  const [authContextError, setAuthContextError] = useState(() => (hasInitialSettings ? initialSettingsData.authContextError || '' : ''));
+  const [sessions, setSessions] = useState(() => (hasInitialSettings ? initialSettingsData.sessions || [] : []));
   const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [sessionsError, setSessionsError] = useState('');
+  const [sessionsError, setSessionsError] = useState(() => (hasInitialSettings ? initialSettingsData.sessionsError || '' : ''));
   const [revokingSessionId, setRevokingSessionId] = useState('');
-  const [agentKeys, setAgentKeys] = useState([]);
+  const [agentKeys, setAgentKeys] = useState(() => (hasInitialSettings ? initialSettingsData.agentKeys || [] : []));
   const [agentKeysLoading, setAgentKeysLoading] = useState(false);
-  const [agentKeysError, setAgentKeysError] = useState('');
+  const [agentKeysError, setAgentKeysError] = useState(() => (hasInitialSettings ? initialSettingsData.agentKeysError || '' : ''));
   const [agentKeyName, setAgentKeyName] = useState('');
   const [agentKeyPublicKey, setAgentKeyPublicKey] = useState('');
   const [agentKeyFormError, setAgentKeyFormError] = useState('');
   const [agentKeySaving, setAgentKeySaving] = useState(false);
   const [revokingKeyId, setRevokingKeyId] = useState('');
+  const clientRefreshUsernameRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
@@ -76,31 +85,67 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
       setAgentKeys([]);
       setAgentKeysLoading(false);
       setAgentKeysError('');
+      setLoadedSettingsUsername('');
       return () => {
         cancelled = true;
       };
     }
 
-    setBindingsLoading(true);
-    setBindingsError('');
-    setAuthMethodsLoading(true);
-    setAuthMethodsError('');
-    setAuthContextLoading(true);
-    setAuthContextError('');
-    setSessionsLoading(true);
-    setSessionsError('');
-    setAgentKeysLoading(true);
-    setAgentKeysError('');
+    if (initialSettingsData?.username === username && loadedSettingsUsername !== username) {
+      setBindings(initialSettingsData.bindings || []);
+      setBindingsLoading(false);
+      setBindingsError(initialSettingsData.bindingsError || '');
+      setAuthMethods(initialSettingsData.authMethods || []);
+      setAuthMethodsLoading(false);
+      setAuthMethodsError(initialSettingsData.authMethodsError || '');
+      setAuthContext(initialSettingsData.authContext || null);
+      setAuthContextLoading(false);
+      setAuthContextError(initialSettingsData.authContextError || '');
+      setSessions(initialSettingsData.sessions || []);
+      setSessionsLoading(false);
+      setSessionsError(initialSettingsData.sessionsError || '');
+      setAgentKeys(initialSettingsData.agentKeys || []);
+      setAgentKeysLoading(false);
+      setAgentKeysError(initialSettingsData.agentKeysError || '');
+      setLoadedSettingsUsername(username);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const hasSeededSettings = loadedSettingsUsername === username;
+    if (hasSeededSettings) {
+      if (clientRefreshUsernameRef.current === username) {
+        return () => {
+          cancelled = true;
+        };
+      }
+      clientRefreshUsernameRef.current = username;
+    } else {
+      clientRefreshUsernameRef.current = username;
+      setBindingsLoading(true);
+      setBindingsError('');
+      setAuthMethodsLoading(true);
+      setAuthMethodsError('');
+      setAuthContextLoading(true);
+      setAuthContextError('');
+      setSessionsLoading(true);
+      setSessionsError('');
+      setAgentKeysLoading(true);
+      setAgentKeysError('');
+    }
     fetchRepoBindings()
       .then((nextBindings) => {
         if (!cancelled) {
           setBindings(nextBindings);
+          setLoadedSettingsUsername(username);
         }
       })
       .catch((err) => {
         if (!cancelled) {
           setBindings([]);
           setBindingsError(err?.message || 'Unable to load repo bindings.');
+          setLoadedSettingsUsername(username);
         }
       })
       .finally(() => {
@@ -180,7 +225,7 @@ export default function SettingsPage({ username, authSessionSource, onOpenProfil
     return () => {
       cancelled = true;
     };
-  }, [username]);
+  }, [initialSettingsData, loadedSettingsUsername, username]);
 
   async function refreshAgentKeys() {
     setAgentKeysLoading(true);

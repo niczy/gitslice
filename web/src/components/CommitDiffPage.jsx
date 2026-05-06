@@ -61,10 +61,19 @@ const LAZY_PATCH_SCROLL_TRIGGER = 24;
 // Commit Diff Page Component
 // ---------------------------------------------------------------------------
 
-export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff }) {
-  const [diffData, setDiffData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+export default function CommitDiffPage({
+  commitHash,
+  onBack,
+  onOpenChangesetDiff,
+  initialCommitHash = '',
+  initialDiffData = null,
+  initialDiffError = '',
+}) {
+  const hasInitialDiff = initialCommitHash === commitHash && Boolean(initialDiffData);
+  const [diffData, setDiffData] = useState(() => (hasInitialDiff ? initialDiffData : null));
+  const [loadedCommitHash, setLoadedCommitHash] = useState(() => (hasInitialDiff ? commitHash : ''));
+  const [isLoading, setIsLoading] = useState(() => !hasInitialDiff && !initialDiffError);
+  const [error, setError] = useState(() => (initialCommitHash === commitHash ? initialDiffError : ''));
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
   const [fallbackContentByFile, setFallbackContentByFile] = useState({});
@@ -78,17 +87,37 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
+  const clientRefreshCommitRef = useRef('');
 
   const encodePath = useCallback((value) => value.split('/').map(encodeURIComponent).join('/'), []);
 
   useEffect(() => {
+    if (initialCommitHash === commitHash && initialDiffData && loadedCommitHash !== commitHash) {
+      setDiffData(initialDiffData);
+      setFallbackContentByFile({});
+      setBinaryVisibleByFile({});
+      setPatchByFile({});
+      setHasLoadedPatches(false);
+      setPatchLoadError('');
+      setError('');
+      setIsLoading(false);
+      setLoadedCommitHash(commitHash);
+      return undefined;
+    }
     if (!commitHash) return;
+    if (loadedCommitHash === commitHash && clientRefreshCommitRef.current === commitHash) {
+      return undefined;
+    }
+    const hasSeededDiff = loadedCommitHash === commitHash && Boolean(diffData);
+    clientRefreshCommitRef.current = commitHash;
     let active = true;
     const controller = new AbortController();
 
     const loadDiff = async () => {
-      setIsLoading(true);
-      setError('');
+      if (!hasSeededDiff) {
+        setIsLoading(true);
+        setError('');
+      }
       try {
         const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
           signal: controller.signal,
@@ -102,10 +131,12 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
           setPatchByFile({});
           setHasLoadedPatches(false);
           setPatchLoadError('');
+          setLoadedCommitHash(commitHash);
         }
       } catch (err) {
         if (active && err?.name !== 'AbortError') {
           setError('Unable to load commit changes.');
+          setLoadedCommitHash(commitHash);
         }
       } finally {
         if (active) setIsLoading(false);
@@ -114,7 +145,7 @@ export default function CommitDiffPage({ commitHash, onBack, onOpenChangesetDiff
 
     loadDiff();
     return () => { active = false; controller.abort(); };
-  }, [commitHash]);
+  }, [commitHash, initialCommitHash, initialDiffData, loadedCommitHash]);
 
   const loadPatches = useCallback(async () => {
     if (!commitHash || isPatchLoading || hasLoadedPatches) {
