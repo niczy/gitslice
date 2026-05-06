@@ -285,7 +285,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     await openGitsliceRepositoryRoot(page);
 
     await page.route('**/v1/slices/root_slice/files/**/README.md**', async (route) => {
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(700);
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -299,6 +299,8 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
+    const loadingState = page.getByTestId('file-loading-state');
+    const loadingVisible = loadingState.waitFor({ state: 'visible' });
     await page.locator('.folder-preview-list').getByRole('button', { name: /^README\.md\b/i }).click();
 
     const fileSizeStatus = page.locator('.code-header-actions .file-size-status');
@@ -306,11 +308,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     await expect(fileSizeStatus).not.toHaveText('0 B');
     const loadingSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
 
-    await page.waitForTimeout(100);
-    await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
-
-    const loadingState = page.getByTestId('file-loading-state');
-    await expect(loadingState).toBeVisible();
+    await loadingVisible;
     const loadingBox = await loadingState.evaluate((element) => {
       const rect = element.getBoundingClientRect();
       return { height: rect.height, width: rect.width };
@@ -319,12 +317,13 @@ test.describe('Repo Browser File Preview Layout', () => {
     expect(loadingBox.width).toBeLessThan(160);
 
     await expect(page.locator('.file-preview')).toContainText('Subtle loading fixture');
+    await expect(loadingState).toHaveCount(0);
     await expect(fileSizeStatus).toHaveText('1.2 KB');
     const loadedSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
     expect(Math.abs(loadedSizeWidth - loadingSizeWidth)).toBeLessThan(1);
 
     await page.route('**/v1/slices/root_slice/files/**/go.mod**', async (route) => {
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(700);
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -348,7 +347,10 @@ test.describe('Repo Browser File Preview Layout', () => {
     const previewTextDuringLoad = await page.locator('.file-preview').textContent();
     expect(previewTextDuringLoad.trim().length).toBeGreaterThan(0);
     expect(previewTextDuringLoad).not.toContain('File is empty.');
+    await page.waitForTimeout(250);
+    await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
     await expect(page.locator('.file-preview')).toContainText('module delayed-preview-fixture');
+    await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
   });
 
   test('keeps long mobile file breadcrumbs from overlapping', async ({ page }) => {
