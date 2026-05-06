@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Edit3,
+  ExternalLink,
   FileText,
   Folder,
   FolderOpen,
@@ -664,6 +665,16 @@ export default function RepoBrowser({
     return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
   };
 
+  const buildRawFileUrl = (filePath) => {
+    const encodedPath = filePath ? encodePath(filePath) : '';
+    const params = new URLSearchParams();
+    if (sliceHash) {
+      params.set('slice_version.slice_hash', sliceHash);
+    }
+    const queryString = params.toString();
+    return `/raw/slices/${encodeURIComponent(sliceId)}/${encodedPath}${queryString ? `?${queryString}` : ''}`;
+  };
+
   // Build URL for file history endpoint based on mode
   const buildHistoryUrl = (filePath) => {
     const encodedPath = filePath ? encodePath(filePath) : '';
@@ -926,6 +937,21 @@ export default function RepoBrowser({
           {showHistory ? <FileText size={15} aria-hidden="true" /> : <History size={15} aria-hidden="true" />}
           {showHistory ? 'Content' : 'History'}
         </Button>
+        {!showHistory && !isEditingFile && (
+          <Button
+            type="button"
+            variant="secondary"
+            className="history-toggle"
+            onClick={() => {
+              window.open(buildRawFileUrl(selectedFile), '_blank', 'noopener,noreferrer');
+              onActionDone?.();
+            }}
+            title="Open raw file"
+          >
+            <ExternalLink size={15} aria-hidden="true" />
+            Raw
+          </Button>
+        )}
       </>
     );
   };
