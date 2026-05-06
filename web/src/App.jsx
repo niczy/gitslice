@@ -185,7 +185,7 @@ function App({
       return;
     }
     setCurrentSliceId((prev) => {
-      if (prev && slices.some((slice) => slice.slice_id === prev) && hasExplicitSliceSelectionRef.current) {
+      if (prev && hasExplicitSliceSelectionRef.current) {
         return prev;
       }
       return getPreferredSliceId(slices, username);

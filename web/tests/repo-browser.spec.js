@@ -105,6 +105,16 @@ test.describe('Slice-specific Browsing (real server)', () => {
     // Should see the "o" directory (genesis files)
     await expect(page.locator('.folder-preview-list').getByRole('button', { name: /^o\b/i })).toBeVisible();
   });
+
+  test('shows not found for signed-out private slice direct URLs', async ({ page }) => {
+    const response = await page.goto('/browser/sl-private-not-visible?file=secret.txt');
+
+    expect(response?.status()).toBe(404);
+    await expect(page.getByTestId('not-found-page')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Page not found/i })).toBeVisible();
+    await expect(page.getByTestId('slice-detail-nav')).toHaveCount(0);
+    await expect(page.locator('.folder-preview-list')).toHaveCount(0);
+  });
 });
 
 test.describe('Repo Browser File Preview Layout', () => {
