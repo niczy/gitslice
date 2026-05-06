@@ -2948,30 +2948,6 @@ body {
   text-align: center;
 }
 
-.file-loading-state {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 6;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0;
-  min-height: 0;
-  width: 22px;
-  height: 22px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 82%, transparent);
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 500;
-  pointer-events: none;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
-}
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -8653,7 +8629,6 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .folder-preview,
 .app-shell--browser .media-preview-wrapper,
 .app-shell--browser .media-preview-pdf,
-.app-shell--browser .file-loading-state,
 .app-shell--browser .slice-settings,
 .app-shell--browser .history-panel {
   min-height: 100%;
@@ -8674,30 +8649,6 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--np-text);
   font-size: 13px;
   line-height: 20px;
-}
-
-.app-shell--browser .file-loading-state {
-  top: 12px;
-  left: 12px;
-  min-height: 0;
-  width: 22px;
-  height: 22px;
-  border: 0;
-  line-height: 1.2;
-  background: color-mix(in srgb, var(--np-surface) 88%, transparent);
-  color: var(--np-muted);
-  font-size: 12px;
-}
-
-.file-loading-state .file-loading-spinner {
-  width: 12px;
-  height: 12px;
-  border-width: 1.5px;
-}
-
-.app-shell--browser .file-loading-state .file-loading-spinner {
-  border-color: color-mix(in srgb, var(--np-primary) 16%, transparent);
-  border-top-color: var(--np-primary);
 }
 
 .app-shell--browser .folder-preview {

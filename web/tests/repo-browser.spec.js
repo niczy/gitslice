@@ -280,7 +280,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     expect(previewLayout.previewWidth).toBeLessThanOrEqual(previewLayout.contentWidth + 1);
   });
 
-  test('shows file loading as a delayed compact status', async ({ page }) => {
+  test('uses the tree loading indicator while files load', async ({ page }) => {
     await openRootRepository(page);
     await openGitsliceRepositoryRoot(page);
 
@@ -299,8 +299,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    const loadingState = page.getByTestId('file-loading-state');
-    const loadingVisible = loadingState.waitFor({ state: 'visible' });
+    const treeLoading = page.getByTestId('tree-loading-indicator');
     await page.locator('.folder-preview-list').getByRole('button', { name: /^README\.md\b/i }).click();
 
     const fileSizeStatus = page.locator('.code-header-actions .file-size-status');
@@ -308,16 +307,12 @@ test.describe('Repo Browser File Preview Layout', () => {
     await expect(fileSizeStatus).not.toHaveText('0 B');
     const loadingSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
 
-    await loadingVisible;
-    const loadingBox = await loadingState.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return { height: rect.height, width: rect.width };
-    });
-    expect(loadingBox.height).toBeLessThan(40);
-    expect(loadingBox.width).toBeLessThan(160);
+    await expect(treeLoading).toHaveClass(/visible/);
+    await expect(treeLoading).toHaveAttribute('aria-label', 'Loading repository content');
+    await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
 
     await expect(page.locator('.file-preview')).toContainText('Subtle loading fixture');
-    await expect(loadingState).toHaveCount(0);
+    await expect(treeLoading).not.toHaveClass(/visible/);
     await expect(fileSizeStatus).toHaveText('1.2 KB');
     const loadedSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
     expect(Math.abs(loadedSizeWidth - loadingSizeWidth)).toBeLessThan(1);
@@ -348,9 +343,11 @@ test.describe('Repo Browser File Preview Layout', () => {
     expect(previewTextDuringLoad.trim().length).toBeGreaterThan(0);
     expect(previewTextDuringLoad).not.toContain('File is empty.');
     await page.waitForTimeout(250);
+    await expect(treeLoading).toHaveClass(/visible/);
     await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
     await expect(page.locator('.file-preview')).toContainText('module delayed-preview-fixture');
     await expect(page.getByTestId('file-loading-state')).toHaveCount(0);
+    await expect(treeLoading).not.toHaveClass(/visible/);
   });
 
   test('keeps long mobile file breadcrumbs from overlapping', async ({ page }) => {

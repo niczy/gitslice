@@ -45,7 +45,6 @@ const SIDEBAR_WIDTH_MIN = 220;
 const SIDEBAR_WIDTH_MAX = 560;
 const SIDEBAR_WIDTH_DEFAULT = 260;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.browser.sidebarWidth';
-const FILE_LOADING_INDICATOR_DELAY_MS = 180;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function clampSidebarWidth(value) {
@@ -197,9 +196,6 @@ export default function RepoBrowser({
   const [previewFilePath, setPreviewFilePath] = useState(() => (
     initialSelectedFilePayload?.content ? initialSelectedFilePath : ''
   ));
-  const [loadedPreviewFilePath, setLoadedPreviewFilePath] = useState(() => (
-    initialSelectedFilePayload?.content ? initialSelectedFilePath : ''
-  ));
   const [previewFileContent, setPreviewFileContent] = useState(() => (
     initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
   ));
@@ -219,7 +215,6 @@ export default function RepoBrowser({
   const [loadingFilePath, setLoadingFilePath] = useState(() => (
     initialSelectedFilePath && !hasInitialSelectedFilePayload ? initialSelectedFilePath : ''
   ));
-  const [showFileLoadingIndicator, setShowFileLoadingIndicator] = useState(false);
   const [error, setError] = useState(() => (
     initialDataMatchesRawSlice ? initialBrowserData?.rootEntriesError || '' : ''
   ));
@@ -255,10 +250,8 @@ export default function RepoBrowser({
   const previewPath = previewFilePath || selectedFile || '';
   const previewMeta = useMemo(() => getPreviewMeta(previewPath, previewEncodedFileContent), [previewEncodedFileContent, previewPath]);
   const hasPreviewContent = Boolean(previewFilePath);
-  const hasCurrentPreviewContent = Boolean(selectedFile && loadedPreviewFilePath === selectedFile);
   const hasLoadedRootEntries = Object.prototype.hasOwnProperty.call(treeEntries, '');
   const isSelectedFileLoading = Boolean(selectedFile && loadingFilePath === selectedFile && !showHistory);
-  const shouldShowFileLoadingIndicator = isSelectedFileLoading && !hasCurrentPreviewContent && showFileLoadingIndicator;
   const displayedFileSize = useMemo(() => {
     if (!selectedFile) {
       return null;
@@ -269,22 +262,6 @@ export default function RepoBrowser({
     return isSelectedFileLoading ? null : fileContent.length;
   }, [fileContent.length, isSelectedFileLoading, selectedFile, selectedFileSize]);
   const visibleEntryError = selectedFile ? '' : error;
-
-  useEffect(() => {
-    if (!isSelectedFileLoading || hasCurrentPreviewContent) {
-      setShowFileLoadingIndicator(false);
-      return undefined;
-    }
-
-    setShowFileLoadingIndicator(false);
-    const timer = window.setTimeout(() => {
-      setShowFileLoadingIndicator(true);
-    }, FILE_LOADING_INDICATOR_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [hasCurrentPreviewContent, isSelectedFileLoading, loadingFilePath]);
 
   useEffect(() => {
     selectedFileRef.current = selectedFile;
@@ -380,7 +357,6 @@ export default function RepoBrowser({
     setFileContent('');
     setEncodedFileContent('');
     setPreviewFilePath('');
-    setLoadedPreviewFilePath('');
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
@@ -540,7 +516,6 @@ export default function RepoBrowser({
       setEncodedFileContent(nextFilePayload.content);
       setFileContent(decodedContent);
       setPreviewFilePath(nextSelectedFile);
-      setLoadedPreviewFilePath(nextSelectedFile);
       setPreviewFileContent(decodedContent);
       setPreviewEncodedFileContent(nextFilePayload.content);
       setSelectedFileSize(getFilePayloadSize(nextFilePayload, decodedContent));
@@ -558,7 +533,6 @@ export default function RepoBrowser({
       setFileContent('');
       setEncodedFileContent('');
       setPreviewFilePath('');
-      setLoadedPreviewFilePath('');
       setPreviewFileContent('');
       setPreviewEncodedFileContent('');
       setSelectedFileSize(getTreeFileSize(
@@ -577,7 +551,6 @@ export default function RepoBrowser({
     setFileContent('');
     setEncodedFileContent('');
     setPreviewFilePath('');
-    setLoadedPreviewFilePath('');
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
@@ -722,7 +695,6 @@ export default function RepoBrowser({
     setFileContent('');
     setEncodedFileContent('');
     setPreviewFilePath('');
-    setLoadedPreviewFilePath('');
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
@@ -942,7 +914,6 @@ export default function RepoBrowser({
         setFileContent(fileDrafts[normalizedPath]);
         setEncodedFileContent('');
         setPreviewFilePath(normalizedPath);
-        setLoadedPreviewFilePath(normalizedPath);
         setPreviewFileContent(fileDrafts[normalizedPath]);
         setPreviewEncodedFileContent('');
         setSelectedFileSize(fileDrafts[normalizedPath].length);
@@ -963,7 +934,6 @@ export default function RepoBrowser({
       const decodedContent = decodeBase64(content);
       setFileContent(decodedContent);
       setPreviewFilePath(normalizedPath);
-      setLoadedPreviewFilePath(normalizedPath);
       setPreviewFileContent(decodedContent);
       setPreviewEncodedFileContent(content);
       setSelectedFileSize(getFilePayloadSize(filePayload?.file, decodedContent));
@@ -1172,7 +1142,6 @@ export default function RepoBrowser({
               const decodedContent = decodeBase64(content);
               setFileContent(decodedContent);
               setPreviewFilePath(pendingFile);
-              setLoadedPreviewFilePath(pendingFile);
               setPreviewFileContent(decodedContent);
               setPreviewEncodedFileContent(content);
               setSelectedFileSize(getFilePayloadSize(fileData?.file, decodedContent));
@@ -1253,7 +1222,6 @@ export default function RepoBrowser({
         setEncodedFileContent(content);
         setFileContent(decodedContent);
         setPreviewFilePath(selectedFile);
-        setLoadedPreviewFilePath(selectedFile);
         setPreviewFileContent(decodedContent);
         setPreviewEncodedFileContent(content);
         setSelectedFileSize(getFilePayloadSize(payload?.file, decodedContent));
@@ -1405,7 +1373,6 @@ export default function RepoBrowser({
     setFileContent(draftContent);
     setEncodedFileContent('');
     setPreviewFilePath(selectedFile);
-    setLoadedPreviewFilePath(selectedFile);
     setPreviewFileContent(draftContent);
     setPreviewEncodedFileContent('');
     setSelectedFileSize(draftContent.length);
@@ -1519,7 +1486,8 @@ export default function RepoBrowser({
                       className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
                       role="status"
                       aria-live="polite"
-                      aria-label={isLoading ? 'Loading folders' : undefined}
+                      aria-label={isLoading ? 'Loading repository content' : undefined}
+                      data-testid="tree-loading-indicator"
                     >
                       <span className="tree-loading-dot" aria-hidden="true" />
                     </span>
@@ -1690,12 +1658,6 @@ export default function RepoBrowser({
                       })}
                     </ul>
                   )}
-                </div>
-              )}
-              {selectedFile && !showHistory && shouldShowFileLoadingIndicator && (
-                <div className="file-loading-state" role="status" aria-live="polite" aria-label="Loading file" data-testid="file-loading-state">
-                  <span className="file-loading-spinner" aria-hidden="true" />
-                  <span className="visually-hidden">Loading file</span>
                 </div>
               )}
               {selectedFile && !showHistory && !isSelectedFileLoading && fileError && <div className="panel-error">{fileError}</div>}
