@@ -1,5 +1,12 @@
 import { escapeHtml } from './highlight.js';
 
+function getUrlBase() {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+  return 'https://gitslice.io';
+}
+
 function sanitizeHref(rawUrl) {
   const trimmed = (rawUrl || '').trim();
   if (!trimmed) {
@@ -11,7 +18,7 @@ function sanitizeHref(rawUrl) {
   }
 
   try {
-    const parsed = new URL(trimmed, window.location.origin);
+    const parsed = new URL(trimmed, getUrlBase());
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
       return parsed.toString();
     }
@@ -20,6 +27,41 @@ function sanitizeHref(rawUrl) {
   }
 
   return '#';
+}
+
+function stripInlineMarkdown(text) {
+  return String(text || '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+}
+
+export function slugifyMarkdownHeading(text) {
+  return stripInlineMarkdown(text)
+    .toLowerCase()
+    .replace(/&[a-z0-9#]+;/gi, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'section';
+}
+
+export function extractMarkdownHeadings(source) {
+  const counts = new Map();
+  return String(source || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.match(/^(#{1,6})\s+(.+)/))
+    .filter(Boolean)
+    .map((match) => {
+      const baseId = slugifyMarkdownHeading(match[2]);
+      const count = counts.get(baseId) || 0;
+      counts.set(baseId, count + 1);
+      return {
+        id: count ? `${baseId}-${count + 1}` : baseId,
+        level: match[1].length,
+        text: stripInlineMarkdown(match[2]).trim(),
+      };
+    });
 }
 
 function renderInlineMarkdown(text) {
@@ -35,7 +77,7 @@ function renderInlineMarkdown(text) {
     });
 }
 
-export function renderMarkdownHtml(source) {
+export function renderMarkdownHtml(source, options = {}) {
   if (!source) {
     return '';
   }
@@ -45,6 +87,7 @@ export function renderMarkdownHtml(source) {
   let inCodeBlock = false;
   let inList = false;
   let listType = '';
+  const headingCounts = new Map();
 
   const closeList = () => {
     if (inList) {
@@ -82,7 +125,16 @@ export function renderMarkdownHtml(source) {
     if (headingMatch) {
       closeList();
       const level = headingMatch[1].length;
-      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+      const headingText = stripInlineMarkdown(headingMatch[2]).trim();
+      const baseId = slugifyMarkdownHeading(headingMatch[2]);
+      const count = headingCounts.get(baseId) || 0;
+      headingCounts.set(baseId, count + 1);
+      const id = count ? `${baseId}-${count + 1}` : baseId;
+      const content = renderInlineMarkdown(headingMatch[2]);
+      const permalink = options.headingLinks
+        ? `<a class="markdown-heading-link" href="#${escapeHtml(id)}" aria-label="Link to ${escapeHtml(headingText)}">#</a>`
+        : '';
+      html.push(`<h${level} id="${escapeHtml(id)}">${permalink}${content}</h${level}>`);
       continue;
     }
 

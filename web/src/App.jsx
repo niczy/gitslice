@@ -25,6 +25,7 @@ import CommitDiffPage from './components/CommitDiffPage.jsx';
 import ChangesetDiffPage from './components/ChangesetDiffPage.jsx';
 import RouteAccessState from './components/RouteAccessState.jsx';
 import { trackRouteEvent } from './utils/analytics.js';
+import { docsMarkdown } from './docs.js';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
@@ -540,7 +541,7 @@ function App({
             onOpenDocs={() => navigate('docs')}
           />
         )}
-        {activePage === 'docs' && <DocsPage onBrowseRepo={openBrowserHome} />}
+        {activePage === 'docs' && <DocsPage markdown={docsMarkdown} onBrowseRepo={openBrowserHome} />}
         {activePage === 'login' && (
           <LoginPage
             authProvider={initialAuthConfig.authProvider}

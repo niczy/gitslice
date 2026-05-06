@@ -28,8 +28,9 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await page.goto('/docs');
 
   await expect(page.getByRole('heading', { level: 1, name: /one versioned filesystem, two work surfaces\./i })).toBeVisible();
-  await expect(page.getByRole('navigation', { name: /documentation navigation/i })).toBeVisible();
-  await expect(page.getByRole('link', { name: /mental model/i })).toBeVisible();
+  const docsNav = page.getByRole('navigation', { name: /documentation navigation/i });
+  await expect(docsNav).toBeVisible();
+  await expect(docsNav.getByRole('link', { name: /mental model/i })).toBeVisible();
   await expect(page.getByRole('heading', { name: /understand the system before choosing a workflow/i })).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /printf "hotfix shipped remotely\\n" \| gs fs write \/\$USER\/app\/NOTICE\.txt/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
@@ -45,6 +46,17 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.getByText(/uploads and checkouts exchange manifests first and then transfer only missing blocks/i)).toBeVisible();
   await expect(page.getByText(/Clerk and WorkOS are both supported/i)).toBeVisible();
   await expect(page.getByText(/Slice detail URLs track the selected directory or file/i)).toBeVisible();
+  await expect(page.locator('#quick-start .markdown-heading-link')).toHaveAttribute('href', '#quick-start');
+  await expect(page.locator('#auth .markdown-heading-link')).toHaveAttribute('href', '#auth');
+});
+
+test('serves docs.md as the docs source', async ({ page }) => {
+  const response = await page.goto('/docs.md');
+
+  expect(response?.status()).toBe(200);
+  expect(response?.headers()['content-type']).toContain('text/markdown');
+  await expect(page.locator('body')).toContainText('# One versioned filesystem, two work surfaces.');
+  await expect(page.locator('body')).toContainText('The docs page is rendered from `/docs.md`');
 });
 
 test('docs page keeps readable contrast and avoids mobile overflow', async ({ page }) => {
@@ -64,10 +76,10 @@ test('docs page keeps readable contrast and avoids mobile overflow', async ({ pa
     };
 
     return [
-      collect('.docs-card p', '.docs-card'),
-      collect('.docs-code-card-head p', '.docs-code-card'),
-      collect('.docs-command-card p', '.docs-command-card'),
-      collect('.docs-page .code-block code', '.docs-page .code-block'),
+      collect('.docs-hero-copy .lede', 'body'),
+      collect('.docs-nav-link', '.docs-nav-card'),
+      collect('.docs-markdown p', 'body'),
+      collect('.docs-markdown pre code', '.docs-markdown pre'),
     ];
   });
 
