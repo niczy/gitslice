@@ -1665,8 +1665,6 @@ export default function RepoBrowser({
               <SliceSettings
                 sliceId={sliceId}
                 sliceName={currentSliceLabel}
-                slice={currentSlice}
-                publicApiBaseUrl={publicApiBaseUrl}
               />
             </div>
           </div>

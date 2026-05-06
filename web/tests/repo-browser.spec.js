@@ -800,23 +800,12 @@ test.describe('Slice Activity Pages', () => {
 });
 
 test.describe('Repo Browser Settings', () => {
-  test('manages slice visibility with public links', async ({ page }) => {
+  test('manages slice visibility without link panels', async ({ page }) => {
     const username = `webvisibility${Date.now()}`;
     const sliceId = `home.${username}`;
+    const sliceName = `visibility-${username}`;
     const sliceSetBodies = [];
     let sliceVisibility = 1;
-
-    await page.addInitScript(() => {
-      window.__copiedTexts = [];
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: {
-          writeText: async (text) => {
-            window.__copiedTexts.push(text);
-          },
-        },
-      });
-    });
 
     await page.route('**/v1/slices?limit=200', async (route) => {
       await route.fulfill({
@@ -826,7 +815,7 @@ test.describe('Repo Browser Settings', () => {
           slices: [
             {
               slice_id: sliceId,
-              name: sliceId,
+              name: sliceName,
               description: 'Visibility test slice',
               files: ['docs/guide.md'],
               owners: [username],
@@ -895,10 +884,15 @@ test.describe('Repo Browser Settings', () => {
     await expect(page).toHaveURL(/\/browser(\?.*)?$/);
     await page.getByTestId('slice-home-row').first().click();
     await expect(page).toHaveURL(new RegExp(`/browser/${sliceId.replace('.', '\\.')}`));
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(sliceName);
+    await expect(page.getByTestId('slice-detail-nav')).not.toContainText(sliceId);
 
     await page.getByTestId('repo-view-settings').click();
     await expect(page.getByTestId('slice-settings-panel')).toBeVisible();
     await expect(page.getByTestId('slice-visibility-status')).toContainText('Private');
+    await expect(page.getByText('Git endpoint', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Public slice URL', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Raw file URL pattern', { exact: true })).toHaveCount(0);
 
     await page.getByTestId('slice-visibility-propagation').selectOption('public');
     await page.getByTestId('slice-visibility-set-public').click();
@@ -909,16 +903,5 @@ test.describe('Repo Browser Settings', () => {
         pathPropagationMode: 2,
       },
     ]);
-
-    const origin = new URL(page.url()).origin;
-    const sliceUrl = `${origin}/v1/public/entries?slice_id=${sliceId}`;
-
-    await expect(page.getByTestId('slice-visibility-url')).toHaveValue(sliceUrl);
-
-    await page.getByTestId('slice-visibility-copy-url').click();
-
-    await expect(page.getByTestId('slice-visibility-copy-url')).toContainText('Copy public URL');
-    const copiedTexts = await page.evaluate(() => window.__copiedTexts);
-    expect(copiedTexts).toEqual([sliceUrl]);
   });
 });

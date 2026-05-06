@@ -99,9 +99,6 @@ export default function SliceDetailNav({
           <span className="slice-detail-nav-name" title={sliceLabel || sliceId}>
             {sliceLabel || sliceId || 'Slice'}
           </span>
-          <span className="slice-detail-nav-id" title={sliceId}>
-            {sliceId || 'No slice selected'}
-          </span>
         </span>
         <div className="slice-detail-get-code" ref={getCodeRef}>
           <Button
