@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, FileCode2, GitPullRequest } from 'lucide-react';
 
 import { listSliceChangesets } from '../utils/api.js';
@@ -36,11 +36,20 @@ export default function SliceChangesetListPage({
   onOpenCode,
   onOpenCommits,
   onOpenChangesetDiff,
+  initialChangesets,
+  initialChangesetsError = '',
+  initialChangesetsSliceId = '',
+  initialStatusFilter = 'all',
 }) {
-  const [changesets, setChangesets] = useState([]);
+  const initialMatchesSlice = initialChangesetsSliceId === sliceId
+    && initialStatusFilter === 'all'
+    && Array.isArray(initialChangesets);
+  const [changesets, setChangesets] = useState(() => (initialMatchesSlice ? initialChangesets : []));
   const [statusFilter, setStatusFilter] = useState('all');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [loadedKey, setLoadedKey] = useState(() => (initialMatchesSlice ? `${sliceId}:all` : ''));
+  const [isLoading, setIsLoading] = useState(() => !initialMatchesSlice && !initialChangesetsError);
+  const [error, setError] = useState(() => (initialMatchesSlice ? initialChangesetsError : ''));
+  const clientRefreshKeyRef = useRef('');
 
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
@@ -48,26 +57,49 @@ export default function SliceChangesetListPage({
   const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
 
   useEffect(() => {
+    const nextKey = `${sliceId || ''}:${statusFilter}`;
+    if (
+      statusFilter === 'all'
+      && initialChangesetsSliceId === sliceId
+      && initialStatusFilter === 'all'
+      && Array.isArray(initialChangesets)
+      && loadedKey !== nextKey
+    ) {
+      setChangesets(initialChangesets);
+      setError(initialChangesetsError || '');
+      setIsLoading(false);
+      setLoadedKey(nextKey);
+      return undefined;
+    }
     if (!sliceId) {
       setChangesets([]);
       setIsLoading(false);
       setError('Choose a slice to view changesets.');
+      setLoadedKey('');
       return undefined;
     }
+    if (loadedKey === nextKey && clientRefreshKeyRef.current === nextKey) {
+      return undefined;
+    }
+    clientRefreshKeyRef.current = nextKey;
 
     let active = true;
-    setIsLoading(true);
-    setError('');
+    if (loadedKey !== nextKey) {
+      setIsLoading(true);
+      setError('');
+    }
 
     listSliceChangesets(sliceId, { limit: CHANGESET_PAGE_SIZE, statusFilter })
       .then((nextChangesets) => {
         if (!active) return;
         setChangesets(nextChangesets);
+        setLoadedKey(nextKey);
       })
       .catch((err) => {
         if (!active) return;
         setChangesets([]);
         setError(err?.message || 'Unable to load changesets.');
+        setLoadedKey(nextKey);
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -76,7 +108,15 @@ export default function SliceChangesetListPage({
     return () => {
       active = false;
     };
-  }, [sliceId, statusFilter]);
+  }, [
+    initialChangesets,
+    initialChangesetsError,
+    initialChangesetsSliceId,
+    initialStatusFilter,
+    loadedKey,
+    sliceId,
+    statusFilter,
+  ]);
 
   return (
     <section className="slice-activity-page" data-testid="slice-changesets-page">
