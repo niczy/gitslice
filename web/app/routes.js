@@ -17,6 +17,7 @@ export default [
   index('routes/app-shell.jsx'),
   route('login', 'routes/login.jsx'),
   route('docs', 'routes/docs.jsx'),
+  route('docs.md', 'routes/docs-md.jsx'),
   route('projects', 'routes/projects.jsx'),
   route('profile', 'routes/profile.jsx'),
   route('settings', 'routes/settings.jsx'),
