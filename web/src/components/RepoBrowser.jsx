@@ -757,8 +757,17 @@ export default function RepoBrowser({
       return;
     }
 
+    const nextBrowserState = {
+      dir,
+      file,
+      slice: sliceId,
+      sliceHash,
+    };
     const method = options.replace ? 'replaceState' : 'pushState';
-    window.history[method]({ gitsliceBrowserState: true }, '', nextPath);
+    window.history[method]({
+      gitsliceBrowserState: true,
+      browserState: nextBrowserState,
+    }, '', nextPath);
   }, [sliceHash, sliceId]);
 
   const openFilePath = useCallback(async (targetPath, options = {}) => {

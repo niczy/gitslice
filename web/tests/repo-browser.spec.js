@@ -316,6 +316,47 @@ test.describe('Repo Browser File Preview Layout', () => {
     await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
     await expect(page.getByRole('heading', { name: /^projects$/i })).toBeVisible();
   });
+
+  test('adds sidebar tree file and directory selections to browser history state', async ({ page }) => {
+    await page.goto('/browser/root_slice');
+    await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
+
+    const sidebar = page.locator('.repo-sidebar');
+
+    await sidebar.getByRole('button', { name: /^o\b/i }).click();
+    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o$/);
+    await expect(page.getByRole('heading', { name: /^o$/i })).toBeVisible();
+    await expect.poll(
+      () => page.evaluate(() => window.history.state?.browserState),
+    ).toMatchObject({
+      dir: 'o',
+      file: '',
+      slice: 'root_slice',
+    });
+
+    await sidebar.getByRole('button', { name: /^genesis\b/i }).click();
+    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis$/);
+    await sidebar.getByRole('button', { name: /^projects\b/i }).click();
+    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await sidebar.getByRole('button', { name: /^gitslice\b/i }).click();
+    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+
+    await sidebar.getByRole('button', { name: /^README\.md\b/i }).click();
+    await expect(page).toHaveURL(/\/browser\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
+    await expect.poll(
+      () => page.evaluate(() => window.history.state?.browserState),
+    ).toMatchObject({
+      dir: '',
+      file: 'o/genesis/projects/gitslice/README.md',
+      slice: 'root_slice',
+    });
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/browser\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
+  });
 });
 
 test.describe('Repo Browser Search', () => {
