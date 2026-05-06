@@ -5823,7 +5823,7 @@ button[data-testid="topbar-get-started"]:hover {
 
 .slice-home-row {
   display: grid !important;
-  grid-template-columns: 34px minmax(160px, 1fr) auto minmax(120px, auto) 18px;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, auto) auto;
   align-items: center !important;
   justify-content: stretch !important;
   gap: 14px;
@@ -5855,22 +5855,6 @@ button[data-testid="topbar-get-started"]:hover {
     var(--surface-hover) !important;
 }
 
-.slice-home-row-icon {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-elevated);
-  color: var(--accent);
-}
-
-.slice-home-row--home .slice-home-row-icon {
-  border-color: rgba(9, 76, 178, 0.26);
-  background: #eef5ff;
-}
-
 .slice-home-row-main {
   display: grid;
   min-width: 0;
@@ -5897,13 +5881,6 @@ button[data-testid="topbar-get-started"]:hover {
   line-height: 1.25;
 }
 
-.slice-home-row-badges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
 .slice-home-chip {
   display: inline-flex;
   align-items: center;
@@ -5919,10 +5896,20 @@ button[data-testid="topbar-get-started"]:hover {
   white-space: nowrap;
 }
 
-.slice-home-chip--home {
+.slice-home-chip--public {
   border-color: rgba(9, 76, 178, 0.24);
   background: #eef5ff;
   color: var(--accent);
+}
+
+.slice-home-chip--private {
+  border-color: rgba(113, 63, 18, 0.18);
+  background: #fff8ed;
+  color: #92400e;
+}
+
+.slice-home-chip--visibility {
+  justify-self: end;
 }
 
 .slice-home-row-updated {
@@ -5931,10 +5918,6 @@ button[data-testid="topbar-get-started"]:hover {
   font-weight: 600;
   text-align: right;
   white-space: nowrap;
-}
-
-.slice-home-row-arrow {
-  color: var(--text-muted);
 }
 
 .slice-home-skeleton {
@@ -6691,11 +6674,10 @@ button[data-testid="topbar-get-started"]:hover {
   }
 
   .slice-home-row {
-    grid-template-columns: 34px minmax(0, 1fr) 18px;
+    grid-template-columns: minmax(0, 1fr) auto;
     min-height: 76px;
   }
 
-  .slice-home-row-badges,
   .slice-home-row-updated {
     display: none;
   }
@@ -7941,7 +7923,6 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--np-primary) !important;
 }
 
-.app-shell--browser .slice-home-row-icon,
 .app-shell--browser .slice-activity-row-icon {
   border-color: var(--np-border-soft);
   border-radius: 4px;
