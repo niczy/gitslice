@@ -21,6 +21,7 @@ function shortHash(hash, length = 12) {
 export default function SliceCommitListPage({
   sliceId,
   slices,
+  publicApiBaseUrl = '',
   onOpenCode,
   onOpenChangesets,
   onOpenCommitDiff,
@@ -129,6 +130,8 @@ export default function SliceCommitListPage({
         activeTab="commits"
         sliceId={sliceId}
         sliceLabel={sliceLabel}
+        slice={currentSlice}
+        publicApiBaseUrl={publicApiBaseUrl}
         onOpenCode={onOpenCode}
         onOpenCommits={() => {}}
         onOpenChangesets={onOpenChangesets}

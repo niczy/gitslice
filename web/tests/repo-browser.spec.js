@@ -108,6 +108,89 @@ test.describe('Slice-specific Browsing (real server)', () => {
 });
 
 test.describe('Repo Browser File Preview Layout', () => {
+  test('shows checkout first in Get Code and copies both commands', async ({ page }) => {
+    const username = `cloneuser${Date.now()}`;
+    const sliceId = `home.${username}`;
+    const slug = `${username}/demo-slice`;
+
+    await page.addInitScript(() => {
+      window.__copiedTexts = [];
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text) => {
+            window.__copiedTexts.push(text);
+          },
+        },
+      });
+    });
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: sliceId,
+              name: 'Demo Slice',
+              slug,
+              description: 'Clone command test slice',
+              owners: [username],
+              created_by: username,
+              is_root: false,
+              file_count: 1,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/entries**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            {
+              id: `${sliceId}:README.md`,
+              name: 'README.md',
+              path: 'README.md',
+              type: 'FILE',
+              size: 92,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await page.goto(`/browser/${sliceId}`);
+
+    await expect(page.getByTestId('slice-get-code-button')).toBeVisible();
+    await page.getByTestId('slice-get-code-button').click();
+
+    const checkoutCommand = page.getByTestId('slice-get-code-command');
+    await expect(checkoutCommand).toHaveText(`gs slice checkout ${slug}`);
+
+    const gitCommand = page.getByTestId('slice-get-code-git-command');
+    const expectedApiBaseUrl = process.env.E2E_API_BASE_URL || `http://127.0.0.1:${process.env.E2E_CORE_PORT || process.env.E2E_GATEWAY_PORT || '50151'}`;
+    await expect(gitCommand).toHaveText(`git clone ${expectedApiBaseUrl}/git/${slug}.git`);
+
+    await page.getByTestId('slice-get-code-copy').click();
+    await expect(page.locator('.slice-detail-get-code-note')).toContainText('Copied checkout command.');
+    await page.getByTestId('slice-get-code-git-copy').click();
+    await expect(page.locator('.slice-detail-get-code-note')).toContainText('Copied Git clone command.');
+
+    const copiedTexts = await page.evaluate(() => window.__copiedTexts);
+    expect(copiedTexts).toEqual([
+      await checkoutCommand.textContent(),
+      await gitCommand.textContent(),
+    ]);
+  });
+
   test('renders markdown previews at full code content width', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
 
