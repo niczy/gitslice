@@ -243,6 +243,102 @@ test.describe('Repo Browser File Preview Layout', () => {
     expect(previewLayout.previewWidth).toBeGreaterThanOrEqual(previewLayout.contentWidth - 1);
     expect(previewLayout.previewWidth).toBeLessThanOrEqual(previewLayout.contentWidth + 1);
   });
+
+  test('keeps long mobile file breadcrumbs from overlapping', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    const filePath = [
+      'workspaces',
+      'extremely-long-customer-folder-name',
+      'deeply-nested-product-area',
+      'ridiculously-long-component-file-name-for-mobile-layout.jsx',
+    ].join('/');
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: 'root_slice',
+              name: 'Root Slice',
+              description: 'Root slice',
+              owners: ['system'],
+              created_by: 'system',
+              is_root: true,
+              file_count: 1,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/entries**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entries: [
+            {
+              id: 'root_slice:workspaces',
+              name: 'workspaces',
+              path: 'workspaces',
+              type: 'ENTRY_TYPE_DIRECTORY',
+              size: 0,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/slices/root_slice/files/**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          file: {
+            path: filePath,
+            content: Buffer.from('export default function MobilePathFixture() {}', 'utf8').toString('base64'),
+          },
+        }),
+      });
+    });
+
+    await page.goto(`/browser/root_slice?file=${encodeURIComponent(filePath)}`);
+    await expect(page.locator('.code-header .breadcrumb')).toHaveCount(3);
+
+    const layout = await page.locator('.code-header').evaluate((header) => {
+      const headerRect = header.getBoundingClientRect();
+      const breadcrumbRects = Array.from(header.querySelectorAll('.breadcrumb')).map((item) => {
+        const rect = item.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      });
+      return {
+        headerLeft: headerRect.left,
+        headerRight: headerRect.right,
+        breadcrumbRects,
+      };
+    });
+
+    for (let index = 0; index < layout.breadcrumbRects.length; index += 1) {
+      const rect = layout.breadcrumbRects[index];
+      expect(rect.left).toBeGreaterThanOrEqual(layout.headerLeft - 1);
+      expect(rect.right).toBeLessThanOrEqual(layout.headerRight + 1);
+      if (index > 0) {
+        const previous = layout.breadcrumbRects[index - 1];
+        const sameLine = Math.abs(previous.top - rect.top) < 1 && Math.abs(previous.bottom - rect.bottom) < 1;
+        if (sameLine) {
+          expect(previous.right).toBeLessThanOrEqual(rect.left + 1);
+        }
+      }
+    }
+  });
 });
 
 test.describe('Repo Browser Search', () => {
