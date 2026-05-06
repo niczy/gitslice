@@ -3401,11 +3401,6 @@ body {
   flex-wrap: wrap;
 }
 
-.slice-settings-note {
-  font-size: 0.82rem;
-  color: var(--text-muted);
-}
-
 .visibility-stack {
   display: grid;
   gap: 14px;
@@ -3463,24 +3458,6 @@ body {
   border-color: rgba(100, 116, 139, 0.24);
   background: rgba(148, 163, 184, 0.08);
   color: #334155;
-}
-
-.visibility-link-block {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)),
-    radial-gradient(circle at top right, rgba(10, 102, 217, 0.08), transparent 52%);
-}
-
-.visibility-link-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
 }
 
 .visibility-target {
@@ -5945,8 +5922,7 @@ button[data-testid="topbar-get-started"]:hover {
   gap: 1px;
 }
 
-.slice-detail-nav-name,
-.slice-detail-nav-id {
+.slice-detail-nav-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5957,13 +5933,6 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--text-primary);
   font-size: 0.9rem;
   font-weight: 750;
-  line-height: 1.2;
-}
-
-.slice-detail-nav-id {
-  color: var(--text-muted);
-  font-size: 0.74rem;
-  font-weight: 600;
   line-height: 1.2;
 }
 
@@ -7812,7 +7781,6 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--np-text);
 }
 
-.app-shell--browser .slice-detail-nav-id,
 .app-shell--browser .slice-detail-copy-command,
 .app-shell--browser .slice-detail-get-code-note,
 .app-shell--browser .slice-detail-get-code-secondary > span,

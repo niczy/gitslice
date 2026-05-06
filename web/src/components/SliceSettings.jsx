@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   getSliceVisibility,
   updateSliceVisibility,
 } from '../utils/api.js';
-import { copyToClipboard } from '../utils/clipboard.js';
-import { buildGitEndpoint } from '../utils/git.js';
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
 import { Card, CardContent } from './ui/card.jsx';
@@ -58,51 +56,13 @@ function visibilityLabel(value) {
   return value === 'public' ? 'Public' : 'Private';
 }
 
-function encodePublicPath(rawPath) {
-  return String(rawPath || '')
-    .replace(/^\/+/, '')
-    .split('/')
-    .filter(Boolean)
-    .map(encodeURIComponent)
-    .join('/');
-}
-
-function buildPublicUrl(sliceId, path, entryType) {
-  if (typeof window === 'undefined' || !sliceId) {
-    return '';
-  }
-  const params = new URLSearchParams({ slice_id: sliceId });
-  const encodedPath = encodePublicPath(path);
-  const isDirectory = entryType === 'directory';
-  const basePath = isDirectory ? '/v1/public/entries' : '/v1/public/files';
-  const suffix = encodedPath ? `/${encodedPath}` : '';
-  return `${window.location.origin}${basePath}${suffix}?${params.toString()}`;
-}
-
-function buildRawSliceUrl(sliceId) {
-  if (typeof window === 'undefined' || !sliceId) {
-    return '';
-  }
-  return `${window.location.origin}/raw/slices/${encodeURIComponent(sliceId)}/path/to/file.txt`;
-}
-
-export default function SliceSettings({ sliceId, sliceName, slice = null, publicApiBaseUrl = '' }) {
+export default function SliceSettings({ sliceId, sliceName }) {
   const [sliceVisibility, setSliceVisibility] = useState('private');
   const [slicePropagationMode, setSlicePropagationMode] = useState('unchanged');
   const [sliceVisibilityLoading, setSliceVisibilityLoading] = useState(true);
   const [sliceVisibilitySaving, setSliceVisibilitySaving] = useState(false);
   const [sliceVisibilityError, setSliceVisibilityError] = useState('');
   const [sliceVisibilitySuccess, setSliceVisibilitySuccess] = useState('');
-
-  const [copiedTarget, setCopiedTarget] = useState('');
-  const [copyError, setCopyError] = useState('');
-
-  const slicePublicUrl = useMemo(() => buildPublicUrl(sliceId, '', 'directory'), [sliceId]);
-  const rawSliceUrl = useMemo(() => buildRawSliceUrl(sliceId), [sliceId]);
-  const gitEndpoint = useMemo(
-    () => buildGitEndpoint({ slice, publicApiBaseUrl }),
-    [publicApiBaseUrl, slice],
-  );
 
   useEffect(() => {
     if (!sliceId) {
@@ -144,17 +104,6 @@ export default function SliceSettings({ sliceId, sliceName, slice = null, public
     };
   }, [sliceId]);
 
-  useEffect(() => {
-    if (!copiedTarget && !copyError) {
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      setCopiedTarget('');
-      setCopyError('');
-    }, 2200);
-    return () => window.clearTimeout(timer);
-  }, [copiedTarget, copyError]);
-
   const saveSliceVisibility = async (nextVisibility) => {
     if (!sliceId || sliceVisibilitySaving) {
       return;
@@ -179,66 +128,16 @@ export default function SliceSettings({ sliceId, sliceName, slice = null, public
     }
   };
 
-  const copyUrl = async (key, url) => {
-    if (!url) {
-      return;
-    }
-    try {
-      await copyToClipboard(url);
-      setCopiedTarget(key);
-      setCopyError('');
-    } catch (err) {
-      setCopiedTarget('');
-      setCopyError(err?.message || 'Unable to copy link.');
-    }
-  };
-
   return (
     <div className="slice-settings" data-testid="slice-settings-panel">
       <div className="slice-settings-header">
         <h3>Slice settings</h3>
         <p>
-          Manage visibility and public links for <strong>{sliceName || sliceId}</strong>.
+          Manage visibility for <strong>{sliceName || sliceId}</strong>.
         </p>
       </div>
 
       <div className="slice-settings-grid">
-        <Card className="border-border/70">
-          <CardContent className="pt-6">
-            <div className="slice-settings-card-header">
-              <div>
-                <h4>Git endpoint</h4>
-                <p>Use this endpoint as the Git remote for this slice.</p>
-              </div>
-            </div>
-
-            <div className="visibility-link-block">
-              <label className="visibility-field">
-                <span>Git remote URL</span>
-                <input
-                  readOnly
-                  value={gitEndpoint || 'Git endpoint unavailable'}
-                  data-testid="slice-git-endpoint-url"
-                />
-              </label>
-              <div className="visibility-link-actions">
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!gitEndpoint}
-                  onClick={() => copyUrl('git', gitEndpoint)}
-                  data-testid="slice-git-endpoint-copy-url"
-                >
-                  {copiedTarget === 'git' ? 'Copied' : 'Copy Git endpoint'}
-                </Button>
-                <span className="slice-settings-note">
-                  Private slices require an authenticated Git client.
-                </span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         <Card className="border-border/70">
           <CardContent className="pt-6">
             <div className="slice-settings-card-header">
@@ -295,60 +194,11 @@ export default function SliceSettings({ sliceId, sliceName, slice = null, public
                     </Button>
                   </div>
                 </div>
-
-                <div className="visibility-link-block">
-                  <label className="visibility-field">
-                    <span>Public slice URL</span>
-                    <input
-                      readOnly
-                      value={slicePublicUrl}
-                      data-testid="slice-visibility-url"
-                    />
-                  </label>
-                  <div className="visibility-link-actions">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => copyUrl('slice', slicePublicUrl)}
-                      data-testid="slice-visibility-copy-url"
-                    >
-                      {copiedTarget === 'slice' ? 'Copied' : 'Copy public URL'}
-                    </Button>
-                    <span className="slice-settings-note">
-                      Anonymous readers only see content that resolves public inside this slice.
-                    </span>
-                  </div>
-                </div>
-                <div className="visibility-link-block">
-                  <label className="visibility-field">
-                    <span>Raw file URL pattern</span>
-                    <input
-                      readOnly
-                      value={rawSliceUrl}
-                      data-testid="slice-raw-url-pattern"
-                    />
-                  </label>
-                  <div className="visibility-link-actions">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => copyUrl('raw', rawSliceUrl)}
-                      data-testid="slice-raw-copy-url"
-                    >
-                      {copiedTarget === 'raw' ? 'Copied' : 'Copy raw pattern'}
-                    </Button>
-                    <span className="slice-settings-note">
-                      Replace the path with a public file path to serve bytes directly.
-                    </span>
-                  </div>
-                </div>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
-
-      {copyError && <div className="panel-error">{copyError}</div>}
     </div>
   );
 }
