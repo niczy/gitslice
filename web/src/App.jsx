@@ -248,10 +248,6 @@ function App({
     });
     if (routerNavigate) {
       hasExplicitSliceSelectionRef.current = true;
-      setCurrentSliceId(normalizedSliceId);
-      setBrowserRouteSliceId(normalizedSliceId);
-      setActivePage('browser');
-      setBrowserMounted(true);
       routerNavigate(nextPath);
       return;
     }
@@ -268,10 +264,14 @@ function App({
       return;
     }
     hasExplicitSliceSelectionRef.current = true;
+    if (routerNavigate) {
+      navigate('slice-commits', '', '', { browserState: { slice: normalizedSliceId } });
+      return;
+    }
     setCurrentSliceId(normalizedSliceId);
     setBrowserRouteSliceId(normalizedSliceId);
     navigate('slice-commits', '', '', { browserState: { slice: normalizedSliceId } });
-  }, [currentSliceId, navigate]);
+  }, [currentSliceId, navigate, routerNavigate]);
 
   const openSliceChangesets = useCallback((sliceId = currentSliceId) => {
     const normalizedSliceId = String(sliceId || '').trim();
@@ -279,13 +279,21 @@ function App({
       return;
     }
     hasExplicitSliceSelectionRef.current = true;
+    if (routerNavigate) {
+      navigate('slice-changesets', '', '', { browserState: { slice: normalizedSliceId } });
+      return;
+    }
     setCurrentSliceId(normalizedSliceId);
     setBrowserRouteSliceId(normalizedSliceId);
     navigate('slice-changesets', '', '', { browserState: { slice: normalizedSliceId } });
-  }, [currentSliceId, navigate]);
+  }, [currentSliceId, navigate, routerNavigate]);
 
   const openBrowserHome = useCallback(() => {
     hasExplicitSliceSelectionRef.current = false;
+    if (routerNavigate) {
+      navigate('browser');
+      return;
+    }
     setCurrentSliceId(getInitialSliceId(username));
     setBrowserRouteSliceId('');
     setActivePage('browser');
@@ -293,7 +301,7 @@ function App({
     setDiffChangesetId('');
     setUnknownRoute('');
     navigate('browser');
-  }, [navigate, username]);
+  }, [navigate, routerNavigate, username]);
 
   const handleSliceChange = useCallback((sliceId) => {
     openSliceDetail(sliceId);
