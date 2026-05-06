@@ -31,7 +31,7 @@ const MODEL_CARDS = [
   },
   {
     title: 'Changeset',
-    copy: 'A changeset is the explicit publish and merge unit. It is the path back into the published tree for local slice work.',
+    copy: 'A changeset is the tracked publish unit. `gs slice publish` creates, updates, or reuses it and merges by default unless you stop at review.',
   },
   {
     title: 'Blocks + manifests',
@@ -42,7 +42,7 @@ const MODEL_CARDS = [
 const COMMAND_MAP = [
   {
     task: 'Read or patch a remote file directly',
-    command: 'gs fs write /$USER/app/NOTICE.txt --text "hotfix shipped remotely"\ngs fs cat /$USER/app/NOTICE.txt\ngs fs snapshot -m "patch notice"',
+    command: 'printf "hotfix shipped remotely\\n" | gs fs write /$USER/app/NOTICE.txt\ngs fs cat /$USER/app/NOTICE.txt\ngs fs snapshot -m "patch notice"',
     note: 'Best for notes, tiny fixes, and direct remote edits.',
   },
   {
@@ -58,7 +58,7 @@ const COMMAND_MAP = [
   {
     task: 'Publish local work back to the shared tree',
     command: 'gs slice sync\ngs slice publish --message "refresh settings page" --files src/routes/settings.tsx\ngs changeset show',
-    note: 'Use this when you are ready to review and publish local slice work.',
+    note: 'Use this when you are ready to review and merge local slice work. Add --review-only if you want to stop before merge.',
   },
 ];
 
@@ -142,7 +142,7 @@ gs auth login --key ~/.config/gitslice/agent_ed25519`}</code>
               <li>Cloud reads, writes, snapshots, diffs, upload, download, and batch operations through <code>gs fs</code>.</li>
               <li>Repo bindings that import a GitHub repo into a home-slice path and optionally let you pull and push it later.</li>
               <li>Focused slice creation and fast <code>gs slice checkout</code> for editor-heavy work.</li>
-              <li>Explicit publish and merge through <code>gs changeset create</code> and <code>gs changeset merge</code>.</li>
+              <li>Tracked publish and merge through <code>gs slice publish</code>, with <code>gs changeset</code> commands available for review and manual steps.</li>
               <li>Repo browser, history, commit diffs, and slice navigation in the web app.</li>
             </ul>
           </section>
@@ -171,7 +171,7 @@ gs auth login --key ~/.config/gitslice/agent_ed25519`}</code>
                 </div>
                 <pre className="code-block">
                   <code>{`gs fs mkdir /$USER/notes
-gs fs write /$USER/notes/todo.md --text "ship the patch"
+printf "ship the patch\\n" | gs fs write /$USER/notes/todo.md
 gs fs cat /$USER/notes/todo.md
 gs fs snapshot -m "notes update"`}</code>
                 </pre>
@@ -231,7 +231,7 @@ gs slice diff`}</code>
                   </tr>
                   <tr>
                     <td>Write a remote file</td>
-                    <td><code>gs fs write /$USER/app/README.md --text "hello"</code></td>
+                    <td><code>printf "hello\n" | gs fs write /$USER/app/README.md</code></td>
                   </tr>
                   <tr>
                     <td>Create a checkpoint</td>
@@ -240,6 +240,14 @@ gs slice diff`}</code>
                   <tr>
                     <td>Inspect changes</td>
                     <td><code>gs fs diff &lt;snapshot-or-commit&gt;</code></td>
+                  </tr>
+                  <tr>
+                    <td>Search file contents</td>
+                    <td><code>gs fs search live --glob '/$USER/app/**' --json</code></td>
+                  </tr>
+                  <tr>
+                    <td>Set browser visibility</td>
+                    <td><code>gs fs visibility set /$USER/app public --recursive --json</code></td>
                   </tr>
                   <tr>
                     <td>Upload a directory tree</td>
@@ -330,16 +338,18 @@ gs changeset show`}</code>
 
           <section id="changesets" className="docs-section">
             <Badge variant="secondary" className="eyebrow">Changesets</Badge>
-            <h2>Publish local work through explicit merge steps</h2>
+            <h2>Publish local work through a tracked changeset</h2>
             <p>
-              Changesets are the publish unit for checked-out slices. Create one from the files you changed, review it,
-              and merge it back into the published tree. That keeps local experimentation separate from the shared state
-              until you intentionally publish.
+              Changesets are the publish unit for checked-out slices. <code>gs slice publish</code> creates, updates,
+              or reuses the checkout's tracked changeset and merges it back into the published tree by default. Pass
+              <code>--review-only</code> or <code>--no-merge</code> when you want to inspect or hand off the changeset
+              before merging.
             </p>
             <pre className="code-block">
               <code>{`$EDITOR src/routes/settings.tsx
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
 gs changeset show
+gs slice publish --review-only --message "stage for review" --files src/routes/settings.tsx
 gs changeset list --status merged`}</code>
             </pre>
             <p className="docs-note">
@@ -395,8 +405,10 @@ gs cache clear --objects`}</code>
             <ul className="docs-bullet-list">
               <li>The repo browser shows slices, folders, file previews, and commit history.</li>
               <li>Signed-in home and custom slices now support indexed file search in the browser, including regex queries and glob filters.</li>
+              <li>Search artifacts are keyed by slice and commit head, so updated slice content gets a fresh index instead of reusing a stale one.</li>
               <li>Diff pages let you inspect commit patches and changeset patches in the browser.</li>
               <li>The web app defaults signed-in users to their home slice and keeps custom slices available for inspection.</li>
+              <li>Slice detail URLs track the selected directory or file, so browser Back and Forward restore navigation state.</li>
               <li>The docs page you are reading is part of the same app, so docs and product stay in one surface.</li>
             </ul>
           </section>
@@ -419,11 +431,10 @@ gs context --json`}</code>
             </pre>
             <ul className="docs-bullet-list">
               <li>Use <code>gs login</code> or <code>gs auth login --device</code> to start browser-approved human CLI auth.</li>
-              <li>Use <code>gs login</code> or <code>gs auth login --device</code> to start browser-approved human CLI auth.</li>
               <li>Use <code>gs auth signup</code> and <code>gs auth login --key</code> for non-interactive agent auth.</li>
               <li>Use <code>gs auth claim-token</code> to create a one-time URL that lets a human attach WorkOS sign-in to an agent-created account.</li>
               <li><code>gs auth status --json</code>, <code>gs doctor --json</code>, and <code>gs context --json</code> expose stored auth metadata including the session and enrolled agent key ID.</li>
-              <li>The web app uses a WorkOS-backed browser session and only exposes username sign-in as an explicit local/dev fallback.</li>
+              <li>The web app uses hosted browser auth through the configured provider. Clerk and WorkOS are both supported; username sign-in remains an explicit local/dev fallback.</li>
               <li>The Settings page shows enrolled agent keys, their fingerprints, last-used timestamps, and revoke controls.</li>
               <li>Your account owns a home slice, which is why `gs fs` can work from absolute paths immediately.</li>
             </ul>
