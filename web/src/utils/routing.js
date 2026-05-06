@@ -17,6 +17,7 @@ function normalizePathname(value) {
 function parseBrowserState(search = '') {
   const params = new URLSearchParams(search || '');
   return {
+    dir: params.get('dir') || '',
     file: params.get('file') || '',
     slice: params.get('slice') || '',
     sliceHash: params.get('sliceHash') || '',
@@ -165,6 +166,7 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
 export function buildBrowserPath(state = {}) {
   const params = new URLSearchParams();
   if (state.file) params.set('file', state.file);
+  if (!state.file && state.dir) params.set('dir', state.dir);
   if (state.sliceHash) params.set('sliceHash', state.sliceHash);
   const query = params.toString();
   const slice = String(state.slice || '').trim();
