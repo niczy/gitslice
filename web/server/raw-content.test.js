@@ -50,6 +50,51 @@ test('handleRawContentRequest serves public file bytes from the JSON file API', 
   assert.equal(await response.text(), 'echo hello\n');
 });
 
+test('handleRawContentRequest serves root slice bytes for raw paths without a slice id', async () => {
+  configureEnv();
+  global.fetch = async (url, options = {}) => {
+    assert.equal(url.toString(), 'http://api.test/v1/files/install-gs.sh');
+    assert.equal(options.method, 'GET');
+    assert.equal(options.headers.get('Accept'), 'application/json');
+    return Response.json({
+      file: {
+        path: 'install-gs.sh',
+        content: btoa('#!/bin/sh\necho install\n'),
+        size: 23,
+        hash: 'root-hash',
+      },
+    });
+  };
+
+  const request = new Request('https://agenttools.dev/raw/install-gs.sh');
+  const response = await handleRawContentRequest(request, 'install-gs.sh');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Cache-Control'), 'public, no-cache');
+  assert.equal(response.headers.get('ETag'), '"root-hash"');
+  assert.equal(await response.text(), '#!/bin/sh\necho install\n');
+});
+
+test('handleRawContentRequest forwards root raw version query params and drops public slice query params', async () => {
+  configureEnv();
+  global.fetch = async (url) => {
+    assert.equal(url.toString(), 'http://api.test/v1/files/docs/README.md?commit_hash=abc123');
+    return Response.json({
+      file: {
+        path: 'docs/README.md',
+        content: btoa('# Root\n'),
+        hash: 'root-version-hash',
+      },
+    });
+  };
+
+  const request = new Request('https://agenttools.dev/raw/docs/README.md?slice_id=ignored&slice_slug=ignored&commit_hash=abc123');
+  const response = await handleRawContentRequest(request, 'docs/README.md');
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '# Root\n');
+});
+
 test('handleRawContentRequest supports slice raw URLs and forwards version query params', async () => {
   configureEnv();
   global.fetch = async (url) => {

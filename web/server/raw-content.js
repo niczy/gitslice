@@ -65,6 +65,9 @@ function decodePathSegment(segment) {
 function parseRawTarget(request, suffix) {
   const url = new URL(request.url);
   const parts = normalizeSuffix(suffix).split('/').filter(Boolean);
+  if (parts.length === 0) {
+    return { error: 'Raw URLs require a file path.' };
+  }
 
   if (parts[0] === 'public') {
     const filePath = parts.slice(1).map(decodePathSegment).join('/');
@@ -84,11 +87,17 @@ function parseRawTarget(request, suffix) {
     };
   }
 
-  const slicePrefixOffset = parts[0] === 'slices' ? 1 : 0;
-  const sliceId = decodePathSegment(parts[slicePrefixOffset] || '');
-  const filePath = parts.slice(slicePrefixOffset + 1).map(decodePathSegment).join('/');
+  if (parts[0] !== 'slices') {
+    return {
+      mode: 'root',
+      filePath: parts.map(decodePathSegment).join('/'),
+    };
+  }
+
+  const sliceId = decodePathSegment(parts[1] || '');
+  const filePath = parts.slice(2).map(decodePathSegment).join('/');
   if (!sliceId || !filePath) {
-    return { error: 'Raw URLs must use /raw/slices/<slice-id>/<path> or /raw/public/<path>?slice_id=<slice-id>.' };
+    return { error: 'Raw URLs must use /raw/<path>, /raw/slices/<slice-id>/<path>, or /raw/public/<path>?slice_id=<slice-id>.' };
   }
   return {
     mode: 'slice',
@@ -126,6 +135,15 @@ function buildPublicFileURL(rawTarget, requestURL) {
   const encodedPath = encodePath(rawTarget.filePath);
   const suffix = encodedPath ? `/${encodedPath}` : '';
   return buildTargetURL(`/v1/public/files${suffix}`, params);
+}
+
+function buildRootFileURL(rawTarget, requestURL) {
+  const params = new URLSearchParams(requestURL.search);
+  params.delete('slice_id');
+  params.delete('slice_slug');
+  const encodedPath = encodePath(rawTarget.filePath);
+  const suffix = encodedPath ? `/${encodedPath}` : '';
+  return buildTargetURL(`/v1/files${suffix}`, params);
 }
 
 async function buildHeadersForUpstream(request, authenticated) {
@@ -429,6 +447,21 @@ async function publicRawResponse(request, rawTarget, requestURL, responseCookies
   });
 }
 
+async function rootRawResponse(request, rawTarget, requestURL) {
+  const rootURL = buildRootFileURL(rawTarget, requestURL);
+  const result = await fetchJSONFile(request, rootURL, false);
+  if (result.error) {
+    return textResponse(result.error, result.status || 502, result.responseCookies);
+  }
+  return rawResponseFromUpstream({
+    request,
+    response: result.response,
+    source: 'public',
+    rawTarget,
+    responseCookies: result.responseCookies,
+  });
+}
+
 export async function handleRawContentRequest(request, suffix = '') {
   const method = request.method.toUpperCase();
   if (!['GET', 'HEAD'].includes(method)) {
@@ -455,6 +488,9 @@ export async function handleRawContentRequest(request, suffix = '') {
     }
     return publicRawResponse(request, rawTarget, requestURL, authenticatedResult.responseCookies);
   }
+  if (rawTarget.mode === 'root') {
+    return rootRawResponse(request, rawTarget, requestURL);
+  }
 
   return publicRawResponse(request, rawTarget, requestURL);
 }
@@ -462,6 +498,7 @@ export async function handleRawContentRequest(request, suffix = '') {
 export const __test = {
   buildAuthenticatedFileURL,
   buildPublicFileURL,
+  buildRootFileURL,
   contentTypeForPath,
   parseRawTarget,
 };
