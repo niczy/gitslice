@@ -406,7 +406,7 @@ gs cache clear --objects`}</code>
               <li>The repo browser shows slices, folders, file previews, and commit history.</li>
               <li>Signed-in home and custom slices now support indexed file search in the browser, including regex queries and glob filters.</li>
               <li>Search artifacts are keyed by slice and commit head, so updated slice content gets a fresh index instead of reusing a stale one.</li>
-              <li>Raw file URLs use <code>/raw/slices/&lt;slice-id&gt;/&lt;path&gt;</code> and return file bytes instead of the base64 JSON from <code>/v1/public/files</code>.</li>
+              <li>Raw file URLs use <code>/raw/&lt;path&gt;</code> for the published root slice or <code>/raw/slices/&lt;slice-id&gt;/&lt;path&gt;</code> for a specific slice, returning bytes instead of base64 JSON.</li>
               <li>Diff pages let you inspect commit patches and changeset patches in the browser.</li>
               <li>The web app defaults signed-in users to their home slice and keeps custom slices available for inspection.</li>
               <li>Slice detail URLs track the selected directory or file, so browser Back and Forward restore navigation state.</li>
