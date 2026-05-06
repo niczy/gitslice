@@ -163,6 +163,25 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
   };
 }
 
+export function resolveHomeRouteForUsername(routeInfo, username) {
+  const user = String(username || '').trim();
+  if (!user || routeInfo?.page !== 'landing') {
+    return routeInfo;
+  }
+  return {
+    ...routeInfo,
+    page: 'browser',
+    commitHash: '',
+    changesetId: '',
+    browserState: routeInfo?.browserState || {},
+    resolvedHomeRoute: true,
+  };
+}
+
+export function resolveHomeRouteForSession(routeInfo, session) {
+  return resolveHomeRouteForUsername(routeInfo, session?.user?.username || '');
+}
+
 export function buildBrowserPath(state = {}) {
   const params = new URLSearchParams();
   if (state.file) params.set('file', state.file);

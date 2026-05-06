@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { buildBrowserPath, buildLegacyRedirectPath, buildPath } from './utils/routing.js';
+import { buildBrowserPath, buildLegacyRedirectPath, buildPath, resolveHomeRouteForUsername } from './utils/routing.js';
 import { apiBaseUrl, currentUsername, searchWorkspaceFiles } from './utils/api.js';
 import { signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 import { useWebSession } from './hooks/useWebSession.js';
@@ -66,12 +66,13 @@ function App({
   const queryClient = useQueryClient();
   const initialRouteData = initialBrowserData || {};
   const initialUsername = initialSession?.user?.username || currentUsername();
-  const initialBrowserRouteSlice = isSliceScopedPage(initialRoute.page) ? initialRoute.browserState?.slice || '' : '';
-  const initialPage = initialRoute.page === 'landing' && initialUsername ? 'browser' : initialRoute.page;
+  const resolvedInitialRoute = resolveHomeRouteForUsername(initialRoute, initialUsername);
+  const initialBrowserRouteSlice = isSliceScopedPage(resolvedInitialRoute.page) ? resolvedInitialRoute.browserState?.slice || '' : '';
+  const initialPage = resolvedInitialRoute.page;
   const [activePage, setActivePage] = useState(() => initialPage);
-  const [diffCommitHash, setDiffCommitHash] = useState(() => initialRoute.commitHash);
-  const [diffChangesetId, setDiffChangesetId] = useState(() => initialRoute.changesetId);
-  const [unknownRoute, setUnknownRoute] = useState(() => initialRoute.unknownPath || '');
+  const [diffCommitHash, setDiffCommitHash] = useState(() => resolvedInitialRoute.commitHash);
+  const [diffChangesetId, setDiffChangesetId] = useState(() => resolvedInitialRoute.changesetId);
+  const [unknownRoute, setUnknownRoute] = useState(() => resolvedInitialRoute.unknownPath || '');
   const [returnToPage, setReturnToPage] = useState('browser');
   const [returnToCommitHash, setReturnToCommitHash] = useState('');
   const [returnToChangesetId, setReturnToChangesetId] = useState('');
@@ -156,17 +157,18 @@ function App({
   }, [routerNavigate]);
 
   useIsomorphicLayoutEffect(() => {
-    setActivePage(initialRoute.page);
-    setDiffCommitHash(initialRoute.commitHash);
-    setDiffChangesetId(initialRoute.changesetId);
-    setUnknownRoute(initialRoute.unknownPath || '');
-    if (isSliceScopedPage(initialRoute.page)) {
-      const nextRouteSliceId = initialRoute.browserState?.slice || '';
+    const nextRoute = resolveHomeRouteForUsername(initialRoute, username);
+    setActivePage(nextRoute.page);
+    setDiffCommitHash(nextRoute.commitHash);
+    setDiffChangesetId(nextRoute.changesetId);
+    setUnknownRoute(nextRoute.unknownPath || '');
+    if (isSliceScopedPage(nextRoute.page)) {
+      const nextRouteSliceId = nextRoute.browserState?.slice || '';
       setBrowserRouteSliceId(nextRouteSliceId);
       if (nextRouteSliceId) {
         hasExplicitSliceSelectionRef.current = true;
         setCurrentSliceId(nextRouteSliceId);
-        if (initialRoute.page === 'browser') {
+        if (nextRoute.page === 'browser') {
           setBrowserMounted(true);
         }
       } else {
@@ -175,7 +177,7 @@ function App({
     } else {
       setBrowserRouteSliceId('');
     }
-  }, [initialRoute]);
+  }, [initialRoute, username]);
 
   useEffect(() => {
     if (slices.length === 0) {
@@ -458,12 +460,6 @@ function App({
       controller.abort();
     };
   }, [browserSearchGlob, browserSearchQuery, browserSearchRegex, isAuthenticated, isBrowserDetail, runBrowserSearch]);
-
-  useEffect(() => {
-    if (isAuthenticated && activePage === 'landing') {
-      navigate('browser', '', '', { replace: true });
-    }
-  }, [activePage, isAuthenticated, navigate]);
 
   useEffect(() => {
     if (activePage === 'not-found') {
