@@ -13,11 +13,9 @@ import (
 )
 
 type Identity struct {
-	Username       string
-	SessionID      string
-	AuthSource     string
-	WorkOSUserID   string
-	OrganizationID string
+	Username   string
+	SessionID  string
+	AuthSource string
 }
 
 func OptionalGRPCIdentity(ctx context.Context, st storage.Storage) (*Identity, error) {

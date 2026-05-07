@@ -36,7 +36,7 @@ export async function proxyRequest(request, suffix = '') {
       return Response.json({ error: 'Not signed in' }, { status: 401 });
     }
   }
-  if (!restrictedAdminPath && !headers.has('Authorization') && ['workos', 'clerk'].includes(getAuthProvider())) {
+  if (!restrictedAdminPath && !headers.has('Authorization') && getAuthProvider() === 'clerk') {
     const authResult = await getProxyAuthorizationResult(request);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {

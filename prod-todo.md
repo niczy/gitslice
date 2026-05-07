@@ -16,10 +16,7 @@ This is the remaining operational work for the final hosted topology:
   - `production` -> `gitslice.io`
 - Set Worker secrets for both environments:
   - `AUTH_SECRET`
-- `WORKOS_CLIENT_ID`
-- `WORKOS_API_KEY`
-- `WORKOS_COOKIE_PASSWORD`
-- `WORKOS_REDIRECT_URI`
+  - `CLERK_SECRET_KEY`
 - Use a fresh production `AUTH_SECRET`; invalidating old browser sessions is acceptable.
 - Deploy both Worker environments:
   - `cd web && npm run deploy:worker:staging`

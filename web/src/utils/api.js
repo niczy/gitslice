@@ -17,7 +17,7 @@ export function fetchWithAuth(url, options = {}) {
   const headers = new Headers(options.headers || {});
   const authSource = getSignedInAuthSource();
   const username = currentUsername();
-  if (username && authSource !== 'workos' && authSource !== 'clerk') {
+  if (username && authSource !== 'clerk') {
     headers.set('Authorization', `User ${username}`);
   }
   return fetch(url, { ...options, credentials: 'include', headers });
@@ -144,21 +144,6 @@ export async function fetchAuthMethods() {
   }
   const payload = await response.json();
   return payload?.methods || [];
-}
-
-export async function linkCurrentWorkOSAuthMethod() {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/methods/link`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      type: 2,
-      provider: 'workos',
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to link WorkOS sign-in'));
-  }
-  return response.json();
 }
 
 export async function deleteAuthMethod(methodId) {

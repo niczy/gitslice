@@ -304,19 +304,16 @@ and verification:
 ```
 
 For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gitslice/web/.dev.vars.example) to `.dev.vars` and set:
-- `AUTH_PROVIDER=clerk` for the default Clerk path, or `AUTH_PROVIDER=workos` when validating WorkOS
+- `AUTH_PROVIDER=clerk` for hosted browser sign-in
 - `ALLOW_DEV_LOGIN=1` only if you want username/dev login available as an explicit local fallback
 - `AUTH_SECRET`
-- `CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY` when testing Clerk
-- `WORKOS_*` when testing WorkOS
+- `CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY`
 
 The legacy `Authorization: User <username>` shortcut is disabled automatically when `DEPLOY_ENV=production`; set `ALLOW_LEGACY_USER_AUTH=1` only for explicit debugging or controlled dev/staging compatibility.
 
 When using Clerk webhooks, point Clerk at `/v1/auth/clerk/webhook` on the API host, subscribe to `user.updated` and `user.deleted`, and set `CLERK_WEBHOOK_SECRET` in the API env file. Gitslice handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the Clerk ID.
 
-When using WorkOS webhooks, point WorkOS at `/v1/auth/workos/webhook` on the API host and set `WORKOS_WEBHOOK_SECRET` in the API env file. Gitslice currently handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the WorkOS ID.
-
-For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_JWKS_URL`, `WORKOS_AUTHKIT_DOMAIN`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:
+For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `CLERK_PUBLISHABLE_KEY`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:
 
 When `AUTH_PROVIDER=clerk`, the deploy wrapper requires both
 `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the env file and syncs the
@@ -325,11 +322,9 @@ Clerk secret to Wrangler during web deploys.
 ```bash
 cd web
 wrangler secret put AUTH_SECRET --env staging
-wrangler secret put WORKOS_API_KEY --env staging
-wrangler secret put WORKOS_COOKIE_PASSWORD --env staging
+wrangler secret put CLERK_SECRET_KEY --env staging
 wrangler secret put AUTH_SECRET --env production
-wrangler secret put WORKOS_API_KEY --env production
-wrangler secret put WORKOS_COOKIE_PASSWORD --env production
+wrangler secret put CLERK_SECRET_KEY --env production
 ```
 
 The production cutover does not need to preserve old browser sessions. Rotating `AUTH_SECRET`
@@ -508,7 +503,7 @@ Search index maintenance:
 
 ## Accounts / Organizations
 
-This repo uses WorkOS-backed human web sign-in, browser-approved CLI device login for humans, and enrolled `ed25519` keys for non-interactive agent auth. Requests include the signed-in user in metadata.
+This repo uses Clerk-backed human web sign-in, browser-approved CLI device login for humans, and enrolled `ed25519` keys for non-interactive agent auth. Requests include the signed-in user in metadata.
 
 - The root slice (`root_slice`) is publicly viewable.
 - Non-root slices are only visible/accessible to their owners.
@@ -518,13 +513,12 @@ Web auth environment variables (see `web/.env.example`):
 
 ```bash
 VITE_WEB_AGENT_REAL_RUNTIME=1
-AUTH_PROVIDER=workos
+AUTH_PROVIDER=clerk
 AUTH_SECRET=replace-with-long-random-string
 ALLOW_LEGACY_USER_AUTH=
-WORKOS_CLIENT_ID=client_...
-WORKOS_API_KEY=sk_...
-WORKOS_COOKIE_PASSWORD=replace-with-long-random-string
-WORKOS_WEBHOOK_SECRET=whsec_...
+CLERK_PUBLISHABLE_KEY=pk_...
+CLERK_SECRET_KEY=sk_...
+CLERK_WEBHOOK_SECRET=whsec_...
 ```
 
 For local setup, copy the template and fill in values:

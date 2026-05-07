@@ -283,8 +283,8 @@ test.describe('Cookie-backed web auth', () => {
           username,
           session_id: 'sess-current',
           auth_source: 'local_session',
-          workos_linked: true,
-          workos_user_id: 'user_workos_test',
+          clerk_linked: true,
+          clerk_user_id: 'user_clerk_test',
           account_id: 'acct_test',
         }),
       });
@@ -303,7 +303,7 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect(page.getByTestId('settings-auth-context')).toContainText('API credential');
     await expect(page.getByTestId('settings-auth-context')).toContainText('local_session');
-    await expect(page.getByTestId('settings-auth-context')).toContainText('WorkOS linked');
+    await expect(page.getByTestId('settings-auth-context')).toContainText('Clerk linked');
     await expect(page.getByTestId('settings-auth-context')).toContainText('yes');
     await expect(page.getByTestId('settings-sessions')).toContainText('Firefox on macOS');
     await expect(page.getByTestId('settings-sessions')).toContainText('gs auth login --device');
@@ -324,9 +324,9 @@ test.describe('Cookie-backed web auth', () => {
         linked_at: '2026-04-05T12:00:00Z',
       },
       {
-        id: 'oauth:workos',
+        id: 'oauth:clerk',
         type: 'AUTH_METHOD_TYPE_OAUTH',
-        provider: 'workos',
+        provider: 'clerk',
         email: `${username}@example.com`,
         linked_at: '2026-04-05T12:05:00Z',
       },
@@ -371,7 +371,7 @@ test.describe('Cookie-backed web auth', () => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(methods.find((method) => method.id === 'oauth:workos')),
+          body: JSON.stringify(methods.find((method) => method.id === 'oauth:clerk')),
         });
       }
     });
@@ -387,7 +387,7 @@ test.describe('Cookie-backed web auth', () => {
 
     await page.goto('/settings');
     await expect(page.getByTestId('settings-auth-methods')).toContainText('password');
-    await expect(page.getByTestId('settings-auth-methods')).toContainText('workos');
+    await expect(page.getByTestId('settings-auth-methods')).toContainText('clerk');
 
     await page.getByTestId('settings-auth-method-delete-password').click();
     await expect(page.getByTestId('settings-auth-methods')).not.toContainText('password');

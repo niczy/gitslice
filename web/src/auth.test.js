@@ -39,21 +39,6 @@ test('startOAuthSignIn returns Clerk users to the current page', () => {
   );
 });
 
-test('startOAuthSignIn returns WorkOS users to the current page', () => {
-  const assignedURLs = installWindow('https://agenttools.dev/admin?tab=users#invite');
-
-  startOAuthSignIn('workos');
-
-  assert.equal(assignedURLs.length, 1);
-  const nextURL = new URL(assignedURLs[0]);
-  assert.equal(nextURL.origin, 'https://agenttools.dev');
-  assert.equal(nextURL.pathname, '/auth/signin/workos');
-  assert.equal(
-    nextURL.searchParams.get('callbackUrl'),
-    'https://agenttools.dev/admin?tab=users#invite',
-  );
-});
-
 test('startOAuthSignIn falls back from auth pages to slices', () => {
   const assignedURLs = installWindow('https://agenttools.dev/sign-in/sso-callback?redirect_url=/admin');
 

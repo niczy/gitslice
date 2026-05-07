@@ -44,7 +44,7 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.locator('code').filter({ hasText: /gs cache stats --checkouts/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache prune/i }).first()).toBeVisible();
   await expect(page.getByText(/uploads and checkouts exchange manifests first and then transfer only missing blocks/i)).toBeVisible();
-  await expect(page.getByText(/Clerk and WorkOS are both supported/i)).toBeVisible();
+  await expect(page.getByText(/hosted browser auth through Clerk/i)).toBeVisible();
   await expect(page.getByText(/Slice detail URLs track the selected directory or file/i)).toBeVisible();
   await expect(page.locator('#quick-start .markdown-heading-link')).toHaveAttribute('href', '#quick-start');
   await expect(page.locator('#auth .markdown-heading-link')).toHaveAttribute('href', '#auth');

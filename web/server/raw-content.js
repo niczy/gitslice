@@ -165,7 +165,7 @@ async function buildHeadersForUpstream(request, authenticated) {
     return { headers, responseCookies, hasAuthorization: true, rejectUnauthenticated: false };
   }
 
-  if (['workos', 'clerk'].includes(getAuthProvider())) {
+  if (getAuthProvider() === 'clerk') {
     const authResult = await getProxyAuthorizationResult(request);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {

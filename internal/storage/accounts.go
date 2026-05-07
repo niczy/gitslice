@@ -396,32 +396,6 @@ func (s *InMemoryStorage) GetUserByEmail(ctx context.Context, email string) (*mo
 	return copyUser(u), nil
 }
 
-func (s *InMemoryStorage) GetUserByWorkOSUserID(ctx context.Context, workOSUserID string) (*models.User, error) {
-	_ = ctx
-	workOSUserID = strings.TrimSpace(workOSUserID)
-	if workOSUserID == "" {
-		return nil, ErrInvalidInput
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, user := range s.users {
-		if user == nil {
-			continue
-		}
-		if strings.TrimSpace(user.WorkOSUserID) != workOSUserID {
-			continue
-		}
-		if user.RootPath == "" {
-			user.RootPath = rootPathForSlug(user.Username)
-		}
-		return copyUser(user), nil
-	}
-
-	return nil, ErrEntryNotFound
-}
-
 func (s *InMemoryStorage) GetUserByClerkUserID(ctx context.Context, clerkUserID string) (*models.User, error) {
 	_ = ctx
 	clerkUserID = strings.TrimSpace(clerkUserID)
@@ -500,7 +474,6 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	}
 	accountID := strings.TrimSpace(user.AccountID)
 	authSource := strings.TrimSpace(user.AuthSource)
-	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
 	clerkUserID := strings.TrimSpace(user.ClerkUserID)
 
 	now := time.Now()
@@ -523,13 +496,6 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 			return ErrEntryNotFound
 		}
 	}
-	if workOSUserID != "" {
-		for _, existing := range s.users {
-			if existing != nil && strings.TrimSpace(existing.WorkOSUserID) == workOSUserID {
-				return ErrEntryExists
-			}
-		}
-	}
 	if clerkUserID != "" {
 		for _, existing := range s.users {
 			if existing != nil && strings.TrimSpace(existing.ClerkUserID) == clerkUserID {
@@ -543,7 +509,6 @@ func (s *InMemoryStorage) CreateUser(ctx context.Context, user *models.User) err
 	newUser.AccountID = accountID
 	newUser.PrimaryEmail = email
 	newUser.AuthSource = authSource
-	newUser.WorkOSUserID = workOSUserID
 	newUser.ClerkUserID = clerkUserID
 	newUser.RootPath = rootPathForSlug(username)
 	if newUser.CreatedAt.IsZero() {
@@ -572,7 +537,6 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	}
 	accountID := strings.TrimSpace(user.AccountID)
 	authSource := strings.TrimSpace(user.AuthSource)
-	workOSUserID := strings.TrimSpace(user.WorkOSUserID)
 	clerkUserID := strings.TrimSpace(user.ClerkUserID)
 
 	now := time.Now()
@@ -592,16 +556,6 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	if accountID != "" {
 		if _, ok := s.accounts[accountID]; !ok {
 			return ErrEntryNotFound
-		}
-	}
-	if workOSUserID != "" {
-		for existingUsername, existing := range s.users {
-			if existingUsername == username || existing == nil {
-				continue
-			}
-			if strings.TrimSpace(existing.WorkOSUserID) == workOSUserID {
-				return ErrEntryExists
-			}
 		}
 	}
 	if clerkUserID != "" {
@@ -624,7 +578,6 @@ func (s *InMemoryStorage) UpdateUser(ctx context.Context, user *models.User) err
 	updated.AccountID = accountID
 	updated.PrimaryEmail = email
 	updated.AuthSource = authSource
-	updated.WorkOSUserID = workOSUserID
 	updated.ClerkUserID = clerkUserID
 	updated.RootPath = rootPathForSlug(username)
 	if updated.CreatedAt.IsZero() {
@@ -1447,7 +1400,6 @@ func (s *InMemoryStorage) CreateOrganization(ctx context.Context, org *models.Or
 	if !auth.ValidateUsername(slug) || !auth.ValidateUsername(createdBy) {
 		return ErrInvalidInput
 	}
-	workOSOrganizationID := strings.TrimSpace(org.WorkOSOrganizationID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1459,19 +1411,11 @@ func (s *InMemoryStorage) CreateOrganization(ctx context.Context, org *models.Or
 	if _, ok := s.users[slug]; ok {
 		return ErrEntryExists
 	}
-	if workOSOrganizationID != "" {
-		for _, existing := range s.orgs {
-			if existing != nil && strings.TrimSpace(existing.WorkOSOrganizationID) == workOSOrganizationID {
-				return ErrEntryExists
-			}
-		}
-	}
 
 	newOrg := *org
 	newOrg.Slug = slug
 	newOrg.Name = name
 	newOrg.CreatedBy = createdBy
-	newOrg.WorkOSOrganizationID = workOSOrganizationID
 	newOrg.RootPath = rootPathForSlug(newOrg.Slug)
 	if newOrg.CreatedAt.IsZero() {
 		newOrg.CreatedAt = now
@@ -1503,32 +1447,6 @@ func (s *InMemoryStorage) GetOrganization(ctx context.Context, orgSlug string) (
 	return &copy, nil
 }
 
-func (s *InMemoryStorage) GetOrganizationByWorkOSOrganizationID(ctx context.Context, workOSOrganizationID string) (*models.Organization, error) {
-	_ = ctx
-	workOSOrganizationID = strings.TrimSpace(workOSOrganizationID)
-	if workOSOrganizationID == "" {
-		return nil, ErrInvalidInput
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, org := range s.orgs {
-		if org == nil {
-			continue
-		}
-		if strings.TrimSpace(org.WorkOSOrganizationID) != workOSOrganizationID {
-			continue
-		}
-		copy := *org
-		if copy.RootPath == "" {
-			copy.RootPath = rootPathForSlug(copy.Slug)
-		}
-		return &copy, nil
-	}
-	return nil, ErrEntryNotFound
-}
-
 func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Organization) error {
 	_ = ctx
 	if org == nil {
@@ -1538,7 +1456,6 @@ func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Or
 	if slug == "" || strings.TrimSpace(org.Name) == "" {
 		return ErrInvalidInput
 	}
-	workOSOrganizationID := strings.TrimSpace(org.WorkOSOrganizationID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1548,20 +1465,9 @@ func (s *InMemoryStorage) UpdateOrganization(ctx context.Context, org *models.Or
 	if !ok || existing == nil {
 		return ErrEntryNotFound
 	}
-	if workOSOrganizationID != "" {
-		for existingSlug, candidate := range s.orgs {
-			if existingSlug == slug || candidate == nil {
-				continue
-			}
-			if strings.TrimSpace(candidate.WorkOSOrganizationID) == workOSOrganizationID {
-				return ErrEntryExists
-			}
-		}
-	}
 
 	updated := *org
 	updated.Slug = slug
-	updated.WorkOSOrganizationID = workOSOrganizationID
 	updated.RootPath = rootPathForSlug(slug)
 	updated.CreatedBy = existing.CreatedBy
 	if updated.CreatedAt.IsZero() {
@@ -1621,7 +1527,6 @@ func (s *InMemoryStorage) AddOrganizationMember(ctx context.Context, member *mod
 	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) || !validOrganizationRole(role) {
 		return ErrInvalidInput
 	}
-	workOSMembershipID := strings.TrimSpace(member.WorkOSMembershipID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1639,21 +1544,11 @@ func (s *InMemoryStorage) AddOrganizationMember(ctx context.Context, member *mod
 	if _, ok := s.orgMembers[orgSlug][username]; ok {
 		return ErrEntryExists
 	}
-	if workOSMembershipID != "" {
-		for _, members := range s.orgMembers {
-			for _, existing := range members {
-				if existing != nil && strings.TrimSpace(existing.WorkOSMembershipID) == workOSMembershipID {
-					return ErrEntryExists
-				}
-			}
-		}
-	}
 
 	newMember := *member
 	newMember.OrgSlug = orgSlug
 	newMember.Username = username
 	newMember.Role = role
-	newMember.WorkOSMembershipID = workOSMembershipID
 	if newMember.CreatedAt.IsZero() {
 		newMember.CreatedAt = now
 	}
@@ -1728,7 +1623,6 @@ func (s *InMemoryStorage) UpdateOrganizationMember(ctx context.Context, member *
 	if !auth.ValidateUsername(orgSlug) || !auth.ValidateUsername(username) || !validOrganizationRole(role) {
 		return ErrInvalidInput
 	}
-	workOSMembershipID := strings.TrimSpace(member.WorkOSMembershipID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -1739,24 +1633,11 @@ func (s *InMemoryStorage) UpdateOrganizationMember(ctx context.Context, member *
 	if !ok || existing == nil {
 		return ErrEntryNotFound
 	}
-	if workOSMembershipID != "" {
-		for existingOrgSlug, members := range s.orgMembers {
-			for existingUsername, candidate := range members {
-				if existingOrgSlug == orgSlug && existingUsername == username {
-					continue
-				}
-				if candidate != nil && strings.TrimSpace(candidate.WorkOSMembershipID) == workOSMembershipID {
-					return ErrEntryExists
-				}
-			}
-		}
-	}
 
 	updated := *member
 	updated.OrgSlug = orgSlug
 	updated.Username = username
 	updated.Role = role
-	updated.WorkOSMembershipID = workOSMembershipID
 	if updated.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt
 	}

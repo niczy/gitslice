@@ -37,7 +37,6 @@ type User struct {
 	PrimaryEmail string    `json:"primary_email"`
 	PasswordHash string    `json:"password_hash"`
 	AuthSource   string    `json:"auth_source"`
-	WorkOSUserID string    `json:"workos_user_id"`
 	ClerkUserID  string    `json:"clerk_user_id"`
 	RootPath     string    `json:"root_path"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -46,13 +45,12 @@ type User struct {
 
 // Organization groups users together.
 type Organization struct {
-	Slug                 string    `json:"slug"`
-	Name                 string    `json:"name"`
-	CreatedBy            string    `json:"created_by"`
-	WorkOSOrganizationID string    `json:"workos_organization_id"`
-	RootPath             string    `json:"root_path"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	CreatedBy string    `json:"created_by"`
+	RootPath  string    `json:"root_path"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type OrganizationRole string
@@ -64,12 +62,11 @@ const (
 )
 
 type OrganizationMember struct {
-	OrgSlug            string           `json:"org_slug"`
-	Username           string           `json:"username"`
-	Role               OrganizationRole `json:"role"`
-	WorkOSMembershipID string           `json:"workos_membership_id"`
-	CreatedAt          time.Time        `json:"created_at"`
-	UpdatedAt          time.Time        `json:"updated_at"`
+	OrgSlug   string           `json:"org_slug"`
+	Username  string           `json:"username"`
+	Role      OrganizationRole `json:"role"`
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
 }
 
 type OrganizationInviteStatus string
