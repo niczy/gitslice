@@ -2283,6 +2283,71 @@ func TestGatewayWorkOSWebhookUsesRawBodyAndSignatureHeader(t *testing.T) {
 	}
 }
 
+func TestGatewayClerkWebhookUsesRawBodyAndSignatureHeaders(t *testing.T) {
+	webhookSecret := gatewayClerkWebhookSecret("clerk-gateway-test")
+	t.Setenv("CLERK_WEBHOOK_SECRET", webhookSecret)
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_gateway_clerk_webhook",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		Name:         "Alice",
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "clerk",
+		ClerkUserID:  "user_gateway_clerk_webhook",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	grpcAddr := startGRPCServer(t, st)
+	gatewayURL := startGatewayServer(t, grpcAddr)
+	body := []byte(`{"type":"user.updated","data":{"id":"user_gateway_clerk_webhook","primary_email_address_id":"email_gateway","email_addresses":[{"id":"email_gateway","email_address":"alice-new@example.com"}],"first_name":"Alice","last_name":"Gateway"}}`)
+	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/auth/clerk/webhook", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("new webhook request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	msgID, timestamp, signature := signGatewayClerkWebhookPayload(t, body, webhookSecret, time.Now())
+	req.Header.Set("Svix-Id", msgID)
+	req.Header.Set("Svix-Timestamp", timestamp)
+	req.Header.Set("Svix-Signature", signature)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/auth/clerk/webhook failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected webhook status %d: %s", resp.StatusCode, string(payload))
+	}
+	var responsePayload struct {
+		Action   string `json:"action"`
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&responsePayload); err != nil {
+		t.Fatalf("decode webhook response: %v", err)
+	}
+	if responsePayload.Action != "updated_user" || responsePayload.Username != "alice" {
+		t.Fatalf("unexpected webhook response payload: %#v", responsePayload)
+	}
+	user, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if user.PrimaryEmail != "alice-new@example.com" || user.Name != "Alice Gateway" {
+		t.Fatalf("expected gateway webhook to update user, got %#v", user)
+	}
+}
+
 func startGatewayWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
 	t.Helper()
 
@@ -2334,6 +2399,28 @@ func signGatewayWorkOSWebhookPayload(t *testing.T, payload []byte, secret string
 	mac.Write([]byte("."))
 	mac.Write(payload)
 	return "t=" + timestamp + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func gatewayClerkWebhookSecret(raw string) string {
+	return "whsec_" + base64.StdEncoding.EncodeToString([]byte(raw))
+}
+
+func signGatewayClerkWebhookPayload(t *testing.T, payload []byte, secret string, at time.Time) (string, string, string) {
+	t.Helper()
+	secret = strings.TrimPrefix(secret, "whsec_")
+	key, err := base64.StdEncoding.DecodeString(secret)
+	if err != nil {
+		t.Fatalf("DecodeString failed: %v", err)
+	}
+	msgID := "msg_gateway_clerk"
+	timestamp := strconv.FormatInt(at.Unix(), 10)
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(msgID))
+	mac.Write([]byte("."))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	return msgID, timestamp, "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func startGatewayServer(t *testing.T, grpcAddr string) string {

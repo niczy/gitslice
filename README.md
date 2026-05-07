@@ -312,6 +312,8 @@ For local Worker auth flows, copy [`.dev.vars.example`](/home/nic/workspace/gits
 
 The legacy `Authorization: User <username>` shortcut is disabled automatically when `DEPLOY_ENV=production`; set `ALLOW_LEGACY_USER_AUTH=1` only for explicit debugging or controlled dev/staging compatibility.
 
+When using Clerk webhooks, point Clerk at `/v1/auth/clerk/webhook` on the API host, subscribe to `user.updated` and `user.deleted`, and set `CLERK_WEBHOOK_SECRET` in the API env file. Gitslice handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the Clerk ID.
+
 When using WorkOS webhooks, point WorkOS at `/v1/auth/workos/webhook` on the API host and set `WORKOS_WEBHOOK_SECRET` in the API env file. Gitslice currently handles `user.updated` by syncing linked profile fields and `user.deleted` by revoking local sessions and unlinking the WorkOS ID.
 
 For staging and production deploys, `ops/deploy.sh --app web` uses the env file to inject non-secret Worker auth vars (`AUTH_PROVIDER`, `ALLOW_DEV_LOGIN`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_JWKS_URL`, `WORKOS_AUTHKIT_DOMAIN`) into a temporary Wrangler config. Set the actual secrets with Wrangler at deploy time:

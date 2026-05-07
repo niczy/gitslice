@@ -51,6 +51,32 @@ func workOSWebhookCtx(ctx context.Context, payload []byte, secret string, at tim
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("workos-signature", "t="+timestamp+",v1="+signature))
 }
 
+func clerkWebhookSecret(raw string) string {
+	return "whsec_" + base64.StdEncoding.EncodeToString([]byte(raw))
+}
+
+func clerkWebhookCtx(t *testing.T, ctx context.Context, payload []byte, secret string, at time.Time) context.Context {
+	t.Helper()
+	key, err := decodeClerkWebhookSecret(secret)
+	if err != nil {
+		t.Fatalf("decodeClerkWebhookSecret failed: %v", err)
+	}
+	msgID := "msg_test_clerk"
+	timestamp := strconv.FormatInt(at.Unix(), 10)
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(msgID))
+	mac.Write([]byte("."))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return metadata.NewIncomingContext(ctx, metadata.Pairs(
+		"svix-id", msgID,
+		"svix-timestamp", timestamp,
+		"svix-signature", "v1,"+signature,
+	))
+}
+
 func signClerkBridgeClaims(t *testing.T, secret string, claims clerkBridgeClaims) string {
 	t.Helper()
 
@@ -1012,6 +1038,128 @@ func TestHandleWorkOSWebhookRejectsInvalidSignature(t *testing.T) {
 	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
 
 	_, err := srv.HandleWorkOSWebhook(ctx, &httpbody.HttpBody{Data: []byte(`{"event":"user.updated","data":{"id":"user_123"}}`)})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected invalid signature to be rejected, got %v", err)
+	}
+}
+
+func TestHandleClerkWebhookUpdatesDeletesAndAllowsRecreatedUser(t *testing.T) {
+	webhookSecret := clerkWebhookSecret("clerk-webhook-test")
+	t.Setenv("CLERK_WEBHOOK_SECRET", webhookSecret)
+	t.Setenv("AUTH_PROVIDER", "clerk")
+	t.Setenv("AUTH_SECRET", "test-auth-secret")
+
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	account := &models.Account{
+		AccountID:  "acct_clerk_webhook",
+		OwnerMode:  models.AccountOwnerModeHumanAttached,
+		ClaimState: models.AccountClaimStateClaimed,
+	}
+	if err := st.CreateAccount(ctx, account); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		AccountID:    account.AccountID,
+		Name:         "Old Name",
+		PrimaryEmail: "old@example.com",
+		AuthSource:   "clerk",
+		ClerkUserID:  "user_clerk_123",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := st.CreateAuthSession(ctx, &models.AuthSession{
+		SessionID:  "sess-clerk-webhook",
+		Username:   "alice",
+		Token:      "gs_clerk_webhook",
+		CreatedAt:  time.Now(),
+		LastSeenAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateAuthSession failed: %v", err)
+	}
+	srv := &accountServiceServer{st: st}
+
+	updatePayload := []byte(`{"type":"user.updated","data":{"id":"user_clerk_123","primary_email_address_id":"email_123","email_addresses":[{"id":"email_123","email_address":"new@example.com"}],"first_name":"Alice","last_name":"Updated"}}`)
+	updateResp, err := srv.HandleClerkWebhook(clerkWebhookCtx(t, ctx, updatePayload, webhookSecret, time.Now()), &httpbody.HttpBody{
+		ContentType: "application/json",
+		Data:        updatePayload,
+	})
+	if err != nil {
+		t.Fatalf("HandleClerkWebhook update failed: %v", err)
+	}
+	if updateResp.GetAction() != "updated_user" || updateResp.GetUsername() != "alice" {
+		t.Fatalf("unexpected update response: %#v", updateResp)
+	}
+	updatedUser, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser after update failed: %v", err)
+	}
+	if updatedUser.PrimaryEmail != "new@example.com" || updatedUser.Name != "Alice Updated" {
+		t.Fatalf("expected Clerk profile sync, got %#v", updatedUser)
+	}
+
+	deletePayload := []byte(`{"type":"user.deleted","data":{"id":"user_clerk_123","deleted":true}}`)
+	deleteResp, err := srv.HandleClerkWebhook(clerkWebhookCtx(t, ctx, deletePayload, webhookSecret, time.Now()), &httpbody.HttpBody{
+		ContentType: "application/json",
+		Data:        deletePayload,
+	})
+	if err != nil {
+		t.Fatalf("HandleClerkWebhook delete failed: %v", err)
+	}
+	if deleteResp.GetAction() != "unlinked_user" || deleteResp.GetRevokedSessions() != 1 {
+		t.Fatalf("unexpected delete response: %#v", deleteResp)
+	}
+	if _, err := st.GetAuthSessionByToken(ctx, "gs_clerk_webhook"); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected Clerk-linked session to be revoked, got %v", err)
+	}
+	unlinkedUser, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser after delete failed: %v", err)
+	}
+	if unlinkedUser.ClerkUserID != "" || unlinkedUser.AuthSource != "local" {
+		t.Fatalf("expected Clerk user to be unlinked, got %#v", unlinkedUser)
+	}
+
+	now := time.Now()
+	signedClaims := signClerkBridgeClaims(t, "test-auth-secret", clerkBridgeClaims{
+		Provider:    "clerk",
+		UserID:      "user_clerk_recreated",
+		SessionID:   "sess_clerk_recreated",
+		Email:       "new@example.com",
+		Name:        "Alice Recreated",
+		IssuedAtMs:  now.UnixMilli(),
+		ExpiresAtMs: now.Add(2 * time.Minute).UnixMilli(),
+	})
+	resp, err := srv.EnsureClerkLocalIdentity(ctx, &accountv1.EnsureClerkLocalIdentityRequest{
+		SignedClaims:      signedClaims,
+		IssueLocalSession: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureClerkLocalIdentity should link recreated Clerk user: %v", err)
+	}
+	if !resp.GetLinkedExistingUser() || resp.GetUser().GetUsername() != "alice" {
+		t.Fatalf("expected recreated Clerk user to link existing local user, got %#v", resp)
+	}
+	relinkedUser, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser after relink failed: %v", err)
+	}
+	if relinkedUser.ClerkUserID != "user_clerk_recreated" {
+		t.Fatalf("expected recreated Clerk id to be linked, got %#v", relinkedUser)
+	}
+}
+
+func TestHandleClerkWebhookRejectsInvalidSignature(t *testing.T) {
+	t.Setenv("CLERK_WEBHOOK_SECRET", clerkWebhookSecret("clerk-webhook-test"))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		"svix-id", "msg_invalid",
+		"svix-timestamp", strconv.FormatInt(time.Now().Unix(), 10),
+		"svix-signature", "v1,invalid",
+	))
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+
+	_, err := srv.HandleClerkWebhook(ctx, &httpbody.HttpBody{Data: []byte(`{"type":"user.deleted","data":{"id":"user_123"}}`)})
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected invalid signature to be rejected, got %v", err)
 	}
