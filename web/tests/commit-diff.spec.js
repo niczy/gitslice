@@ -476,6 +476,8 @@ test.describe('Commit Diff Page (real server)', () => {
 
     await page.goto(`/changesets/${changesetId}`);
     await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
+    await expect(page.getByTestId('changeset-file-panel')).toBeVisible();
+    await expect(page.getByTestId('changeset-file-panel-item')).toHaveCount(1);
 
     const snapshotPicker = page.getByTestId('changeset-snapshot-select');
     await expect(snapshotPicker).toBeVisible();
