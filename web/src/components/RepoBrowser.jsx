@@ -244,6 +244,8 @@ export default function RepoBrowser({
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
   const selectedFileRef = useRef(initialSelectedFilePath || null);
+  const treeEntriesRef = useRef(treeEntries);
+  const treeEntriesScopeRef = useRef('');
   const hasAppliedInitialSliceRef = useRef(false);
   const hasMountedSliceRef = useRef(false);
   const actionMenuRef = useRef(null);
@@ -314,11 +316,16 @@ export default function RepoBrowser({
     }
     return resolveRequestedSliceId(rawSliceId) || rawSliceId;
   }, [rawSliceId, resolveRequestedSliceId]);
+  const treeEntriesScopeKey = useMemo(() => `${sliceId}\0${String(sliceHash || '')}`, [sliceHash, sliceId]);
 
   const initialBrowserDataMatches = useMemo(() => {
     return initialBrowserData?.selectedSliceId === sliceId
       && String(initialBrowserData?.sliceHash || '') === String(sliceHash || '');
   }, [initialBrowserData, sliceHash, sliceId]);
+
+  useIsomorphicLayoutEffect(() => {
+    treeEntriesRef.current = treeEntries;
+  }, [treeEntries]);
 
   useEffect(() => {
     if (!rawSliceId || sliceId === rawSliceId) {
@@ -506,8 +513,16 @@ export default function RepoBrowser({
     const nextFilePayload = initialBrowserData?.selectedFilePayload || null;
 
     if (Array.isArray(initialBrowserData?.rootEntries)) {
-      setTreeEntries({ '': initialBrowserData.rootEntries });
-      setExpandedPaths(['']);
+      const shouldPreserveTree = treeEntriesScopeRef.current === treeEntriesScopeKey;
+      treeEntriesScopeRef.current = treeEntriesScopeKey;
+      setTreeEntries((prev) => (
+        shouldPreserveTree
+          ? { ...prev, '': initialBrowserData.rootEntries }
+          : { '': initialBrowserData.rootEntries }
+      ));
+      setExpandedPaths((prev) => (
+        shouldPreserveTree && prev.includes('') ? prev : ['']
+      ));
       setError(nextSelectedFile ? '' : initialBrowserData.rootEntriesError || '');
     } else if (initialBrowserData?.rootEntriesError) {
       setError(nextSelectedFile ? '' : initialBrowserData.rootEntriesError);
@@ -562,7 +577,7 @@ export default function RepoBrowser({
     setDraftContent('');
     setFileError('');
     setLoadingFilePath('');
-  }, [initialBrowserData, initialBrowserDataMatches]);
+  }, [initialBrowserData, initialBrowserDataMatches, treeEntriesScopeKey]);
 
   useEffect(() => {
     if (!viewingSettings || typeof window === 'undefined') {
@@ -693,6 +708,7 @@ export default function RepoBrowser({
     if (initialBrowserDataMatches && Array.isArray(initialBrowserData?.rootEntries)) {
       return;
     }
+    treeEntriesScopeRef.current = treeEntriesScopeKey;
     setTreeEntries({});
     setExpandedPaths(['']);
     pendingFileRef.current = null;
@@ -709,12 +725,12 @@ export default function RepoBrowser({
     setFileError('');
     setLoadingFilePath('');
     setFocusedEntry({ path: '', type: 'directory' });
-  }, [initialBrowserData, initialBrowserDataMatches, sliceId, sliceHash]);
+  }, [initialBrowserData, initialBrowserDataMatches, sliceId, sliceHash, treeEntriesScopeKey]);
 
-  const encodePath = (value) => value.split('/').map(encodeURIComponent).join('/');
+  const encodePath = useCallback((value) => value.split('/').map(encodeURIComponent).join('/'), []);
 
   // Build URL for entries endpoint based on mode
-  const buildEntriesUrl = (path) => {
+  const buildEntriesUrl = useCallback((path) => {
     const params = new URLSearchParams();
     const encodedPath = path ? encodePath(path) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
@@ -724,10 +740,10 @@ export default function RepoBrowser({
     }
     const queryString = params.toString();
     return `${apiBaseUrl}/v1/slices/${sliceId}/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
-  };
+  }, [encodePath, sliceHash, sliceId]);
 
   // Build URL for file endpoint based on mode
-  const buildFileUrl = (filePath) => {
+  const buildFileUrl = useCallback((filePath) => {
     const encodedPath = filePath ? encodePath(filePath) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
     const params = new URLSearchParams();
@@ -737,9 +753,9 @@ export default function RepoBrowser({
     }
     const queryString = params.toString();
     return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
-  };
+  }, [encodePath, sliceHash, sliceId]);
 
-  const buildRawFileUrl = (filePath) => {
+  const buildRawFileUrl = useCallback((filePath) => {
     const encodedPath = filePath ? encodePath(filePath) : '';
     const params = new URLSearchParams();
     if (sliceHash) {
@@ -747,14 +763,14 @@ export default function RepoBrowser({
     }
     const queryString = params.toString();
     return `/raw/slices/${encodeURIComponent(sliceId)}/${encodedPath}${queryString ? `?${queryString}` : ''}`;
-  };
+  }, [encodePath, sliceHash, sliceId]);
 
   // Build URL for file history endpoint based on mode
-  const buildHistoryUrl = (filePath) => {
+  const buildHistoryUrl = useCallback((filePath) => {
     const encodedPath = filePath ? encodePath(filePath) : '';
     const pathSuffix = encodedPath ? `/${encodedPath}` : '';
     return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
-  };
+  }, [encodePath, sliceId]);
 
   // Fetch file history from the API
   const readErrorMessage = async (response, fallbackMessage) => {
@@ -800,7 +816,7 @@ export default function RepoBrowser({
     } finally {
       setHistoryLoading(false);
     }
-  }, [sliceId]);
+  }, [buildHistoryUrl]);
 
   // Toggle history panel
   const toggleHistory = () => {
@@ -1187,7 +1203,18 @@ export default function RepoBrowser({
       active = false;
       controller.abort();
     };
-  }, [canLoad, hasLoadedRootEntries, initialBrowserData, initialBrowserDataMatches, isActive, sliceId, sliceHash, refreshHistoryToken]);
+  }, [
+    buildEntriesUrl,
+    buildFileUrl,
+    canLoad,
+    hasLoadedRootEntries,
+    initialBrowserData,
+    initialBrowserDataMatches,
+    isActive,
+    refreshHistoryToken,
+    sliceHash,
+    sliceId,
+  ]);
 
   useEffect(() => {
     if (!isActive || !canLoad || !selectedFile || isEditingFile) {
@@ -1250,7 +1277,20 @@ export default function RepoBrowser({
       active = false;
       controller.abort();
     };
-  }, [canLoad, initialBrowserData, initialBrowserDataMatches, isActive, isEditingFile, isLoading, loadingFilePath, refreshHistoryToken, selectedFile, sliceId, sliceHash]);
+  }, [
+    buildFileUrl,
+    canLoad,
+    initialBrowserData,
+    initialBrowserDataMatches,
+    isActive,
+    isEditingFile,
+    isLoading,
+    loadingFilePath,
+    refreshHistoryToken,
+    selectedFile,
+    sliceHash,
+    sliceId,
+  ]);
 
   const fetchEntries = async (path) => {
     if (!canLoad) {
@@ -1279,6 +1319,72 @@ export default function RepoBrowser({
     }
   };
 
+  useEffect(() => {
+    if (!isActive || !canLoad || !selectedFile) {
+      return undefined;
+    }
+
+    const parentPath = getParentDirectoryPath(selectedFile);
+    if (!parentPath) {
+      return undefined;
+    }
+
+    const missingAncestorPaths = getDirectoryAncestorPaths(parentPath).filter((path) => (
+      !Object.prototype.hasOwnProperty.call(treeEntriesRef.current, path)
+    ));
+    if (missingAncestorPaths.length === 0) {
+      return undefined;
+    }
+
+    let active = true;
+    const controller = new AbortController();
+
+    const hydrateFileAncestors = async () => {
+      for (const path of missingAncestorPaths) {
+        if (!active) {
+          return;
+        }
+        if (Object.prototype.hasOwnProperty.call(treeEntriesRef.current, path)) {
+          continue;
+        }
+
+        try {
+          const response = await fetchWithAuth(buildEntriesUrl(path), {
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            return;
+          }
+          const payload = await response.json();
+          if (!active) {
+            return;
+          }
+          const entries = payload.entries || [];
+          setTreeEntries((prev) => {
+            if (Object.prototype.hasOwnProperty.call(prev, path)) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [path]: entries,
+            };
+          });
+        } catch (err) {
+          if (err?.name !== 'AbortError') {
+            return;
+          }
+        }
+      }
+    };
+
+    hydrateFileAncestors();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [buildEntriesUrl, canLoad, isActive, selectedFile, treeEntriesScopeKey]);
+
   const openDirectoryPath = async (targetPath, options = {}) => {
     if (!canLoad) {
       return;
@@ -1295,7 +1401,7 @@ export default function RepoBrowser({
       writeBrowserState({ dir: normalizedPath });
     }
 
-    if (!Object.prototype.hasOwnProperty.call(treeEntries, normalizedPath)) {
+    if (!Object.prototype.hasOwnProperty.call(treeEntriesRef.current, normalizedPath)) {
       await fetchEntries(normalizedPath);
     }
 
