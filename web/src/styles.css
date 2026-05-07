@@ -4100,6 +4100,15 @@ body {
   gap: 8px;
 }
 
+.changeset-detail-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .changeset-snapshot-picker {
   display: inline-flex;
   align-items: center;
@@ -4132,6 +4141,10 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text-secondary);
+}
+
+.changeset-detail-page .diff-action-error {
+  margin: 0 0 12px;
 }
 
 .changeset-no-patch {
@@ -4289,6 +4302,13 @@ body {
   .diff-top-bar {
     padding: 10px 12px;
     gap: 10px;
+  }
+  .app-shell--browser .changeset-detail-page .diff-top-bar {
+    grid-template-columns: 1fr;
+  }
+  .app-shell--browser .changeset-detail-page .changeset-detail-controls {
+    justify-content: flex-start;
+    justify-self: stretch;
   }
   .diff-content {
     padding: 10px;
@@ -7701,6 +7721,14 @@ button[data-testid="topbar-get-started"]:hover {
   padding: 10px 16px;
   border-bottom: 1px solid var(--np-border-soft);
   background: var(--np-surface);
+}
+
+.app-shell--browser .changeset-detail-page .diff-top-bar {
+  grid-template-columns: auto minmax(240px, 1fr) minmax(0, auto);
+}
+
+.app-shell--browser .changeset-detail-page .changeset-detail-controls {
+  justify-self: end;
 }
 
 .app-shell--browser .diff-top-title {
