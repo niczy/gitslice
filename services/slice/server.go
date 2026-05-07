@@ -1077,7 +1077,11 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		return nil, err
 	}
 
-	modifiedFiles := normalizeModifiedFiles(req.ModifiedFiles)
+	fileContents, err := normalizeChangesetFileContentChanges(req.GetFileContents())
+	if err != nil {
+		return nil, err
+	}
+	modifiedFiles := mergeModifiedFilesWithFileContents(req.ModifiedFiles, fileContents)
 
 	// Validate modified files
 	for _, fileID := range modifiedFiles {
@@ -1112,6 +1116,9 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		}
 		if !authz.HasSliceViewAccess(slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+		}
+		if err := s.applyChangesetFileContents(ctx, existing.SliceID, fileContents); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
 		}
 
 		existing.Hash = fmt.Sprintf("hash-%d", time.Now().UnixNano())
@@ -1148,6 +1155,9 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	if err := s.applyChangesetFileContents(ctx, req.SliceId, fileContents); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
 	}
 
 	id := ""
@@ -1811,6 +1821,98 @@ func normalizeModifiedFiles(files []string) []string {
 	return normalized
 }
 
+type changesetFileContentChange struct {
+	path          string
+	content       []byte
+	deleted       bool
+	executable    bool
+	symlinkTarget string
+}
+
+func normalizeChangesetFileContentChanges(changes []*slicev1.FileContentChange) ([]changesetFileContentChange, error) {
+	if len(changes) == 0 {
+		return nil, nil
+	}
+
+	byPath := make(map[string]changesetFileContentChange, len(changes))
+	for _, change := range changes {
+		if change == nil {
+			continue
+		}
+		filePath := cleanDiffPath(change.GetPath())
+		if filePath == "" {
+			return nil, status.Error(codes.InvalidArgument, "file content path is required")
+		}
+		if err := common.ValidateFileID(filePath); err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid file content path %s: %v", filePath, err))
+		}
+		byPath[filePath] = changesetFileContentChange{
+			path:          filePath,
+			content:       append([]byte(nil), change.GetContent()...),
+			deleted:       change.GetDeleted(),
+			executable:    change.GetExecutable(),
+			symlinkTarget: strings.TrimSpace(change.GetSymlinkTarget()),
+		}
+	}
+	if len(byPath) == 0 {
+		return nil, nil
+	}
+
+	paths := make([]string, 0, len(byPath))
+	for filePath := range byPath {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	normalized := make([]changesetFileContentChange, 0, len(paths))
+	for _, filePath := range paths {
+		normalized = append(normalized, byPath[filePath])
+	}
+	return normalized, nil
+}
+
+func mergeModifiedFilesWithFileContents(files []string, changes []changesetFileContentChange) []string {
+	seen := make(map[string]struct{}, len(files)+len(changes))
+	out := make([]string, 0, len(files)+len(changes))
+	for _, filePath := range normalizeModifiedFiles(files) {
+		cleaned := cleanDiffPath(filePath)
+		if cleaned == "" {
+			continue
+		}
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	for _, change := range changes {
+		if change.path == "" {
+			continue
+		}
+		if _, exists := seen[change.path]; exists {
+			continue
+		}
+		seen[change.path] = struct{}{}
+		out = append(out, change.path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *sliceServiceServer) applyChangesetFileContents(ctx context.Context, sliceID string, changes []changesetFileContentChange) error {
+	for _, change := range changes {
+		if change.deleted {
+			if err := s.removeSliceFilePath(ctx, sliceID, change.path); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.upsertSliceFilePathWithMetadata(ctx, sliceID, change.path, "", change.content, change.executable, change.symlinkTarget); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func revertModifiedFiles(change *models.FileChangeRecord) []string {
 	if change == nil {
 		return nil
@@ -2307,27 +2409,34 @@ func (s *sliceServiceServer) loadRevertContentByHash(ctx context.Context, conten
 }
 
 func (s *sliceServiceServer) upsertSliceFilePath(ctx context.Context, sliceID, filePath, contentHash string, data []byte) error {
+	return s.upsertSliceFilePathWithMetadata(ctx, sliceID, filePath, contentHash, data, false, "")
+}
+
+func (s *sliceServiceServer) upsertSliceFilePathWithMetadata(ctx context.Context, sliceID, filePath, contentHash string, data []byte, executable bool, symlinkTarget string) error {
 	cleanedPath := cleanDiffPath(filePath)
 	if cleanedPath == "" {
 		return fmt.Errorf("file path is empty")
 	}
 
-	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       fmt.Sprintf("%s:%s", sliceID, cleanedPath),
-		Path:     cleanedPath,
-		Type:     "file",
-		ParentID: sliceID,
-		Size:     int64(len(data)),
-	}); err != nil {
-		return fmt.Errorf("failed to upsert file entry: %w", err)
-	}
-
-	manifest, err := storage.WriteSliceFileManifest(ctx, s.storage, sliceID, cleanedPath, append([]byte(nil), data...))
+	manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, s.storage, sliceID, cleanedPath, append([]byte(nil), data...), executable, symlinkTarget)
 	if err != nil {
 		return fmt.Errorf("failed to upsert file content: %w", err)
 	}
 	if expected := strings.TrimSpace(contentHash); expected != "" && expected != strings.TrimSpace(manifest.Hash) {
 		return fmt.Errorf("content hash mismatch for %s", cleanedPath)
+	}
+
+	if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:            fmt.Sprintf("%s:%s", sliceID, cleanedPath),
+		Path:          cleanedPath,
+		Type:          "file",
+		ParentID:      sliceID,
+		Size:          int64(len(data)),
+		Hash:          manifest.Hash,
+		Executable:    executable,
+		SymlinkTarget: symlinkTarget,
+	}); err != nil {
+		return fmt.Errorf("failed to upsert file entry: %w", err)
 	}
 
 	if err := s.storage.AddFileToSlice(ctx, cleanedPath, sliceID); err != nil {

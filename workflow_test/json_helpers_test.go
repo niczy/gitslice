@@ -8,7 +8,9 @@ type changesetCreateJSON struct {
 }
 
 type mergeJSON struct {
-	Status string `json:"status"`
+	ChangesetID   string `json:"changeset_id"`
+	Status        string `json:"status"`
+	NewCommitHash string `json:"new_commit_hash"`
 }
 
 type changesetRebaseJSON struct {
