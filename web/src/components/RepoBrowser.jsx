@@ -120,6 +120,11 @@ const getDirectoryAncestorPaths = (path) => {
   return ancestors;
 };
 
+const getParentDirectoryPath = (path) => {
+  const parts = String(path || '').split('/').filter(Boolean);
+  return parts.slice(0, -1).join('/');
+};
+
 const getPreviewMeta = (filePath, encodedContent) => {
   const extension = getFileExtension(filePath);
   if (extension === 'pdf') {
@@ -1391,7 +1396,12 @@ export default function RepoBrowser({
   };
 
   const handleBreadcrumbClick = async (path) => {
-    await openDirectoryPath(path);
+    const normalizedPath = normalizeWorkspaceResultPath(path);
+    const normalizedSelectedFile = normalizeWorkspaceResultPath(selectedFile);
+    const directoryPath = normalizedSelectedFile && normalizedPath === normalizedSelectedFile
+      ? getParentDirectoryPath(normalizedSelectedFile)
+      : normalizedPath;
+    await openDirectoryPath(directoryPath);
   };
 
   const renderTree = (path, depth = 0) => {
@@ -1562,6 +1572,10 @@ export default function RepoBrowser({
                     const isSlicePrefix = index === 0;
                     const hasPathAfterPrefix = visibleBreadcrumbs.length > 1;
                     const separator = isSlicePrefix ? (hasPathAfterPrefix ? '://' : '') : (index < visibleBreadcrumbs.length - 1 ? '/' : '');
+                    const isSelectedFileCrumb = Boolean(
+                      selectedFile
+                      && normalizeWorkspaceResultPath(crumb.path) === normalizeWorkspaceResultPath(selectedFile),
+                    );
                     return (
                       <Button
                         key={`${crumb.path || 'slice-root'}-${index}`}
@@ -1569,7 +1583,11 @@ export default function RepoBrowser({
                         variant="ghost"
                         className="breadcrumb"
                         onClick={() => handleBreadcrumbClick(crumb.path)}
-                        title={crumb.name === '…' ? 'Jump to parent folder' : crumb.name}
+                        title={
+                          isSelectedFileCrumb
+                            ? 'Open containing folder'
+                            : (crumb.name === '…' ? 'Jump to parent folder' : crumb.name)
+                        }
                       >
                         <span className="breadcrumb-label">{crumb.name}</span>
                         {separator && <span className="separator">{separator}</span>}

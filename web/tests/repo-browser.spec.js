@@ -61,6 +61,23 @@ test.describe('Root Repository Browsing (real server)', () => {
     await expect(preview).not.toBeEmpty();
   });
 
+  test('opens the containing folder from the selected file breadcrumb', async ({ page }) => {
+    await openRootRepository(page);
+    await openGitsliceRepositoryRoot(page);
+
+    await openPreviewEntry(page, /^README\.md\b/i);
+    const fileBreadcrumb = page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i });
+    await expect(fileBreadcrumb).toBeVisible();
+
+    await fileBreadcrumb.click();
+
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page.getByTestId('folder-preview')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
+    await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
+    await expect(page.locator('.code-content .panel-error')).toHaveCount(0);
+  });
+
   test('navigates into subdirectories and back', async ({ page }) => {
     await openRootRepository(page);
     await openGitsliceRepositoryRoot(page);
