@@ -77,6 +77,29 @@ func clerkWebhookCtx(t *testing.T, ctx context.Context, payload []byte, secret s
 	))
 }
 
+func startClerkUserFixture(t *testing.T, userStatuses map[string]int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected Clerk fixture method: %s", r.Method)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk_test_lazy_clerk" {
+			t.Errorf("unexpected Clerk fixture authorization header: %q", got)
+		}
+		userID := strings.TrimPrefix(r.URL.Path, "/users/")
+		statusCode, ok := userStatuses[userID]
+		if !ok {
+			statusCode = http.StatusNotFound
+		}
+		w.WriteHeader(statusCode)
+		if statusCode == http.StatusOK {
+			_, _ = w.Write([]byte(`{"id":"` + userID + `"}`))
+		}
+	}))
+}
+
 func signClerkBridgeClaims(t *testing.T, secret string, claims clerkBridgeClaims) string {
 	t.Helper()
 
@@ -493,6 +516,115 @@ func TestEnsureClerkLocalIdentityRequiresChosenUsernameForNewUser(t *testing.T) 
 	}
 	if _, err := srv.st.GetUser(ctx, "auto-choice"); err != storage.ErrEntryNotFound {
 		t.Fatalf("expected no auto-created user, got %v", err)
+	}
+}
+
+func TestEnsureClerkLocalIdentityRelinksDeletedClerkUserByEmail(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "clerk")
+	t.Setenv("AUTH_SECRET", "test-auth-secret")
+	t.Setenv("CLERK_SECRET_KEY", "sk_test_lazy_clerk")
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		Name:         "Alice Old",
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "clerk",
+		ClerkUserID:  "user_clerk_deleted",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	clerkAPI := startClerkUserFixture(t, map[string]int{
+		"user_clerk_deleted": http.StatusNotFound,
+	})
+	defer clerkAPI.Close()
+	srv := &accountServiceServer{
+		st:              st,
+		clerkHTTPClient: clerkAPI.Client(),
+		clerkAPIBaseURL: clerkAPI.URL,
+	}
+	now := time.Now()
+	signedClaims := signClerkBridgeClaims(t, "test-auth-secret", clerkBridgeClaims{
+		Provider:          "clerk",
+		UserID:            "user_clerk_recreated",
+		SessionID:         "sess_clerk_recreated",
+		Email:             "alice@example.com",
+		Name:              "Alice Recreated",
+		PreferredUsername: "alice-recreated",
+		IssuedAtMs:        now.UnixMilli(),
+		ExpiresAtMs:       now.Add(2 * time.Minute).UnixMilli(),
+	})
+
+	resp, err := srv.EnsureClerkLocalIdentity(ctx, &accountv1.EnsureClerkLocalIdentityRequest{
+		SignedClaims:      signedClaims,
+		IssueLocalSession: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureClerkLocalIdentity should relink recreated Clerk user: %v", err)
+	}
+	if !resp.GetLinkedExistingUser() || resp.GetUser().GetUsername() != "alice" || resp.GetCreatedUser() {
+		t.Fatalf("expected relinked existing user, got %#v", resp)
+	}
+	if resp.GetLocalAuth() == nil || resp.GetLocalAuth().GetAccessToken() == "" {
+		t.Fatalf("expected local auth session from Clerk relink, got %#v", resp)
+	}
+	relinkedUser, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if relinkedUser.ClerkUserID != "user_clerk_recreated" || relinkedUser.AuthSource != "clerk" {
+		t.Fatalf("expected recreated Clerk id to be linked, got %#v", relinkedUser)
+	}
+	assertHomeSliceProvisioned(t, ctx, srv.st, "alice")
+}
+
+func TestEnsureClerkLocalIdentityRejectsRelinkWhenOldClerkUserStillExists(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "clerk")
+	t.Setenv("AUTH_SECRET", "test-auth-secret")
+	t.Setenv("CLERK_SECRET_KEY", "sk_test_lazy_clerk")
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "alice",
+		PrimaryEmail: "alice@example.com",
+		AuthSource:   "clerk",
+		ClerkUserID:  "user_clerk_existing",
+	}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	clerkAPI := startClerkUserFixture(t, map[string]int{
+		"user_clerk_existing": http.StatusOK,
+	})
+	defer clerkAPI.Close()
+	srv := &accountServiceServer{
+		st:              st,
+		clerkHTTPClient: clerkAPI.Client(),
+		clerkAPIBaseURL: clerkAPI.URL,
+	}
+	now := time.Now()
+	signedClaims := signClerkBridgeClaims(t, "test-auth-secret", clerkBridgeClaims{
+		Provider:    "clerk",
+		UserID:      "user_clerk_other",
+		SessionID:   "sess_clerk_other",
+		Email:       "alice@example.com",
+		Name:        "Alice Other",
+		IssuedAtMs:  now.UnixMilli(),
+		ExpiresAtMs: now.Add(2 * time.Minute).UnixMilli(),
+	})
+
+	_, err := srv.EnsureClerkLocalIdentity(ctx, &accountv1.EnsureClerkLocalIdentityRequest{
+		SignedClaims:      signedClaims,
+		IssueLocalSession: true,
+	})
+	if status.Code(err) != codes.AlreadyExists || !strings.Contains(err.Error(), "email already linked to another Clerk user") {
+		t.Fatalf("expected existing Clerk user conflict, got %v", err)
+	}
+	user, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if user.ClerkUserID != "user_clerk_existing" {
+		t.Fatalf("expected old Clerk id to remain, got %#v", user)
 	}
 }
 
