@@ -146,8 +146,8 @@ mkdir ui-refresh && cd ui-refresh
 gs slice checkout <slice-id-or-slug>
 $EDITOR src/routes/settings.tsx
 gs slice diff
-gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset merge <changeset-id>`}</code>
+gs slice export --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset merge`}</code>
             </pre>
             <ul className="landing-inline-facts">
               {CHECKOUT_FACTS.map((fact) => (

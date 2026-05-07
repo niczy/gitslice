@@ -83,7 +83,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 	files := fs.String("files", "", "Comma-separated file list")
 	author := fs.String("author", "user", "Author of the changeset")
 	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
-	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging (default behavior)")
+	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging")
 	noMerge := fs.Bool("no-merge", false, "Alias for --review-only")
 	explicitMerge := fs.Bool("merge", false, "Merge the tracked changeset after review")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
@@ -91,6 +91,13 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 	jsonEnabled := jsonRequested || *jsonOutput
 	if (*reviewOnly || *noMerge) && *explicitMerge {
 		commandFatal("INVALID_ARGUMENT", "Use either --merge or --review-only/--no-merge, not both.", false, "")
+	}
+	shouldMerge := commandName == "publish"
+	if *reviewOnly || *noMerge {
+		shouldMerge = false
+	}
+	if *explicitMerge {
+		shouldMerge = true
 	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
@@ -127,6 +134,10 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 		}
 		changesetOutput = buildChangesetOutputFromInfo(reviewResp.GetChangeset())
 	} else {
+		fileContents, contentErr := buildLocalChangesetFileContents(".", modifiedFiles)
+		if contentErr != nil {
+			commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice diff", "Cannot read local changes: %v", contentErr)
+		}
 		createResp, createErr := cli.sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
 			SliceId:        sliceID,
 			BaseCommitHash: strings.TrimSpace(*base),
@@ -134,6 +145,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 			Author:         strings.TrimSpace(*author),
 			Message:        strings.TrimSpace(*message),
 			ChangesetId:    resolvedChangesetID,
+			FileContents:   fileContents,
 		})
 		if createErr != nil {
 			commandFatalf("CHANGESET_CREATE_FAILED", true, "", "Failed to create changeset: %v", createErr)
@@ -151,7 +163,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 		changesetOutput = buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles)
 	}
 
-	if !*explicitMerge {
+	if !shouldMerge {
 		if jsonEnabled {
 			writeJSONOutput(jsonSlicePublishOutput{
 				Changeset:      changesetOutput,
@@ -170,7 +182,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 		}
 		fmt.Printf("Status: %s\n", changesetOutput.Status)
 		printChangesetReview(reviewResp, false)
-		fmt.Printf("Merge explicitly with: gs changeset merge %s\n", targetChangesetID)
+		fmt.Println("Merge explicitly with: gs changeset merge")
 		return
 	}
 

@@ -103,6 +103,10 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	if len(modifiedFiles) == 0 {
 		commandFatal("NO_LOCAL_CHANGES", "No modified files specified and working tree is clean", false, "Edit files or pass --files explicitly")
 	}
+	fileContents, err := buildLocalChangesetFileContents(".", modifiedFiles)
+	if err != nil {
+		commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice diff", "Cannot read local changes: %v", err)
+	}
 
 	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
 	if err != nil {
@@ -117,6 +121,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		Author:         *author,
 		Message:        *message,
 		ChangesetId:    resolvedChangesetID,
+		FileContents:   fileContents,
 	}
 
 	resp, err := cli.sliceClient.CreateChangeset(ctx, req)
@@ -233,12 +238,19 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
-	if fs.NArg() < 1 {
-		commandUsage("Usage: gs changeset merge <changeset-id> [--json]")
+	changesetID, err := resolveChangesetIDForRead("")
+	if fs.NArg() == 1 {
+		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
+	} else if fs.NArg() > 1 {
+		commandUsage("Usage: gs changeset merge [<changeset-id>] [--json]")
+		return
+	}
+	if err != nil {
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
 		return
 	}
 
-	req := &slicev1.MergeChangesetRequest{ChangesetId: fs.Arg(0)}
+	req := &slicev1.MergeChangesetRequest{ChangesetId: changesetID}
 	resp, err := cli.sliceClient.MergeChangeset(ctx, req)
 	if err != nil {
 		commandFatalf("CHANGESET_MERGE_FAILED", true, "gs slice sync", "Failed to merge changeset: %v", err)
@@ -399,7 +411,7 @@ func printMergeConflicts(conflicts []*slicev1.Conflict) {
 
 func printSliceConflictGuidance() {
 	fmt.Println("Hint: sync to the latest slice head, review your local changes, then publish again.")
-	fmt.Println("      Suggested flow: gs slice sync && gs slice diff && gs slice publish && gs changeset merge <changeset-id>")
+	fmt.Println("      Suggested flow: gs slice sync && gs slice diff && gs slice export && gs changeset merge")
 }
 
 func printMergeResult(resp *slicev1.MergeChangesetResponse) {
@@ -422,7 +434,7 @@ func printMergeResult(resp *slicev1.MergeChangesetResponse) {
 		printSliceConflictGuidance()
 	case slicev1.MergeStatus_MERGE_STATUS_STALE_BASE:
 		fmt.Println("Hint: rebase the changeset onto the latest slice head, then merge again.")
-		fmt.Printf("      Suggested flow: gs changeset rebase %s && gs changeset merge %s\n", resp.GetChangesetId(), resp.GetChangesetId())
+		fmt.Printf("      Suggested flow: gs changeset rebase %s && gs changeset merge\n", resp.GetChangesetId())
 	case slicev1.MergeStatus_MERGE_STATUS_LOCKED:
 		fmt.Println("Hint: another merge is already operating on this slice or file set. Retry shortly.")
 	}

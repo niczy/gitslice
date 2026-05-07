@@ -370,11 +370,13 @@ gs slice diff
 gs slice restore --dry-run
 gs slice restore
 gs slice sync
-gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset merge <changeset-id>
+gs slice export --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset merge
+# Or export and merge in one step:
+gs slice publish --message "refresh settings page"
 ```
 
-If the working tree is already clean but a tracked changeset exists, `gs slice publish` reuses that tracked changeset for review instead of failing. It does not merge by default; use `gs changeset merge <changeset-id>` or `gs slice publish --merge` when you want to merge explicitly.
+`gs slice export` creates or updates the tracked changeset without merging it. `gs changeset merge` uses the changeset tracked by the current checkout when no ID is passed. `gs slice publish` is the convenience form for export plus merge; if the working tree is already clean but a tracked changeset exists, it reuses that tracked changeset instead of failing.
 
 Useful day-to-day helpers:
 

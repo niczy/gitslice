@@ -43,7 +43,7 @@ func TestConflictListChangeset(t *testing.T) {
 	if !strings.Contains(output, "MERGE_STATUS_CONFLICT") {
 		t.Fatalf("expected merge conflict status, got: %s", output)
 	}
-	if !strings.Contains(output, "gs slice sync && gs slice diff && gs slice publish && gs changeset merge <changeset-id>") {
+	if !strings.Contains(output, "gs slice sync && gs slice diff && gs slice export && gs changeset merge") {
 		t.Fatalf("expected merge conflict guidance, got: %s", output)
 	}
 

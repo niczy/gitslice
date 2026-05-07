@@ -205,12 +205,21 @@ message CreateChangesetRequest {
   string author = 5;
   string message = 6;
   string changeset_id = 7; // Optional: append a new snapshot to this changeset.
+  repeated FileContentChange file_contents = 8; // Optional: file payloads for local checkout changes.
 }
 
 message CreateChangesetResponse {
   string changeset_id = 1;
   string changeset_hash = 2;
   ChangesetStatus status = 3;
+}
+
+message FileContentChange {
+  string path = 1;
+  bytes content = 2;
+  bool deleted = 3;
+  bool executable = 4;
+  string symlink_target = 5;
 }
 
 message ChangesetChunk {

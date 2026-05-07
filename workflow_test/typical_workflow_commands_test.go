@@ -435,13 +435,8 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	}
 
 	publishResp := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish")
-	if !publishResp.ReusedExisting || !publishResp.ReviewOnly || publishResp.Merge != nil {
-		t.Fatalf("expected publish to reuse tracked changeset without merging, got: %+v", publishResp)
-	}
-
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, workdir, "changeset", "merge", changesetID)
-	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
-		t.Fatalf("expected explicit merge success, got: %+v", mergeResp)
+	if !publishResp.ReusedExisting || publishResp.ReviewOnly || publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected publish to reuse and merge tracked changeset, got: %+v", publishResp)
 	}
 
 	mergedList := runCLIJSONOrFail[changesetListJSON](t, workdir, "changeset", "list", "--status", "merged")
@@ -454,6 +449,75 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	}
 	if !foundMerged {
 		t.Fatalf("expected merged changeset in list output, got: %+v", mergedList)
+	}
+}
+
+func TestSliceExportThenTrackedChangesetMergeAppendsCommitAndUpdatesTree(t *testing.T) {
+	sliceID := fmt.Sprintf("slice-export-merge-%d", time.Now().UnixNano())
+	fileRel := filepath.ToSlash(filepath.Join("src", "app.txt"))
+	initialContent := "version one\n"
+	updatedContent := "version two\n"
+
+	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
+		fileRel: {content: []byte(initialContent)},
+	})
+
+	checkoutDir := checkoutFocusedSliceRef(t, sliceID)
+	beforeHistory := runCLIJSONOrFail[sliceHistoryJSON](t, checkoutDir, "slice", "history")
+	if len(beforeHistory.Commits) == 0 {
+		t.Fatalf("expected initial slice history, got: %+v", beforeHistory)
+	}
+	beforeHead := beforeHistory.Commits[0].CommitHash
+
+	if err := os.WriteFile(filepath.Join(checkoutDir, filepath.FromSlash(fileRel)), []byte(updatedContent), 0o644); err != nil {
+		t.Fatalf("update checked out file: %v", err)
+	}
+
+	createResp := runCLIJSONOrFail[changesetCreateJSON](t, checkoutDir, "changeset", "create", "--message", "export then merge workflow")
+	if createResp.ChangesetID == "" {
+		t.Fatalf("expected created changeset, got: %+v", createResp)
+	}
+
+	exportResp := runCLIJSONOrFail[slicePublishJSON](t, checkoutDir, "slice", "export", "--message", "export then merge workflow")
+	if exportResp.Changeset.ChangesetID != createResp.ChangesetID ||
+		!exportResp.ReviewOnly ||
+		exportResp.Merge != nil ||
+		exportResp.Review.ReviewStatus != "READY_FOR_MERGE" {
+		t.Fatalf("expected export to update tracked changeset without merging, got: %+v", exportResp)
+	}
+
+	afterExportHistory := runCLIJSONOrFail[sliceHistoryJSON](t, checkoutDir, "slice", "history")
+	if len(afterExportHistory.Commits) != len(beforeHistory.Commits) || afterExportHistory.Commits[0].CommitHash != beforeHead {
+		t.Fatalf("expected export to leave history unchanged, before=%+v after=%+v", beforeHistory, afterExportHistory)
+	}
+
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutDir, "changeset", "merge")
+	if mergeResp.Status != "MERGE_STATUS_SUCCESS" ||
+		mergeResp.ChangesetID != createResp.ChangesetID ||
+		mergeResp.NewCommitHash == "" ||
+		mergeResp.NewCommitHash == beforeHead {
+		t.Fatalf("expected tracked changeset merge to append a new commit, got: %+v", mergeResp)
+	}
+
+	afterMergeHistory := runCLIJSONOrFail[sliceHistoryJSON](t, checkoutDir, "slice", "history")
+	if len(afterMergeHistory.Commits) != len(beforeHistory.Commits)+1 ||
+		afterMergeHistory.Commits[0].CommitHash != mergeResp.NewCommitHash {
+		t.Fatalf("expected merge to append commit %s, before=%+v after=%+v", mergeResp.NewCommitHash, beforeHistory, afterMergeHistory)
+	}
+
+	treeOutput := runCLIOrFail(t, checkoutDir, "slice", "tree", "src")
+	if !strings.Contains(treeOutput, "app.txt") {
+		t.Fatalf("expected updated file in slice tree, got: %s", treeOutput)
+	}
+
+	committedContent := runCLIOrFail(t, checkoutDir, "file", "cat", "--slice", sliceID, "--commit", mergeResp.NewCommitHash, "--raw", fileRel)
+	if committedContent != updatedContent {
+		t.Fatalf("expected committed file content %q, got %q", updatedContent, committedContent)
+	}
+
+	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status")
+	if statusResp.TrackedChangesetID != "" {
+		t.Fatalf("expected tracked changeset to clear after merge, got: %+v", statusResp)
 	}
 }
 
@@ -615,11 +679,11 @@ func TestComprehensiveNoGitSlicePublishAndSyncWorkflow(t *testing.T) {
 		t.Fatalf("expected tracked changeset show to cover 2 remaining paths, got: %+v", showResp)
 	}
 
-	publishResp := runCLIJSONOrFail[slicePublishJSON](t, checkoutA, "slice", "publish", "--message", "comprehensive no-git workflow")
+	publishResp := runCLIJSONOrFail[slicePublishJSON](t, checkoutA, "slice", "export", "--message", "comprehensive no-git workflow")
 	if !publishResp.ReviewOnly || publishResp.Merge != nil {
-		t.Fatalf("expected publish to export without merging, got: %+v", publishResp)
+		t.Fatalf("expected export without merging, got: %+v", publishResp)
 	}
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutA, "changeset", "merge", publishResp.Changeset.ChangesetID)
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutA, "changeset", "merge")
 	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
 		t.Fatalf("expected explicit merge success, got: %+v", mergeResp)
 	}
