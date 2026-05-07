@@ -1,5 +1,7 @@
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-sans);
   line-height: 1.6;
   font-weight: 400;
   color: #111827;
@@ -610,7 +612,7 @@ body {
 }
 
 .agent-terminal-mock {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   line-height: 1.6;
 }
@@ -1006,7 +1008,7 @@ body {
 }
 
 .chat-tone-meta {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 0.82rem;
   background: #f4f6fa;
   color: #4b5563;
@@ -1618,7 +1620,7 @@ body {
 }
 
 .landing-terminal-note code {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--text-primary);
 }
@@ -2141,7 +2143,7 @@ body {
   border-radius: 8px;
   background: #f6f8fa;
   border: 1px solid var(--border);
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--text-primary);
   overflow-x: auto;
@@ -3101,7 +3103,7 @@ body {
   font-size: 0.8rem;
   line-height: 1.6;
   border: 1px solid var(--border);
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
   transition: all 200ms ease;
 }
 
@@ -3115,7 +3117,7 @@ body {
 }
 
 .file-preview-markdown {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-sans);
   font-size: 0.92rem;
   line-height: 1.7;
   white-space: normal;
@@ -3150,7 +3152,7 @@ body {
 }
 
 .file-preview-markdown code {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
   background: rgba(15, 23, 42, 0.06);
   border-radius: 4px;
   padding: 0.1rem 0.3rem;
@@ -3199,7 +3201,7 @@ body {
   resize: none;
   font-size: 0.8rem;
   line-height: 1.6;
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-family: var(--font-mono);
 }
 
 .media-preview-wrapper {
@@ -3647,7 +3649,7 @@ body {
 }
 
 .commit-hash {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--accent);
   background: rgba(9, 105, 218, 0.08);
@@ -3690,7 +3692,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
 }
 
@@ -3912,7 +3914,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
 }
 
@@ -3991,7 +3993,7 @@ body {
 }
 
 .diff-file-path {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   color: var(--text-primary);
   word-break: break-all;
@@ -4130,7 +4132,7 @@ body {
   background: #f6f8fa;
   overflow-x: auto;
   padding: 10px 12px;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 1.45;
 }
@@ -4204,7 +4206,7 @@ body {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1.45;
 }
@@ -4541,7 +4543,7 @@ body {
 }
 
 .kv-val {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   color: var(--text-primary);
   overflow: hidden;
@@ -4577,7 +4579,7 @@ body {
 }
 
 .org-slug {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--text-muted);
 }
@@ -5067,7 +5069,7 @@ body {
 
 .docs-page :where(h1, h2, h3) {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   color: var(--docs-ink);
   letter-spacing: 0;
 }
@@ -5131,7 +5133,7 @@ body {
   border: 0;
   background: transparent;
   color: inherit;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.86rem;
   line-height: 1.65;
   white-space: pre;
@@ -5526,7 +5528,7 @@ body {
 
 /* Alexandria editorial redesign */
 :root {
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   color: #1b1c1d;
   background: #faf9fa;
   --surface: #ffffff;
@@ -5560,7 +5562,7 @@ body {
     linear-gradient(180deg, #ffffff 0, #faf9fa 320px),
     #faf9fa;
   color: var(--text-primary);
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 .app-shell {
@@ -5577,16 +5579,16 @@ body {
 }
 
 :where(h1, h2, h3, .brand-text, .section-header h1, .section-header h2, .hero h1) {
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  font-family: var(--font-sans);
   font-weight: 700;
 }
 
 :where(.eyebrow, .status, .sidebar-panel-title, .repo-insight-meta dt, .repo-search-count, .change-type) {
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 :where(code, pre, .code-block, .file-preview, .file-editor, .commit-hash, .repo-search-result-line) {
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .top-bar {
@@ -5638,7 +5640,7 @@ body {
   border-radius: 8px;
   color: #222733;
   background: transparent;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
 }
 
@@ -7210,7 +7212,7 @@ button[data-testid="topbar-get-started"]:hover {
 .breadcrumb {
   min-height: 34px;
   color: #2e3542;
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.82rem;
 }
 
@@ -7296,13 +7298,13 @@ button[data-testid="topbar-get-started"]:hover {
   width: 100%;
   max-width: none;
   box-sizing: border-box;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 .file-preview-markdown h1,
 .file-preview-markdown h2 {
   border-bottom: 0;
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  font-family: var(--font-sans);
 }
 
 .file-preview-markdown pre {
@@ -7400,7 +7402,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .footer-copy {
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  font-family: var(--font-sans);
   color: #222733;
 }
 
@@ -7512,7 +7514,7 @@ button[data-testid="topbar-get-started"]:hover {
   --np-gutter: 16px;
   background: var(--np-bg);
   color: var(--np-text);
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 .app-shell--browser :where(.primary, .ghost, .slice-create-button, .top-search-submit, .history-toggle, .browser-header-secondary, .repo-search-actions button, .repo-search-load-more, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .slice-detail-tab, .slice-activity-filter-btn, .slice-home-actions button, .diff-revert-button) {
@@ -7549,12 +7551,12 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser :where(h1, h2, h3, .sidebar-panel-title, .repo-insight-meta dt, .footer-copy) {
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   letter-spacing: 0;
 }
 
 .app-shell--browser :where(code, pre, .file-preview, .file-editor, .commit-hash, .repo-search-result-line, .breadcrumb) {
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .app-shell--browser {
@@ -8813,7 +8815,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .file-preview-markdown :where(h1, h2, h3) {
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 .app-shell--browser .code-content > .panel-empty {

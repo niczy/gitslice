@@ -1454,6 +1454,9 @@ export function renderDevicePage({ userCode, startupError, authProvider }) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Authorize Device</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {
         color-scheme: light;
@@ -1471,7 +1474,7 @@ export function renderDevicePage({ userCode, startupError, authProvider }) {
       body {
         margin: 0;
         min-height: 100vh;
-        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         color: var(--text);
         background:
           radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 32%),
