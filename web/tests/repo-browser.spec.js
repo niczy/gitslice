@@ -1103,12 +1103,15 @@ test.describe('Slice Activity Pages', () => {
       const time = firstRow.querySelector('.slice-activity-row-meta');
       const status = firstRow.querySelector('.slice-activity-status');
       const arrow = firstRow.querySelector('.slice-activity-row-arrow');
+      const filterButtons = Array.from(pageElement.querySelectorAll('.slice-activity-filter-btn'));
       const rowRect = firstRow.getBoundingClientRect();
       const titleRect = title.getBoundingClientRect();
       const subtitleRect = subtitle.getBoundingClientRect();
       const timeRect = time.getBoundingClientRect();
       const statusRect = status.getBoundingClientRect();
       const arrowRect = arrow.getBoundingClientRect();
+      const filterButtonTop = filterButtons[0]?.getBoundingClientRect().top || 0;
+      const filterSingleRow = filterButtons.every((button) => Math.abs(button.getBoundingClientRect().top - filterButtonTop) <= 4);
       const rectsOverlap = (a, b) => (
         a.left < b.right
         && a.right > b.left
@@ -1125,10 +1128,12 @@ test.describe('Slice Activity Pages', () => {
         documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         contentOverflow: content.scrollWidth - content.clientWidth,
         firstRowOverflow: firstRow.scrollWidth - firstRow.clientWidth,
+        firstRowVerticalOverflow: firstRow.scrollHeight - firstRow.clientHeight,
+        filterSingleRow,
         titleTimeOverlap: rectsOverlap(titleRect, timeRect),
         titleInsideRow: titleRect.left >= rowRect.left - 1 && titleRect.right <= rowRect.right + 1,
-        subtitleBelowTitle: subtitleRect.top >= titleRect.bottom - 1,
-        statusBelowSubtitle: statusRect.top >= subtitleRect.bottom - 1,
+        statusBelowTitle: statusRect.top >= titleRect.bottom - 1,
+        subtitleBelowStatus: subtitleRect.top >= statusRect.bottom - 1,
         arrowInsideRow: arrowRect.left >= rowRect.left && arrowRect.right <= rowRect.right + 1,
         lastRowBottomGap: Math.round(contentRect.bottom - lastRowRect.bottom),
       };
@@ -1137,10 +1142,12 @@ test.describe('Slice Activity Pages', () => {
     expect(mobileLayout.documentOverflow).toBeLessThanOrEqual(1);
     expect(mobileLayout.contentOverflow).toBeLessThanOrEqual(1);
     expect(mobileLayout.firstRowOverflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.firstRowVerticalOverflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.filterSingleRow).toBe(true);
     expect(mobileLayout.titleTimeOverlap).toBe(false);
     expect(mobileLayout.titleInsideRow).toBe(true);
-    expect(mobileLayout.subtitleBelowTitle).toBe(true);
-    expect(mobileLayout.statusBelowSubtitle).toBe(true);
+    expect(mobileLayout.statusBelowTitle).toBe(true);
+    expect(mobileLayout.subtitleBelowStatus).toBe(true);
     expect(mobileLayout.arrowInsideRow).toBe(true);
     expect(mobileLayout.lastRowBottomGap).toBeGreaterThan(8);
   });
