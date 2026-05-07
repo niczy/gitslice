@@ -6239,10 +6239,36 @@ button[data-testid="topbar-get-started"]:hover {
   border-radius: 0 !important;
   color: var(--text-primary) !important;
   text-align: left;
+  white-space: normal;
 }
 
 .slice-activity-row--changeset {
-  grid-template-columns: 34px minmax(0, 1fr) 86px 150px 96px 18px;
+  grid-template-columns: 34px minmax(0, 1fr) minmax(132px, max-content) 96px 18px;
+  grid-template-rows: auto auto;
+}
+
+.slice-activity-row--changeset .slice-activity-row-files {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.slice-activity-row--changeset .slice-activity-row-meta {
+  grid-column: 3;
+  grid-row: 2;
+  justify-self: end;
+}
+
+.slice-activity-row--changeset .slice-activity-status {
+  grid-column: 4;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.slice-activity-row--changeset .slice-activity-row-arrow {
+  grid-column: 5;
+  grid-row: 1 / span 2;
+  align-self: center;
 }
 
 .slice-activity-row:hover {
@@ -7994,13 +8020,19 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .slice-activity-panel {
-  border: 0;
-  background: transparent;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 6px;
+  background: var(--np-surface);
   box-shadow: none;
+  overflow: hidden;
 }
 
 .app-shell--browser .slice-activity-list li + li {
-  border-top: 0;
+  border-top: 1px solid var(--np-border-soft);
+}
+
+.app-shell--browser .slice-activity-panel .slice-activity-row {
+  border-radius: 0 !important;
 }
 
 .app-shell--browser :where(.slice-home-row, .slice-activity-row, .slice-dropdown-item, .diff-file-panel-item, .repo-search-result, .tree-entry) {
@@ -9170,6 +9202,7 @@ button[data-testid="topbar-get-started"]:hover {
   .slice-activity-row-files,
   .slice-activity-status {
     grid-column: 2;
+    grid-row: auto;
     justify-self: start;
     text-align: left;
   }
