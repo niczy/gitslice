@@ -119,6 +119,10 @@ export default function SliceChangesetListPage({
     statusFilter,
   ]);
 
+  const showInitialLoading = isLoading && !loadedKey && changesets.length === 0 && !error;
+  const showChangesets = !error && changesets.length > 0;
+  const showEmpty = !isLoading && !error && changesets.length === 0;
+
   return (
     <section className="slice-activity-page" data-testid="slice-changesets-page">
       <SliceDetailNav
@@ -139,7 +143,7 @@ export default function SliceChangesetListPage({
             <h1>Changesets</h1>
           </div>
           <div className="slice-activity-summary" data-testid="slice-changesets-summary">
-            {isLoading ? 'Loading changesets' : `${changesets.length} shown`}
+            {`${changesets.length} shown`}
           </div>
         </div>
 
@@ -162,8 +166,8 @@ export default function SliceChangesetListPage({
           </div>
         </div>
 
-        <div className="slice-activity-panel">
-          {isLoading && (
+        <div className="slice-activity-panel" aria-busy={isLoading ? 'true' : 'false'}>
+          {showInitialLoading && (
             <div className="slice-activity-list" data-testid="slice-activity-loading">
               {[0, 1, 2, 3].map((item) => (
                 <div className="slice-activity-skeleton" key={item} />
@@ -173,13 +177,13 @@ export default function SliceChangesetListPage({
 
           {!isLoading && error && <div className="panel-error">{error}</div>}
 
-          {!isLoading && !error && changesets.length === 0 && (
+          {showEmpty && (
             <div className="panel-empty" data-testid="slice-changesets-empty">
               No changesets match this filter.
             </div>
           )}
 
-          {!isLoading && !error && changesets.length > 0 && (
+          {showChangesets && (
             <ul className="slice-activity-list" data-testid="slice-changesets-list">
               {changesets.map((changeset) => {
                 const files = changeset.modified_files || [];
