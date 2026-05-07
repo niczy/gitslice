@@ -28,6 +28,25 @@ func IDForUsername(username string) string {
 	return idPrefix + strings.TrimSpace(username)
 }
 
+// ExternalSlugForSlice returns the public slug for a home slice.
+func ExternalSlugForSlice(slice *models.Slice) (string, bool) {
+	if slice == nil {
+		return "", false
+	}
+	sliceID := strings.TrimSpace(slice.ID)
+	if !strings.HasPrefix(sliceID, idPrefix) {
+		return "", false
+	}
+	username := strings.TrimSpace(strings.TrimPrefix(sliceID, idPrefix))
+	if username == "" {
+		return "", false
+	}
+	if createdBy := strings.TrimSpace(slice.CreatedBy); createdBy != "" && createdBy != username {
+		return "", false
+	}
+	return username, true
+}
+
 // VisibleRootPath returns the absolute user-visible home path for a user.
 func VisibleRootPath(username string) string {
 	username = strings.TrimSpace(username)

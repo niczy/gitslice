@@ -58,6 +58,9 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 		if slice.GetSlug() == "" {
 			t.Fatalf("expected slice slug to be populated, got %#v", slice)
 		}
+		if slice.GetSliceId() == "home.alice" && slice.GetSlug() != "alice" {
+			t.Fatalf("expected home slice slug alice, got %#v", slice)
+		}
 	}
 }
 

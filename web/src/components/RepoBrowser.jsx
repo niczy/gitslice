@@ -331,8 +331,18 @@ export default function RepoBrowser({
     if (!rawSliceId || sliceId === rawSliceId) {
       return;
     }
+    const normalizedAuthUsername = String(authUsername || '').trim().toLowerCase();
+    const normalizedRawSliceId = String(rawSliceId || '').trim().toLowerCase();
+    const normalizedSliceId = String(sliceId || '').trim().toLowerCase();
+    if (
+      normalizedAuthUsername
+      && normalizedRawSliceId === normalizedAuthUsername
+      && normalizedSliceId === `home.${normalizedAuthUsername}`
+    ) {
+      return;
+    }
     onSliceChange(sliceId);
-  }, [onSliceChange, rawSliceId, sliceId]);
+  }, [authUsername, onSliceChange, rawSliceId, sliceId]);
 
   const currentSlice = useMemo(() => {
     return slices.find((slice) => slice.slice_id === sliceId) || null;

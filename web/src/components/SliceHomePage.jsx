@@ -35,6 +35,13 @@ function isHomeSlice(slice, homeSliceId) {
   return Boolean(normalizedHomeSliceId && sliceId === normalizedHomeSliceId);
 }
 
+function getSliceRouteRef(slice, homeSliceId) {
+  if (isHomeSlice(slice, homeSliceId)) {
+    return slice?.slug || slice?.name || slice?.slice_id || '';
+  }
+  return slice?.slice_id || '';
+}
+
 function getSliceVisibility(slice) {
   const value = slice?.visibility ?? slice?.Visibility;
   if (value === 2 || value === 'VISIBILITY_PUBLIC' || value === 'PUBLIC' || value === 'public') {
@@ -412,7 +419,7 @@ export default function SliceHomePage({
                     type="button"
                     variant="ghost"
                     className={`slice-home-row${isHome ? ' slice-home-row--home' : ''}`}
-                    onClick={() => onOpenSlice(slice.slice_id)}
+                    onClick={() => onOpenSlice(getSliceRouteRef(slice, homeSliceId))}
                     data-testid="slice-home-row"
                   >
                     <span className="slice-home-row-main">

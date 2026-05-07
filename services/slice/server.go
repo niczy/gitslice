@@ -151,6 +151,9 @@ func canManageSliceVisibility(slice *models.Slice, username string) bool {
 }
 
 func externalSliceSlug(slice *models.Slice) string {
+	if slug, ok := homeslice.ExternalSlugForSlice(slice); ok {
+		return slug
+	}
 	return storage.QualifiedSliceSlug(slice)
 }
 

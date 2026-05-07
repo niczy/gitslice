@@ -67,6 +67,26 @@ export async function fetchOAuthSession() {
   return setCachedSession(await response.json());
 }
 
+export async function completeClerkUsername(username) {
+  const response = await fetch('/auth/clerk/complete-username', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ username: String(username || '').trim().toLowerCase() }),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const payload = await response.json();
+      detail = String(payload?.error || payload?.message || '').trim();
+    } catch {
+      detail = '';
+    }
+    throw new Error(detail || 'Unable to choose username.');
+  }
+  return setCachedSession(await response.json());
+}
+
 export function startOAuthSignIn(provider = 'workos') {
   const normalizedProvider = String(provider || 'workos').trim().toLowerCase();
   const callbackUrl = `${window.location.origin}/slices`;

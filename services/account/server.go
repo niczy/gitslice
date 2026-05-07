@@ -950,22 +950,29 @@ func verifySignedClerkClaims(rawValue string, now time.Time) (*clerkBridgeClaims
 	return &claims, nil
 }
 
-func clerkUsernameBase(req *accountv1.EnsureClerkLocalIdentityRequest, claims *clerkBridgeClaims) string {
-	if claims != nil {
-		if preferred := sanitizeUsernameCandidate(claims.PreferredUsername); strings.TrimSpace(claims.PreferredUsername) != "" {
-			return preferred
-		}
-		if name := sanitizeUsernameCandidate(claims.Name); strings.TrimSpace(claims.Name) != "" {
-			return name
-		}
-		if email := normalizeEmail(claims.Email); email != "" {
-			if local := sanitizeUsernameCandidate(strings.Split(email, "@")[0]); local != "" {
-				return local
-			}
-		}
-		return sanitizeUsernameCandidate(claims.UserID)
+func clerkChosenUsername(req *accountv1.EnsureClerkLocalIdentityRequest) (string, error) {
+	if req == nil || strings.TrimSpace(req.GetPreferredUsername()) == "" {
+		return "", status.Error(codes.FailedPrecondition, "username required")
 	}
-	return "user"
+	username := strings.ToLower(strings.TrimSpace(req.GetPreferredUsername()))
+	if !auth.ValidateUsername(username) {
+		return "", status.Error(codes.InvalidArgument, "invalid username")
+	}
+	return username, nil
+}
+
+func (s *accountServiceServer) ensureUsernameAvailable(ctx context.Context, username string) error {
+	if _, err := s.st.GetUser(ctx, username); err == nil {
+		return status.Error(codes.AlreadyExists, "username already taken")
+	} else if err != storage.ErrEntryNotFound {
+		return status.Error(codes.Internal, "failed to check username")
+	}
+	if _, err := s.st.GetOrganization(ctx, username); err == nil {
+		return status.Error(codes.AlreadyExists, "username already taken")
+	} else if err != storage.ErrEntryNotFound {
+		return status.Error(codes.Internal, "failed to check username")
+	}
+	return nil
 }
 
 func (s *accountServiceServer) ensureWorkOSLocalIdentity(ctx context.Context, claimsSubject, displayName, primaryEmail string, req *accountv1.EnsureWorkOSLocalIdentityRequest) (*ensureWorkOSLocalIdentityResult, error) {
@@ -1319,6 +1326,14 @@ func (s *accountServiceServer) ensureClerkLocalIdentity(ctx context.Context, cla
 		}
 	}
 
+	username, err := clerkChosenUsername(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureUsernameAvailable(ctx, username); err != nil {
+		return nil, err
+	}
+
 	account, createdAccount, err := s.createHumanAttachedAccount(ctx)
 	if err != nil {
 		if stErr, ok := status.FromError(err); ok {
@@ -1327,40 +1342,36 @@ func (s *accountServiceServer) ensureClerkLocalIdentity(ctx context.Context, cla
 		return nil, status.Error(codes.Internal, "failed to create local account")
 	}
 
-	baseUsername := clerkUsernameBase(req, claims)
-	for i := 0; i < 100; i++ {
-		username := usernameCandidateWithSuffix(baseUsername, i)
-		user := &models.User{
-			Username:     username,
-			AccountID:    account.AccountID,
-			Name:         displayName,
-			PrimaryEmail: primaryEmail,
-			AuthSource:   "clerk",
-			ClerkUserID:  claims.UserID,
-		}
-		if err := s.st.CreateUser(ctx, user); err == nil {
-			if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
-				return nil, status.Error(codes.Internal, "failed to provision home slice")
-			}
-			createdUser, err := s.st.GetUser(ctx, username)
-			if err != nil {
-				return nil, status.Error(codes.Internal, "failed to load created user")
-			}
-			return &ensureWorkOSLocalIdentityResult{
-				user:           createdUser,
-				account:        account,
-				createdAccount: createdAccount,
-				createdUser:    true,
-			}, nil
-		} else if err != storage.ErrEntryExists {
-			if err == storage.ErrEntryNotFound {
-				return nil, status.Error(codes.Internal, "failed to attach account to created user")
-			}
-			return nil, status.Error(codes.Internal, "failed to create local user")
-		}
+	user := &models.User{
+		Username:     username,
+		AccountID:    account.AccountID,
+		Name:         displayName,
+		PrimaryEmail: primaryEmail,
+		AuthSource:   "clerk",
+		ClerkUserID:  claims.UserID,
 	}
-
-	return nil, status.Error(codes.Aborted, "failed to allocate local username")
+	if err := s.st.CreateUser(ctx, user); err != nil {
+		if err == storage.ErrEntryExists {
+			return nil, status.Error(codes.AlreadyExists, "username already taken")
+		}
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.Internal, "failed to attach account to created user")
+		}
+		return nil, status.Error(codes.Internal, "failed to create local user")
+	}
+	if _, err := homeslice.EnsureUserHomeSlice(ctx, s.st, username); err != nil {
+		return nil, status.Error(codes.Internal, "failed to provision home slice")
+	}
+	createdUser, err := s.st.GetUser(ctx, username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load created user")
+	}
+	return &ensureWorkOSLocalIdentityResult{
+		user:           createdUser,
+		account:        account,
+		createdAccount: createdAccount,
+		createdUser:    true,
+	}, nil
 }
 
 func ensureClerkLocalIdentityResultToProto(result *ensureWorkOSLocalIdentityResult) *accountv1.EnsureClerkLocalIdentityResponse {

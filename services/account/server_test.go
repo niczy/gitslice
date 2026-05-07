@@ -427,6 +427,7 @@ func TestEnsureClerkLocalIdentityCreatesNewLocalUser(t *testing.T) {
 	resp, err := srv.EnsureClerkLocalIdentity(ctx, &accountv1.EnsureClerkLocalIdentityRequest{
 		SignedClaims:      signedClaims,
 		IssueLocalSession: true,
+		PreferredUsername: "alice-clerk",
 	})
 	if err != nil {
 		t.Fatalf("EnsureClerkLocalIdentity failed: %v", err)
@@ -438,6 +439,35 @@ func TestEnsureClerkLocalIdentityCreatesNewLocalUser(t *testing.T) {
 		t.Fatalf("expected local auth session from Clerk exchange, got %#v", resp)
 	}
 	assertHomeSliceProvisioned(t, ctx, srv.st, "alice-clerk")
+}
+
+func TestEnsureClerkLocalIdentityRequiresChosenUsernameForNewUser(t *testing.T) {
+	t.Setenv("AUTH_PROVIDER", "clerk")
+	t.Setenv("AUTH_SECRET", "test-auth-secret")
+	ctx := context.Background()
+	srv := &accountServiceServer{st: storage.NewInMemoryStorage()}
+	now := time.Now()
+	signedClaims := signClerkBridgeClaims(t, "test-auth-secret", clerkBridgeClaims{
+		Provider:          "clerk",
+		UserID:            "user_clerk_needs_username",
+		SessionID:         "sess_clerk_needs_username",
+		Email:             "needs-username@example.com",
+		Name:              "Needs Username",
+		PreferredUsername: "auto-choice",
+		IssuedAtMs:        now.UnixMilli(),
+		ExpiresAtMs:       now.Add(2 * time.Minute).UnixMilli(),
+	})
+
+	_, err := srv.EnsureClerkLocalIdentity(ctx, &accountv1.EnsureClerkLocalIdentityRequest{
+		SignedClaims:      signedClaims,
+		IssueLocalSession: true,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if _, err := srv.st.GetUser(ctx, "auto-choice"); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected no auto-created user, got %v", err)
+	}
 }
 
 func TestEnsureWorkOSLocalIdentityCanIssueRefreshableLocalSession(t *testing.T) {
