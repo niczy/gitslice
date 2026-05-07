@@ -103,6 +103,9 @@ func gatewayIncomingHeaderMatcher(key string) (string, bool) {
 	if strings.EqualFold(key, "Svix-Signature") {
 		return "svix-signature", true
 	}
+	if strings.EqualFold(key, "X-Gitslice-Clerk-Admin-Claims") {
+		return "x-gitslice-clerk-admin-claims", true
+	}
 	return runtime.DefaultHeaderMatcher(key)
 }
 

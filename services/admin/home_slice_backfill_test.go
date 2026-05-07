@@ -23,9 +23,17 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	svc := newAdminServiceServer(st)
+	t.Setenv("AUTH_SECRET", "test-auth-secret")
+	t.Setenv("ADMIN_USER_EMAILS", "admin@example.com")
 
-	if _, err := st.EnsureUser(ctx, "adminuser"); err != nil {
-		t.Fatalf("EnsureUser(adminuser) failed: %v", err)
+	if err := st.CreateUser(ctx, &models.User{
+		Username:     "adminuser",
+		Name:         "Admin User",
+		PrimaryEmail: "admin@example.com",
+		ClerkUserID:  "user_admin",
+		PasswordHash: "hash",
+	}); err != nil {
+		t.Fatalf("CreateUser(adminuser) failed: %v", err)
 	}
 	if err := st.CreateUser(ctx, &models.User{
 		Username:     "legacyuser",
@@ -59,7 +67,8 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
 
-	resp, err := svc.BackfillHomeSlices(withAdminUser(ctx, "adminuser"), &adminv1.BackfillHomeSlicesRequest{
+	adminCtx := withClerkAdminSession(t, ctx, "user_admin", "admin@example.com")
+	resp, err := svc.BackfillHomeSlices(adminCtx, &adminv1.BackfillHomeSlicesRequest{
 		Usernames: []string{"legacyuser"},
 	})
 	if err != nil {
@@ -84,7 +93,7 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 		t.Fatalf("unexpected copied content: %q", string(copied.Content))
 	}
 
-	second, err := svc.BackfillHomeSlices(withAdminUser(ctx, "adminuser"), &adminv1.BackfillHomeSlicesRequest{
+	second, err := svc.BackfillHomeSlices(adminCtx, &adminv1.BackfillHomeSlicesRequest{
 		Usernames: []string{"legacyuser"},
 	})
 	if err != nil {

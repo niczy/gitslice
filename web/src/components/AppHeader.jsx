@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { UserButton } from '@clerk/react';
-import { BookOpen, Github, LibraryBig, LogIn, Search, User } from 'lucide-react';
+import { BookOpen, Github, LibraryBig, LogIn, Search, ShieldCheck, User } from 'lucide-react';
 
 import { Button } from './ui/button.jsx';
 
@@ -57,6 +57,7 @@ export default function AppHeader({
   navigate,
   onOpenRepos,
   onLogin,
+  isAdminUser = false,
   isNavActive,
   browserSearch,
 }) {
@@ -100,6 +101,7 @@ export default function AppHeader({
   const loginClassName = `nav-link${isNavActive('login') ? ' nav-link--active' : ''}`;
   const getStartedClassName = `nav-link${isNavActive('get-started') ? ' nav-link--active' : ''}`;
   const profileClassName = `nav-link${isNavActive('profile') ? ' nav-link--active' : ''}`;
+  const adminClassName = `nav-link${isNavActive('admin') ? ' nav-link--active' : ''}`;
 
   useEffect(() => {
     if (!showBrowserSearch) {
@@ -318,6 +320,22 @@ export default function AppHeader({
                 {username || 'Profile'}
               </a>
             </Button>
+            {isAdminUser && (
+              <Button
+                asChild
+                variant={isNavActive('admin') ? 'secondary' : 'ghost'}
+                className={adminClassName}
+              >
+                <a
+                  href="/admin"
+                  data-testid="topbar-admin"
+                  onClick={(event) => handleInternalLinkClick(event, () => navigate('admin'))}
+                >
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  Admin
+                </a>
+              </Button>
+            )}
             {authSessionSource === 'clerk' && (
               <UserButton
                 afterSignOutUrl="/"

@@ -207,6 +207,7 @@ const vars = { ...(envConfig.vars || {}) };
 const workerVars = {
   AUTH_PROVIDER: process.env.AUTH_PROVIDER || '',
   ALLOW_DEV_LOGIN: process.env.ALLOW_DEV_LOGIN || '',
+  ADMIN_USER_EMAILS: process.env.ADMIN_USER_EMAILS || '',
   CLERK_PUBLISHABLE_KEY: process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '',
   VITE_CLERK_PUBLISHABLE_KEY: process.env.VITE_CLERK_PUBLISHABLE_KEY || process.env.CLERK_PUBLISHABLE_KEY || '',
   WORKOS_CLIENT_ID: process.env.WORKOS_CLIENT_ID || '',

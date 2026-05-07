@@ -410,6 +410,25 @@ func (s *InMemoryStorage) DeleteSlice(ctx context.Context, sliceID string) error
 
 	delete(s.sliceCommits, sliceID)
 	delete(s.commitsBySliceHash, sliceID)
+	manifestPrefix := sliceID + ":"
+	for key := range s.manifests {
+		if strings.HasPrefix(key, manifestPrefix) {
+			delete(s.manifests, key)
+		}
+	}
+	for bindingID, binding := range s.repoBindings {
+		if binding == nil || binding.SliceID != sliceID {
+			continue
+		}
+		delete(s.repoBindings, bindingID)
+		delete(s.repoBindingsByPath, repoBindingPathKey(binding.SliceID, binding.RootPath))
+		if ownerBindings := s.repoBindingsByOwner[binding.OwnerUsername]; ownerBindings != nil {
+			delete(ownerBindings, bindingID)
+			if len(ownerBindings) == 0 {
+				delete(s.repoBindingsByOwner, binding.OwnerUsername)
+			}
+		}
+	}
 	for commitHash, snapshot := range s.commitSnapshots {
 		if snapshot != nil && snapshot.SliceID == sliceID {
 			delete(s.commitSnapshots, commitHash)

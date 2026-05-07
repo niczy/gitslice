@@ -453,10 +453,10 @@ function App({
   const isClerkUsernameRequired = authSessionSource === 'clerk' && requiresUsername && !username;
   const isAuthenticated = Boolean(username);
   const hasSignedInShell = isAuthenticated || isClerkUsernameRequired;
+  const isAdminUser = Boolean(webSessionQuery.data?.user?.isAdmin || initialSession?.user?.isAdmin);
   const isSliceHomePage = activePage === 'browser' && !browserRouteSliceId;
   const isBrowserLayout = (activePage === 'browser' && Boolean(browserRouteSliceId)) || isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
   const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${isSliceHomePage ? ' page--slice-home' : ''}${activePage === 'profile' ? ' page--profile' : ''}`;
-  const isAdminUser = (username || '').toLowerCase() === 'admin';
   const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
   const hasRouteAuthorization = activePage !== 'admin' || isAdminUser;
@@ -528,6 +528,9 @@ function App({
     if (item === 'profile') {
       return activePage === 'profile';
     }
+    if (item === 'admin') {
+      return activePage === 'admin';
+    }
     if (item === 'login') {
       return activePage === 'login';
     }
@@ -550,6 +553,7 @@ function App({
         navigate={navigate}
         onOpenRepos={openBrowserHome}
         onLogin={openLogin}
+        isAdminUser={isAdminUser}
         isNavActive={isNavActive}
         browserSearch={{
           visible: isBrowserDetail && isAuthenticated,
@@ -718,7 +722,7 @@ function App({
           />
         )}
 
-        {activePage === 'admin' && routeAccessState === 'allowed' && <AdminPage />}
+        {activePage === 'admin' && routeAccessState === 'allowed' && <AdminPage initialIsAdmin={isAdminUser} />}
 
         {isProtectedPage && routeAccessState !== 'allowed' && (
           <RouteAccessState

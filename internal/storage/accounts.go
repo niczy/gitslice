@@ -656,16 +656,68 @@ func (s *InMemoryStorage) DeleteUser(ctx context.Context, username string) error
 		delete(s.userByEmail, email)
 	}
 	delete(s.users, username)
+	if user.AccountID != "" {
+		accountInUse := false
+		for _, existing := range s.users {
+			if existing != nil && existing.AccountID == user.AccountID {
+				accountInUse = true
+				break
+			}
+		}
+		if !accountInUse {
+			if account := s.accounts[user.AccountID]; account != nil && account.ClaimTokenHash != "" {
+				delete(s.accountByClaimTokenHash, account.ClaimTokenHash)
+			}
+			delete(s.accounts, user.AccountID)
+		}
+	}
 
 	if sessionIDs := s.authSessionsByUser[username]; len(sessionIDs) > 0 {
 		for sessionID := range sessionIDs {
 			if session, ok := s.authSessions[sessionID]; ok && session != nil {
 				delete(s.authSessionByToken, session.Token)
+				if session.RefreshToken != "" {
+					delete(s.authSessionByRefreshToken, session.RefreshToken)
+				}
 			}
 			delete(s.authSessions, sessionID)
 		}
 	}
 	delete(s.authSessionsByUser, username)
+	if keyIDs := s.agentKeysByUser[username]; len(keyIDs) > 0 {
+		for keyID := range keyIDs {
+			if key, ok := s.agentKeys[keyID]; ok && key != nil {
+				delete(s.agentKeyByFingerprint, key.Fingerprint)
+			}
+			delete(s.agentKeys, keyID)
+			for challengeID, challenge := range s.agentKeyChallenges {
+				if challenge != nil && challenge.AgentKeyID == keyID {
+					delete(s.agentKeyChallenges, challengeID)
+				}
+			}
+		}
+	}
+	delete(s.agentKeysByUser, username)
+	for challengeID, challenge := range s.agentKeyChallenges {
+		if challenge != nil && challenge.Username == username {
+			delete(s.agentKeyChallenges, challengeID)
+		}
+	}
+	for deviceCode, authorization := range s.deviceAuthorizationsByDeviceCode {
+		if authorization != nil && authorization.Username == username {
+			delete(s.deviceAuthorizationsByDeviceCode, deviceCode)
+			delete(s.deviceAuthorizationByUserCode, authorization.UserCode)
+		}
+	}
+	if bindingIDs := s.repoBindingsByOwner[username]; len(bindingIDs) > 0 {
+		for bindingID := range bindingIDs {
+			if binding := s.repoBindings[bindingID]; binding != nil {
+				delete(s.repoBindingsByPath, repoBindingPathKey(binding.SliceID, binding.RootPath))
+			}
+			delete(s.repoBindings, bindingID)
+		}
+	}
+	delete(s.repoBindingsByOwner, username)
 
 	if orgs := s.userOrgs[username]; len(orgs) > 0 {
 		for slug := range orgs {
@@ -681,7 +733,7 @@ func (s *InMemoryStorage) DeleteUser(ctx context.Context, username string) error
 			continue
 		}
 		for inviteID, invite := range invites {
-			if invite != nil && invite.CreatedBy == username {
+			if invite != nil && (invite.CreatedBy == username || normalizeEmail(invite.TargetEmail) == normalizeEmail(user.PrimaryEmail)) {
 				delete(invites, inviteID)
 			}
 		}

@@ -217,6 +217,130 @@ func (s *adminServiceServer) Me(ctx context.Context, req *adminv1.MeRequest) (*a
 	}, nil
 }
 
+func (s *adminServiceServer) GetAdminStatus(ctx context.Context, req *adminv1.AdminStatusRequest) (*adminv1.AdminStatusResponse, error) {
+	claims, err := s.requireClerkAdminClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	adminConfigured, isAdmin, primaryEmail := adminStatusForEmail(claims.Email)
+	username := ""
+	if user, userErr := s.loadUserForClerkAdminClaims(ctx, claims); userErr == nil && user != nil {
+		username = user.Username
+	} else if status.Code(userErr) != codes.FailedPrecondition {
+		return nil, userErr
+	}
+	return &adminv1.AdminStatusResponse{
+		AdminConfigured: adminConfigured,
+		IsAdmin:         isAdmin,
+		Username:        username,
+		PrimaryEmail:    primaryEmail,
+	}, nil
+}
+
+func (s *adminServiceServer) DeleteUser(ctx context.Context, req *adminv1.DeleteUserRequest) (*adminv1.DeleteUserResponse, error) {
+	adminUser, err := s.requireAdminUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	username := strings.TrimSpace(req.GetUsername())
+	if !auth.ValidateUsername(username) {
+		return nil, status.Error(codes.InvalidArgument, "invalid username")
+	}
+	target, err := s.storage.GetUser(ctx, username)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	return s.deleteUser(ctx, adminUser, target)
+}
+
+func (s *adminServiceServer) DeleteUserByEmail(ctx context.Context, req *adminv1.DeleteUserByEmailRequest) (*adminv1.DeleteUserResponse, error) {
+	adminUser, err := s.requireAdminUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	email := strings.ToLower(strings.TrimSpace(req.GetEmail()))
+	if email == "" || !strings.Contains(email, "@") {
+		return nil, status.Error(codes.InvalidArgument, "invalid email")
+	}
+	target, err := s.storage.GetUserByEmail(ctx, email)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to load user")
+	}
+	return s.deleteUser(ctx, adminUser, target)
+}
+
+func (s *adminServiceServer) deleteUser(ctx context.Context, adminUser, target *models.User) (*adminv1.DeleteUserResponse, error) {
+	if target == nil || !auth.ValidateUsername(target.Username) {
+		return nil, status.Error(codes.InvalidArgument, "invalid user")
+	}
+	if adminUser != nil && target.Username == adminUser.Username {
+		return nil, status.Error(codes.FailedPrecondition, "admin users cannot delete their own account")
+	}
+	orgs, err := s.storage.ListOrganizationsForUser(ctx, target.Username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to validate user organizations")
+	}
+	for _, org := range orgs {
+		if org != nil && org.CreatedBy == target.Username {
+			return nil, status.Error(codes.FailedPrecondition, "cannot delete user while they own organizations")
+		}
+	}
+
+	sessions, _ := s.storage.ListAuthSessionsByUser(ctx, target.Username)
+	agentKeys, _ := s.storage.ListAgentKeysByUser(ctx, target.Username)
+
+	repoBindings, err := s.storage.ListRepoBindingsByOwner(ctx, target.Username)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list repo bindings")
+	}
+	for _, binding := range repoBindings {
+		if binding == nil {
+			continue
+		}
+		if err := s.storage.DeleteRepoBinding(ctx, binding.SliceID, binding.RootPath); err != nil && err != storage.ErrRepoBindingNotFound {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete repo binding: %v", err))
+		}
+	}
+
+	ownedSlices, err := s.storage.ListSlicesByOwner(ctx, target.Username, int(^uint(0)>>1), 0)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list user slices")
+	}
+	deletedSlices := 0
+	for _, slice := range ownedSlices {
+		if slice == nil || slice.IsRoot {
+			continue
+		}
+		if err := s.storage.DeleteSlice(ctx, slice.ID); err != nil {
+			if err == storage.ErrSliceNotFound {
+				continue
+			}
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete slice %s: %v", slice.ID, err))
+		}
+		deletedSlices++
+	}
+
+	if err := s.storage.DeleteUser(ctx, target.Username); err != nil {
+		if err == storage.ErrEntryNotFound {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete user: %v", err))
+	}
+	return &adminv1.DeleteUserResponse{
+		Username:         target.Username,
+		PrimaryEmail:     strings.ToLower(strings.TrimSpace(target.PrimaryEmail)),
+		DeletedSlices:    int32(deletedSlices),
+		DeletedSessions:  int32(len(sessions)),
+		DeletedAgentKeys: int32(len(agentKeys)),
+	}, nil
+}
+
 func (s *adminServiceServer) ListOrganizations(ctx context.Context, req *adminv1.ListOrganizationsRequest) (*adminv1.ListOrganizationsResponse, error) {
 	username, _, err := s.requireUser(ctx)
 	if err != nil {
@@ -694,7 +818,7 @@ func (s *adminServiceServer) GetGlobalState(ctx context.Context, req *adminv1.Gl
 }
 
 func (s *adminServiceServer) ImportGitRepo(ctx context.Context, req *adminv1.ImportGitRepoRequest) (*adminv1.ImportGitRepoResponse, error) {
-	if _, err := s.requireUsername(ctx); err != nil {
+	if _, err := s.requireAdminUser(ctx); err != nil {
 		return nil, err
 	}
 
@@ -809,7 +933,7 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 }
 
 func (s *adminServiceServer) BackfillHomeSlices(ctx context.Context, req *adminv1.BackfillHomeSlicesRequest) (*adminv1.BackfillHomeSlicesResponse, error) {
-	if _, _, err := s.requireUser(ctx); err != nil {
+	if _, err := s.requireAdminUser(ctx); err != nil {
 		return nil, err
 	}
 

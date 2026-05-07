@@ -102,6 +102,7 @@ function buildCoreEnv(target, fileEnv) {
     AUTH_PROVIDER: fileEnv.AUTH_PROVIDER || "local",
     AUTH_SECRET: fileEnv.AUTH_SECRET || "",
     ALLOW_LEGACY_USER_AUTH: fileEnv.ALLOW_LEGACY_USER_AUTH || "",
+    ADMIN_USER_EMAILS: fileEnv.ADMIN_USER_EMAILS || "",
     STORAGE_TYPE: fileEnv.STORAGE_TYPE || defaults.STORAGE_TYPE,
     POSTGRES_DSN: fileEnv.POSTGRES_DSN || fileEnv.NEON_DB || defaults.POSTGRES_DSN,
     POSTGRES_MAX_CONNS: fileEnv.POSTGRES_MAX_CONNS || "",

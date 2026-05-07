@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"runtime"
@@ -1566,6 +1567,12 @@ func (s *PostgresNativeStorage) DeleteSlice(ctx context.Context, sliceID string)
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM agent_sessions WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM repo_bindings WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM file_manifests WHERE slice_id = $1`, sliceID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM changesets WHERE slice_id = $1`, sliceID); err != nil {
@@ -3861,10 +3868,40 @@ func (s *PostgresNativeStorage) DeleteUser(ctx context.Context, username string)
 	}
 	defer tx.Rollback(ctx)
 
+	var primaryEmail, accountID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(primary_email, ''), COALESCE(account_id, '') FROM users WHERE username = $1`, username).Scan(&primaryEmail, &accountID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrEntryNotFound
+		}
+		return err
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM auth_sessions WHERE username = $1`, username); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM agent_key_challenges
+		WHERE username = $1
+		   OR agent_key_id IN (SELECT key_id FROM agent_keys WHERE username = $1)
+	`, username); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_keys WHERE username = $1`, username); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM device_authorizations WHERE username = $1`, username); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM repo_bindings WHERE owner_username = $1`, username); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM team_members WHERE username = $1`, username); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM organization_members WHERE username = $1`, username); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_invites WHERE created_by = $1 OR lower(target_email) = lower($2)`, username, strings.TrimSpace(primaryEmail)); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM users WHERE username = $1`, username)
@@ -3873,6 +3910,15 @@ func (s *PostgresNativeStorage) DeleteUser(ctx context.Context, username string)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrEntryNotFound
+	}
+	if accountID != "" {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM accounts
+			WHERE account_id = $1
+			  AND NOT EXISTS (SELECT 1 FROM users WHERE account_id = $1)
+		`, accountID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

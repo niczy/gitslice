@@ -2844,6 +2844,41 @@ body {
   font-size: 0.85rem;
 }
 
+.admin-page {
+  max-width: 980px;
+}
+
+.admin-card {
+  border-radius: 8px;
+}
+
+.admin-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: inherit;
+  font-size: 1.05rem;
+  letter-spacing: 0;
+}
+
+.admin-delete-form {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.admin-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
 @keyframes errorShake {
   0%, 100% { transform: translateX(0); }
   10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }

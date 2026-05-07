@@ -42,6 +42,49 @@ export function getAuthProvider() {
   return String(process.env.AUTH_PROVIDER || 'local').trim().toLowerCase() || 'local';
 }
 
+function normalizeAdminEmail(value) {
+  const email = String(value || '').trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  return email && email.includes('@') ? email : '';
+}
+
+function parseAdminEmailValue(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) {
+    return [];
+  }
+  if (raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map(normalizeAdminEmail).filter(Boolean);
+      }
+    } catch {
+      // Fall back to delimiter parsing below.
+    }
+  }
+  return raw.split(/[,;\n\t]+/).map(normalizeAdminEmail).filter(Boolean);
+}
+
+export function getConfiguredAdminEmails() {
+  return new Set(parseAdminEmailValue(process.env.ADMIN_USER_EMAILS));
+}
+
+function attachAdminStatus(session) {
+  if (!session?.user) {
+    return session;
+  }
+  const admins = getConfiguredAdminEmails();
+  const email = normalizeAdminEmail(session.user.email || session.user.primaryEmail);
+  return {
+    ...session,
+    user: {
+      ...session.user,
+      isAdmin: Boolean(email && admins.has(email)),
+      adminConfigured: admins.size > 0,
+    },
+  };
+}
+
 function parseBooleanEnv(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) {
@@ -84,6 +127,7 @@ export function getPublicAuthConfig(request) {
     authProvider: String(authContext?.authProvider || getAuthProvider()).trim().toLowerCase() || 'local',
     allowDevLogin: isDevLoginEnabled(request, authContext),
     publicApiBaseUrl: getGatewayTarget(),
+    adminConfigured: getConfiguredAdminEmails().size > 0,
   };
 }
 
@@ -1088,6 +1132,21 @@ export async function getProxyAuthorizationHeader(request) {
   return authorization;
 }
 
+export async function getClerkAdminClaimsResult(request) {
+  const authContext = createAuthContext(request);
+  if (authContext.authProvider !== 'clerk' || authContext.startupError) {
+    return { signedClaims: '', rejectUnauthenticated: false };
+  }
+  const clerkAuthSession = await authenticateClerkSession(request, authContext);
+  if (!clerkAuthSession.session) {
+    return { signedClaims: '', rejectUnauthenticated: true };
+  }
+  return {
+    signedClaims: await buildSignedClerkClaims(clerkAuthSession.session, authContext.authSecret),
+    rejectUnauthenticated: false,
+  };
+}
+
 export async function getProxyAuthorizationResult(request) {
   const authContext = createAuthContext(request);
   if ((authContext.authProvider !== 'workos' && authContext.authProvider !== 'clerk') || authContext.startupError) {
@@ -1131,30 +1190,30 @@ export async function loadSession(request) {
       if (!devUsername) {
         return null;
       }
-      return {
+      return attachAdminStatus({
         user: {
           name: devUsername,
           username: devUsername,
         },
         source: 'dev',
         expires: '',
-      };
+      });
     }
-    return resolvedSession.publicSession;
+    return attachAdminStatus(resolvedSession.publicSession);
   }
   const devUsername = await verifyDevSession(parseCookieHeader(request.headers.get('cookie')).get(DEV_SESSION_COOKIE), authContext.authSecret);
   if (!devUsername) {
     return null;
   }
 
-  return {
+  return attachAdminStatus({
     user: {
       name: devUsername,
       username: devUsername,
     },
     source: 'dev',
     expires: '',
-  };
+  });
 }
 
 export async function handleSessionRequest(request) {
@@ -1199,7 +1258,7 @@ export async function handleSessionRequest(request) {
       }
     }
 
-    const response = session ? Response.json(session) : Response.json({ error: 'Not signed in' }, { status: 401 });
+    const response = session ? Response.json(attachAdminStatus(session)) : Response.json({ error: 'Not signed in' }, { status: 401 });
     for (const cookie of setCookies) {
       if (cookie) {
         response.headers.append('Set-Cookie', cookie);
@@ -1212,7 +1271,7 @@ export async function handleSessionRequest(request) {
   if (!session?.user?.username) {
     return Response.json({ error: 'Not signed in' }, { status: 401 });
   }
-  return Response.json(session);
+  return Response.json(attachAdminStatus(session));
 }
 
 export async function handleDevLoginRequest(request) {

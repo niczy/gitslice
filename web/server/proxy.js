@@ -1,5 +1,5 @@
 import { getConfiguredAPIBaseURL } from '../shared/runtime.js';
-import { clearLocalSessionCookie, getAuthProvider, getProxyAuthorizationResult } from './auth.js';
+import { clearLocalSessionCookie, getAuthProvider, getClerkAdminClaimsResult, getProxyAuthorizationResult } from './auth.js';
 
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
@@ -11,13 +11,32 @@ function buildProxyURL(request, suffix = '') {
   return new URL(`${pathname}${url.search}`, getGatewayTarget());
 }
 
+function isRestrictedAdminProxyPath(pathname) {
+  const path = String(pathname || '').trim();
+  return path === '/v1/admin/status'
+    || path === '/v1/admin/users:deleteByEmail'
+    || path.startsWith('/v1/admin/users/')
+    || path === '/v1/admin/home-slices:backfill'
+    || path === '/v1/import/git';
+}
+
 export async function proxyRequest(request, suffix = '') {
   const targetURL = buildProxyURL(request, suffix);
   const headers = new Headers(request.headers);
   headers.set('x-forwarded-host', new URL(request.url).host);
   headers.set('x-forwarded-proto', new URL(request.url).protocol.replace(':', ''));
   const responseCookies = [];
-  if (!headers.has('Authorization') && ['workos', 'clerk'].includes(getAuthProvider())) {
+  const restrictedAdminPath = isRestrictedAdminProxyPath(targetURL.pathname);
+  if (restrictedAdminPath && getAuthProvider() === 'clerk') {
+    const authResult = await getClerkAdminClaimsResult(request);
+    if (authResult.signedClaims) {
+      headers.set('X-Gitslice-Clerk-Admin-Claims', authResult.signedClaims);
+      headers.delete('Authorization');
+    } else if (authResult.rejectUnauthenticated) {
+      return Response.json({ error: 'Not signed in' }, { status: 401 });
+    }
+  }
+  if (!restrictedAdminPath && !headers.has('Authorization') && ['workos', 'clerk'].includes(getAuthProvider())) {
     const authResult = await getProxyAuthorizationResult(request);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {

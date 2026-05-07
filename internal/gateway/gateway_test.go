@@ -83,6 +83,13 @@ func TestGatewayIncomingHeaderMatcherForwardsWorkOSSignature(t *testing.T) {
 	}
 }
 
+func TestGatewayIncomingHeaderMatcherForwardsClerkAdminClaims(t *testing.T) {
+	key, ok := gatewayIncomingHeaderMatcher("X-Gitslice-Clerk-Admin-Claims")
+	if !ok || key != "x-gitslice-clerk-admin-claims" {
+		t.Fatalf("expected Clerk admin claims header to be forwarded, got key=%q ok=%v", key, ok)
+	}
+}
+
 func TestGatewayListEntries(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

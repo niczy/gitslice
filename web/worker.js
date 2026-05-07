@@ -17,6 +17,7 @@ function ensureProcessEnv(env) {
     WEB_COMPAT_RUNTIME: 'worker',
     AUTH_PROVIDER: String(env?.AUTH_PROVIDER || processLike.env.AUTH_PROVIDER || 'local'),
     ALLOW_DEV_LOGIN: String(env?.ALLOW_DEV_LOGIN || processLike.env.ALLOW_DEV_LOGIN || ''),
+    ADMIN_USER_EMAILS: String(env?.ADMIN_USER_EMAILS || processLike.env.ADMIN_USER_EMAILS || ''),
     PUBLIC_WEB_BASE_URL: String(env?.PUBLIC_WEB_BASE_URL || processLike.env.PUBLIC_WEB_BASE_URL || ''),
     PUBLIC_API_BASE_URL: String(env?.PUBLIC_API_BASE_URL || processLike.env.PUBLIC_API_BASE_URL || ''),
     VITE_FILE_API_BASE_URL: String(env?.VITE_FILE_API_BASE_URL || processLike.env.VITE_FILE_API_BASE_URL || ''),
