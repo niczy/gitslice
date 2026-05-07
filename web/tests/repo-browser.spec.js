@@ -1151,6 +1151,249 @@ test.describe('Slice Activity Pages', () => {
     expect(mobileLayout.arrowInsideRow).toBe(true);
     expect(mobileLayout.lastRowBottomGap).toBeGreaterThan(8);
   });
+
+  test('keeps commit and changeset detail controls readable at mobile width', async ({ page }) => {
+    const username = `detailmobile${Date.now()}`;
+    const sliceId = `home.${username}`;
+    const commitHash = 'fs-mobile-detail-commit-abcdef123456';
+    const changesetId = 'cs-mobile-detail-review-abcdef123456';
+    const patch = [
+      '--- a/apps/mobile/detail-layout.jsx',
+      '+++ b/apps/mobile/detail-layout.jsx',
+      '@@ -1,3 +1,4 @@',
+      ' import React from "react";',
+      '-export const mode = "desktop";',
+      '+export const mode = "mobile";',
+      '+export const detail = "responsive";',
+    ].join('\n');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [{
+            slice_id: sliceId,
+            name: sliceId,
+            description: 'Mobile detail layout test slice',
+            owners: [username],
+            created_by: username,
+            is_root: false,
+            file_count: 4,
+          }],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/commits/${commitHash}/changes**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          commit_hash: commitHash,
+          files_added: 1,
+          files_modified: 2,
+          files_deleted: 1,
+          files_renamed: 1,
+          changes: [
+            {
+              id: 'commit-change-1',
+              slice_id: sliceId,
+              path: `${username}/apps/mobile/detail-layout.jsx`,
+              change_type: 'modify',
+              lines_added: 12,
+              lines_deleted: 5,
+              patch,
+            },
+            {
+              id: 'commit-change-2',
+              slice_id: sliceId,
+              path: `${username}/docs/mobile/detail-layout-reference.md`,
+              change_type: 'add',
+              lines_added: 4,
+              lines_deleted: 0,
+              patch,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/snapshots**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          snapshots: [{
+            snapshotId: 'snap-mobile-detail-1',
+            changesetId,
+            version: 2,
+            author: username,
+            createdAt: 1777955400,
+            message: 'Mobile detail layout review snapshot',
+          }],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/diff**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changeset: {
+            changesetId,
+            sliceId,
+            status: 'PENDING',
+            author: username,
+            createdAt: 1777955400,
+            message: 'Review mobile detail layout with long enough message to reveal cramped controls',
+          },
+          snapshot: {
+            snapshotId: 'snap-mobile-detail-1',
+            changesetId,
+            version: 2,
+            author: username,
+            createdAt: 1777955400,
+            message: 'Snapshot message for mobile detail view',
+          },
+          diff: {
+            filesAdded: 1,
+            filesModified: 2,
+            filesDeleted: 1,
+          },
+          changes: [
+            {
+              id: 'changeset-change-1',
+              path: `${username}/apps/mobile/detail-layout.jsx`,
+              changeType: 'modify',
+              linesAdded: 12,
+              linesDeleted: 5,
+              patch,
+            },
+            {
+              id: 'changeset-change-2',
+              path: `${username}/docs/mobile/detail-layout-reference.md`,
+              changeType: 'add',
+              linesAdded: 4,
+              linesDeleted: 0,
+              patch,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+
+    await page.goto(`/diff/${commitHash}`);
+    await expect(page.getByTestId('commit-diff-page')).toBeVisible();
+    await expect(page.getByTestId('diff-file-item')).toHaveCount(2);
+
+    const commitLayout = await page.getByTestId('commit-diff-page').evaluate((pageElement) => {
+      const viewportWidth = document.documentElement.clientWidth;
+      const topBar = pageElement.querySelector('.diff-top-bar');
+      const controls = pageElement.querySelector('.diff-detail-controls');
+      const filePanel = pageElement.querySelector('.diff-file-panel');
+      const content = pageElement.querySelector('.diff-content');
+      const firstFile = pageElement.querySelector('[data-testid="diff-file-item"]');
+      const topBarRect = topBar.getBoundingClientRect();
+      const controlsRect = controls.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      const firstFileRect = firstFile.getBoundingClientRect();
+      return {
+        documentOverflow: document.documentElement.scrollWidth - viewportWidth,
+        filePanelHidden: getComputedStyle(filePanel).display === 'none',
+        topBarHeight: Math.round(topBarRect.height),
+        controlsInsideViewport: controlsRect.left >= 0 && controlsRect.right <= viewportWidth + 1,
+        contentBelowHeader: contentRect.top >= topBarRect.bottom - 1,
+        firstFileVisibleBelowHeader: firstFileRect.top >= contentRect.top - 1 && firstFileRect.top < contentRect.bottom,
+      };
+    });
+
+    expect(commitLayout.documentOverflow).toBeLessThanOrEqual(1);
+    expect(commitLayout.filePanelHidden).toBe(true);
+    expect(commitLayout.topBarHeight).toBeLessThan(280);
+    expect(commitLayout.controlsInsideViewport).toBe(true);
+    expect(commitLayout.contentBelowHeader).toBe(true);
+    expect(commitLayout.firstFileVisibleBelowHeader).toBe(true);
+
+    const commitBottomLayout = await page.getByTestId('commit-diff-page').evaluate((pageElement) => {
+      const content = pageElement.querySelector('.diff-content');
+      const fileItems = pageElement.querySelectorAll('[data-testid="diff-file-item"]');
+      const lastFile = fileItems[fileItems.length - 1];
+      const footer = document.querySelector('.app-footer');
+      content.scrollTop = content.scrollHeight;
+      const contentRect = content.getBoundingClientRect();
+      const lastFileRect = lastFile.getBoundingClientRect();
+      const footerTop = footer?.getBoundingClientRect().top ?? window.innerHeight;
+      return {
+        scrolledToBottom: Math.abs(content.scrollTop + content.clientHeight - content.scrollHeight) <= 2,
+        lastFileClearOfFooter: lastFileRect.bottom <= Math.min(contentRect.bottom, footerTop) - 1,
+      };
+    });
+
+    expect(commitBottomLayout.scrolledToBottom).toBe(true);
+    expect(commitBottomLayout.lastFileClearOfFooter).toBe(true);
+
+    await page.goto(`/changesets/${changesetId}`);
+    await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
+    await expect(page.getByTestId('changeset-file-item')).toHaveCount(2);
+
+    const changesetLayout = await page.getByTestId('changeset-diff-page').evaluate((pageElement) => {
+      const viewportWidth = document.documentElement.clientWidth;
+      const topBar = pageElement.querySelector('.diff-top-bar');
+      const controls = pageElement.querySelector('.changeset-detail-controls');
+      const snapshotPicker = pageElement.querySelector('.changeset-snapshot-picker');
+      const filePanel = pageElement.querySelector('.diff-file-panel');
+      const content = pageElement.querySelector('.diff-content');
+      const firstFile = pageElement.querySelector('[data-testid="changeset-file-item"]');
+      const topBarRect = topBar.getBoundingClientRect();
+      const controlsRect = controls.getBoundingClientRect();
+      const pickerRect = snapshotPicker.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      const firstFileRect = firstFile.getBoundingClientRect();
+      return {
+        documentOverflow: document.documentElement.scrollWidth - viewportWidth,
+        filePanelHidden: getComputedStyle(filePanel).display === 'none',
+        topBarHeight: Math.round(topBarRect.height),
+        controlsInsideViewport: controlsRect.left >= 0 && controlsRect.right <= viewportWidth + 1,
+        pickerInsideViewport: pickerRect.left >= 0 && pickerRect.right <= viewportWidth + 1,
+        contentBelowHeader: contentRect.top >= topBarRect.bottom - 1,
+        firstFileVisibleBelowHeader: firstFileRect.top >= contentRect.top - 1 && firstFileRect.top < contentRect.bottom,
+      };
+    });
+
+    expect(changesetLayout.documentOverflow).toBeLessThanOrEqual(1);
+    expect(changesetLayout.filePanelHidden).toBe(true);
+    expect(changesetLayout.topBarHeight).toBeLessThan(360);
+    expect(changesetLayout.controlsInsideViewport).toBe(true);
+    expect(changesetLayout.pickerInsideViewport).toBe(true);
+    expect(changesetLayout.contentBelowHeader).toBe(true);
+    expect(changesetLayout.firstFileVisibleBelowHeader).toBe(true);
+
+    const changesetBottomLayout = await page.getByTestId('changeset-diff-page').evaluate((pageElement) => {
+      const content = pageElement.querySelector('.diff-content');
+      const fileItems = pageElement.querySelectorAll('[data-testid="changeset-file-item"]');
+      const lastFile = fileItems[fileItems.length - 1];
+      const footer = document.querySelector('.app-footer');
+      content.scrollTop = content.scrollHeight;
+      const contentRect = content.getBoundingClientRect();
+      const lastFileRect = lastFile.getBoundingClientRect();
+      const footerTop = footer?.getBoundingClientRect().top ?? window.innerHeight;
+      return {
+        scrolledToBottom: Math.abs(content.scrollTop + content.clientHeight - content.scrollHeight) <= 2,
+        lastFileClearOfFooter: lastFileRect.bottom <= Math.min(contentRect.bottom, footerTop) - 1,
+      };
+    });
+
+    expect(changesetBottomLayout.scrolledToBottom).toBe(true);
+    expect(changesetBottomLayout.lastFileClearOfFooter).toBe(true);
+  });
 });
 
 test.describe('Repo Browser Settings', () => {
