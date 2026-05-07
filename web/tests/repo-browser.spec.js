@@ -367,6 +367,57 @@ test.describe('Repo Browser File Preview Layout', () => {
     await expect(treeLoading).not.toHaveClass(/visible/);
   });
 
+  test('does not flash folder loading when going back from a file detail to its folder', async ({ page }) => {
+    const directoryPath = 'o/genesis/projects/gitslice';
+    const filePath = `${directoryPath}/README.md`;
+    const parentEntriesResponse = page.waitForResponse((response) => {
+      const responseUrl = decodeURIComponent(response.url());
+      return response.ok() && responseUrl.includes(`/v1/slices/root_slice/entries/${directoryPath}`);
+    });
+
+    await page.goto(`/slices/root_slice?file=${encodeURIComponent(filePath)}`);
+    await expect(page.locator('.file-preview')).toBeVisible();
+    await parentEntriesResponse;
+
+    await page.evaluate(({ dir, file }) => {
+      const folderState = {
+        gitsliceBrowserState: true,
+        browserState: { slice: 'root_slice', dir, file: '' },
+      };
+      const fileState = {
+        gitsliceBrowserState: true,
+        browserState: { slice: 'root_slice', dir: '', file },
+      };
+      window.history.replaceState(folderState, '', `/slices/root_slice?dir=${encodeURIComponent(dir)}`);
+      window.history.pushState(fileState, '', `/slices/root_slice?file=${encodeURIComponent(file)}`);
+    }, { dir: directoryPath, file: filePath });
+
+    await page.evaluate(() => {
+      window.__sawFolderLoading = Boolean(document.querySelector('.folder-preview-loading'));
+      window.__folderLoadingObserver = new MutationObserver(() => {
+        if (document.querySelector('.folder-preview-loading')) {
+          window.__sawFolderLoading = true;
+        }
+      });
+      window.__folderLoadingObserver.observe(document.body, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    });
+
+    await page.goBack();
+
+    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
+    await expect(page.locator('.folder-preview-list').getByRole('button', { name: /^README\.md\b/i })).toBeVisible();
+    const sawFolderLoading = await page.evaluate(() => {
+      window.__folderLoadingObserver?.disconnect();
+      return window.__sawFolderLoading;
+    });
+    expect(sawFolderLoading).toBe(false);
+  });
+
   test('keeps long mobile file breadcrumbs from overlapping', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
 
