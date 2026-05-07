@@ -789,6 +789,7 @@ message EnsureClerkLocalIdentityRequest {
   string signed_claims = 1;
   string claim_token = 2;
   bool issue_local_session = 3;
+  string preferred_username = 4;
 }
 
 message EnsureClerkLocalIdentityResponse {

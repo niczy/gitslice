@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { buildBrowserPath, buildLegacyRedirectPath, buildPath, resolveHomeRouteForUsername } from './utils/routing.js';
 import { apiBaseUrl, currentUsername, searchWorkspaceFiles } from './utils/api.js';
-import { signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
+import { completeClerkUsername, signInWithAccount, signOutAccount, startOAuthSignIn, startOAuthSignOut } from './auth.js';
 import { useWebSession } from './hooks/useWebSession.js';
 import { useSlicesQuery } from './hooks/useSlices.js';
 
@@ -13,6 +13,7 @@ import AppHeader from './components/AppHeader.jsx';
 import AppFooter from './components/AppFooter.jsx';
 import AdminPage from './components/AdminPage.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import UsernameOnboardingPage from './components/UsernameOnboardingPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RepoBrowser from './components/RepoBrowser.jsx';
 import SliceHomePage from './components/SliceHomePage.jsx';
@@ -79,6 +80,8 @@ function App({
   const [returnToChangesetId, setReturnToChangesetId] = useState('');
   const [username, setUsername] = useState(() => initialUsername);
   const [authSessionSource, setAuthSessionSource] = useState(() => initialSession?.source || '');
+  const [requiresUsername, setRequiresUsername] = useState(() => Boolean(initialSession?.requiresUsername && !initialUsername));
+  const [pendingClerkUser, setPendingClerkUser] = useState(() => initialSession?.user || null);
   const [browserRouteSliceId, setBrowserRouteSliceId] = useState(() => initialBrowserRouteSlice);
   const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser' && Boolean(initialBrowserRouteSlice));
   const [currentSliceId, setCurrentSliceId] = useState(() => initialBrowserRouteSlice || getInitialSliceId(initialUsername));
@@ -202,9 +205,17 @@ function App({
   }, [username]);
 
   useEffect(() => {
-    const nextUsername = webSessionQuery.data?.user?.username || '';
+    const session = webSessionQuery.data || null;
+    const nextUsername = session?.user?.username || '';
+    const nextRequiresUsername = Boolean(session?.requiresUsername && session?.source === 'clerk' && !nextUsername);
     setUsername(nextUsername);
-    setAuthSessionSource(webSessionQuery.data?.source || '');
+    setAuthSessionSource(session?.source || '');
+    setRequiresUsername(nextRequiresUsername);
+    if (nextRequiresUsername) {
+      setPendingClerkUser(session?.user || null);
+    } else if (nextUsername) {
+      setPendingClerkUser(null);
+    }
     if (nextUsername && activePage === 'login') {
       const nextPage = returnToPage || 'browser';
       const nextCommitHash = nextPage === 'diff' ? returnToCommitHash : '';
@@ -414,6 +425,22 @@ function App({
     startOAuthSignIn(providerId);
   }, []);
 
+  const doCompleteClerkUsername = useCallback(async (chosenUsername) => {
+    const session = await completeClerkUsername(chosenUsername);
+    const nextUsername = session?.user?.username || '';
+    if (!nextUsername) {
+      throw new Error('Username was not saved.');
+    }
+    setUsername(nextUsername);
+    setAuthSessionSource(session?.source || 'clerk');
+    setRequiresUsername(false);
+    setPendingClerkUser(null);
+    setCurrentSliceId(getHomeSliceId(nextUsername));
+    queryClient.setQueryData(['web-session'], session);
+    await queryClient.invalidateQueries({ queryKey: ['slices'] });
+    navigate('browser', '', '', { replace: true });
+  }, [navigate, queryClient]);
+
   const openLogin = useCallback(() => {
     const provider = String(initialAuthConfig.authProvider || '').trim().toLowerCase();
     if (provider === 'workos' || provider === 'clerk') {
@@ -423,7 +450,9 @@ function App({
     navigate('login');
   }, [initialAuthConfig.authProvider, navigate]);
 
+  const isClerkUsernameRequired = authSessionSource === 'clerk' && requiresUsername && !username;
   const isAuthenticated = Boolean(username);
+  const hasSignedInShell = isAuthenticated || isClerkUsernameRequired;
   const isSliceHomePage = activePage === 'browser' && !browserRouteSliceId;
   const isBrowserLayout = (activePage === 'browser' && Boolean(browserRouteSliceId)) || isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
   const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${isSliceHomePage ? ' page--slice-home' : ''}${activePage === 'profile' ? ' page--profile' : ''}`;
@@ -514,7 +543,7 @@ function App({
   return (
     <div className={`app-shell min-h-screen bg-background text-foreground${isBrowserLayout ? ' app-shell--browser' : ''}`}>
       <AppHeader
-        isAuthenticated={isAuthenticated}
+        isAuthenticated={hasSignedInShell}
         authSessionSource={authSessionSource}
         username={username}
         githubUrl={githubUrl}
@@ -540,6 +569,15 @@ function App({
       />
 
       <main className={pageClassName}>
+        {isClerkUsernameRequired ? (
+          <UsernameOnboardingPage
+            suggestedUsername={pendingClerkUser?.suggestedUsername || pendingClerkUser?.derivedUsername || ''}
+            email={pendingClerkUser?.email || ''}
+            onSubmit={doCompleteClerkUsername}
+            onLogout={doLogout}
+          />
+        ) : (
+          <>
         {activePage === 'landing' && (
           <OverviewPage
             onBrowseRepo={openBrowserHome}
@@ -690,6 +728,8 @@ function App({
         )}
 
         {activePage === 'not-found' && <NotFoundPage unknownPath={unknownRoute} onGoHome={() => navigate('landing')} />}
+          </>
+        )}
       </main>
 
       <AppFooter docsUrl={docsUrl} statusUrl={statusUrl} supportUrl={supportUrl} githubUrl={githubUrl} />

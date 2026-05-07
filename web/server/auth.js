@@ -26,6 +26,14 @@ const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/;
 const MAX_AUTH_ERROR_DETAIL_LENGTH = 240;
 const localSessionKeyCache = new Map();
 
+class ProviderIdentityError extends Error {
+  constructor(message, status = 0) {
+    super(message);
+    this.name = 'ProviderIdentityError';
+    this.status = status;
+  }
+}
+
 function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
 }
@@ -347,6 +355,23 @@ function buildClerkSessionPayload(authObject, user) {
     sessionId: String(authObject?.sessionId || '').trim(),
     organizationId: String(authObject?.orgId || '').trim(),
     authenticationMethod: 'clerk',
+  };
+}
+
+function buildPendingClerkUsernameSession(session) {
+  if (!session?.user?.clerkUserId && !session?.user?.id) {
+    return null;
+  }
+  return {
+    ...session,
+    apiAuthSource: 'clerk_pending_username',
+    requiresUsername: true,
+    user: {
+      ...(session.user || {}),
+      username: '',
+      localUsername: '',
+      suggestedUsername: String(session?.user?.derivedUsername || '').trim(),
+    },
   };
 }
 
@@ -811,6 +836,7 @@ async function ensureClerkLocalIdentity(request, authContext, session, options =
   }
   const claimToken = String(options?.claimToken || '').trim();
   const issueLocalSession = Boolean(options?.issueLocalSession);
+  const preferredUsername = String(options?.preferredUsername || '').trim();
   const signedClaims = await buildSignedClerkClaims(session, authContext.authSecret);
 
   const response = await fetch(new URL('/v1/auth/clerk/ensure-local-identity', getGatewayTarget()), {
@@ -823,6 +849,7 @@ async function ensureClerkLocalIdentity(request, authContext, session, options =
       signedClaims,
       claimToken,
       issueLocalSession,
+      preferredUsername,
     }),
   });
 
@@ -834,7 +861,7 @@ async function ensureClerkLocalIdentity(request, authContext, session, options =
     } catch {
       detail = '';
     }
-    throw new Error(detail || `failed to ensure local Clerk identity (${response.status})`);
+    throw new ProviderIdentityError(detail || `failed to ensure local Clerk identity (${response.status})`, response.status);
   }
 
   const payload = await response.json();
@@ -852,6 +879,11 @@ async function ensureClerkLocalIdentity(request, authContext, session, options =
       email: String(payload?.user?.primaryEmail || session.user?.email || '').trim(),
     },
   };
+}
+
+function isClerkUsernameRequiredError(error) {
+  return error instanceof ProviderIdentityError
+    && /username required/i.test(String(error.message || ''));
 }
 
 async function loadLocalSession(request, authSecret) {
@@ -1026,7 +1058,20 @@ async function resolveClerkBackedLocalSession(request, authContext, options = {}
     };
   }
 
-  const bootstrapped = await bootstrapLocalSessionFromClerk(request, authContext, clerkAuthSession.session, options.claimToken || '');
+  let bootstrapped;
+  try {
+    bootstrapped = await bootstrapLocalSessionFromClerk(request, authContext, clerkAuthSession.session, options.claimToken || '');
+  } catch (error) {
+    if (isClerkUsernameRequiredError(error)) {
+      return {
+        localSession: null,
+        publicSession: buildPendingClerkUsernameSession(clerkAuthSession.session),
+        setCookies,
+        clearLocalCookie: clearLocalCookie || Boolean(localSession),
+      };
+    }
+    throw error;
+  }
   if (bootstrapped.setCookie) {
     setCookies.push(bootstrapped.setCookie);
   }
@@ -1403,6 +1448,52 @@ async function handleClerkClaimAccountRequest(request, authContext) {
   }
 }
 
+async function handleClerkCompleteUsernameRequest(request, authContext) {
+  if (request.method !== 'POST') {
+    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  }
+
+  let payload = {};
+  try {
+    payload = await request.json();
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const preferredUsername = String(payload?.username || payload?.preferredUsername || '').trim().toLowerCase();
+  if (!USERNAME_PATTERN.test(preferredUsername)) {
+    return Response.json({ error: 'Invalid username' }, { status: 400 });
+  }
+
+  const { session } = await authenticateClerkSession(request, authContext);
+  if (!session) {
+    return Response.json({ error: 'Not signed in' }, { status: 401 });
+  }
+
+  try {
+    const ensuredSession = await ensureClerkLocalIdentity(request, authContext, session, {
+      preferredUsername,
+      issueLocalSession: true,
+    });
+    const localSession = buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession);
+    const publicSession = localSession ? buildPublicSessionFromLocalSession(localSession) : null;
+    if (!localSession || !publicSession) {
+      return Response.json({ error: 'Failed to create local session' }, { status: 500 });
+    }
+    const response = Response.json(publicSession);
+    response.headers.append('Set-Cookie', await serializeLocalSessionCookie(request, localSession, authContext.authSecret));
+    return response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to choose username';
+    const statusCode = /already (taken|exists)/i.test(message)
+      ? 409
+      : error instanceof ProviderIdentityError && error.status >= 400 && error.status < 500
+        ? error.status
+        : 400;
+    return Response.json({ error: message }, { status: statusCode });
+  }
+}
+
 export async function handleAuthRequest(request) {
   const authContext = createAuthContext(request);
   if (authContext.startupError) {
@@ -1428,6 +1519,9 @@ export async function handleAuthRequest(request) {
     const pathname = new URL(request.url).pathname.replace(/^\/auth\/?/, '');
     if (pathname === 'claim-account') {
       return handleClerkClaimAccountRequest(request, authContext);
+    }
+    if (pathname === 'clerk/complete-username') {
+      return handleClerkCompleteUsernameRequest(request, authContext);
     }
     return Response.json({ error: 'Clerk auth route not found' }, { status: 404 });
   }

@@ -4356,6 +4356,24 @@ body {
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
 }
 
+.username-field-control {
+  position: relative;
+}
+
+.username-field-control svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  z-index: 1;
+  color: var(--text-muted);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.auth-card .username-field-control input[type="text"] {
+  padding-left: 36px;
+}
+
 .auth-actions {
   display: flex;
   gap: 10px;

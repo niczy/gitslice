@@ -1227,6 +1227,27 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	}
 }
 
+func TestHomeSliceExternalSlugUsesUsername(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.GetSliceBySlug(ctx, &slicev1.GetSliceBySlugRequest{Slug: "alice"})
+	if err != nil {
+		t.Fatalf("GetSliceBySlug failed: %v", err)
+	}
+	if resp.GetSliceId() != home.ID {
+		t.Fatalf("expected home slice %q, got %q", home.ID, resp.GetSliceId())
+	}
+	if resp.GetSlug() != "alice" {
+		t.Fatalf("expected home slice slug alice, got %q", resp.GetSlug())
+	}
+}
+
 func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

@@ -787,10 +787,14 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 	}
 
 	for _, slice := range slices {
+		slug := storage.QualifiedSliceSlug(slice)
+		if homeSlug, ok := homeslice.ExternalSlugForSlice(slice); ok {
+			slug = homeSlug
+		}
 		response.Slices = append(response.Slices, &adminv1.SliceInfo{
 			SliceId:     slice.ID,
 			Name:        slice.Name,
-			Slug:        storage.QualifiedSliceSlug(slice),
+			Slug:        slug,
 			Description: slice.Description,
 			Owners:      slice.Owners,
 			CreatedAt:   slice.CreatedAt.Unix(),
