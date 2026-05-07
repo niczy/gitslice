@@ -2638,6 +2638,29 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
+	hashA := mustWriteSliceManifest(t, ctx, testStorage, sliceA, sharedFile, []byte("slice-a initial content"))
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceA, sharedFile),
+		Path:     sharedFile,
+		Type:     "file",
+		ParentID: sliceA,
+		Hash:     hashA,
+		Size:     int64(len("slice-a initial content")),
+	}); err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("failed to add initial entry for slice A: %v", err)
+	}
+	hashB := mustWriteSliceManifest(t, ctx, testStorage, sliceB, sharedFile, []byte("slice-b initial content"))
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceB, sharedFile),
+		Path:     sharedFile,
+		Type:     "file",
+		ParentID: sliceB,
+		Hash:     hashB,
+		Size:     int64(len("slice-b initial content")),
+	}); err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("failed to add initial entry for slice B: %v", err)
+	}
+
 	if _, err := sliceClient.ResolveConflict(ctx, &slicev1.ResolveConflictRequest{FileId: sharedFile, PreferredSliceId: sliceA}); err != nil {
 		t.Fatalf("failed to resolve conflict to slice A: %v", err)
 	}

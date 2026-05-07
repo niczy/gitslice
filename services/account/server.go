@@ -2070,6 +2070,13 @@ func (s *accountServiceServer) GetMe(ctx context.Context, req *accountv1.GetMeRe
 	user, err := s.st.GetUser(ctx, identity.username)
 	if err != nil {
 		if err == storage.ErrEntryNotFound {
+			if identity.authSource == "local" && identity.sessionID == "" {
+				user, err = s.st.EnsureUser(ctx, identity.username)
+				if err != nil {
+					return nil, status.Error(codes.Internal, "failed to ensure user")
+				}
+				return userToProto(user), nil
+			}
 			return nil, status.Error(codes.NotFound, "user not found")
 		}
 		return nil, status.Error(codes.Internal, "failed to load user")
