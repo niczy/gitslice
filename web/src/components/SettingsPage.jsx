@@ -12,7 +12,6 @@ import {
   fetchAuthMethods,
   fetchAuthSessions,
   fetchRepoBindings,
-  linkCurrentWorkOSAuthMethod,
   revokeAgentKey,
 } from '../utils/api.js';
 
@@ -48,7 +47,6 @@ export default function SettingsPage({
   const [authMethods, setAuthMethods] = useState(() => (hasInitialSettings ? initialSettingsData.authMethods || [] : []));
   const [authMethodsLoading, setAuthMethodsLoading] = useState(false);
   const [authMethodsError, setAuthMethodsError] = useState(() => (hasInitialSettings ? initialSettingsData.authMethodsError || '' : ''));
-  const [linkingWorkOS, setLinkingWorkOS] = useState(false);
   const [removingMethodId, setRemovingMethodId] = useState('');
   const [authContext, setAuthContext] = useState(() => (hasInitialSettings ? initialSettingsData.authContext || null : null));
   const [authContextLoading, setAuthContextLoading] = useState(false);
@@ -283,19 +281,6 @@ export default function SettingsPage({
     }
   }
 
-  async function handleLinkCurrentWorkOS() {
-    setAuthMethodsError('');
-    setLinkingWorkOS(true);
-    try {
-      await linkCurrentWorkOSAuthMethod();
-      await refreshAuthMethods();
-    } catch (err) {
-      setAuthMethodsError(err?.message || 'Unable to link WorkOS sign-in.');
-    } finally {
-      setLinkingWorkOS(false);
-    }
-  }
-
   async function handleDeleteAuthMethod(methodId) {
     setAuthMethodsError('');
     setRemovingMethodId(methodId);
@@ -412,10 +397,6 @@ export default function SettingsPage({
                         <span className="kv-val">{authContext.agent_key_id || authContext.agentKeyId || 'none'}</span>
                       </div>
                       <div className="kv-row">
-                        <span className="kv-key">WorkOS linked</span>
-                        <span className="kv-val">{authContext.workos_linked || authContext.workosLinked ? 'yes' : 'no'}</span>
-                      </div>
-                      <div className="kv-row">
                         <span className="kv-key">Clerk linked</span>
                         <span className="kv-val">{authContext.clerk_linked || authContext.clerkLinked ? 'yes' : 'no'}</span>
                       </div>
@@ -486,18 +467,6 @@ export default function SettingsPage({
                         </div>
                       </div>
                     ))}
-                  </div>
-                )}
-                {authSessionSource === 'workos' && !authMethods.some((method) => method.id === 'oauth:workos') && (
-                  <div className="auth-actions">
-                    <Button
-                      type="button"
-                      onClick={handleLinkCurrentWorkOS}
-                      disabled={linkingWorkOS}
-                      data-testid="settings-auth-method-link-workos"
-                    >
-                      {linkingWorkOS ? 'Linking…' : 'Link current WorkOS login'}
-                    </Button>
                   </div>
                 )}
               </CardContent>

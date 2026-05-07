@@ -22,8 +22,8 @@ function formatOAuthErrorMessage(authProvider, errorCode, detail) {
   const code = String(errorCode || '').trim();
   const safeDetail = String(detail || '').trim();
   const provider = String(authProvider || '').trim().toLowerCase();
-  if (provider === 'workos' || provider === 'clerk') {
-    const providerLabel = provider === 'clerk' ? 'Clerk' : 'WorkOS';
+  if (provider === 'clerk') {
+    const providerLabel = 'Clerk';
     if (safeDetail) {
       return `${providerLabel} sign-in failed: ${safeDetail}`;
     }
@@ -53,8 +53,8 @@ export default function LoginPage({
   const [oauthError, setOAuthError] = useState(() => String(initialOAuthError || '').trim());
   const [loading, setLoading] = useState(false);
   const normalizedProvider = String(authProvider || '').trim().toLowerCase();
-  const isProviderSignIn = normalizedProvider === 'workos' || normalizedProvider === 'clerk';
-  const providerLabel = normalizedProvider === 'clerk' ? 'Clerk' : 'WorkOS';
+  const isProviderSignIn = normalizedProvider === 'clerk';
+  const providerLabel = 'Clerk';
   const showPrimarySignIn = isProviderSignIn;
 
   useEffect(() => {

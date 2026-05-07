@@ -171,23 +171,9 @@ service AccountService {
     };
   }
 
-  rpc EnsureWorkOSLocalIdentity(EnsureWorkOSLocalIdentityRequest) returns (EnsureWorkOSLocalIdentityResponse) {
-    option (google.api.http) = {
-      post: "/v1/auth/workos/ensure-local-identity"
-      body: "*"
-    };
-  }
-
   rpc EnsureClerkLocalIdentity(EnsureClerkLocalIdentityRequest) returns (EnsureClerkLocalIdentityResponse) {
     option (google.api.http) = {
       post: "/v1/auth/clerk/ensure-local-identity"
-      body: "*"
-    };
-  }
-
-  rpc HandleWorkOSWebhook(google.api.HttpBody) returns (HandleWorkOSWebhookResponse) {
-    option (google.api.http) = {
-      post: "/v1/auth/workos/webhook"
       body: "*"
     };
   }
@@ -704,13 +690,12 @@ message ListSessionsResponse {
 message GetAuthContextRequest {}
 
 message GetAuthContextResponse {
+  reserved 6, 7;
   bool authenticated = 1;
   string username = 2;
   string session_id = 3;
   string auth_source = 4;
   string agent_key_id = 5;
-  bool workos_linked = 6;
-  string workos_user_id = 7;
   string account_id = 8;
   string access_token_expires_at = 9;
   string refresh_token_expires_at = 10;
@@ -774,24 +759,6 @@ message CreateAccountClaimTokenResponse {
 
 message GetMeRequest {}
 
-message EnsureWorkOSLocalIdentityRequest {
-  string preferred_username = 1;
-  string name = 2;
-  string primary_email = 3;
-  string claim_token = 4;
-  bool issue_local_session = 5;
-}
-
-message EnsureWorkOSLocalIdentityResponse {
-  User user = 1;
-  string account_id = 2;
-  bool created_account = 3;
-  bool created_user = 4;
-  bool linked_existing_user = 5;
-  bool claimed_account = 6;
-  AuthResponse local_auth = 7;
-}
-
 message EnsureClerkLocalIdentityRequest {
   string signed_claims = 1;
   string claim_token = 2;
@@ -807,14 +774,6 @@ message EnsureClerkLocalIdentityResponse {
   bool linked_existing_user = 5;
   bool claimed_account = 6;
   AuthResponse local_auth = 7;
-}
-
-message HandleWorkOSWebhookResponse {
-  string event = 1;
-  string workos_user_id = 2;
-  string username = 3;
-  string action = 4;
-  int32 revoked_sessions = 5;
 }
 
 message HandleClerkWebhookResponse {

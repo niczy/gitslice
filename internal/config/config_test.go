@@ -8,20 +8,13 @@ import (
 func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("DEPLOY_ENV", "staging")
 	t.Setenv("CORE_BIND_ADDR", "127.0.0.1")
-	t.Setenv("AUTH_PROVIDER", "workos")
+	t.Setenv("AUTH_PROVIDER", "clerk")
 	t.Setenv("ALLOW_LEGACY_USER_AUTH", "1")
 	t.Setenv("STORAGE_TYPE", "postgres")
 	t.Setenv("POSTGRES_DSN", "postgres://user:pass@localhost:5432/gitslice?sslmode=disable")
 	t.Setenv("POSTGRES_MAX_CONNS", "25")
 	t.Setenv("POSTGRES_MIN_CONNS", "3")
 	t.Setenv("POSTGRES_MAX_CONN_LIFETIME", "45m")
-	t.Setenv("WORKOS_CLIENT_ID", "client_123")
-	t.Setenv("WORKOS_API_KEY", "sk_test_123")
-	t.Setenv("WORKOS_REDIRECT_URI", "https://agenttools.dev/auth/callback/workos")
-	t.Setenv("WORKOS_JWKS_URL", "https://api.workos.com/sso/jwks/client_123")
-	t.Setenv("WORKOS_COOKIE_PASSWORD", "cookie-secret")
-	t.Setenv("WORKOS_AUTHKIT_DOMAIN", "auth.gitslice.io")
-	t.Setenv("WORKOS_WEBHOOK_SECRET", "whsec_test_123")
 	t.Setenv("CLERK_WEBHOOK_SECRET", "whsec_clerk_test_123")
 
 	cfg, err := LoadConfig()
@@ -31,8 +24,8 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	if cfg.DeployEnv != "staging" {
 		t.Fatalf("expected deploy env staging, got %q", cfg.DeployEnv)
 	}
-	if cfg.AuthProvider != "workos" {
-		t.Fatalf("expected auth provider workos, got %q", cfg.AuthProvider)
+	if cfg.AuthProvider != "clerk" {
+		t.Fatalf("expected auth provider clerk, got %q", cfg.AuthProvider)
 	}
 	if !cfg.AllowLegacyUserAuth {
 		t.Fatalf("expected legacy user auth override to load")
@@ -48,24 +41,6 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 	if cfg.PostgresMaxConnLifetime != 45*time.Minute {
 		t.Fatalf("expected max conn lifetime 45m, got %s", cfg.PostgresMaxConnLifetime)
-	}
-	if cfg.WorkOSClientID != "client_123" || cfg.WorkOSAPIKey != "sk_test_123" {
-		t.Fatalf("expected WorkOS config to load, got client=%q api_key=%q", cfg.WorkOSClientID, cfg.WorkOSAPIKey)
-	}
-	if cfg.WorkOSRedirectURI != "https://agenttools.dev/auth/callback/workos" {
-		t.Fatalf("unexpected WorkOS redirect uri: %q", cfg.WorkOSRedirectURI)
-	}
-	if cfg.WorkOSJWKSURL != "https://api.workos.com/sso/jwks/client_123" {
-		t.Fatalf("unexpected WorkOS JWKS url: %q", cfg.WorkOSJWKSURL)
-	}
-	if cfg.WorkOSCookiePassword != "cookie-secret" {
-		t.Fatalf("unexpected WorkOS cookie password: %q", cfg.WorkOSCookiePassword)
-	}
-	if cfg.WorkOSAuthKitDomain != "auth.gitslice.io" {
-		t.Fatalf("unexpected WorkOS authkit domain: %q", cfg.WorkOSAuthKitDomain)
-	}
-	if cfg.WorkOSWebhookSecret != "whsec_test_123" {
-		t.Fatalf("unexpected WorkOS webhook secret: %q", cfg.WorkOSWebhookSecret)
 	}
 	if cfg.ClerkWebhookSecret != "whsec_clerk_test_123" {
 		t.Fatalf("unexpected Clerk webhook secret: %q", cfg.ClerkWebhookSecret)

@@ -37,12 +37,6 @@ function ensureProcessEnv(env) {
     ),
     CLERK_SECRET_KEY: String(env?.CLERK_SECRET_KEY || processLike.env.CLERK_SECRET_KEY || ''),
     CLERK_JWT_KEY: String(env?.CLERK_JWT_KEY || processLike.env.CLERK_JWT_KEY || ''),
-    WORKOS_CLIENT_ID: String(env?.WORKOS_CLIENT_ID || processLike.env.WORKOS_CLIENT_ID || ''),
-    WORKOS_API_KEY: String(env?.WORKOS_API_KEY || processLike.env.WORKOS_API_KEY || ''),
-    WORKOS_REDIRECT_URI: String(env?.WORKOS_REDIRECT_URI || processLike.env.WORKOS_REDIRECT_URI || ''),
-    WORKOS_JWKS_URL: String(env?.WORKOS_JWKS_URL || processLike.env.WORKOS_JWKS_URL || ''),
-    WORKOS_COOKIE_PASSWORD: String(env?.WORKOS_COOKIE_PASSWORD || processLike.env.WORKOS_COOKIE_PASSWORD || ''),
-    WORKOS_AUTHKIT_DOMAIN: String(env?.WORKOS_AUTHKIT_DOMAIN || processLike.env.WORKOS_AUTHKIT_DOMAIN || ''),
   });
 }
 

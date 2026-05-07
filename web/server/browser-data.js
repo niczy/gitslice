@@ -48,7 +48,7 @@ async function createGatewayHeaders(request, session) {
     return { headers, setCookies: [] };
   }
 
-  if (['workos', 'clerk'].includes(getAuthProvider())) {
+  if (getAuthProvider() === 'clerk') {
     const authResult = await getProxyAuthorizationResult(request);
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);

@@ -3,16 +3,12 @@ package gateway
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,10 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	agentsession "github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/common"
-	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	accountservice "github.com/niczy/gitslice/services/account"
@@ -73,13 +67,6 @@ func doSearchRequestEventuallyOK(t *testing.T, client *http.Client, newReq func(
 			t.Fatalf("unexpected search status %d: %s", lastStatus, lastBody)
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-func TestGatewayIncomingHeaderMatcherForwardsWorkOSSignature(t *testing.T) {
-	key, ok := gatewayIncomingHeaderMatcher("WorkOS-Signature")
-	if !ok || key != "workos-signature" {
-		t.Fatalf("expected WorkOS signature header to be forwarded, got key=%q ok=%v", key, ok)
 	}
 }
 
@@ -2139,157 +2126,6 @@ func startGRPCServer(t *testing.T, st storage.Storage) string {
 	return lis.Addr().String()
 }
 
-func TestGatewayFilesystemWorkspaceCreateUsesExchangedWorkOSLocalSession(t *testing.T) {
-	t.Setenv("AUTH_PROVIDER", "workos")
-	t.Setenv("WORKOS_CLIENT_ID", "client_test_123")
-
-	privateKey, jwksServer := startGatewayWorkOSJWKSFixture(t)
-	t.Setenv("WORKOS_JWKS_URL", jwksServer.URL)
-
-	ctx := context.Background()
-	st := storage.NewInMemoryStorage()
-	account := &models.Account{
-		AccountID:  "acct_123",
-		OwnerMode:  models.AccountOwnerModeHumanAttached,
-		ClaimState: models.AccountClaimStateClaimed,
-	}
-	if err := st.CreateAccount(ctx, account); err != nil {
-		t.Fatalf("CreateAccount failed: %v", err)
-	}
-	if err := st.CreateUser(ctx, &models.User{
-		Username:     "alice",
-		AccountID:    account.AccountID,
-		Name:         "Alice",
-		PrimaryEmail: "alice@example.com",
-		AuthSource:   "workos",
-		WorkOSUserID: "user_123",
-	}); err != nil {
-		t.Fatalf("CreateUser failed: %v", err)
-	}
-	if _, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice"); err != nil {
-		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
-	}
-
-	grpcAddr := startGRPCServer(t, st)
-	gatewayURL := startGatewayServer(t, grpcAddr)
-	workOSToken := signGatewayWorkOSToken(t, privateKey, "client_test_123", "user_123", "sess_workos_123")
-
-	exchangeReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/auth/workos/ensure-local-identity", strings.NewReader(`{"preferredUsername":"alice","name":"Alice","primaryEmail":"alice@example.com","issueLocalSession":true}`))
-	if err != nil {
-		t.Fatalf("new exchange request: %v", err)
-	}
-	exchangeReq.Header.Set("Authorization", "Bearer "+workOSToken)
-	exchangeReq.Header.Set("Content-Type", "application/json")
-	exchangeResp, err := http.DefaultClient.Do(exchangeReq)
-	if err != nil {
-		t.Fatalf("POST /v1/auth/workos/ensure-local-identity failed: %v", err)
-	}
-	defer exchangeResp.Body.Close()
-	if exchangeResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(exchangeResp.Body)
-		t.Fatalf("unexpected exchange status %d: %s", exchangeResp.StatusCode, string(body))
-	}
-	var exchangePayload struct {
-		LocalAuth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"localAuth"`
-	}
-	if err := json.NewDecoder(exchangeResp.Body).Decode(&exchangePayload); err != nil {
-		t.Fatalf("decode exchange response: %v", err)
-	}
-	if exchangePayload.LocalAuth.AccessToken == "" {
-		t.Fatalf("exchange response missing local access token: %#v", exchangePayload)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/fs/workspaces", strings.NewReader(`{"workspaceId":"workos-gw-ws","name":"WorkOS Workspace"}`))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+exchangePayload.LocalAuth.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /v1/fs/workspaces failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-	var payload struct {
-		WorkspaceID string `json:"workspaceId"`
-		Name        string `json:"name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode workspace response: %v", err)
-	}
-	if payload.WorkspaceID != "workos-gw-ws" || payload.Name != "WorkOS Workspace" {
-		t.Fatalf("unexpected workspace payload: %#v", payload)
-	}
-}
-
-func TestGatewayWorkOSWebhookUsesRawBodyAndSignatureHeader(t *testing.T) {
-	const webhookSecret = "whsec_gateway_test"
-	t.Setenv("WORKOS_WEBHOOK_SECRET", webhookSecret)
-
-	ctx := context.Background()
-	st := storage.NewInMemoryStorage()
-	account := &models.Account{
-		AccountID:  "acct_gateway_webhook",
-		OwnerMode:  models.AccountOwnerModeHumanAttached,
-		ClaimState: models.AccountClaimStateClaimed,
-	}
-	if err := st.CreateAccount(ctx, account); err != nil {
-		t.Fatalf("CreateAccount failed: %v", err)
-	}
-	if err := st.CreateUser(ctx, &models.User{
-		Username:     "alice",
-		AccountID:    account.AccountID,
-		Name:         "Alice",
-		PrimaryEmail: "alice@example.com",
-		AuthSource:   "workos",
-		WorkOSUserID: "user_gateway_webhook",
-	}); err != nil {
-		t.Fatalf("CreateUser failed: %v", err)
-	}
-
-	grpcAddr := startGRPCServer(t, st)
-	gatewayURL := startGatewayServer(t, grpcAddr)
-	body := []byte(`{"event":"user.updated","data":{"object":"user","id":"user_gateway_webhook","email":"alice-new@example.com","first_name":"Alice","last_name":"Gateway"}}`)
-	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/auth/workos/webhook", strings.NewReader(string(body)))
-	if err != nil {
-		t.Fatalf("new webhook request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("WorkOS-Signature", signGatewayWorkOSWebhookPayload(t, body, webhookSecret, time.Now()))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /v1/auth/workos/webhook failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		payload, _ := io.ReadAll(resp.Body)
-		t.Fatalf("unexpected webhook status %d: %s", resp.StatusCode, string(payload))
-	}
-	var responsePayload struct {
-		Action   string `json:"action"`
-		Username string `json:"username"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&responsePayload); err != nil {
-		t.Fatalf("decode webhook response: %v", err)
-	}
-	if responsePayload.Action != "updated_user" || responsePayload.Username != "alice" {
-		t.Fatalf("unexpected webhook response payload: %#v", responsePayload)
-	}
-	user, err := st.GetUser(ctx, "alice")
-	if err != nil {
-		t.Fatalf("GetUser failed: %v", err)
-	}
-	if user.PrimaryEmail != "alice-new@example.com" || user.Name != "Alice Gateway" {
-		t.Fatalf("expected gateway webhook to update user, got %#v", user)
-	}
-}
-
 func TestGatewayClerkWebhookUsesRawBodyAndSignatureHeaders(t *testing.T) {
 	webhookSecret := gatewayClerkWebhookSecret("clerk-gateway-test")
 	t.Setenv("CLERK_WEBHOOK_SECRET", webhookSecret)
@@ -2353,59 +2189,6 @@ func TestGatewayClerkWebhookUsesRawBodyAndSignatureHeaders(t *testing.T) {
 	if user.PrimaryEmail != "alice-new@example.com" || user.Name != "Alice Gateway" {
 		t.Fatalf("expected gateway webhook to update user, got %#v", user)
 	}
-}
-
-func startGatewayWorkOSJWKSFixture(t *testing.T) (*rsa.PrivateKey, *httptest.Server) {
-	t.Helper()
-
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"keys": []map[string]string{{
-				"kid": "test-kid",
-				"kty": "RSA",
-				"alg": "RS256",
-				"use": "sig",
-				"n":   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
-				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
-			}},
-		})
-	}))
-	t.Cleanup(server.Close)
-	return privateKey, server
-}
-
-func signGatewayWorkOSToken(t *testing.T, privateKey *rsa.PrivateKey, audience, subject, sessionID string) string {
-	t.Helper()
-
-	now := time.Now()
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"aud": []string{audience},
-		"exp": now.Add(10 * time.Minute).Unix(),
-		"iat": now.Unix(),
-		"iss": "https://api.workos.com/",
-		"sub": subject,
-		"sid": sessionID,
-	})
-	token.Header["kid"] = "test-kid"
-	signed, err := token.SignedString(privateKey)
-	if err != nil {
-		t.Fatalf("SignedString failed: %v", err)
-	}
-	return signed
-}
-
-func signGatewayWorkOSWebhookPayload(t *testing.T, payload []byte, secret string, at time.Time) string {
-	t.Helper()
-	timestamp := strconv.FormatInt(at.UnixMilli(), 10)
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("."))
-	mac.Write(payload)
-	return "t=" + timestamp + ",v1=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func gatewayClerkWebhookSecret(raw string) string {

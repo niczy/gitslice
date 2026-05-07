@@ -13,15 +13,6 @@ function resetEnv() {
   Object.assign(process.env, ORIGINAL_ENV);
 }
 
-function configureWorkOSEnv() {
-  process.env.AUTH_SECRET = 'test-auth-secret';
-  process.env.AUTH_PROVIDER = 'workos';
-  process.env.WORKOS_CLIENT_ID = 'client_test';
-  process.env.WORKOS_API_KEY = 'sk_test';
-  process.env.WORKOS_COOKIE_PASSWORD = 'cookie-password';
-  process.env.WORKOS_REDIRECT_URI = 'https://agenttools.dev/auth/callback/workos';
-}
-
 function configureClerkEnv() {
   process.env.AUTH_SECRET = 'test-auth-secret';
   process.env.AUTH_PROVIDER = 'clerk';
@@ -40,8 +31,8 @@ test.afterEach(() => {
   global.fetch = ORIGINAL_FETCH;
 });
 
-test('handleSessionRequest returns a cached local session for WorkOS users', async () => {
-  configureWorkOSEnv();
+test('handleSessionRequest returns a cached local session for Clerk users', async () => {
+  configureClerkEnv();
   global.fetch = async () => {
     throw new Error('unexpected fetch');
   };
@@ -49,6 +40,7 @@ test('handleSessionRequest returns a cached local session for WorkOS users', asy
   const future = new Date(Date.now() + 15 * 60 * 1000).toISOString();
   const refreshFuture = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const cookie = await createLocalSessionCookie({
+    source: 'clerk',
     sessionId: 'sess_cached',
     accessToken: 'access_cached',
     refreshToken: 'refresh_cached',
@@ -58,7 +50,7 @@ test('handleSessionRequest returns a cached local session for WorkOS users', asy
       username: 'nic',
       name: 'Nic',
       email: 'nic@example.com',
-      workosUserId: 'user_123',
+      clerkUserId: 'user_123',
     },
   });
 
@@ -67,17 +59,18 @@ test('handleSessionRequest returns a cached local session for WorkOS users', asy
   }));
   assert.equal(response.status, 200);
   const session = await response.json();
-  assert.equal(session.source, 'workos');
+  assert.equal(session.source, 'clerk');
   assert.equal(session.apiAuthSource, 'local_session');
   assert.equal(session.user.username, 'nic');
-  assert.equal(session.user.workosUserId, 'user_123');
+  assert.equal(session.user.clerkUserId, 'user_123');
 });
 
 test('getProxyAuthorizationResult refreshes an expired local access token', async () => {
-  configureWorkOSEnv();
+  configureClerkEnv();
   const expired = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const refreshFuture = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const cookie = await createLocalSessionCookie({
+    source: 'clerk',
     sessionId: 'sess_old',
     accessToken: 'access_old',
     refreshToken: 'refresh_old',
@@ -87,7 +80,7 @@ test('getProxyAuthorizationResult refreshes an expired local access token', asyn
       username: 'nic',
       name: 'Nic',
       email: 'nic@example.com',
-      workosUserId: 'user_123',
+      clerkUserId: 'user_123',
     },
   });
 
@@ -119,7 +112,7 @@ test('getProxyAuthorizationResult refreshes an expired local access token', asyn
 });
 
 test('getProxyAuthorizationResult clears malformed local session cookies', async () => {
-  configureWorkOSEnv();
+  configureClerkEnv();
   global.fetch = async () => {
     throw new Error('unexpected fetch');
   };

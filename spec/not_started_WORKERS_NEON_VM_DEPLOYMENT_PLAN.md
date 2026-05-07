@@ -357,10 +357,7 @@ The plan should standardize the following deployment config:
 - `PUBLIC_WEB_BASE_URL`
 - `PUBLIC_API_BASE_URL`
 - `AUTH_SECRET`
-- `WORKOS_CLIENT_ID`
-- `WORKOS_API_KEY`
-- `WORKOS_COOKIE_PASSWORD`
-- `WORKOS_REDIRECT_URI`
+- `CLERK_SECRET_KEY`
 - `WORKER_ENV`
 - `CF_ACCOUNT_ID`
 - `CF_ZONE_ID`

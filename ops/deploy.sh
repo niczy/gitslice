@@ -210,10 +210,6 @@ const workerVars = {
   ADMIN_USER_EMAILS: process.env.ADMIN_USER_EMAILS || '',
   CLERK_PUBLISHABLE_KEY: process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY || '',
   VITE_CLERK_PUBLISHABLE_KEY: process.env.VITE_CLERK_PUBLISHABLE_KEY || process.env.CLERK_PUBLISHABLE_KEY || '',
-  WORKOS_CLIENT_ID: process.env.WORKOS_CLIENT_ID || '',
-  WORKOS_REDIRECT_URI: process.env.WORKOS_REDIRECT_URI || '',
-  WORKOS_JWKS_URL: process.env.WORKOS_JWKS_URL || '',
-  WORKOS_AUTHKIT_DOMAIN: process.env.WORKOS_AUTHKIT_DOMAIN || '',
 };
 
 for (const [key, value] of Object.entries(workerVars)) {
@@ -250,12 +246,6 @@ sync_worker_secrets() {
     exit 1
   fi
 
-  if [ "$auth_provider" = "workos" ]; then
-    if [ -z "${WORKOS_CLIENT_ID:-}" ] || [ -z "${WORKOS_API_KEY:-}" ] || [ -z "${WORKOS_COOKIE_PASSWORD:-}" ]; then
-      echo "WORKOS_CLIENT_ID, WORKOS_API_KEY, and WORKOS_COOKIE_PASSWORD must be set when AUTH_PROVIDER=workos" >&2
-      exit 1
-    fi
-  fi
   if [ "$auth_provider" = "clerk" ]; then
     if [ -z "${CLERK_PUBLISHABLE_KEY:-}" ] || [ -z "${CLERK_SECRET_KEY:-}" ]; then
       echo "CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY must be set when AUTH_PROVIDER=clerk" >&2
@@ -265,8 +255,6 @@ sync_worker_secrets() {
 
   sync_worker_secret "AUTH_SECRET" "${AUTH_SECRET:-}"
   sync_worker_secret "CLERK_SECRET_KEY" "${CLERK_SECRET_KEY:-}"
-  sync_worker_secret "WORKOS_API_KEY" "${WORKOS_API_KEY:-}"
-  sync_worker_secret "WORKOS_COOKIE_PASSWORD" "${WORKOS_COOKIE_PASSWORD:-}"
 }
 
 validate_api_env() {
@@ -312,9 +300,6 @@ validate_api_env() {
       ;;
   esac
 
-  if [ "$auth_provider" = "workos" ]; then
-    [ -n "${WORKOS_CLIENT_ID:-}" ] || missing+=("WORKOS_CLIENT_ID")
-  fi
   if [ "$auth_provider" = "clerk" ]; then
     [ -n "${AUTH_SECRET:-}" ] || missing+=("AUTH_SECRET")
     [ -n "${CLERK_SECRET_KEY:-}" ] || missing+=("CLERK_SECRET_KEY")

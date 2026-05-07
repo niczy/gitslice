@@ -1,11 +1,10 @@
 let cachedSession = null;
 
 function normalizeSession(session) {
-  const source = String(session?.source || '').trim() || 'workos';
+  const source = String(session?.source || '').trim() || 'local';
   const username = String(session?.user?.username || '').trim();
-  const workosUserId = String(session?.user?.workosUserId || session?.user?.id || '').trim();
   const clerkUserId = String(session?.user?.clerkUserId || session?.user?.id || '').trim();
-  if (!username && !(source === 'workos' && workosUserId) && !(source === 'clerk' && clerkUserId)) {
+  if (!username && !(source === 'clerk' && clerkUserId)) {
     return null;
   }
   return {
@@ -13,7 +12,6 @@ function normalizeSession(session) {
     user: {
       ...(session?.user || {}),
       username,
-      workosUserId,
       clerkUserId,
     },
     source,
@@ -87,26 +85,26 @@ export async function completeClerkUsername(username) {
   return setCachedSession(await response.json());
 }
 
-export function startOAuthSignIn(provider = 'workos') {
-  const normalizedProvider = String(provider || 'workos').trim().toLowerCase();
+export function startOAuthSignIn(provider = 'clerk') {
+  const normalizedProvider = String(provider || 'clerk').trim().toLowerCase();
   const callbackUrl = `${window.location.origin}/slices`;
-  const url = new URL(normalizedProvider === 'clerk' ? '/sign-in' : '/auth/signin/workos', window.location.origin);
+  const url = new URL('/sign-in', window.location.origin);
   if (normalizedProvider === 'clerk') {
     url.searchParams.set('redirect_url', callbackUrl);
   } else {
-    url.searchParams.set('callbackUrl', callbackUrl);
+    url.searchParams.set('redirect_url', callbackUrl);
   }
   window.location.assign(url.toString());
 }
 
-export function startOAuthSignOut(provider = 'workos') {
-  const normalizedProvider = String(provider || 'workos').trim().toLowerCase();
+export function startOAuthSignOut(provider = 'clerk') {
+  const normalizedProvider = String(provider || 'clerk').trim().toLowerCase();
   const callbackUrl = `${window.location.origin}/`;
-  const url = new URL(normalizedProvider === 'clerk' ? '/sign-out' : '/auth/signout', window.location.origin);
+  const url = new URL('/sign-out', window.location.origin);
   if (normalizedProvider === 'clerk') {
     url.searchParams.set('redirect_url', callbackUrl);
   } else {
-    url.searchParams.set('callbackUrl', callbackUrl);
+    url.searchParams.set('redirect_url', callbackUrl);
   }
   window.location.assign(url.toString());
 }

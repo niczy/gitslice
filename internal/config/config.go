@@ -66,15 +66,6 @@ type Config struct {
 	// Agent session WebSocket token signing.
 	AgentWSTokenSecret string
 
-	// WorkOS auth configuration.
-	WorkOSClientID       string
-	WorkOSAPIKey         string
-	WorkOSRedirectURI    string
-	WorkOSJWKSURL        string
-	WorkOSCookiePassword string
-	WorkOSAuthKitDomain  string
-	WorkOSWebhookSecret  string
-
 	// Clerk auth configuration.
 	ClerkWebhookSecret string
 
@@ -151,13 +142,6 @@ func LoadConfig() (*Config, error) {
 		R2SecretAccessKey:       getEnv("R2_SECRET_ACCESS_KEY", ""),
 		R2UsePathStyle:          getEnvBool("R2_USE_PATH_STYLE", false),
 		AgentWSTokenSecret:      getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
-		WorkOSClientID:          getEnv("WORKOS_CLIENT_ID", ""),
-		WorkOSAPIKey:            getEnv("WORKOS_API_KEY", ""),
-		WorkOSRedirectURI:       getEnv("WORKOS_REDIRECT_URI", ""),
-		WorkOSJWKSURL:           getEnv("WORKOS_JWKS_URL", ""),
-		WorkOSCookiePassword:    getEnv("WORKOS_COOKIE_PASSWORD", ""),
-		WorkOSAuthKitDomain:     getEnv("WORKOS_AUTHKIT_DOMAIN", ""),
-		WorkOSWebhookSecret:     getEnv("WORKOS_WEBHOOK_SECRET", ""),
 		ClerkWebhookSecret:      getEnv("CLERK_WEBHOOK_SECRET", ""),
 		E2BAPIURL:               getEnv("E2B_API_URL", ""),
 		E2BDomain:               getEnv("E2B_DOMAIN", "e2b.app"),
@@ -194,9 +178,9 @@ type PostgresTargetSummary struct {
 
 func (c *Config) Validate() error {
 	switch strings.ToLower(strings.TrimSpace(c.AuthProvider)) {
-	case "", "local", "workos", "clerk":
+	case "", "local", "clerk":
 	default:
-		return fmt.Errorf("AUTH_PROVIDER must be one of: local, workos, clerk")
+		return fmt.Errorf("AUTH_PROVIDER must be one of: local, clerk")
 	}
 	if !strings.EqualFold(c.StorageType, "postgres") {
 		return nil

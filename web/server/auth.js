@@ -1,4 +1,3 @@
-import { WorkOS } from '@workos-inc/node';
 import { createClerkClient } from '@clerk/backend';
 import {
   base64URLToBytes,
@@ -15,10 +14,6 @@ import {
 
 const DEV_SESSION_COOKIE = 'gs_dev_session';
 const LOCAL_SESSION_COOKIE = 'gs_local_session';
-const WORKOS_SESSION_COOKIE = 'gs_workos_session';
-const WORKOS_STATE_COOKIE = 'gs_workos_state';
-const WORKOS_STATE_COOKIE_MAX_AGE = 60 * 10;
-const WORKOS_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 const LOCAL_SESSION_COOKIE_DEFAULT_MAX_AGE = 60 * 60 * 24 * 30;
 const LOCAL_SESSION_REFRESH_SKEW_MS = 60 * 1000;
 const CLERK_BRIDGE_CLAIMS_MAX_AGE_MS = 5 * 60 * 1000;
@@ -115,7 +110,7 @@ export function isDevLoginEnabled(request, authContext = null) {
     return explicit;
   }
   const provider = String(authContext?.authProvider || getAuthProvider()).trim().toLowerCase();
-  if (provider !== 'workos' && provider !== 'clerk') {
+  if (provider !== 'clerk') {
     return true;
   }
   return isLocalHost(request?.url);
@@ -168,31 +163,20 @@ function buildUsernameFromProfile(profile) {
   return `${trimmed}${randomHex(2)}`.slice(0, 8);
 }
 
-function getWorkOSRedirectURI(request) {
-  const configured = String(process.env.WORKOS_REDIRECT_URI || '').trim();
-  if (configured) {
-    return configured;
-  }
-  if (!request) {
-    return '';
-  }
-  return new URL('/auth/callback/workos', request.url).toString();
-}
-
 function buildCookieSessionDisplayName(user) {
   const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
   return fullName || String(user?.email || user?.id || '').trim();
 }
 
 function buildGenericUserPayload({
-  provider = 'workos',
+  provider = 'clerk',
   id = '',
   email = '',
   name = '',
   username = '',
   profilePictureUrl = '',
 } = {}) {
-  const providerName = String(provider || '').trim().toLowerCase() || 'workos';
+  const providerName = String(provider || '').trim().toLowerCase() || 'clerk';
   const normalizedName = String(name || '').trim();
   const normalizedEmail = String(email || '').trim();
   const normalizedID = String(id || '').trim();
@@ -201,7 +185,6 @@ function buildGenericUserPayload({
     email: normalizedEmail,
     name: normalizedName,
     username: String(username || '').trim(),
-    workosUserId: providerName === 'workos' ? normalizedID : '',
     clerkUserId: providerName === 'clerk' ? normalizedID : '',
     derivedUsername: buildUsernameFromProfile({
       id: normalizedID,
@@ -314,57 +297,12 @@ function sanitizeAuthErrorDetail(rawValue) {
   return value.slice(0, MAX_AUTH_ERROR_DETAIL_LENGTH);
 }
 
-function buildWorkOSProviderFailure(url) {
-  const code = sanitizeAuthErrorCode(url.searchParams.get('error')) || 'workos_callback_failed';
-  const description = sanitizeAuthErrorDetail(url.searchParams.get('error_description'));
-  const detail = description || code.replace(/[_-]+/g, ' ');
-  return { code, detail };
-}
-
-function buildWorkOSAuthenticateFailure(error) {
-  const code = sanitizeAuthErrorCode(
-    error?.code
-      || error?.error
-      || error?.rawData?.error
-      || error?.cause?.code
-      || 'workos_authenticate_failed',
-  ) || 'workos_authenticate_failed';
-  const detail = sanitizeAuthErrorDetail(
-    error?.description
-      || error?.rawData?.error_description
-      || error?.rawData?.message
-      || error?.cause?.message
-      || error?.message,
-  );
-  return { code, detail };
-}
-
 function appendAuthFailure(failureURL, code, detail = '') {
   failureURL.searchParams.set('error', sanitizeAuthErrorCode(code) || 'auth_failed');
   const safeDetail = sanitizeAuthErrorDetail(detail);
   if (safeDetail) {
     failureURL.searchParams.set('detail', safeDetail);
   }
-}
-
-function buildWorkOSSessionPayload(authResponse) {
-  const user = authResponse?.user;
-  if (!user?.id) {
-    return null;
-  }
-  return {
-    user: buildGenericUserPayload({
-      provider: 'workos',
-      id: user.id,
-      email: user.email,
-      name: buildCookieSessionDisplayName(user),
-      profilePictureUrl: user.profilePictureUrl || '',
-    }),
-    source: 'workos',
-    sessionId: authResponse.sessionId || '',
-    organizationId: authResponse.organizationId || '',
-    authenticationMethod: authResponse.authenticationMethod || '',
-  };
 }
 
 function primaryClerkEmailAddress(user) {
@@ -419,18 +357,6 @@ function buildPendingClerkUsernameSession(session) {
   };
 }
 
-function buildWorkOSSessionPayloadFromAuthenticatedSession(authResponse) {
-  if (!authResponse?.authenticated) {
-    return null;
-  }
-  return buildWorkOSSessionPayload({
-    user: authResponse.user,
-    sessionId: authResponse.sessionId || '',
-    organizationId: authResponse.organizationId || '',
-    authenticationMethod: authResponse.authenticationMethod || '',
-  });
-}
-
 function parseTimeMs(rawValue) {
   const value = String(rawValue || '').trim();
   if (!value) {
@@ -449,7 +375,6 @@ function sanitizeLocalSessionUser(user, fallbackUser = null) {
     username,
     name: String(user?.name || fallbackUser?.name || '').trim(),
     email: String(user?.email || user?.primaryEmail || fallbackUser?.email || '').trim(),
-    workosUserId: String(user?.workosUserId || fallbackUser?.workosUserId || fallbackUser?.id || '').trim(),
     clerkUserId: String(user?.clerkUserId || fallbackUser?.clerkUserId || '').trim(),
     profilePictureUrl: String(user?.profilePictureUrl || fallbackUser?.profilePictureUrl || '').trim(),
   };
@@ -461,7 +386,7 @@ function normalizeLocalSessionPayload(payload) {
   if (!user || !refreshToken) {
     return null;
   }
-  const source = String(payload?.source || '').trim().toLowerCase() || 'workos';
+  const source = String(payload?.source || '').trim().toLowerCase() || 'local';
   return {
     source,
     sessionId: String(payload?.sessionId || '').trim(),
@@ -503,7 +428,7 @@ function buildPublicSessionFromLocalSession(localSession) {
   }
   return {
     user,
-    source: String(localSession?.source || '').trim() || 'workos',
+    source: String(localSession?.source || '').trim() || 'local',
     apiAuthSource: 'local_session',
     sessionId: String(localSession?.sessionId || '').trim(),
     accountId: String(localSession?.accountId || '').trim(),
@@ -520,7 +445,7 @@ function buildLocalSessionPayloadFromAuth(authResponse, fallbackSession = null) 
   if (!user || !refreshToken) {
     return null;
   }
-  const source = String(authResponse?.source || fallbackSession?.source || '').trim().toLowerCase() || 'workos';
+  const source = String(authResponse?.source || fallbackSession?.source || '').trim().toLowerCase() || 'local';
   return normalizeLocalSessionPayload({
     source,
     sessionId: String(authResponse?.sessionId || fallbackSession?.sessionId || '').trim(),
@@ -538,30 +463,6 @@ function buildLocalSessionPayloadFromAuth(authResponse, fallbackSession = null) 
 
 function buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession) {
   return buildLocalSessionPayloadFromAuth(ensuredSession?.localAuth, ensuredSession);
-}
-
-function createWorkOSAuthContext(authSecret, request) {
-  const clientId = String(process.env.WORKOS_CLIENT_ID || '').trim();
-  const apiKey = String(process.env.WORKOS_API_KEY || '').trim();
-  const redirectURI = getWorkOSRedirectURI(request);
-  const cookiePassword = String(process.env.WORKOS_COOKIE_PASSWORD || '').trim();
-  if (!clientId || !apiKey || !redirectURI || !cookiePassword) {
-    return {
-      authProvider: 'workos',
-      startupError: 'WorkOS auth is not fully configured',
-      authSecret,
-    };
-  }
-  return {
-    authProvider: 'workos',
-    startupError: '',
-    authSecret,
-    workos: new WorkOS(apiKey, { clientId }),
-    workosClientId: clientId,
-    workosRedirectURI: redirectURI,
-    workosCookiePassword: cookiePassword,
-    workosAuthKitDomain: String(process.env.WORKOS_AUTHKIT_DOMAIN || '').trim(),
-  };
 }
 
 function createClerkAuthContext(authSecret, request) {
@@ -601,9 +502,6 @@ export function createAuthContext(request) {
   const authSecret = process.env.AUTH_SECRET;
   if (!authSecret) {
     return { authProvider: getAuthProvider(), startupError: 'AUTH_SECRET is not configured' };
-  }
-  if (getAuthProvider() === 'workos') {
-    return createWorkOSAuthContext(authSecret, request);
   }
   if (getAuthProvider() === 'clerk') {
     return createClerkAuthContext(authSecret, request);
@@ -668,10 +566,6 @@ export function clearLocalSessionCookie(request) {
   return serializeCookie(request, LOCAL_SESSION_COOKIE, '', 0);
 }
 
-function clearWorkOSSessionCookie(request) {
-  return serializeCookie(request, WORKOS_SESSION_COOKIE, '', 0);
-}
-
 function parseCookieHeader(value) {
   const cookies = new Map();
   for (const chunk of String(value || '').split(';')) {
@@ -698,89 +592,6 @@ function redirectWithCookies(location, cookies = []) {
   return new Response(null, { status: 302, headers });
 }
 
-function logWorkOSDebug(message, extra = {}) {
-  if (String(process.env.DEPLOY_ENV || '').trim().toLowerCase() === 'production') {
-    return;
-  }
-  try {
-    console.error(`[workos-auth] ${message}`, JSON.stringify(extra));
-  } catch {
-    console.error(`[workos-auth] ${message}`);
-  }
-}
-
-async function authenticateWorkOSSession(request, authContext) {
-  if (!authContext?.workos || !authContext?.workosCookiePassword) {
-    return { session: null, accessToken: '', sessionId: '', clearCookie: false, setCookie: '' };
-  }
-  const sealedSession = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_SESSION_COOKIE);
-  if (!sealedSession) {
-    return { session: null, accessToken: '', sessionId: '', clearCookie: false, setCookie: '' };
-  }
-
-  try {
-    const cookieSession = authContext.workos.userManagement.loadSealedSession({
-      sessionData: sealedSession,
-      cookiePassword: authContext.workosCookiePassword,
-    });
-    let authResponse = await cookieSession.authenticate();
-    let setCookie = '';
-    if (!authResponse.authenticated && authResponse.reason === 'invalid_jwt') {
-      const refreshed = await cookieSession.refresh({
-        cookiePassword: authContext.workosCookiePassword,
-      });
-      if (refreshed.authenticated && refreshed.sealedSession) {
-        authResponse = {
-          authenticated: true,
-          sessionId: refreshed.sessionId || '',
-          organizationId: refreshed.organizationId || '',
-          authenticationMethod: refreshed.authenticationMethod || '',
-          user: refreshed.user,
-          accessToken: refreshed.session?.accessToken || '',
-        };
-        setCookie = serializeCookie(
-          request,
-          WORKOS_SESSION_COOKIE,
-          refreshed.sealedSession,
-          WORKOS_SESSION_COOKIE_MAX_AGE,
-        );
-      } else {
-        logWorkOSDebug('refresh failed', { reason: refreshed.reason || '' });
-        return {
-          session: null,
-          accessToken: '',
-          sessionId: '',
-          clearCookie: refreshed.reason !== 'no_session_cookie_provided',
-          setCookie: '',
-        };
-      }
-    }
-    if (!authResponse.authenticated) {
-      logWorkOSDebug('authenticate failed', { reason: authResponse.reason || '' });
-      return {
-        session: null,
-        accessToken: '',
-        sessionId: '',
-        clearCookie: authResponse.reason !== 'no_session_cookie_provided',
-        setCookie: '',
-      };
-    }
-    return {
-      session: buildWorkOSSessionPayloadFromAuthenticatedSession(authResponse),
-      accessToken: authResponse.accessToken || '',
-      sessionId: authResponse.sessionId || '',
-      clearCookie: false,
-      setCookie,
-    };
-  } catch (error) {
-    logWorkOSDebug('session authenticate threw', {
-      error: error instanceof Error ? error.message : String(error || ''),
-      name: error instanceof Error ? error.name : '',
-    });
-    return { session: null, accessToken: '', sessionId: '', clearCookie: true, setCookie: '' };
-  }
-}
-
 async function authenticateClerkSession(request, authContext) {
   if (!authContext?.clerk) {
     return { session: null };
@@ -805,57 +616,6 @@ async function authenticateClerkSession(request, authContext) {
   } catch {
     return { session: null };
   }
-}
-
-async function ensureWorkOSLocalIdentity(request, accessToken, session, options = {}) {
-  if (!session?.user?.workosUserId || !accessToken) {
-    return session;
-  }
-  const claimToken = String(options?.claimToken || '').trim();
-  const issueLocalSession = Boolean(options?.issueLocalSession);
-
-  const response = await fetch(new URL('/v1/auth/workos/ensure-local-identity', getGatewayTarget()), {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      preferredUsername: session.user.derivedUsername || '',
-      name: session.user.name || '',
-      primaryEmail: session.user.email || '',
-      claimToken,
-      issueLocalSession,
-    }),
-  });
-
-  if (!response.ok) {
-    let detail = '';
-    try {
-      const payload = await response.json();
-      detail = String(payload?.message || payload?.error || '').trim();
-    } catch {
-      detail = '';
-    }
-    throw new Error(detail || `failed to ensure local WorkOS identity (${response.status})`);
-  }
-
-  const payload = await response.json();
-  const localUsername = String(payload?.user?.username || '').trim();
-  return {
-    ...session,
-    accountId: String(payload?.accountId || '').trim(),
-    linkedExistingUser: Boolean(payload?.linkedExistingUser),
-    localAuth: payload?.localAuth || null,
-    user: {
-      ...(session.user || {}),
-      username: localUsername,
-      localUsername,
-      name: String(payload?.user?.name || session.user?.name || '').trim(),
-      email: String(payload?.user?.primaryEmail || session.user?.email || '').trim(),
-    },
-  };
 }
 
 async function buildSignedClerkClaims(session, authSecret) {
@@ -969,24 +729,6 @@ async function refreshLocalSession(request, authContext, localSession) {
   };
 }
 
-async function bootstrapLocalSessionFromWorkOS(request, authContext, authSession, claimToken = '') {
-  if (!authSession?.session || !authSession?.accessToken) {
-    return { localSession: null, setCookie: '' };
-  }
-  const ensuredSession = await ensureWorkOSLocalIdentity(request, authSession.accessToken, authSession.session, {
-    claimToken,
-    issueLocalSession: true,
-  });
-  const localSession = buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession);
-  if (!localSession) {
-    throw new Error('failed to create local session from WorkOS identity');
-  }
-  return {
-    localSession,
-    setCookie: await serializeLocalSessionCookie(request, localSession, authContext.authSecret),
-  };
-}
-
 async function bootstrapLocalSessionFromClerk(request, authContext, session, claimToken = '') {
   if (!session) {
     return { localSession: null, setCookie: '' };
@@ -1005,77 +747,6 @@ async function bootstrapLocalSessionFromClerk(request, authContext, session, cla
   };
 }
 
-async function resolveWorkOSBackedLocalSession(request, authContext, options = {}) {
-  const setCookies = [];
-  let clearWorkOSCookie = false;
-  let clearLocalCookie = false;
-
-  let { localSession, clearCookie: shouldClearLocalCookie } = await loadLocalSession(request, authContext.authSecret);
-  if (shouldClearLocalCookie) {
-    clearLocalCookie = true;
-  }
-  if (localSession && shouldRefreshLocalSession(localSession)) {
-    const refreshed = await refreshLocalSession(request, authContext, localSession);
-    if (refreshed.localSession) {
-      localSession = refreshed.localSession;
-      if (refreshed.setCookie) {
-        setCookies.push(refreshed.setCookie);
-      }
-      clearLocalCookie = false;
-    } else {
-      localSession = null;
-      clearLocalCookie = clearLocalCookie || refreshed.clearCookie;
-    }
-  }
-  if (localSession) {
-    return {
-      localSession,
-      publicSession: buildPublicSessionFromLocalSession(localSession),
-      setCookies,
-      clearLocalCookie,
-      clearWorkOSCookie,
-    };
-  }
-  if (!options.allowWorkOSBootstrap) {
-    return {
-      localSession: null,
-      publicSession: null,
-      setCookies,
-      clearLocalCookie,
-      clearWorkOSCookie,
-    };
-  }
-
-  const workosAuthSession = await authenticateWorkOSSession(request, authContext);
-  if (workosAuthSession.setCookie) {
-    setCookies.push(workosAuthSession.setCookie);
-  }
-  if (workosAuthSession.clearCookie) {
-    clearWorkOSCookie = true;
-  }
-  if (!workosAuthSession.session || !workosAuthSession.accessToken) {
-    return {
-      localSession: null,
-      publicSession: null,
-      setCookies,
-      clearLocalCookie,
-      clearWorkOSCookie,
-    };
-  }
-
-  const bootstrapped = await bootstrapLocalSessionFromWorkOS(request, authContext, workosAuthSession, options.claimToken || '');
-  if (bootstrapped.setCookie) {
-    setCookies.push(bootstrapped.setCookie);
-  }
-  return {
-    localSession: bootstrapped.localSession,
-    publicSession: buildPublicSessionFromLocalSession(bootstrapped.localSession),
-    setCookies,
-    clearLocalCookie: false,
-    clearWorkOSCookie,
-  };
-}
-
 async function resolveClerkBackedLocalSession(request, authContext, options = {}) {
   const setCookies = [];
   let { localSession, clearCookie: clearLocalCookie } = await loadLocalSession(request, authContext.authSecret);
@@ -1090,6 +761,21 @@ async function resolveClerkBackedLocalSession(request, authContext, options = {}
       setCookies,
       clearLocalCookie,
     };
+  }
+  if (localSession) {
+    const refreshedSession = await refreshLocalSession(request, authContext, localSession);
+    if (refreshedSession.setCookie) {
+      setCookies.push(refreshedSession.setCookie);
+    }
+    if (refreshedSession.localSession) {
+      return {
+        localSession: refreshedSession.localSession,
+        publicSession: buildPublicSessionFromLocalSession(refreshedSession.localSession),
+        setCookies,
+        clearLocalCookie: false,
+      };
+    }
+    clearLocalCookie = clearLocalCookie || refreshedSession.clearCookie;
   }
 
   const clerkAuthSession = await authenticateClerkSession(request, authContext);
@@ -1149,21 +835,15 @@ export async function getClerkAdminClaimsResult(request) {
 
 export async function getProxyAuthorizationResult(request) {
   const authContext = createAuthContext(request);
-  if ((authContext.authProvider !== 'workos' && authContext.authProvider !== 'clerk') || authContext.startupError) {
+  if (authContext.authProvider !== 'clerk' || authContext.startupError) {
     return { authorization: '', setCookies: [], rejectUnauthenticated: false };
   }
   const cookieHeader = String(request.headers.get('cookie') || '');
-  const hadSessionCookie = cookieHeader.includes(`${LOCAL_SESSION_COOKIE}=`)
-    || (authContext.authProvider === 'workos' && cookieHeader.includes(`${WORKOS_SESSION_COOKIE}=`));
-  const authSession = authContext.authProvider === 'clerk'
-    ? await resolveClerkBackedLocalSession(request, authContext)
-    : await resolveWorkOSBackedLocalSession(request, authContext);
+  const hadSessionCookie = cookieHeader.includes(`${LOCAL_SESSION_COOKIE}=`);
+  const authSession = await resolveClerkBackedLocalSession(request, authContext);
   const setCookies = [...(authSession.setCookies || [])];
   if (authSession.clearLocalCookie) {
     setCookies.push(clearLocalSessionCookie(request));
-  }
-  if (authSession.clearWorkOSCookie) {
-    setCookies.push(clearWorkOSSessionCookie(request));
   }
   return {
     authorization: authSession.localSession?.accessToken ? `Bearer ${authSession.localSession.accessToken}` : '',
@@ -1178,10 +858,8 @@ export async function loadSession(request) {
     return null;
   }
   const allowDevLogin = isDevLoginEnabled(request, authContext);
-  if (authContext.authProvider === 'workos' || authContext.authProvider === 'clerk') {
-    const resolvedSession = authContext.authProvider === 'clerk'
-      ? await resolveClerkBackedLocalSession(request, authContext)
-      : await resolveWorkOSBackedLocalSession(request, authContext);
+  if (authContext.authProvider === 'clerk') {
+    const resolvedSession = await resolveClerkBackedLocalSession(request, authContext);
     if (!resolvedSession.publicSession) {
       if (!allowDevLogin) {
         return null;
@@ -1223,21 +901,16 @@ export async function handleSessionRequest(request) {
     return Response.json({ error: authContext.startupError }, { status: 500 });
   }
 
-  if (authContext.authProvider === 'workos' || authContext.authProvider === 'clerk') {
+  if (authContext.authProvider === 'clerk') {
     let session = null;
     const setCookies = [];
     if (!authContext.startupError) {
       try {
-        const resolvedSession = authContext.authProvider === 'clerk'
-          ? await resolveClerkBackedLocalSession(request, authContext)
-          : await resolveWorkOSBackedLocalSession(request, authContext);
+        const resolvedSession = await resolveClerkBackedLocalSession(request, authContext);
         session = resolvedSession.publicSession;
         setCookies.push(...(resolvedSession.setCookies || []));
         if (resolvedSession.clearLocalCookie) {
           setCookies.push(clearLocalSessionCookie(request));
-        }
-        if (resolvedSession.clearWorkOSCookie) {
-          setCookies.push(clearWorkOSSessionCookie(request));
         }
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : 'Failed to load provider-backed session' }, { status: 500 });
@@ -1348,134 +1021,6 @@ export function handleDevLogoutRequest(request) {
   return response;
 }
 
-async function handleWorkOSSignInRequest(request, authContext) {
-  const url = new URL(request.url);
-  const callbackURL = normalizeReturnTo(request, url.searchParams.get('callbackUrl'), '/login');
-  const state = randomHex(16);
-  const stateCookie = await signPayload({ state, callbackUrl: callbackURL }, authContext.authSecret);
-  const redirectURL = authContext.workos.userManagement.getAuthorizationUrl({
-    provider: 'authkit',
-    clientId: authContext.workosClientId,
-    redirectUri: authContext.workosRedirectURI,
-    state,
-  });
-  return redirectWithCookies(redirectURL, [
-    serializeCookie(request, WORKOS_STATE_COOKIE, stateCookie, WORKOS_STATE_COOKIE_MAX_AGE),
-  ]);
-}
-
-async function handleWorkOSCallbackRequest(request, authContext) {
-  const url = new URL(request.url);
-  const signedState = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_STATE_COOKIE);
-  const statePayload = await verifySignedPayload(signedState, authContext.authSecret);
-  const callbackURL = normalizeReturnTo(request, statePayload?.callbackUrl, '/login');
-  const failureURL = new URL('/login', request.url);
-  const clearStateCookie = serializeCookie(request, WORKOS_STATE_COOKIE, '', 0);
-  const errorCode = String(url.searchParams.get('error') || '').trim();
-  const returnedState = String(url.searchParams.get('state') || '').trim();
-  const code = String(url.searchParams.get('code') || '').trim();
-
-  if (errorCode) {
-    const failure = buildWorkOSProviderFailure(url);
-    appendAuthFailure(failureURL, failure.code, failure.detail);
-    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
-  }
-  if (!statePayload?.state || !returnedState || returnedState !== String(statePayload.state)) {
-    appendAuthFailure(failureURL, 'workos_callback_failed', 'State verification failed. Start the WorkOS sign-in flow again.');
-    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
-  }
-  if (!code) {
-    appendAuthFailure(failureURL, 'workos_code_missing', 'WorkOS did not return an authorization code.');
-    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
-  }
-
-  let authResponse;
-  try {
-    authResponse = await authContext.workos.userManagement.authenticateWithCode({
-      clientId: authContext.workosClientId,
-      code,
-      redirectUri: authContext.workosRedirectURI,
-      ipAddress: String(request.headers.get('cf-connecting-ip') || '').trim(),
-      userAgent: String(request.headers.get('user-agent') || '').trim(),
-      session: {
-        sealSession: true,
-        cookiePassword: authContext.workosCookiePassword,
-      },
-    });
-  } catch (error) {
-    const failure = buildWorkOSAuthenticateFailure(error);
-    appendAuthFailure(failureURL, failure.code, failure.detail);
-    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
-  }
-
-  const sealedSession = String(authResponse?.sealedSession || '').trim();
-  if (!sealedSession) {
-    appendAuthFailure(failureURL, 'workos_session_missing', 'WorkOS returned no sealed session.');
-    return redirectWithCookies(failureURL.toString(), [clearStateCookie]);
-  }
-
-  return redirectWithCookies(callbackURL, [
-    clearStateCookie,
-    serializeCookie(request, WORKOS_SESSION_COOKIE, sealedSession, WORKOS_SESSION_COOKIE_MAX_AGE),
-  ]);
-}
-
-async function handleWorkOSLogoutRequest(request, authContext) {
-  const returnTo = normalizeReturnTo(request, new URL(request.url).searchParams.get('callbackUrl'), '/');
-  const sealedSession = parseCookieHeader(request.headers.get('cookie')).get(WORKOS_SESSION_COOKIE);
-  let redirectURL = returnTo;
-  if (sealedSession) {
-    try {
-      const cookieSession = authContext.workos.userManagement.loadSealedSession({
-        sessionData: sealedSession,
-        cookiePassword: authContext.workosCookiePassword,
-      });
-      redirectURL = await cookieSession.getLogoutUrl({ returnTo });
-    } catch {
-      redirectURL = returnTo;
-    }
-  }
-  return redirectWithCookies(redirectURL, [
-    clearWorkOSSessionCookie(request),
-    clearLocalSessionCookie(request),
-  ]);
-}
-
-async function handleWorkOSClaimAccountRequest(request, authContext) {
-  const url = new URL(request.url);
-  const claimToken = String(url.searchParams.get('token') || '').trim();
-  const callbackURL = normalizeReturnTo(request, url.searchParams.get('callbackUrl'), '/browser');
-  if (!claimToken) {
-    return Response.json({ error: 'claim token is required' }, { status: 400 });
-  }
-
-  const { session, accessToken, clearCookie } = await authenticateWorkOSSession(request, authContext);
-  if (!session || !accessToken) {
-    const signinURL = new URL('/auth/signin/workos', request.url);
-    signinURL.searchParams.set('callbackUrl', url.toString());
-    const response = redirectWithCookies(signinURL.toString(), []);
-    if (clearCookie) {
-      response.headers.append('Set-Cookie', clearWorkOSSessionCookie(request));
-    }
-    return response;
-  }
-
-  try {
-    const ensuredSession = await ensureWorkOSLocalIdentity(request, accessToken, session, {
-      claimToken,
-      issueLocalSession: true,
-    });
-    const localSession = buildLocalSessionPayloadFromEnsuredIdentity(ensuredSession);
-    const cookies = [];
-    if (localSession) {
-      cookies.push(await serializeLocalSessionCookie(request, localSession, authContext.authSecret));
-    }
-    return redirectWithCookies(callbackURL, cookies);
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : 'Failed to claim account' }, { status: 400 });
-  }
-}
-
 async function handleClerkClaimAccountRequest(request, authContext) {
   const url = new URL(request.url);
   const claimToken = String(url.searchParams.get('token') || '').trim();
@@ -1557,22 +1102,6 @@ export async function handleAuthRequest(request) {
   const authContext = createAuthContext(request);
   if (authContext.startupError) {
     return Response.json({ error: authContext.startupError || 'Auth is not configured' }, { status: 500 });
-  }
-  if (authContext.authProvider === 'workos') {
-    const pathname = new URL(request.url).pathname.replace(/^\/auth\/?/, '');
-    if (pathname === 'signin/workos') {
-      return handleWorkOSSignInRequest(request, authContext);
-    }
-    if (pathname === 'callback/workos') {
-      return handleWorkOSCallbackRequest(request, authContext);
-    }
-    if (pathname === 'claim-account') {
-      return handleWorkOSClaimAccountRequest(request, authContext);
-    }
-    if (pathname === 'signout') {
-      return handleWorkOSLogoutRequest(request, authContext);
-    }
-    return Response.json({ error: 'WorkOS auth route not found' }, { status: 404 });
   }
   if (authContext.authProvider === 'clerk') {
     const pathname = new URL(request.url).pathname.replace(/^\/auth\/?/, '');
@@ -1748,11 +1277,11 @@ export function renderDevicePage({ userCode, startupError, authProvider }) {
 
       function syncSignInLink() {
         const authProvider = document.body.dataset.authProvider || 'local';
-        const signInURL = new URL(authProvider === 'clerk' ? '/sign-in' : '/auth/signin/workos', window.location.origin);
+        const signInURL = new URL(authProvider === 'clerk' ? '/sign-in' : '/login', window.location.origin);
         if (authProvider === 'clerk') {
           signInURL.searchParams.set('redirect_url', window.location.href);
         } else {
-          signInURL.searchParams.set('callbackUrl', window.location.href);
+          signInURL.searchParams.set('redirect_url', window.location.href);
         }
         signInLink.href = signInURL.toString();
       }

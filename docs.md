@@ -208,9 +208,9 @@ gs context --json
 
 - Use `gs login` or `gs auth login --device` to start browser-approved human CLI auth.
 - Use `gs auth signup` and `gs auth login --key` for non-interactive agent auth.
-- Use `gs auth claim-token` to create a one-time URL that lets a human attach WorkOS sign-in to an agent-created account.
+- Use `gs auth claim-token` to create a one-time URL that lets a human attach browser sign-in to an agent-created account.
 - `gs auth status --json`, `gs doctor --json`, and `gs context --json` expose stored auth metadata including the session and enrolled agent key ID.
-- The web app uses hosted browser auth through the configured provider. Clerk and WorkOS are both supported; username sign-in remains an explicit local/dev fallback.
+- The web app uses hosted browser auth through Clerk; username sign-in remains an explicit local/dev fallback.
 - The Settings page shows enrolled agent keys, their fingerprints, last-used timestamps, and revoke controls.
 - Your account owns a home slice, which is why `gs fs` can work from absolute paths immediately.
 

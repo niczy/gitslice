@@ -407,7 +407,7 @@ function App({
     setAuthSessionSource('');
     navigate('landing', '', '', { replace: true });
     await queryClient.invalidateQueries({ queryKey: ['web-session'] });
-    if (authSessionSource === 'workos' || authSessionSource === 'clerk') {
+    if (authSessionSource === 'clerk') {
       startOAuthSignOut(authSessionSource);
     }
   }, [authSessionSource, navigate, queryClient]);
@@ -443,7 +443,7 @@ function App({
 
   const openLogin = useCallback(() => {
     const provider = String(initialAuthConfig.authProvider || '').trim().toLowerCase();
-    if (provider === 'workos' || provider === 'clerk') {
+    if (provider === 'clerk') {
       startOAuthSignIn(provider);
       return;
     }
