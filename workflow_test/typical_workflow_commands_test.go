@@ -417,10 +417,10 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 		t.Fatalf("write publish workflow file: %v", err)
 	}
 
-	publishPreview := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish", "--review-only", "--message", "publish workflow")
+	publishPreview := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "export", "--message", "publish workflow")
 	changesetID := publishPreview.Changeset.ChangesetID
-	if changesetID == "" || !publishPreview.ReviewOnly || publishPreview.Review.ChangesetID != changesetID || publishPreview.ReusedExisting {
-		t.Fatalf("expected review output in publish command, got: %+v", publishPreview)
+	if changesetID == "" || !publishPreview.ReviewOnly || publishPreview.Review.ChangesetID != changesetID || publishPreview.ReusedExisting || publishPreview.Merge != nil {
+		t.Fatalf("expected unmerged publish output, got: %+v", publishPreview)
 	}
 
 	showResp := runCLIJSONOrFail[changesetReviewJSON](t, workdir, "changeset", "show")
@@ -435,8 +435,13 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	}
 
 	publishResp := runCLIJSONOrFail[slicePublishJSON](t, workdir, "slice", "publish")
-	if !publishResp.ReusedExisting || publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
-		t.Fatalf("expected publish merge success, got: %+v", publishResp)
+	if !publishResp.ReusedExisting || !publishResp.ReviewOnly || publishResp.Merge != nil {
+		t.Fatalf("expected publish to reuse tracked changeset without merging, got: %+v", publishResp)
+	}
+
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, workdir, "changeset", "merge", changesetID)
+	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected explicit merge success, got: %+v", mergeResp)
 	}
 
 	mergedList := runCLIJSONOrFail[changesetListJSON](t, workdir, "changeset", "list", "--status", "merged")
@@ -611,8 +616,12 @@ func TestComprehensiveNoGitSlicePublishAndSyncWorkflow(t *testing.T) {
 	}
 
 	publishResp := runCLIJSONOrFail[slicePublishJSON](t, checkoutA, "slice", "publish", "--message", "comprehensive no-git workflow")
-	if publishResp.Merge == nil || publishResp.Merge.Status != "MERGE_STATUS_SUCCESS" {
-		t.Fatalf("expected publish merge success, got: %+v", publishResp)
+	if !publishResp.ReviewOnly || publishResp.Merge != nil {
+		t.Fatalf("expected publish to export without merging, got: %+v", publishResp)
+	}
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutA, "changeset", "merge", publishResp.Changeset.ChangesetID)
+	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
+		t.Fatalf("expected explicit merge success, got: %+v", mergeResp)
 	}
 }
 

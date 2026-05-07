@@ -371,9 +371,10 @@ gs slice restore --dry-run
 gs slice restore
 gs slice sync
 gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset merge <changeset-id>
 ```
 
-If the working tree is already clean but a tracked changeset exists, `gs slice publish` reuses that tracked changeset for review or merge instead of failing.
+If the working tree is already clean but a tracked changeset exists, `gs slice publish` reuses that tracked changeset for review instead of failing. It does not merge by default; use `gs changeset merge <changeset-id>` or `gs slice publish --merge` when you want to merge explicitly.
 
 Useful day-to-day helpers:
 

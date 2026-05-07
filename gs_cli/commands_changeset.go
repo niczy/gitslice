@@ -399,7 +399,7 @@ func printMergeConflicts(conflicts []*slicev1.Conflict) {
 
 func printSliceConflictGuidance() {
 	fmt.Println("Hint: sync to the latest slice head, review your local changes, then publish again.")
-	fmt.Println("      Suggested flow: gs slice sync && gs slice diff && gs slice publish")
+	fmt.Println("      Suggested flow: gs slice sync && gs slice diff && gs slice publish && gs changeset merge <changeset-id>")
 }
 
 func printMergeResult(resp *slicev1.MergeChangesetResponse) {

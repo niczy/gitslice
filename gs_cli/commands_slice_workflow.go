@@ -69,7 +69,7 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
+func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args []string) {
 	sliceID, err := sliceIDFromConfig()
 	if err != nil {
 		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read slice binding: %v", err)
@@ -77,15 +77,15 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := newCommandFlagSet("slice publish")
+	fs := newCommandFlagSet("slice " + commandName)
 	message := fs.String("message", "", "Changeset message")
 	base := fs.String("base", "", "Base commit hash")
 	files := fs.String("files", "", "Comma-separated file list")
 	author := fs.String("author", "user", "Author of the changeset")
 	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
-	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging")
+	reviewOnly := fs.Bool("review-only", false, "Create/update the tracked changeset and show review output without merging (default behavior)")
 	noMerge := fs.Bool("no-merge", false, "Alias for --review-only")
-	explicitMerge := fs.Bool("merge", false, "Merge the tracked changeset after review (default behavior)")
+	explicitMerge := fs.Bool("merge", false, "Merge the tracked changeset after review")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
@@ -151,7 +151,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		changesetOutput = buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles)
 	}
 
-	if *reviewOnly || *noMerge {
+	if !*explicitMerge {
 		if jsonEnabled {
 			writeJSONOutput(jsonSlicePublishOutput{
 				Changeset:      changesetOutput,
@@ -170,6 +170,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, args []string) {
 		}
 		fmt.Printf("Status: %s\n", changesetOutput.Status)
 		printChangesetReview(reviewResp, false)
+		fmt.Printf("Merge explicitly with: gs changeset merge %s\n", targetChangesetID)
 		return
 	}
 

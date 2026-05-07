@@ -68,8 +68,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceCheckout(ctx, cli, args[1:])
 	case "sync", "pull":
 		handleSliceSync(ctx, cli, args[1:])
-	case "publish":
-		handleSlicePublish(ctx, cli, args[1:])
+	case "publish", "export":
+		handleSlicePublish(ctx, cli, args[0], args[1:])
 	case "status":
 		handleSliceStatus(ctx, cli, args[1:])
 	case "visibility":

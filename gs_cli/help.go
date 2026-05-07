@@ -120,7 +120,8 @@ func printSliceHelp() {
 	fmt.Println("  visibility Inspect or change slice visibility")
 	fmt.Println("  pull      Alias for sync")
 	fmt.Println("  sync      Sync the current checked out slice in place")
-	fmt.Println("  publish   Create/update or reuse the tracked changeset and merge it")
+	fmt.Println("  publish   Create/update or reuse the tracked changeset without merging")
+	fmt.Println("  export    Alias for publish")
 	fmt.Println("  tree      Print a slice file tree")
 	fmt.Println("  list-files Alias for tree")
 	fmt.Println("  history   Show slice commit history")
@@ -142,7 +143,7 @@ func printSliceHelp() {
 	fmt.Println("  gs slice tree --slice nic/ui-refresh --json")
 	fmt.Println("  gs slice history nic/ui-refresh --json")
 	fmt.Println("  gs slice diff --summary")
-	fmt.Println("  gs slice publish --review-only --json")
+	fmt.Println("  gs slice publish --json")
 }
 
 func printCacheHelp() {
