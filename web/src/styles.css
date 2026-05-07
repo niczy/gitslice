@@ -9191,6 +9191,49 @@ button[data-testid="topbar-get-started"]:hover {
     min-height: 76px;
   }
 
+  .slice-activity-row--changeset {
+    align-items: start !important;
+    min-height: 0;
+    padding: 12px !important;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-icon {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-main {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 6px;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-title {
+    display: -webkit-box;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-subtitle {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    gap: 5px 8px;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-meta,
+  .slice-activity-row--changeset .slice-activity-row-files,
+  .slice-activity-row--changeset .slice-activity-muted,
+  .slice-activity-row--changeset .commit-hash {
+    max-width: 100%;
+    line-height: 1.35;
+    white-space: normal;
+  }
+
   .slice-activity-row-meta,
   .slice-activity-row-files,
   .slice-activity-status {
@@ -9200,10 +9243,25 @@ button[data-testid="topbar-get-started"]:hover {
     text-align: left;
   }
 
+  .slice-activity-row--changeset .slice-activity-status {
+    grid-row: 2;
+    align-self: start;
+    margin-top: 2px;
+  }
+
   .slice-activity-row-arrow {
     grid-column: 3;
     grid-row: 1 / span 3;
     align-self: center;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-arrow {
+    grid-row: 1 / span 2;
+  }
+
+  .app-shell--browser .slice-activity-content {
+    padding: 16px 16px max(56px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+    scroll-padding-bottom: max(56px, calc(env(safe-area-inset-bottom, 0px) + 40px));
   }
 
   .app-shell--browser .code-header {

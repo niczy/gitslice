@@ -1040,6 +1040,110 @@ test.describe('Slice Activity Pages', () => {
     await expect(page).toHaveURL(/\/changesets\/cs-merged-review/);
     await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
   });
+
+  test('keeps slice changeset rows readable at mobile width', async ({ page }) => {
+    const username = `activitymobile${Date.now()}`;
+    const sliceId = `home.${username}`;
+    const changesets = Array.from({ length: 10 }, (_, index) => ({
+      changesetId: `cs-mobile-review-${index}`,
+      changesetHash: `hash-mobile-review-${index}`,
+      sliceId,
+      baseCommitHash: `fs-mobile-base-${index}`,
+      modifiedFiles: [`${username}/notes/${index}/mobile-layout-review.md`],
+      status: index % 3 === 0 ? 'MERGED' : 'PENDING',
+      author: username,
+      createdAt: 1777955400 - (index * 600),
+      message: `mobile review ${index + 1} with a long changeset title that must not overlap the timestamp`,
+    }));
+
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.route('**/v1/slices?limit=200', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          slices: [
+            {
+              slice_id: sliceId,
+              name: sliceId,
+              description: 'Mobile changeset layout test slice',
+              owners: [username],
+              created_by: username,
+              is_root: false,
+              file_count: 10,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/v1/slices/${sliceId}/changesets**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ changesets }),
+      });
+    });
+
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(username);
+    await page.getByRole('button', { name: /login with username/i }).click();
+    await page.goto(`/slices/${sliceId}/changesets`);
+
+    await expect(page.getByTestId('slice-changesets-page')).toBeVisible();
+    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(10);
+
+    const mobileLayout = await page.getByTestId('slice-changesets-page').evaluate(async (pageElement) => {
+      const content = pageElement.querySelector('.slice-activity-content');
+      const rows = Array.from(pageElement.querySelectorAll('[data-testid="slice-changeset-row"]'));
+      const firstRow = rows[0];
+      const title = firstRow.querySelector('.slice-activity-row-title');
+      const subtitle = firstRow.querySelector('.slice-activity-row-subtitle');
+      const time = firstRow.querySelector('.slice-activity-row-meta');
+      const status = firstRow.querySelector('.slice-activity-status');
+      const arrow = firstRow.querySelector('.slice-activity-row-arrow');
+      const rowRect = firstRow.getBoundingClientRect();
+      const titleRect = title.getBoundingClientRect();
+      const subtitleRect = subtitle.getBoundingClientRect();
+      const timeRect = time.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      const arrowRect = arrow.getBoundingClientRect();
+      const rectsOverlap = (a, b) => (
+        a.left < b.right
+        && a.right > b.left
+        && a.top < b.bottom
+        && a.bottom > b.top
+      );
+
+      content.scrollTop = content.scrollHeight;
+      await new Promise(requestAnimationFrame);
+
+      const contentRect = content.getBoundingClientRect();
+      const lastRowRect = rows[rows.length - 1].getBoundingClientRect();
+      return {
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        contentOverflow: content.scrollWidth - content.clientWidth,
+        firstRowOverflow: firstRow.scrollWidth - firstRow.clientWidth,
+        titleTimeOverlap: rectsOverlap(titleRect, timeRect),
+        titleInsideRow: titleRect.left >= rowRect.left - 1 && titleRect.right <= rowRect.right + 1,
+        subtitleBelowTitle: subtitleRect.top >= titleRect.bottom - 1,
+        statusBelowSubtitle: statusRect.top >= subtitleRect.bottom - 1,
+        arrowInsideRow: arrowRect.left >= rowRect.left && arrowRect.right <= rowRect.right + 1,
+        lastRowBottomGap: Math.round(contentRect.bottom - lastRowRect.bottom),
+      };
+    });
+
+    expect(mobileLayout.documentOverflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.contentOverflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.firstRowOverflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.titleTimeOverlap).toBe(false);
+    expect(mobileLayout.titleInsideRow).toBe(true);
+    expect(mobileLayout.subtitleBelowTitle).toBe(true);
+    expect(mobileLayout.statusBelowSubtitle).toBe(true);
+    expect(mobileLayout.arrowInsideRow).toBe(true);
+    expect(mobileLayout.lastRowBottomGap).toBeGreaterThan(8);
+  });
 });
 
 test.describe('Repo Browser Settings', () => {
