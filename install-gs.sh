@@ -4,9 +4,9 @@ set -eu
 REPO_URL="${GITSLICE_REPO_URL:-https://github.com/niczy/gitslice.git}"
 REF="${GITSLICE_REF:-main}"
 GOPATH_VALUE="$(go env GOPATH)"
-INSTALL_DIR="${GOBIN:-${GOPATH_VALUE}/bin}"
+INSTALL_DIR="${GITSLICE_INSTALL_DIR:-${GOBIN:-${GOPATH_VALUE}/bin}}"
 
-for tool in go git protoc; do
+for tool in go git make protoc; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		echo "error: $tool is required to install gs" >&2
 		exit 1
@@ -26,6 +26,9 @@ make install
 make build-cli
 
 mkdir -p "$INSTALL_DIR"
-cp bin/gs "$INSTALL_DIR/gs"
+tmp="$INSTALL_DIR/.gs.new.$$"
+cp bin/gs "$tmp"
+chmod +x "$tmp"
+mv "$tmp" "$INSTALL_DIR/gs"
 
 echo "installed gs to $INSTALL_DIR/gs"

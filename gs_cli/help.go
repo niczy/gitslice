@@ -6,6 +6,7 @@ func printHelp() {
 	fmt.Println("Usage: gs <command> [options]")
 	fmt.Println("\nGlobal behavior:")
 	fmt.Println("  --non-interactive   Fail instead of opening interactive flows (also GS_NON_INTERACTIVE=1)")
+	fmt.Println("  --version, -v       Print CLI version information")
 	fmt.Println("\nGlobal auth resolution:")
 	fmt.Println("  1. --api-key")
 	fmt.Println("  2. GS_API_KEY")
@@ -23,6 +24,7 @@ func printHelp() {
 	fmt.Println("  repo        Bind remote repositories into your home slice")
 	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  fs          Remote home filesystem operations")
+	fmt.Println("  update      Update the gs CLI (alias: upgrade)")
 	fmt.Println("  jobs        Inspect detached CLI jobs for long-running commands")
 	fmt.Println("  cache       Inspect and clean local checkout/cache state")
 	fmt.Println("  doctor      Check auth, slice binding, cache, and service health")
@@ -44,8 +46,25 @@ func printHelp() {
 	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
 	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
 	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --detach --json")
+	fmt.Println("  gs update")
 	fmt.Println("  gs jobs wait job_123 --json")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
+}
+
+func printUpdateHelp() {
+	fmt.Println("Usage: gs update [options]")
+	fmt.Println("Alias: gs upgrade")
+	fmt.Println("\nOptions:")
+	fmt.Println("  --repo <url>        Git repository URL to install from")
+	fmt.Println("  --ref <ref>         Git branch, tag, or ref to install")
+	fmt.Println("  --install-dir <dir> Directory where gs should be installed")
+	fmt.Println("  --dry-run           Print the update plan without changing files")
+	fmt.Println("  --json              Print structured JSON output")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs update")
+	fmt.Println("  gs update --ref main")
+	fmt.Println("  gs update --ref v0.3.1")
+	fmt.Println("  gs upgrade --dry-run")
 }
 
 func printGitHelp() {

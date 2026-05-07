@@ -27,6 +27,7 @@ func NewRootCommand(args []string) *cobra.Command {
 	if shouldRegisterLocalCobraCommands(args) {
 		cmd.AddCommand(
 			newCacheCommand(),
+			newUpdateCommand(),
 			newJobsCommand(),
 			newCheckoutWatcherCommand(),
 			newDetachedJobRunnerCommand(),
@@ -63,6 +64,10 @@ func isHelpRequest(args []string) bool {
 }
 
 func runCobraRoot(args []string) {
+	if isVersionRequest(args) {
+		printVersion()
+		return
+	}
 	if isHelpRequest(args) {
 		printHelp()
 		return
@@ -81,4 +86,8 @@ func runCobraRoot(args []string) {
 	if err := NewRootCommand(remaining).Execute(); err != nil {
 		commandFatal("INVALID_ARGUMENT", err.Error(), false, "gs --help")
 	}
+}
+
+func isVersionRequest(args []string) bool {
+	return len(args) == 1 && (args[0] == "--version" || args[0] == "-v")
 }

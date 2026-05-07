@@ -3,6 +3,10 @@
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
 ROOT_TEST_PACKAGES = $$(go list ./... | grep -v '/benchmark_suite$$')
+CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+CLI_BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+CLI_LDFLAGS := -X github.com/niczy/gitslice/gs_cli.version=$(CLI_VERSION) -X github.com/niczy/gitslice/gs_cli.commit=$(CLI_COMMIT) -X github.com/niczy/gitslice/gs_cli.buildDate=$(CLI_BUILD_DATE)
 GOOGLEAPIS_DIR := third_party/googleapis
 # Pin to specific googleapis commit for reproducible builds
 # This commit is from 2024-05-13, matching our genproto dependency date
@@ -57,7 +61,7 @@ build-core: proto
 	go build -o core_server ./servers/core
 
 build-cli: proto
-	go build -o bin/gs ./gs/
+	go build -ldflags "$(CLI_LDFLAGS)" -o bin/gs ./gs/
 
 start-servers:
 	CORE_SERVICE_PORT=$(CORE_SERVICE_PORT) WEB_PORT=$(WEB_PORT) VITE_FILE_API_PROXY_TARGET=$(VITE_FILE_API_PROXY_TARGET) dev/start-servers.sh --storage postgres --object-store filesystem

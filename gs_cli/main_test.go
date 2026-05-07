@@ -142,6 +142,12 @@ func TestRootCommandPrintsCommandSpecificHelp(t *testing.T) {
 			wantExample: "gs config endpoint set api.agenttools.dev:443 --tls",
 		},
 		{
+			name:        "update",
+			args:        []string{"update", "--help"},
+			wantUsage:   "Usage: gs update [options]",
+			wantExample: "gs upgrade --dry-run",
+		},
+		{
 			name:        "status",
 			args:        []string{"status", "--help"},
 			wantUsage:   "Usage: gs status [options]",
@@ -168,7 +174,7 @@ func TestRootCommandPrintsCommandSpecificHelp(t *testing.T) {
 func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 	cmd := NewRootCommand(nil)
 	for _, name := range []string{
-		"cache", "jobs", "__watch-checkout", "__run-job",
+		"cache", "update", "jobs", "__watch-checkout", "__run-job",
 		"auth", "git", "config", "login", "logout",
 		"file", "doctor", "context", "slice",
 		"changeset", "conflict", "import", "repo", "fs",
@@ -181,6 +187,47 @@ func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 		if child == nil || child.Name() != name {
 			t.Fatalf("expected %q command to be registered, got %#v", name, child)
 		}
+	}
+}
+
+func TestRootCommandRegistersUpgradeAlias(t *testing.T) {
+	cmd := NewRootCommand(nil)
+	child, _, err := cmd.Find([]string{"upgrade"})
+	if err != nil {
+		t.Fatalf("Find(upgrade) failed: %v", err)
+	}
+	if child == nil || child.Name() != "update" {
+		t.Fatalf("expected upgrade alias to resolve to update command, got %#v", child)
+	}
+}
+
+func TestRootCommandPrintsVersion(t *testing.T) {
+	for _, arg := range []string{"--version", "-v"} {
+		t.Run(arg, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := NewRootCommand([]string{arg}).Execute(); err != nil {
+					t.Fatalf("Execute failed: %v", err)
+				}
+			})
+			if !strings.Contains(output, "gs ") || !strings.Contains(output, "commit") {
+				t.Fatalf("unexpected version output: %s", output)
+			}
+		})
+	}
+}
+
+func TestUpdateCommandDryRunDoesNotInstall(t *testing.T) {
+	installDir := t.TempDir()
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"upgrade", "--dry-run", "--repo", "https://example.com/repo.git", "--ref", "test-ref", "--install-dir", installDir}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "https://example.com/repo.git") || !strings.Contains(output, "test-ref") || !strings.Contains(output, "Dry run") {
+		t.Fatalf("unexpected dry-run output: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "gs")); !os.IsNotExist(err) {
+		t.Fatalf("dry run should not install gs, stat err: %v", err)
 	}
 }
 
