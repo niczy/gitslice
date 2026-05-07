@@ -6208,6 +6208,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-activity-panel {
+  flex: 0 0 auto;
   min-height: 240px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -6243,32 +6244,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-activity-row--changeset {
-  grid-template-columns: 34px minmax(0, 1fr) minmax(132px, max-content) 96px 18px;
-  grid-template-rows: auto auto;
-}
-
-.slice-activity-row--changeset .slice-activity-row-files {
-  grid-column: 3;
-  grid-row: 1;
-  justify-self: end;
-}
-
-.slice-activity-row--changeset .slice-activity-row-meta {
-  grid-column: 3;
-  grid-row: 2;
-  justify-self: end;
-}
-
-.slice-activity-row--changeset .slice-activity-status {
-  grid-column: 4;
-  grid-row: 1 / span 2;
-  align-self: center;
-}
-
-.slice-activity-row--changeset .slice-activity-row-arrow {
-  grid-column: 5;
-  grid-row: 1 / span 2;
-  align-self: center;
+  grid-template-columns: 34px minmax(0, 1fr) 96px 18px;
 }
 
 .slice-activity-row:hover {
@@ -6338,6 +6314,12 @@ button[data-testid="topbar-get-started"]:hover {
   gap: 5px;
   min-width: 0;
   white-space: nowrap;
+}
+
+.slice-activity-row--changeset .slice-activity-row-files,
+.slice-activity-row--changeset .slice-activity-row-meta {
+  justify-content: flex-start;
+  text-align: left;
 }
 
 .slice-activity-status {
@@ -8017,6 +7999,17 @@ button[data-testid="topbar-get-started"]:hover {
 .app-shell--browser .slice-activity-page,
 .app-shell--browser .slice-activity-content {
   background: var(--np-bg);
+}
+
+.app-shell--browser .slice-activity-page {
+  height: calc(100dvh - var(--app-header-height) - 32px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell--browser .slice-activity-content {
+  padding-bottom: 56px;
+  scroll-padding-bottom: 56px;
 }
 
 .app-shell--browser .slice-activity-panel {

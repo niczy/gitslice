@@ -850,6 +850,17 @@ test.describe('Slice Activity Pages', () => {
     const username = `activitycs${Date.now()}`;
     const sliceId = `home.${username}`;
     const requests = [];
+    const overflowChangesets = Array.from({ length: 12 }, (_, index) => ({
+      changesetId: `cs-pending-overflow-${index}`,
+      changesetHash: `hash-pending-overflow-${index}`,
+      sliceId,
+      baseCommitHash: `fs-base-${index + 3}`,
+      modifiedFiles: [`${username}/overflow-${index}.md`],
+      status: 'PENDING',
+      author: username,
+      createdAt: 1777955200 - index,
+      message: `queued review ${index + 1} with enough title text to exercise row clipping and scrolling`,
+    }));
 
     await page.setViewportSize({ width: 760, height: 900 });
 
@@ -892,6 +903,7 @@ test.describe('Slice Activity Pages', () => {
           createdAt: 1777955400,
           message: 'draft todo update with a long reviewer note that should stay clipped inside the row',
         },
+        ...overflowChangesets,
         {
           changesetId: 'cs-merged-review',
           changesetHash: 'hash-merged',
@@ -909,7 +921,9 @@ test.describe('Slice Activity Pages', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          changesets: statusFilter === '3' ? allChangesets.slice(1) : allChangesets,
+          changesets: statusFilter === '3'
+            ? allChangesets.filter((changeset) => changeset.status === 'MERGED')
+            : allChangesets,
         }),
       });
     });
@@ -948,7 +962,7 @@ test.describe('Slice Activity Pages', () => {
 
     await expect(page.getByTestId('slice-changesets-page')).toBeVisible();
     await expect(page.getByTestId('slice-detail-tab-changesets')).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(2);
+    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(14);
     expect(requests).toContain('all:true');
     const statusMetrics = await page.getByTestId('slice-changeset-row').evaluateAll((rows) => rows.map((row) => {
       const status = row.querySelector('.slice-activity-status');
@@ -981,11 +995,33 @@ test.describe('Slice Activity Pages', () => {
     expect(listLayout.panelRadius).toBeGreaterThan(0);
     expect(listLayout.rowRadius).toBe(0);
     expect(listLayout.rowInsidePanel).toBe(true);
+    const rowTextLayout = await page.getByTestId('slice-changeset-row').first().evaluate((row) => {
+      const title = row.querySelector('.slice-activity-row-title');
+      const time = row.querySelector('.slice-activity-row-meta');
+      const titleRect = title.getBoundingClientRect();
+      const timeRect = time.getBoundingClientRect();
+      return {
+        titleAboveTime: titleRect.bottom <= timeRect.top + 1,
+      };
+    });
+    expect(rowTextLayout.titleAboveTime).toBe(true);
+
+    const bottomLayout = await page.getByTestId('slice-changesets-page').evaluate((pageElement) => {
+      const content = pageElement.querySelector('.slice-activity-content');
+      const rows = pageElement.querySelectorAll('[data-testid="slice-changeset-row"]');
+      content.scrollTop = content.scrollHeight;
+      const contentRect = content.getBoundingClientRect();
+      const lastRowRect = rows[rows.length - 1].getBoundingClientRect();
+      return {
+        bottomGap: Math.round(contentRect.bottom - lastRowRect.bottom),
+      };
+    });
+    expect(bottomLayout.bottomGap).toBeGreaterThan(8);
 
     await page.getByTestId('changeset-filter-merged').click();
     await expect(page.getByTestId('slice-changesets-summary')).not.toContainText('Loading changesets');
     await expect(page.getByTestId('slice-activity-loading')).toHaveCount(0);
-    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(2);
+    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(14);
     await expect(page.getByTestId('slice-changeset-row')).toHaveCount(1);
     await expect(page.getByTestId('slice-changeset-row').first()).toContainText('merged notes update');
     const filteredStatusMetric = await page.getByTestId('slice-changeset-row').first().evaluate((row) => {

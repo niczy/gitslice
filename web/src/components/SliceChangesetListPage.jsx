@@ -207,14 +207,14 @@ export default function SliceChangesetListPage({
                           {changeset.base_commit_hash && (
                             <span className="slice-activity-muted">base {shortId(changeset.base_commit_hash, 7)}</span>
                           )}
+                          <span className="slice-activity-row-files">
+                            <FileCode2 size={14} aria-hidden="true" />
+                            {files.length} {files.length === 1 ? 'file' : 'files'}
+                          </span>
+                          <span className="slice-activity-row-meta">
+                            {changeset.created_at ? formatTimestamp(changeset.created_at) : 'Unknown time'}
+                          </span>
                         </span>
-                      </span>
-                      <span className="slice-activity-row-files">
-                        <FileCode2 size={14} aria-hidden="true" />
-                        {files.length} {files.length === 1 ? 'file' : 'files'}
-                      </span>
-                      <span className="slice-activity-row-meta">
-                        {changeset.created_at ? formatTimestamp(changeset.created_at) : 'Unknown time'}
                       </span>
                       <span className={`slice-activity-status slice-activity-status--${status}`}>
                         {status}
