@@ -858,6 +858,9 @@ test.describe('Slice Activity Pages', () => {
       const url = new URL(route.request().url());
       const statusFilter = url.searchParams.get('status_filter');
       requests.push(statusFilter || `all:${url.searchParams.get('include_all_statuses')}`);
+      if (statusFilter === '3') {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
       const allChangesets = [
         {
           changesetId: 'cs-pending-review',
@@ -941,6 +944,9 @@ test.describe('Slice Activity Pages', () => {
     expect(new Set(statusMetrics.map((metric) => metric.rightOffset)).size).toBe(1);
 
     await page.getByTestId('changeset-filter-merged').click();
+    await expect(page.getByTestId('slice-changesets-summary')).not.toContainText('Loading changesets');
+    await expect(page.getByTestId('slice-activity-loading')).toHaveCount(0);
+    await expect(page.getByTestId('slice-changeset-row')).toHaveCount(2);
     await expect(page.getByTestId('slice-changeset-row')).toHaveCount(1);
     await expect(page.getByTestId('slice-changeset-row').first()).toContainText('merged notes update');
     const filteredStatusMetric = await page.getByTestId('slice-changeset-row').first().evaluate((row) => {
