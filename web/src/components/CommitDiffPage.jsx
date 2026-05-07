@@ -356,7 +356,7 @@ export default function CommitDiffPage({
   }, [commitHash, isRevertingDiff, onOpenChangesetDiff, revertSliceId]);
 
   return (
-    <section className="commit-diff-page" data-testid="commit-diff-page">
+    <section className="commit-diff-page diff-detail-page" data-testid="commit-diff-page">
       <div className="diff-top-bar">
         <Button type="button" variant="ghost" className="diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
           Back to browser
@@ -367,51 +367,52 @@ export default function CommitDiffPage({
             Commit <span className="commit-hash">{commitHash ? commitHash.slice(0, 12) : ''}</span>
           </h2>
         </div>
-        {diffData && (
-          <div className="diff-summary" data-testid="diff-summary">
-            <span className="diff-stat diff-stat-added">+{diffData.files_added || 0} added</span>
-            <span className="diff-stat diff-stat-modified">{diffData.files_modified || 0} modified</span>
-            <span className="diff-stat diff-stat-deleted">-{diffData.files_deleted || 0} deleted</span>
-            {(diffData.files_renamed || 0) > 0 && (
-              <span className="diff-stat diff-stat-renamed">{diffData.files_renamed} renamed</span>
-            )}
+        <div className="diff-detail-controls">
+          {diffData && (
+            <div className="diff-summary" data-testid="diff-summary">
+              <span className="diff-stat diff-stat-added">+{diffData.files_added || 0} added</span>
+              <span className="diff-stat diff-stat-modified">{diffData.files_modified || 0} modified</span>
+              <span className="diff-stat diff-stat-deleted">-{diffData.files_deleted || 0} deleted</span>
+              {(diffData.files_renamed || 0) > 0 && (
+                <span className="diff-stat diff-stat-renamed">{diffData.files_renamed} renamed</span>
+              )}
+            </div>
+          )}
+          <div className="diff-view-toggle" data-testid="diff-view-toggle">
+            <Button
+              type="button"
+              variant="ghost"
+              className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
+              onClick={() => setViewMode('unified')}
+              data-testid="diff-view-unified-btn"
+            >
+              Unified
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
+              onClick={() => setViewMode('split')}
+              data-testid="diff-view-split-btn"
+            >
+              Side-by-side
+            </Button>
           </div>
-        )}
-        <div className="diff-view-toggle" data-testid="diff-view-toggle">
-          <Button
-            type="button"
-            variant="ghost"
-            className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
-            onClick={() => setViewMode('unified')}
-            data-testid="diff-view-unified-btn"
-          >
-            Unified
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
-            onClick={() => setViewMode('split')}
-            data-testid="diff-view-split-btn"
-          >
-            Side-by-side
-          </Button>
-        </div>
-        <div className="changeset-actions" data-testid="diff-actions">
-          <Button
-            type="button"
-            variant="secondary"
-            className="diff-revert-button"
-            onClick={handleRevertDiff}
-            disabled={isLoading || isRevertingDiff || !commitHash}
-            data-testid="diff-revert-btn"
-          >
-            <Undo2 size={15} aria-hidden="true" />
-            {isRevertingDiff ? 'Reverting...' : 'Revert'}
-          </Button>
+          <div className="changeset-actions" data-testid="diff-actions">
+            <Button
+              type="button"
+              variant="secondary"
+              className="diff-revert-button"
+              onClick={handleRevertDiff}
+              disabled={isLoading || isRevertingDiff || !commitHash}
+              data-testid="diff-revert-btn"
+            >
+              <Undo2 size={15} aria-hidden="true" />
+              {isRevertingDiff ? 'Reverting...' : 'Revert'}
+            </Button>
+          </div>
         </div>
       </div>
-      {actionError && <div className="panel-error diff-action-error">{actionError}</div>}
 
       <div className="diff-layout">
         {/* Left file panel */}
@@ -457,6 +458,7 @@ export default function CommitDiffPage({
 
         {/* Main diff content */}
         <div className="diff-content" ref={diffContentRef}>
+          {actionError && <div className="panel-error diff-action-error">{actionError}</div>}
           {isLoading && <div className="diff-loading">Loading commit changes...</div>}
           {error && <div className="panel-error">{error}</div>}
           {!isLoading && !error && shouldLazyLoadPatches && !hasLoadedPatches && (
