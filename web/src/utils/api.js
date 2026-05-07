@@ -108,6 +108,26 @@ export async function fetchAuthContext() {
   return response.json();
 }
 
+export async function fetchAdminStatus() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/admin/status`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load admin status'));
+  }
+  return response.json();
+}
+
+export async function deleteAdminUserByEmail(email) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/admin/users:deleteByEmail`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to delete user'));
+  }
+  return response.json();
+}
+
 export async function deleteAuthSession(sessionId) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/auth/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',

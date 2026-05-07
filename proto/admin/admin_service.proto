@@ -22,6 +22,28 @@ option go_package = "github.com/niczy/gitslice/proto;adminv1";
     };
   }
 
+  // Get whether the current signed-in user can use restricted admin operations.
+  rpc GetAdminStatus(AdminStatusRequest) returns (AdminStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/admin/status"
+    };
+  }
+
+  // Delete a user account and owned user data. Restricted to configured admin users.
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {
+    option (google.api.http) = {
+      delete: "/v1/admin/users/{username}"
+    };
+  }
+
+  // Delete a user account by email and owned user data. Restricted to configured admin users.
+  rpc DeleteUserByEmail(DeleteUserByEmailRequest) returns (DeleteUserResponse) {
+    option (google.api.http) = {
+      post: "/v1/admin/users:deleteByEmail"
+      body: "*"
+    };
+  }
+
   // List organizations for the current user.
   rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse) {
     option (google.api.http) = {
@@ -205,6 +227,31 @@ message ListSlicesRequest {
 message ListSlicesResponse {
   repeated SliceInfo slices = 1;
   int32 total = 2;
+}
+
+message AdminStatusRequest {}
+
+message AdminStatusResponse {
+  bool admin_configured = 1;
+  bool is_admin = 2;
+  string username = 3;
+  string primary_email = 4;
+}
+
+message DeleteUserRequest {
+  string username = 1;
+}
+
+message DeleteUserByEmailRequest {
+  string email = 1;
+}
+
+message DeleteUserResponse {
+  string username = 1;
+  string primary_email = 2;
+  int32 deleted_slices = 3;
+  int32 deleted_sessions = 4;
+  int32 deleted_agent_keys = 5;
 }
 
 message ImportGitRepoRequest {
