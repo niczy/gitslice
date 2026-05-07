@@ -201,7 +201,12 @@ export default function SliceChangesetListPage({
                         <GitPullRequest size={17} />
                       </span>
                       <span className="slice-activity-row-main">
-                        <span className="slice-activity-row-title">{getChangesetTitle(changeset)}</span>
+                        <span className="slice-activity-row-heading">
+                          <span className="slice-activity-row-title">{getChangesetTitle(changeset)}</span>
+                          <span className={`slice-activity-status slice-activity-status--${status}`}>
+                            {status}
+                          </span>
+                        </span>
                         <span className="slice-activity-row-subtitle">
                           <span className="commit-hash">{shortId(changeset.changeset_id)}</span>
                           {changeset.base_commit_hash && (
@@ -215,9 +220,6 @@ export default function SliceChangesetListPage({
                             {changeset.created_at ? formatTimestamp(changeset.created_at) : 'Unknown time'}
                           </span>
                         </span>
-                      </span>
-                      <span className={`slice-activity-status slice-activity-status--${status}`}>
-                        {status}
                       </span>
                       <ArrowRight size={16} aria-hidden="true" className="slice-activity-row-arrow" />
                     </Button>
