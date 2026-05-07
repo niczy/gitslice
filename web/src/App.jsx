@@ -438,8 +438,10 @@ function App({
     setCurrentSliceId(getHomeSliceId(nextUsername));
     queryClient.setQueryData(['web-session'], session);
     await queryClient.invalidateQueries({ queryKey: ['slices'] });
-    navigate('browser', '', '', { replace: true });
-  }, [navigate, queryClient]);
+    if (activePage === 'login') {
+      navigate('browser', '', '', { replace: true });
+    }
+  }, [activePage, navigate, queryClient]);
 
   const openLogin = useCallback(() => {
     const provider = String(initialAuthConfig.authProvider || '').trim().toLowerCase();
