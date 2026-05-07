@@ -41,7 +41,11 @@ func readSliceIDFromConfig() (string, error) {
 
 // writeSliceIDConfig writes the slice ID to the .gs/config file.
 func writeSliceIDConfig(sliceID string) error {
-	return os.WriteFile(sliceConfigPath, []byte(sliceID), 0600)
+	return writeSliceIDConfigAt(".", sliceID)
+}
+
+func writeSliceIDConfigAt(dir, sliceID string) error {
+	return os.WriteFile(filepath.Join(dir, sliceConfigPath), []byte(sliceID), 0600)
 }
 
 // readTrackedChangesetIDFromConfig reads the locally tracked changeset ID.

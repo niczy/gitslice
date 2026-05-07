@@ -345,19 +345,20 @@ gs fs snapshot -m "checkpoint"
 Each `gs fs` mutation creates a home-slice commit and publishes it through the same slice changeset merge flow used by `gs changeset merge`. If you want the local workflow, check out the same home slice and inspect the merged publish history there:
 
 ```bash
-mkdir my-home-slice && cd my-home-slice
 gs slice checkout home.<username>
+cd home.<username>
 gs changeset list --status merged
 ```
 
 `gs slice create` keeps a free-form display name and also returns a stable slice ref. Slice slugs are only unique within the owning user namespace, so external refs use `owner/slug`. `gs slice checkout` accepts either the slice ID or that ref.
-Plain `gs slice checkout` is the primary local path. It is fast, skips local git metadata entirely, and supports local status, diff, restore, sync, and publish directly from the recorded `.gs/index`.
+Plain `gs slice checkout` creates `./<slice-name>` by default. It is fast, skips local git metadata entirely, and supports local status, diff, restore, sync, and publish directly from the recorded `.gs/index`. Use `--here` to materialize into the current directory.
 
 For the normal local workflow, list your slices, check one out, inspect local changes, and publish through the tracked changeset:
 
 ```bash
 gs slice list
 gs slice checkout <slice-id-or-ref>
+cd <slice-name>
 gs slice status
 gs slice status --remote
 gs slice diff --summary

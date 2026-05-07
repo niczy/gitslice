@@ -40,6 +40,7 @@ type sliceEnsureJSON struct {
 type sliceCheckoutJSON struct {
 	SliceID   string `json:"slice_id"`
 	Commit    string `json:"commit"`
+	Path      string `json:"path"`
 	FileCount int    `json:"file_count"`
 	CacheHits int64  `json:"cache_hits"`
 	Files     []struct {

@@ -211,6 +211,7 @@ type jsonSliceCheckoutFile struct {
 type jsonSliceCheckoutOutput struct {
 	SliceID   string                  `json:"slice_id"`
 	Commit    string                  `json:"commit"`
+	Path      string                  `json:"path,omitempty"`
 	FileCount int                     `json:"file_count"`
 	CacheHits int64                   `json:"cache_hits"`
 	Files     []jsonSliceCheckoutFile `json:"files,omitempty"`
@@ -881,9 +882,10 @@ func buildSliceInfoOutput(slice *adminv1.SliceInfo) jsonSliceInfo {
 	}
 }
 
-func buildSliceCheckoutOutput(sliceID string, result *checkoutFetchResult, includeFiles bool) jsonSliceCheckoutOutput {
+func buildSliceCheckoutOutput(sliceID, checkoutPath string, result *checkoutFetchResult, includeFiles bool) jsonSliceCheckoutOutput {
 	output := jsonSliceCheckoutOutput{
 		SliceID: sliceID,
+		Path:    checkoutPath,
 	}
 	if result == nil {
 		return output

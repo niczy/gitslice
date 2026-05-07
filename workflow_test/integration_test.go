@@ -745,7 +745,7 @@ func TestCheckoutWritesNoGitMetadata(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here")
 	if resp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", resp)
 	}
@@ -802,7 +802,7 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
-	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	output := runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--here", "--json")
 	var checkoutResp sliceCheckoutJSON
 	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
 		t.Fatalf("decode first checkout JSON: %v\nOutput:\n%s", err, output)
@@ -820,7 +820,7 @@ func TestCheckoutReusesCachedBlocks(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir2, 0o755); err != nil {
 		t.Fatalf("mkdir second checkout dir: %v", err)
 	}
-	output = runCLIForUser(checkoutDir2, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	output = runCLIForUser(checkoutDir2, "slice", "checkout", homeslice.IDForUsername(username), "--here", "--json")
 	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
 		t.Fatalf("decode second checkout JSON: %v\nOutput:\n%s", err, output)
 	}
@@ -949,7 +949,7 @@ func TestSliceSyncNoGitUpdatesCurrentCheckout(t *testing.T) {
 	})
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -1042,7 +1042,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	sliceArg := sliceIDArg(sliceID)
 
 	sliceWorkdir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, sliceWorkdir, "slice", "checkout", sliceSlug, "--files")
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, sliceWorkdir, "slice", "checkout", sliceSlug, "--here", "--files")
 	if checkoutResp.SliceID != sliceID || len(checkoutResp.Files) == 0 {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -1074,7 +1074,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	}
 
 	updatedSliceWorkdir := t.TempDir()
-	checkoutResp = runCLIJSONOrFail[sliceCheckoutJSON](t, updatedSliceWorkdir, "slice", "checkout", sliceArg, "--files")
+	checkoutResp = runCLIJSONOrFail[sliceCheckoutJSON](t, updatedSliceWorkdir, "slice", "checkout", sliceArg, "--here", "--files")
 	if checkoutResp.Commit != sliceCommit {
 		t.Fatalf("expected latest slice commit in checkout, got: %+v", checkoutResp)
 	}
@@ -1094,7 +1094,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		rootCheckoutDir := t.TempDir()
 		var err error
-		output, err = runCLIWithDirForTest(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--files", "--json")
+		output, err = runCLIWithDirForTest(t, rootCheckoutDir, "slice", "checkout", rootCheckoutArg, "--here", "--files", "--json")
 		if err != nil {
 			return false, nil
 		}
@@ -1214,7 +1214,7 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout dir: %v", err)
 	}
-	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--here", "--json")
 	var homeCheckoutResp sliceCheckoutJSON
 	if err := json.Unmarshal([]byte(output), &homeCheckoutResp); err != nil {
 		t.Fatalf("decode home checkout JSON: %v\nOutput:\n%s", err, output)

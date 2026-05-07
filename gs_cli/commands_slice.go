@@ -163,11 +163,12 @@ func handleSliceCreate(ctx context.Context, cli *CLI, args []string) {
 func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	if len(args) < 1 {
-		commandUsage("Usage: gs slice checkout|clone <slice-id-or-ref> [--commit <commit-hash>] [--files] [--json]")
+		commandUsage("Usage: gs slice checkout|clone <slice-id-or-ref> [--commit <commit-hash>] [--here] [--files] [--json]")
 		return
 	}
 
-	sliceID, err := resolveSliceRef(ctx, cli, args[0])
+	sliceRef := strings.TrimSpace(args[0])
+	sliceID, err := resolveSliceRef(ctx, cli, sliceRef)
 	if err != nil {
 		commandFatalf("INVALID_SLICE_REFERENCE", false, "gs slice list --json", "Invalid slice reference: %v", err)
 	}
@@ -175,55 +176,58 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	// Parse flags
 	fs := newCommandFlagSet("slice checkout")
 	commitHash := fs.String("commit", "HEAD", "Commit hash to checkout")
+	checkoutHere := fs.Bool("here", false, "Checkout into the current directory instead of ./<slice-name>")
 	showFiles := fs.Bool("files", false, "Print each file in the slice after checkout")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args[1:])
 	jsonEnabled := jsonRequested || *jsonOutput
 
-	entries, err := os.ReadDir(".")
+	targetRoot, err := checkoutTargetRoot(sliceRef, *checkoutHere)
 	if err != nil {
-		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to read directory: %v", err)
-	}
-	if len(entries) > 0 {
-		commandFatal("DIRECTORY_NOT_EMPTY", "Directory is not empty. Please checkout into an empty directory.", false, "")
+		commandFatalf("INVALID_ARGUMENT", false, "", "Failed to choose checkout directory: %v", err)
 	}
 
-	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, ".", false, nil)
+	if err := prepareCheckoutTargetRoot(targetRoot); err != nil {
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to prepare checkout directory: %v", err)
+	}
+
+	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, sliceID, *commitHash, targetRoot, false, nil)
 	if err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", true, "", "Failed to checkout slice: %v", err)
 	}
 
-	if err := os.MkdirAll(".gs", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(targetRoot, ".gs"), 0o755); err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to create .gs directory: %v", err)
 	}
-	if err := writeSliceIDConfig(sliceID); err != nil {
+	if err := writeSliceIDConfigAt(targetRoot, sliceID); err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write config file: %v", err)
 	}
 
-	nextCheckoutIndex, err := buildCheckoutIndex(".", sliceID, checkoutResult.Manifest)
+	nextCheckoutIndex, err := buildCheckoutIndex(targetRoot, sliceID, checkoutResult.Manifest)
 	if err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
-	if err := writeCheckoutIndex(".", nextCheckoutIndex); err != nil {
+	if err := writeCheckoutIndex(targetRoot, nextCheckoutIndex); err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write checkout index: %v", err)
 	}
-	if err := ensureLocalSliceSearchArtifact(ctx, cli, ".", sliceID, checkoutResult.Manifest); err != nil {
+	if err := ensureLocalSliceSearchArtifact(ctx, cli, targetRoot, sliceID, checkoutResult.Manifest); err != nil {
 		log.Printf("Warning: failed to prepare local slice search artifact: %v", err)
 	}
-	if err := resetDirtyTracker(".", nextCheckoutIndex); err != nil {
+	if err := resetDirtyTracker(targetRoot, nextCheckoutIndex); err != nil {
 		log.Printf("Warning: failed to start dirty tracker: %v", err)
 	}
-	if err := registerCheckout(".", sliceID, checkoutResult.Manifest.CommitHash); err != nil {
+	if err := registerCheckout(targetRoot, sliceID, checkoutResult.Manifest.CommitHash); err != nil {
 		log.Printf("Warning: failed to register checkout path: %v", err)
 	}
 
 	if jsonEnabled {
-		writeJSONOutput(buildSliceCheckoutOutput(sliceID, checkoutResult, *showFiles))
+		writeJSONOutput(buildSliceCheckoutOutput(sliceID, targetRoot, checkoutResult, *showFiles))
 		return
 	}
 
 	// Display checkout results
 	fmt.Printf("Checked out slice: %s\n", sliceID)
+	fmt.Printf("Directory: %s\n", targetRoot)
 	fmt.Printf("Commit: %s\n", checkoutResult.Manifest.CommitHash)
 	fmt.Printf("Files: %d\n", len(checkoutResult.Manifest.FileMetadata))
 
@@ -237,6 +241,53 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if checkoutResult.Cache != nil {
 		fmt.Printf("Cache hits: %d\n", checkoutResult.Materialized.CacheHits)
 	}
+}
+
+func checkoutTargetRoot(sliceRef string, checkoutHere bool) (string, error) {
+	if checkoutHere {
+		return ".", nil
+	}
+	name := defaultCheckoutDirectoryName(sliceRef)
+	if name == "" {
+		return "", fmt.Errorf("slice reference is required")
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(name))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid checkout directory %q", name)
+	}
+	if cleaned == ".git" || cleaned == ".gs" || strings.Contains(cleaned, string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid checkout directory %q", name)
+	}
+	return cleaned, nil
+}
+
+func defaultCheckoutDirectoryName(sliceRef string) string {
+	name := strings.Trim(strings.TrimSpace(sliceRef), "/")
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return strings.TrimSpace(name)
+}
+
+func prepareCheckoutTargetRoot(root string) error {
+	info, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.MkdirAll(root, 0o755)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", root)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("%s is not empty", root)
+	}
+	return nil
 }
 
 func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
