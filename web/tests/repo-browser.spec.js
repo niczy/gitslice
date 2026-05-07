@@ -851,6 +851,8 @@ test.describe('Slice Activity Pages', () => {
     const sliceId = `home.${username}`;
     const requests = [];
 
+    await page.setViewportSize({ width: 760, height: 900 });
+
     await page.route('**/v1/slices?limit=200', async (route) => {
       await route.fulfill({
         status: 200,
@@ -888,7 +890,7 @@ test.describe('Slice Activity Pages', () => {
           status: 'PENDING',
           author: username,
           createdAt: 1777955400,
-          message: 'draft todo update',
+          message: 'draft todo update with a long reviewer note that should stay clipped inside the row',
         },
         {
           changesetId: 'cs-merged-review',
@@ -900,7 +902,7 @@ test.describe('Slice Activity Pages', () => {
           author: username,
           createdAt: 1777955300,
           mergedAt: 1777955350,
-          message: 'merged notes update',
+          message: 'merged notes update with release notes, generated docs, and review metadata',
         },
       ];
       await route.fulfill({
@@ -959,6 +961,26 @@ test.describe('Slice Activity Pages', () => {
     }));
     expect(new Set(statusMetrics.map((metric) => metric.width)).size).toBe(1);
     expect(new Set(statusMetrics.map((metric) => metric.rightOffset)).size).toBe(1);
+    const listLayout = await page.getByTestId('slice-changesets-page').evaluate((pageElement) => {
+      const panel = pageElement.querySelector('.slice-activity-panel');
+      const row = pageElement.querySelector('[data-testid="slice-changeset-row"]');
+      const panelStyle = window.getComputedStyle(panel);
+      const rowStyle = window.getComputedStyle(row);
+      const panelRect = panel.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      return {
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        panelBorderTopWidth: Number.parseFloat(panelStyle.borderTopWidth),
+        panelRadius: Number.parseFloat(panelStyle.borderTopLeftRadius),
+        rowRadius: Number.parseFloat(rowStyle.borderTopLeftRadius),
+        rowInsidePanel: rowRect.left >= panelRect.left - 1 && rowRect.right <= panelRect.right + 1,
+      };
+    });
+    expect(listLayout.documentOverflow).toBeLessThanOrEqual(1);
+    expect(listLayout.panelBorderTopWidth).toBeGreaterThan(0);
+    expect(listLayout.panelRadius).toBeGreaterThan(0);
+    expect(listLayout.rowRadius).toBe(0);
+    expect(listLayout.rowInsidePanel).toBe(true);
 
     await page.getByTestId('changeset-filter-merged').click();
     await expect(page.getByTestId('slice-changesets-summary')).not.toContainText('Loading changesets');
