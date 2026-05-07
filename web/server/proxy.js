@@ -16,8 +16,7 @@ function isRestrictedAdminProxyPath(pathname) {
   return path === '/v1/admin/status'
     || path === '/v1/admin/users:deleteByEmail'
     || path.startsWith('/v1/admin/users/')
-    || path === '/v1/admin/home-slices:backfill'
-    || path === '/v1/import/git';
+    || path === '/v1/admin/home-slices:backfill';
 }
 
 export async function proxyRequest(request, suffix = '') {

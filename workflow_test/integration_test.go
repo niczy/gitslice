@@ -628,8 +628,8 @@ func assertEntryNames(t *testing.T, entries []*filev1.DirectoryEntry, expected .
 	}
 }
 
-func resolveAllConflicts(ctx context.Context, t *testing.T, client adminv1.AdminServiceClient) {
-	resp, err := client.GetConflicts(ctx, &adminv1.ConflictsRequest{})
+func resolveAllConflicts(ctx context.Context, t *testing.T, client slicev1.SliceServiceClient) {
+	resp, err := client.GetConflicts(ctx, &slicev1.ConflictsRequest{})
 	if err != nil {
 		t.Fatalf("failed to list conflicts: %v", err)
 	}
@@ -640,7 +640,7 @@ func resolveAllConflicts(ctx context.Context, t *testing.T, client adminv1.Admin
 			preferred = conflict.ConflictingSliceIds[0]
 		}
 
-		if _, err := client.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{FileId: conflict.FileId, PreferredSliceId: preferred}); err != nil {
+		if _, err := client.ResolveConflict(ctx, &slicev1.ResolveConflictRequest{FileId: conflict.FileId, PreferredSliceId: preferred}); err != nil {
 			t.Fatalf("failed to resolve conflict for %s: %v", conflict.FileId, err)
 		}
 	}
@@ -2383,11 +2383,11 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 
 	conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		t.Fatalf("failed to dial admin service: %v", err)
+		t.Fatalf("failed to dial slice service: %v", err)
 	}
 	defer conn.Close()
 
-	client := adminv1.NewAdminServiceClient(conn)
+	client := slicev1.NewSliceServiceClient(conn)
 	sliceA := fmt.Sprintf("batch-merge-a-%d", time.Now().UnixNano())
 	sliceB := fmt.Sprintf("batch-merge-b-%d", time.Now().UnixNano())
 
@@ -2398,7 +2398,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
-	mergeResp, err := client.BatchMerge(ctx, &adminv1.BatchMergeRequest{})
+	mergeResp, err := client.BatchMerge(ctx, &slicev1.BatchMergeRequest{})
 	if err != nil {
 		t.Fatalf("batch merge failed: %v", err)
 	}
@@ -2417,7 +2417,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 		t.Fatalf("expected 2 modified files in root metadata, got %d", rootMetadata.ModifiedFilesCount)
 	}
 
-	conflictsResp, err := client.GetConflicts(ctx, &adminv1.ConflictsRequest{})
+	conflictsResp, err := client.GetConflicts(ctx, &slicev1.ConflictsRequest{})
 	if err != nil {
 		t.Fatalf("get conflicts failed: %v", err)
 	}
@@ -2481,19 +2481,19 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 
 	createSliceFromRoot(t, sliceID, "")
 
-	adminClient := newAdminClient(t)
+	sliceClient := newSliceClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
 
-	resolveAllConflicts(ctx, t, adminClient)
+	resolveAllConflicts(ctx, t, sliceClient)
 
-	mergeResp, err := adminClient.BatchMerge(ctx, &adminv1.BatchMergeRequest{})
+	mergeResp, err := sliceClient.BatchMerge(ctx, &slicev1.BatchMergeRequest{})
 	if err != nil {
 		t.Fatalf("batch merge failed: %v", err)
 	}
 
-	stateResp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	stateResp, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 	if err != nil {
 		t.Fatalf("failed to get global state: %v", err)
 	}
@@ -2519,7 +2519,6 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
 	}
 
-	sliceClient := newSliceClient(t)
 	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
 	if err != nil {
 		t.Fatalf("failed to get root slice state: %v", err)
@@ -2602,16 +2601,9 @@ func TestPostgresRestartPersistsEndToEnd(t *testing.T) {
 		t.Fatalf("failed to dial restarted slice service: %v", err)
 	}
 	defer sliceConn2.Close()
-	adminConn2, err := grpc.DialContext(ctx, addr2, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("failed to dial restarted admin service: %v", err)
-	}
-	defer adminConn2.Close()
-
 	sliceClient2 := slicev1.NewSliceServiceClient(sliceConn2)
-	adminClient2 := adminv1.NewAdminServiceClient(adminConn2)
 
-	globalState, err := adminClient2.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	globalState, err := sliceClient2.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 	if err != nil {
 		t.Fatalf("failed to read global state after restart: %v", err)
 	}
@@ -2633,7 +2625,6 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
 
-	adminClient := newAdminClient(t)
 	sliceClient := newSliceClient(t)
 
 	sharedFile := fmt.Sprintf("lock-shared-%d.txt", time.Now().UnixNano())
@@ -2647,7 +2638,30 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("failed to create slice B: %v", err)
 	}
 
-	if _, err := adminClient.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{FileId: sharedFile, PreferredSliceId: sliceA}); err != nil {
+	hashA := mustWriteSliceManifest(t, ctx, testStorage, sliceA, sharedFile, []byte("slice-a initial content"))
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceA, sharedFile),
+		Path:     sharedFile,
+		Type:     "file",
+		ParentID: sliceA,
+		Hash:     hashA,
+		Size:     int64(len("slice-a initial content")),
+	}); err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("failed to add initial entry for slice A: %v", err)
+	}
+	hashB := mustWriteSliceManifest(t, ctx, testStorage, sliceB, sharedFile, []byte("slice-b initial content"))
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       fmt.Sprintf("%s:%s", sliceB, sharedFile),
+		Path:     sharedFile,
+		Type:     "file",
+		ParentID: sliceB,
+		Hash:     hashB,
+		Size:     int64(len("slice-b initial content")),
+	}); err != nil && !errors.Is(err, storage.ErrEntryExists) {
+		t.Fatalf("failed to add initial entry for slice B: %v", err)
+	}
+
+	if _, err := sliceClient.ResolveConflict(ctx, &slicev1.ResolveConflictRequest{FileId: sharedFile, PreferredSliceId: sliceA}); err != nil {
 		t.Fatalf("failed to resolve conflict to slice A: %v", err)
 	}
 
@@ -2673,9 +2687,9 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("expected new commit hash from merge")
 	}
 
-	var stateResp *adminv1.GlobalStateResponse
+	var stateResp *slicev1.GlobalStateResponse
 	if err := waitForCondition(2*time.Second, 25*time.Millisecond, func() (bool, error) {
-		resp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+		resp, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 		if err != nil {
 			return false, err
 		}
@@ -2733,10 +2747,9 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
 
-	adminClient := newAdminClient(t)
 	sliceClient := newSliceClient(t)
 
-	initialState, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+	initialState, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 	if err != nil {
 		t.Fatalf("failed to read initial global state: %v", err)
 	}
@@ -2801,9 +2814,9 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		}
 	}
 
-	var globalState *adminv1.GlobalStateResponse
+	var globalState *slicev1.GlobalStateResponse
 	if err := waitForCondition(3*time.Second, 25*time.Millisecond, func() (bool, error) {
-		resp, err := adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{IncludeHistory: true})
+		resp, err := sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{IncludeHistory: true})
 		if err != nil {
 			return false, err
 		}

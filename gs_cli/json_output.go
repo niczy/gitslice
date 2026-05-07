@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
-	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -867,7 +866,7 @@ func buildMergeConflicts(conflicts []*slicev1.Conflict) []jsonMergeConflict {
 	return out
 }
 
-func buildSliceInfoOutput(slice *adminv1.SliceInfo) jsonSliceInfo {
+func buildSliceInfoOutput(slice *slicev1.SliceInfo) jsonSliceInfo {
 	if slice == nil {
 		return jsonSliceInfo{}
 	}
@@ -992,7 +991,7 @@ func buildRepoBindingOutput(binding *filesystemv1.RepoBinding) jsonRepoBinding {
 	}
 }
 
-func buildConflictOutput(conflict *adminv1.Conflict) jsonConflictInfo {
+func buildConflictOutput(conflict *slicev1.Conflict) jsonConflictInfo {
 	if conflict == nil {
 		return jsonConflictInfo{}
 	}
@@ -1003,7 +1002,7 @@ func buildConflictOutput(conflict *adminv1.Conflict) jsonConflictInfo {
 	}
 }
 
-func conflictSeverityLabel(conflict *adminv1.Conflict) string {
+func conflictSeverityLabel(conflict *slicev1.Conflict) string {
 	if conflict == nil {
 		return ""
 	}

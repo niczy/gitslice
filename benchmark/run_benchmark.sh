@@ -57,7 +57,7 @@ import_repo() {
     local size_kb=$3
     local repo_name
     repo_name=$(echo "$repo" | tr '/' '_')
-    local mount_path="/o/genesis/projects/${repo_name}"
+    local mount_path="/benchmark/projects/${repo_name}"
     local log_file="$RUN_DIR/${repo_name}.log"
     local url="https://github.com/${repo}.git"
     local size_mb
@@ -72,7 +72,6 @@ import_repo() {
     if output=$(timeout "${PER_REPO_TIMEOUT}s" "$GS_CLI" --addr "$SERVER_ADDR" --user "$USER" import git \
         --repo "$url" \
         --ref HEAD \
-        --slice root_slice \
         --mount "$mount_path" \
         --max-commits "$MAX_COMMITS" \
         --first-parent \

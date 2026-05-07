@@ -3,11 +3,10 @@ package gscli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
 func handleImportCommand(ctx context.Context, cli *CLI, args []string) {
@@ -27,31 +26,31 @@ func handleImportCommand(ctx context.Context, cli *CLI, args []string) {
 func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("import git")
-	repo := fs.String("repo", ".", "Git repo source: local path on server host or remote URL (e.g. https://github.com/org/repo.git)")
+	repo := fs.String("repo", "", "Remote git repository URL (e.g. https://github.com/org/repo.git)")
 	ref := fs.String("ref", "HEAD", "Git ref to import (e.g. HEAD, main, <sha>)")
-	sliceID := fs.String("slice", "root_slice", "Target slice ID")
-	mount := fs.String("mount", "", "Mount path prefix (default: /o/genesis/projects/<repo-name>)")
-	reset := fs.Bool("reset", false, "Reset storage namespace before importing (DANGEROUS)")
+	mount := fs.String("mount", "", "Absolute mount path under your home directory (default: /<user>/<repo-name>)")
 	firstParent := fs.Bool("first-parent", true, "Import first-parent linear history (merges are not represented)")
-	maxCommits := fs.Int("max-commits", 0, "Optional cap for number of commits imported (0 = no cap)")
+	maxCommits := fs.Int("max-commits", 0, "Optional cap for number of commits imported (0 = server default)")
 	timeout := fs.Duration("timeout", 30*time.Minute, "Timeout for the import operation")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	repoArg := strings.TrimSpace(*repo)
-	req := &adminv1.ImportGitRepoRequest{
-		Ref:          *ref,
-		SliceId:      *sliceID,
-		MountPath:    *mount,
-		ResetStorage: *reset,
-		FirstParent:  *firstParent,
-		MaxCommits:   int32(*maxCommits),
+	if repoArg == "" {
+		if fs.NArg() > 0 {
+			repoArg = strings.TrimSpace(fs.Arg(0))
+		}
 	}
-	if looksLikeGitURL(repoArg) {
-		req.RepoUrl = repoArg
-	} else {
-		req.RepoPath = repoArg
+	if !looksLikeGitURL(repoArg) {
+		commandFatal("INVALID_ARGUMENT", "Remote https repo URL is required", false, "gs import git --repo https://github.com/org/repo.git")
+	}
+	req := &slicev1.ImportGitRepoRequest{
+		RepoUrl:     repoArg,
+		Ref:         *ref,
+		MountPath:   *mount,
+		FirstParent: *firstParent,
+		MaxCommits:  int32(*maxCommits),
 	}
 
 	importCtx := ctx
@@ -61,18 +60,18 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 		defer cancel()
 	}
 
-	resp, err := cli.adminClient.ImportGitRepo(importCtx, req)
+	resp, err := cli.sliceClient.ImportGitRepo(importCtx, req)
 	if err != nil {
 		commandFatalf("IMPORT_FAILED", true, "", "Import failed: %v", err)
 	}
 
 	displayMount := *mount
 	if displayMount == "" {
-		displayMount = "/o/genesis/projects/" + repoNameForDisplay(repoArg)
+		displayMount = resp.GetMountPath()
 	}
 	if jsonEnabled {
 		writeJSONOutput(jsonImportGitOutput{
-			SliceID:         req.SliceId,
+			SliceID:         resp.GetSliceId(),
 			MountPath:       displayMount,
 			ImportedCommits: int(resp.GetImportedCommits()),
 			HeadCommitHash:  resp.GetHeadCommitHash(),
@@ -81,7 +80,7 @@ func handleImportGit(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
-	fmt.Printf("Imported %d commit(s) into slice %s at %s\n", resp.ImportedCommits, req.SliceId, displayMount)
+	fmt.Printf("Imported %d commit(s) into slice %s at %s\n", resp.ImportedCommits, resp.GetSliceId(), displayMount)
 	fmt.Printf("Head commit: %s\n", resp.HeadCommitHash)
 	if len(resp.Warnings) > 0 {
 		fmt.Printf("Warnings: %d\n", len(resp.Warnings))
@@ -96,35 +95,5 @@ func looksLikeGitURL(s string) bool {
 	if s == "" {
 		return false
 	}
-	if strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "ssh://") {
-		return true
-	}
-	// Common GitHub SSH form: git@github.com:org/repo.git
-	if strings.HasPrefix(s, "git@") && strings.Contains(s, ":") {
-		return true
-	}
-	return false
-}
-
-func repoNameForDisplay(repoArg string) string {
-	repoArg = strings.TrimSpace(repoArg)
-	if repoArg == "" {
-		return "repo"
-	}
-	// For URLs, strip any trailing slashes and .git suffix, then take the last path segment.
-	if looksLikeGitURL(repoArg) {
-		s := strings.TrimSuffix(repoArg, "/")
-		s = strings.TrimSuffix(s, ".git")
-		// Split on both / and : (for git@github.com:org/repo).
-		s = strings.ReplaceAll(s, ":", "/")
-		parts := strings.Split(s, "/")
-		if len(parts) > 0 {
-			last := strings.TrimSpace(parts[len(parts)-1])
-			if last != "" {
-				return last
-			}
-		}
-		return "repo"
-	}
-	return filepath.Base(filepath.Clean(repoArg))
+	return strings.HasPrefix(s, "https://")
 }

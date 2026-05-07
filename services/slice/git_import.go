@@ -1,4 +1,4 @@
-package adminservice
+package sliceservice
 
 import (
 	"context"
@@ -386,7 +386,7 @@ func deleteFileFromSlice(ctx context.Context, st storage.Storage, sliceID string
 	return nil
 }
 
-func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, repoURL string, ref string, sliceID string, mountPath string, reset bool, firstParent bool, maxCommits int) (*gitImportResult, error) {
+func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, repoURL string, ref string, sliceID string, mountPath string, reset bool, firstParent bool, maxCommits int, updateGlobalState bool) (*gitImportResult, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
@@ -676,15 +676,17 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 					return err
 				}
 
-				if state, err := st.GetGlobalState(ctx); err == nil && state != nil {
-					state.GlobalCommitHash = meta.Hash
-					state.Timestamp = meta.Timestamp
-					state.History = append([]*models.GlobalCommit{{
-						CommitHash:     meta.Hash,
-						Timestamp:      meta.Timestamp,
-						MergedSliceIDs: []string{sliceID},
-					}}, state.History...)
-					_ = st.UpdateGlobalState(ctx, state)
+				if updateGlobalState {
+					if state, err := st.GetGlobalState(ctx); err == nil && state != nil {
+						state.GlobalCommitHash = meta.Hash
+						state.Timestamp = meta.Timestamp
+						state.History = append([]*models.GlobalCommit{{
+							CommitHash:     meta.Hash,
+							Timestamp:      meta.Timestamp,
+							MergedSliceIDs: []string{sliceID},
+						}}, state.History...)
+						_ = st.UpdateGlobalState(ctx, state)
+					}
 				}
 
 				if err := saveCommitSnapshot(ctx, st, sliceID, meta.Hash, meta.Timestamp, currentFileHashes); err != nil {
@@ -956,15 +958,17 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 			return nil, err
 		}
 
-		if state, err := st.GetGlobalState(ctx); err == nil && state != nil {
-			state.GlobalCommitHash = meta.Hash
-			state.Timestamp = meta.Timestamp
-			state.History = append([]*models.GlobalCommit{{
-				CommitHash:     meta.Hash,
-				Timestamp:      meta.Timestamp,
-				MergedSliceIDs: []string{sliceID},
-			}}, state.History...)
-			_ = st.UpdateGlobalState(ctx, state)
+		if updateGlobalState {
+			if state, err := st.GetGlobalState(ctx); err == nil && state != nil {
+				state.GlobalCommitHash = meta.Hash
+				state.Timestamp = meta.Timestamp
+				state.History = append([]*models.GlobalCommit{{
+					CommitHash:     meta.Hash,
+					Timestamp:      meta.Timestamp,
+					MergedSliceIDs: []string{sliceID},
+				}}, state.History...)
+				_ = st.UpdateGlobalState(ctx, state)
+			}
 		}
 
 		if err := saveCommitSnapshot(ctx, st, sliceID, meta.Hash, meta.Timestamp, currentFileHashes); err != nil {

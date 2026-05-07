@@ -428,7 +428,7 @@ AGENT_RUNTIME_PROVIDER_DEFAULT=cloudflare_containers \
 CORE_SERVICE_PORT=50051 ./core_server
 ```
 
-For rollout safety, keep `AGENT_RUNTIME_PROVIDER_DEFAULT=e2b` initially and opt slices into Cloudflare via environment registry (`provider=cloudflare_containers`).
+For rollout safety, keep `AGENT_RUNTIME_PROVIDER_DEFAULT=e2b` initially and switch runtime defaults through deployment configuration.
 
 Cloudflare control-plane worker source is in `servers/cloudflare_control_plane`:
 
@@ -437,26 +437,6 @@ cd servers/cloudflare_control_plane
 npm install
 npm test
 npx wrangler dev
-```
-
-Register a Cloudflare-backed environment profile:
-
-```bash
-curl -X POST "$GATEWAY_BASE_URL/v1/environments" \
-  -H "Authorization: Bearer <access-token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name":"cfc-canary",
-    "displayName":"Cloudflare Canary",
-    "provider":"cloudflare_containers",
-    "providerId":"cfc-profile",
-    "providerConfig":{
-      "worker_base_url":"https://<worker-subdomain>.workers.dev",
-      "container_class":"sandbox",
-      "instance_type":"basic"
-    },
-    "region":"us-east-1"
-  }'
 ```
 
 For Codex/Claude sandbox sessions, configure model credentials and optional egress policy:

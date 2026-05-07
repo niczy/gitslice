@@ -41,15 +41,6 @@ async function readErrorMessage(response, fallback) {
   return detail ? `${fallback}: ${detail}` : `${fallback} (${response.status})`;
 }
 
-export async function fetchEnvironments() {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/environments?limit=500&offset=0`);
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to load environments'));
-  }
-  const payload = await response.json();
-  return payload?.environments || [];
-}
-
 export async function fetchRepoBindings() {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/repos/bindings`);
   if (!response.ok) {
@@ -153,27 +144,6 @@ export async function deleteAuthMethod(methodId) {
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to remove auth method'));
   }
-}
-
-export async function fetchOrganizations() {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/orgs`);
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to load organizations'));
-  }
-  const payload = await response.json();
-  return payload?.organizations || [];
-}
-
-export async function createOrganization({ name = '' } = {}) {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/orgs`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to create organization'));
-  }
-  return response.json();
 }
 
 export async function searchWorkspaceFiles(workspaceId, { query, glob = '', regex = false, signal = undefined } = {}) {
@@ -308,14 +278,6 @@ export async function revokeAgentKey(keyId) {
   }
 }
 
-export async function getSliceEnvironment(sliceId) {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/environment`);
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to load slice environment'));
-  }
-  return response.json();
-}
-
 export async function getSliceVisibility(sliceId) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/visibility`);
   if (!response.ok) {
@@ -363,18 +325,6 @@ export async function updatePathVisibility({ path, visibility, recursive = false
   });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to update path visibility'));
-  }
-  return response.json();
-}
-
-export async function updateSliceEnvironment(sliceId, environment) {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/environment`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ environment }),
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'Unable to update slice environment'));
   }
   return response.json();
 }

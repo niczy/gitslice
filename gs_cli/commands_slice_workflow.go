@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
@@ -24,12 +23,12 @@ func handleSliceList(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
-	resp, err := cli.adminClient.ListSlices(ctx, &adminv1.ListSlicesRequest{Limit: int32(*limit)})
+	resp, err := cli.sliceClient.ListSlices(ctx, &slicev1.ListSlicesRequest{Limit: int32(*limit)})
 	if err != nil {
 		commandFatalf("SLICE_LIST_FAILED", true, "", "Failed to list slices: %v", err)
 	}
 
-	slices := append([]*adminv1.SliceInfo(nil), resp.GetSlices()...)
+	slices := append([]*slicev1.SliceInfo(nil), resp.GetSlices()...)
 	sort.Slice(slices, func(i, j int) bool {
 		if slices[i].GetUpdatedAt() == slices[j].GetUpdatedAt() {
 			return slices[i].GetSliceId() < slices[j].GetSliceId()

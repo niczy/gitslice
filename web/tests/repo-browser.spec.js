@@ -1475,29 +1475,6 @@ test.describe('Repo Browser Settings', () => {
       });
     });
 
-    await page.route('**/v1/environments?limit=500&offset=0', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          environments: [
-            { name: 'staging', displayName: 'Staging' },
-          ],
-        }),
-      });
-    });
-
-    await page.route(`**/v1/slices/${sliceId}/environment`, async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          slice_id: sliceId,
-          environment: '',
-        }),
-      });
-    });
-
     await page.route(`**/v1/slices/${sliceId}/visibility`, async (route) => {
       await route.fulfill({
         status: 200,
