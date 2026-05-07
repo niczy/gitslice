@@ -600,6 +600,7 @@ async function authenticateClerkSession(request, authContext) {
     const requestState = await authContext.clerk.authenticateRequest(request, {
       authorizedParties: authContext.clerkAuthorizedParties,
       jwtKey: authContext.clerkJWTKey || undefined,
+      acceptsToken: 'session_token',
     });
     if (!requestState?.isAuthenticated) {
       return { session: null };

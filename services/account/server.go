@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -40,6 +41,7 @@ const (
 	agentKeyChallengeTTL    = 5 * time.Minute
 	devicePollInterval      = 5 * time.Second
 	defaultPublicWebBaseURL = "http://localhost:4173"
+	defaultClerkAPIBaseURL  = "https://api.clerk.com/v1"
 	clerkWebhookTolerance   = 5 * time.Minute
 	bridgeTokenMaxLifetime  = 15 * time.Minute
 	bridgeTokenClockSkew    = 1 * time.Minute
@@ -50,7 +52,9 @@ var deviceUserCodeAlphabet = []byte("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
 
 type accountServiceServer struct {
 	accountv1.UnimplementedAccountServiceServer
-	st storage.Storage
+	st              storage.Storage
+	clerkHTTPClient *http.Client
+	clerkAPIBaseURL string
 }
 
 type authIdentity struct {
@@ -62,6 +66,23 @@ type authIdentity struct {
 // RegisterGRPCServer registers the account service handlers on an existing gRPC server.
 func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	accountv1.RegisterAccountServiceServer(srv, &accountServiceServer{st: st})
+}
+
+func (s *accountServiceServer) clerkClient() *http.Client {
+	if s != nil && s.clerkHTTPClient != nil {
+		return s.clerkHTTPClient
+	}
+	return http.DefaultClient
+}
+
+func (s *accountServiceServer) clerkBackendAPIBaseURL() string {
+	if s != nil && strings.TrimSpace(s.clerkAPIBaseURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(s.clerkAPIBaseURL), "/")
+	}
+	if value := strings.TrimSpace(os.Getenv("CLERK_API_BASE_URL")); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return defaultClerkAPIBaseURL
 }
 
 func normalizeEmail(email string) string {
@@ -742,6 +763,53 @@ func (s *accountServiceServer) ensureUserAccountLinkedToHuman(ctx context.Contex
 	return account, createdAccount, nil
 }
 
+func (s *accountServiceServer) clerkUserExists(ctx context.Context, clerkUserID string) (bool, error) {
+	clerkUserID = strings.TrimSpace(clerkUserID)
+	if clerkUserID == "" {
+		return false, nil
+	}
+	secretKey := strings.TrimSpace(os.Getenv("CLERK_SECRET_KEY"))
+	if secretKey == "" {
+		// Keep the existing conflict behavior unless the server can verify the old Clerk id is gone.
+		return true, nil
+	}
+	endpoint := s.clerkBackendAPIBaseURL() + "/users/" + url.PathEscape(clerkUserID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return true, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secretKey)
+
+	resp, err := s.clerkClient().Do(req)
+	if err != nil {
+		return true, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound, http.StatusGone:
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
+func (s *accountServiceServer) canReplaceClerkUserID(ctx context.Context, oldClerkUserID, newClerkUserID string) (bool, error) {
+	oldClerkUserID = strings.TrimSpace(oldClerkUserID)
+	newClerkUserID = strings.TrimSpace(newClerkUserID)
+	if oldClerkUserID == "" || oldClerkUserID == newClerkUserID {
+		return true, nil
+	}
+	exists, err := s.clerkUserExists(ctx, oldClerkUserID)
+	if err != nil {
+		return false, err
+	}
+	return !exists, nil
+}
+
 func (s *accountServiceServer) usersForAccount(ctx context.Context, accountID string) ([]*models.User, error) {
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
@@ -920,7 +988,13 @@ func (s *accountServiceServer) ensureClerkLocalIdentity(ctx context.Context, cla
 			return nil, status.Error(codes.Internal, "failed to resolve linked Clerk user")
 		}
 		if targetUser.ClerkUserID != "" && targetUser.ClerkUserID != claims.UserID {
-			return nil, status.Error(codes.AlreadyExists, "account is already linked to another Clerk user")
+			canReplace, err := s.canReplaceClerkUserID(ctx, targetUser.ClerkUserID, claims.UserID)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "failed to verify existing Clerk user")
+			}
+			if !canReplace {
+				return nil, status.Error(codes.AlreadyExists, "account is already linked to another Clerk user")
+			}
 		}
 		if applyClerkUserHints(targetUser, claims.UserID, displayName, primaryEmail) {
 			if err := s.st.UpdateUser(ctx, targetUser); err != nil {
@@ -996,7 +1070,13 @@ func (s *accountServiceServer) ensureClerkLocalIdentity(ctx context.Context, cla
 				}
 			}
 			if existingUser.ClerkUserID != "" && existingUser.ClerkUserID != claims.UserID {
-				return nil, status.Error(codes.AlreadyExists, "email already linked to another Clerk user")
+				canReplace, err := s.canReplaceClerkUserID(ctx, existingUser.ClerkUserID, claims.UserID)
+				if err != nil {
+					return nil, status.Error(codes.Internal, "failed to verify existing Clerk user")
+				}
+				if !canReplace {
+					return nil, status.Error(codes.AlreadyExists, "email already linked to another Clerk user")
+				}
 			}
 			account, createdAccount, err := s.ensureUserAccountLinkedToHuman(ctx, existingUser)
 			if err != nil {
