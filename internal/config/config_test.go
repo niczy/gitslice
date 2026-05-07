@@ -22,6 +22,7 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("WORKOS_COOKIE_PASSWORD", "cookie-secret")
 	t.Setenv("WORKOS_AUTHKIT_DOMAIN", "auth.gitslice.io")
 	t.Setenv("WORKOS_WEBHOOK_SECRET", "whsec_test_123")
+	t.Setenv("CLERK_WEBHOOK_SECRET", "whsec_clerk_test_123")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -65,6 +66,9 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 	if cfg.WorkOSWebhookSecret != "whsec_test_123" {
 		t.Fatalf("unexpected WorkOS webhook secret: %q", cfg.WorkOSWebhookSecret)
+	}
+	if cfg.ClerkWebhookSecret != "whsec_clerk_test_123" {
+		t.Fatalf("unexpected Clerk webhook secret: %q", cfg.ClerkWebhookSecret)
 	}
 }
 

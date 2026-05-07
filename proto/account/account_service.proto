@@ -192,6 +192,13 @@ service AccountService {
     };
   }
 
+  rpc HandleClerkWebhook(google.api.HttpBody) returns (HandleClerkWebhookResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/clerk/webhook"
+      body: "*"
+    };
+  }
+
   rpc UpdateMe(UpdateMeRequest) returns (User) {
     option (google.api.http) = {
       patch: "/v1/users/me"
@@ -805,6 +812,14 @@ message EnsureClerkLocalIdentityResponse {
 message HandleWorkOSWebhookResponse {
   string event = 1;
   string workos_user_id = 2;
+  string username = 3;
+  string action = 4;
+  int32 revoked_sessions = 5;
+}
+
+message HandleClerkWebhookResponse {
+  string event = 1;
+  string clerk_user_id = 2;
   string username = 3;
   string action = 4;
   int32 revoked_sessions = 5;

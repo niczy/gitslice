@@ -41,6 +41,7 @@ const (
 	devicePollInterval      = 5 * time.Second
 	defaultPublicWebBaseURL = "http://localhost:4173"
 	workOSWebhookTolerance  = 3 * time.Minute
+	clerkWebhookTolerance   = 5 * time.Minute
 	bridgeTokenMaxLifetime  = 15 * time.Minute
 	bridgeTokenClockSkew    = 1 * time.Minute
 )
@@ -164,6 +165,20 @@ func workOSSignatureFromContext(ctx context.Context) string {
 	return ""
 }
 
+func clerkWebhookHeaderFromContext(ctx context.Context, names ...string) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	for _, name := range names {
+		vals := md.Get(name)
+		if len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
+		}
+	}
+	return ""
+}
+
 func verifyWorkOSWebhookSignature(payload []byte, sigHeader, secret string, now time.Time) error {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
@@ -211,6 +226,59 @@ func verifyWorkOSWebhookSignature(payload []byte, sigHeader, secret string, now 
 		return status.Error(codes.Unauthenticated, "invalid WorkOS signature")
 	}
 	return nil
+}
+
+func decodeClerkWebhookSecret(secret string) ([]byte, error) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return nil, status.Error(codes.FailedPrecondition, "CLERK_WEBHOOK_SECRET is not configured")
+	}
+	secret = strings.TrimPrefix(secret, "whsec_")
+	decoded, err := base64.StdEncoding.DecodeString(secret)
+	if err == nil {
+		return decoded, nil
+	}
+	decoded, rawErr := base64.RawStdEncoding.DecodeString(secret)
+	if rawErr == nil {
+		return decoded, nil
+	}
+	return nil, status.Error(codes.FailedPrecondition, "invalid CLERK_WEBHOOK_SECRET")
+}
+
+func verifyClerkWebhookSignature(payload []byte, idHeader, timestampHeader, sigHeader, secret string, now time.Time) error {
+	if strings.TrimSpace(idHeader) == "" || strings.TrimSpace(timestampHeader) == "" || strings.TrimSpace(sigHeader) == "" {
+		return status.Error(codes.Unauthenticated, "missing Clerk webhook signature headers")
+	}
+	key, err := decodeClerkWebhookSecret(secret)
+	if err != nil {
+		return err
+	}
+	timestamp, err := strconv.ParseInt(strings.TrimSpace(timestampHeader), 10, 64)
+	if err != nil {
+		return status.Error(codes.Unauthenticated, "invalid Clerk webhook timestamp")
+	}
+	signedAt := time.Unix(timestamp, 0)
+	if now.Sub(signedAt) > clerkWebhookTolerance || signedAt.Sub(now) > clerkWebhookTolerance {
+		return status.Error(codes.Unauthenticated, "Clerk webhook timestamp is outside tolerance")
+	}
+
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(strings.TrimSpace(idHeader)))
+	mac.Write([]byte("."))
+	mac.Write([]byte(strconv.FormatInt(timestamp, 10)))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	for _, versionedSignature := range strings.Fields(sigHeader) {
+		version, signature, ok := strings.Cut(versionedSignature, ",")
+		if !ok || version != "v1" {
+			continue
+		}
+		if hmac.Equal([]byte(signature), []byte(expected)) {
+			return nil
+		}
+	}
+	return status.Error(codes.Unauthenticated, "invalid Clerk webhook signature")
 }
 
 func publicWebBaseURL() string {
@@ -557,6 +625,21 @@ type workOSWebhookEnvelope struct {
 	} `json:"data"`
 }
 
+type clerkWebhookEnvelope struct {
+	Type string `json:"type"`
+	Data struct {
+		ID                    string `json:"id"`
+		PrimaryEmailAddressID string `json:"primary_email_address_id"`
+		EmailAddresses        []struct {
+			ID           string `json:"id"`
+			EmailAddress string `json:"email_address"`
+		} `json:"email_addresses"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Username  string `json:"username"`
+	} `json:"data"`
+}
+
 type clerkBridgeClaims struct {
 	Provider          string `json:"provider"`
 	UserID            string `json:"userId"`
@@ -843,6 +926,24 @@ func (s *accountServiceServer) usersForAccount(ctx context.Context, accountID st
 		}
 	}
 	return out, nil
+}
+
+func (s *accountServiceServer) revokeAuthSessionsForUser(ctx context.Context, username string) (int, error) {
+	sessions, err := s.st.ListAuthSessionsByUser(ctx, username)
+	if err != nil {
+		return 0, err
+	}
+	revoked := 0
+	for _, session := range sessions {
+		if session == nil || strings.TrimSpace(session.SessionID) == "" {
+			continue
+		}
+		if err := s.st.RevokeAuthSession(ctx, username, session.SessionID); err != nil && err != storage.ErrEntryNotFound {
+			return revoked, err
+		}
+		revoked++
+	}
+	return revoked, nil
 }
 
 func applyWorkOSUserHints(user *models.User, workOSUserID, name, email string) bool {
@@ -2640,19 +2741,9 @@ func (s *accountServiceServer) HandleWorkOSWebhook(ctx context.Context, req *htt
 		}
 		resp.Action = "updated_user"
 	case "user.deleted":
-		sessions, err := s.st.ListAuthSessionsByUser(ctx, user.Username)
+		revoked, err := s.revokeAuthSessionsForUser(ctx, user.Username)
 		if err != nil {
-			return nil, status.Error(codes.Internal, "failed to list sessions")
-		}
-		revoked := 0
-		for _, session := range sessions {
-			if session == nil || strings.TrimSpace(session.SessionID) == "" {
-				continue
-			}
-			if err := s.st.RevokeAuthSession(ctx, user.Username, session.SessionID); err != nil && err != storage.ErrEntryNotFound {
-				return nil, status.Error(codes.Internal, "failed to revoke sessions")
-			}
-			revoked++
+			return nil, status.Error(codes.Internal, "failed to revoke sessions")
 		}
 		user.WorkOSUserID = ""
 		if user.AuthSource == "workos" {
@@ -2661,6 +2752,97 @@ func (s *accountServiceServer) HandleWorkOSWebhook(ctx context.Context, req *htt
 		user.UpdatedAt = time.Now()
 		if err := s.st.UpdateUser(ctx, user); err != nil {
 			return nil, status.Error(codes.Internal, "failed to unlink WorkOS user")
+		}
+		resp.Action = "unlinked_user"
+		resp.RevokedSessions = int32(revoked)
+	}
+	return resp, nil
+}
+
+func (s *accountServiceServer) HandleClerkWebhook(ctx context.Context, req *httpbody.HttpBody) (*accountv1.HandleClerkWebhookResponse, error) {
+	if req == nil || len(req.GetData()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "webhook payload is required")
+	}
+	payload := req.GetData()
+	idHeader := clerkWebhookHeaderFromContext(ctx, "svix-id", "webhook-id")
+	timestampHeader := clerkWebhookHeaderFromContext(ctx, "svix-timestamp", "webhook-timestamp")
+	signatureHeader := clerkWebhookHeaderFromContext(ctx, "svix-signature", "webhook-signature")
+	if err := verifyClerkWebhookSignature(payload, idHeader, timestampHeader, signatureHeader, os.Getenv("CLERK_WEBHOOK_SECRET"), time.Now()); err != nil {
+		return nil, err
+	}
+
+	var event clerkWebhookEnvelope
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Clerk webhook payload")
+	}
+	eventName := strings.TrimSpace(event.Type)
+	clerkUserID := strings.TrimSpace(event.Data.ID)
+	resp := &accountv1.HandleClerkWebhookResponse{
+		Event:       eventName,
+		ClerkUserId: clerkUserID,
+		Action:      "ignored",
+	}
+	if clerkUserID == "" {
+		return resp, nil
+	}
+
+	user, err := s.st.GetUserByClerkUserID(ctx, clerkUserID)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return resp, nil
+		}
+		return nil, status.Error(codes.Internal, "failed to load Clerk-linked user")
+	}
+	resp.Username = user.Username
+
+	switch eventName {
+	case "user.updated":
+		updated := false
+		primaryEmailID := strings.TrimSpace(event.Data.PrimaryEmailAddressID)
+		primaryEmail := ""
+		for _, email := range event.Data.EmailAddresses {
+			if primaryEmailID != "" && strings.TrimSpace(email.ID) != primaryEmailID {
+				continue
+			}
+			primaryEmail = normalizeEmail(email.EmailAddress)
+			break
+		}
+		if primaryEmail == "" && len(event.Data.EmailAddresses) > 0 {
+			primaryEmail = normalizeEmail(event.Data.EmailAddresses[0].EmailAddress)
+		}
+		if primaryEmail != "" && primaryEmail != user.PrimaryEmail {
+			user.PrimaryEmail = primaryEmail
+			updated = true
+		}
+		if name := strings.TrimSpace(strings.Join([]string{event.Data.FirstName, event.Data.LastName}, " ")); name != "" && name != user.Name {
+			user.Name = name
+			updated = true
+		}
+		if !updated {
+			resp.Action = "noop"
+			return resp, nil
+		}
+		user.UpdatedAt = time.Now()
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			return nil, status.Error(codes.Internal, "failed to update Clerk-linked user")
+		}
+		resp.Action = "updated_user"
+	case "user.deleted":
+		revoked, err := s.revokeAuthSessionsForUser(ctx, user.Username)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to revoke sessions")
+		}
+		user.ClerkUserID = ""
+		if user.AuthSource == "clerk" {
+			if strings.TrimSpace(user.WorkOSUserID) != "" {
+				user.AuthSource = "workos"
+			} else {
+				user.AuthSource = "local"
+			}
+		}
+		user.UpdatedAt = time.Now()
+		if err := s.st.UpdateUser(ctx, user); err != nil {
+			return nil, status.Error(codes.Internal, "failed to unlink Clerk user")
 		}
 		resp.Action = "unlinked_user"
 		resp.RevokedSessions = int32(revoked)

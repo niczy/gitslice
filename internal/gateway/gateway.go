@@ -74,6 +74,10 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
+	if err := registerClerkWebhookOverride(mux, accountClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
 	if err := registerFileEntriesOverrides(mux, fileClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
@@ -89,6 +93,15 @@ func gatewayIncomingHeaderMatcher(key string) (string, bool) {
 	}
 	if strings.EqualFold(key, "WorkOS-Signature") {
 		return "workos-signature", true
+	}
+	if strings.EqualFold(key, "Svix-Id") {
+		return "svix-id", true
+	}
+	if strings.EqualFold(key, "Svix-Timestamp") {
+		return "svix-timestamp", true
+	}
+	if strings.EqualFold(key, "Svix-Signature") {
+		return "svix-signature", true
 	}
 	return runtime.DefaultHeaderMatcher(key)
 }
@@ -132,6 +145,12 @@ func registerWorkOSWebhookOverride(mux *runtime.ServeMux, client accountv1.Accou
 	})
 }
 
+func registerClerkWebhookOverride(mux *runtime.ServeMux, client accountv1.AccountServiceClient) error {
+	return mux.HandlePath(http.MethodPost, "/v1/auth/clerk/webhook", func(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
+		handleClerkWebhook(w, r, mux, client, pathParams, "/v1/auth/clerk/webhook")
+	})
+}
+
 func handleWorkOSWebhook(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -162,6 +181,44 @@ func handleWorkOSWebhook(
 
 	var md runtime.ServerMetadata
 	resp, err := client.HandleWorkOSWebhook(annotatedContext, req, grpc.Header(&md.HeaderMD), grpc.Trailer(&md.TrailerMD))
+	annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+	if err != nil {
+		runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, r, err)
+		return
+	}
+	runtime.ForwardResponseMessage(annotatedContext, mux, outboundMarshaler, w, r, resp, mux.GetForwardResponseOptions()...)
+}
+
+func handleClerkWebhook(
+	w http.ResponseWriter,
+	r *http.Request,
+	mux *runtime.ServeMux,
+	client accountv1.AccountServiceClient,
+	_ map[string]string,
+	pattern string,
+) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	_, outboundMarshaler := runtime.MarshalerForRequest(mux, r)
+	annotatedContext, err := runtime.AnnotateContext(ctx, mux, r, "/account.v1.AccountService/HandleClerkWebhook", runtime.WithHTTPPathPattern(pattern))
+	if err != nil {
+		runtime.HTTPError(ctx, mux, outboundMarshaler, w, r, err)
+		return
+	}
+
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, r, status.Error(codes.InvalidArgument, "failed to read webhook body"))
+		return
+	}
+	req := &httpbody.HttpBody{
+		ContentType: r.Header.Get("Content-Type"),
+		Data:        payload,
+	}
+
+	var md runtime.ServerMetadata
+	resp, err := client.HandleClerkWebhook(annotatedContext, req, grpc.Header(&md.HeaderMD), grpc.Trailer(&md.TrailerMD))
 	annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 	if err != nil {
 		runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, r, err)
