@@ -49,8 +49,8 @@ Best when the task needs a local editor or tests. Plain checkout is the local wo
 
 ```sh
 gs slice create ui-refresh apps/web
-mkdir ui-refresh && cd ui-refresh
 gs slice checkout <slice-id-or-slug>
+cd ui-refresh
 gs slice status
 gs slice diff
 ```
@@ -74,8 +74,8 @@ Plain checkout is the local workflow. Status, diff, restore, sync, and publish a
 ```sh
 gs slice list
 gs slice create ui-refresh apps/web
-mkdir ui-refresh && cd ui-refresh
 gs slice checkout <slice-id-or-slug>
+cd ui-refresh
 gs slice diff
 ```
 
@@ -132,13 +132,13 @@ gs repo unlink /$USER/vendor/repo
 
 ## Custom slices
 
-Check out a focused slice instead of dragging a whole tree everywhere. A custom slice is the local-work path. Create one around the folder or surface you care about, then check it out. Plain `gs slice checkout` is now the primary local path. It skips git metadata for speed, keeps a local index under `.gs`, and supports local status, diff, restore, sync, and publish directly. The client asks for manifests first and downloads only blocks missing from local cache, so repeat checkouts stay fast.
+Check out a focused slice instead of dragging a whole tree everywhere. A custom slice is the local-work path. Create one around the folder or surface you care about, then check it out. Plain `gs slice checkout` creates `./<slice-name>` by default, skips git metadata for speed, keeps a local index under `.gs`, and supports local status, diff, restore, sync, and publish directly. Use `--here` to materialize into the current directory. The client asks for manifests first and downloads only blocks missing from local cache, so repeat checkouts stay fast.
 
 ```sh
 gs slice list
 gs slice create ui-refresh apps/web
-mkdir ui-refresh && cd ui-refresh
 gs slice checkout <slice-id-or-slug>
+cd ui-refresh
 gs slice tree
 gs slice diff
 gs slice restore

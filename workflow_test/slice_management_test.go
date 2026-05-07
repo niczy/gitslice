@@ -14,7 +14,7 @@ func TestSliceCheckoutByID(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here")
 	if resp.SliceID != sliceID {
 		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}

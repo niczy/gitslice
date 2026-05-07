@@ -99,10 +99,10 @@ func TestPerfSliceCheckoutWarmCache(t *testing.T) {
 	warmBudget := workflowPerfBudget(t, "WORKFLOW_PERF_CHECKOUT_WARM_MAX_MS", perfCheckoutWarmBudget)
 
 	firstDir := t.TempDir()
-	_, coldDuration := timeCLI(t, firstDir, "slice", "checkout", sliceIDArg(sliceID))
+	_, coldDuration := timeCLI(t, firstDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 
 	secondDir := t.TempDir()
-	_, warmDuration := timeCLI(t, secondDir, "slice", "checkout", sliceIDArg(sliceID))
+	_, warmDuration := timeCLI(t, secondDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 
 	t.Logf("slice checkout perf: cold=%s warm=%s", coldDuration, warmDuration)
 	if coldDuration > coldBudget {
@@ -121,7 +121,7 @@ func TestPerfSliceStatusNoGit(t *testing.T) {
 	statusBudget := workflowPerfBudget(t, "WORKFLOW_PERF_STATUS_MAX_MS", perfStatusBudget)
 
 	checkoutDir := t.TempDir()
-	_ = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	_ = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 
 	start := time.Now()
 	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status")
@@ -144,7 +144,7 @@ func TestPerfSlicePublishReviewNoGit(t *testing.T) {
 	publishBudget := workflowPerfBudget(t, "WORKFLOW_PERF_PUBLISH_MAX_MS", perfPublishReviewBudget)
 
 	checkoutDir := t.TempDir()
-	_ = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	_ = runCLIOrFail(t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 
 	targetFile := filepath.Join(checkoutDir, basePath, "dir-00", "file-000.txt")
 	if err := os.WriteFile(targetFile, []byte("perf publish review change\n"), 0o644); err != nil {

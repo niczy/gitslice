@@ -93,8 +93,8 @@ export default function OverviewPage({ onBrowseRepo, onOpenDocs }) {
             </div>
             <pre className="code-block">
               <code>{`gs slice create ui-refresh apps/web
-mkdir ui-refresh && cd ui-refresh
-gs slice checkout <slice-id-or-slug>`}</code>
+gs slice checkout <slice-id-or-slug>
+cd ui-refresh`}</code>
             </pre>
           </div>
 
@@ -142,8 +142,8 @@ gs fs snapshot -m "patch notice"`}</code>
             </div>
             <pre className="code-block">
               <code>{`gs slice create ui-refresh apps/web
-mkdir ui-refresh && cd ui-refresh
 gs slice checkout <slice-id-or-slug>
+cd ui-refresh
 $EDITOR src/routes/settings.tsx
 gs slice diff
 gs slice export --message "refresh settings page" --files src/routes/settings.tsx

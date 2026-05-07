@@ -44,7 +44,7 @@ func TestSliceSearchFindsBaseAndOverlayMatches(t *testing.T) {
 	setWorkflowSliceHead(t, ctx, sliceID, "slice-search-overlay-1", "", map[string]string{filePath: manifestHash})
 
 	workdir := t.TempDir()
-	runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID))
+	runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 
 	baseResp := runCLIJSONOrFail[sliceSearchJSON](t, workdir, "slice", "search", "alpha")
 	if baseResp.Total != 1 || len(baseResp.Matches) != 1 || baseResp.Matches[0].Path != filePath {
@@ -114,7 +114,7 @@ func TestSliceSearchRefreshesAfterRestoreAndSync(t *testing.T) {
 	setWorkflowSliceHead(t, ctx, sliceID, "slice-search-sync-1", "", map[string]string{filePath: initialHash})
 
 	workdir := t.TempDir()
-	runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID))
+	runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 
 	if err := os.WriteFile(filepath.Join(workdir, filePath), []byte("local transient change\n"), 0o644); err != nil {
 		t.Fatalf("write local change: %v", err)

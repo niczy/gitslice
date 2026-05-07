@@ -192,7 +192,7 @@ func TestSliceSyncUpdatesRemoteMetadataAndStatus(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, nil, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, nil, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -264,7 +264,7 @@ func TestSliceSyncFailsOnDirtyCheckoutAndPreservesLocalChanges(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, nil, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, nil, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}

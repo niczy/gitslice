@@ -143,7 +143,7 @@ func checkoutFocusedSliceRef(t *testing.T, sliceRef string) string {
 	t.Helper()
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceRef)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceRef, "--here")
 	if checkoutResp.SliceID == "" {
 		t.Fatalf("expected checkout for created slice, got: %+v", checkoutResp)
 	}
@@ -275,7 +275,7 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	}
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceSlug)
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceSlug, "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -526,7 +526,7 @@ func TestChangesetCreateWorksWithoutGitCheckout(t *testing.T) {
 	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -559,7 +559,7 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -789,7 +789,7 @@ func TestSliceDiffAndRestoreWorkWithoutGitCheckout(t *testing.T) {
 	sliceID := createFocusedSliceFromPublishedFolder(t, folderPath)
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, checkoutDir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -871,7 +871,7 @@ func TestNoGitCheckoutStartsDirtyTracker(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	output, err := runCLIWithDirInputEnvLegacyUser(checkoutDir, "", workflowProcessEnv(t, env), true, workflowUsername(t), "slice", "checkout", sliceIDArg(sliceID), "--json")
+	output, err := runCLIWithDirInputEnvLegacyUser(checkoutDir, "", workflowProcessEnv(t, env), true, workflowUsername(t), "slice", "checkout", sliceIDArg(sliceID), "--here", "--json")
 	if err != nil {
 		t.Fatalf("checkout with dirty tracker failed: %v\nOutput:\n%s", err, output)
 	}
@@ -953,7 +953,7 @@ func TestNoGitStatusAndChangesetCreateWorkWithDirtyTracker(t *testing.T) {
 	t.Cleanup(func() {
 		stopDirtyTrackerForTest(t, checkoutDir)
 	})
-	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}
@@ -1023,7 +1023,7 @@ func TestNoGitStatusFallsBackWhenDirtyTrackerStops(t *testing.T) {
 	env := map[string]string{"GS_DISABLE_DIRTY_TRACKER": "0"}
 
 	checkoutDir := t.TempDir()
-	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, checkoutDir, env, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	if checkoutResp.SliceID != sliceID {
 		t.Fatalf("expected checkout output, got: %+v", checkoutResp)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here")
 	if resp.SliceID != sliceID || resp.FileCount != 0 {
 		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
@@ -33,11 +34,103 @@ func TestCheckoutSliceReturnsManifest(t *testing.T) {
 	}
 }
 
+func TestCheckoutSliceDefaultsToSliceNameDirectory(t *testing.T) {
+	if testStorage == nil {
+		t.Fatalf("test storage is not initialized")
+	}
+
+	ctx := withWorkflowUser(t, context.Background())
+	sliceID := fmt.Sprintf("checkout-default-dir-%d", time.Now().UnixNano())
+	sliceSlug := "api-cross-a-20260504232313"
+	qualifiedRef := "nicholas/" + sliceSlug
+	filePath := filepath.ToSlash(filepath.Join("fixtures", sliceID, "README.md"))
+	content := []byte("default checkout directory\n")
+
+	if err := testStorage.CreateSlice(ctx, &models.Slice{
+		ID:        sliceID,
+		Name:      "API Cross A",
+		Slug:      sliceSlug,
+		Owners:    []string{workflowUsername(t)},
+		CreatedBy: "nicholas",
+	}); err != nil {
+		t.Fatalf("CreateSlice(%s) failed: %v", sliceID, err)
+	}
+	manifest, err := storage.WriteSliceFileManifest(ctx, testStorage, sliceID, filePath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest(%s) failed: %v", filePath, err)
+	}
+	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: sliceID,
+		Size:     int64(len(content)),
+		Hash:     manifest.Hash,
+	}); err != nil {
+		t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+	}
+	if err := testStorage.AddFileToSlice(ctx, filePath, sliceID); err != nil {
+		t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+	}
+	now := time.Now()
+	commitHash := "seed-" + sliceID
+	if err := testStorage.AddSliceCommit(ctx, sliceID, &models.Commit{
+		CommitHash: commitHash,
+		Timestamp:  now,
+		Message:    "seed default checkout directory",
+	}); err != nil {
+		t.Fatalf("AddSliceCommit(%s) failed: %v", sliceID, err)
+	}
+	if err := testStorage.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: commitHash,
+		SliceID:    sliceID,
+		Files:      map[string]string{filePath: manifest.Hash},
+		Timestamp:  now,
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot(%s) failed: %v", commitHash, err)
+	}
+	metadata, err := testStorage.GetSliceMetadata(ctx, sliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata(%s) failed: %v", sliceID, err)
+	}
+	metadata.HeadCommitHash = commitHash
+	metadata.ModifiedFiles = []string{filePath}
+	metadata.ModifiedFilesCount = 1
+	metadata.LastModified = now
+	if err := testStorage.UpdateSliceMetadata(ctx, sliceID, metadata); err != nil {
+		t.Fatalf("UpdateSliceMetadata(%s) failed: %v", sliceID, err)
+	}
+
+	parentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parentDir, "unrelated.txt"), []byte("keep parent usable\n"), 0o644); err != nil {
+		t.Fatalf("write unrelated parent file: %v", err)
+	}
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, parentDir, "slice", "checkout", qualifiedRef)
+	if resp.SliceID != sliceID || resp.Path != sliceSlug {
+		t.Fatalf("expected checkout into %q, got: %+v", sliceSlug, resp)
+	}
+
+	checkoutDir := filepath.Join(parentDir, sliceSlug)
+	checkedOutContent, err := os.ReadFile(filepath.Join(checkoutDir, filePath))
+	if err != nil {
+		t.Fatalf("read checked out file: %v", err)
+	}
+	if string(checkedOutContent) != string(content) {
+		t.Fatalf("expected checked out content %q, got %q", string(content), string(checkedOutContent))
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, ".gs", "config")); err != nil {
+		t.Fatalf("expected checkout metadata under target directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(parentDir, filePath)); !os.IsNotExist(err) {
+		t.Fatalf("expected checkout not to write files into parent dir, err=%v", err)
+	}
+}
+
 func TestCheckoutSliceNotFound(t *testing.T) {
 	workdir := t.TempDir()
 	sliceArg := sliceIDArg("nonexistent-slice")
 
-	_, err := runCLIWithDirForTest(t, workdir, "slice", "checkout", sliceArg)
+	_, err := runCLIWithDirForTest(t, workdir, "slice", "checkout", sliceArg, "--here")
 	if err == nil {
 		t.Fatalf("expected checkout to fail for missing slice")
 	}
@@ -50,7 +143,7 @@ func TestCheckoutSliceWithCommitHash(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--commit", "HEAD")
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here", "--commit", "HEAD")
 	if resp.SliceID != sliceID || resp.Commit == "" {
 		t.Fatalf("expected checkout JSON output with commit, got: %+v", resp)
 	}
@@ -63,7 +156,7 @@ func TestCheckoutEmptySlice(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here")
 	if resp.SliceID != sliceID || resp.FileCount != 0 {
 		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
@@ -76,7 +169,7 @@ func TestStreamCheckoutSlice(t *testing.T) {
 	createSliceFromRoot(t, sliceID, "")
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg)
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here")
 	if resp.SliceID != sliceID || resp.FileCount != 0 {
 		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
@@ -121,7 +214,7 @@ func TestCheckoutSlicePrintsFilesWhenRequested(t *testing.T) {
 	})
 	sliceArg := sliceIDArg(sliceID)
 
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--files")
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceArg, "--here", "--files")
 	if resp.SliceID != sliceID || resp.FileCount != 1 || len(resp.Files) != 1 {
 		t.Fatalf("expected verbose checkout JSON output, got: %+v", resp)
 	}
@@ -185,7 +278,7 @@ func TestCheckoutSliceHonorsFileMetadata(t *testing.T) {
 	}
 
 	workdir := t.TempDir()
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--files")
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--here", "--files")
 	if resp.SliceID != sliceID || resp.FileCount != 2 || len(resp.Files) != 2 {
 		t.Fatalf("expected checkout JSON output, got: %+v", resp)
 	}
@@ -243,7 +336,7 @@ func TestCheckoutPersistsSliceSearchArtifact(t *testing.T) {
 	})
 
 	workdir := t.TempDir()
-	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID))
+	resp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	meta := readSearchArtifactMetadata(t, workdir)
 	if meta.Source != "downloaded" {
 		t.Fatalf("expected downloaded search artifact, got %+v", meta)
@@ -293,7 +386,7 @@ func TestCheckoutSearchArtifactFallsBackToLocalBuild(t *testing.T) {
 
 	workdir := t.TempDir()
 	env := map[string]string{"GS_DISABLE_SLICE_SEARCH_ARTIFACT_DOWNLOAD": "1"}
-	resp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, workdir, env, "slice", "checkout", sliceIDArg(sliceID))
+	resp := runCLIJSONWithEnvOrFail[sliceCheckoutJSON](t, workdir, env, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	meta := readSearchArtifactMetadata(t, workdir)
 	if meta.Source != "rebuilt_local" {
 		t.Fatalf("expected rebuilt_local search artifact, got %+v", meta)
@@ -382,7 +475,7 @@ func TestSliceSyncReplacesSliceSearchArtifactWhenCommitChanges(t *testing.T) {
 	setHead("sync-search-artifact-1", "", []byte("alpha beta gamma\n"))
 
 	workdir := t.TempDir()
-	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID))
+	checkoutResp := runCLIJSONOrFail[sliceCheckoutJSON](t, workdir, "slice", "checkout", sliceIDArg(sliceID), "--here")
 	firstMeta := readSearchArtifactMetadata(t, workdir)
 	firstArtifact := readBaseSearchArtifact(t, workdir)
 	if firstMeta.CommitHash != checkoutResp.Commit || firstArtifact.CommitHash != checkoutResp.Commit {

@@ -117,7 +117,7 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
 		t.Fatalf("mkdir checkout: %v", err)
 	}
-	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--json")
+	output = runCLIForUser(checkoutDir, "slice", "checkout", homeslice.IDForUsername(username), "--here", "--json")
 	var checkoutResp sliceCheckoutJSON
 	if err := json.Unmarshal([]byte(output), &checkoutResp); err != nil {
 		t.Fatalf("decode checkout JSON: %v\nOutput:\n%s", err, output)
