@@ -3719,21 +3719,9 @@ body {
 /* Commit diff page */
 .commit-diff-page {
   padding: 0;
-  animation: pageEnter 400ms cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   flex-direction: column;
   height: calc(100vh - 57px);
-}
-
-@keyframes pageEnter {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 /* Top bar with back button, title, summary, and view toggle */
@@ -3776,7 +3764,6 @@ body {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-left: auto;
 }
 
 .diff-stat {
@@ -3784,11 +3771,6 @@ body {
   font-weight: 600;
   padding: 3px 8px;
   border-radius: 4px;
-  transition: all 200ms ease;
-}
-
-.diff-stat:hover {
-  transform: translateY(-2px);
 }
 
 .diff-stat-added {
@@ -3979,37 +3961,17 @@ body {
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 12px;
-  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
-  animation: fileItemEnter 300ms cubic-bezier(0.16, 1, 0.3, 1);
-  animation-fill-mode: both;
+  transition: border-color 150ms ease, background 150ms ease;
   scroll-margin-top: 16px;
-}
-
-.diff-file-item:nth-child(1) { animation-delay: 0ms; }
-.diff-file-item:nth-child(2) { animation-delay: 50ms; }
-.diff-file-item:nth-child(3) { animation-delay: 100ms; }
-.diff-file-item:nth-child(4) { animation-delay: 150ms; }
-.diff-file-item:nth-child(5) { animation-delay: 200ms; }
-
-@keyframes fileItemEnter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .diff-file-item:hover {
   border-color: var(--border-strong);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 
 .diff-file-item-selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), 0 4px 12px rgba(9, 105, 218, 0.1);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .diff-file-header {
@@ -4085,7 +4047,7 @@ body {
 }
 
 .diff-action-error {
-  margin: 8px 20px 0;
+  margin: 0 0 12px;
 }
 
 .changeset-title-meta {
@@ -4100,6 +4062,7 @@ body {
   gap: 8px;
 }
 
+.diff-detail-controls,
 .changeset-detail-controls {
   display: flex;
   align-items: center;
@@ -4306,6 +4269,7 @@ body {
   .app-shell--browser .changeset-detail-page .diff-top-bar {
     grid-template-columns: 1fr;
   }
+  .app-shell--browser .diff-detail-controls,
   .app-shell--browser .changeset-detail-page .changeset-detail-controls {
     justify-content: flex-start;
     justify-self: stretch;
@@ -7719,21 +7683,26 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .diff-top-bar {
   display: grid;
-  grid-template-columns: auto minmax(220px, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(220px, 1fr) minmax(0, auto);
   align-items: center;
   gap: 12px;
-  min-height: 70px;
+  min-height: 64px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--np-border-soft);
   background: var(--np-surface);
 }
 
-.app-shell--browser .changeset-detail-page .diff-top-bar {
-  grid-template-columns: auto minmax(240px, 1fr) minmax(0, auto);
+.app-shell--browser .diff-detail-page {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  background: var(--np-bg);
 }
 
-.app-shell--browser .changeset-detail-page .changeset-detail-controls {
+.app-shell--browser .diff-detail-controls {
   justify-self: end;
+  gap: 8px;
+  max-width: 100%;
 }
 
 .app-shell--browser .diff-top-title {
@@ -7746,7 +7715,8 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .diff-summary {
-  margin-left: 0;
+  align-items: center;
+  gap: 6px;
 }
 
 .app-shell--browser .diff-back-btn {
@@ -7791,6 +7761,91 @@ button[data-testid="topbar-get-started"]:hover {
   background: var(--np-surface) !important;
   color: var(--np-primary) !important;
   box-shadow: inset 0 -2px var(--np-primary) !important;
+}
+
+.app-shell--browser .diff-stat {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 999px;
+  background: var(--np-container);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.app-shell--browser .diff-stat-added {
+  color: #1a7f37;
+}
+
+.app-shell--browser .diff-stat-modified,
+.app-shell--browser .diff-stat-renamed {
+  color: var(--np-primary);
+}
+
+.app-shell--browser .diff-stat-deleted {
+  color: #cf222e;
+}
+
+.app-shell--browser .diff-layout {
+  background: var(--np-bg);
+}
+
+.app-shell--browser .diff-file-panel {
+  width: 260px;
+  min-width: 220px;
+  border-right: 1px solid var(--np-border-soft);
+  background: var(--np-container);
+}
+
+.app-shell--browser .diff-file-panel-header {
+  min-height: 48px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--np-border-soft);
+  background: var(--np-container);
+  color: var(--np-muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.app-shell--browser .diff-file-panel-list {
+  padding: 8px 0;
+}
+
+.app-shell--browser .diff-file-panel-item {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-left: 0;
+  color: var(--np-text);
+}
+
+.app-shell--browser .diff-file-panel-item:hover,
+.app-shell--browser .diff-file-panel-item-active {
+  background: var(--np-surface) !important;
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .diff-content {
+  padding: 12px 16px 16px;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .diff-file-list {
+  gap: 10px;
+}
+
+.app-shell--browser .diff-file-item {
+  border-color: var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+  box-shadow: none;
+}
+
+.app-shell--browser .diff-file-item:hover,
+.app-shell--browser .diff-file-item-selected {
+  border-color: var(--np-border);
+  box-shadow: none;
 }
 
 .app-shell--browser .repo-layout {

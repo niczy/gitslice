@@ -242,7 +242,7 @@ export default function ChangesetDiffPage({
   };
 
   return (
-    <section className="commit-diff-page changeset-detail-page" data-testid="changeset-diff-page">
+    <section className="commit-diff-page diff-detail-page changeset-detail-page" data-testid="changeset-diff-page">
       <div className="diff-top-bar">
         <Button type="button" variant="ghost" className="diff-back-btn" onClick={onBack} data-testid="changeset-back-btn">
           Back to changesets
@@ -263,7 +263,7 @@ export default function ChangesetDiffPage({
             </p>
           )}
         </div>
-        <div className="changeset-detail-controls">
+        <div className="diff-detail-controls changeset-detail-controls">
           {diff && (
             <div className="diff-summary" data-testid="changeset-summary">
               <span className="diff-stat diff-stat-added">+{diff.files_added || diff.filesAdded || 0} added</span>
