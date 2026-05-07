@@ -928,10 +928,31 @@ test.describe('Slice Activity Pages', () => {
     await expect(page.getByTestId('slice-detail-tab-changesets')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('slice-changeset-row')).toHaveCount(2);
     expect(requests).toContain('all:true');
+    const statusMetrics = await page.getByTestId('slice-changeset-row').evaluateAll((rows) => rows.map((row) => {
+      const status = row.querySelector('.slice-activity-status');
+      const rowRect = row.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      return {
+        rightOffset: Math.round(rowRect.right - statusRect.right),
+        width: Math.round(statusRect.width),
+      };
+    }));
+    expect(new Set(statusMetrics.map((metric) => metric.width)).size).toBe(1);
+    expect(new Set(statusMetrics.map((metric) => metric.rightOffset)).size).toBe(1);
 
     await page.getByTestId('changeset-filter-merged').click();
     await expect(page.getByTestId('slice-changeset-row')).toHaveCount(1);
     await expect(page.getByTestId('slice-changeset-row').first()).toContainText('merged notes update');
+    const filteredStatusMetric = await page.getByTestId('slice-changeset-row').first().evaluate((row) => {
+      const status = row.querySelector('.slice-activity-status');
+      const rowRect = row.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      return {
+        rightOffset: Math.round(rowRect.right - statusRect.right),
+        width: Math.round(statusRect.width),
+      };
+    });
+    expect(filteredStatusMetric).toEqual(statusMetrics[0]);
     expect(requests).toContain('3');
 
     await page.getByTestId('slice-changeset-row').first().click();

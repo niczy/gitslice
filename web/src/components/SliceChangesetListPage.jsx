@@ -205,15 +205,15 @@ export default function SliceChangesetListPage({
                           )}
                         </span>
                       </span>
-                      <span className={`slice-activity-status slice-activity-status--${status}`}>
-                        {status}
-                      </span>
                       <span className="slice-activity-row-files">
                         <FileCode2 size={14} aria-hidden="true" />
                         {files.length} {files.length === 1 ? 'file' : 'files'}
                       </span>
                       <span className="slice-activity-row-meta">
                         {changeset.created_at ? formatTimestamp(changeset.created_at) : 'Unknown time'}
+                      </span>
+                      <span className={`slice-activity-status slice-activity-status--${status}`}>
+                        {status}
                       </span>
                       <ArrowRight size={16} aria-hidden="true" className="slice-activity-row-arrow" />
                     </Button>

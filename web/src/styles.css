@@ -6278,7 +6278,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-activity-row--changeset {
-  grid-template-columns: 34px minmax(0, 1fr) auto auto minmax(130px, auto) 18px;
+  grid-template-columns: 34px minmax(0, 1fr) 86px 150px 96px 18px;
 }
 
 .slice-activity-row:hover {
@@ -6336,6 +6336,7 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-activity-row-meta {
+  min-width: 0;
   text-align: right;
   white-space: nowrap;
 }
@@ -6343,7 +6344,9 @@ button[data-testid="topbar-get-started"]:hover {
 .slice-activity-row-files {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 5px;
+  min-width: 0;
   white-space: nowrap;
 }
 
@@ -6351,6 +6354,8 @@ button[data-testid="topbar-get-started"]:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  justify-self: end;
+  width: 86px;
   min-height: 24px;
   padding: 0 8px;
   border: 1px solid var(--border);
