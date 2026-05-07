@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"github.com/spf13/cobra"
 )
@@ -53,11 +53,11 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		Auth: buildDoctorAuthOutput(authConfig, creds),
 	}
 
-	if meResp, err := cli.adminClient.Me(ctx, &adminv1.MeRequest{}); err != nil {
+	if meResp, err := cli.accountClient.GetMe(ctx, &accountv1.GetMeRequest{}); err != nil {
 		out.Services.Admin.Error = err.Error()
 	} else {
 		out.Services.Admin.OK = true
-		out.Services.Admin.Username = meResp.GetUser().GetUsername()
+		out.Services.Admin.Username = meResp.GetUsername()
 	}
 	if rootResp, err := cli.sliceClient.GetRootSlice(ctx, &slicev1.GetRootSliceRequest{}); err != nil {
 		out.Services.Slice.Error = err.Error()
@@ -66,7 +66,7 @@ func handleDoctor(ctx context.Context, cli *CLI, authConfig cliAuth, args []stri
 		out.Services.Slice.RootSliceID = rootResp.GetSliceId()
 		out.Services.Slice.Head = rootResp.GetCommitHash()
 	}
-	if stateResp, err := cli.adminClient.GetGlobalState(ctx, &adminv1.GlobalStateRequest{}); err != nil {
+	if stateResp, err := cli.sliceClient.GetGlobalState(ctx, &slicev1.GlobalStateRequest{}); err != nil {
 		out.Services.GlobalState.Error = err.Error()
 	} else {
 		out.Services.GlobalState.OK = true

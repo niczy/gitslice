@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
 func handleConflictCommand(ctx context.Context, cli *CLI, args []string) {
@@ -43,12 +43,12 @@ func handleConflictList(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	req := &adminv1.ConflictsRequest{}
+	req := &slicev1.ConflictsRequest{}
 	if sliceID != "" {
 		req.SliceId = sliceID
 	}
 
-	resp, err := cli.adminClient.GetConflicts(ctx, req)
+	resp, err := cli.sliceClient.GetConflicts(ctx, req)
 	if err != nil {
 		commandFatalf("CONFLICT_LIST_FAILED", true, "", "Failed to list conflicts: %v", err)
 	}
@@ -118,8 +118,8 @@ func handleConflictResolve(ctx context.Context, cli *CLI, args []string) {
 		}
 	}
 
-	req := &adminv1.ResolveConflictRequest{FileId: fileID, PreferredSliceId: preferredSlice}
-	resp, err := cli.adminClient.ResolveConflict(ctx, req)
+	req := &slicev1.ResolveConflictRequest{FileId: fileID, PreferredSliceId: preferredSlice}
+	resp, err := cli.sliceClient.ResolveConflict(ctx, req)
 	if err != nil {
 		commandFatalf("CONFLICT_RESOLVE_FAILED", true, "", "Failed to resolve conflict: %v", err)
 	}
@@ -146,8 +146,8 @@ func handleConflictShow(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	fileID := fs.Arg(0)
-	req := &adminv1.ConflictsRequest{}
-	resp, err := cli.adminClient.GetConflicts(ctx, req)
+	req := &slicev1.ConflictsRequest{}
+	resp, err := cli.sliceClient.GetConflicts(ctx, req)
 	if err != nil {
 		commandFatalf("CONFLICT_SHOW_FAILED", true, "", "Failed to fetch conflicts: %v", err)
 	}

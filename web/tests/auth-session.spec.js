@@ -402,14 +402,6 @@ test.describe('Cookie-backed web auth', () => {
       primary_email: 'original@example.com',
       created_at: '2026-04-05T10:00:00Z',
     };
-    let organizations = [
-      {
-        id: 'org-1',
-        slug: 'acme',
-        name: 'Acme',
-        owner_user_id: username,
-      },
-    ];
     let deleted = false;
 
     await page.goto('/login');
@@ -449,37 +441,11 @@ test.describe('Cookie-backed web auth', () => {
         });
       }
     });
-    await page.route('**/v1/orgs', async (route) => {
-      if (route.request().method() === 'GET') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ organizations }),
-        });
-        return;
-      }
-      if (route.request().method() === 'POST') {
-        const payload = JSON.parse(route.request().postData() || '{}');
-        organizations = [...organizations, {
-          id: 'org-2',
-          slug: 'new-org',
-          name: payload.name,
-          owner_user_id: username,
-        }];
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify(organizations[organizations.length - 1]),
-        });
-      }
-    });
-
     await page.goto('/settings');
     await page.getByRole('button', { name: /open profile details/i }).click();
     await expect(page.getByTestId('profile-page')).toBeVisible();
     await expect(page.getByLabel(/^Name$/)).toHaveValue('Original Name');
     await expect(page.getByLabel(/^Primary email$/)).toHaveValue('original@example.com');
-    await expect(page.locator('.org-name', { hasText: 'Acme' })).toBeVisible();
 
     await page.getByLabel(/^Name$/).fill('Updated Name');
     await page.getByLabel(/^Primary email$/).fill('updated@example.com');

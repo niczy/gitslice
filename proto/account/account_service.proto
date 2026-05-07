@@ -168,6 +168,7 @@ service AccountService {
   rpc GetMe(GetMeRequest) returns (User) {
     option (google.api.http) = {
       get: "/v1/users/me"
+      additional_bindings { get: "/v1/me" }
     };
   }
 
@@ -201,119 +202,6 @@ service AccountService {
   rpc GetUser(GetUserRequest) returns (User) {
     option (google.api.http) = {
       get: "/v1/users/{user_id}"
-    };
-  }
-
-  // Organizations
-  rpc CreateOrganization(CreateOrganizationRequest) returns (Organization) {
-    option (google.api.http) = {
-      post: "/v1/orgs"
-      body: "*"
-    };
-  }
-
-  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse) {
-    option (google.api.http) = {
-      get: "/v1/orgs"
-    };
-  }
-
-  rpc GetOrganization(GetOrganizationRequest) returns (Organization) {
-    option (google.api.http) = {
-      get: "/v1/orgs/{org_id}"
-    };
-  }
-
-  rpc UpdateOrganization(UpdateOrganizationRequest) returns (Organization) {
-    option (google.api.http) = {
-      patch: "/v1/orgs/{org_id}"
-      body: "*"
-    };
-  }
-
-  rpc DeleteOrganization(DeleteOrganizationRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/v1/orgs/{org_id}"
-    };
-  }
-
-  // Memberships and teams
-  rpc CreateInvite(CreateInviteRequest) returns (Invite) {
-    option (google.api.http) = {
-      post: "/v1/orgs/{org_id}/invites"
-      body: "*"
-    };
-  }
-
-  rpc AcceptInvite(AcceptInviteRequest) returns (Invite) {
-    option (google.api.http) = {
-      post: "/v1/orgs/{org_id}/invites/{invite_id}/accept"
-      body: "*"
-    };
-  }
-
-  rpc DeclineInvite(DeclineInviteRequest) returns (Invite) {
-    option (google.api.http) = {
-      post: "/v1/orgs/{org_id}/invites/{invite_id}/decline"
-      body: "*"
-    };
-  }
-
-  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {
-    option (google.api.http) = {
-      get: "/v1/orgs/{org_id}/members"
-    };
-  }
-
-  rpc UpdateMember(UpdateMemberRequest) returns (Membership) {
-    option (google.api.http) = {
-      patch: "/v1/orgs/{org_id}/members/{member_id}"
-      body: "*"
-    };
-  }
-
-  rpc DeleteMember(DeleteMemberRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/v1/orgs/{org_id}/members/{member_id}"
-    };
-  }
-
-  rpc CreateTeam(CreateTeamRequest) returns (Team) {
-    option (google.api.http) = {
-      post: "/v1/orgs/{org_id}/teams"
-      body: "*"
-    };
-  }
-
-  rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse) {
-    option (google.api.http) = {
-      get: "/v1/orgs/{org_id}/teams"
-    };
-  }
-
-  rpc UpdateTeam(UpdateTeamRequest) returns (Team) {
-    option (google.api.http) = {
-      patch: "/v1/orgs/{org_id}/teams/{team_id}"
-      body: "*"
-    };
-  }
-
-  rpc DeleteTeam(DeleteTeamRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/v1/orgs/{org_id}/teams/{team_id}"
-    };
-  }
-
-  rpc AddTeamMember(AddTeamMemberRequest) returns (TeamMember) {
-    option (google.api.http) = {
-      post: "/v1/orgs/{org_id}/teams/{team_id}/members"
-      body: "*"
-    };
-  }
-
-  rpc DeleteTeamMember(DeleteTeamMemberRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/v1/orgs/{org_id}/teams/{team_id}/members/{member_id}"
     };
   }
 
@@ -580,7 +468,8 @@ message ActivityEvent {
 
 message AuthResponse {
   User user = 1;
-  repeated Organization organizations = 2;
+  reserved 2;
+  reserved "organizations";
   Session session = 3;
   string access_token = 4;
   string refresh_token = 5;
@@ -793,101 +682,6 @@ message DeleteMeRequest {}
 
 message GetUserRequest {
   string user_id = 1;
-}
-
-message CreateOrganizationRequest {
-  string slug = 1;
-  string name = 2;
-}
-
-message ListOrganizationsRequest {}
-
-message ListOrganizationsResponse {
-  repeated Organization organizations = 1;
-}
-
-message GetOrganizationRequest {
-  string org_id = 1;
-}
-
-message UpdateOrganizationRequest {
-  string org_id = 1;
-  string name = 2;
-}
-
-message DeleteOrganizationRequest {
-  string org_id = 1;
-}
-
-message CreateInviteRequest {
-  string org_id = 1;
-  string target_email = 2;
-  Role role = 3;
-}
-
-message AcceptInviteRequest {
-  string org_id = 1;
-  string invite_id = 2;
-}
-
-message DeclineInviteRequest {
-  string org_id = 1;
-  string invite_id = 2;
-}
-
-message ListMembersRequest {
-  string org_id = 1;
-}
-
-message ListMembersResponse {
-  repeated Membership members = 1;
-}
-
-message UpdateMemberRequest {
-  string org_id = 1;
-  string member_id = 2;
-  Role role = 3;
-}
-
-message DeleteMemberRequest {
-  string org_id = 1;
-  string member_id = 2;
-}
-
-message CreateTeamRequest {
-  string org_id = 1;
-  string name = 2;
-}
-
-message ListTeamsRequest {
-  string org_id = 1;
-}
-
-message ListTeamsResponse {
-  repeated Team teams = 1;
-}
-
-message UpdateTeamRequest {
-  string org_id = 1;
-  string team_id = 2;
-  string name = 3;
-}
-
-message DeleteTeamRequest {
-  string org_id = 1;
-  string team_id = 2;
-}
-
-message AddTeamMemberRequest {
-  string org_id = 1;
-  string team_id = 2;
-  string member_id = 3;
-}
-
-message DeleteTeamMemberRequest {
-  string org_id = 1;
-  string team_id = 2;
-  string member_id = 3;
 }
 
 message GetNodeByPathRequest {

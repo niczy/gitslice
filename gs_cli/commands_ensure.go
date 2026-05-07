@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	adminv1 "github.com/niczy/gitslice/proto/admin"
+	accountv1 "github.com/niczy/gitslice/proto/account"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc/codes"
@@ -40,11 +40,11 @@ func handleSliceEnsure(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 
-	meResp, err := cli.adminClient.Me(ctx, &adminv1.MeRequest{})
+	meResp, err := cli.accountClient.GetMe(ctx, &accountv1.GetMeRequest{})
 	if err != nil {
 		commandFatalf("SLICE_ENSURE_FAILED", true, "", "Failed to resolve current user: %v", err)
 	}
-	slug := ensureSliceSlug(meResp.GetUser().GetUsername(), sliceName)
+	slug := ensureSliceSlug(meResp.GetUsername(), sliceName)
 	if slugResp, err := cli.sliceClient.GetSliceBySlug(ctx, &slicev1.GetSliceBySlugRequest{Slug: slug}); err == nil {
 		if jsonEnabled {
 			writeJSONOutput(jsonSliceEnsureOutput{

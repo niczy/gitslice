@@ -284,7 +284,7 @@ func printConflictHelp() {
 func printImportHelp() {
 	fmt.Println("Usage: gs import <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  git        Import a git repository (local path or remote URL) commit-by-commit into the root slice")
+	fmt.Println("  git        Import a remote git repository into your home tree")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs import git https://github.com/org/repo.git")
 }
