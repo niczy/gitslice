@@ -2255,6 +2255,11 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		t.Fatalf("expected merge success, got %v", resp.GetStatus())
 	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	}
 
 	rootSlice, err := base.GetRootSlice(ctx)
 	if err != nil {
@@ -2275,6 +2280,78 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 	if !listEntriesContainPath(listResp.GetEntries(), "docs") {
 		t.Fatalf("expected root file tree to include promoted directory %q, got paths %#v", "docs", listEntryPaths(listResp.GetEntries()))
+	}
+}
+
+func TestMergeChangesetReturnsBeforePromotionMaterializesRoot(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	slice := &models.Slice{ID: "slice-async-promotion", Name: "slice-async-promotion", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	filePath := "async/file.txt"
+	contentHash := mustWriteSliceManifest(t, ctx, base, slice.ID, filePath, []byte("async\n"))
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("async\n")),
+		Hash:     contentHash,
+	}); err != nil {
+		t.Fatalf("failed to add slice file entry: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_async-promotion",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(base)
+	srv.promotionBatchWindow = 300 * time.Millisecond
+	start := time.Now()
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+	if elapsed := time.Since(start); elapsed >= 250*time.Millisecond {
+		t.Fatalf("expected merge to return before promotion batch window, took %s", elapsed)
+	}
+
+	rootSlice, err := base.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice: %v", err)
+	}
+	if containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected root materialization to lag immediately after merge")
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	}
+	rootSlice, err = base.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice after promotion: %v", err)
+	}
+	if !containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected root materialization after queue drain, got %#v", rootSlice.Files)
 	}
 }
 

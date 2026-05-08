@@ -2,9 +2,9 @@
 
 ## Problem Statement
 
-The current merge workflow treats home/root promotion as part of the
-user-visible merge operation. That gives strong read-after-merge behavior for
-materialized home/root views, but it also makes every merge pay for work that is
+The historical merge workflow treated home/root promotion as part of the
+user-visible merge operation. That gave strong read-after-merge behavior for
+materialized home/root views, but it also made every merge pay for work that was
 not needed to decide whether the merge is valid.
 
 In the recent Postgres benchmark, the average merge profile was roughly:
@@ -87,7 +87,7 @@ conflict authority.
 
 ### Fully synchronous promotion
 
-Current behavior:
+Legacy fully synchronous behavior:
 
 ```
 MergeChangeset
@@ -114,31 +114,42 @@ Costs:
 
 ### Async promotion
 
-Proposed behavior:
+Current request-time behavior:
 
 ```
 MergeChangeset
   -> validate conflicts
   -> mark source changeset merged
   -> append source slice commit
-  -> append durable promotion event
+  -> enqueue promotion work
   -> return success
 
 Promotion worker
-  -> read accepted promotion events
   -> update home/root materialized views in batches
 ```
+
+Config changes are the exception for now: changesets touching
+`.gitslice/config.yaml` wait for promotion before applying config because config
+sync reads the root file tree.
+
+Promotion is intentionally backpressured relative to foreground merge traffic:
+the in-process worker queue uses fewer concurrent promotion workers and larger
+batches so derived-view writes do not saturate the same Postgres pool used by
+`CreateSliceFromFolder`, `CreateChangeset`, and `MergeChangeset`.
 
 Advantages:
 
 - Merge latency tracks correctness work, not view materialization.
 - Promotions can be batched by home and path.
 - Workers can be tuned independently from request concurrency.
-- Retry/idempotency is easier because promotion consumes durable events.
+- Durable retry/idempotency can be added around a smaller worker boundary.
 
 Costs:
 
 - Home/root views become eventually consistent.
+- The current in-process queue is not durable; a process crash after merge
+  success but before queue drain can leave materialized views stale until a
+  reconciliation worker exists.
 - APIs that need a fully materialized home/root view need an explicit wait,
   freshness token, or promotion status check.
 - Promotion must be order-independent and idempotent, or stale jobs can
@@ -151,8 +162,11 @@ single authority and promotion uses monotonic guards.
 
 ## Required Safety Rule: Monotonic Per-Path Promotion
 
-Async promotion must not be "last worker wins." Queue execution order is not a
-valid correctness mechanism.
+Durable async promotion must not be "last worker wins." Queue execution order is
+not a valid correctness mechanism once promotion can be retried, distributed
+across processes, or replayed after a crash. The current first phase keeps
+home-scoped jobs on the same in-process FIFO shard, but that is a throughput
+step, not the final integrity model.
 
 Bad case without guards:
 
