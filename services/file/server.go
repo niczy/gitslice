@@ -617,6 +617,56 @@ func (s *fileServiceServer) mountedBackingHasSliceFile(ctx context.Context, back
 	return err == nil && len(paths) > 0
 }
 
+func (s *fileServiceServer) childrenIncludeLocalModifiedPath(ctx context.Context, sliceID, parentPath string, children []*models.DirectoryEntry) bool {
+	if len(children) == 0 {
+		return false
+	}
+	metadata, err := s.storage.GetSliceMetadata(ctx, sliceID)
+	if err != nil || metadata == nil {
+		return false
+	}
+
+	childPaths := make(map[string]struct{}, len(children))
+	for _, child := range children {
+		if child == nil {
+			continue
+		}
+		childPath := common.CleanRelativePath(child.Path)
+		if childPath == "" {
+			continue
+		}
+		childPaths[childPath] = struct{}{}
+	}
+
+	parentPath = common.CleanRelativePath(parentPath)
+	for _, rawPath := range metadata.ModifiedFiles {
+		modifiedPath := common.CleanRelativePath(rawPath)
+		if modifiedPath == "" {
+			continue
+		}
+		if _, ok := childPaths[modifiedPath]; ok {
+			return true
+		}
+		if parentPath != "" {
+			prefix := parentPath + "/"
+			if !strings.HasPrefix(modifiedPath, prefix) {
+				continue
+			}
+			remaining := strings.TrimPrefix(modifiedPath, prefix)
+			name := strings.SplitN(remaining, "/", 2)[0]
+			if _, ok := childPaths[path.Join(parentPath, name)]; ok {
+				return true
+			}
+			continue
+		}
+		name := strings.SplitN(modifiedPath, "/", 2)[0]
+		if _, ok := childPaths[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *fileServiceServer) ListEntries(ctx context.Context, req *filev1.ListEntriesRequest) (*filev1.ListEntriesResponse, error) {
 	// Resolve version from oneof
 	sliceID, resolvedCommit, err := s.resolveVersion(ctx, req.GetCommitHash(), req.GetSliceVersion())
@@ -739,6 +789,15 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		storedParentPath := common.SliceStoredPath(slice, normalizedPath)
 		if storedParentPath == "" {
 			return nil, status.Error(codes.NotFound, "path not found")
+		}
+		if parentEntry, err := s.storage.GetEntryByPath(ctx, sliceID, storedParentPath); err == nil && parentEntry != nil {
+			if parentEntry.Type == "file" {
+				return nil, status.Error(codes.FailedPrecondition, "path refers to a file")
+			}
+			children, err := s.storage.ListEntries(ctx, sliceID, parentEntry.ID)
+			if err == nil && s.childrenIncludeLocalModifiedPath(ctx, sliceID, storedParentPath, children) {
+				return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
+			}
 		}
 		if parentEntry, err := s.storage.GetEntryByPath(ctx, backingSliceID, storedParentPath); err == nil && parentEntry != nil {
 			if parentEntry.Type == "file" {

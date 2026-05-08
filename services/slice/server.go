@@ -3678,6 +3678,15 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 			}
 		}
 
+		for _, job := range batch {
+			if homeslice.IsHomeSliceID(job.SliceID) {
+				continue
+			}
+			if err := s.syncPromotionJobToRoot(ctx, rootSliceID, job); err != nil {
+				return err
+			}
+		}
+
 		files := collectUniquePromotionFiles(batch)
 		for _, fileID := range files {
 			if err := s.storage.AddFileToSlice(ctx, fileID, rootSliceID); err != nil {
@@ -3722,6 +3731,65 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 
 		return nil
 	})
+}
+
+func (s *sliceServiceServer) syncPromotionJobToRoot(ctx context.Context, rootSliceID string, job rootpromote.Job) error {
+	sliceID := strings.TrimSpace(job.SliceID)
+	if sliceID == "" || strings.TrimSpace(rootSliceID) == "" {
+		return nil
+	}
+	if _, err := s.storage.GetSlice(ctx, sliceID); err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed to load promotion source slice %s: %w", sliceID, err)
+	}
+
+	for _, rawPath := range normalizeModifiedFiles(job.Files) {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+
+		content, err := storage.ReadSliceFileContent(ctx, s.storage, sliceID, filePath)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				continue
+			}
+			return fmt.Errorf("failed to read promoted file %s from %s: %w", filePath, sliceID, err)
+		}
+
+		var executable bool
+		var symlinkTarget string
+		if entry, entryErr := s.storage.GetEntryByPath(ctx, sliceID, filePath); entryErr == nil && entry != nil {
+			executable = entry.Executable
+			symlinkTarget = entry.SymlinkTarget
+		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
+			return fmt.Errorf("failed to load promoted entry metadata for %s: %w", filePath, entryErr)
+		}
+
+		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, s.storage, rootSliceID, filePath, append([]byte(nil), content.Content...), executable, symlinkTarget)
+		if err != nil {
+			return fmt.Errorf("failed to write promoted root manifest for %s: %w", filePath, err)
+		}
+		if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+			ID:            common.GenerateEntryID(rootSliceID, filePath),
+			Path:          filePath,
+			Type:          "file",
+			ParentID:      rootSliceID,
+			Size:          manifest.TotalSize,
+			Hash:          manifest.Hash,
+			Executable:    manifest.Executable,
+			SymlinkTarget: manifest.SymlinkTarget,
+		}); err != nil {
+			return fmt.Errorf("failed to materialize promoted root entry for %s: %w", filePath, err)
+		}
+		if err := s.storage.AddFileToSlice(ctx, filePath, rootSliceID); err != nil {
+			return fmt.Errorf("failed to add promoted file %s to root slice: %w", filePath, err)
+		}
+	}
+
+	return nil
 }
 
 func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
