@@ -42,6 +42,7 @@ const (
 
 type Handler struct {
 	st                    storage.Storage
+	promotionStorage      storage.Storage
 	cacheDir              string
 	mu                    sync.Mutex
 	promotionQueueMu      sync.Mutex
@@ -63,16 +64,31 @@ type route struct {
 }
 
 func NewHandler(st storage.Storage, cacheDir string) *Handler {
+	return NewHandlerWithPromotionStorage(st, st, cacheDir)
+}
+
+func NewHandlerWithPromotionStorage(st storage.Storage, promotionSt storage.Storage, cacheDir string) *Handler {
 	cacheDir = strings.TrimSpace(cacheDir)
 	if cacheDir == "" {
 		cacheDir = filepath.Join(os.TempDir(), "gitslice-git-cache")
 	}
+	if promotionSt == nil {
+		promotionSt = st
+	}
 	return &Handler{
 		st:                    st,
+		promotionStorage:      promotionSt,
 		cacheDir:              cacheDir,
 		promotionBatchWindow:  rootpromote.DefaultBatchWindow,
 		promotionBatchMaxSize: rootpromote.DefaultBatchMaxSize,
 	}
+}
+
+func (h *Handler) promotionStore() storage.Storage {
+	if h.promotionStorage != nil {
+		return h.promotionStorage
+	}
+	return h.st
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

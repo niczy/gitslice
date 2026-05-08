@@ -3322,6 +3322,47 @@ func TestRootPromotionQueueBatchesSameSlice(t *testing.T) {
 	}
 }
 
+func TestRootPromotionUsesPromotionStorage(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	foregroundStorage := &promotionWriteCounter{
+		Storage:      base,
+		rootAddCalls: make(map[string]int),
+	}
+	promotionStorage := &promotionWriteCounter{
+		Storage:      base,
+		rootAddCalls: make(map[string]int),
+	}
+	srv := newSliceServiceServerWithPromotionStorage(foregroundStorage, promotionStorage)
+
+	if err := srv.promoteSlice(ctx, "slice-promotion-pool", "commit-promotion-pool", []string{"pool.txt"}, time.Now()); err != nil {
+		t.Fatalf("promoteSlice failed: %v", err)
+	}
+
+	if got := foregroundStorage.updateGlobalStateCalls; got != 0 {
+		t.Fatalf("expected foreground storage to avoid global state writes, got %d", got)
+	}
+	if got := foregroundStorage.updateRootMetadataCalls; got != 0 {
+		t.Fatalf("expected foreground storage to avoid root metadata writes, got %d", got)
+	}
+	if got := foregroundStorage.rootAddCalls["pool.txt"]; got != 0 {
+		t.Fatalf("expected foreground storage to avoid root file writes, got %d", got)
+	}
+	if got := promotionStorage.updateGlobalStateCalls; got != 1 {
+		t.Fatalf("expected promotion storage to update global state once, got %d", got)
+	}
+	if got := promotionStorage.updateRootMetadataCalls; got != 1 {
+		t.Fatalf("expected promotion storage to update root metadata once, got %d", got)
+	}
+	if got := promotionStorage.rootAddCalls["pool.txt"]; got != 1 {
+		t.Fatalf("expected promotion storage to add root file once, got %d", got)
+	}
+}
+
 func TestRootPromotionShardKeyUsesHomeScope(t *testing.T) {
 	tests := []struct {
 		name    string

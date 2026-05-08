@@ -40,7 +40,7 @@ func main() {
 	logPostgresRuntimeConfig(cfg)
 
 	ctx := context.Background()
-	st, closeStorage, err := initStorage(ctx, cfg)
+	st, promotionSt, closeStorage, err := initStorage(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage backend: %v", err)
 	}
@@ -54,9 +54,9 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	sliceservice.RegisterGRPCServer(grpcServer, st)
+	sliceservice.RegisterGRPCServerWithPromotionStorage(grpcServer, st, promotionSt)
 	fileservice.RegisterGRPCServer(grpcServer, st)
-	filesystemservice.RegisterGRPCServer(grpcServer, st)
+	filesystemservice.RegisterGRPCServerWithPromotionStorage(grpcServer, st, promotionSt)
 	adminservice.RegisterGRPCServer(grpcServer, st)
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
@@ -158,7 +158,7 @@ func main() {
 
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
-	httpMux.Handle("/git/", gitlayer.NewHandler(st, ""))
+	httpMux.Handle("/git/", gitlayer.NewHandlerWithPromotionStorage(st, promotionSt, ""))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.
 	httpMux.Handle("/", gateway.WithNoBodyWriteGuard(gateway.WithCORS(gateway.SlicePathCompatHandler(gatewayMux))))
@@ -184,17 +184,18 @@ func buildCombinedCoreHandler(grpcServer *grpc.Server, httpMux http.Handler) htt
 	}), &http2.Server{})
 }
 
-func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func(), error) {
+func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, storage.Storage, func(), error) {
 	switch strings.ToLower(cfg.StorageType) {
 	case "memory":
-		return storage.NewInMemoryStorage(), func() {}, nil
+		st := storage.NewInMemoryStorage()
+		return st, st, func() {}, nil
 	case "postgres":
 		if cfg.PostgresDSN == "" {
-			return nil, nil, fmt.Errorf("POSTGRES_DSN is required for STORAGE_TYPE=postgres")
+			return nil, nil, nil, fmt.Errorf("POSTGRES_DSN is required for STORAGE_TYPE=postgres")
 		}
 		objectStore, closeObjectStore, err := storage.BuildObjectStore(ctx, storage.ObjectStoreConfigFromAppConfig(cfg))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		st, err := storage.NewPostgresNativeStorageWithOptions(ctx, cfg.PostgresDSN, objectStore, "core", storage.PostgresNativeStorageOptions{
@@ -204,15 +205,34 @@ func initStorage(ctx context.Context, cfg *config.Config) (storage.Storage, func
 		})
 		if err != nil {
 			closeObjectStore()
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		promotionSt := storage.Storage(st)
+		if cfg.PostgresPromotionMaxConns > 0 {
+			promo, err := storage.NewPostgresNativeStorageWithOptions(ctx, cfg.PostgresDSN, objectStore, "core", storage.PostgresNativeStorageOptions{
+				MaxConns:        cfg.PostgresPromotionMaxConns,
+				MaxConnLifetime: cfg.PostgresMaxConnLifetime,
+			})
+			if err != nil {
+				_ = st.Close()
+				closeObjectStore()
+				return nil, nil, nil, fmt.Errorf("initialize promotion postgres storage: %w", err)
+			}
+			promotionSt = promo
+			log.Printf("Using separate PostgreSQL promotion pool max_conns=%d", cfg.PostgresPromotionMaxConns)
 		}
 		log.Printf("Using native PostgreSQL storage")
-		return st, func() {
+		return st, promotionSt, func() {
+			if promotionSt != st {
+				if closer, ok := promotionSt.(interface{ Close() error }); ok {
+					_ = closer.Close()
+				}
+			}
 			_ = st.Close()
 			closeObjectStore()
 		}, nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported STORAGE_TYPE: %s", cfg.StorageType)
+		return nil, nil, nil, fmt.Errorf("unsupported STORAGE_TYPE: %s", cfg.StorageType)
 	}
 }
 
@@ -237,14 +257,19 @@ func logPostgresRuntimeConfig(cfg *config.Config) {
 	if cfg.PostgresMaxConnLifetime > 0 {
 		maxConnLifetime = cfg.PostgresMaxConnLifetime.String()
 	}
+	promotionMaxConns := "shared"
+	if cfg.PostgresPromotionMaxConns > 0 {
+		promotionMaxConns = fmt.Sprintf("%d", cfg.PostgresPromotionMaxConns)
+	}
 	log.Printf(
-		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s max_conn_lifetime=%s deploy_env=%s",
+		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s promotion_max_conns=%s max_conn_lifetime=%s deploy_env=%s",
 		summary.Host,
 		summary.Database,
 		summary.Remote,
 		summary.UsesTLS,
 		maxConns,
 		minConns,
+		promotionMaxConns,
 		maxConnLifetime,
 		strings.TrimSpace(cfg.DeployEnv),
 	)

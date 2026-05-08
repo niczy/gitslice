@@ -104,7 +104,8 @@ BENCHMARK_POSTGRES_DSN=postgres://... \
 ```
 
 The CSV includes throughput, successful merges, conflicts, errors,
-p50/p95/p99 latencies, foreground pool wait counters, and promotion drain time.
+p50/p95/p99 latencies, foreground and promotion pool wait counters, and
+promotion drain time.
 
 ### Recent benchmark run (2026-02-19)
 
@@ -142,6 +143,7 @@ Both values can be overridden via environment variables:
 | `BENCHMARK_STORAGE` | `memory` | Storage backend: `memory` or `postgres` |
 | `BENCHMARK_POSTGRES_DSN` | empty | Postgres DSN when `BENCHMARK_STORAGE=postgres`; falls back to `TEST_POSTGRES_DSN` |
 | `BENCHMARK_POSTGRES_MAX_CONNS` | pgx default | Postgres pool max connections for benchmark storage |
+| `BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS` | empty | Optional separate Postgres pool max connections for async promotion workers |
 | `BENCHMARK_HOME_SHARDS` | `1` | Spread users across N home roots for home-scoped promotion tests |
 
 When using Postgres storage, `TestSimulate100kUsers` also logs pgx pool
