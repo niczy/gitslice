@@ -146,7 +146,7 @@ func LoadConfig() (*Config, error) {
 		PostgresPromotionMaxConns: postgresPromotionMaxConns,
 		MergeEventPromotionEnabled: getEnvBool(
 			"MERGE_EVENT_PROMOTION_ENABLED",
-			false,
+			true,
 		),
 		MergeEventPromotionWorkers:      getEnvInt("MERGE_EVENT_PROMOTION_WORKERS", 1),
 		MergeEventPromotionBatchSize:    getEnvInt("MERGE_EVENT_PROMOTION_BATCH_SIZE", 256),

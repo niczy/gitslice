@@ -71,6 +71,34 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 }
 
+func TestLoadConfigEnablesMergeEventPromotionByDefault(t *testing.T) {
+	t.Setenv("MERGE_EVENT_PROMOTION_ENABLED", "")
+	t.Setenv("MERGE_EVENT_PROMOTION_WORKERS", "")
+	t.Setenv("MERGE_EVENT_PROMOTION_BATCH_SIZE", "")
+	t.Setenv("MERGE_EVENT_PROMOTION_SHARDS", "")
+	t.Setenv("MERGE_EVENT_PROMOTION_POLL_INTERVAL", "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if !cfg.MergeEventPromotionEnabled {
+		t.Fatalf("expected merge event promotion to default to enabled")
+	}
+	if cfg.MergeEventPromotionWorkers != 1 {
+		t.Fatalf("expected default merge event promotion workers 1, got %d", cfg.MergeEventPromotionWorkers)
+	}
+	if cfg.MergeEventPromotionBatchSize != 256 {
+		t.Fatalf("expected default merge event promotion batch size 256, got %d", cfg.MergeEventPromotionBatchSize)
+	}
+	if cfg.MergeEventPromotionShardCount != 1024 {
+		t.Fatalf("expected default merge event promotion shards 1024, got %d", cfg.MergeEventPromotionShardCount)
+	}
+	if cfg.MergeEventPromotionPollInterval != 250*time.Millisecond {
+		t.Fatalf("expected default merge event promotion poll interval 250ms, got %s", cfg.MergeEventPromotionPollInterval)
+	}
+}
+
 func TestCoreServiceAddrDefaultsToWildcard(t *testing.T) {
 	cfg := &Config{CoreServicePort: "50051"}
 

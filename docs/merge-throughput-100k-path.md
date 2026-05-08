@@ -911,7 +911,7 @@ Scope:
 Feature flag:
 
 ```text
-MERGE_EVENT_PROMOTION_ENABLED=false
+MERGE_EVENT_PROMOTION_ENABLED=true
 MERGE_EVENT_PROMOTION_WORKERS=1
 MERGE_EVENT_PROMOTION_BATCH_SIZE=256
 MERGE_EVENT_PROMOTION_SHARDS=1024
@@ -941,6 +941,15 @@ Scope:
 - Remove dependence on the in-process queue for normal promotion.
 - Keep synchronous wait behavior only for paths that still require it, such as
   config changes, until those reads are redesigned.
+
+Runtime default:
+
+```text
+MERGE_EVENT_PROMOTION_ENABLED=true
+```
+
+Set `MERGE_EVENT_PROMOTION_ENABLED=false` to fall back to the in-process queue
+while investigating projection lag or worker issues.
 
 Validation:
 
