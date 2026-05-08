@@ -58,6 +58,7 @@ servers/cloudflare_control_plane/.wrangler/
 
 # Logs
 logs/
+benchmark_suite/results/
 .restart_all.lock
 
 # Environment files (may contain credentials)
