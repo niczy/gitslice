@@ -858,6 +858,16 @@ merge_events (...)
 projection_offsets (...)
 ```
 
+Storage API shape:
+
+```text
+AppendMergeEvent
+GetMergeEventByChangeset
+ListMergeEvents(shard_id, after_seq, limit)
+UpdateProjectionOffset
+GetProjectionOffset
+```
+
 Validation:
 
 - Storage tests cover insert, uniqueness, shard ordering, range reads, and

@@ -22,11 +22,15 @@ var (
 	ErrAgentSessionNotFound   = errors.New("agent session not found")
 	ErrAgentSessionConflict   = errors.New("agent session conflict")
 	ErrSearchArtifactNotReady = errors.New("search artifact not ready")
+	ErrMergeEventNotFound     = errors.New("merge event not found")
+	ErrMergeEventConflict     = errors.New("merge event conflict")
 )
 
 const (
 	defaultSliceCommitListLimit = 100
 	maxSliceCommitListLimit     = 10000
+	defaultMergeEventListLimit  = 100
+	maxMergeEventListLimit      = 10000
 )
 
 // RootPromotionJob describes a slice commit whose changed files should be
@@ -38,12 +42,31 @@ type RootPromotionJob struct {
 	CommitTime time.Time
 }
 
+// MergeEventStore persists accepted merge facts and projection offsets.
+type MergeEventStore interface {
+	AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error
+	GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error)
+	ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error)
+	UpdateProjectionOffset(ctx context.Context, offset *models.ProjectionOffset) error
+	GetProjectionOffset(ctx context.Context, projectionName string, shardID int32) (*models.ProjectionOffset, error)
+}
+
 func normalizeSliceCommitLimit(limit int) int {
 	if limit <= 0 {
 		return defaultSliceCommitListLimit
 	}
 	if limit > maxSliceCommitListLimit {
 		return maxSliceCommitListLimit
+	}
+	return limit
+}
+
+func normalizeMergeEventListLimit(limit int) int {
+	if limit <= 0 {
+		return defaultMergeEventListLimit
+	}
+	if limit > maxMergeEventListLimit {
+		return maxMergeEventListLimit
 	}
 	return limit
 }

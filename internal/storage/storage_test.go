@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -74,6 +75,145 @@ func TestStorageCompliance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runStorageContract(ctx, t, tc.factory(t))
 		})
+	}
+}
+
+func TestMergeEventStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			store, ok := tc.factory(t).(MergeEventStore)
+			if !ok {
+				t.Fatalf("storage implementation does not implement MergeEventStore")
+			}
+			runMergeEventStoreContract(ctx, t, store)
+		})
+	}
+}
+
+func runMergeEventStoreContract(ctx context.Context, t *testing.T, store MergeEventStore) {
+	t.Helper()
+
+	missing, err := store.GetProjectionOffset(ctx, "home-tree", 1)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset missing failed: %v", err)
+	}
+	if missing.MergeSeq != 0 {
+		t.Fatalf("expected missing projection offset seq 0, got %d", missing.MergeSeq)
+	}
+
+	event2 := sampleMergeEvent("home-alice", 1, 2, "evt-2", "chg-2")
+	if err := store.AppendMergeEvent(ctx, event2); err != nil {
+		t.Fatalf("AppendMergeEvent seq2 failed: %v", err)
+	}
+	event1 := sampleMergeEvent("home-alice", 1, 1, "evt-1", "chg-1")
+	if err := store.AppendMergeEvent(ctx, event1); err != nil {
+		t.Fatalf("AppendMergeEvent seq1 failed: %v", err)
+	}
+	otherShard := sampleMergeEvent("home-bob", 2, 1, "evt-shard-2", "chg-shard-2")
+	if err := store.AppendMergeEvent(ctx, otherShard); err != nil {
+		t.Fatalf("AppendMergeEvent other shard failed: %v", err)
+	}
+
+	fetched, err := store.GetMergeEventByChangeset(ctx, "chg-1")
+	if err != nil {
+		t.Fatalf("GetMergeEventByChangeset failed: %v", err)
+	}
+	if fetched.EventID != "evt-1" || fetched.MergeSeq != 1 || len(fetched.PathUpdates) != 1 {
+		t.Fatalf("unexpected fetched event: %#v", fetched)
+	}
+	if fetched.PathUpdates[0].Path != "alice/app/main.go" || fetched.PathUpdates[0].NewVersion != 2 {
+		t.Fatalf("unexpected path update: %#v", fetched.PathUpdates[0])
+	}
+	if fetched.CreatedAt.IsZero() {
+		t.Fatalf("expected CreatedAt to be populated")
+	}
+
+	listed, err := store.ListMergeEvents(ctx, 1, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMergeEvents failed: %v", err)
+	}
+	if len(listed) != 2 || listed[0].MergeSeq != 1 || listed[1].MergeSeq != 2 {
+		t.Fatalf("expected shard events in sequence order, got %#v", listed)
+	}
+	afterFirst, err := store.ListMergeEvents(ctx, 1, 1, 10)
+	if err != nil {
+		t.Fatalf("ListMergeEvents after seq failed: %v", err)
+	}
+	if len(afterFirst) != 1 || afterFirst[0].MergeSeq != 2 {
+		t.Fatalf("expected one event after seq 1, got %#v", afterFirst)
+	}
+	limited, err := store.ListMergeEvents(ctx, 1, 0, 1)
+	if err != nil {
+		t.Fatalf("ListMergeEvents limit failed: %v", err)
+	}
+	if len(limited) != 1 || limited[0].MergeSeq != 1 {
+		t.Fatalf("expected limited first event, got %#v", limited)
+	}
+	shardTwo, err := store.ListMergeEvents(ctx, 2, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMergeEvents shard 2 failed: %v", err)
+	}
+	if len(shardTwo) != 1 || shardTwo[0].ChangesetID != "chg-shard-2" {
+		t.Fatalf("expected shard isolation, got %#v", shardTwo)
+	}
+
+	duplicateChangeset := sampleMergeEvent("home-alice", 1, 3, "evt-3", "chg-1")
+	if err := store.AppendMergeEvent(ctx, duplicateChangeset); !errors.Is(err, ErrMergeEventConflict) {
+		t.Fatalf("expected duplicate changeset conflict, got %v", err)
+	}
+	duplicateSeq := sampleMergeEvent("home-alice", 1, 1, "evt-duplicate-seq", "chg-duplicate-seq")
+	if err := store.AppendMergeEvent(ctx, duplicateSeq); !errors.Is(err, ErrMergeEventConflict) {
+		t.Fatalf("expected duplicate shard sequence conflict, got %v", err)
+	}
+
+	if err := store.UpdateProjectionOffset(ctx, &models.ProjectionOffset{ProjectionName: "home-tree", ShardID: 1, MergeSeq: 2}); err != nil {
+		t.Fatalf("UpdateProjectionOffset seq2 failed: %v", err)
+	}
+	if err := store.UpdateProjectionOffset(ctx, &models.ProjectionOffset{ProjectionName: "home-tree", ShardID: 1, MergeSeq: 1}); err != nil {
+		t.Fatalf("UpdateProjectionOffset stale seq failed: %v", err)
+	}
+	offset, err := store.GetProjectionOffset(ctx, "home-tree", 1)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset failed: %v", err)
+	}
+	if offset.MergeSeq != 2 {
+		t.Fatalf("expected stale offset update to be ignored, got %d", offset.MergeSeq)
+	}
+	if err := store.UpdateProjectionOffset(ctx, &models.ProjectionOffset{ProjectionName: "home-tree", ShardID: 1, MergeSeq: 3}); err != nil {
+		t.Fatalf("UpdateProjectionOffset seq3 failed: %v", err)
+	}
+	offset, err = store.GetProjectionOffset(ctx, "home-tree", 1)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset after seq3 failed: %v", err)
+	}
+	if offset.MergeSeq != 3 {
+		t.Fatalf("expected offset seq 3, got %d", offset.MergeSeq)
+	}
+}
+
+func sampleMergeEvent(homeID string, shardID int32, mergeSeq int64, eventID, changesetID string) *models.MergeEvent {
+	return &models.MergeEvent{
+		HomeID:           homeID,
+		ShardID:          shardID,
+		MergeSeq:         mergeSeq,
+		EventID:          eventID,
+		ChangesetID:      changesetID,
+		SourceSliceID:    "sl-source",
+		SourceCommitHash: fmt.Sprintf("commit-%d", mergeSeq),
+		Author:           "alice",
+		Message:          "merge event test",
+		TouchedPaths:     []string{"alice/app/main.go"},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             "alice/app/main.go",
+			BaseVersion:      mergeSeq,
+			NewVersion:       mergeSeq + 1,
+			ContentHash:      fmt.Sprintf("sha256:content-%d", mergeSeq),
+			ManifestHash:     fmt.Sprintf("sha256:manifest-%d", mergeSeq),
+			SourceSliceID:    "sl-source",
+			SourceCommitHash: fmt.Sprintf("commit-%d", mergeSeq),
+		}},
 	}
 }
 
