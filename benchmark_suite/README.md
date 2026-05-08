@@ -72,6 +72,40 @@ Integrity OK: all 1000 sampled users passed
 go test -v -timeout 600s ./benchmark_suite/
 ```
 
+### Postgres worker/connection matrix
+
+The matrix runner executes `TestSimulate100kUsers` against Postgres across
+worker, connection-pool, and home-shard combinations. It writes one raw log per
+run plus a CSV summary under `benchmark_suite/results/`.
+
+```bash
+BENCHMARK_POSTGRES_DSN=postgres://... \
+  make benchmark-postgres-matrix
+```
+
+Default matrix:
+
+| Variable | Values |
+|---|---|
+| `BENCHMARK_MATRIX_WORKERS` | `128 256 512` |
+| `BENCHMARK_MATRIX_MAX_CONNS` | `64 96 128` |
+| `BENCHMARK_MATRIX_HOME_SHARDS` | `64 256` |
+
+Useful overrides:
+
+```bash
+BENCHMARK_MATRIX_USERS=5000 \
+BENCHMARK_MATRIX_WORKERS="128 256" \
+BENCHMARK_MATRIX_MAX_CONNS="64 96" \
+BENCHMARK_MATRIX_HOME_SHARDS="64" \
+BENCHMARK_MATRIX_TIMEOUT=900s \
+BENCHMARK_POSTGRES_DSN=postgres://... \
+  ./benchmark_suite/run_postgres_matrix.sh
+```
+
+The CSV includes throughput, successful merges, conflicts, errors,
+p50/p95/p99 latencies, foreground pool wait counters, and promotion drain time.
+
 ### Recent benchmark run (2026-02-19)
 
 Command:

@@ -1,4 +1,4 @@
-.PHONY: install proto build build-core build-cli start-servers start-servers-memory start-servers-postgres start-servers-postgres-file start-servers-postgres-r2 restart-servers restart-servers-memory restart-servers-postgres restart-servers-postgres-file restart-servers-postgres-r2 stop-servers dev-status test test-benchmark clean install_gs web-install web-build web-test-e2e setup-googleapis
+.PHONY: install proto build build-core build-cli start-servers start-servers-memory start-servers-postgres start-servers-postgres-file start-servers-postgres-r2 restart-servers restart-servers-memory restart-servers-postgres restart-servers-postgres-file restart-servers-postgres-r2 stop-servers dev-status test test-benchmark benchmark-postgres-matrix clean install_gs web-install web-build web-test-e2e setup-googleapis
 
 GOPATH := $(shell go env GOPATH)
 GOBIN := $(GOPATH)/bin
@@ -102,6 +102,9 @@ test: install proto
 
 test-benchmark: install proto
 	go test ./benchmark_suite
+
+benchmark-postgres-matrix:
+	./benchmark_suite/run_postgres_matrix.sh
 
 clean:
 	rm -f core_server slice_service_server admin_service_server gateway_service_server bin/gs

@@ -789,6 +789,16 @@ BENCHMARK_POSTGRES_MAX_CONNS: 64, 96, 128
 BENCHMARK_HOME_SHARDS:        64, 256
 ```
 
+The local runner for this matrix is:
+
+```bash
+BENCHMARK_POSTGRES_DSN=postgres://... make benchmark-postgres-matrix
+```
+
+It writes raw logs plus `results.csv` under `benchmark_suite/results/` by
+default. `BENCHMARK_MATRIX_*` variables can narrow or expand the matrix without
+changing benchmark code.
+
 Validation:
 
 - Matrix can be run locally against the benchmark Postgres DSN.
