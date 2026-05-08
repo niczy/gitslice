@@ -82,10 +82,10 @@ func TestMain(m *testing.M) {
 func seedBenchmarkRootFolders(ctx context.Context, st storage.Storage) error {
 	for _, folder := range []string{"bench", "cc", "conflict", "fsread", "hotfile", "integrity"} {
 		seedPath := fmt.Sprintf("%s/.seed", folder)
-		if _, err := storage.WriteSliceFileManifest(ctx, st, "root_slice", seedPath, []byte("seed\n")); err != nil {
+		if _, err := storage.WriteSliceFileManifest(ctx, st, "root", seedPath, []byte("seed\n")); err != nil {
 			return err
 		}
-		if err := st.AddFileToSlice(ctx, seedPath, "root_slice"); err != nil {
+		if err := st.AddFileToSlice(ctx, seedPath, "root"); err != nil {
 			return err
 		}
 	}

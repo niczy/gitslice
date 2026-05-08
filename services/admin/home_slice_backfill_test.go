@@ -81,11 +81,11 @@ func TestBackfillHomeSlicesCopiesExistingRootSubtree(t *testing.T) {
 		t.Fatalf("expected one result, got %#v", resp)
 	}
 	result := resp.GetResults()[0]
-	if result.GetHomeSliceId() != "home.legacyuser" || result.GetFilesCopied() != 1 {
+	if result.GetHomeSliceId() != "home_legacyuser" || result.GetFilesCopied() != 1 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 
-	copied, err := storage.ReadSliceFileContent(ctx, st, "home.legacyuser", filePath)
+	copied, err := storage.ReadSliceFileContent(ctx, st, "home_legacyuser", filePath)
 	if err != nil {
 		t.Fatalf("ReadSliceFileContent failed: %v", err)
 	}

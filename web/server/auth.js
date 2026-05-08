@@ -1242,7 +1242,7 @@ export function renderDevicePage({ userCode, startupError, authProvider }) {
       #status.error { color: var(--error); }
       #status.success { color: var(--success); }
       #sign-in {
-        display: none;
+        display: inline-flex;
       }
       body[data-startup-error="1"] #authorize {
         opacity: 0.6;
@@ -1256,7 +1256,7 @@ export function renderDevicePage({ userCode, startupError, authProvider }) {
       <p data-testid="device-page-copy">Approve a waiting CLI login using your current web session.</p>
       <label for="user-code">Device code</label>
       <input id="user-code" data-testid="device-user-code" name="user_code" value="${safeUserCode}" placeholder="ABCD-1234" autocomplete="one-time-code" />
-      <div id="session-state" data-testid="device-session-state">Checking your sign-in state…</div>
+      <div id="session-state" data-testid="device-session-state">Sign in to approve this device.</div>
       <div class="row">
         <button id="authorize" data-testid="device-authorize" class="primary" type="button">Authorize device</button>
         <a id="sign-in" data-testid="device-sign-in" class="button secondary" href="#">Continue to sign in</a>

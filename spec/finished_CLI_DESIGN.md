@@ -28,7 +28,7 @@ go build -o gs_cli ./gs_cli/
 ### Slice Commands
 
 ```bash
-gs slice checkout root_slice --commit HEAD
+gs slice checkout root --commit HEAD
 gs slice clone payments_slice --commit HEAD
 ```
 
@@ -38,9 +38,9 @@ gs slice clone payments_slice --commit HEAD
 
 ```bash
 gs changeset create --message "Add feature" --files foo.go,bar.go
-gs changeset review cs-123
-gs changeset merge cs-123
-gs changeset rebase cs-123
+gs changeset review chg_123
+gs changeset merge chg_123
+gs changeset rebase chg_123
 gs changeset list --limit 20 --status pending
 ```
 
@@ -69,7 +69,7 @@ gs log payments_slice
 
 ```bash
 gs root
-gs fork payments_slice ./folder --parent root_slice --description "Forked slice"
+gs fork payments_slice ./folder --parent root --description "Forked slice"
 ```
 
 ---

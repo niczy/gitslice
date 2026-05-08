@@ -44,7 +44,7 @@ test.describe('Cookie-backed web auth', () => {
     await expect(page.getByTestId('topbar-settings')).toHaveCount(0);
     await expect(page.getByTestId('slice-home-page')).toBeVisible();
     await page.getByTestId('slice-home-row').first().click();
-    await expect(page).toHaveURL(/\/slices\/home\.webtester1/);
+    await expect(page).toHaveURL(/\/slices\/webtester1/);
     await expect(page.getByTestId('slice-detail-nav')).toContainText(/webtester1/i);
     await expect(page.getByRole('button', { name: /\+ Folder/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /\+ File/i })).toHaveCount(0);

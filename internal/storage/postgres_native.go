@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/niczy/gitslice/internal/auth"
+	"github.com/niczy/gitslice/internal/ids"
 	"github.com/niczy/gitslice/internal/models"
 )
 
@@ -808,7 +809,7 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 		return err
 	}
 
-	initialCommitHash := fmt.Sprintf("init-%s", slice.ID)
+	initialCommitHash := ids.GenerateInitialCommitID(slice.ID)
 	_, err = s.tx.Exec(ctx, `
 		INSERT INTO slice_metadata (slice_id, head_commit_hash, modified_files, last_modified, modified_files_count)
 		VALUES ($1, $2, '[]', $3, 0)
@@ -871,7 +872,7 @@ func (s *postgresNativeTxView) InitializeRootSlice(ctx context.Context) error {
 	}
 
 	rootSlice := &models.Slice{
-		ID:          "root_slice",
+		ID:          ids.RootSliceID,
 		Name:        "Root Slice",
 		Description: "The root slice containing all files",
 		Visibility:  models.VisibilityPrivate,
@@ -884,7 +885,7 @@ func (s *postgresNativeTxView) InitializeRootSlice(ctx context.Context) error {
 		return err
 	}
 
-	_, err := s.tx.Exec(ctx, `UPDATE slice_metadata SET head_commit_hash = 'root-initial' WHERE slice_id = $1`, rootSlice.ID)
+	_, err := s.tx.Exec(ctx, `UPDATE slice_metadata SET head_commit_hash = $2 WHERE slice_id = $1`, rootSlice.ID, ids.GenerateInitialCommitID(rootSlice.ID))
 	return err
 }
 
@@ -1404,7 +1405,7 @@ func (s *postgresNativeTxView) GetGlobalState(ctx context.Context) (*models.Glob
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return &models.GlobalState{
-				GlobalCommitHash: "global-init",
+				GlobalCommitHash: ids.GenerateInitialCommitID(ids.RootSliceID),
 				History:          []*models.GlobalCommit{},
 			}, nil
 		}
@@ -1510,7 +1511,7 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 		return err
 	}
 
-	initialCommitHash := fmt.Sprintf("init-%s", slice.ID)
+	initialCommitHash := ids.GenerateInitialCommitID(slice.ID)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO slice_metadata (slice_id, head_commit_hash, modified_files, last_modified, modified_files_count)
 		VALUES ($1, $2, '[]', $3, 0)
@@ -1685,7 +1686,7 @@ func (s *PostgresNativeStorage) InitializeRootSlice(ctx context.Context) error {
 	}
 
 	rootSlice := &models.Slice{
-		ID:          "root_slice",
+		ID:          ids.RootSliceID,
 		Name:        "Root Slice",
 		Description: "The root slice containing all files",
 		Visibility:  models.VisibilityPrivate,
@@ -1701,8 +1702,8 @@ func (s *PostgresNativeStorage) InitializeRootSlice(ctx context.Context) error {
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		UPDATE slice_metadata SET head_commit_hash = 'root-initial' WHERE slice_id = $1
-	`, rootSlice.ID)
+		UPDATE slice_metadata SET head_commit_hash = $2 WHERE slice_id = $1
+	`, rootSlice.ID, ids.GenerateInitialCommitID(rootSlice.ID))
 	return err
 }
 
@@ -2326,7 +2327,7 @@ func (s *PostgresNativeStorage) CreateChangeset(ctx context.Context, changeset *
 		if err := s.pool.QueryRow(ctx, `SELECT nextval('changeset_id_seq')`).Scan(&nextID); err != nil {
 			return err
 		}
-		changeset.ID = fmt.Sprintf("cs-global-%d", nextID)
+		changeset.ID = fmt.Sprintf("chg_%d", nextID)
 	}
 
 	_, err = s.pool.Exec(ctx, `
@@ -3174,7 +3175,7 @@ func (s *PostgresNativeStorage) GetGlobalState(ctx context.Context) (*models.Glo
 		if err == pgx.ErrNoRows {
 			// Return default state.
 			return &models.GlobalState{
-				GlobalCommitHash: "global-init",
+				GlobalCommitHash: ids.GenerateInitialCommitID(ids.RootSliceID),
 				History:          []*models.GlobalCommit{},
 			}, nil
 		}

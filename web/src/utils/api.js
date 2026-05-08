@@ -164,7 +164,7 @@ export async function searchWorkspaceFiles(workspaceId, { query, glob = '', rege
 }
 
 export async function createSliceFromFolder({
-  parentSliceId = 'root_slice',
+  parentSliceId = 'root',
   folderPaths = [],
   newSliceId = '',
   name = '',

@@ -293,7 +293,7 @@ func runUserSession(i int) userResult {
 	// 1. Create slice.
 	t0 := time.Now()
 	_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		NewSliceId:    sid,
 		Name:          fmt.Sprintf("Bench User %d", i),
 		Description:   "benchmark slice",
@@ -362,7 +362,7 @@ func TestIntegrity(t *testing.T) {
 			records[i] = record{sid: sid, fid: fid}
 
 			_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-				ParentSliceId: "root_slice",
+				ParentSliceId: "root",
 				NewSliceId:    sid,
 				Name:          sid,
 				FolderPaths:   []string{"integrity"},
@@ -458,7 +458,7 @@ func TestIntegrity(t *testing.T) {
 
 	t.Run("FileHistoryConsistency", func(t *testing.T) {
 		for i, rec := range records {
-			// Must specify SliceId; without it the server defaults to root_slice
+			// Must specify SliceId; without it the server defaults to root
 			// which does not own the file changes we recorded.
 			histResp, err := benchFileClient.GetFileHistory(ctx, &filev1.GetFileHistoryRequest{
 				Path:    rec.fid,

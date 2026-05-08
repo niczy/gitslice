@@ -12,7 +12,7 @@ import (
 	"github.com/niczy/gitslice/internal/storage"
 )
 
-const idPrefix = "home."
+const idPrefix = "home_"
 
 type BackfillResult struct {
 	Username          string
@@ -62,7 +62,7 @@ func RelativeRootPath(username string) string {
 }
 
 // ResolveLiveBackingSliceID returns a user's home slice when a mounted slice was
-// created from root_slice paths that all live under that user's home root.
+// created from root paths that all live under that user's home root.
 // This lets read-side projections see the same live backing tree that the git
 // layer writes to before asynchronous root promotion catches up.
 func ResolveLiveBackingSliceID(ctx context.Context, st storage.Storage, slice *models.Slice) (string, bool, error) {
@@ -275,7 +275,7 @@ func ensureInitialHeadArtifacts(ctx context.Context, st storage.Storage, slice *
 		return err
 	}
 
-	expectedHead := "init-" + slice.ID
+	expectedHead := common.GenerateInitialCommitID(slice.ID)
 	if strings.TrimSpace(meta.HeadCommitHash) != expectedHead {
 		return nil
 	}
@@ -506,7 +506,7 @@ func recordSliceStateCommit(ctx context.Context, st storage.Storage, slice *mode
 	}
 
 	now := time.Now()
-	commitHash := fmt.Sprintf("home-backfill-%d", now.UnixNano())
+	commitHash := common.GenerateCommitID()
 	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
 		CommitHash: commitHash,
 		ParentHash: meta.HeadCommitHash,

@@ -7,12 +7,11 @@ SELECT setval(
             (
                 SELECT MAX(
                     COALESCE(
-                        (regexp_match(id, '^cs-global-([0-9]+)$'))[1]::bigint,
-                        (regexp_match(id, '^cs-([0-9]+)$'))[1]::bigint
+                        (regexp_match(id, '^chg_([0-9]+)$'))[1]::bigint
                     )
                 )
                 FROM changesets
-                WHERE id ~ '^cs-global-[0-9]+$' OR id ~ '^cs-[0-9]+$'
+                WHERE id ~ '^chg_[0-9]+$'
             ),
             0
         ) + 1,

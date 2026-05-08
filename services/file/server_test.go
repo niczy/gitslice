@@ -112,35 +112,35 @@ func TestGetFileAllowsAnonymousRootSliceAccess(t *testing.T) {
 	if err := st.InitializeRootSlice(ctx); err != nil {
 		t.Fatalf("InitializeRootSlice failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, path, "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, path, "root"); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
-	mustWriteSliceManifest(t, ctx, st, "root_slice", path, []byte("hello"))
+	mustWriteSliceManifest(t, ctx, st, "root", path, []byte("hello"))
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       common.GenerateEntryID("root_slice", path),
+		ID:       common.GenerateEntryID("root", path),
 		Path:     path,
 		Type:     "file",
-		ParentID: "root_slice",
+		ParentID: "root",
 		Content:  []byte("hello"),
 		Size:     5,
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
 
-	meta, err := st.GetSliceMetadata(ctx, "root_slice")
+	meta, err := st.GetSliceMetadata(ctx, "root")
 	if err != nil {
 		t.Fatalf("GetSliceMetadata failed: %v", err)
 	}
 	meta.ModifiedFiles = []string{path}
 	meta.ModifiedFilesCount = 1
-	if err := st.UpdateSliceMetadata(ctx, "root_slice", meta); err != nil {
+	if err := st.UpdateSliceMetadata(ctx, "root", meta); err != nil {
 		t.Fatalf("UpdateSliceMetadata failed: %v", err)
 	}
 
 	svc := newFileServiceServer(st)
 	resp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
 		Path:    path,
-		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: "root_slice"}},
+		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: "root"}},
 	})
 	if err != nil {
 		t.Fatalf("GetFile failed: %v", err)
@@ -1234,7 +1234,7 @@ func TestSnapshotPathsExcludeStaleFileIDs(t *testing.T) {
 	}
 
 	const (
-		sliceID    = "root_slice"
+		sliceID    = "root"
 		headCommit = "head-1"
 		stalePath  = "o/genesis/projects/org/repo/hello.py"
 	)
@@ -1288,7 +1288,7 @@ func TestGetCommitChangesSkipsBinaryPatchContent(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 
 	const (
-		sliceID    = "root_slice"
+		sliceID    = "root"
 		parentHash = "c0"
 		commitHash = "c1"
 		path       = "o/genesis/projects/org/repo/image.bin"
@@ -1334,7 +1334,7 @@ func TestGetCommitChangesLooksUpParentCommitByHashOncePerCommit(t *testing.T) {
 	baseStorage := storage.NewInMemoryStorage()
 
 	const (
-		sliceID    = "root_slice"
+		sliceID    = "root"
 		parentHash = "c0"
 		commitHash = "c1"
 	)
@@ -1445,7 +1445,7 @@ func BenchmarkGetCommitChangesDiffLoading(b *testing.B) {
 	st := storage.NewInMemoryStorage()
 
 	const (
-		sliceID    = "root_slice"
+		sliceID    = "root"
 		parentHash = "c0"
 		commitHash = "c1"
 		fileCount  = 100
@@ -1505,7 +1505,7 @@ func TestGetCommitChangesOmitsPatchesByDefault(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 
 	const (
-		sliceID    = "root_slice"
+		sliceID    = "root"
 		parentHash = "c0"
 		commitHash = "c1"
 		filePath   = "o/genesis/projects/org/repo/hello.txt"
@@ -1561,7 +1561,7 @@ func TestGetCommitChangesSkipsPatchesOverThreshold(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 
 	const (
-		sliceID    = "root_slice"
+		sliceID    = "root"
 		parentHash = "c0"
 		commitHash = "c1"
 	)

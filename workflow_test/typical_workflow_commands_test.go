@@ -91,7 +91,7 @@ func publishRootFolderFromWorktree(t *testing.T, folderPath, message string, pop
 	t.Helper()
 
 	rootWorkdir := t.TempDir()
-	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
+	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root"))
 	populate(rootWorkdir)
 
 	rootFolder := filepath.Join(rootWorkdir, filepath.FromSlash(folderPath))
@@ -233,7 +233,7 @@ func createSeededWorkflowSlice(t *testing.T, sliceID string, files map[string]se
 
 func TestSliceWorkflowCommands(t *testing.T) {
 	rootWorkdir := t.TempDir()
-	rootSliceArg := sliceIDArg("root_slice")
+	rootSliceArg := sliceIDArg("root")
 	_ = runCLIOrFail(t, rootWorkdir, "init", rootSliceArg)
 
 	folderPath := fmt.Sprintf("apps/workflow-%d", time.Now().UnixNano())
@@ -400,7 +400,7 @@ func TestSliceTreeRenameAndChangesetRebaseJSON(t *testing.T) {
 
 func TestSliceResourceAliasesWorkflow(t *testing.T) {
 	rootResp := runCLIJSONOrFail[sliceRootJSON](t, "", "slice", "root")
-	if rootResp.SliceID != "root_slice" {
+	if rootResp.SliceID != "root" {
 		t.Fatalf("unexpected slice root response: %+v", rootResp)
 	}
 

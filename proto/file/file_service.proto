@@ -8,7 +8,7 @@ import "google/api/annotations.proto";
 
 service FileService {
   // List entries within a slice at a given path.
-  // If no version is specified, uses root_slice at HEAD.
+  // If no version is specified, uses root at HEAD.
   rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse) {
     option (google.api.http) = {
       get: "/v1/files/entries/{path=**}"
@@ -27,7 +27,7 @@ service FileService {
   }
 
   // Fetch the contents of a file within a slice.
-  // If no version is specified, uses root_slice at HEAD.
+  // If no version is specified, uses root at HEAD.
   rpc GetFile(GetFileRequest) returns (GetFileResponse) {
     option (google.api.http) = {
       get: "/v1/files/{path=**}"
@@ -83,7 +83,7 @@ message ListEntriesRequest {
 
   // Version specifier (optional, mutually exclusive)
   oneof version {
-    string commit_hash = 10;      // Global commit hash (uses root_slice)
+    string commit_hash = 10;      // Global commit hash (uses root)
     SliceVersion slice_version = 11;  // Specific slice at version
   }
 }
@@ -122,7 +122,7 @@ message GetFileRequest {
 
   // Version specifier (optional, mutually exclusive)
   oneof version {
-    string commit_hash = 10;      // Global commit hash (uses root_slice)
+    string commit_hash = 10;      // Global commit hash (uses root)
     SliceVersion slice_version = 11;  // Specific slice at version
   }
 }

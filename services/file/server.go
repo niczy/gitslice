@@ -354,7 +354,7 @@ func (s *fileServiceServer) resolveVersion(ctx context.Context, commitHash strin
 		return sliceID, metadata.HeadCommitHash, nil
 	}
 
-	// Case 2: commit_hash specified (use root_slice)
+	// Case 2: commit_hash specified (use root)
 	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
 		return "", "", status.Error(codes.Internal, "root slice not found")
@@ -363,7 +363,7 @@ func (s *fileServiceServer) resolveVersion(ctx context.Context, commitHash strin
 		return rootSlice.ID, commitHash, nil
 	}
 
-	// Case 3: Nothing specified (use root_slice HEAD)
+	// Case 3: Nothing specified (use root HEAD)
 	metadata, err := s.storage.GetSliceMetadata(ctx, rootSlice.ID)
 	if err != nil {
 		return "", "", status.Error(codes.Internal, fmt.Sprintf("failed to get root slice metadata: %v", err))
@@ -1044,7 +1044,7 @@ func (s *fileServiceServer) maybeSetNotModifiedHeader(ctx context.Context, respo
 
 func (s *fileServiceServer) resolveEffectiveCommit(ctx context.Context, primarySliceID, resolvedCommit string) string {
 	effectiveCommit := strings.TrimSpace(resolvedCommit)
-	if strings.TrimSpace(primarySliceID) != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+	if strings.TrimSpace(primarySliceID) != "" && (effectiveCommit == "" || common.IsInitialCommitID(effectiveCommit)) {
 		if meta, err := s.storage.GetSliceMetadata(ctx, primarySliceID); err == nil && meta != nil {
 			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
 		}

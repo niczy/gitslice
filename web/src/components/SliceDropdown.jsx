@@ -31,8 +31,8 @@ export default function SliceDropdown({
     if (currentSlice) {
       return getSliceDisplayName(currentSlice.name || currentSlice.slice_id);
     }
-    if (String(currentSliceId || '').startsWith('home.')) {
-      return getSliceDisplayName(String(currentSliceId).slice('home.'.length));
+    if (String(currentSliceId || '').startsWith('home_')) {
+      return getSliceDisplayName(String(currentSliceId).slice('home_'.length));
     }
     return getSliceDisplayName(currentSliceId);
   }, [currentSlice, currentSliceId]);

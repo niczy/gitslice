@@ -46,11 +46,11 @@ function getPreferredSliceId(slices, username) {
 
 function getHomeSliceId(username) {
   const trimmedUsername = String(username || '').trim().toLowerCase();
-  return trimmedUsername ? `home.${trimmedUsername}` : '';
+  return trimmedUsername ? `home_${trimmedUsername}` : '';
 }
 
 function getInitialSliceId(username) {
-  return getHomeSliceId(username) || 'root_slice';
+  return getHomeSliceId(username) || 'root';
 }
 
 function isSliceScopedPage(page) {

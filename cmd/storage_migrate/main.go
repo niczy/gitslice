@@ -1747,10 +1747,10 @@ func backfillNative(ctx context.Context, pool *pgxpool.Pool, objectStore storage
 		}{History: gs.History}
 		stateJSON, _ := json.Marshal(stateData)
 		_, err := tx.Exec(ctx, `
-			INSERT INTO global_state (id, root_slice_id, global_commit_hash, updated_at, state_json)
+			INSERT INTO global_state (id, root_id, global_commit_hash, updated_at, state_json)
 			VALUES (true, $1, $2, $3, $4)
-			ON CONFLICT (id) DO UPDATE SET root_slice_id = EXCLUDED.root_slice_id, global_commit_hash = EXCLUDED.global_commit_hash, updated_at = EXCLUDED.updated_at, state_json = EXCLUDED.state_json
-		`, "root_slice", gs.GlobalCommitHash, gs.Timestamp, stateJSON)
+			ON CONFLICT (id) DO UPDATE SET root_id = EXCLUDED.root_id, global_commit_hash = EXCLUDED.global_commit_hash, updated_at = EXCLUDED.updated_at, state_json = EXCLUDED.state_json
+		`, common.RootSliceID, gs.GlobalCommitHash, gs.Timestamp, stateJSON)
 		if err != nil {
 			return nil, err
 		}

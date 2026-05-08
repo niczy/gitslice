@@ -58,14 +58,14 @@ test.describe('Navigation history and URL reloading', () => {
 
   test('navigating to repo browser updates the URL path', async ({ page }) => {
     await page.goto('/');
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
 
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
-    await expect(page).toHaveURL(/\/slices\/root_slice(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices\/root(\?.*)?$/);
   });
 
   test('navigating back to landing updates the URL path', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Click brand logo to go back to landing
@@ -97,17 +97,17 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('reloading the repo browser page preserves the view', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Reload the page
     await page.reload();
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
-    await expect(page).toHaveURL(/\/slices\/root_slice(\?.*)?$/);
+    await expect(page).toHaveURL(/\/slices\/root(\?.*)?$/);
   });
 
   test('brand button returns to landing from the browser', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Use brand button to return to landing
@@ -116,7 +116,7 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('browser route returns to browser from landing', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
 
     // Back to landing via brand button
@@ -124,12 +124,12 @@ test.describe('Navigation history and URL reloading', () => {
     await expect(page.getByRole('heading', { level: 1, name: landingTitle })).toBeVisible();
 
     // Forward to browser via path route
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
   });
 
   test('navigating to diff page updates the URL path', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
 
     await openGenesisReadme(page);
 
@@ -145,7 +145,7 @@ test.describe('Navigation history and URL reloading', () => {
   });
 
   test('reloading the diff page preserves the commit view', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
 
     await openGenesisReadme(page);
 

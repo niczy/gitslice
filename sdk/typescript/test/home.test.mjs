@@ -32,7 +32,7 @@ test("home filesystem uses absolute paths and home workspace", async () => {
     {
       status: 200,
       payload: {
-        workspaceId: "home.tester",
+        workspaceId: "home_tester",
         path: "/tester/README.md",
         size: "6",
         hash: "hash",
@@ -42,7 +42,7 @@ test("home filesystem uses absolute paths and home workspace", async () => {
     {
       status: 200,
       payload: {
-        workspaceId: "home.tester",
+        workspaceId: "home_tester",
         path: "/tester/README.md",
         content: Buffer.from("hello\n", "utf8").toString("base64"),
         size: "6",
@@ -61,13 +61,13 @@ test("home filesystem uses absolute paths and home workspace", async () => {
   const content = await home.read("/tester/README.md");
   const writeBody = JSON.parse(transport.calls[0].init.body);
 
-  assert.equal(home.workspaceId, "home.tester");
-  assert.equal(writeResult.workspaceId, "home.tester");
+  assert.equal(home.workspaceId, "home_tester");
+  assert.equal(writeResult.workspaceId, "home_tester");
   assert.equal(content, "hello\n");
-  assert.equal(writeBody.workspaceId, "home.tester");
+  assert.equal(writeBody.workspaceId, "home_tester");
   assert.equal(writeBody.path, "/tester/README.md");
-  assert.match(transport.calls[0].input, /\/v1\/fs\/workspaces\/home\.tester\/files\/%2Ftester%2FREADME\.md$/);
-  assert.match(transport.calls[1].input, /\/v1\/fs\/workspaces\/home\.tester\/files\/%2Ftester%2FREADME\.md$/);
+  assert.match(transport.calls[0].input, /\/v1\/fs\/workspaces\/home_tester\/files\/%2Ftester%2FREADME\.md$/);
+  assert.match(transport.calls[1].input, /\/v1\/fs\/workspaces\/home_tester\/files\/%2Ftester%2FREADME\.md$/);
 });
 
 test("home filesystem resolves username from current user", async () => {
@@ -97,9 +97,9 @@ test("home filesystem resolves username from current user", async () => {
   const entries = await home.ls();
 
   assert.deepEqual(entries, []);
-  assert.equal(home.workspaceId, "home.token-user");
+  assert.equal(home.workspaceId, "home_token-user");
   assert.equal(transport.calls[0].input, "https://example.test/v1/users/me");
-  assert.match(transport.calls[1].input, /\/v1\/fs\/workspaces\/home\.token-user\/ls\/%2Ftoken-user$/);
+  assert.match(transport.calls[1].input, /\/v1\/fs\/workspaces\/home_token-user\/ls\/%2Ftoken-user$/);
 });
 
 test("home filesystem requires absolute paths", async () => {

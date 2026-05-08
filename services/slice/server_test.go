@@ -283,12 +283,12 @@ func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
 	}
 
 	const path = "o/genesis/projects/repo/main.go"
-	if err := st.AddFileToSlice(ctx, path, "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, path, "root"); err != nil {
 		t.Fatalf("failed to add root file: %v", err)
 	}
 
 	srv := newSliceServiceServer(st)
-	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "root_slice"})
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "root"})
 	if err != nil {
 		t.Fatalf("CheckoutSlice returned error: %v", err)
 	}
@@ -1016,7 +1016,7 @@ func TestCheckoutProfileSummary(t *testing.T) {
 }
 
 func TestMergeProfileSummary(t *testing.T) {
-	profile := newMergeProfile("cs-123", "slice-123", 256)
+	profile := newMergeProfile("chg_123", "slice-123", 256)
 	profile.markConflictCheck(3, 120*time.Millisecond)
 	profile.markRevertApply(15 * time.Millisecond)
 	profile.markFinalize(230 * time.Millisecond)
@@ -1026,7 +1026,7 @@ func TestMergeProfileSummary(t *testing.T) {
 
 	summary := profile.summary()
 	for _, want := range []string{
-		"changeset_id=cs-123",
+		"changeset_id=chg_123",
 		"slice_id=slice-123",
 		"modified_files=256",
 		"conflicts=3",
@@ -1149,14 +1149,14 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 	now := time.Now()
 	changesets := []*models.Changeset{
 		{
-			ID:            "cs-pending",
+			ID:            "chg_pending",
 			SliceID:       slice.ID,
 			Status:        models.ChangesetStatusPending,
 			ModifiedFiles: []string{"file1"},
 			CreatedAt:     now,
 		},
 		{
-			ID:            "cs-merged",
+			ID:            "chg_merged",
 			SliceID:       slice.ID,
 			Status:        models.ChangesetStatusMerged,
 			ModifiedFiles: []string{"file2"},
@@ -1190,8 +1190,8 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 		if got, want := len(resp.Changesets), 1; got != want {
 			t.Fatalf("expected %d pending changeset, got %d", want, got)
 		}
-		if resp.Changesets[0].ChangesetId != "cs-pending" {
-			t.Fatalf("expected cs-pending, got %s", resp.Changesets[0].ChangesetId)
+		if resp.Changesets[0].ChangesetId != "chg_pending" {
+			t.Fatalf("expected chg_pending, got %s", resp.Changesets[0].ChangesetId)
 		}
 	})
 
@@ -1203,8 +1203,8 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 		if got, want := len(resp.Changesets), 1; got != want {
 			t.Fatalf("expected %d merged changeset, got %d", want, got)
 		}
-		if resp.Changesets[0].ChangesetId != "cs-merged" {
-			t.Fatalf("expected cs-merged, got %s", resp.Changesets[0].ChangesetId)
+		if resp.Changesets[0].ChangesetId != "chg_merged" {
+			t.Fatalf("expected chg_merged, got %s", resp.Changesets[0].ChangesetId)
 		}
 	})
 }
@@ -1216,13 +1216,13 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	if err := st.AddFileToSlice(ctx, "tester/o/genesis/projects/repo/main.go", "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, "tester/o/genesis/projects/repo/main.go", "root"); err != nil {
 		t.Fatalf("failed to add root file: %v", err)
 	}
 
 	srv := newSliceServiceServer(st)
 	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		FolderPaths:   []string{"o/genesis/projects/repo"},
 		Name:          "my-slice",
 		Description:   "auto id test",
@@ -1231,8 +1231,8 @@ func TestCreateSliceAutoGeneratesID(t *testing.T) {
 		t.Fatalf("CreateSliceFromFolder failed: %v", err)
 	}
 
-	if !strings.HasPrefix(resp.SliceId, "sl-") {
-		t.Fatalf("expected auto-generated ID with sl- prefix, got %q", resp.SliceId)
+	if !strings.HasPrefix(resp.SliceId, "sl_") {
+		t.Fatalf("expected auto-generated ID with sl_ prefix, got %q", resp.SliceId)
 	}
 	if resp.Name != "my-slice" {
 		t.Fatalf("expected name %q, got %q", "my-slice", resp.Name)
@@ -1282,13 +1282,13 @@ func TestCreateSliceUsesFolderPathsAsDefaultName(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	if err := st.AddFileToSlice(ctx, "tester/org/project/service/main.go", "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, "tester/org/project/service/main.go", "root"); err != nil {
 		t.Fatalf("failed to add root file: %v", err)
 	}
 
 	srv := newSliceServiceServer(st)
 	resp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		FolderPaths:   []string{"org/project/service"},
 		Description:   "derive default name from folder",
 	})
@@ -1366,13 +1366,13 @@ func TestCreateSliceFromFolderRejectsMissingFolder(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	if err := st.AddFileToSlice(ctx, "docs/README.md", "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, "docs/README.md", "root"); err != nil {
 		t.Fatalf("failed to add root file: %v", err)
 	}
 
 	srv := newSliceServiceServer(st)
 	_, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		NewSliceId:    "missing-folder-slice",
 		FolderPaths:   []string{"does-not-exist"},
 		Name:          "missing-folder",
@@ -1400,17 +1400,17 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 	displayPath := "o/genesis/projects/repo/README.md"
 	content := []byte("repo readme")
 	if err := st.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       "root_slice:" + filePath,
+		ID:       "root:" + filePath,
 		Path:     filePath,
 		Type:     "file",
-		ParentID: "root_slice",
+		ParentID: "root",
 		Size:     int64(len(content)),
 	}); err != nil {
 		t.Fatalf("AddEntry failed: %v", err)
 	}
-	mustWriteSliceManifest(t, ctx, st, "root_slice", filePath, content)
+	mustWriteSliceManifest(t, ctx, st, "root", filePath, content)
 
-	rootSlice, err := st.GetSlice(ctx, "root_slice")
+	rootSlice, err := st.GetSlice(ctx, "root")
 	if err != nil {
 		t.Fatalf("failed to load root slice: %v", err)
 	}
@@ -1420,7 +1420,7 @@ func TestCreateSliceFromFolderUsesParentEntriesWhenSliceFilesEmpty(t *testing.T)
 
 	srv := NewService(st)
 	createResp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		NewSliceId:    "entry-backed-slice",
 		Name:          "entry-backed-slice",
 		FolderPaths:   []string{"o/genesis/projects/repo"},
@@ -1494,18 +1494,18 @@ func TestCheckoutMountedSliceUsesLiveBackingFolder(t *testing.T) {
 
 	writeBackingFile := func(filePath, content string) {
 		t.Helper()
-		hash := mustWriteSliceManifest(t, ctx, st, "root_slice", filePath, []byte(content))
+		hash := mustWriteSliceManifest(t, ctx, st, "root", filePath, []byte(content))
 		if err := st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:       "root_slice:" + filePath,
+			ID:       "root:" + filePath,
 			Path:     filePath,
 			Type:     "file",
-			ParentID: "root_slice",
+			ParentID: "root",
 			Size:     int64(len(content)),
 			Hash:     hash,
 		}); err != nil {
 			t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
 		}
-		if err := st.AddFileToSlice(ctx, filePath, "root_slice"); err != nil {
+		if err := st.AddFileToSlice(ctx, filePath, "root"); err != nil {
 			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
 		}
 	}
@@ -1516,7 +1516,7 @@ func TestCheckoutMountedSliceUsesLiveBackingFolder(t *testing.T) {
 	srv := NewService(st)
 	for _, sliceID := range []string{"shared-a", "shared-b"} {
 		if _, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-			ParentSliceId: "root_slice",
+			ParentSliceId: "root",
 			NewSliceId:    sliceID,
 			Name:          sliceID,
 			FolderPaths:   []string{"tester/shared"},
@@ -1689,16 +1689,16 @@ func TestCheckoutMountedSliceFallsBackToBackingSliceFiles(t *testing.T) {
 		t.Fatalf("failed to initialize root slice: %v", err)
 	}
 
-	if _, err := storage.WriteSliceFileManifest(ctx, st, "root_slice", "tester/legacy/README.md", []byte("legacy readme")); err != nil {
+	if _, err := storage.WriteSliceFileManifest(ctx, st, "root", "tester/legacy/README.md", []byte("legacy readme")); err != nil {
 		t.Fatalf("WriteSliceFileManifest failed: %v", err)
 	}
-	if err := st.AddFileToSlice(ctx, "tester/legacy/README.md", "root_slice"); err != nil {
+	if err := st.AddFileToSlice(ctx, "tester/legacy/README.md", "root"); err != nil {
 		t.Fatalf("AddFileToSlice failed: %v", err)
 	}
 
 	srv := NewService(st)
 	if _, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		NewSliceId:    "legacy-mounted",
 		Name:          "legacy-mounted",
 		FolderPaths:   []string{"tester/legacy"},
@@ -1730,14 +1730,14 @@ func TestRenameSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "sl-test-rename", Name: "old-name", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "sl_test-rename", Name: "old-name", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 
 	srv := NewService(st)
 	resp, err := srv.RenameSlice(ctx, &slicev1.RenameSliceRequest{
-		SliceId: "sl-test-rename",
+		SliceId: "sl_test-rename",
 		NewName: "new-name",
 	})
 	if err != nil {
@@ -1752,7 +1752,7 @@ func TestRenameSlice(t *testing.T) {
 	}
 
 	// Verify persistence
-	updated, err := st.GetSlice(ctx, "sl-test-rename")
+	updated, err := st.GetSlice(ctx, "sl_test-rename")
 	if err != nil {
 		t.Fatalf("failed to get slice: %v", err)
 	}
@@ -1768,7 +1768,7 @@ func TestDeleteSliceRemovesCustomSlice(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "sl-delete-test", Name: "delete-me", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "sl_delete-test", Name: "delete-me", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -1813,12 +1813,12 @@ func TestDeleteSliceRequiresForceForOpenChangesets(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "sl-delete-open", Name: "open-work", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "sl_delete-open", Name: "open-work", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 	if err := st.CreateChangeset(ctx, &models.Changeset{
-		ID:             "cs-open",
+		ID:             "chg_open",
 		Hash:           "hash-open",
 		SliceID:        slice.ID,
 		BaseCommitHash: "base-1",
@@ -1849,7 +1849,7 @@ func TestGetSliceByName(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "sl-lookup-test", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "sl_lookup-test", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -1860,8 +1860,8 @@ func TestGetSliceByName(t *testing.T) {
 		t.Fatalf("GetSliceByName failed: %v", err)
 	}
 
-	if resp.SliceId != "sl-lookup-test" {
-		t.Fatalf("expected ID %q, got %q", "sl-lookup-test", resp.SliceId)
+	if resp.SliceId != "sl_lookup-test" {
+		t.Fatalf("expected ID %q, got %q", "sl_lookup-test", resp.SliceId)
 	}
 	if resp.Name != "my-project" {
 		t.Fatalf("expected name %q, got %q", "my-project", resp.Name)
@@ -1875,7 +1875,7 @@ func TestGetSliceBySlug(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "sl-slug-test", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "sl_slug-test", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
@@ -1886,8 +1886,8 @@ func TestGetSliceBySlug(t *testing.T) {
 		t.Fatalf("GetSliceBySlug failed: %v", err)
 	}
 
-	if resp.SliceId != "sl-slug-test" {
-		t.Fatalf("expected ID %q, got %q", "sl-slug-test", resp.SliceId)
+	if resp.SliceId != "sl_slug-test" {
+		t.Fatalf("expected ID %q, got %q", "sl_slug-test", resp.SliceId)
 	}
 	if resp.Slug != "tester/my-project" {
 		t.Fatalf("expected slug %q, got %q", "tester/my-project", resp.Slug)
@@ -1899,8 +1899,8 @@ func TestGetSliceBySlugUsesAuthenticatedOwnerNamespaceForLocalSlug(t *testing.T)
 	st := storage.NewInMemoryStorage()
 
 	for _, slice := range []*models.Slice{
-		{ID: "sl-slug-tester", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"},
-		{ID: "sl-slug-other", Name: "my-project", Owners: []string{"other"}, CreatedBy: "other"},
+		{ID: "sl_slug-tester", Name: "my-project", Owners: []string{"tester"}, CreatedBy: "tester"},
+		{ID: "sl_slug-other", Name: "my-project", Owners: []string{"other"}, CreatedBy: "other"},
 	} {
 		if err := st.CreateSlice(ctx, slice); err != nil {
 			t.Fatalf("failed to create slice %s: %v", slice.ID, err)
@@ -1912,7 +1912,7 @@ func TestGetSliceBySlugUsesAuthenticatedOwnerNamespaceForLocalSlug(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetSliceBySlug local failed: %v", err)
 	}
-	if got, want := resp.GetSliceId(), "sl-slug-tester"; got != want {
+	if got, want := resp.GetSliceId(), "sl_slug-tester"; got != want {
 		t.Fatalf("slice id = %q, want %q", got, want)
 	}
 	if got, want := resp.GetSlug(), "tester/my-project"; got != want {
@@ -1933,15 +1933,15 @@ func TestCreateSliceFromMultipleFoldersRemapsCheckoutPaths(t *testing.T) {
 		"tester/o/genesis/projects/repo-b/main.go":     []byte("package main"),
 	}
 	for filePath, content := range seedFiles {
-		if err := st.AddFileToSlice(ctx, filePath, "root_slice"); err != nil {
+		if err := st.AddFileToSlice(ctx, filePath, "root"); err != nil {
 			t.Fatalf("failed to add root file %s: %v", filePath, err)
 		}
-		mustWriteSliceManifest(t, ctx, st, "root_slice", filePath, content)
+		mustWriteSliceManifest(t, ctx, st, "root", filePath, content)
 	}
 
 	srv := NewService(st)
 	createResp, err := srv.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		NewSliceId:    "multi-folder-slice",
 		Name:          "multi-folder-slice",
 		Description:   "multi folder test",
@@ -2056,7 +2056,7 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "cs-dup",
+		ID:            "chg_dup",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{"dup.txt", "dup.txt", "dup.txt"},
 		Status:        models.ChangesetStatusPending,
@@ -2085,7 +2085,7 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	if got := countingStorage.counts["slice-dup:dup.txt"]; got != 1 {
 		t.Fatalf("expected one ownership write for slice file, got %d", got)
 	}
-	if got := countingStorage.counts["root_slice:dup.txt"]; got != 1 {
+	if got := countingStorage.counts["root:dup.txt"]; got != 1 {
 		t.Fatalf("expected one ownership write for root file, got %d", got)
 	}
 
@@ -2106,15 +2106,15 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 
 	if err := base.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       "root_slice:existing.txt",
+		ID:       "root:existing.txt",
 		Path:     "existing.txt",
 		Type:     "file",
-		ParentID: "root_slice",
+		ParentID: "root",
 		Size:     8,
 	}); err != nil {
 		t.Fatalf("failed to seed root entry: %v", err)
 	}
-	if err := base.AddFileToSlice(ctx, "existing.txt", "root_slice"); err != nil {
+	if err := base.AddFileToSlice(ctx, "existing.txt", "root"); err != nil {
 		t.Fatalf("failed to seed root file ownership: %v", err)
 	}
 
@@ -2138,7 +2138,7 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "cs-tree-promotion",
+		ID:            "chg_tree-promotion",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -2173,7 +2173,7 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	fileSvc := fileservice.NewService(base)
 	listResp, err := fileSvc.ListEntries(ctx, &filev1.ListEntriesRequest{
 		Version: &filev1.ListEntriesRequest_SliceVersion{
-			SliceVersion: &filev1.SliceVersion{SliceId: "root_slice"},
+			SliceVersion: &filev1.SliceVersion{SliceId: "root"},
 		},
 	})
 	if err != nil {
@@ -2193,10 +2193,10 @@ func TestMergeChangesetMountedSliceListsMergedFile(t *testing.T) {
 
 	mountedDir := "nicholas/test2"
 	if err := base.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       "root_slice:" + mountedDir,
+		ID:       "root:" + mountedDir,
 		Path:     mountedDir,
 		Type:     "directory",
-		ParentID: "root_slice",
+		ParentID: "root",
 	}); err != nil {
 		t.Fatalf("failed to seed mounted root directory: %v", err)
 	}
@@ -2206,7 +2206,7 @@ func TestMergeChangesetMountedSliceListsMergedFile(t *testing.T) {
 		Name:        "api-cross-b-20260504232313",
 		Owners:      []string{"tester"},
 		CreatedBy:   "tester",
-		ParentSlice: "root_slice",
+		ParentSlice: "root",
 		FolderMounts: []models.SliceFolderMount{{
 			SourcePath: mountedDir,
 			Alias:      mountedDir,
@@ -2231,7 +2231,7 @@ func TestMergeChangesetMountedSliceListsMergedFile(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "cs-mounted-slice-file",
+		ID:            "chg_mounted-slice-file",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -2279,7 +2279,7 @@ func TestMergeChangesetReturnsAbortedWhenSliceAlreadyLocked(t *testing.T) {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 	cs := &models.Changeset{
-		ID:            "cs-locked",
+		ID:            "chg_locked",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{"locked.txt"},
 		Status:        models.ChangesetStatusPending,
@@ -2315,14 +2315,14 @@ func TestMergeChangesetConcurrentSameSliceOneAborts(t *testing.T) {
 		t.Fatalf("failed to create slice: %v", err)
 	}
 	cs1 := &models.Changeset{
-		ID:            "cs-concurrent-1",
+		ID:            "chg_concurrent-1",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{"a.txt"},
 		Status:        models.ChangesetStatusPending,
 		CreatedAt:     time.Now(),
 	}
 	cs2 := &models.Changeset{
-		ID:            "cs-concurrent-2",
+		ID:            "chg_concurrent-2",
 		SliceID:       slice.ID,
 		ModifiedFiles: []string{"b.txt"},
 		Status:        models.ChangesetStatusPending,
@@ -2390,14 +2390,14 @@ func TestMergeChangesetConcurrentOverlappingFilesOneAborts(t *testing.T) {
 	}
 
 	csA := &models.Changeset{
-		ID:            "cs-overlap-a",
+		ID:            "chg_overlap-a",
 		SliceID:       sliceA.ID,
 		ModifiedFiles: []string{sharedFile},
 		Status:        models.ChangesetStatusPending,
 		CreatedAt:     time.Now(),
 	}
 	csB := &models.Changeset{
-		ID:            "cs-overlap-b",
+		ID:            "chg_overlap-b",
 		SliceID:       sliceB.ID,
 		ModifiedFiles: []string{sharedFile},
 		Status:        models.ChangesetStatusPending,
@@ -2510,10 +2510,10 @@ func TestCreateChangesetUsesIncrementalGlobalIDs(t *testing.T) {
 		t.Fatalf("CreateChangeset(second) failed: %v", err)
 	}
 
-	if got, want := first.GetChangesetId(), "cs-global-1"; got != want {
+	if got, want := first.GetChangesetId(), "chg_1"; got != want {
 		t.Fatalf("expected first changeset id %q, got %q", want, got)
 	}
-	if got, want := second.GetChangesetId(), "cs-global-2"; got != want {
+	if got, want := second.GetChangesetId(), "chg_2"; got != want {
 		t.Fatalf("expected second changeset id %q, got %q", want, got)
 	}
 }
@@ -2615,7 +2615,7 @@ func TestReviewChangesetMarksStaleBaseAsNeedsRebase(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:             "cs-stale-review",
+		ID:             "chg_stale-review",
 		SliceID:        slice.ID,
 		BaseCommitHash: "head-old",
 		ModifiedFiles:  []string{"README.md"},
@@ -2660,7 +2660,7 @@ func TestMergeChangesetRejectsStaleBase(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:             "cs-stale-merge",
+		ID:             "chg_stale-merge",
 		SliceID:        slice.ID,
 		BaseCommitHash: "head-old",
 		ModifiedFiles:  []string{"README.md"},
@@ -2722,7 +2722,7 @@ func TestReviewChangesetReportsContentConflictIssue(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "cs-review-content-conflict",
+		ID:            "chg_review-content-conflict",
 		SliceID:       sliceA.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -2777,7 +2777,7 @@ func TestReviewChangesetReportsOwnershipIssueWithoutBlockingMerge(t *testing.T) 
 	}
 
 	cs := &models.Changeset{
-		ID:            "cs-review-ownership",
+		ID:            "chg_review-ownership",
 		SliceID:       sliceA.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -2845,7 +2845,7 @@ func TestMergeChangesetIgnoresNormalizedCrossSliceFileState(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:            "cs-normalized-merge",
+		ID:            "chg_normalized-merge",
 		SliceID:       sliceA.ID,
 		ModifiedFiles: []string{filePath},
 		Status:        models.ChangesetStatusPending,
@@ -2883,7 +2883,7 @@ func TestRebaseChangesetUsesCurrentSliceHead(t *testing.T) {
 	}
 
 	cs := &models.Changeset{
-		ID:             "cs-rebase-head",
+		ID:             "chg_rebase-head",
 		SliceID:        slice.ID,
 		BaseCommitHash: "head-old",
 		ModifiedFiles:  []string{"README.md"},
@@ -3019,7 +3019,7 @@ func TestListChangesetSnapshotsReturnsSyntheticWhenNoStoredSnapshots(t *testing.
 	}
 
 	cs := &models.Changeset{
-		ID:             "cs-synthetic-snapshot",
+		ID:             "chg_synthetic-snapshot",
 		Hash:           "hash-synthetic",
 		SliceID:        slice.ID,
 		BaseCommitHash: "base-synthetic",
@@ -3062,7 +3062,7 @@ type promotionWriteCounter struct {
 }
 
 func (c *promotionWriteCounter) AddFileToSlice(ctx context.Context, fileID, sliceID string) error {
-	if sliceID == "root_slice" {
+	if sliceID == "root" {
 		c.mu.Lock()
 		if c.rootAddCalls == nil {
 			c.rootAddCalls = make(map[string]int)
@@ -3081,7 +3081,7 @@ func (c *promotionWriteCounter) UpdateGlobalState(ctx context.Context, state *mo
 }
 
 func (c *promotionWriteCounter) UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error {
-	if sliceID == "root_slice" {
+	if sliceID == "root" {
 		c.mu.Lock()
 		c.updateRootMetadataCalls++
 		c.mu.Unlock()

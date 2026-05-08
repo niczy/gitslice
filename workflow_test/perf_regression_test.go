@@ -50,7 +50,7 @@ func buildPerfFixtureSlice(t *testing.T, basePath string) string {
 	t.Helper()
 
 	rootWorkdir := t.TempDir()
-	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
+	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root"))
 
 	paths := make([]string, 0, perfFixtureDirCount*perfFixtureFilesPerDir)
 	for dirIdx := 0; dirIdx < perfFixtureDirCount; dirIdx++ {

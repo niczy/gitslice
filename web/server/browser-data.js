@@ -128,7 +128,7 @@ function recordRouteError(data, setCookies, error) {
 
 function shouldTreatBrowserRouteAsNotFound(routeInfo, sliceId, error) {
   const requestedSlice = String(routeInfo?.browserState?.slice || '').trim();
-  if (routeInfo?.page !== 'browser' || !requestedSlice || sliceId === 'root_slice') {
+  if (routeInfo?.page !== 'browser' || !requestedSlice || sliceId === 'root') {
     return false;
   }
   return [401, 403, 404].includes(Number(error?.status));

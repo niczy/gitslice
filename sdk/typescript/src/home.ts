@@ -32,7 +32,7 @@ export class HomeFilesystem {
 
   constructor(private readonly client: GitsliceClient, username: string) {
     this.username = username.trim();
-    this.workspaceId = `home.${this.username}`;
+    this.workspaceId = `home_${this.username}`;
     this.rootPath = `/${this.username}`;
   }
 

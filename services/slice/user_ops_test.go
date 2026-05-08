@@ -29,7 +29,7 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 
 	now := time.Now()
 	if err := st.CreateSlice(ctx, &models.Slice{
-		ID:          "home.alice",
+		ID:          "home_alice",
 		Name:        "alice",
 		Description: "alice home",
 		Owners:      []string{"alice"},
@@ -37,7 +37,7 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 		UpdatedAt:   now,
 		CreatedBy:   "alice",
 	}); err != nil {
-		t.Fatalf("CreateSlice(home.alice) failed: %v", err)
+		t.Fatalf("CreateSlice(home_alice) failed: %v", err)
 	}
 	if err := st.CreateSlice(ctx, &models.Slice{
 		ID:          "team.alpha",
@@ -60,13 +60,13 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 		t.Fatalf("expected 2 owned slices, got %d", len(resp.GetSlices()))
 	}
 	for _, slice := range resp.GetSlices() {
-		if slice.GetIsRoot() || slice.GetSliceId() == "root_slice" {
+		if slice.GetIsRoot() || slice.GetSliceId() == "root" {
 			t.Fatalf("expected root slice to be excluded, got %#v", slice)
 		}
 		if slice.GetSlug() == "" {
 			t.Fatalf("expected slice slug to be populated, got %#v", slice)
 		}
-		if slice.GetSliceId() == "home.alice" && slice.GetSlug() != "alice" {
+		if slice.GetSliceId() == "home_alice" && slice.GetSlug() != "alice" {
 			t.Fatalf("expected home slice slug alice, got %#v", slice)
 		}
 	}
@@ -88,7 +88,7 @@ func TestListSlicesWithoutUserReturnsRootSlice(t *testing.T) {
 	if len(resp.GetSlices()) != 1 {
 		t.Fatalf("expected only root slice for anonymous user, got %d", len(resp.GetSlices()))
 	}
-	if !resp.GetSlices()[0].GetIsRoot() || resp.GetSlices()[0].GetSliceId() != "root_slice" {
+	if !resp.GetSlices()[0].GetIsRoot() || resp.GetSlices()[0].GetSliceId() != "root" {
 		t.Fatalf("expected root slice for anonymous user, got %#v", resp.GetSlices()[0])
 	}
 	if resp.GetSlices()[0].GetSlug() != "root" {

@@ -292,7 +292,7 @@ func (h *Handler) applyFilesToSlice(ctx context.Context, slice *models.Slice, fi
 		return err
 	}
 	if strings.TrimSpace(commitHash) == "" {
-		commitHash = fmt.Sprintf("git-%d", time.Now().UnixNano())
+		commitHash = common.GenerateCommitID()
 	}
 	if commitTime.IsZero() {
 		commitTime = time.Now()
@@ -504,7 +504,7 @@ func (h *Handler) recordFileChanges(ctx context.Context, sliceID, commitHash, me
 			changeType = models.ChangeTypeDelete
 		}
 		changes = append(changes, &models.FileChangeRecord{
-			ID:         fmt.Sprintf("%s-%s", commitHash, filePath),
+			ID:         common.GenerateFileChangeID(commitHash, filePath),
 			SliceID:    sliceID,
 			CommitHash: commitHash,
 			Path:       filePath,

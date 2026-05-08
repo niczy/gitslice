@@ -11,7 +11,7 @@ import (
 
 func TestSliceEnsureIsIdempotent(t *testing.T) {
 	rootWorkdir := t.TempDir()
-	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root_slice"))
+	_ = runCLIOrFail(t, rootWorkdir, "init", sliceIDArg("root"))
 
 	folderPath := fmt.Sprintf("ensure-%d", time.Now().UnixNano())
 	filePath := folderPath + "/README.md"

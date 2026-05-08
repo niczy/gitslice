@@ -161,7 +161,7 @@ For repos with many commits, processing diffs and blob extraction in parallel
 
 ### Optimization: True per-slice parallelism
 
-Currently all imports go to `root_slice` because non-root slices must be
+Currently all imports go to `root` because non-root slices must be
 pre-created. Adding auto-creation of slices during import would enable
 true isolation and potentially better parallelism at the storage level.
 

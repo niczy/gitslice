@@ -100,7 +100,7 @@ test('handleRawContentRequest supports slice raw URLs and forwards version query
   global.fetch = async (url) => {
     assert.equal(
       url.toString(),
-      'http://api.test/v1/slices/sl-123/files/src/main.go?slice_version.slice_hash=abc',
+      'http://api.test/v1/slices/sl_123/files/src/main.go?slice_version.slice_hash=abc',
     );
     return Response.json({
       file: {
@@ -111,10 +111,10 @@ test('handleRawContentRequest supports slice raw URLs and forwards version query
     });
   };
 
-  const request = new Request('https://agenttools.dev/raw/slices/sl-123/src/main.go?slice_version.slice_hash=abc', {
+  const request = new Request('https://agenttools.dev/raw/slices/sl_123/src/main.go?slice_version.slice_hash=abc', {
     headers: { Authorization: 'User nic' },
   });
-  const response = await handleRawContentRequest(request, 'slices/sl-123/src/main.go');
+  const response = await handleRawContentRequest(request, 'slices/sl_123/src/main.go');
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
@@ -136,11 +136,11 @@ test('handleRawContentRequest uses public visibility for anonymous slice raw URL
     });
   };
 
-  const request = new Request('https://agenttools.dev/raw/slices/sl-123/README.md');
-  const response = await handleRawContentRequest(request, 'slices/sl-123/README.md');
+  const request = new Request('https://agenttools.dev/raw/slices/sl_123/README.md');
+  const response = await handleRawContentRequest(request, 'slices/sl_123/README.md');
 
   assert.deepEqual(calls, [
-    'http://api.test/v1/public/files/README.md?slice_id=sl-123',
+    'http://api.test/v1/public/files/README.md?slice_id=sl_123',
   ]);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'public, no-cache');
@@ -164,14 +164,14 @@ test('handleRawContentRequest falls back to public files when authenticated acce
     });
   };
 
-  const request = new Request('https://agenttools.dev/raw/slices/sl-123/README.md', {
+  const request = new Request('https://agenttools.dev/raw/slices/sl_123/README.md', {
     headers: { Authorization: 'User nic' },
   });
-  const response = await handleRawContentRequest(request, 'slices/sl-123/README.md');
+  const response = await handleRawContentRequest(request, 'slices/sl_123/README.md');
 
   assert.deepEqual(calls, [
-    'http://api.test/v1/slices/sl-123/files/README.md',
-    'http://api.test/v1/public/files/README.md?slice_id=sl-123',
+    'http://api.test/v1/slices/sl_123/files/README.md',
+    'http://api.test/v1/public/files/README.md?slice_id=sl_123',
   ]);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'public, no-cache');
@@ -188,7 +188,7 @@ test('handleRawContentRequest returns 304 for matching raw ETags', async () => {
     },
   });
 
-  const request = new Request('https://agenttools.dev/raw/public/README.md?slice_id=sl-123', {
+  const request = new Request('https://agenttools.dev/raw/public/README.md?slice_id=sl_123', {
     headers: { 'If-None-Match': '"public-hash"' },
   });
   const response = await handleRawContentRequest(request, 'public/README.md');
@@ -208,7 +208,7 @@ test('handleRawContentRequest handles HEAD without a response body', async () =>
     },
   });
 
-  const request = new Request('https://agenttools.dev/raw/public/README.md?slice_id=sl-123', {
+  const request = new Request('https://agenttools.dev/raw/public/README.md?slice_id=sl_123', {
     method: 'HEAD',
   });
   const response = await handleRawContentRequest(request, 'public/README.md');

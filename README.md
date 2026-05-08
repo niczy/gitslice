@@ -345,8 +345,8 @@ gs fs snapshot -m "checkpoint"
 Each `gs fs` mutation creates a home-slice commit and publishes it through the same slice changeset merge flow used by `gs changeset merge`. If you want the local workflow, check out the same home slice and inspect the merged publish history there:
 
 ```bash
-gs slice checkout home.<username>
-cd home.<username>
+gs slice checkout home_<username>
+cd home_<username>
 gs changeset list --status merged
 ```
 
@@ -490,7 +490,7 @@ Search index maintenance:
 
 This repo uses Clerk-backed human web sign-in, browser-approved CLI device login for humans, and enrolled `ed25519` keys for non-interactive agent auth. Requests include the signed-in user in metadata.
 
-- The root slice (`root_slice`) is publicly viewable.
+- The root slice (`root`) is publicly viewable.
 - Non-root slices are only visible/accessible to their owners.
 - Organizations are user-created groups shown on the profile page (no invites yet).
 

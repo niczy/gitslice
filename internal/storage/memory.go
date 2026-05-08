@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/niczy/gitslice/internal/ids"
 	"github.com/niczy/gitslice/internal/models"
 )
 
@@ -168,7 +169,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		nextAuditID:                      1,
 		nextChangesetSeq:                 1,
 		globalState: &models.GlobalState{
-			GlobalCommitHash: "global-init",
+			GlobalCommitHash: ids.GenerateInitialCommitID(ids.RootSliceID),
 			Timestamp:        time.Now(),
 			History:          []*models.GlobalCommit{},
 		},
@@ -331,7 +332,7 @@ func (s *InMemoryStorage) CreateSlice(ctx context.Context, slice *models.Slice) 
 	s.slices[slice.ID] = slice
 
 	// Initialize metadata with initial commit hash
-	initialCommitHash := fmt.Sprintf("init-%s", slice.ID)
+	initialCommitHash := ids.GenerateInitialCommitID(slice.ID)
 	s.sliceMetadata[slice.ID] = &models.SliceMetadata{
 		SliceID:            slice.ID,
 		HeadCommitHash:     initialCommitHash,
@@ -1081,7 +1082,7 @@ func (s *InMemoryStorage) nextChangesetIDLocked() string {
 			s.nextChangesetSeq = maxSeen + 1
 		}
 	}
-	id := fmt.Sprintf("cs-global-%d", s.nextChangesetSeq)
+	id := fmt.Sprintf("chg_%d", s.nextChangesetSeq)
 	s.nextChangesetSeq++
 	return id
 }
@@ -1090,11 +1091,8 @@ func parseGlobalChangesetSeq(id string) (int64, bool) {
 	rawID := strings.TrimSpace(id)
 	var raw string
 	switch {
-	case strings.HasPrefix(rawID, "cs-global-"):
-		raw = strings.TrimSpace(strings.TrimPrefix(rawID, "cs-global-"))
-	case strings.HasPrefix(rawID, "cs-"):
-		// Backward compatibility for existing IDs.
-		raw = strings.TrimSpace(strings.TrimPrefix(rawID, "cs-"))
+	case strings.HasPrefix(rawID, "chg_"):
+		raw = strings.TrimSpace(strings.TrimPrefix(rawID, "chg_"))
 	default:
 		return 0, false
 	}
@@ -1554,7 +1552,7 @@ func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
 	}
 
 	rootSlice := &models.Slice{
-		ID:          "root_slice",
+		ID:          ids.RootSliceID,
 		Name:        "Root Slice",
 		Slug:        "root",
 		Description: "The root slice containing all files",
@@ -1572,7 +1570,7 @@ func (s *InMemoryStorage) InitializeRootSlice(ctx context.Context) error {
 	s.slices[rootSlice.ID] = rootSlice
 	s.sliceMetadata[rootSlice.ID] = &models.SliceMetadata{
 		SliceID:            rootSlice.ID,
-		HeadCommitHash:     "root-initial",
+		HeadCommitHash:     ids.GenerateInitialCommitID(rootSlice.ID),
 		ModifiedFiles:      []string{},
 		LastModified:       now,
 		ModifiedFilesCount: 0,

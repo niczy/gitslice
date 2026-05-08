@@ -18,14 +18,14 @@ func TestCheckoutRegistryRegisterListAndRemove(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(secondDir, ".gs"), 0o755); err != nil {
 		t.Fatalf("mkdir second checkout: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(firstDir, ".gs", "config"), []byte("home.tester"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(firstDir, ".gs", "config"), []byte("home_tester"), 0o600); err != nil {
 		t.Fatalf("write first config: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(secondDir, ".gs", "config"), []byte("slice.ui"), 0o600); err != nil {
 		t.Fatalf("write second config: %v", err)
 	}
 
-	if err := registerCheckout(firstDir, "home.tester", "commit-1"); err != nil {
+	if err := registerCheckout(firstDir, "home_tester", "commit-1"); err != nil {
 		t.Fatalf("register first checkout: %v", err)
 	}
 	if err := registerCheckout(secondDir, "slice.ui", "commit-2"); err != nil {
@@ -58,7 +58,7 @@ func TestCheckoutRegistryRegisterListAndRemove(t *testing.T) {
 	if got, want := len(records), 1; got != want {
 		t.Fatalf("expected %d records after remove, got %d", want, got)
 	}
-	if records[0].SliceID != "home.tester" {
+	if records[0].SliceID != "home_tester" {
 		t.Fatalf("unexpected remaining slice ID: %s", records[0].SliceID)
 	}
 }
@@ -72,13 +72,13 @@ func TestCheckoutRegistryPruneStaleRecords(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(activeDir, ".gs"), 0o755); err != nil {
 		t.Fatalf("mkdir active checkout: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(activeDir, ".gs", "config"), []byte("home.active"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(activeDir, ".gs", "config"), []byte("home_active"), 0o600); err != nil {
 		t.Fatalf("write active config: %v", err)
 	}
-	if err := registerCheckout(activeDir, "home.active", "commit-active"); err != nil {
+	if err := registerCheckout(activeDir, "home_active", "commit-active"); err != nil {
 		t.Fatalf("register active checkout: %v", err)
 	}
-	if err := registerCheckout(staleDir, "home.stale", "commit-stale"); err != nil {
+	if err := registerCheckout(staleDir, "home_stale", "commit-stale"); err != nil {
 		t.Fatalf("register stale checkout: %v", err)
 	}
 

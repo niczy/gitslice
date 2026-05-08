@@ -154,7 +154,7 @@ func TestGatewaySliceActivityLists(t *testing.T) {
 	mergedAt := now.Add(2 * time.Minute)
 	changesets := []*models.Changeset{
 		{
-			ID:             "cs-pending",
+			ID:             "chg_pending",
 			Hash:           "hash-pending",
 			SliceID:        slice.ID,
 			BaseCommitHash: "commit-new",
@@ -165,7 +165,7 @@ func TestGatewaySliceActivityLists(t *testing.T) {
 			CreatedAt:      now,
 		},
 		{
-			ID:             "cs-merged",
+			ID:             "chg_merged",
 			Hash:           "hash-merged",
 			SliceID:        slice.ID,
 			BaseCommitHash: "commit-old",
@@ -269,8 +269,8 @@ func TestGatewaySliceActivityLists(t *testing.T) {
 	if got, want := len(mergedPayload.Changesets), 1; got != want {
 		t.Fatalf("expected %d merged changeset, got %d", want, got)
 	}
-	if mergedPayload.Changesets[0].ChangesetID != "cs-merged" {
-		t.Fatalf("expected cs-merged, got %#v", mergedPayload.Changesets)
+	if mergedPayload.Changesets[0].ChangesetID != "chg_merged" {
+		t.Fatalf("expected chg_merged, got %#v", mergedPayload.Changesets)
 	}
 }
 

@@ -8,11 +8,17 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/google/uuid"
+	"github.com/niczy/gitslice/internal/ids"
 	"github.com/niczy/gitslice/internal/storage"
 )
 
 const GenesisMountPath = "/o/genesis/projects/gitslice"
+const RootSliceID = ids.RootSliceID
+const ChangesetIDPrefix = ids.ChangesetIDPrefix
+const CommitIDPrefix = ids.CommitIDPrefix
+const ChangesetVersionIDPrefix = ids.ChangesetVersionIDPrefix
+const ChangesetSnapshotIDPrefix = ids.ChangesetSnapshotIDPrefix
+const FileChangeIDPrefix = ids.FileChangeIDPrefix
 
 // EnsureRootSliceInitialized initializes the root slice if it doesn't exist.
 // It returns an error only if initialization fails critically.
@@ -72,9 +78,39 @@ func GenerateEntryID(sliceID, path string) string {
 	return fmt.Sprintf("%s:%s", sliceID, path)
 }
 
-// GenerateSliceID creates a new unique slice ID with a "sl-" prefix followed by a UUID.
+// GenerateSliceID creates a new opaque custom-slice ID.
 func GenerateSliceID() string {
-	return "sl-" + uuid.New().String()
+	return ids.GenerateSliceID()
+}
+
+// GenerateCommitID creates an opaque synthetic commit ID.
+func GenerateCommitID() string {
+	return ids.GenerateCommitID()
+}
+
+// GenerateInitialCommitID creates a deterministic initial commit ID for a slice.
+func GenerateInitialCommitID(sliceID string) string {
+	return ids.GenerateInitialCommitID(sliceID)
+}
+
+// IsInitialCommitID reports whether an ID is a deterministic slice-initial marker.
+func IsInitialCommitID(commitID string) bool {
+	return ids.IsInitialCommitID(commitID)
+}
+
+// GenerateChangesetVersionHash creates an opaque version marker for changeset contents.
+func GenerateChangesetVersionHash() string {
+	return ids.GenerateChangesetVersionHash()
+}
+
+// GenerateChangesetSnapshotID creates a deterministic ID for one changeset version.
+func GenerateChangesetSnapshotID(changesetID string, version int64) string {
+	return ids.GenerateChangesetSnapshotID(changesetID, version)
+}
+
+// GenerateFileChangeID creates a stable private ID for a path within one commit.
+func GenerateFileChangeID(commitID, filePath string) string {
+	return ids.GenerateFileChangeID(commitID, filePath)
 }
 
 // NormalizeSlicePath prefixes a repo-relative file path with the genesis mount path.

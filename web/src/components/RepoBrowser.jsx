@@ -286,19 +286,19 @@ export default function RepoBrowser({
     const normalizedRequested = requested.toLowerCase();
     if (
       normalizedAuthUsername &&
-      (normalizedRequested === normalizedAuthUsername || normalizedRequested === `home.${normalizedAuthUsername}`)
+      (normalizedRequested === normalizedAuthUsername || normalizedRequested === `home_${normalizedAuthUsername}`)
     ) {
-      return `home.${normalizedAuthUsername}`;
+      return `home_${normalizedAuthUsername}`;
     }
 
     const candidateIds = [requested];
-    if (requested.startsWith('home.')) {
-      const suffix = requested.slice('home.'.length).trim();
+    if (requested.startsWith('home_')) {
+      const suffix = requested.slice('home_'.length).trim();
       if (suffix) {
-        candidateIds.push(`home.${suffix.toLowerCase()}`);
+        candidateIds.push(`home_${suffix.toLowerCase()}`);
       }
     } else {
-      candidateIds.push(`home.${requested.toLowerCase()}`);
+      candidateIds.push(`home_${requested.toLowerCase()}`);
     }
 
     for (const candidateId of candidateIds) {
@@ -337,7 +337,7 @@ export default function RepoBrowser({
     if (
       normalizedAuthUsername
       && normalizedRawSliceId === normalizedAuthUsername
-      && normalizedSliceId === `home.${normalizedAuthUsername}`
+      && normalizedSliceId === `home_${normalizedAuthUsername}`
     ) {
       return;
     }
@@ -348,13 +348,13 @@ export default function RepoBrowser({
     return slices.find((slice) => slice.slice_id === sliceId) || null;
   }, [slices, sliceId]);
 
-  const canLoad = sliceId !== '' && (sliceId === 'root_slice' || Boolean(String(authUsername || '').trim()));
+  const canLoad = sliceId !== '' && (sliceId === 'root' || Boolean(String(authUsername || '').trim()));
 
   const currentSliceLabel = useMemo(() => {
     if (currentSlice?.name) {
       return currentSlice.name;
     }
-    return sliceId === 'root_slice' ? 'Root Slice' : sliceId;
+    return sliceId === 'root' ? 'Root Slice' : sliceId;
   }, [currentSlice, sliceId]);
 
   const currentSliceDisplayName = useMemo(() => {

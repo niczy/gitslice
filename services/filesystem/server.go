@@ -4763,7 +4763,7 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 	}
 
 	now := time.Now()
-	commitHash := fmt.Sprintf("fs-%d", now.UnixNano())
+	commitHash := common.GenerateCommitID()
 	if err := s.storage.AddSliceCommit(ctx, workspace.ID, &models.Commit{
 		CommitHash: commitHash,
 		ParentHash: meta.HeadCommitHash,
@@ -4822,7 +4822,7 @@ func (s *filesystemServiceServer) recordWorkspaceFileChanges(ctx context.Context
 		handledPaths[rename.oldPath] = struct{}{}
 		handledPaths[rename.newPath] = struct{}{}
 		changes = append(changes, &models.FileChangeRecord{
-			ID:         fmt.Sprintf("%s-%s", commitHash, rename.newPath),
+			ID:         common.GenerateFileChangeID(commitHash, rename.newPath),
 			SliceID:    workspace.ID,
 			CommitHash: commitHash,
 			Path:       rename.newPath,
@@ -4883,7 +4883,7 @@ func (s *filesystemServiceServer) recordWorkspaceFileChanges(ctx context.Context
 			_, linesAdded, linesDeleted = s.buildFilesystemDiffPatch(ctx, filePath, oldHash, newHash)
 		}
 		changes = append(changes, &models.FileChangeRecord{
-			ID:           fmt.Sprintf("%s-%s", commitHash, filePath),
+			ID:           common.GenerateFileChangeID(commitHash, filePath),
 			SliceID:      workspace.ID,
 			CommitHash:   commitHash,
 			Path:         filePath,
