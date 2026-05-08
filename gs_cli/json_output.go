@@ -153,12 +153,24 @@ type jsonMergeConflict struct {
 	Message             string   `json:"message,omitempty"`
 }
 
+type jsonProjectionStatus struct {
+	ProjectionName string `json:"projection_name"`
+	ShardID        int32  `json:"shard_id"`
+	RequestedSeq   int64  `json:"requested_seq"`
+	AppliedSeq     int64  `json:"applied_seq"`
+	State          string `json:"state"`
+}
+
 type jsonMergeOutput struct {
-	ChangesetID   string              `json:"changeset_id,omitempty"`
-	Status        string              `json:"status"`
-	NewCommitHash string              `json:"new_commit_hash,omitempty"`
-	Message       string              `json:"message,omitempty"`
-	Conflicts     []jsonMergeConflict `json:"conflicts,omitempty"`
+	ChangesetID   string                 `json:"changeset_id,omitempty"`
+	Status        string                 `json:"status"`
+	NewCommitHash string                 `json:"new_commit_hash,omitempty"`
+	Message       string                 `json:"message,omitempty"`
+	MergeHomeID   string                 `json:"merge_home_id,omitempty"`
+	MergeShard    int32                  `json:"merge_shard,omitempty"`
+	MergeSeq      int64                  `json:"merge_seq,omitempty"`
+	Projections   []jsonProjectionStatus `json:"projections,omitempty"`
+	Conflicts     []jsonMergeConflict    `json:"conflicts,omitempty"`
 }
 
 type jsonChangesetRebaseOutput struct {
@@ -865,6 +877,21 @@ func buildMergeOutput(resp *slicev1.MergeChangesetResponse) *jsonMergeOutput {
 		Status:        resp.GetStatus().String(),
 		NewCommitHash: resp.GetNewCommitHash(),
 		Message:       resp.GetMessage(),
+		MergeHomeID:   resp.GetMergeHomeId(),
+		MergeShard:    resp.GetMergeShard(),
+		MergeSeq:      resp.GetMergeSeq(),
+	}
+	for _, projection := range resp.GetProjections() {
+		if projection == nil {
+			continue
+		}
+		output.Projections = append(output.Projections, jsonProjectionStatus{
+			ProjectionName: projection.GetProjectionName(),
+			ShardID:        projection.GetShardId(),
+			RequestedSeq:   projection.GetRequestedSeq(),
+			AppliedSeq:     projection.GetAppliedSeq(),
+			State:          projection.GetState().String(),
+		})
 	}
 	output.Conflicts = buildMergeConflicts(resp.GetConflicts())
 	return output

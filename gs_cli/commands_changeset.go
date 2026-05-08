@@ -498,6 +498,15 @@ func printMergeResult(resp *slicev1.MergeChangesetResponse) {
 	if resp.GetNewCommitHash() != "" {
 		fmt.Printf("New commit: %s\n", resp.GetNewCommitHash())
 	}
+	if resp.GetMergeSeq() > 0 {
+		fmt.Printf("Projection token: %s shard=%d seq=%d\n", resp.GetMergeHomeId(), resp.GetMergeShard(), resp.GetMergeSeq())
+		for _, projection := range resp.GetProjections() {
+			if projection == nil {
+				continue
+			}
+			fmt.Printf("Projection %s: %s (applied=%d requested=%d)\n", projection.GetProjectionName(), projection.GetState().String(), projection.GetAppliedSeq(), projection.GetRequestedSeq())
+		}
+	}
 	if message := strings.TrimSpace(resp.GetMessage()); message != "" {
 		fmt.Printf("Message: %s\n", message)
 	}

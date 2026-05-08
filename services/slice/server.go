@@ -1451,6 +1451,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 
 	var promotionCommitHash string
 	var promotionCommitTime time.Time
+	var acceptedMergeEvent *models.MergeEvent
 	finalizeStartedAt := time.Now()
 	if err := withMergeStorage(ctx, s.storage, func(st storage.Storage) error {
 		if len(appliedRevertChanges) == 0 {
@@ -1483,9 +1484,11 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
 				promotionCommitTime = existingCommit.Timestamp
 			}
-			if err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
+			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, modifiedFiles, promotionCommitTime)
+			if err != nil {
 				return fmt.Errorf("failed to append merge event: %w", err)
 			}
+			acceptedMergeEvent = event
 			return nil
 		}
 
@@ -1513,9 +1516,11 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		if err := s.recordFileChangesWithStorage(ctx, st, cs, newCommit, parentHash, now); err != nil {
 			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
 		}
-		if err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, modifiedFiles, now); err != nil {
+		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, modifiedFiles, now)
+		if err != nil {
 			return fmt.Errorf("failed to append merge event: %w", err)
 		}
+		acceptedMergeEvent = event
 		return nil
 	}); err != nil {
 		profile.markFinalize(time.Since(finalizeStartedAt))
@@ -1559,31 +1564,35 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		NewCommitHash: newCommit,
 		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
+		MergeHomeId:   mergeEventHomeIDFromEvent(acceptedMergeEvent),
+		MergeShard:    mergeEventShardFromEvent(acceptedMergeEvent),
+		MergeSeq:      mergeEventSeqFromEvent(acceptedMergeEvent),
+		Projections:   s.mergeProjectionStatuses(ctx, acceptedMergeEvent),
 	}, nil
 }
 
 const mergeEventShardCount = 1024
 
-func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, modifiedFiles []string, mergedAt time.Time) error {
+func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, modifiedFiles []string, mergedAt time.Time) (*models.MergeEvent, error) {
 	eventStore, ok := st.(storage.MergeEventStore)
 	if !ok || cs == nil {
-		return nil
+		return nil, nil
 	}
 	homeID := mergeEventHomeID(sourceSlice, cs, modifiedFiles)
 	shardID := mergeEventShardID(homeID)
 	mergeSeq, err := eventStore.NextMergeEventSequence(ctx, shardID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	paths := normalizeModifiedFiles(modifiedFiles)
 	fileHashes, err := getFileManifestHashes(ctx, st, cs.SliceID, paths)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	existingEntries, err := getExistingEntriesByPaths(ctx, st, cs.SliceID, paths)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	pathUpdates := make([]*models.MergePathUpdate, 0, len(paths))
@@ -1607,7 +1616,7 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 	if author == "" {
 		author = "system"
 	}
-	return eventStore.AppendMergeEvent(ctx, &models.MergeEvent{
+	event := &models.MergeEvent{
 		HomeID:           homeID,
 		ShardID:          shardID,
 		MergeSeq:         mergeSeq,
@@ -1620,7 +1629,11 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		TouchedPaths:     paths,
 		PathUpdates:      pathUpdates,
 		CreatedAt:        mergedAt,
-	})
+	}
+	if err := eventStore.AppendMergeEvent(ctx, event); err != nil {
+		return nil, err
+	}
+	return event, nil
 }
 
 func mergeEventHomeID(sourceSlice *models.Slice, cs *models.Changeset, modifiedFiles []string) string {

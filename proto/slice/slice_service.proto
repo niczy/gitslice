@@ -37,6 +37,13 @@ service SliceService {
     };
   }
 
+  // Inspect or wait for a projection to catch up to a merge sequence.
+  rpc GetProjectionStatus(GetProjectionStatusRequest) returns (ProjectionStatus) {
+    option (google.api.http) = {
+      get: "/v1/projections/{projection_name}/status"
+    };
+  }
+
   // Close a pending/approved changeset without merging.
   rpc CloseChangeset(CloseChangesetRequest) returns (CloseChangesetResponse) {
     option (google.api.http) = {
@@ -352,6 +359,31 @@ message MergeChangesetResponse {
   string changeset_id = 3;
   repeated Conflict conflicts = 4;
   string message = 5;
+  string merge_home_id = 6;
+  int32 merge_shard = 7;
+  int64 merge_seq = 8;
+  repeated ProjectionStatus projections = 9;
+}
+
+message GetProjectionStatusRequest {
+  string projection_name = 1;
+  int32 shard_id = 2;
+  int64 merge_seq = 3;
+  int32 wait_ms = 4;
+}
+
+message ProjectionStatus {
+  string projection_name = 1;
+  int32 shard_id = 2;
+  int64 requested_seq = 3;
+  int64 applied_seq = 4;
+  ProjectionState state = 5;
+}
+
+enum ProjectionState {
+  PROJECTION_STATE_UNSPECIFIED = 0;
+  PROJECTION_STATE_CAUGHT_UP = 1;
+  PROJECTION_STATE_PENDING = 2;
 }
 
 enum MergeStatus {

@@ -2247,6 +2247,15 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		t.Fatalf("expected merge success, got %v", resp.GetStatus())
 	}
+	if resp.GetMergeHomeId() != "alice" || resp.GetMergeSeq() <= 0 {
+		t.Fatalf("expected merge freshness token, got home=%q shard=%d seq=%d", resp.GetMergeHomeId(), resp.GetMergeShard(), resp.GetMergeSeq())
+	}
+	if len(resp.GetProjections()) != 1 || resp.GetProjections()[0].GetProjectionName() != durablePromotionProjectionName {
+		t.Fatalf("expected root promotion projection status, got %#v", resp.GetProjections())
+	}
+	if resp.GetProjections()[0].GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
+		t.Fatalf("expected projection to be pending before queued promotion drains, got %v", resp.GetProjections()[0].GetState())
+	}
 
 	event, err := st.GetMergeEventByChangeset(ctx, cs.ID)
 	if err != nil {
@@ -2257,6 +2266,9 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	}
 	if event.SourceSliceID != slice.ID || event.SourceCommitHash != resp.GetNewCommitHash() {
 		t.Fatalf("unexpected event source: %#v", event)
+	}
+	if event.ShardID != resp.GetMergeShard() || event.MergeSeq != resp.GetMergeSeq() {
+		t.Fatalf("response token does not match event: resp shard=%d seq=%d event=%#v", resp.GetMergeShard(), resp.GetMergeSeq(), event)
 	}
 	if len(event.TouchedPaths) != 1 || event.TouchedPaths[0] != filePath {
 		t.Fatalf("unexpected touched paths: %#v", event.TouchedPaths)
@@ -3548,6 +3560,17 @@ func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T)
 	}
 
 	srv := newSliceServiceServer(base)
+	statusResp, err := srv.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
+		ProjectionName: durablePromotionProjectionName,
+		ShardId:        event.ShardID,
+		MergeSeq:       event.MergeSeq,
+	})
+	if err != nil {
+		t.Fatalf("GetProjectionStatus before promotion failed: %v", err)
+	}
+	if statusResp.GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
+		t.Fatalf("expected projection pending before durable worker, got %v", statusResp.GetState())
+	}
 	processed, err := srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 10})
 	if err != nil {
 		t.Fatalf("processDurablePromotionOnce failed: %v", err)
@@ -3576,6 +3599,17 @@ func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T)
 	}
 	if offset.MergeSeq != event.MergeSeq {
 		t.Fatalf("expected projection offset %d, got %d", event.MergeSeq, offset.MergeSeq)
+	}
+	statusResp, err = srv.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
+		ProjectionName: durablePromotionProjectionName,
+		ShardId:        event.ShardID,
+		MergeSeq:       event.MergeSeq,
+	})
+	if err != nil {
+		t.Fatalf("GetProjectionStatus after promotion failed: %v", err)
+	}
+	if statusResp.GetState() != slicev1.ProjectionState_PROJECTION_STATE_CAUGHT_UP || statusResp.GetAppliedSeq() != event.MergeSeq {
+		t.Fatalf("expected projection caught up after durable worker, got %#v", statusResp)
 	}
 	processed, err = srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 10})
 	if err != nil {

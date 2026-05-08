@@ -972,6 +972,17 @@ Scope:
 - Add optional wait behavior for CLI/tests that need read-after-merge
   materialization.
 
+Implemented API shape:
+
+```text
+MergeChangesetResponse.merge_home_id
+MergeChangesetResponse.merge_shard
+MergeChangesetResponse.merge_seq
+MergeChangesetResponse.projections[]
+
+GET /v1/projections/{projection_name}/status?shard_id=N&merge_seq=N&wait_ms=N
+```
+
 Validation:
 
 - A client can merge, wait for home/root projection to reach the returned
