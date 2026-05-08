@@ -14,6 +14,11 @@ type mergeJSON struct {
 	NewCommitHash string `json:"new_commit_hash"`
 }
 
+type changesetCloseJSON struct {
+	ChangesetID string `json:"changeset_id"`
+	Status      string `json:"status"`
+}
+
 type changesetRebaseJSON struct {
 	ChangesetID         string   `json:"changeset_id"`
 	Status              string   `json:"status"`
@@ -173,8 +178,9 @@ type changesetReviewJSON struct {
 
 type slicePublishJSON struct {
 	Changeset struct {
-		ChangesetID string `json:"changeset_id"`
-		Status      string `json:"status"`
+		ChangesetID   string   `json:"changeset_id"`
+		Status        string   `json:"status"`
+		ModifiedFiles []string `json:"modified_files"`
 	} `json:"changeset"`
 	Review struct {
 		ChangesetID  string `json:"changeset_id"`

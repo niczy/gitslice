@@ -323,6 +323,22 @@ func TestSliceWorkflowCommands(t *testing.T) {
 		t.Fatalf("expected doctor JSON output sections, got: %+v", doctorResp)
 	}
 
+	localChangeset := runCLIJSONOrFail[changesetCreateJSON](t, checkoutDir, "changeset", "create", "--message", "review local update")
+	if localChangeset.ChangesetID == "" {
+		t.Fatalf("expected local changeset ID, got: %+v", localChangeset)
+	}
+	localReview := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--patches")
+	assertChangesetReviewPatch(t, localReview, localChangeset.ChangesetID, 1, filePath, "seed workflow folder", "updated locally")
+
+	closeResp := runCLIJSONOrFail[changesetCloseJSON](t, checkoutDir, "changeset", "close", "--json")
+	if closeResp.ChangesetID != localChangeset.ChangesetID || closeResp.Status != "REJECTED" {
+		t.Fatalf("expected tracked changeset close response, got: %+v", closeResp)
+	}
+	closedStatusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status")
+	if closedStatusResp.TrackedChangesetID != "" {
+		t.Fatalf("expected tracked changeset to clear after close, got: %+v", closedStatusResp)
+	}
+
 	deleteResp := runCLIJSONOrFail[sliceDeleteJSON](t, "", "slice", "delete", sliceSlug)
 	if deleteResp.SliceID != sliceID || deleteResp.Status == "" {
 		t.Fatalf("expected delete output, got: %+v", deleteResp)
@@ -596,6 +612,10 @@ func TestSliceExportThenTrackedChangesetMergeAppendsCommitAndUpdatesTree(t *test
 	if committedContent != updatedContent {
 		t.Fatalf("expected committed file content %q, got %q", updatedContent, committedContent)
 	}
+	committedContentTrailingFlags := runCLIOrFail(t, checkoutDir, "file", "cat", fileRel, "--slice", sliceID, "--commit", mergeResp.NewCommitHash, "--raw")
+	if committedContentTrailingFlags != updatedContent {
+		t.Fatalf("expected committed file content with trailing flags %q, got %q", updatedContent, committedContentTrailingFlags)
+	}
 
 	statusResp := runCLIJSONOrFail[sliceStatusJSON](t, checkoutDir, "slice", "status")
 	if statusResp.TrackedChangesetID != "" {
@@ -630,8 +650,14 @@ func TestChangesetCreateWorksWithoutGitCheckout(t *testing.T) {
 		t.Fatalf("expected changeset ID, got: %+v", createResp)
 	}
 
-	showResp := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show")
-	if showResp.ChangesetID != createResp.ChangesetID || showResp.Diff.FilesAdded != 1 || showResp.Diff.FilesModified != 0 || showResp.Diff.FilesDeleted != 0 {
+	showResp := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--patches")
+	if showResp.ChangesetID != createResp.ChangesetID ||
+		showResp.Diff.FilesAdded != 0 ||
+		showResp.Diff.FilesModified != 1 ||
+		showResp.Diff.FilesDeleted != 0 ||
+		len(showResp.Changes) != 1 ||
+		!strings.Contains(showResp.Changes[0].ChangeType, "MODIFY") ||
+		!strings.Contains(showResp.Changes[0].Patch, "+// no-git changeset create") {
 		t.Fatalf("expected changeset show to include modified file, got: %+v", showResp)
 	}
 }

@@ -367,19 +367,20 @@ gs slice restore --dry-run
 gs slice restore
 gs slice sync
 gs slice export --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset show --patches
 gs changeset merge
 # Or export and merge in one step:
 gs slice publish --message "refresh settings page"
 ```
 
-`gs slice export` creates or updates the tracked changeset without merging it. `gs changeset create` always starts a fresh changeset; if the checkout already tracks one, use `gs slice export` to append another version or pass `--replace-tracked` to replace the local association. `gs changeset merge` uses the changeset tracked by the current checkout when no ID is passed. `gs slice publish` is the convenience form for export plus merge; if the working tree is already clean but a tracked changeset exists, it reuses that tracked changeset instead of failing.
+`gs slice export` creates or updates the tracked changeset without merging it. `gs changeset create` always starts a fresh changeset; if the checkout already tracks one, use `gs slice export` to append another version or pass `--replace-tracked` to replace the local association. `gs changeset merge` uses the changeset tracked by the current checkout when no ID is passed. `gs changeset close` closes the tracked changeset without merging and clears the local association. `gs slice publish` is the convenience form for export plus merge; if the working tree is already clean but a tracked changeset exists, it reuses that tracked changeset instead of failing.
 
 Useful day-to-day helpers:
 
 ```bash
 gs slice tree
 gs slice diff --name-only
-gs changeset show
+gs changeset show --patches
 gs doctor
 gs repo import https://github.com/org/repo.git /$USER/vendor/repo --push-enabled
 gs repo pull /$USER/vendor/repo

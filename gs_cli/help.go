@@ -277,6 +277,7 @@ func printChangesetHelp() {
 	fmt.Println("  show      Show the tracked or specified changeset")
 	fmt.Println("  review    Review a changeset")
 	fmt.Println("  merge     Merge a changeset into the slice")
+	fmt.Println("  close     Close a changeset without merging")
 	fmt.Println("  rebase    Rebase a changeset onto the latest slice head")
 	fmt.Println("  list      List changesets for the current slice")
 	fmt.Println("\nExamples:")
@@ -286,6 +287,7 @@ func printChangesetHelp() {
 	fmt.Println("  gs changeset review cs_123 --json")
 	fmt.Println("  gs changeset rebase cs_123 --json")
 	fmt.Println("  gs changeset merge --json")
+	fmt.Println("  gs changeset close --json")
 }
 
 func printConflictHelp() {

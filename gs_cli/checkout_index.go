@@ -339,7 +339,7 @@ func detectCheckoutMode(dir string) (*localCheckoutIndex, error) {
 }
 
 func detectNoGitModifiedFiles(dir string, index *localCheckoutIndex) ([]string, error) {
-	entries, err := collectNoGitWorkingTreeStatus(dir, index)
+	entries, err := collectNoGitWorkingTreeStatusFullScan(dir, index)
 	if err != nil {
 		return nil, err
 	}

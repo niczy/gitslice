@@ -95,8 +95,9 @@ Use this when you are ready to review and merge local slice work. Add `--review-
 
 ```sh
 gs slice sync
-gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset show
+gs slice export --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset show --patches
+gs changeset merge
 ```
 
 ## Cloud filesystem
@@ -143,19 +144,22 @@ gs slice tree
 gs slice diff
 gs slice restore
 gs slice sync
-gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset show
+gs slice export --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset show --patches
+gs changeset merge
 ```
 
 ## Changesets
 
-Publish local work through a tracked changeset. Changesets are the publish unit for checked-out slices. `gs slice export` creates or updates the checkout's tracked changeset without merging; `gs slice publish` does the same export and then merges by default. `gs changeset create` starts a fresh changeset and refuses to replace an already tracked one unless you pass `--replace-tracked`.
+Publish local work through a tracked changeset. Changesets are the publish unit for checked-out slices. `gs slice export` creates or updates the checkout's tracked changeset without merging; `gs slice publish` does the same export and then merges by default. `gs changeset create` starts a fresh changeset and refuses to replace an already tracked one unless you pass `--replace-tracked`. `gs changeset merge` and `gs changeset close` use the checkout's tracked changeset when no ID is passed.
 
 ```sh
 $EDITOR src/routes/settings.tsx
-gs slice publish --message "refresh settings page" --files src/routes/settings.tsx
-gs changeset show
+gs slice export --message "refresh settings page" --files src/routes/settings.tsx
+gs changeset show --patches
+gs changeset merge
 gs slice publish --review-only --message "stage for review" --files src/routes/settings.tsx
+gs changeset close
 gs changeset list --status merged
 ```
 

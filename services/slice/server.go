@@ -1117,12 +1117,16 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if !authz.HasSliceViewAccess(slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 		}
+		baseCommitHash := strings.TrimSpace(req.BaseCommitHash)
+		if baseCommitHash == "" {
+			baseCommitHash = strings.TrimSpace(existing.BaseCommitHash)
+		}
 		if err := s.applyChangesetFileContents(ctx, existing.SliceID, fileContents); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
 		}
 
 		existing.Hash = fmt.Sprintf("hash-%d", time.Now().UnixNano())
-		existing.BaseCommitHash = req.BaseCommitHash
+		existing.BaseCommitHash = baseCommitHash
 		existing.ModifiedFiles = modifiedFiles
 		existing.Author = username
 		existing.Message = req.Message
@@ -1167,7 +1171,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		ID:             id,
 		Hash:           hash,
 		SliceID:        req.SliceId,
-		BaseCommitHash: req.BaseCommitHash,
+		BaseCommitHash: strings.TrimSpace(req.BaseCommitHash),
 		ModifiedFiles:  modifiedFiles,
 		Status:         models.ChangesetStatusPending,
 		Author:         username,
@@ -2723,6 +2727,18 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 	if err != nil {
 		return err
 	}
+	existingEntries, err := getExistingEntriesByPaths(ctx, s.storage, cs.SliceID, modifiedFiles)
+	if err != nil {
+		return err
+	}
+	snapshotFileHashes := make(map[string]string, len(fileHashes))
+	for _, rawPath := range modifiedFiles {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" || !existingEntries[filePath] {
+			continue
+		}
+		snapshotFileHashes[filePath] = strings.TrimSpace(fileHashes[filePath])
+	}
 
 	snapshot := &models.ChangesetSnapshot{
 		ID:             fmt.Sprintf("%s-snapshot-%d", cs.ID, nextVersion),
@@ -2731,7 +2747,7 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 		Hash:           cs.Hash,
 		BaseCommitHash: cs.BaseCommitHash,
 		ModifiedFiles:  modifiedFiles,
-		FileHashes:     normalizeSnapshotFileHashes(fileHashes),
+		FileHashes:     normalizeSnapshotFileHashes(snapshotFileHashes),
 		Author:         cs.Author,
 		Message:        cs.Message,
 		CreatedAt:      time.Now(),
@@ -4039,9 +4055,17 @@ func (s *sliceServiceServer) createCommitSnapshotWithStorage(ctx context.Context
 	if err != nil {
 		return fmt.Errorf("failed to load changed file manifests for snapshot: %w", err)
 	}
+	existingEntries, err := getExistingEntriesByPaths(ctx, st, sliceID, normalizeModifiedFiles(modifiedFiles))
+	if err != nil {
+		return fmt.Errorf("failed to load changed file entries for snapshot: %w", err)
+	}
 	for _, rawPath := range normalizeModifiedFiles(modifiedFiles) {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
+			continue
+		}
+		if !existingEntries[filePath] {
+			delete(files, filePath)
 			continue
 		}
 

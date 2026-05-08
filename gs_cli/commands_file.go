@@ -124,7 +124,7 @@ func handleFileCat(ctx context.Context, cli *CLI, args []string) {
 	commitFlag := fs.String("commit", "", "Commit hash")
 	raw := fs.Bool("raw", false, "Write file bytes only")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	parseCommandFlags(fs, args)
+	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	if fs.NArg() != 1 {
