@@ -45,7 +45,7 @@ Expected output:
 === Load Test Results ===
 Users simulated:   100000
 Workers:           16
-Elapsed:           28.43 s
+Elapsed:           28.43 s (foreground workflow)
 Throughput:        3516.8 users/sec
 
 Outcomes:
@@ -60,6 +60,8 @@ End-to-end latency per user (ms):
   Max:  38.11
 
 ...
+
+Promotion drain elapsed: 0.00 s
 
 Integrity OK: all 1000 sampled users passed
 ```
@@ -103,6 +105,18 @@ Both values can be overridden via environment variables:
 |---|---|---|
 | `BENCHMARK_USERS` | `100000` | Total number of simulated users |
 | `BENCHMARK_WORKERS` | `2 × NumCPU` | Number of concurrent goroutines |
+| `BENCHMARK_STORAGE` | `memory` | Storage backend: `memory` or `postgres` |
+| `BENCHMARK_POSTGRES_DSN` | empty | Postgres DSN when `BENCHMARK_STORAGE=postgres`; falls back to `TEST_POSTGRES_DSN` |
+| `BENCHMARK_POSTGRES_MAX_CONNS` | pgx default | Postgres pool max connections for benchmark storage |
+| `BENCHMARK_HOME_SHARDS` | `1` | Spread users across N home roots for home-scoped promotion tests |
+
+When using Postgres storage, `TestSimulate100kUsers` also logs pgx pool
+observability for the foreground workload and promotion-drain phase:
+
+- current acquired, idle, total, constructing, and max connections
+- observed max acquired, idle, total, and constructing connections
+- acquire count, empty-acquire count, canceled acquires, acquire duration,
+  empty-acquire wait time, new connections, and destroy counts
 
 Examples:
 

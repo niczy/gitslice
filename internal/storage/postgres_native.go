@@ -36,6 +36,24 @@ type PostgresNativeStorageOptions struct {
 	MaxConnLifetime time.Duration
 }
 
+// PostgresPoolStats is a stable snapshot of pgx pool counters used by
+// benchmark and diagnostic code without exposing pgxpool internals.
+type PostgresPoolStats struct {
+	AcquireCount            int64
+	AcquireDuration         time.Duration
+	AcquiredConns           int32
+	CanceledAcquireCount    int64
+	ConstructingConns       int32
+	EmptyAcquireCount       int64
+	EmptyAcquireWaitTime    time.Duration
+	IdleConns               int32
+	MaxConns                int32
+	TotalConns              int32
+	NewConnsCount           int64
+	MaxLifetimeDestroyCount int64
+	MaxIdleDestroyCount     int64
+}
+
 func nativeEntryID(sliceID, p string) string {
 	if p == "" {
 		// Root node uses the slice ID so callers can list root children via parentID=sliceID.
@@ -732,6 +750,28 @@ func (s *PostgresNativeStorage) UpdateAccount(ctx context.Context, account *mode
 func (s *PostgresNativeStorage) Close() error {
 	s.pool.Close()
 	return nil
+}
+
+func (s *PostgresNativeStorage) PostgresPoolStats() PostgresPoolStats {
+	if s == nil || s.pool == nil {
+		return PostgresPoolStats{}
+	}
+	stats := s.pool.Stat()
+	return PostgresPoolStats{
+		AcquireCount:            stats.AcquireCount(),
+		AcquireDuration:         stats.AcquireDuration(),
+		AcquiredConns:           stats.AcquiredConns(),
+		CanceledAcquireCount:    stats.CanceledAcquireCount(),
+		ConstructingConns:       stats.ConstructingConns(),
+		EmptyAcquireCount:       stats.EmptyAcquireCount(),
+		EmptyAcquireWaitTime:    stats.EmptyAcquireWaitTime(),
+		IdleConns:               stats.IdleConns(),
+		MaxConns:                stats.MaxConns(),
+		TotalConns:              stats.TotalConns(),
+		NewConnsCount:           stats.NewConnsCount(),
+		MaxLifetimeDestroyCount: stats.MaxLifetimeDestroyCount(),
+		MaxIdleDestroyCount:     stats.MaxIdleDestroyCount(),
+	}
 }
 
 // BulkWrite executes a sequence of storage operations and commits them as a single
