@@ -281,6 +281,7 @@ func printChangesetHelp() {
 	fmt.Println("  list      List changesets for the current slice")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs changeset create --message \"update settings\" --json")
+	fmt.Println("  gs changeset create --replace-tracked --message \"new attempt\" --json")
 	fmt.Println("  gs changeset show --json")
 	fmt.Println("  gs changeset review cs_123 --json")
 	fmt.Println("  gs changeset rebase cs_123 --json")

@@ -86,11 +86,11 @@ func TestClearTrackedChangesetIDIfMatches(t *testing.T) {
 	}
 }
 
-func TestResolveChangesetIDForCreate(t *testing.T) {
+func TestResolveChangesetIDForExport(t *testing.T) {
 	tmp := t.TempDir()
 	withWorkingDir(t, tmp)
 
-	id, isUpdate, err := resolveChangesetIDForCreate("")
+	id, isUpdate, err := resolveChangesetIDForExport("")
 	if err != nil {
 		t.Fatalf("resolve without tracked id failed: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestResolveChangesetIDForCreate(t *testing.T) {
 		t.Fatalf("expected new changeset mode, got id=%q isUpdate=%v", id, isUpdate)
 	}
 
-	id, isUpdate, err = resolveChangesetIDForCreate("cs-explicit")
+	id, isUpdate, err = resolveChangesetIDForExport("cs-explicit")
 	if err != nil {
 		t.Fatalf("resolve with explicit id failed: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestResolveChangesetIDForCreate(t *testing.T) {
 	if err := writeTrackedChangesetIDConfig("cs-tracked"); err != nil {
 		t.Fatalf("write tracked id failed: %v", err)
 	}
-	id, isUpdate, err = resolveChangesetIDForCreate("")
+	id, isUpdate, err = resolveChangesetIDForExport("")
 	if err != nil {
 		t.Fatalf("resolve with tracked id failed: %v", err)
 	}

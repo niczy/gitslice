@@ -1222,7 +1222,7 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		LinesAdded:    int64(len(reviewCS.ModifiedFiles)),
 		LinesRemoved:  0,
 	}
-	reviewChanges, warnings := s.buildReviewChanges(ctx, reviewCS)
+	reviewChanges, warnings := s.buildReviewChanges(ctx, reviewCS, snapshot)
 	if len(reviewChanges) > 0 {
 		diff = summarizeReviewChanges(reviewChanges)
 	}
@@ -2003,13 +2003,13 @@ func isRevertChangesetHash(hash string) bool {
 	return ok
 }
 
-func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.Changeset) ([]*filev1.FileChangeRecord, []string) {
+func (s *sliceServiceServer) buildReviewChanges(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) ([]*filev1.FileChangeRecord, []string) {
 	targetChanges, err := s.resolveRevertSourceChanges(ctx, cs)
 	if err != nil {
 		return nil, []string{err.Error()}
 	}
 	if len(targetChanges) == 0 {
-		return s.buildStandardReviewChanges(ctx, cs)
+		return s.buildStandardReviewChanges(ctx, cs, snapshot)
 	}
 
 	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(targetChanges))
@@ -2037,7 +2037,7 @@ type reviewFileState struct {
 	patchable bool
 }
 
-func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs *models.Changeset) ([]*filev1.FileChangeRecord, []string) {
+func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) ([]*filev1.FileChangeRecord, []string) {
 	if cs == nil {
 		return nil, nil
 	}
@@ -2061,7 +2061,7 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 		if beforeWarning != "" {
 			warnings = append(warnings, beforeWarning)
 		}
-		after, afterWarning := s.loadReviewFileAtHead(ctx, cs, filePath)
+		after, afterWarning := s.loadReviewFileAtChangesetHead(ctx, cs, snapshot, filePath)
 		if afterWarning != "" {
 			warnings = append(warnings, afterWarning)
 		}
@@ -2129,6 +2129,41 @@ func (s *sliceServiceServer) loadReviewFileAtBase(ctx context.Context, cs *model
 			return state, ""
 		}
 		return state, fmt.Sprintf("base lookup failed for %s: %v", filePath, err)
+	}
+
+	state.exists = true
+	state.lines, state.hash, state.patchable = s.extractDiffLinesFromContent(ctx, filePath, content)
+	return state, ""
+}
+
+func (s *sliceServiceServer) loadReviewFileAtChangesetHead(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot, filePath string) (reviewFileState, string) {
+	if snapshot != nil && snapshot.FileHashes != nil {
+		return s.loadReviewFileAtSnapshot(ctx, snapshot, filePath)
+	}
+	return s.loadReviewFileAtHead(ctx, cs, filePath)
+}
+
+func (s *sliceServiceServer) loadReviewFileAtSnapshot(ctx context.Context, snapshot *models.ChangesetSnapshot, filePath string) (reviewFileState, string) {
+	state := reviewFileState{
+		exists:    false,
+		lines:     []string{},
+		hash:      "",
+		patchable: true,
+	}
+	if snapshot == nil {
+		return state, ""
+	}
+
+	hash := strings.TrimSpace(snapshot.FileHashes[cleanDiffPath(filePath)])
+	if hash == "" {
+		return state, ""
+	}
+	content, err := storage.ReadVersionedFileContent(ctx, s.storage, hash)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) {
+			return state, ""
+		}
+		return state, fmt.Sprintf("snapshot lookup failed for %s: %v", filePath, err)
 	}
 
 	state.exists = true
@@ -2683,6 +2718,11 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 	if len(snapshots) > 0 && snapshots[0] != nil && snapshots[0].Version > 0 {
 		nextVersion = snapshots[0].Version + 1
 	}
+	modifiedFiles := normalizeModifiedFiles(cs.ModifiedFiles)
+	fileHashes, err := getFileManifestHashes(ctx, s.storage, cs.SliceID, modifiedFiles)
+	if err != nil {
+		return err
+	}
 
 	snapshot := &models.ChangesetSnapshot{
 		ID:             fmt.Sprintf("%s-snapshot-%d", cs.ID, nextVersion),
@@ -2690,7 +2730,8 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 		Version:        nextVersion,
 		Hash:           cs.Hash,
 		BaseCommitHash: cs.BaseCommitHash,
-		ModifiedFiles:  normalizeModifiedFiles(cs.ModifiedFiles),
+		ModifiedFiles:  modifiedFiles,
+		FileHashes:     normalizeSnapshotFileHashes(fileHashes),
 		Author:         cs.Author,
 		Message:        cs.Message,
 		CreatedAt:      time.Now(),
@@ -2713,10 +2754,24 @@ func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnap
 		Hash:           cs.Hash,
 		BaseCommitHash: cs.BaseCommitHash,
 		ModifiedFiles:  normalizeModifiedFiles(cs.ModifiedFiles),
+		FileHashes:     nil,
 		Author:         cs.Author,
 		Message:        cs.Message,
 		CreatedAt:      createdAt,
 	}
+}
+
+func normalizeSnapshotFileHashes(fileHashes map[string]string) map[string]string {
+	out := make(map[string]string, len(fileHashes))
+	for rawPath, rawHash := range fileHashes {
+		path := cleanDiffPath(rawPath)
+		hash := strings.TrimSpace(rawHash)
+		if path == "" || !isUsableContentHash(path, hash) {
+			continue
+		}
+		out[path] = hash
+	}
+	return out
 }
 
 func (s *sliceServiceServer) resolveChangesetSnapshotForReview(ctx context.Context, cs *models.Changeset, requestedVersion int32) (*models.ChangesetSnapshot, error) {

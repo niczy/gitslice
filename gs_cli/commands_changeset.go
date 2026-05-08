@@ -86,10 +86,30 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	base := fs.String("base", "", "Base commit hash")
 	files := fs.String("files", "", "Comma-separated file list")
 	author := fs.String("author", "user", "Author of the changeset")
-	changesetID := fs.String("changeset-id", "", "Existing changeset ID to append a new snapshot")
+	changesetID := fs.String("changeset-id", "", "Deprecated; use gs slice export to append to an existing changeset")
+	replaceTracked := fs.Bool("replace-tracked", false, "Create a new changeset and replace the locally tracked changeset ID")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
+
+	if strings.TrimSpace(*changesetID) != "" {
+		commandFatal("INVALID_ARGUMENT", "gs changeset create always creates a new changeset; use gs slice export --changeset-id to append to an existing changeset.", false, "gs slice export --changeset-id "+strings.TrimSpace(*changesetID))
+	}
+	trackedChangesetID, err := readTrackedChangesetIDFromConfig()
+	if err != nil {
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to read tracked changeset ID: %v", err)
+		return
+	}
+	trackedChangesetID = strings.TrimSpace(trackedChangesetID)
+	if trackedChangesetID != "" && !*replaceTracked {
+		commandFatalf(
+			"CHANGESET_ALREADY_TRACKED",
+			false,
+			"gs slice export",
+			"A changeset is already tracked: %s. Use gs slice export to append to it, gs changeset merge to merge it, or pass --replace-tracked to create and track a new changeset.",
+			trackedChangesetID,
+		)
+	}
 
 	modifiedFiles := []string{}
 	if *files != "" {
@@ -108,19 +128,12 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 		commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice diff", "Cannot read local changes: %v", err)
 	}
 
-	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
-	if err != nil {
-		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve tracked changeset ID: %v", err)
-		return
-	}
-
 	req := &slicev1.CreateChangesetRequest{
 		SliceId:        sliceID,
 		BaseCommitHash: *base,
 		ModifiedFiles:  modifiedFiles,
 		Author:         *author,
 		Message:        *message,
-		ChangesetId:    resolvedChangesetID,
 		FileContents:   fileContents,
 	}
 
@@ -133,15 +146,11 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	}
 
 	if jsonEnabled {
-		writeJSONOutput(buildChangesetCreateOutput(resp, isUpdate, sliceID, modifiedFiles))
+		writeJSONOutput(buildChangesetCreateOutput(resp, false, sliceID, modifiedFiles))
 		return
 	}
 
-	if isUpdate {
-		fmt.Printf("Updated changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
-	} else {
-		fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
-	}
+	fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
 	fmt.Printf("Status: %s\n", resp.Status.String())
 }
 
@@ -182,7 +191,7 @@ func normalizeLocalModifiedFiles(files []string) []string {
 	return out
 }
 
-func resolveChangesetIDForCreate(explicit string) (string, bool, error) {
+func resolveChangesetIDForExport(explicit string) (string, bool, error) {
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
 		return explicit, true, nil

@@ -10,6 +10,7 @@ type ChangesetSnapshot struct {
 	Hash           string
 	BaseCommitHash string
 	ModifiedFiles  []string
+	FileHashes     map[string]string
 	Author         string
 	Message        string
 	CreatedAt      time.Time

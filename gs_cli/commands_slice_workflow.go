@@ -99,7 +99,7 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 		shouldMerge = true
 	}
 
-	resolvedChangesetID, isUpdate, err := resolveChangesetIDForCreate(*changesetID)
+	resolvedChangesetID, isUpdate, err := resolveChangesetIDForExport(*changesetID)
 	if err != nil {
 		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve tracked changeset ID: %v", err)
 		return
