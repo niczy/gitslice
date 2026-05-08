@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -74,6 +75,69 @@ func TestPostgresNativeStorageFileContentReadWriteIsolation(t *testing.T) {
 	}
 	if string(fileAgain.Content) != "hello" {
 		t.Fatalf("read mutation should not alias stored content, got %q", string(fileAgain.Content))
+	}
+}
+
+func TestPostgresNativeStorageUsesVersionedManifestRefs(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+
+	ctx := context.Background()
+	objectStore := NewInMemoryObjectStore()
+	st, err := NewPostgresNativeStorage(ctx, dsn, objectStore, fmt.Sprintf("test-native-manifest-ref-%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("NewPostgresNativeStorage failed: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	source := &models.Slice{ID: "source-slice", Name: "Source", Owners: []string{"alice"}, CreatedBy: "alice"}
+	target := &models.Slice{ID: "target-slice", Name: "Target", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("CreateSlice(source) failed: %v", err)
+	}
+	if err := st.CreateSlice(ctx, target); err != nil {
+		t.Fatalf("CreateSlice(target) failed: %v", err)
+	}
+
+	filePath := "alice/app/main.go"
+	content := []byte("package main\n\nfunc main() {}\n")
+	manifest, err := WriteSliceFileManifest(ctx, st, source.ID, filePath, content)
+	if err != nil {
+		t.Fatalf("WriteSliceFileManifest failed: %v", err)
+	}
+
+	if _, err := objectStore.GetObject(ctx, st.objKey("manifests", source.ID, filePath)); err != ErrEntryNotFound {
+		t.Fatalf("expected no source slice-local manifest object, got %v", err)
+	}
+	if got, err := st.GetFileManifest(ctx, source.ID, filePath); err != nil {
+		t.Fatalf("GetFileManifest(source) failed: %v", err)
+	} else if got.Hash != manifest.Hash || got.Path != filePath {
+		t.Fatalf("source manifest = %#v, want hash=%q path=%q", got, manifest.Hash, filePath)
+	}
+
+	if err := st.PromoteFilesToSlice(ctx, target.ID, []RootPromotionJob{{
+		SliceID:    source.ID,
+		CommitHash: "commit-1",
+		Files:      []string{filePath},
+		CommitTime: time.Now(),
+	}}); err != nil {
+		t.Fatalf("PromoteFilesToSlice failed: %v", err)
+	}
+
+	if _, err := objectStore.GetObject(ctx, st.objKey("manifests", target.ID, filePath)); err != ErrEntryNotFound {
+		t.Fatalf("expected no target slice-local manifest object, got %v", err)
+	}
+	promoted, err := ReadSliceFileContent(ctx, st, target.ID, filePath)
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent(target) failed: %v", err)
+	}
+	if !bytes.Equal(promoted.Content, content) {
+		t.Fatalf("promoted content mismatch: got %q want %q", promoted.Content, content)
+	}
+	if promoted.Hash != manifest.Hash {
+		t.Fatalf("promoted hash=%q want %q", promoted.Hash, manifest.Hash)
 	}
 }
 

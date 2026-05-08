@@ -181,24 +181,147 @@ func fileChangeCopyRows(changes []*models.FileChangeRecord) [][]any {
 	return rows
 }
 
+type postgresRootPromotionFile struct {
+	Manifest   *models.FileManifest
+	BlockCount int
+}
+
+type postgresEntryContribution struct {
+	Type string
+	Size int64
+}
+
+func appendGlobalCommitsTx(ctx context.Context, exec execable, commits []*models.GlobalCommit) error {
+	if len(commits) == 0 {
+		return nil
+	}
+	hashes := make([]string, 0, len(commits))
+	timestamps := make([]time.Time, 0, len(commits))
+	mergedSliceIDs := make([]string, 0, len(commits))
+	for i := len(commits) - 1; i >= 0; i-- {
+		commit := commits[i]
+		if commit == nil || strings.TrimSpace(commit.CommitHash) == "" {
+			continue
+		}
+		hashes = append(hashes, strings.TrimSpace(commit.CommitHash))
+		timestamps = append(timestamps, commit.Timestamp)
+		merged, err := json.Marshal(commit.MergedSliceIDs)
+		if err != nil {
+			return err
+		}
+		mergedSliceIDs = append(mergedSliceIDs, string(merged))
+	}
+	if len(hashes) == 0 {
+		return nil
+	}
+	_, err := exec.Exec(ctx, `
+		INSERT INTO global_commits (commit_hash, committed_at, merged_slice_ids)
+		SELECT commit_hash, committed_at, merged_slice_ids::jsonb
+		FROM unnest($1::text[], $2::timestamptz[], $3::text[]) WITH ORDINALITY
+			AS rows(commit_hash, committed_at, merged_slice_ids, ord)
+		ORDER BY ord
+		ON CONFLICT (commit_hash) DO NOTHING
+	`, hashes, timestamps, mergedSliceIDs)
+	return err
+}
+
+func loadGlobalCommitHistory(ctx context.Context, q queryable) ([]*models.GlobalCommit, error) {
+	rows, err := q.Query(ctx, `
+		SELECT commit_hash, committed_at, merged_slice_ids
+		FROM global_commits
+		ORDER BY committed_at DESC, seq DESC
+		LIMIT 10000
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	history := make([]*models.GlobalCommit, 0)
+	for rows.Next() {
+		var commit models.GlobalCommit
+		var mergedJSON []byte
+		if err := rows.Scan(&commit.CommitHash, &commit.Timestamp, &mergedJSON); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(mergedJSON, &commit.MergedSliceIDs); err != nil {
+			commit.MergedSliceIDs = nil
+		}
+		history = append(history, &commit)
+	}
+	return history, rows.Err()
+}
+
+func decodeGlobalStateHistory(stateJSON []byte) []*models.GlobalCommit {
+	var stateData struct {
+		History []*models.GlobalCommit `json:"history"`
+	}
+	if err := json.Unmarshal(stateJSON, &stateData); err != nil {
+		return []*models.GlobalCommit{}
+	}
+	if stateData.History == nil {
+		return []*models.GlobalCommit{}
+	}
+	return stateData.History
+}
+
+func globalStateJSONWithoutHistory() []byte {
+	stateJSON, _ := json.Marshal(struct {
+		History []*models.GlobalCommit `json:"history"`
+	}{History: []*models.GlobalCommit{}})
+	return stateJSON
+}
+
+func aggregateImmediateParentDeltas(paths []string, oldByPath map[string]postgresEntryContribution, manifestByPath map[string]*models.FileManifest) (deltaPaths []string, deltas []int64) {
+	aggregated := make(map[string]int64)
+	for _, filePath := range paths {
+		manifest := manifestByPath[filePath]
+		if manifest == nil {
+			continue
+		}
+		parentPath := cleanRelativePath(path.Dir(filePath))
+		if parentPath == "" {
+			continue
+		}
+		old := int64(0)
+		if prev, ok := oldByPath[filePath]; ok {
+			old = directoryEntryAggregateContribution(&models.DirectoryEntry{Type: prev.Type, Size: prev.Size})
+		}
+		next := directoryEntryAggregateContribution(&models.DirectoryEntry{Type: "file", Size: manifest.TotalSize})
+		if delta := next - old; delta != 0 {
+			aggregated[parentPath] += delta
+		}
+	}
+	if len(aggregated) == 0 {
+		return nil, nil
+	}
+	deltaPaths = make([]string, 0, len(aggregated))
+	for p := range aggregated {
+		deltaPaths = append(deltaPaths, p)
+	}
+	sort.Strings(deltaPaths)
+	deltas = make([]int64, 0, len(deltaPaths))
+	for _, p := range deltaPaths {
+		deltas = append(deltas, aggregated[p])
+	}
+	return deltaPaths, deltas
+}
+
 func (s *PostgresNativeStorage) materializeDirectoryTreeTx(ctx context.Context, tx pgx.Tx, sliceID string, rawFiles []string, includeFiles bool) error {
 	paths := collectMaterializedPaths(rawFiles)
 	dirs := computeDirSet(paths)
 
-	batch := &pgx.Batch{}
+	ids := make([]string, 0, len(paths)*2+1)
+	entryPaths := make([]string, 0, len(paths)*2+1)
+	types := make([]string, 0, len(paths)*2+1)
+	parents := make([]string, 0, len(paths)*2+1)
+	sizes := make([]int64, 0, len(paths)*2+1)
 	enqueue := func(id, pth, typ, parent string, size int64) {
-		batch.Queue(`
-			INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
-			VALUES ($1,$2,$3,$4,$5,NULL,$6)
-			ON CONFLICT (slice_id, path) DO UPDATE SET
-				type = EXCLUDED.type,
-				parent_id = EXCLUDED.parent_id,
-				size = CASE
-					WHEN EXCLUDED.size = 0 THEN directory_entries.size
-					ELSE EXCLUDED.size
-				END,
-				updated_at = NOW()
-		`, id, sliceID, pth, typ, parent, size)
+		ids = append(ids, id)
+		entryPaths = append(entryPaths, pth)
+		types = append(types, typ)
+		parents = append(parents, parent)
+		sizes = append(sizes, size)
 	}
 
 	// Root node.
@@ -223,14 +346,28 @@ func (s *PostgresNativeStorage) materializeDirectoryTreeTx(ctx context.Context, 
 		}
 	}
 
-	res := tx.SendBatch(ctx, batch)
-	defer res.Close()
-	for i := 0; i < batch.Len(); i++ {
-		if _, err := res.Exec(); err != nil {
-			return err
-		}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size)
+		SELECT id, $1, path, type, parent_id, NULL, size
+		FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::bigint[])
+			AS rows(id, path, type, parent_id, size)
+		ON CONFLICT (slice_id, path) DO NOTHING
+	`, sliceID, ids, entryPaths, types, parents, sizes)
+	return err
+}
+
+func insertFileSliceIndex(ctx context.Context, exec execable, sliceID string, fileIDs []string) error {
+	cleanedIDs := normalizeFileIndexIDs(fileIDs)
+	if len(cleanedIDs) == 0 {
+		return nil
 	}
-	return nil
+	_, err := exec.Exec(ctx, `
+		INSERT INTO file_slice_index (file_id, slice_id)
+		SELECT file_id, $2
+		FROM unnest($1::text[]) AS file_id
+		ON CONFLICT DO NOTHING
+	`, cleanedIDs, strings.TrimSpace(sliceID))
+	return err
 }
 
 type postgresEntryAggregateState struct {
@@ -645,6 +782,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			users,
 			accounts,
 			file_changes,
+			global_commits,
 			global_state,
 			file_manifests,
 			commit_snapshots,
@@ -818,15 +956,8 @@ func (s *postgresNativeTxView) CreateSlice(ctx context.Context, slice *models.Sl
 		return err
 	}
 
-	for _, fileID := range slice.Files {
-		_, err = s.tx.Exec(ctx, `
-			INSERT INTO file_slice_index (file_id, slice_id)
-			VALUES ($1, $2)
-			ON CONFLICT DO NOTHING
-		`, fileID, slice.ID)
-		if err != nil {
-			return err
-		}
+	if err := insertFileSliceIndex(ctx, s.tx, slice.ID, slice.Files); err != nil {
+		return err
 	}
 
 	// Materialize directory-entry tree from the slice file set.
@@ -1255,23 +1386,23 @@ func (s *postgresNativeTxView) PutFileManifest(ctx context.Context, sliceID, fil
 		return ErrInvalidInput
 	}
 
-	raw, err := json.Marshal(manifest)
-	if err != nil {
+	canonical := cloneManifest(manifest)
+	canonical.Path = filePath
+	if strings.TrimSpace(canonical.Hash) == "" {
+		return ErrInvalidInput
+	}
+	if err := s.PutVersionedFileManifest(ctx, canonical); err != nil {
 		return err
 	}
-	if err := s.objectStore.PutObject(ctx, s.objKey("manifests", sliceID, filePath), raw); err != nil {
-		return err
-	}
-	_, err = s.tx.Exec(ctx, `
-		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (slice_id, path) DO UPDATE SET hash = $3, total_size = $4, block_count = $5, updated_at = NOW()
-	`, sliceID, filePath, manifest.Hash, manifest.TotalSize, len(manifest.Blocks))
-	return err
+	return s.putFileManifestReference(ctx, sliceID, filePath, canonical)
+}
+
+func (s *postgresNativeTxView) putFileManifestReference(ctx context.Context, sliceID, filePath string, manifest *models.FileManifest) error {
+	return putPostgresFileManifestReference(ctx, s.tx, sliceID, filePath, manifest)
 }
 
 func (s *postgresNativeTxView) GetFileManifest(ctx context.Context, sliceID, filePath string) (*models.FileManifest, error) {
-	return s.PostgresNativeStorage.GetFileManifest(ctx, sliceID, filePath)
+	return s.PostgresNativeStorage.getFileManifest(ctx, s.tx, sliceID, filePath)
 }
 
 func (s *postgresNativeTxView) GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error) {
@@ -1411,15 +1542,11 @@ func (s *postgresNativeTxView) GetGlobalState(ctx context.Context) (*models.Glob
 		}
 		return nil, err
 	}
-	var stateData struct {
-		History []*models.GlobalCommit `json:"history"`
+	history, err := loadGlobalCommitHistory(ctx, s.tx)
+	if err != nil {
+		history = decodeGlobalStateHistory(stateJSON)
 	}
-	if err := json.Unmarshal(stateJSON, &stateData); err == nil {
-		gs.History = stateData.History
-	}
-	if gs.History == nil {
-		gs.History = []*models.GlobalCommit{}
-	}
+	gs.History = history
 	return &gs, nil
 }
 
@@ -1428,12 +1555,10 @@ func (s *postgresNativeTxView) UpdateGlobalState(ctx context.Context, state *mod
 	if state == nil {
 		return ErrInvalidInput
 	}
-	stateData := struct {
-		History []*models.GlobalCommit `json:"history"`
-	}{
-		History: state.History,
+	if err := appendGlobalCommitsTx(ctx, s.tx, state.History); err != nil {
+		return err
 	}
-	stateJSON, _ := json.Marshal(stateData)
+	stateJSON := globalStateJSONWithoutHistory()
 	_, err := s.tx.Exec(ctx, `
 		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
 		VALUES (true, $1, $2, $3)
@@ -1521,15 +1646,8 @@ func (s *PostgresNativeStorage) CreateSlice(ctx context.Context, slice *models.S
 	}
 
 	// Index files from the slice definition.
-	for _, fileID := range slice.Files {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO file_slice_index (file_id, slice_id)
-			VALUES ($1, $2)
-			ON CONFLICT DO NOTHING
-		`, fileID, slice.ID)
-		if err != nil {
-			return err
-		}
+	if err := insertFileSliceIndex(ctx, tx, slice.ID, slice.Files); err != nil {
+		return err
 	}
 
 	// Materialize directory-entry tree from the slice file set so ListEntries can
@@ -1882,6 +2000,7 @@ func (s *PostgresNativeStorage) AddSliceCommit(ctx context.Context, sliceID stri
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO slice_commits (slice_id, commit_hash, parent_hash, message, committed_at)
 		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (slice_id, commit_hash) DO NOTHING
 	`, sliceID, commit.CommitHash, commit.ParentHash, commit.Message, commit.Timestamp)
 	return err
 }
@@ -2700,29 +2819,78 @@ func (s *PostgresNativeStorage) PutFileManifest(ctx context.Context, sliceID, fi
 		return ErrInvalidInput
 	}
 
-	raw, err := json.Marshal(manifest)
-	if err != nil {
+	canonical := cloneManifest(manifest)
+	canonical.Path = filePath
+	if strings.TrimSpace(canonical.Hash) == "" {
+		return ErrInvalidInput
+	}
+	if err := s.PutVersionedFileManifest(ctx, canonical); err != nil {
 		return err
 	}
-	if err := s.objectStore.PutObject(ctx, s.objKey("manifests", sliceID, filePath), raw); err != nil {
-		return err
+	return s.putFileManifestReference(ctx, sliceID, filePath, canonical)
+}
+
+func (s *PostgresNativeStorage) putFileManifestReference(ctx context.Context, sliceID, filePath string, manifest *models.FileManifest) error {
+	return putPostgresFileManifestReference(ctx, s.pool, sliceID, filePath, manifest)
+}
+
+func putPostgresFileManifestReference(ctx context.Context, exec execable, sliceID, filePath string, manifest *models.FileManifest) error {
+	sliceID = strings.TrimSpace(sliceID)
+	filePath = cleanRelativePath(filePath)
+	if sliceID == "" || filePath == "" || manifest == nil {
+		return ErrInvalidInput
 	}
-	_, err = s.pool.Exec(ctx, `
+	canonical := cloneManifest(manifest)
+	canonical.Path = filePath
+	if strings.TrimSpace(canonical.Hash) == "" {
+		return ErrInvalidInput
+	}
+	_, err := exec.Exec(ctx, `
 		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (slice_id, path) DO UPDATE SET hash = $3, total_size = $4, block_count = $5, updated_at = NOW()
-	`, sliceID, filePath, manifest.Hash, manifest.TotalSize, len(manifest.Blocks))
+	`, sliceID, filePath, canonical.Hash, canonical.TotalSize, len(canonical.Blocks))
 	return err
 }
 
 func (s *PostgresNativeStorage) GetFileManifest(ctx context.Context, sliceID, filePath string) (*models.FileManifest, error) {
 	ctx = ensureCtx(ctx)
+	return s.getFileManifest(ctx, s.pool, sliceID, filePath)
+}
+
+func (s *PostgresNativeStorage) getFileManifest(ctx context.Context, q queryable, sliceID, filePath string) (*models.FileManifest, error) {
 	sliceID = strings.TrimSpace(sliceID)
 	filePath = cleanRelativePath(filePath)
 	if sliceID == "" || filePath == "" {
 		return nil, ErrInvalidInput
 	}
 
+	var hash string
+	var totalSize int64
+	var blockCount int
+	err := q.QueryRow(ctx, `
+		SELECT hash, total_size, block_count
+		FROM file_manifests
+		WHERE slice_id = $1 AND path = $2
+	`, sliceID, filePath).Scan(&hash, &totalSize, &blockCount)
+	if err == nil {
+		manifest, manifestErr := s.GetVersionedFileManifest(ctx, hash)
+		if manifestErr == nil && manifest != nil {
+			manifest.Path = filePath
+			manifest.Hash = strings.TrimSpace(hash)
+			if manifest.TotalSize == 0 && totalSize > 0 {
+				manifest.TotalSize = totalSize
+			}
+			return manifest, nil
+		}
+		if manifestErr != nil && manifestErr != ErrEntryNotFound {
+			return nil, manifestErr
+		}
+	} else if err != pgx.ErrNoRows {
+		return nil, err
+	}
+
+	// Legacy fallback for namespaces written before manifests became hash-addressed.
 	raw, err := s.objectStore.GetObject(ctx, s.objKey("manifests", sliceID, filePath))
 	if err != nil {
 		if err == ErrEntryNotFound {
@@ -2734,6 +2902,12 @@ func (s *PostgresNativeStorage) GetFileManifest(ctx context.Context, sliceID, fi
 	var manifest models.FileManifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		return nil, err
+	}
+	manifest.Path = filePath
+	if strings.TrimSpace(manifest.Hash) != "" {
+		if err := s.PutVersionedFileManifest(ctx, &manifest); err != nil {
+			return nil, err
+		}
 	}
 	return cloneManifest(&manifest), nil
 }
@@ -2764,6 +2938,285 @@ func (s *PostgresNativeStorage) GetFileManifestHashes(ctx context.Context, slice
 		result[filePath] = strings.TrimSpace(hash)
 	}
 	return result, rows.Err()
+}
+
+func (s *PostgresNativeStorage) PromoteFilesToRoot(ctx context.Context, rootSliceID string, jobs []RootPromotionJob) error {
+	return s.PromoteFilesToSlice(ctx, rootSliceID, jobs)
+}
+
+func (s *PostgresNativeStorage) PromoteFilesToSlice(ctx context.Context, targetSliceID string, jobs []RootPromotionJob) error {
+	ctx = ensureCtx(ctx)
+	targetSliceID = strings.TrimSpace(targetSliceID)
+	if targetSliceID == "" {
+		return ErrInvalidInput
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	type promotionRequest struct {
+		sourceSliceID string
+		filePath      string
+		ordinal       int32
+	}
+
+	requests := make([]promotionRequest, 0)
+	sourceSliceIDs := make([]string, 0)
+	sourcePaths := make([]string, 0)
+	ordinals := make([]int32, 0)
+	var ordinal int32
+	for _, job := range jobs {
+		sourceSliceID := strings.TrimSpace(job.SliceID)
+		if sourceSliceID == "" {
+			continue
+		}
+		jobPaths := normalizeRelativePaths(job.Files)
+		if len(jobPaths) == 0 {
+			continue
+		}
+		for _, filePath := range jobPaths {
+			requests = append(requests, promotionRequest{
+				sourceSliceID: sourceSliceID,
+				filePath:      filePath,
+				ordinal:       ordinal,
+			})
+			sourceSliceIDs = append(sourceSliceIDs, sourceSliceID)
+			sourcePaths = append(sourcePaths, filePath)
+			ordinals = append(ordinals, ordinal)
+			ordinal++
+		}
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+
+	selected := make(map[string]postgresRootPromotionFile)
+	selectedOrdinal := make(map[string]int32)
+	rows, err := s.pool.Query(ctx, `
+		WITH requested AS (
+			SELECT source_slice_id, path, ordinal
+			FROM unnest($1::text[], $2::text[], $3::int[]) AS r(source_slice_id, path, ordinal)
+		),
+		ranked AS (
+			SELECT r.path, r.ordinal, fm.hash, fm.total_size, fm.block_count,
+			       COALESCE(de.is_executable, false) AS is_executable,
+			       COALESCE(de.symlink_target, '') AS symlink_target
+			FROM requested r
+			JOIN file_manifests fm
+			  ON fm.slice_id = r.source_slice_id AND fm.path = r.path
+			LEFT JOIN directory_entries de
+			  ON de.slice_id = fm.slice_id AND de.path = fm.path
+		),
+		latest AS (
+			SELECT path, ordinal, hash, total_size, block_count, is_executable, symlink_target,
+			       ROW_NUMBER() OVER (PARTITION BY path ORDER BY ordinal DESC) AS rn
+			FROM ranked
+		)
+		SELECT path, ordinal, hash, total_size, block_count, is_executable, symlink_target
+		FROM latest
+		WHERE rn = 1
+	`, sourceSliceIDs, sourcePaths, ordinals)
+	if err != nil {
+		return fmt.Errorf("failed to load source manifest refs: %w", err)
+	}
+	for rows.Next() {
+		var filePath, hash, symlinkTarget string
+		var totalSize int64
+		var blockCount int
+		var requestOrdinal int32
+		var executable bool
+		if err := rows.Scan(&filePath, &requestOrdinal, &hash, &totalSize, &blockCount, &executable, &symlinkTarget); err != nil {
+			rows.Close()
+			return err
+		}
+		filePath = cleanRelativePath(filePath)
+		if filePath == "" || strings.TrimSpace(hash) == "" {
+			continue
+		}
+		selected[filePath] = postgresRootPromotionFile{
+			Manifest: &models.FileManifest{
+				Path:          filePath,
+				Hash:          strings.TrimSpace(hash),
+				TotalSize:     totalSize,
+				Executable:    executable,
+				SymlinkTarget: symlinkTarget,
+			},
+			BlockCount: blockCount,
+		}
+		selectedOrdinal[filePath] = requestOrdinal
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, request := range requests {
+		if existingOrdinal, ok := selectedOrdinal[request.filePath]; ok && existingOrdinal >= request.ordinal {
+			continue
+		}
+		manifest, err := s.GetFileManifest(ctx, request.sourceSliceID, request.filePath)
+		if err != nil {
+			if err == ErrEntryNotFound {
+				continue
+			}
+			return fmt.Errorf("failed to load source manifest for %s in %s: %w", request.filePath, request.sourceSliceID, err)
+		}
+		manifest.Path = request.filePath
+		selected[request.filePath] = postgresRootPromotionFile{
+			Manifest:   cloneManifest(manifest),
+			BlockCount: len(manifest.Blocks),
+		}
+		selectedOrdinal[request.filePath] = request.ordinal
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+
+	paths := make([]string, 0, len(selected))
+	for filePath := range selected {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var isRoot bool
+	if err := tx.QueryRow(ctx, `SELECT is_root FROM slices WHERE id = $1`, targetSliceID).Scan(&isRoot); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSliceNotFound
+		}
+		return err
+	}
+
+	lockKeys := make([]string, 0, len(paths))
+	for _, filePath := range paths {
+		lockKeys = append(lockKeys, targetSliceID+":"+filePath)
+	}
+	if _, err := tx.Exec(ctx, `
+		SELECT pg_advisory_xact_lock(hashtextextended(lock_key, 0))
+		FROM unnest($1::text[]) AS lock_key
+		ORDER BY lock_key
+	`, lockKeys); err != nil {
+		return err
+	}
+
+	if err := s.materializeDirectoryTreeTx(ctx, tx, targetSliceID, paths, false); err != nil {
+		return err
+	}
+
+	oldByPath := make(map[string]postgresEntryContribution, len(paths))
+	rows, err = tx.Query(ctx, `
+		SELECT path, type, size
+		FROM directory_entries
+		WHERE slice_id = $1 AND path = ANY($2)
+	`, targetSliceID, paths)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var filePath, typ string
+		var size int64
+		if err := rows.Scan(&filePath, &typ, &size); err != nil {
+			rows.Close()
+			return err
+		}
+		oldByPath[filePath] = postgresEntryContribution{Type: typ, Size: size}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	ids := make([]string, 0, len(paths))
+	parentIDs := make([]string, 0, len(paths))
+	sizes := make([]int64, 0, len(paths))
+	hashes := make([]string, 0, len(paths))
+	blockCounts := make([]int, 0, len(paths))
+	executables := make([]bool, 0, len(paths))
+	symlinkTargets := make([]string, 0, len(paths))
+	manifestByPath := make(map[string]*models.FileManifest, len(paths))
+	for _, filePath := range paths {
+		manifest := selected[filePath].Manifest
+		if manifest == nil {
+			continue
+		}
+		ids = append(ids, nativeEntryID(targetSliceID, filePath))
+		parentIDs = append(parentIDs, nativeParentID(targetSliceID, filePath))
+		sizes = append(sizes, manifest.TotalSize)
+		hashes = append(hashes, strings.TrimSpace(manifest.Hash))
+		blockCounts = append(blockCounts, selected[filePath].BlockCount)
+		executables = append(executables, manifest.Executable)
+		symlinkTargets = append(symlinkTargets, manifest.SymlinkTarget)
+		manifestByPath[filePath] = manifest
+	}
+	if len(ids) == 0 {
+		return tx.Commit(ctx)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO file_manifests (slice_id, path, hash, total_size, block_count)
+		SELECT $1, path, hash, total_size, block_count
+		FROM unnest($2::text[], $3::text[], $4::bigint[], $5::int[])
+			AS rows(path, hash, total_size, block_count)
+		ON CONFLICT (slice_id, path) DO UPDATE SET
+			hash = EXCLUDED.hash,
+			total_size = EXCLUDED.total_size,
+			block_count = EXCLUDED.block_count,
+			updated_at = NOW()
+	`, targetSliceID, paths, hashes, sizes, blockCounts); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO directory_entries (id, slice_id, path, type, parent_id, content, size, is_executable, symlink_target)
+		SELECT id, $1, path, 'file', parent_id, NULL, size, is_executable, symlink_target
+		FROM unnest($2::text[], $3::text[], $4::text[], $5::bigint[], $6::bool[], $7::text[])
+			AS rows(id, path, parent_id, size, is_executable, symlink_target)
+		ON CONFLICT (slice_id, path) DO UPDATE SET
+			type = 'file',
+			parent_id = EXCLUDED.parent_id,
+			content = NULL,
+			size = EXCLUDED.size,
+			is_executable = EXCLUDED.is_executable,
+			symlink_target = EXCLUDED.symlink_target,
+			updated_at = NOW()
+	`, targetSliceID, ids, paths, parentIDs, sizes, executables, symlinkTargets); err != nil {
+		return err
+	}
+
+	if !isRoot {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO file_slice_index (file_id, slice_id)
+			SELECT file_id, $2
+			FROM unnest($1::text[]) AS file_id
+			ON CONFLICT DO NOTHING
+		`, paths, targetSliceID); err != nil {
+			return err
+		}
+	}
+
+	deltaPaths, deltas := aggregateImmediateParentDeltas(paths, oldByPath, manifestByPath)
+	if len(deltaPaths) > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE directory_entries AS de
+			SET size = GREATEST(0, de.size + rows.delta),
+				updated_at = NOW()
+			FROM unnest($2::text[], $3::bigint[]) AS rows(path, delta)
+			WHERE de.slice_id = $1
+			  AND de.type = 'directory'
+			  AND de.path = rows.path
+		`, targetSliceID, deltaPaths, deltas); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresNativeStorage) DeleteFileManifest(ctx context.Context, sliceID, filePath string) error {
@@ -3027,6 +3480,63 @@ func (s *PostgresNativeStorage) GetExistingEntriesByPaths(ctx context.Context, s
 	return result, rows.Err()
 }
 
+func (s *PostgresNativeStorage) ListEntriesByPathPrefixes(ctx context.Context, sliceID string, prefixes []string) ([]*models.DirectoryEntry, error) {
+	ctx = ensureCtx(ctx)
+	cleanedPrefixes := normalizeRelativePaths(prefixes)
+	if len(cleanedPrefixes) == 0 {
+		return nil, nil
+	}
+	likePatterns := make([]string, 0, len(cleanedPrefixes))
+	for _, prefix := range cleanedPrefixes {
+		likePatterns = append(likePatterns, postgresLikeDescendantPattern(prefix))
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT de.id, de.path, de.type, de.parent_id, de.content, de.size, de.is_executable, de.symlink_target,
+			COALESCE(fm.hash, '')
+		FROM directory_entries de
+		JOIN unnest($2::text[], $3::text[]) AS prefix(path_prefix, descendant_pattern)
+			ON de.path = prefix.path_prefix OR de.path LIKE prefix.descendant_pattern ESCAPE '\'
+		LEFT JOIN file_manifests fm
+			ON fm.slice_id = de.slice_id AND fm.path = de.path
+		WHERE de.slice_id = $1
+		ORDER BY de.path
+	`, strings.TrimSpace(sliceID), cleanedPrefixes, likePatterns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]*models.DirectoryEntry, 0)
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var e models.DirectoryEntry
+		if err := rows.Scan(&e.ID, &e.Path, &e.Type, &e.ParentID, &e.Content, &e.Size, &e.Executable, &e.SymlinkTarget, &e.Hash); err != nil {
+			return nil, err
+		}
+		key := e.ID + "\x00" + e.Path
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, &e)
+	}
+	return result, rows.Err()
+}
+
+func postgresLikeDescendantPattern(prefix string) string {
+	var b strings.Builder
+	for _, r := range cleanRelativePath(prefix) {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteString("/%")
+	return b.String()
+}
+
 func (s *PostgresNativeStorage) ListEntries(ctx context.Context, sliceID, parentID string) ([]*models.DirectoryEntry, error) {
 	ctx = ensureCtx(ctx)
 
@@ -3182,16 +3692,11 @@ func (s *PostgresNativeStorage) GetGlobalState(ctx context.Context) (*models.Glo
 		return nil, err
 	}
 
-	// Decode history from state_json.
-	var stateData struct {
-		History []*models.GlobalCommit `json:"history"`
+	history, err := loadGlobalCommitHistory(ctx, s.pool)
+	if err != nil {
+		history = decodeGlobalStateHistory(stateJSON)
 	}
-	if err := json.Unmarshal(stateJSON, &stateData); err == nil {
-		gs.History = stateData.History
-	}
-	if gs.History == nil {
-		gs.History = []*models.GlobalCommit{}
-	}
+	gs.History = history
 
 	return &gs, nil
 }
@@ -3199,12 +3704,13 @@ func (s *PostgresNativeStorage) GetGlobalState(ctx context.Context) (*models.Glo
 func (s *PostgresNativeStorage) UpdateGlobalState(ctx context.Context, state *models.GlobalState) error {
 	ctx = ensureCtx(ctx)
 
-	stateData := struct {
-		History []*models.GlobalCommit `json:"history"`
-	}{
-		History: state.History,
+	if state == nil {
+		return ErrInvalidInput
 	}
-	stateJSON, _ := json.Marshal(stateData)
+	if err := appendGlobalCommitsTx(ctx, s.pool, state.History); err != nil {
+		return err
+	}
+	stateJSON := globalStateJSONWithoutHistory()
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
@@ -3212,6 +3718,68 @@ func (s *PostgresNativeStorage) UpdateGlobalState(ctx context.Context, state *mo
 		ON CONFLICT (id) DO UPDATE SET global_commit_hash = $1, updated_at = $2, state_json = $3
 	`, state.GlobalCommitHash, state.Timestamp, stateJSON)
 	return err
+}
+
+func (s *PostgresNativeStorage) UpdateRootPromotionState(ctx context.Context, rootSliceID string, latestCommitHash string, latestTime time.Time, latestFiles []string, commits []*models.GlobalCommit) error {
+	ctx = ensureCtx(ctx)
+	rootSliceID = strings.TrimSpace(rootSliceID)
+	latestCommitHash = strings.TrimSpace(latestCommitHash)
+	if rootSliceID == "" || latestCommitHash == "" {
+		return ErrInvalidInput
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
+		VALUES (true, $1, $2, $3)
+		ON CONFLICT (id) DO NOTHING
+	`, latestCommitHash, latestTime, globalStateJSONWithoutHistory()); err != nil {
+		return err
+	}
+	if err := appendGlobalCommitsTx(ctx, tx, commits); err != nil {
+		return err
+	}
+	initialCommitHash := ids.GenerateInitialCommitID(ids.RootSliceID)
+	if _, err := tx.Exec(ctx, `
+		UPDATE global_state
+		SET global_commit_hash = $1,
+			updated_at = $2,
+			state_json = $3
+		WHERE id = true
+		  AND (global_commit_hash = '' OR global_commit_hash = $4 OR updated_at <= $2)
+	`, latestCommitHash, latestTime, globalStateJSONWithoutHistory(), initialCommitHash); err != nil {
+		return err
+	}
+
+	cleanedFiles := normalizeRelativePaths(latestFiles)
+	modifiedJSON, _ := json.Marshal(cleanedFiles)
+	tag, err := tx.Exec(ctx, `
+		UPDATE slice_metadata
+		SET head_commit_hash = $1,
+			modified_files = $2,
+			last_modified = $3,
+			modified_files_count = $4
+		WHERE slice_id = $5
+		  AND (head_commit_hash = '' OR head_commit_hash = $6 OR last_modified <= $3)
+	`, latestCommitHash, modifiedJSON, latestTime, len(cleanedFiles), rootSliceID, initialCommitHash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM slice_metadata WHERE slice_id = $1)`, rootSliceID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrSliceNotFound
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ============ Health Check ============
@@ -5762,6 +6330,62 @@ func (s *PostgresNativeStorage) allocateSliceSlug(ctx context.Context, q queryab
 	}
 }
 
+func (s *PostgresNativeStorage) hydrateRootSliceFiles(ctx context.Context, q queryable, sl *models.Slice) error {
+	if sl == nil || !sl.IsRoot || strings.TrimSpace(sl.ID) == "" {
+		return nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT path
+		FROM directory_entries
+		WHERE slice_id = $1
+		  AND type = 'file'
+		ORDER BY path
+	`, sl.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	files := make([]string, 0)
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			return err
+		}
+		if filePath = cleanRelativePath(filePath); filePath != "" {
+			files = append(files, filePath)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(files) > 0 {
+		seen := make(map[string]struct{}, len(sl.Files)+len(files))
+		merged := make([]string, 0, len(sl.Files)+len(files))
+		for _, existing := range sl.Files {
+			cleaned := cleanRelativePath(existing)
+			if cleaned == "" {
+				continue
+			}
+			if _, ok := seen[cleaned]; ok {
+				continue
+			}
+			seen[cleaned] = struct{}{}
+			merged = append(merged, cleaned)
+		}
+		for _, filePath := range files {
+			if _, ok := seen[filePath]; ok {
+				continue
+			}
+			seen[filePath] = struct{}{}
+			merged = append(merged, filePath)
+		}
+		sort.Strings(merged)
+		sl.Files = merged
+	}
+	return nil
+}
+
 func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql string, args ...interface{}) (*models.Slice, error) {
 	var sl models.Slice
 	var filesJSON, ownersJSON, mountsJSON []byte
@@ -5795,6 +6419,9 @@ func (s *PostgresNativeStorage) scanSlice(ctx context.Context, q queryable, sql 
 	}
 	if strings.TrimSpace(sl.Slug) == "" {
 		sl.Slug = defaultSliceSlug(&sl)
+	}
+	if err := s.hydrateRootSliceFiles(ctx, q, &sl); err != nil {
+		return nil, err
 	}
 
 	return &sl, nil

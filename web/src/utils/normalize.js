@@ -41,6 +41,7 @@ export function normalizeChangesetDiffResponse(data) {
     created_at: changeset.created_at ?? changeset.createdAt,
     merged_at: changeset.merged_at ?? changeset.mergedAt,
     status: normalizeChangesetStatus(changeset.status),
+    review_status: normalizeReviewStatus(changeset.review_status ?? changeset.reviewStatus),
   };
   const normalizedChanges = (data?.changes || [])
     .map(normalizeChange);
@@ -117,6 +118,7 @@ export function normalizeChangesetInfo(changeset) {
     message: changeset?.message ?? '',
     created_at: changeset?.created_at ?? changeset?.createdAt ?? 0,
     merged_at: changeset?.merged_at ?? changeset?.mergedAt ?? 0,
+    review_status: normalizeReviewStatus(changeset?.review_status ?? changeset?.reviewStatus),
   };
 }
 
@@ -130,6 +132,14 @@ export function normalizeChangesetStatus(value) {
   if (value === 2 || value === 'REJECTED' || value === 'rejected') return 'rejected';
   if (value === 3 || value === 'MERGED' || value === 'merged') return 'merged';
   return 'pending';
+}
+
+export function normalizeReviewStatus(value) {
+  if (value === 1 || value === 'NEEDS_SYNC' || value === 'NEEDS_REBASE' || value === 'needs_sync' || value === 'needs_rebase') {
+    return 'needs_sync';
+  }
+  if (value === 2 || value === 'HAS_CONFLICTS' || value === 'has_conflicts') return 'has_conflicts';
+  return 'ready_for_merge';
 }
 
 export function normalizeSliceInfo(slice) {

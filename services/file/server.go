@@ -261,6 +261,33 @@ func (s *fileServiceServer) resolveBackingSliceID(ctx context.Context, sliceID s
 	return backingSliceID, nil
 }
 
+func (s *fileServiceServer) rootHomeBackingForPath(ctx context.Context, slice *models.Slice, requestPath string, preferSnapshots bool) (string, bool, error) {
+	if preferSnapshots || slice == nil || !slice.IsRoot {
+		return "", false, nil
+	}
+	cleaned := common.CleanRelativePath(requestPath)
+	if cleaned == "" {
+		return "", false, nil
+	}
+	username, _, _ := strings.Cut(cleaned, "/")
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", false, nil
+	}
+	homeSliceID := homeslice.IDForUsername(username)
+	homeSlice, err := s.storage.GetSlice(ctx, homeSliceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if homeSlice == nil {
+		return "", false, nil
+	}
+	return homeSlice.ID, true, nil
+}
+
 func (s *fileServiceServer) sliceDisplayPathExists(ctx context.Context, sliceID string, slice *models.Slice, displayPath string) (bool, bool, error) {
 	normalizedDisplayPath := cleanPath(displayPath)
 	if normalizedDisplayPath == "" {
@@ -814,6 +841,24 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 	// Fast path for materialized directory trees: list direct children via directory entries
 	// instead of scanning all descendant file paths under a prefix.
 	{
+		if normalizedPath != "" {
+			if homeBackingID, ok, err := s.rootHomeBackingForPath(ctx, slice, normalizedPath, preferSnapshots); err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve root home backing: %v", err))
+			} else if ok {
+				if parentEntry, err := s.storage.GetEntryByPath(ctx, homeBackingID, normalizedPath); err == nil && parentEntry != nil {
+					if parentEntry.Type == "file" {
+						return nil, status.Error(codes.FailedPrecondition, "path refers to a file")
+					}
+					children, err := s.storage.ListEntries(ctx, homeBackingID, parentEntry.ID)
+					if err == nil {
+						return buildListResponse(sliceID, normalizedPath, children, slice, limit), nil
+					}
+				} else if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list root home backing: %v", err))
+				}
+			}
+		}
+
 		backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice, preferSnapshots)
 		if err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
@@ -1266,6 +1311,39 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 			Hash:    hash,
 		}
 		return &filev1.GetFileResponse{File: file}, nil
+	}
+
+	if homeBackingID, ok, err := s.rootHomeBackingForPath(ctx, slice, requestPath, preferSnapshots); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve root home backing: %v", err))
+	} else if ok {
+		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, homeBackingID, requestPath, resolvedCommit)
+		if metaErr != nil && !errors.Is(metaErr, storage.ErrEntryNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file metadata: %v", metaErr))
+		}
+		if notModifiedResp, matched := s.maybeSetNotModifiedHeader(ctx, requestPath, hash, size); matched {
+			return notModifiedResp, nil
+		}
+		content, err := s.resolveFileContent(ctx, sliceID, slice, homeBackingID, requestPath, resolvedCommit)
+		if err == nil && content != nil {
+			if size := contentSize(content); size > maxUnaryGetFileBytes {
+				return nil, status.Error(codes.ResourceExhausted, fmt.Sprintf("file is too large for GetFile (%d bytes > %d bytes); use a streamed download path", size, maxUnaryGetFileBytes))
+			}
+			if strings.TrimSpace(hash) == "" {
+				hash = strings.TrimSpace(content.Hash)
+			}
+			if size == 0 {
+				size = contentSize(content)
+			}
+			return &filev1.GetFileResponse{File: &filev1.File{
+				Path:    requestPath,
+				Content: content.Content,
+				Size:    size,
+				Hash:    hash,
+			}}, nil
+		}
+		if err != nil && !errors.Is(err, storage.ErrEntryNotFound) {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load file content: %v", err))
+		}
 	}
 
 	pathMap, _, mapErr := s.cachedSlicePathMap(ctx, sliceID, slice, resolvedCommit, preferSnapshots)

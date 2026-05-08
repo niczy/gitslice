@@ -71,13 +71,9 @@ func (m *loadMetrics) record(r userResult) {
 // After the load phase, the test verifies system integrity: every successful
 // merge is reflected in the slice's commit history and state.
 func TestSimulate100kUsers(t *testing.T) {
-	numUsers := 100_000
-	if v := os.Getenv("BENCHMARK_USERS"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
-			t.Fatalf("BENCHMARK_USERS must be a positive integer, got %q", v)
-		}
-		numUsers = n
+	numUsers, err := benchmarkUserCountFromEnv()
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	numWorkers := runtime.NumCPU() * 2
@@ -212,9 +208,9 @@ func TestSimulate100kUsers(t *testing.T) {
 
 	perm := rand.Perm(numUsers)
 	integrityErrors := 0
-	ctx := userCtx(context.Background())
 
 	for _, i := range perm[:sampleSize] {
+		ctx := userCtxForIndex(context.Background(), i)
 		sid := sliceID(i)
 		fid := fileID(i)
 
@@ -282,7 +278,7 @@ func TestSimulate100kUsers(t *testing.T) {
 func runUserSession(i int) userResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	ctx = userCtx(ctx)
+	ctx = userCtxForIndex(ctx, i)
 
 	r := userResult{userIndex: i}
 	sid := sliceID(i)
@@ -297,7 +293,7 @@ func runUserSession(i int) userResult {
 		NewSliceId:    sid,
 		Name:          fmt.Sprintf("Bench User %d", i),
 		Description:   "benchmark slice",
-		FolderPaths:   []string{"bench"},
+		FolderPaths:   []string{benchmarkFolderPath(i)},
 	})
 	r.createSliceMs = float64(time.Since(t0).Microseconds()) / 1000.0
 	if err != nil {
@@ -312,6 +308,10 @@ func runUserSession(i int) userResult {
 		ModifiedFiles: []string{fid},
 		Author:        "bench-worker",
 		Message:       fmt.Sprintf("bench change for user %d", i),
+		FileContents: []*slicev1.FileContentChange{{
+			Path:    fid,
+			Content: []byte(fmt.Sprintf("package main\n\nconst benchUser = %d\n", i)),
+		}},
 	})
 	r.createChangeMs = float64(time.Since(t1).Microseconds()) / 1000.0
 	if err != nil {

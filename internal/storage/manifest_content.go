@@ -11,6 +11,10 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 )
 
+type fileManifestReferenceWriter interface {
+	putFileManifestReference(ctx context.Context, sliceID, path string, manifest *models.FileManifest) error
+}
+
 // ReadSliceFileContent assembles the current file content for a slice path from
 // the stored manifest and content-addressed blocks.
 func ReadSliceFileContent(ctx context.Context, st Storage, sliceID, filePath string) (*models.FileContent, error) {
@@ -93,9 +97,9 @@ func ListSliceFileContents(ctx context.Context, st Storage, sliceID string) ([]*
 	return files, nil
 }
 
-// WriteSliceFileManifest chunks content into blocks and persists both the
-// slice-local and versioned manifests. Entry/index maintenance remains the
-// responsibility of the caller.
+// WriteSliceFileManifest chunks content into blocks and persists the versioned
+// manifest plus the slice/path manifest reference. Entry/index maintenance
+// remains the responsibility of the caller.
 func WriteSliceFileManifest(ctx context.Context, st Storage, sliceID, filePath string, content []byte) (*models.FileManifest, error) {
 	return WriteSliceFileManifestWithMetadata(ctx, st, sliceID, filePath, content, false, "")
 }
@@ -138,10 +142,16 @@ func WriteSliceFileManifestWithMetadata(
 		}
 	}
 
-	if err := st.PutFileManifest(ctx, strings.TrimSpace(sliceID), path, manifest); err != nil {
+	if err := st.PutVersionedFileManifest(ctx, manifest); err != nil {
 		return nil, err
 	}
-	if err := st.PutVersionedFileManifest(ctx, manifest); err != nil {
+	if refWriter, ok := st.(fileManifestReferenceWriter); ok {
+		if err := refWriter.putFileManifestReference(ctx, strings.TrimSpace(sliceID), path, manifest); err != nil {
+			return nil, err
+		}
+		return cloneManifest(manifest), nil
+	}
+	if err := st.PutFileManifest(ctx, strings.TrimSpace(sliceID), path, manifest); err != nil {
 		return nil, err
 	}
 	return cloneManifest(manifest), nil

@@ -935,6 +935,55 @@ func TestRootMountedSliceListEntriesUsesLiveHomeBackingTree(t *testing.T) {
 	}
 }
 
+func TestRootSliceDirectReadsUseLiveHomeBackingTree(t *testing.T) {
+	ctx := authCtx()
+	st := storage.NewInMemoryStorage()
+
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "tester")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, "tester/shared"),
+		Path:     "tester/shared",
+		Type:     "directory",
+		ParentID: common.GenerateEntryID(home.ID, "tester"),
+	}); err != nil {
+		t.Fatalf("AddEntry(home dir) failed: %v", err)
+	}
+	hash := mustWriteSliceManifest(t, ctx, st, home.ID, "tester/shared/live.txt", []byte("live home"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(home.ID, "tester/shared/live.txt"),
+		Path:     "tester/shared/live.txt",
+		Type:     "file",
+		ParentID: common.GenerateEntryID(home.ID, "tester/shared"),
+		Size:     int64(len("live home")),
+		Hash:     hash,
+	}); err != nil {
+		t.Fatalf("AddEntry(home file) failed: %v", err)
+	}
+
+	svc := newFileServiceServer(st)
+	listResp, err := svc.ListEntries(ctx, &filev1.ListEntriesRequest{Path: "tester/shared"})
+	if err != nil {
+		t.Fatalf("ListEntries(root home path) failed: %v", err)
+	}
+	if got := len(listResp.GetEntries()); got != 1 {
+		t.Fatalf("expected one logical root entry, got %d: %#v", got, listResp.GetEntries())
+	}
+	if got := listResp.GetEntries()[0].GetPath(); got != "tester/shared/live.txt" {
+		t.Fatalf("expected logical root file tester/shared/live.txt, got %q", got)
+	}
+
+	fileResp, err := svc.GetFile(ctx, &filev1.GetFileRequest{Path: "tester/shared/live.txt"})
+	if err != nil {
+		t.Fatalf("GetFile(root home path) failed: %v", err)
+	}
+	if got := string(fileResp.GetFile().GetContent()); got != "live home" {
+		t.Fatalf("GetFile content = %q, want live home content", got)
+	}
+}
+
 func TestRootMountedSliceGetFileUsesLiveHomeBackingSliceFilesFallback(t *testing.T) {
 	ctx := authCtx()
 	st := storage.NewInMemoryStorage()

@@ -390,13 +390,13 @@ func TestHandlerImportsRootMountedPushThroughHomeSliceAndPromotesRoot(t *testing
 	}
 	rootReadme, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/README.md")
 	if err != nil {
-		t.Fatalf("read promoted root README: %v", err)
+		t.Fatalf("read root README: %v", err)
 	}
-	if got, want := string(rootReadme.Content), "new via git\n"; got != want {
+	if got, want := string(rootReadme.Content), "old root\n"; got != want {
 		t.Fatalf("root README = %q, want %q", got, want)
 	}
-	if _, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/src/new.txt"); err != nil {
-		t.Fatalf("read promoted root new file: %v", err)
+	if _, err := storage.ReadSliceFileContent(ctx, st, root.ID, "alice/git-auth-smoke/src/new.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("expected no physical root copy for new file, got %v", err)
 	}
 }
 

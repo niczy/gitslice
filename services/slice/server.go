@@ -43,6 +43,7 @@ type sliceServiceServer struct {
 	promotionQueue        *rootpromote.Queue
 	promotionBatchWindow  time.Duration
 	promotionBatchMaxSize int
+	promotionWorkerCount  int
 }
 
 func (s *sliceServiceServer) requireUsername(ctx context.Context) (string, error) {
@@ -65,8 +66,9 @@ func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, erro
 }
 
 const (
-	defaultPromotionBatchWindow  = rootpromote.DefaultBatchWindow
-	defaultPromotionBatchMaxSize = rootpromote.DefaultBatchMaxSize
+	defaultPromotionBatchWindow  = 10 * time.Millisecond
+	defaultPromotionBatchMaxSize = 128
+	defaultPromotionWorkerCount  = 8
 	revertChangesetHashPrefix    = common.ChangesetVersionIDPrefix + "revert~"
 	revertAllChangesToken        = "*"
 	checkoutManifestChunkSize    = 256
@@ -271,6 +273,21 @@ func (s *sliceServiceServer) collectSliceEntries(ctx context.Context, sliceID st
 		queue = append(queue, children...)
 	}
 	return result, nil
+}
+
+func (s *sliceServiceServer) collectSliceEntriesForRequestedFolders(ctx context.Context, parentSlice *models.Slice, folderPaths []string, username string) ([]*models.DirectoryEntry, bool, error) {
+	if parentSlice == nil {
+		return nil, false, nil
+	}
+	prefixes := candidateFolderEntryPrefixes(parentSlice, folderPaths, username)
+	if len(prefixes) > 0 {
+		entries, ok, err := listEntriesByPathPrefixes(ctx, s.storage, parentSlice.ID, prefixes)
+		if ok || err != nil {
+			return entries, ok, err
+		}
+	}
+	entries, err := s.collectSliceEntries(ctx, parentSlice.ID)
+	return entries, false, err
 }
 
 func (s *sliceServiceServer) resolveBackingSliceID(ctx context.Context, sliceID string, slice *models.Slice) (string, error) {
@@ -1231,44 +1248,17 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		diff = summarizeReviewChanges(reviewChanges)
 	}
 
-	reviewStatus := slicev1.ReviewStatus_READY_FOR_MERGE
-	issues := make([]*slicev1.ReviewIssue, 0)
-	if stale, currentHead, err := s.changesetNeedsRebase(ctx, reviewCS); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
-	} else if stale {
-		reviewStatus = slicev1.ReviewStatus_NEEDS_REBASE
-		message := fmt.Sprintf(
-			"changeset base %s is stale; current slice head is %s. Run gs changeset rebase %s before merging.",
-			shortHash(reviewCS.BaseCommitHash),
-			shortHash(currentHead),
-			reviewCS.ID,
-		)
-		warnings = append(warnings, message)
-		issues = append(issues, &slicev1.ReviewIssue{
-			Type:    slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE,
-			Message: message,
-		})
-	} else {
-		conflicts, ownershipIssues, err := collectMergeConflictsAndOwnership(ctx, s.storage, reviewCS.SliceID, reviewCS.ModifiedFiles)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to review changeset conflicts: %v", err))
-		}
-		if len(conflicts) > 0 {
-			reviewStatus = slicev1.ReviewStatus_HAS_CONFLICTS
-			for _, conflict := range conflicts {
-				issues = append(issues, &slicev1.ReviewIssue{
-					Type:                reviewIssueTypeForConflict(conflict),
-					FileId:              conflict.GetFileId(),
-					ConflictingSliceIds: append([]string(nil), conflict.GetConflictingSliceIds()...),
-					Message:             conflict.GetMessage(),
-				})
-			}
-		}
-		issues = append(issues, ownershipIssues...)
+	reviewStatus, issues, stateWarnings, err := s.evaluateChangesetReviewState(ctx, reviewCS)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset state: %v", err))
 	}
+	warnings = append(warnings, stateWarnings...)
+
+	changesetInfo := convertChangesetToProto(reviewCS)
+	changesetInfo.ReviewStatus = reviewStatus
 
 	return &slicev1.ReviewChangesetResponse{
-		Changeset:    convertChangesetToProto(reviewCS),
+		Changeset:    changesetInfo,
 		Diff:         diff,
 		ReviewStatus: reviewStatus,
 		Warnings:     warnings,
@@ -1494,8 +1484,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 
 	promotionStartedAt := time.Now()
 	if promotionCommitHash != "" {
-		if err := s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
-			log.Printf("failed to enqueue promotion for slice %s: %v", cs.SliceID, err)
+		if err := s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
+			profile.markPromotion(time.Since(promotionStartedAt))
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to promote merged changeset to root: %v", err))
 		}
 		if useCurrentHead {
 			newCommit = promotionCommitHash
@@ -2988,10 +2979,65 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 
 	response := &slicev1.ListChangesetsResponse{}
 	for _, cs := range changesets {
-		response.Changesets = append(response.Changesets, convertChangesetToProto(cs))
+		info := convertChangesetToProto(cs)
+		if cs.Status == models.ChangesetStatusPending || cs.Status == models.ChangesetStatusApproved {
+			reviewStatus, _, _, err := s.evaluateChangesetReviewState(ctx, cs)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset %s state: %v", cs.ID, err))
+			}
+			info.ReviewStatus = reviewStatus
+		}
+		response.Changesets = append(response.Changesets, info)
 	}
 
 	return response, nil
+}
+
+func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, cs *models.Changeset) (slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
+	if cs == nil {
+		return slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	if cs.Status == models.ChangesetStatusMerged || cs.Status == models.ChangesetStatusRejected {
+		return slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+
+	reviewStatus := slicev1.ReviewStatus_READY_FOR_MERGE
+	issues := make([]*slicev1.ReviewIssue, 0)
+	warnings := make([]string, 0)
+	if stale, currentHead, err := s.changesetNeedsRebase(ctx, cs); err != nil {
+		return reviewStatus, nil, nil, fmt.Errorf("failed to evaluate changeset base commit: %w", err)
+	} else if stale {
+		reviewStatus = slicev1.ReviewStatus_NEEDS_SYNC
+		message := fmt.Sprintf(
+			"changeset base %s is stale; current slice head is %s. Sync the changeset before merging.",
+			shortHash(cs.BaseCommitHash),
+			shortHash(currentHead),
+		)
+		warnings = append(warnings, message)
+		issues = append(issues, &slicev1.ReviewIssue{
+			Type:    slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE,
+			Message: message,
+		})
+		return reviewStatus, issues, warnings, nil
+	}
+
+	conflicts, ownershipIssues, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, cs.ModifiedFiles)
+	if err != nil {
+		return reviewStatus, nil, nil, fmt.Errorf("failed to review changeset conflicts: %w", err)
+	}
+	if len(conflicts) > 0 {
+		reviewStatus = slicev1.ReviewStatus_HAS_CONFLICTS
+		for _, conflict := range conflicts {
+			issues = append(issues, &slicev1.ReviewIssue{
+				Type:                reviewIssueTypeForConflict(conflict),
+				FileId:              conflict.GetFileId(),
+				ConflictingSliceIds: append([]string(nil), conflict.GetConflictingSliceIds()...),
+				Message:             conflict.GetMessage(),
+			})
+		}
+	}
+	issues = append(issues, ownershipIssues...)
+	return reviewStatus, issues, warnings, nil
 }
 
 func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
@@ -3101,7 +3147,7 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 		return nil, status.Error(codes.PermissionDenied, "not authorized for parent slice")
 	}
 
-	parentEntries, err := s.collectSliceEntries(ctx, parentSlice.ID)
+	parentEntries, entriesScopedToFolders, err := s.collectSliceEntriesForRequestedFolders(ctx, parentSlice, folderPaths, username)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enumerate parent slice entries: %v", err))
 	}
@@ -3113,7 +3159,8 @@ func (s *sliceServiceServer) CreateSliceFromFolder(ctx context.Context, req *sli
 	if err := validateFolderSelectionsExist(parentSlice, parentEntries, folderSelections); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	selectedFiles := collectSliceFilesForFolders(parentSlice, parentEntries, folderSelections)
+	includeParentSliceFiles := !entriesScopedToFolders || !entriesContainFilesForSelections(parentEntries, folderSelections)
+	selectedFiles := collectSliceFilesForFolders(parentSlice, parentEntries, folderSelections, includeParentSliceFiles)
 
 	newSlice := &models.Slice{
 		ID:           sliceID,
@@ -3511,6 +3558,47 @@ type sliceFolderSelection struct {
 	storedPath  string
 }
 
+func candidateFolderEntryPrefixes(parentSlice *models.Slice, folderPaths []string, username string) []string {
+	if parentSlice == nil || len(folderPaths) == 0 {
+		return nil
+	}
+	prefixes := make([]string, 0, len(folderPaths)*2)
+	seen := make(map[string]struct{}, len(folderPaths)*2)
+	add := func(raw string) {
+		cleaned := common.CleanRelativePath(raw)
+		if cleaned == "" {
+			return
+		}
+		if _, ok := seen[cleaned]; ok {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		prefixes = append(prefixes, cleaned)
+	}
+
+	homeRoot := ""
+	if parentSlice.IsRoot || homeslice.IsHomeSliceID(parentSlice.ID) {
+		homeUsername := strings.TrimSpace(username)
+		if sliceUsername := homeslice.UsernameFromSliceID(parentSlice.ID); sliceUsername != "" {
+			homeUsername = sliceUsername
+		}
+		homeRoot = homeslice.RelativeRootPath(homeUsername)
+	}
+
+	for _, displayPath := range folderPaths {
+		cleanDisplayPath := common.CleanRelativePath(displayPath)
+		if cleanDisplayPath == "" {
+			continue
+		}
+		storedPath := common.SliceStoredPath(parentSlice, cleanDisplayPath)
+		add(storedPath)
+		if homeRoot != "" && storedPath != homeRoot && !strings.HasPrefix(storedPath, homeRoot+"/") {
+			add(path.Join(homeRoot, cleanDisplayPath))
+		}
+	}
+	return prefixes
+}
+
 func resolveRequestedFolderSelections(parentSlice *models.Slice, entries []*models.DirectoryEntry, folderPaths []string, username string) ([]sliceFolderSelection, error) {
 	if len(folderPaths) == 0 {
 		return nil, nil
@@ -3565,7 +3653,7 @@ func resolveRequestedFolderSelections(parentSlice *models.Slice, entries []*mode
 	return selections, nil
 }
 
-func collectSliceFilesForFolders(parentSlice *models.Slice, entries []*models.DirectoryEntry, selections []sliceFolderSelection) []string {
+func collectSliceFilesForFolders(parentSlice *models.Slice, entries []*models.DirectoryEntry, selections []sliceFolderSelection, includeParentSliceFiles bool) []string {
 	if len(selections) == 0 {
 		return nil
 	}
@@ -3596,9 +3684,11 @@ func collectSliceFilesForFolders(parentSlice *models.Slice, entries []*models.Di
 		}
 	}
 
-	for _, rawPath := range parentSlice.Files {
-		if matchesSelection(rawPath) {
-			selectedSet[common.CleanRelativePath(rawPath)] = struct{}{}
+	if includeParentSliceFiles && parentSlice != nil {
+		for _, rawPath := range parentSlice.Files {
+			if matchesSelection(rawPath) {
+				selectedSet[common.CleanRelativePath(rawPath)] = struct{}{}
+			}
 		}
 	}
 
@@ -3611,6 +3701,24 @@ func collectSliceFilesForFolders(parentSlice *models.Slice, entries []*models.Di
 	}
 	sort.Strings(selectedFiles)
 	return selectedFiles
+}
+
+func entriesContainFilesForSelections(entries []*models.DirectoryEntry, selections []sliceFolderSelection) bool {
+	for _, entry := range entries {
+		if entry == nil || entry.Type != "file" {
+			continue
+		}
+		cleaned := common.CleanRelativePath(entry.Path)
+		if cleaned == "" {
+			continue
+		}
+		for _, selection := range selections {
+			if cleaned == selection.storedPath || strings.HasPrefix(cleaned, selection.storedPath+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func buildSliceFolderMounts(selections []sliceFolderSelection) []models.SliceFolderMount {
@@ -3711,21 +3819,61 @@ func folderSelectionExists(parentSlice *models.Slice, entries []*models.Director
 }
 
 func (s *sliceServiceServer) enqueueRootPromotion(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.rootPromotionQueue().Enqueue(ctx, rootpromote.Job{
+	return s.rootPromotionQueue().Enqueue(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime))
+}
+
+func (s *sliceServiceServer) enqueueRootPromotionAndWait(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
+	return s.rootPromotionQueue().EnqueueAndWait(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime))
+}
+
+func rootPromotionJob(sliceID, commitHash string, files []string, commitTime time.Time) rootpromote.Job {
+	return rootpromote.Job{
 		SliceID:    sliceID,
 		CommitHash: commitHash,
 		Files:      append([]string(nil), files...),
 		CommitTime: commitTime,
-	})
+		ShardKey:   rootPromotionShardKey(sliceID, files),
+	}
 }
 
 func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.promoteSliceBatch(ctx, []rootpromote.Job{{
-		SliceID:    sliceID,
-		CommitHash: commitHash,
-		Files:      files,
-		CommitTime: commitTime,
-	}})
+	return s.promoteSliceBatch(ctx, []rootpromote.Job{rootPromotionJob(sliceID, commitHash, files, commitTime)})
+}
+
+func rootPromotionShardKey(sliceID string, files []string) string {
+	sliceID = strings.TrimSpace(sliceID)
+	if username := homeslice.UsernameFromSliceID(sliceID); username != "" {
+		return "home:" + username
+	}
+	if homeRoot := commonHomeRootFromFiles(files); homeRoot != "" {
+		return "home:" + homeRoot
+	}
+	if sliceID != "" {
+		return "slice:" + sliceID
+	}
+	return "global"
+}
+
+func commonHomeRootFromFiles(files []string) string {
+	var root string
+	for _, rawPath := range normalizeModifiedFiles(files) {
+		cleaned := common.CleanRelativePath(rawPath)
+		if cleaned == "" {
+			continue
+		}
+		part, _, _ := strings.Cut(cleaned, "/")
+		if part == "" {
+			continue
+		}
+		if root == "" {
+			root = part
+			continue
+		}
+		if root != part {
+			return ""
+		}
+	}
+	return root
 }
 
 func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []rootpromote.Job) error {
@@ -3733,6 +3881,269 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 		return nil
 	}
 
+	if promoted, err := s.promoteSliceBatchToHomeViews(ctx, batch); err != nil || promoted {
+		return err
+	}
+
+	if _, ok := s.storage.(rootPromotionFilePromoter); !ok || hasHomePromotionJob(batch) {
+		return s.promoteSliceBatchWithGlobalLock(ctx, batch)
+	}
+
+	start := time.Now()
+	rootSliceID, err := s.getRootSliceID(ctx)
+	if err != nil {
+		return err
+	}
+
+	fileStart := time.Now()
+	if err := s.storage.(rootPromotionFilePromoter).PromoteFilesToRoot(ctx, rootSliceID, storageRootPromotionJobs(batch)); err != nil {
+		return err
+	}
+	fileDuration := time.Since(fileStart)
+
+	stateStart := time.Now()
+	latest := latestPromotionJob(batch)
+	if err := s.updateRootPromotionState(ctx, rootSliceID, latest, promotionGlobalCommits(batch)); err != nil {
+		return err
+	}
+	stateDuration := time.Since(stateStart)
+	totalDuration := time.Since(start)
+	if totalDuration > 250*time.Millisecond || len(batch) > 1 {
+		log.Printf("root promotion batch jobs=%d files=%d file_sync=%s state_update=%s total=%s", len(batch), len(collectUniquePromotionFiles(batch)), fileDuration, stateDuration, totalDuration)
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) promoteSliceBatchToHomeViews(ctx context.Context, batch []rootpromote.Job) (bool, error) {
+	groups := make(map[string][]rootpromote.Job)
+	for _, job := range batch {
+		username, ok, err := s.promotionHomeUsername(ctx, job)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+		groups[username] = append(groups[username], job)
+	}
+	if len(groups) == 0 {
+		return false, nil
+	}
+
+	start := time.Now()
+	rootSliceID, err := s.getRootSliceID(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	fileStart := time.Now()
+	if err := s.promoteHomeGroups(ctx, groups); err != nil {
+		return false, err
+	}
+	fileDuration := time.Since(fileStart)
+
+	stateStart := time.Now()
+	latest := latestPromotionJob(batch)
+	if err := s.updateRootPromotionState(ctx, rootSliceID, latest, promotionGlobalCommits(batch)); err != nil {
+		return false, err
+	}
+	stateDuration := time.Since(stateStart)
+	totalDuration := time.Since(start)
+	if totalDuration > 250*time.Millisecond || len(batch) > 1 {
+		log.Printf("home promotion batch homes=%d jobs=%d files=%d home_sync=%s state_update=%s total=%s", len(groups), len(batch), len(collectUniquePromotionFilesIncludingHome(batch)), fileDuration, stateDuration, totalDuration)
+	}
+	return true, nil
+}
+
+func (s *sliceServiceServer) promoteHomeGroups(ctx context.Context, groups map[string][]rootpromote.Job) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	usernames := make([]string, 0, len(groups))
+	for username := range groups {
+		usernames = append(usernames, username)
+	}
+	sort.Strings(usernames)
+
+	parallelism := len(usernames)
+	if parallelism > 8 {
+		parallelism = 8
+	}
+	sem := make(chan struct{}, parallelism)
+	errCh := make(chan error, len(usernames))
+	var wg sync.WaitGroup
+
+	for _, username := range usernames {
+		username := username
+		jobs := append([]rootpromote.Job(nil), groups[username]...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := s.promoteHomeGroup(ctx, username, jobs); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) promoteHomeGroup(ctx context.Context, username string, jobs []rootpromote.Job) error {
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, s.storage, username)
+	if err != nil {
+		return fmt.Errorf("failed to ensure home slice for %s: %w", username, err)
+	}
+	copyJobs := nonHomeSourcePromotionJobs(homeSlice.ID, jobs)
+	if len(copyJobs) > 0 {
+		if promoter, ok := s.storage.(sliceFilePromoter); ok {
+			if err := promoter.PromoteFilesToSlice(ctx, homeSlice.ID, storageRootPromotionJobs(copyJobs)); err != nil {
+				return fmt.Errorf("failed to publish files into home slice %s: %w", homeSlice.ID, err)
+			}
+		} else {
+			for _, job := range copyJobs {
+				if err := s.syncPromotionJobToSlice(ctx, homeSlice.ID, job); err != nil {
+					return err
+				}
+			}
+			if err := addFilesToSlice(ctx, s.storage, collectUniquePromotionFiles(copyJobs), homeSlice.ID); err != nil {
+				return fmt.Errorf("failed to add promoted files to home slice: %w", err)
+			}
+		}
+	}
+	if err := s.updateHomePromotionState(ctx, homeSlice.ID, jobs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) promotionHomeUsername(ctx context.Context, job rootpromote.Job) (string, bool, error) {
+	if username := homeslice.UsernameFromSliceID(job.SliceID); username != "" {
+		return username, true, nil
+	}
+	homeRoot := commonHomeRootFromFiles(job.Files)
+	if homeRoot == "" {
+		return "", false, nil
+	}
+	if user, err := s.storage.GetUser(ctx, homeRoot); err == nil && user != nil {
+		rootPath := strings.TrimPrefix(strings.TrimSpace(user.RootPath), "/")
+		if rootPath == "" {
+			rootPath = homeslice.RelativeRootPath(user.Username)
+		}
+		if common.CleanRelativePath(rootPath) == homeRoot {
+			return user.Username, true, nil
+		}
+	}
+	sourceSlice, err := s.storage.GetSlice(ctx, strings.TrimSpace(job.SliceID))
+	if err != nil {
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if sliceOwnedByUsername(sourceSlice, homeRoot) {
+		return homeRoot, true, nil
+	}
+	return "", false, nil
+}
+
+func sliceOwnedByUsername(slice *models.Slice, username string) bool {
+	username = strings.TrimSpace(username)
+	if slice == nil || username == "" {
+		return false
+	}
+	if strings.TrimSpace(slice.CreatedBy) == username {
+		return true
+	}
+	for _, owner := range slice.Owners {
+		if strings.TrimSpace(owner) == username {
+			return true
+		}
+	}
+	return false
+}
+
+func nonHomeSourcePromotionJobs(homeSliceID string, jobs []rootpromote.Job) []rootpromote.Job {
+	homeSliceID = strings.TrimSpace(homeSliceID)
+	result := make([]rootpromote.Job, 0, len(jobs))
+	for _, job := range jobs {
+		sourceSliceID := strings.TrimSpace(job.SliceID)
+		if sourceSliceID == "" || sourceSliceID == homeSliceID || homeslice.IsHomeSliceID(sourceSliceID) {
+			continue
+		}
+		result = append(result, job)
+	}
+	return result
+}
+
+func (s *sliceServiceServer) updateHomePromotionState(ctx context.Context, homeSliceID string, jobs []rootpromote.Job) error {
+	homeSliceID = strings.TrimSpace(homeSliceID)
+	if homeSliceID == "" || len(jobs) == 0 {
+		return nil
+	}
+	metadata, err := s.storage.GetSliceMetadata(ctx, homeSliceID)
+	if err != nil {
+		return fmt.Errorf("failed to load home metadata: %w", err)
+	}
+
+	ordered := append([]rootpromote.Job(nil), jobs...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if !left.CommitTime.Equal(right.CommitTime) {
+			return left.CommitTime.Before(right.CommitTime)
+		}
+		return strings.TrimSpace(left.CommitHash) < strings.TrimSpace(right.CommitHash)
+	})
+
+	parentHash := strings.TrimSpace(metadata.HeadCommitHash)
+	for _, job := range ordered {
+		commitHash := strings.TrimSpace(job.CommitHash)
+		if commitHash == "" {
+			continue
+		}
+		if strings.TrimSpace(job.SliceID) != homeSliceID {
+			commitTime := job.CommitTime
+			if commitTime.IsZero() {
+				commitTime = time.Now()
+			}
+			if err := s.storage.AddSliceCommit(ctx, homeSliceID, &models.Commit{
+				CommitHash: commitHash,
+				ParentHash: parentHash,
+				Timestamp:  commitTime,
+				Message:    "publish changeset to home",
+			}); err != nil {
+				return fmt.Errorf("failed to add home commit: %w", err)
+			}
+		}
+		parentHash = commitHash
+	}
+
+	latest := latestPromotionJob(jobs)
+	if strings.TrimSpace(latest.CommitHash) != "" {
+		metadata.HeadCommitHash = strings.TrimSpace(latest.CommitHash)
+	}
+	latestFiles := collectUniquePromotionFilesIncludingHome(jobs)
+	metadata.ModifiedFiles = latestFiles
+	metadata.ModifiedFilesCount = len(latestFiles)
+	if latest.CommitTime.IsZero() {
+		metadata.LastModified = time.Now()
+	} else {
+		metadata.LastModified = latest.CommitTime
+	}
+	if err := s.storage.UpdateSliceMetadata(ctx, homeSliceID, metadata); err != nil {
+		return fmt.Errorf("failed to update home metadata: %w", err)
+	}
+	return nil
+}
+
+func (s *sliceServiceServer) promoteSliceBatchWithGlobalLock(ctx context.Context, batch []rootpromote.Job) error {
 	return rootpromote.WithGlobalLock(func() error {
 		rootSliceID, err := s.getRootSliceID(ctx)
 		if err != nil {
@@ -3759,55 +4170,68 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 			}
 		}
 
-		files := collectUniquePromotionFiles(batch)
-		for _, fileID := range files {
-			if err := s.storage.AddFileToSlice(ctx, fileID, rootSliceID); err != nil {
-				return fmt.Errorf("failed to add file to root slice: %w", err)
-			}
+		if err := addFilesToSlice(ctx, s.storage, collectUniquePromotionFiles(batch), rootSliceID); err != nil {
+			return fmt.Errorf("failed to add promoted files to root slice: %w", err)
 		}
 
-		state, err := s.storage.GetGlobalState(ctx)
-		if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
-			return fmt.Errorf("failed to load global state: %w", err)
-		}
-		if state == nil {
-			state = &models.GlobalState{}
-		}
-
-		history := make([]*models.GlobalCommit, 0, len(batch))
-		for i := len(batch) - 1; i >= 0; i-- {
-			job := batch[i]
-			history = append(history, &models.GlobalCommit{
-				CommitHash:     job.CommitHash,
-				Timestamp:      job.CommitTime,
-				MergedSliceIDs: []string{job.SliceID},
-			})
-		}
 		latest := batch[len(batch)-1]
-		state.GlobalCommitHash = latest.CommitHash
-		state.Timestamp = latest.CommitTime
-		state.History = append(history, state.History...)
-
-		if err := s.storage.UpdateGlobalState(ctx, state); err != nil {
-			return fmt.Errorf("failed to update global state: %w", err)
-		}
-
-		rootMetadata.HeadCommitHash = state.GlobalCommitHash
-		latestFiles := normalizeModifiedFiles(latest.Files)
-		rootMetadata.ModifiedFiles = latestFiles
-		rootMetadata.ModifiedFilesCount = len(latestFiles)
-		rootMetadata.LastModified = state.Timestamp
-		if err := s.storage.UpdateSliceMetadata(ctx, rootSliceID, rootMetadata); err != nil {
-			return fmt.Errorf("failed to update root metadata: %w", err)
+		if err := updateRootPromotionStateFallback(ctx, s.storage, rootSliceID, rootMetadata, latest, promotionGlobalCommits(batch)); err != nil {
+			return err
 		}
 
 		return nil
 	})
 }
 
+func (s *sliceServiceServer) updateRootPromotionState(ctx context.Context, rootSliceID string, latest rootpromote.Job, history []*models.GlobalCommit) error {
+	if updater, ok := s.storage.(rootPromotionStateUpdater); ok {
+		latestFiles := normalizeModifiedFiles(latest.Files)
+		return updater.UpdateRootPromotionState(ctx, rootSliceID, latest.CommitHash, latest.CommitTime, latestFiles, history)
+	}
+	return rootpromote.WithGlobalLock(func() error {
+		rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSliceID)
+		if err != nil {
+			return fmt.Errorf("failed to load root metadata: %w", err)
+		}
+		return updateRootPromotionStateFallback(ctx, s.storage, rootSliceID, rootMetadata, latest, history)
+	})
+}
+
+func updateRootPromotionStateFallback(ctx context.Context, st storage.Storage, rootSliceID string, rootMetadata *models.SliceMetadata, latest rootpromote.Job, history []*models.GlobalCommit) error {
+	state, err := st.GetGlobalState(ctx)
+	if err != nil && !errors.Is(err, storage.ErrInvalidInput) {
+		return fmt.Errorf("failed to load global state: %w", err)
+	}
+	if state == nil {
+		state = &models.GlobalState{}
+	}
+	state.GlobalCommitHash = latest.CommitHash
+	state.Timestamp = latest.CommitTime
+	state.History = append(history, state.History...)
+
+	if err := st.UpdateGlobalState(ctx, state); err != nil {
+		return fmt.Errorf("failed to update global state: %w", err)
+	}
+
+	rootMetadata.HeadCommitHash = state.GlobalCommitHash
+	latestFiles := normalizeModifiedFiles(latest.Files)
+	rootMetadata.ModifiedFiles = latestFiles
+	rootMetadata.ModifiedFilesCount = len(latestFiles)
+	rootMetadata.LastModified = state.Timestamp
+	if err := st.UpdateSliceMetadata(ctx, rootSliceID, rootMetadata); err != nil {
+		return fmt.Errorf("failed to update root metadata: %w", err)
+	}
+	return nil
+}
+
 func (s *sliceServiceServer) syncPromotionJobToRoot(ctx context.Context, rootSliceID string, job rootpromote.Job) error {
+	return s.syncPromotionJobToSlice(ctx, rootSliceID, job)
+}
+
+func (s *sliceServiceServer) syncPromotionJobToSlice(ctx context.Context, targetSliceID string, job rootpromote.Job) error {
 	sliceID := strings.TrimSpace(job.SliceID)
-	if sliceID == "" || strings.TrimSpace(rootSliceID) == "" {
+	targetSliceID = strings.TrimSpace(targetSliceID)
+	if sliceID == "" || targetSliceID == "" {
 		return nil
 	}
 	if _, err := s.storage.GetSlice(ctx, sliceID); err != nil {
@@ -3840,24 +4264,21 @@ func (s *sliceServiceServer) syncPromotionJobToRoot(ctx context.Context, rootSli
 			return fmt.Errorf("failed to load promoted entry metadata for %s: %w", filePath, entryErr)
 		}
 
-		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, s.storage, rootSliceID, filePath, append([]byte(nil), content.Content...), executable, symlinkTarget)
+		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, s.storage, targetSliceID, filePath, append([]byte(nil), content.Content...), executable, symlinkTarget)
 		if err != nil {
-			return fmt.Errorf("failed to write promoted root manifest for %s: %w", filePath, err)
+			return fmt.Errorf("failed to write promoted manifest for %s in %s: %w", filePath, targetSliceID, err)
 		}
 		if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
-			ID:            common.GenerateEntryID(rootSliceID, filePath),
+			ID:            common.GenerateEntryID(targetSliceID, filePath),
 			Path:          filePath,
 			Type:          "file",
-			ParentID:      rootSliceID,
+			ParentID:      targetSliceID,
 			Size:          manifest.TotalSize,
 			Hash:          manifest.Hash,
 			Executable:    manifest.Executable,
 			SymlinkTarget: manifest.SymlinkTarget,
 		}); err != nil {
-			return fmt.Errorf("failed to materialize promoted root entry for %s: %w", filePath, err)
-		}
-		if err := s.storage.AddFileToSlice(ctx, filePath, rootSliceID); err != nil {
-			return fmt.Errorf("failed to add promoted file %s to root slice: %w", filePath, err)
+			return fmt.Errorf("failed to materialize promoted entry for %s in %s: %w", filePath, targetSliceID, err)
 		}
 	}
 
@@ -3883,6 +4304,84 @@ func collectUniquePromotionFiles(batch []rootpromote.Job) []string {
 		}
 	}
 	return files
+}
+
+func collectUniquePromotionFilesIncludingHome(batch []rootpromote.Job) []string {
+	if len(batch) == 0 {
+		return nil
+	}
+	dedup := make(map[string]struct{})
+	files := make([]string, 0)
+	for _, job := range batch {
+		for _, fileID := range normalizeModifiedFiles(job.Files) {
+			if _, exists := dedup[fileID]; exists {
+				continue
+			}
+			dedup[fileID] = struct{}{}
+			files = append(files, fileID)
+		}
+	}
+	return files
+}
+
+func hasHomePromotionJob(batch []rootpromote.Job) bool {
+	for _, job := range batch {
+		if homeslice.IsHomeSliceID(job.SliceID) {
+			return true
+		}
+	}
+	return false
+}
+
+func storageRootPromotionJobs(batch []rootpromote.Job) []storage.RootPromotionJob {
+	if len(batch) == 0 {
+		return nil
+	}
+	jobs := make([]storage.RootPromotionJob, 0, len(batch))
+	for _, job := range batch {
+		if homeslice.IsHomeSliceID(job.SliceID) {
+			continue
+		}
+		jobs = append(jobs, storage.RootPromotionJob{
+			SliceID:    job.SliceID,
+			CommitHash: job.CommitHash,
+			Files:      append([]string(nil), job.Files...),
+			CommitTime: job.CommitTime,
+		})
+	}
+	return jobs
+}
+
+func promotionGlobalCommits(batch []rootpromote.Job) []*models.GlobalCommit {
+	if len(batch) == 0 {
+		return nil
+	}
+	history := make([]*models.GlobalCommit, 0, len(batch))
+	for i := len(batch) - 1; i >= 0; i-- {
+		job := batch[i]
+		if strings.TrimSpace(job.CommitHash) == "" {
+			continue
+		}
+		history = append(history, &models.GlobalCommit{
+			CommitHash:     job.CommitHash,
+			Timestamp:      job.CommitTime,
+			MergedSliceIDs: []string{job.SliceID},
+		})
+	}
+	return history
+}
+
+func latestPromotionJob(batch []rootpromote.Job) rootpromote.Job {
+	if len(batch) == 0 {
+		return rootpromote.Job{}
+	}
+	latest := batch[0]
+	for _, job := range batch[1:] {
+		if job.CommitTime.After(latest.CommitTime) || (job.CommitTime.Equal(latest.CommitTime) && strings.TrimSpace(job.CommitHash) > strings.TrimSpace(latest.CommitHash)) {
+			latest = job
+		}
+	}
+	return latest
 }
 
 func (s *sliceServiceServer) hydrateSliceEntryMetadataFromParent(ctx context.Context, slice, parentSlice *models.Slice, filePaths []string) error {
@@ -3944,7 +4443,14 @@ func (s *sliceServiceServer) rootPromotionQueue() *rootpromote.Queue {
 	if s.promotionQueue != nil {
 		return s.promotionQueue
 	}
-	s.promotionQueue = rootpromote.New(s.promotionBatchWindow, s.promotionBatchMaxSize, func(ctx context.Context, batch []rootpromote.Job) error {
+	workerCount := s.promotionWorkerCount
+	if workerCount <= 0 {
+		workerCount = 1
+		if _, ok := s.storage.(rootPromotionFilePromoter); ok {
+			workerCount = defaultPromotionWorkerCount
+		}
+	}
+	s.promotionQueue = rootpromote.NewWithWorkers(s.promotionBatchWindow, s.promotionBatchMaxSize, workerCount, func(ctx context.Context, batch []rootpromote.Job) error {
 		if err := s.promoteSliceBatch(ctx, batch); err != nil {
 			sliceID := ""
 			if len(batch) > 0 {

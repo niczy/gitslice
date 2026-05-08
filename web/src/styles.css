@@ -6399,10 +6399,23 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-activity-status--pending,
-.slice-activity-status--approved {
+.slice-activity-status--approved,
+.slice-activity-status--ready {
   border-color: rgba(9, 76, 178, 0.22);
   background: #eef5ff;
   color: var(--accent);
+}
+
+.slice-activity-status--needs-sync {
+  border-color: rgba(133, 77, 14, 0.26);
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.slice-activity-status--conflict {
+  border-color: rgba(185, 28, 28, 0.24);
+  background: #fef2f2;
+  color: #b91c1c;
 }
 
 .slice-activity-status--merged {

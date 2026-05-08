@@ -1209,6 +1209,104 @@ func TestListChangesetsFiltersByStatus(t *testing.T) {
 	})
 }
 
+func TestListChangesetsIncludesProactiveReviewStatus(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	sliceA := &models.Slice{ID: "slice-list-review-a", Name: "slice-list-review-a", Owners: []string{"tester"}, CreatedBy: "tester"}
+	sliceB := &models.Slice{ID: "slice-list-review-b", Name: "slice-list-review-b", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, sliceA.ID)
+	if err != nil {
+		t.Fatalf("failed to load slice metadata: %v", err)
+	}
+	meta.HeadCommitHash = "head-current"
+	if err := st.UpdateSliceMetadata(ctx, sliceA.ID, meta); err != nil {
+		t.Fatalf("failed to update slice metadata: %v", err)
+	}
+
+	conflictPath := "README.md"
+	for _, setup := range []struct {
+		sliceID string
+		content string
+	}{
+		{sliceA.ID, "alpha\n"},
+		{sliceB.ID, "beta\n"},
+	} {
+		hash := mustWriteSliceManifest(t, ctx, st, setup.sliceID, conflictPath, []byte(setup.content))
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       fmt.Sprintf("%s:%s", setup.sliceID, conflictPath),
+			Path:     conflictPath,
+			Type:     "file",
+			ParentID: setup.sliceID,
+			Hash:     hash,
+			Size:     int64(len(setup.content)),
+		}); err != nil {
+			t.Fatalf("failed to add entry for %s: %v", setup.sliceID, err)
+		}
+		if err := st.AddFileToSlice(ctx, conflictPath, setup.sliceID); err != nil {
+			t.Fatalf("failed to index file for %s: %v", setup.sliceID, err)
+		}
+	}
+
+	now := time.Now()
+	for _, cs := range []*models.Changeset{
+		{
+			ID:             "chg_ready-list",
+			SliceID:        sliceA.ID,
+			BaseCommitHash: "head-current",
+			ModifiedFiles:  []string{"ready.txt"},
+			Status:         models.ChangesetStatusPending,
+			CreatedAt:      now,
+		},
+		{
+			ID:             "chg_stale-list",
+			SliceID:        sliceA.ID,
+			BaseCommitHash: "head-old",
+			ModifiedFiles:  []string{"stale.txt"},
+			Status:         models.ChangesetStatusPending,
+			CreatedAt:      now.Add(time.Second),
+		},
+		{
+			ID:             "chg_conflict-list",
+			SliceID:        sliceA.ID,
+			BaseCommitHash: "head-current",
+			ModifiedFiles:  []string{conflictPath},
+			Status:         models.ChangesetStatusPending,
+			CreatedAt:      now.Add(2 * time.Second),
+		},
+	} {
+		if err := st.CreateChangeset(ctx, cs); err != nil {
+			t.Fatalf("failed to create changeset %s: %v", cs.ID, err)
+		}
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.ListChangesets(ctx, &slicev1.ListChangesetsRequest{SliceId: sliceA.ID, StatusFilter: slicev1.ChangesetStatus_PENDING})
+	if err != nil {
+		t.Fatalf("ListChangesets failed: %v", err)
+	}
+
+	got := make(map[string]slicev1.ReviewStatus)
+	for _, cs := range resp.GetChangesets() {
+		got[cs.GetChangesetId()] = cs.GetReviewStatus()
+	}
+	if got["chg_ready-list"] != slicev1.ReviewStatus_READY_FOR_MERGE {
+		t.Fatalf("ready review status = %v", got["chg_ready-list"])
+	}
+	if got["chg_stale-list"] != slicev1.ReviewStatus_NEEDS_SYNC {
+		t.Fatalf("stale review status = %v", got["chg_stale-list"])
+	}
+	if got["chg_conflict-list"] != slicev1.ReviewStatus_HAS_CONFLICTS {
+		t.Fatalf("conflict review status = %v", got["chg_conflict-list"])
+	}
+}
+
 func TestCreateSliceAutoGeneratesID(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
@@ -2149,17 +2247,13 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(base)
+	srv.promotionBatchWindow = 200 * time.Millisecond
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
 	}
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
 		t.Fatalf("expected merge success, got %v", resp.GetStatus())
-	}
-	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
-		t.Fatalf("timed out waiting for root promotion queue: %v", err)
 	}
 
 	rootSlice, err := base.GetRootSlice(ctx)
@@ -2597,7 +2691,7 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	}
 }
 
-func TestReviewChangesetMarksStaleBaseAsNeedsRebase(t *testing.T) {
+func TestReviewChangesetMarksStaleBaseAsNeedsSync(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
@@ -2631,8 +2725,8 @@ func TestReviewChangesetMarksStaleBaseAsNeedsRebase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReviewChangeset failed: %v", err)
 	}
-	if resp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_REBASE {
-		t.Fatalf("expected NEEDS_REBASE, got %v", resp.GetReviewStatus())
+	if resp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_SYNC {
+		t.Fatalf("expected NEEDS_SYNC, got %v", resp.GetReviewStatus())
 	}
 	if len(resp.GetWarnings()) == 0 || !strings.Contains(resp.GetWarnings()[0], "stale") {
 		t.Fatalf("expected stale-base warning, got %#v", resp.GetWarnings())
@@ -3148,6 +3242,41 @@ func TestRootPromotionQueueBatchesSameSlice(t *testing.T) {
 	}
 	if got, want := state.History[0].CommitHash, "commit-3"; got != want {
 		t.Fatalf("expected newest history commit %q, got %q", want, got)
+	}
+}
+
+func TestRootPromotionShardKeyUsesHomeScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		sliceID string
+		files   []string
+		want    string
+	}{
+		{
+			name:    "home slice id",
+			sliceID: homeslice.IDForUsername("alice"),
+			files:   []string{"alice/src/main.go"},
+			want:    "home:alice",
+		},
+		{
+			name:    "single home root from files",
+			sliceID: "sl-feature",
+			files:   []string{"alice/src/main.go", "alice/README.md"},
+			want:    "home:alice",
+		},
+		{
+			name:    "mixed roots fall back to slice",
+			sliceID: "sl-feature",
+			files:   []string{"alice/src/main.go", "bob/README.md"},
+			want:    "slice:sl-feature",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rootPromotionShardKey(tt.sliceID, tt.files); got != tt.want {
+				t.Fatalf("rootPromotionShardKey() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
