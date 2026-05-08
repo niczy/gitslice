@@ -44,6 +44,7 @@ type RootPromotionJob struct {
 
 // MergeEventStore persists accepted merge facts and projection offsets.
 type MergeEventStore interface {
+	NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error)
 	AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error
 	GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error)
 	ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error)

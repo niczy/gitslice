@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"path"
 	"runtime"
@@ -1473,6 +1474,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
 				promotionCommitTime = existingCommit.Timestamp
 			}
+			if err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
+				return fmt.Errorf("failed to append merge event: %w", err)
+			}
 			return nil
 		}
 
@@ -1499,6 +1503,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 		if err := s.recordFileChangesWithStorage(ctx, st, cs, newCommit, parentHash, now); err != nil {
 			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
+		}
+		if err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, modifiedFiles, now); err != nil {
+			return fmt.Errorf("failed to append merge event: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -1542,6 +1549,102 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
 	}, nil
+}
+
+const mergeEventShardCount = 1024
+
+func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, modifiedFiles []string, mergedAt time.Time) error {
+	eventStore, ok := st.(storage.MergeEventStore)
+	if !ok || cs == nil {
+		return nil
+	}
+	homeID := mergeEventHomeID(sourceSlice, cs, modifiedFiles)
+	shardID := mergeEventShardID(homeID)
+	mergeSeq, err := eventStore.NextMergeEventSequence(ctx, shardID)
+	if err != nil {
+		return err
+	}
+
+	paths := normalizeModifiedFiles(modifiedFiles)
+	fileHashes, err := getFileManifestHashes(ctx, st, cs.SliceID, paths)
+	if err != nil {
+		return err
+	}
+	existingEntries, err := getExistingEntriesByPaths(ctx, st, cs.SliceID, paths)
+	if err != nil {
+		return err
+	}
+
+	pathUpdates := make([]*models.MergePathUpdate, 0, len(paths))
+	for _, filePath := range paths {
+		hash := strings.TrimSpace(fileHashes[filePath])
+		pathUpdates = append(pathUpdates, &models.MergePathUpdate{
+			Path:             filePath,
+			NewVersion:       mergeSeq,
+			ContentHash:      hash,
+			ManifestHash:     hash,
+			SourceSliceID:    cs.SliceID,
+			SourceCommitHash: commitHash,
+			Deleted:          !existingEntries[filePath],
+		})
+	}
+
+	author := strings.TrimSpace(cs.Author)
+	if author == "" && sourceSlice != nil {
+		author = strings.TrimSpace(sourceSlice.CreatedBy)
+	}
+	if author == "" {
+		author = "system"
+	}
+	return eventStore.AppendMergeEvent(ctx, &models.MergeEvent{
+		HomeID:           homeID,
+		ShardID:          shardID,
+		MergeSeq:         mergeSeq,
+		EventID:          common.GenerateMergeEventID(),
+		ChangesetID:      cs.ID,
+		SourceSliceID:    cs.SliceID,
+		SourceCommitHash: commitHash,
+		Author:           author,
+		Message:          cs.Message,
+		TouchedPaths:     paths,
+		PathUpdates:      pathUpdates,
+		CreatedAt:        mergedAt,
+	})
+}
+
+func mergeEventHomeID(sourceSlice *models.Slice, cs *models.Changeset, modifiedFiles []string) string {
+	if sourceSlice != nil {
+		if username := homeslice.UsernameFromSliceID(sourceSlice.ID); username != "" {
+			return username
+		}
+	}
+	if homeRoot := commonHomeRootFromFiles(modifiedFiles); homeRoot != "" {
+		return homeRoot
+	}
+	if sourceSlice != nil {
+		if createdBy := strings.TrimSpace(sourceSlice.CreatedBy); createdBy != "" {
+			return createdBy
+		}
+		for _, owner := range sourceSlice.Owners {
+			if owner = strings.TrimSpace(owner); owner != "" {
+				return owner
+			}
+		}
+	}
+	if cs != nil && strings.TrimSpace(cs.SliceID) != "" {
+		return strings.TrimSpace(cs.SliceID)
+	}
+	return "global"
+}
+
+func mergeEventShardID(homeID string) int32 {
+	homeID = strings.TrimSpace(homeID)
+	if homeID == "" {
+		homeID = "global"
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(homeID))
+	return int32(h.Sum32() % mergeEventShardCount)
 }
 
 func (s *sliceServiceServer) changesetNeedsRebase(ctx context.Context, cs *models.Changeset) (bool, string, error) {

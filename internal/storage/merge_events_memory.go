@@ -7,6 +7,22 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 )
 
+func (s *InMemoryStorage) NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error) {
+	_ = ctx
+	if shardID < 0 {
+		return 0, ErrInvalidInput
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var maxSeq int64
+	for _, event := range s.mergeEventsByShard[shardID] {
+		if event.MergeSeq > maxSeq {
+			maxSeq = event.MergeSeq
+		}
+	}
+	return maxSeq + 1, nil
+}
+
 func (s *InMemoryStorage) AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error {
 	_ = ctx
 	normalized, err := normalizeMergeEvent(event)

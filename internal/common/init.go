@@ -113,6 +113,11 @@ func GenerateFileChangeID(commitID, filePath string) string {
 	return ids.GenerateFileChangeID(commitID, filePath)
 }
 
+// GenerateMergeEventID creates an opaque durable merge event ID.
+func GenerateMergeEventID() string {
+	return ids.GenerateMergeEventID()
+}
+
 // NormalizeSlicePath prefixes a repo-relative file path with the genesis mount path.
 func NormalizeSlicePath(filePath string) string {
 	slicePath := path.Join(GenesisMountPath, filePath)
