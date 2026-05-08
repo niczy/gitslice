@@ -72,6 +72,7 @@ func (s *filesystemServiceServer) ImportRepo(ctx context.Context, req *filesyste
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load repo binding: %v", err))
 	}
+	s.enqueueWorkspaceSearchIndex(workspace.ID, commitHash)
 
 	return &filesystemv1.ImportRepoResponse{
 		Binding:      repoBindingToProto(binding),
@@ -147,6 +148,7 @@ func (s *filesystemServiceServer) PullRepoBinding(ctx context.Context, req *file
 	if err := s.storage.PutRepoBinding(ctx, binding); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update repo binding: %v", err))
 	}
+	s.enqueueWorkspaceSearchIndex(workspace.ID, commitHash)
 	fresh, err := s.storage.GetRepoBinding(ctx, workspace.ID, storedPath)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to reload repo binding: %v", err))
