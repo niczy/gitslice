@@ -145,7 +145,7 @@ SET id = 'chgsnap_' ||
 WHERE id !~ '^chgsnap_';
 
 UPDATE file_changes
-SET id = 'fc_' || md5(commit_hash || chr(0) || path || chr(0) || slice_id)
+SET id = 'fc_' || md5(commit_hash || '|' || path || '|' || slice_id)
 WHERE id !~ '^fc_';
 
 SELECT setval(
