@@ -3,6 +3,7 @@ package filesystemservice
 import (
 	"context"
 	"fmt"
+	"log"
 	"path"
 	"sort"
 	"strings"
@@ -72,7 +73,7 @@ func (s *filesystemServiceServer) ImportRepo(ctx context.Context, req *filesyste
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load repo binding: %v", err))
 	}
-	s.enqueueWorkspaceSearchIndex(workspace.ID, commitHash)
+	s.refreshRepoBindingSearchArtifact(ctx, workspace.ID, commitHash)
 
 	return &filesystemv1.ImportRepoResponse{
 		Binding:      repoBindingToProto(binding),
@@ -148,7 +149,7 @@ func (s *filesystemServiceServer) PullRepoBinding(ctx context.Context, req *file
 	if err := s.storage.PutRepoBinding(ctx, binding); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update repo binding: %v", err))
 	}
-	s.enqueueWorkspaceSearchIndex(workspace.ID, commitHash)
+	s.refreshRepoBindingSearchArtifact(ctx, workspace.ID, commitHash)
 	fresh, err := s.storage.GetRepoBinding(ctx, workspace.ID, storedPath)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to reload repo binding: %v", err))
@@ -242,6 +243,21 @@ func (s *filesystemServiceServer) DeleteRepoBinding(ctx context.Context, req *fi
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete repo binding: %v", err))
 	}
 	return &filesystemv1.DeleteRepoBindingResponse{Path: displayPath}, nil
+}
+
+func (s *filesystemServiceServer) refreshRepoBindingSearchArtifact(ctx context.Context, workspaceID, commitHash string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	commitHash = strings.TrimSpace(commitHash)
+	if workspaceID == "" || commitHash == "" {
+		return
+	}
+	if meta, err := s.storage.GetSliceMetadata(ctx, workspaceID); err == nil && strings.TrimSpace(meta.HeadCommitHash) != "" {
+		commitHash = strings.TrimSpace(meta.HeadCommitHash)
+	}
+	if _, err := storage.BuildAndStoreWorkspaceSearchArtifact(ctx, s.storage, workspaceID, commitHash); err != nil {
+		log.Printf("filesystem: failed to refresh repo binding search artifact for commit %s in %s: %v", commitHash, workspaceID, err)
+		s.enqueueWorkspaceSearchIndex(workspaceID, commitHash)
+	}
 }
 
 func (s *filesystemServiceServer) resolveRepoBindingTarget(ctx context.Context, rawPath string) (string, *models.Slice, string, string, error) {
