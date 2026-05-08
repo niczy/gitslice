@@ -3499,6 +3499,173 @@ func TestRootPromotionUsesPromotionStorage(t *testing.T) {
 	}
 }
 
+func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "docs/durable-worker.txt"
+	source := &models.Slice{ID: "slice-durable-worker", Name: "slice-durable-worker", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("failed to create source slice: %v", err)
+	}
+	content := []byte("durable worker\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, base, source.ID, filePath, content)
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(source.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: source.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add source entry: %v", err)
+	}
+	event := &models.MergeEvent{
+		HomeID:           "tester",
+		ShardID:          0,
+		MergeSeq:         1,
+		EventID:          common.GenerateMergeEventID(),
+		ChangesetID:      "chg_durable-worker",
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "commit-durable-worker",
+		Author:           "tester",
+		Message:          "durable promotion worker",
+		TouchedPaths:     []string{filePath},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             filePath,
+			NewVersion:       1,
+			ManifestHash:     manifestHash,
+			SourceSliceID:    source.ID,
+			SourceCommitHash: "commit-durable-worker",
+		}},
+		CreatedAt: time.Now(),
+	}
+	if err := base.AppendMergeEvent(ctx, event); err != nil {
+		t.Fatalf("failed to append merge event: %v", err)
+	}
+
+	srv := newSliceServiceServer(base)
+	processed, err := srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 10})
+	if err != nil {
+		t.Fatalf("processDurablePromotionOnce failed: %v", err)
+	}
+	if !processed {
+		t.Fatalf("expected durable promotion worker to process one batch")
+	}
+
+	rootSlice, err := base.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice: %v", err)
+	}
+	if !containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected durable worker to promote %q into root files, got %#v", filePath, rootSlice.Files)
+	}
+	promoted, err := storage.ReadSliceFileContent(ctx, base, "root", filePath)
+	if err != nil {
+		t.Fatalf("failed to read promoted root file: %v", err)
+	}
+	if string(promoted.Content) != string(content) {
+		t.Fatalf("promoted content mismatch: got %q want %q", promoted.Content, content)
+	}
+	offset, err := base.GetProjectionOffset(ctx, durablePromotionProjectionName, event.ShardID)
+	if err != nil {
+		t.Fatalf("failed to load projection offset: %v", err)
+	}
+	if offset.MergeSeq != event.MergeSeq {
+		t.Fatalf("expected projection offset %d, got %d", event.MergeSeq, offset.MergeSeq)
+	}
+	processed, err = srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 10})
+	if err != nil {
+		t.Fatalf("processDurablePromotionOnce second run failed: %v", err)
+	}
+	if processed {
+		t.Fatalf("expected no second batch after offset advanced")
+	}
+}
+
+func TestMergeChangesetDurablePromotionFlagSkipsInProcessQueue(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "docs/durable-merge.txt"
+	source := &models.Slice{ID: "slice-durable-merge", Name: "slice-durable-merge", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("failed to create source slice: %v", err)
+	}
+	content := []byte("durable merge\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, base, source.ID, filePath, content)
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(source.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: source.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add source entry: %v", err)
+	}
+	cs := &models.Changeset{
+		ID:            "chg_durable-merge",
+		SliceID:       source.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(base)
+	srv.durablePromotion = true
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+	rootSlice, err := base.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice: %v", err)
+	}
+	if containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected root materialization to wait for durable promotion worker")
+	}
+
+	event, err := base.GetMergeEventByChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("expected merge event for durable promotion: %v", err)
+	}
+	processed, err := srv.processDurablePromotionOnce(ctx, DurablePromotionConfig{})
+	if err != nil {
+		t.Fatalf("processDurablePromotionOnce failed: %v", err)
+	}
+	if !processed {
+		t.Fatalf("expected durable promotion worker to process merge event")
+	}
+	offset, err := base.GetProjectionOffset(ctx, durablePromotionProjectionName, event.ShardID)
+	if err != nil {
+		t.Fatalf("failed to load projection offset: %v", err)
+	}
+	if offset.MergeSeq != event.MergeSeq {
+		t.Fatalf("expected projection offset %d, got %d", event.MergeSeq, offset.MergeSeq)
+	}
+	rootSlice, err = base.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice after durable promotion: %v", err)
+	}
+	if !containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected durable worker to promote %q into root files, got %#v", filePath, rootSlice.Files)
+	}
+}
+
 func TestRootPromotionShardKeyUsesHomeScope(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -16,6 +16,11 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("POSTGRES_MIN_CONNS", "3")
 	t.Setenv("POSTGRES_MAX_CONN_LIFETIME", "45m")
 	t.Setenv("POSTGRES_PROMOTION_MAX_CONNS", "5")
+	t.Setenv("MERGE_EVENT_PROMOTION_ENABLED", "true")
+	t.Setenv("MERGE_EVENT_PROMOTION_WORKERS", "3")
+	t.Setenv("MERGE_EVENT_PROMOTION_BATCH_SIZE", "128")
+	t.Setenv("MERGE_EVENT_PROMOTION_SHARDS", "64")
+	t.Setenv("MERGE_EVENT_PROMOTION_POLL_INTERVAL", "2s")
 	t.Setenv("CLERK_WEBHOOK_SECRET", "whsec_clerk_test_123")
 
 	cfg, err := LoadConfig()
@@ -45,6 +50,21 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 	if cfg.PostgresPromotionMaxConns != 5 {
 		t.Fatalf("expected promotion max conns 5, got %d", cfg.PostgresPromotionMaxConns)
+	}
+	if !cfg.MergeEventPromotionEnabled {
+		t.Fatalf("expected merge event promotion flag to load")
+	}
+	if cfg.MergeEventPromotionWorkers != 3 {
+		t.Fatalf("expected merge event promotion workers 3, got %d", cfg.MergeEventPromotionWorkers)
+	}
+	if cfg.MergeEventPromotionBatchSize != 128 {
+		t.Fatalf("expected merge event promotion batch size 128, got %d", cfg.MergeEventPromotionBatchSize)
+	}
+	if cfg.MergeEventPromotionShardCount != 64 {
+		t.Fatalf("expected merge event promotion shards 64, got %d", cfg.MergeEventPromotionShardCount)
+	}
+	if cfg.MergeEventPromotionPollInterval != 2*time.Second {
+		t.Fatalf("expected merge event promotion poll interval 2s, got %s", cfg.MergeEventPromotionPollInterval)
 	}
 	if cfg.ClerkWebhookSecret != "whsec_clerk_test_123" {
 		t.Fatalf("unexpected Clerk webhook secret: %q", cfg.ClerkWebhookSecret)
@@ -118,6 +138,26 @@ func TestValidateRejectsMinConnsAboveMax(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected min/max validation failure")
+	}
+}
+
+func TestValidateRejectsDurablePromotionWithSinglePromotionConnection(t *testing.T) {
+	cfg := &Config{
+		StorageType:                     "postgres",
+		PostgresDSN:                     "postgres://user:pass@127.0.0.1:5432/gitslice?sslmode=disable",
+		ObjectStoreType:                 "filesystem",
+		ObjectStoreDir:                  "/tmp/objectstore",
+		PostgresMaxConns:                10,
+		PostgresPromotionMaxConns:       1,
+		MergeEventPromotionEnabled:      true,
+		MergeEventPromotionWorkers:      1,
+		MergeEventPromotionBatchSize:    64,
+		MergeEventPromotionShardCount:   1024,
+		MergeEventPromotionPollInterval: time.Second,
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected durable promotion single-connection validation failure")
 	}
 }
 

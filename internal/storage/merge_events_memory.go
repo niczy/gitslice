@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 )
@@ -133,6 +134,58 @@ func (s *InMemoryStorage) GetProjectionOffset(ctx context.Context, projectionNam
 	}
 	clone := *existing
 	return &clone, nil
+}
+
+func (s *InMemoryStorage) ProcessMergeEventProjectionBatch(ctx context.Context, projectionName string, shardCount int32, limit int, fn func(context.Context, []*models.MergeEvent) error) (bool, error) {
+	if fn == nil || shardCount <= 0 {
+		return false, ErrInvalidInput
+	}
+	projectionName = normalizeProjectionName(projectionName)
+	if projectionName == "" {
+		return false, ErrInvalidInput
+	}
+	limit = normalizeMergeEventListLimit(limit)
+
+	var events []*models.MergeEvent
+	var shardID int32
+	var latestSeq int64
+
+	s.mu.RLock()
+	for candidateShard := int32(0); candidateShard < shardCount; candidateShard++ {
+		key := projectionOffsetKey(projectionName, candidateShard)
+		var afterSeq int64
+		if offset := s.projectionOffsets[key]; offset != nil {
+			afterSeq = offset.MergeSeq
+		}
+		for _, event := range s.mergeEventsByShard[candidateShard] {
+			if event.MergeSeq <= afterSeq {
+				continue
+			}
+			events = append(events, cloneMergeEvent(event))
+			latestSeq = event.MergeSeq
+			if len(events) >= limit {
+				break
+			}
+		}
+		if len(events) > 0 {
+			shardID = candidateShard
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(events) == 0 {
+		return false, nil
+	}
+	if err := fn(ctx, events); err != nil {
+		return true, err
+	}
+	return true, s.UpdateProjectionOffset(ctx, &models.ProjectionOffset{
+		ProjectionName: projectionName,
+		ShardID:        shardID,
+		MergeSeq:       latestSeq,
+		UpdatedAt:      time.Now(),
+	})
 }
 
 func projectionOffsetKey(projectionName string, shardID int32) string {

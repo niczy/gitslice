@@ -46,6 +46,7 @@ type sliceServiceServer struct {
 	promotionBatchWindow  time.Duration
 	promotionBatchMaxSize int
 	promotionWorkerCount  int
+	durablePromotion      bool
 }
 
 func (s *sliceServiceServer) requireUsername(ctx context.Context) (string, error) {
@@ -108,6 +109,14 @@ func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 // separate storage backend for async promotion workers.
 func RegisterGRPCServerWithPromotionStorage(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage) {
 	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServerWithPromotionStorage(st, promotionSt))
+}
+
+// RegisterGRPCServerWithPromotionStorageAndDurablePromotion registers the slice
+// service and optionally starts merge-event-backed promotion workers.
+func RegisterGRPCServerWithPromotionStorageAndDurablePromotion(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage, cfg DurablePromotionConfig) {
+	service := newSliceServiceServerWithPromotionStorage(st, promotionSt)
+	service.StartDurablePromotionWorkers(context.Background(), cfg)
+	slicev1.RegisterSliceServiceServer(srv, service)
 }
 
 // NewGRPCServer constructs a gRPC server for the slice service using the provided storage backend.
@@ -1520,7 +1529,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	promotionStartedAt := time.Now()
 	if promotionCommitHash != "" {
 		var promotionErr error
-		if changesetTouchesConfig(modifiedFiles) {
+		if s.durablePromotion && !changesetTouchesConfig(modifiedFiles) {
+			// Durable promotion workers consume the merge event appended above.
+		} else if changesetTouchesConfig(modifiedFiles) {
 			promotionErr = s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime)
 		} else {
 			promotionErr = s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime)
