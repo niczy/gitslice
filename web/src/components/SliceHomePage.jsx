@@ -364,8 +364,8 @@ export default function SliceHomePage({
       <div className="slice-home-header">
         <div>
           <Badge variant="secondary" className="eyebrow">Slices</Badge>
-          <h1>Browse slices</h1>
-          <p>Choose a root or workspace slice, then open its files in a focused code browser.</p>
+          <h1>Your slices</h1>
+          <p>Open the root, your home slice, or a focused custom slice to inspect files, commits, and changesets.</p>
         </div>
         <div className="slice-home-actions">
           <Button
