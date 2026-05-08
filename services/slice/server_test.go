@@ -2196,6 +2196,142 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "alice/app/main.go"
+	slice := &models.Slice{
+		ID:        "slice-merge-event",
+		Name:      "slice-merge-event",
+		Files:     []string{filePath},
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	content := []byte("package main\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add entry: %v", err)
+	}
+	cs := &models.Changeset{
+		ID:            "chg_merge-event",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "alice",
+		Message:       "merge event",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+
+	event, err := st.GetMergeEventByChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("expected accepted merge event: %v", err)
+	}
+	if event.HomeID != "alice" {
+		t.Fatalf("expected home alice, got %q", event.HomeID)
+	}
+	if event.SourceSliceID != slice.ID || event.SourceCommitHash != resp.GetNewCommitHash() {
+		t.Fatalf("unexpected event source: %#v", event)
+	}
+	if len(event.TouchedPaths) != 1 || event.TouchedPaths[0] != filePath {
+		t.Fatalf("unexpected touched paths: %#v", event.TouchedPaths)
+	}
+	if len(event.PathUpdates) != 1 {
+		t.Fatalf("expected one path update, got %#v", event.PathUpdates)
+	}
+	update := event.PathUpdates[0]
+	if update.Path != filePath || update.ManifestHash != manifestHash || update.SourceCommitHash != resp.GetNewCommitHash() || update.Deleted {
+		t.Fatalf("unexpected path update: %#v", update)
+	}
+	if update.NewVersion != event.MergeSeq {
+		t.Fatalf("expected path update new version to match merge seq, got update=%d event=%d", update.NewVersion, event.MergeSeq)
+	}
+	listed, err := st.ListMergeEvents(ctx, event.ShardID, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMergeEvents failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ChangesetID != cs.ID {
+		t.Fatalf("expected event in shard list, got %#v", listed)
+	}
+}
+
+func TestMergeChangesetConflictDoesNotAppendMergeEvent(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+
+	const sharedFile = "alice/shared.txt"
+	sliceA := &models.Slice{ID: "slice-event-conflict-a", Name: "slice-event-conflict-a", Files: []string{sharedFile}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	sliceB := &models.Slice{ID: "slice-event-conflict-b", Name: "slice-event-conflict-b", Files: []string{sharedFile}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, sliceA); err != nil {
+		t.Fatalf("failed to create slice A: %v", err)
+	}
+	if err := st.CreateSlice(ctx, sliceB); err != nil {
+		t.Fatalf("failed to create slice B: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, sharedFile, sliceA.ID); err != nil {
+		t.Fatalf("failed to index slice A file: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, sharedFile, sliceB.ID); err != nil {
+		t.Fatalf("failed to index slice B file: %v", err)
+	}
+	hashA := mustWriteSliceManifest(t, ctx, st, sliceA.ID, sharedFile, []byte("a"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: common.GenerateEntryID(sliceA.ID, sharedFile), Path: sharedFile, Type: "file", ParentID: sliceA.ID, Hash: hashA, Size: 1}); err != nil {
+		t.Fatalf("failed to add slice A entry: %v", err)
+	}
+	hashB := mustWriteSliceManifest(t, ctx, st, sliceB.ID, sharedFile, []byte("b"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: common.GenerateEntryID(sliceB.ID, sharedFile), Path: sharedFile, Type: "file", ParentID: sliceB.ID, Hash: hashB, Size: 1}); err != nil {
+		t.Fatalf("failed to add slice B entry: %v", err)
+	}
+	cs := &models.Changeset{
+		ID:            "chg_merge-event-conflict",
+		SliceID:       sliceB.ID,
+		ModifiedFiles: []string{sharedFile},
+		Status:        models.ChangesetStatusPending,
+		Author:        "alice",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
+		t.Fatalf("expected conflict, got %v", resp.GetStatus())
+	}
+	if _, err := st.GetMergeEventByChangeset(ctx, cs.ID); !errors.Is(err, storage.ErrMergeEventNotFound) {
+		t.Fatalf("expected no merge event for conflicted changeset, got %v", err)
+	}
+}
+
 func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()

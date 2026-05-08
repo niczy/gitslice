@@ -12,6 +12,47 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 )
 
+const mergeEventSequenceAdvisoryLockClass int32 = 93242
+
+func (s *PostgresNativeStorage) NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error) {
+	ctx = ensureCtx(ctx)
+	if shardID < 0 {
+		return 0, ErrInvalidInput
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	seq, err := nextMergeEventSequence(ctx, tx, tx, shardID)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
+func (s *postgresNativeTxView) NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error) {
+	ctx = ensureCtx(ctx)
+	return nextMergeEventSequence(ctx, s.tx, s.tx, shardID)
+}
+
+func nextMergeEventSequence(ctx context.Context, q queryable, exec execable, shardID int32) (int64, error) {
+	if shardID < 0 {
+		return 0, ErrInvalidInput
+	}
+	if _, err := exec.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, mergeEventSequenceAdvisoryLockClass, shardID); err != nil {
+		return 0, err
+	}
+	var lastSeq int64
+	if err := q.QueryRow(ctx, `SELECT COALESCE(MAX(merge_seq), 0) FROM merge_events WHERE shard_id = $1`, shardID).Scan(&lastSeq); err != nil {
+		return 0, err
+	}
+	return lastSeq + 1, nil
+}
+
 func (s *PostgresNativeStorage) AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error {
 	ctx = ensureCtx(ctx)
 	return appendMergeEvent(ctx, s.pool, event)
