@@ -51,6 +51,10 @@ type InMemoryStorage struct {
 	sliceChangesets           map[string][]string                  // sliceID -> []changesetID
 	changesetSnapshots        map[string]*models.ChangesetSnapshot // snapshotID -> snapshot
 	changesetSnapshotVersions map[string][]string                  // changesetID -> []snapshotID (newest first)
+	mergeEventsByShard        map[int32][]*models.MergeEvent       // shardID -> events ordered by merge_seq asc
+	mergeEventsByChangeset    map[string]*models.MergeEvent        // changesetID -> event
+	mergeEventsByID           map[string]*models.MergeEvent        // eventID -> event
+	projectionOffsets         map[string]*models.ProjectionOffset  // projectionName:shardID -> offset
 
 	// Commit history
 	sliceCommits       map[string][]*models.Commit // sliceID -> commits (newest first)
@@ -127,6 +131,10 @@ func NewInMemoryStorage() *InMemoryStorage {
 		sliceChangesets:                  make(map[string][]string),
 		changesetSnapshots:               make(map[string]*models.ChangesetSnapshot),
 		changesetSnapshotVersions:        make(map[string][]string),
+		mergeEventsByShard:               make(map[int32][]*models.MergeEvent),
+		mergeEventsByChangeset:           make(map[string]*models.MergeEvent),
+		mergeEventsByID:                  make(map[string]*models.MergeEvent),
+		projectionOffsets:                make(map[string]*models.ProjectionOffset),
 		sliceCommits:                     make(map[string][]*models.Commit),
 		commitsBySliceHash:               make(map[string]map[string]*models.Commit),
 		lockedSlices:                     make(map[string]bool),
