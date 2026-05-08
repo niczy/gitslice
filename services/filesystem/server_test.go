@@ -85,6 +85,37 @@ func mustWorkspaceSearchArtifact(t *testing.T, st storage.Storage, workspaceID s
 	return artifact
 }
 
+func waitForWorkspaceSearchArtifactCommitForTest(t *testing.T, svc filesystemv1.FilesystemServiceServer, st storage.Storage, workspaceID, commitHash string) *searchindex.SliceArtifact {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var lastArtifact *searchindex.SliceArtifact
+	var lastErr error
+	for time.Now().Before(deadline) {
+		waitForSearchIndexForTest(t, svc)
+		payload, err := st.GetWorkspaceSearchArtifact(context.Background(), workspaceID, searchindex.CurrentArtifactVersion)
+		if err != nil {
+			lastErr = err
+		} else {
+			artifact, decodeErr := searchindex.DecodeSliceArtifact(payload)
+			if decodeErr != nil {
+				t.Fatalf("DecodeSliceArtifact(%s) failed: %v", workspaceID, decodeErr)
+			}
+			lastArtifact = artifact
+			if artifact.CommitHash == commitHash {
+				return artifact
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if lastArtifact != nil {
+		t.Fatalf("expected artifact commit %q for %s, got %q", commitHash, workspaceID, lastArtifact.CommitHash)
+	}
+	t.Fatalf("expected artifact commit %q for %s, last load error: %v", commitHash, workspaceID, lastErr)
+	return nil
+}
+
 type sliceSearchArtifactLoadCounter struct {
 	storage.Storage
 	mu    sync.Mutex
@@ -997,11 +1028,7 @@ func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
 		t.Fatalf("ImportRepo failed: %v", err)
 	}
 
-	waitForSearchIndexForTest(t, svc)
-	artifact := mustWorkspaceSearchArtifact(t, st, homeslice.IDForUsername("tester"))
-	if artifact.CommitHash != importResp.GetCommitHash() {
-		t.Fatalf("expected artifact commit %q after import, got %q", importResp.GetCommitHash(), artifact.CommitHash)
-	}
+	artifact := waitForWorkspaceSearchArtifactCommitForTest(t, svc, st, homeslice.IDForUsername("tester"), importResp.GetCommitHash())
 	if got := searchArtifactPaths(artifact); len(got) != 1 || got[0] != "tester/vendor/demo/README.md" {
 		t.Fatalf("unexpected artifact paths after import: %#v", got)
 	}
@@ -1023,11 +1050,7 @@ func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
 		t.Fatalf("PullRepoBinding failed: %v", err)
 	}
 
-	waitForSearchIndexForTest(t, svc)
-	artifact = mustWorkspaceSearchArtifact(t, st, homeslice.IDForUsername("tester"))
-	if artifact.CommitHash != pullResp.GetCommitHash() {
-		t.Fatalf("expected artifact commit %q after pull, got %q", pullResp.GetCommitHash(), artifact.CommitHash)
-	}
+	artifact = waitForWorkspaceSearchArtifactCommitForTest(t, svc, st, homeslice.IDForUsername("tester"), pullResp.GetCommitHash())
 	if got := searchArtifactPaths(artifact); len(got) != 2 || got[0] != "tester/vendor/demo/CHANGELOG.md" || got[1] != "tester/vendor/demo/README.md" {
 		t.Fatalf("unexpected artifact paths after pull: %#v", got)
 	}
