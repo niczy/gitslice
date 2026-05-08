@@ -26,6 +26,8 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 		handleChangesetReview(ctx, cli, args[1:])
 	case "merge":
 		handleChangesetMerge(ctx, cli, args[1:])
+	case "close":
+		handleChangesetClose(ctx, cli, args[1:])
 	case "rebase":
 		handleChangesetRebase(ctx, cli, args[1:])
 	case "list":
@@ -127,10 +129,14 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice diff", "Cannot read local changes: %v", err)
 	}
+	baseCommitHash, err := resolveCheckoutBaseCommit(".", *base)
+	if err != nil {
+		commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice status", "Cannot resolve checkout base commit: %v", err)
+	}
 
 	req := &slicev1.CreateChangesetRequest{
 		SliceId:        sliceID,
-		BaseCommitHash: *base,
+		BaseCommitHash: baseCommitHash,
 		ModifiedFiles:  modifiedFiles,
 		Author:         *author,
 		Message:        *message,
@@ -168,6 +174,20 @@ func resolveWorkingTreeModifiedFiles(dir string, explicit []string) ([]string, b
 		}
 	}
 	return modifiedFiles, false, nil
+}
+
+func resolveCheckoutBaseCommit(dir, explicit string) (string, error) {
+	if base := strings.TrimSpace(explicit); base != "" {
+		return base, nil
+	}
+	index, err := readCheckoutIndex(dir)
+	if err != nil {
+		return "", err
+	}
+	if index == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(index.CommitHash), nil
 }
 
 func normalizeLocalModifiedFiles(files []string) []string {
@@ -275,6 +295,46 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 	printMergeResult(resp)
+}
+
+func handleChangesetClose(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("changeset close")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseFlagSetInterspersed(fs, args)
+	jsonEnabled := jsonRequested || *jsonOutput
+
+	changesetID, err := resolveChangesetIDForRead("")
+	switch fs.NArg() {
+	case 0:
+	case 1:
+		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
+	default:
+		commandUsage("Usage: gs changeset close [<changeset-id>] [--json]")
+		return
+	}
+	if err != nil {
+		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
+		return
+	}
+
+	req := &slicev1.CloseChangesetRequest{ChangesetId: changesetID}
+	resp, err := cli.sliceClient.CloseChangeset(ctx, req)
+	if err != nil {
+		commandFatalf("CHANGESET_CLOSE_FAILED", true, "", "Failed to close changeset: %v", err)
+	}
+	if resp.GetStatus() == slicev1.ChangesetStatus_REJECTED {
+		if err := clearTrackedChangesetIDIfMatches(req.ChangesetId); err != nil {
+			log.Printf("Warning: failed to clear tracked changeset ID: %v", err)
+		}
+	}
+
+	if jsonEnabled {
+		writeJSONOutput(buildChangesetCloseOutput(resp))
+		return
+	}
+	fmt.Printf("Closed changeset %s\n", resp.GetChangesetId())
+	fmt.Printf("Status: %s\n", resp.GetStatus().String())
 }
 
 func handleChangesetRebase(ctx context.Context, cli *CLI, args []string) {

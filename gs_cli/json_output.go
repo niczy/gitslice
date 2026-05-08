@@ -168,6 +168,11 @@ type jsonChangesetRebaseOutput struct {
 	Conflicts           []jsonMergeConflict `json:"conflicts,omitempty"`
 }
 
+type jsonChangesetCloseOutput struct {
+	ChangesetID string `json:"changeset_id,omitempty"`
+	Status      string `json:"status"`
+}
+
 type jsonSliceInfo struct {
 	Name        string   `json:"name"`
 	SliceID     string   `json:"slice_id"`
@@ -848,6 +853,16 @@ func buildMergeOutput(resp *slicev1.MergeChangesetResponse) *jsonMergeOutput {
 	}
 	output.Conflicts = buildMergeConflicts(resp.GetConflicts())
 	return output
+}
+
+func buildChangesetCloseOutput(resp *slicev1.CloseChangesetResponse) jsonChangesetCloseOutput {
+	if resp == nil {
+		return jsonChangesetCloseOutput{}
+	}
+	return jsonChangesetCloseOutput{
+		ChangesetID: resp.GetChangesetId(),
+		Status:      resp.GetStatus().String(),
+	}
 }
 
 func buildMergeConflicts(conflicts []*slicev1.Conflict) []jsonMergeConflict {

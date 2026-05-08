@@ -223,6 +223,30 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 	return entries, nil
 }
 
+func collectNoGitWorkingTreeStatusFullScan(dir string, index *localCheckoutIndex) ([]workingTreeStatusEntry, error) {
+	if index == nil {
+		return nil, fmt.Errorf("checkout metadata missing; re-checkout the slice")
+	}
+
+	lookup := newCheckoutIndexLookup(index)
+	entries, err := collectNoGitTrackedStatus(dir, lookup)
+	if err != nil {
+		return nil, err
+	}
+
+	newFiles, err := scanCheckoutForNewFiles(dir, "", lookup)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range newFiles {
+		entries = append(entries, workingTreeStatusEntry{Path: path, Status: "A"})
+	}
+
+	_ = writeDirtyTrackerPaths(dir, collectWorkingTreeStatusPaths(entries))
+	sortWorkingTreeStatus(entries)
+	return entries, nil
+}
+
 func sortWorkingTreeStatus(entries []workingTreeStatusEntry) {
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Path == entries[j].Path {

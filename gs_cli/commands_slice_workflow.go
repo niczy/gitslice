@@ -137,9 +137,16 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 		if contentErr != nil {
 			commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice diff", "Cannot read local changes: %v", contentErr)
 		}
+		baseCommitHash := strings.TrimSpace(*base)
+		if baseCommitHash == "" && !isUpdate {
+			baseCommitHash, err = resolveCheckoutBaseCommit(".", "")
+			if err != nil {
+				commandFatalf("CHANGESET_CREATE_FAILED", false, "gs slice status", "Cannot resolve checkout base commit: %v", err)
+			}
+		}
 		createResp, createErr := cli.sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
 			SliceId:        sliceID,
-			BaseCommitHash: strings.TrimSpace(*base),
+			BaseCommitHash: baseCommitHash,
 			ModifiedFiles:  modifiedFiles,
 			Author:         strings.TrimSpace(*author),
 			Message:        strings.TrimSpace(*message),
