@@ -18,6 +18,45 @@ ALTER TABLE IF EXISTS file_manifests DROP CONSTRAINT IF EXISTS file_manifests_sl
 ALTER TABLE IF EXISTS repo_bindings DROP CONSTRAINT IF EXISTS repo_bindings_slice_id_fkey;
 ALTER TABLE IF EXISTS changeset_snapshots DROP CONSTRAINT IF EXISTS changeset_snapshots_changeset_id_fkey;
 
+DO $$
+BEGIN
+  IF to_regclass('public.global_state') IS NOT NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'global_state'
+        AND column_name = 'root_slice_id'
+    ) AND NOT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'global_state'
+        AND column_name = 'root_id'
+    ) THEN
+      ALTER TABLE global_state RENAME COLUMN root_slice_id TO root_id;
+    ELSIF NOT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'global_state'
+        AND column_name = 'root_id'
+    ) THEN
+      ALTER TABLE global_state ADD COLUMN root_id TEXT DEFAULT '';
+    ELSIF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'global_state'
+        AND column_name = 'root_slice_id'
+    ) THEN
+      UPDATE global_state
+      SET root_id = COALESCE(NULLIF(root_id, ''), root_slice_id);
+      ALTER TABLE global_state DROP COLUMN root_slice_id;
+    END IF;
+  END IF;
+END $$;
+
 CREATE TEMP TABLE id_taxonomy_slice_map AS
 WITH candidates AS (
   SELECT
