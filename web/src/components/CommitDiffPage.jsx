@@ -57,6 +57,16 @@ const LAZY_PATCH_FILE_COUNT_THRESHOLD = 80;
 const LAZY_PATCH_LINE_THRESHOLD = 1200;
 const LAZY_PATCH_SCROLL_TRIGGER = 24;
 
+function shouldDeferPatchLoad(changes = []) {
+  if (changes.length === 0) {
+    return false;
+  }
+  if (changes.length > LAZY_PATCH_FILE_COUNT_THRESHOLD) {
+    return true;
+  }
+  return changes.some((change) => ((change.lines_added || 0) + (change.lines_deleted || 0)) > LAZY_PATCH_LINE_THRESHOLD);
+}
+
 // ---------------------------------------------------------------------------
 // Commit Diff Page Component
 // ---------------------------------------------------------------------------
@@ -186,14 +196,7 @@ export default function CommitDiffPage({
 
 
   const shouldLazyLoadPatches = useMemo(() => {
-    const baseChanges = diffData?.changes || [];
-    if (baseChanges.length === 0) {
-      return false;
-    }
-    if (baseChanges.length > LAZY_PATCH_FILE_COUNT_THRESHOLD) {
-      return true;
-    }
-    return baseChanges.some((change) => ((change.lines_added || 0) + (change.lines_deleted || 0)) > LAZY_PATCH_LINE_THRESHOLD);
+    return shouldDeferPatchLoad(diffData?.changes || []);
   }, [diffData]);
 
 
@@ -202,7 +205,8 @@ export default function CommitDiffPage({
       return;
     }
 
-    if (!shouldLazyLoadPatches) {
+    const shouldDefer = shouldDeferPatchLoad(diffData?.changes || []);
+    if (!shouldDefer) {
       loadPatches();
       return;
     }
@@ -212,15 +216,29 @@ export default function CommitDiffPage({
       return;
     }
 
-    const handleDiffScroll = () => {
-      if (diffContentEl.scrollTop >= LAZY_PATCH_SCROLL_TRIGGER) {
+    const handleWheel = (event) => {
+      if (Math.abs(event.deltaY) > 0 && diffContentEl.scrollTop + event.deltaY >= LAZY_PATCH_SCROLL_TRIGGER) {
         loadPatches();
       }
     };
 
-    diffContentEl.addEventListener('scroll', handleDiffScroll, { passive: true });
+    const handleTouchMove = () => {
+      loadPatches();
+    };
+
+    const handleKeyboardScroll = (event) => {
+      if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
+        loadPatches();
+      }
+    };
+
+    diffContentEl.addEventListener('wheel', handleWheel, { passive: true });
+    diffContentEl.addEventListener('touchmove', handleTouchMove, { passive: true });
+    diffContentEl.addEventListener('keydown', handleKeyboardScroll);
     return () => {
-      diffContentEl.removeEventListener('scroll', handleDiffScroll);
+      diffContentEl.removeEventListener('wheel', handleWheel);
+      diffContentEl.removeEventListener('touchmove', handleTouchMove);
+      diffContentEl.removeEventListener('keydown', handleKeyboardScroll);
     };
   }, [diffData, hasLoadedPatches, isPatchLoading, loadPatches, shouldLazyLoadPatches]);
 

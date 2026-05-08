@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 // so root entries should include the "o" directory.
 
 async function openRootRepository(page) {
-  await page.goto('/slices/root_slice');
+  await page.goto('/slices/root');
   await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
   await expect(page.getByTestId('folder-preview')).toBeVisible();
 }
@@ -71,7 +71,7 @@ test.describe('Root Repository Browsing (real server)', () => {
 
     await fileBreadcrumb.click();
 
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByTestId('folder-preview')).toBeVisible();
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
@@ -114,7 +114,7 @@ test.describe('Root Repository Browsing (real server)', () => {
 });
 
 test.describe('Slice-specific Browsing (real server)', () => {
-  test('browses root_slice in slice mode', async ({ page }) => {
+  test('browses root in slice mode', async ({ page }) => {
     await openRootRepository(page);
 
     await expect(page.getByRole('heading', { name: /File tree/i })).toBeVisible();
@@ -124,7 +124,7 @@ test.describe('Slice-specific Browsing (real server)', () => {
   });
 
   test('shows not found for signed-out private slice direct URLs', async ({ page }) => {
-    const response = await page.goto('/slices/sl-private-not-visible?file=secret.txt');
+    const response = await page.goto('/slices/sl_private-not-visible?file=secret.txt');
 
     expect(response?.status()).toBe(404);
     await expect(page.getByTestId('not-found-page')).toBeVisible();
@@ -137,7 +137,7 @@ test.describe('Slice-specific Browsing (real server)', () => {
 test.describe('Repo Browser File Preview Layout', () => {
   test('shows checkout first in Get Code and copies both commands', async ({ page }) => {
     const username = `cloneuser${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
     const slug = `${username}/demo-slice`;
 
     await page.addInitScript(() => {
@@ -228,7 +228,7 @@ test.describe('Repo Browser File Preview Layout', () => {
         body: JSON.stringify({
           slices: [
             {
-              slice_id: 'root_slice',
+              slice_id: 'root',
               name: 'Root Slice',
               description: 'Root slice',
               owners: ['system'],
@@ -241,14 +241,14 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/entries**', async (route) => {
+    await page.route('**/v1/slices/root/entries**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           entries: [
             {
-              id: 'root_slice:README.md',
+              id: 'root:README.md',
               name: 'README.md',
               path: 'README.md',
               type: 'FILE',
@@ -259,7 +259,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/files/README.md**', async (route) => {
+    await page.route('**/v1/slices/root/files/README.md**', async (route) => {
       const content = '# Wide markdown preview\n\nThis markdown file should use the available preview width.';
       await route.fulfill({
         status: 200,
@@ -273,7 +273,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.goto('/slices/root_slice?file=README.md');
+    await page.goto('/slices/root?file=README.md');
 
     const preview = page.locator('.file-preview-markdown');
     await expect(preview).toContainText('Wide markdown preview');
@@ -301,7 +301,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     await openRootRepository(page);
     await openGitsliceRepositoryRoot(page);
 
-    await page.route('**/v1/slices/root_slice/files/**/README.md**', async (route) => {
+    await page.route('**/v1/slices/root/files/**/README.md**', async (route) => {
       await page.waitForTimeout(700);
       await route.fulfill({
         status: 200,
@@ -334,7 +334,7 @@ test.describe('Repo Browser File Preview Layout', () => {
     const loadedSizeWidth = await fileSizeStatus.evaluate((element) => element.getBoundingClientRect().width);
     expect(Math.abs(loadedSizeWidth - loadingSizeWidth)).toBeLessThan(1);
 
-    await page.route('**/v1/slices/root_slice/files/**/go.mod**', async (route) => {
+    await page.route('**/v1/slices/root/files/**/go.mod**', async (route) => {
       await page.waitForTimeout(700);
       await route.fulfill({
         status: 200,
@@ -351,8 +351,8 @@ test.describe('Repo Browser File Preview Layout', () => {
 
     await page.evaluate(() => {
       const file = 'o/genesis/projects/gitslice/go.mod';
-      const state = { gitsliceBrowserState: true, browserState: { slice: 'root_slice', file } };
-      window.history.pushState(state, '', `/slices/root_slice?file=${encodeURIComponent(file)}`);
+      const state = { gitsliceBrowserState: true, browserState: { slice: 'root', file } };
+      window.history.pushState(state, '', `/slices/root?file=${encodeURIComponent(file)}`);
       window.dispatchEvent(new PopStateEvent('popstate', { state }));
     });
     await page.waitForTimeout(100);
@@ -372,24 +372,24 @@ test.describe('Repo Browser File Preview Layout', () => {
     const filePath = `${directoryPath}/README.md`;
     const parentEntriesResponse = page.waitForResponse((response) => {
       const responseUrl = decodeURIComponent(response.url());
-      return response.ok() && responseUrl.includes(`/v1/slices/root_slice/entries/${directoryPath}`);
+      return response.ok() && responseUrl.includes(`/v1/slices/root/entries/${directoryPath}`);
     });
 
-    await page.goto(`/slices/root_slice?file=${encodeURIComponent(filePath)}`);
+    await page.goto(`/slices/root?file=${encodeURIComponent(filePath)}`);
     await expect(page.locator('.file-preview')).toBeVisible();
     await parentEntriesResponse;
 
     await page.evaluate(({ dir, file }) => {
       const folderState = {
         gitsliceBrowserState: true,
-        browserState: { slice: 'root_slice', dir, file: '' },
+        browserState: { slice: 'root', dir, file: '' },
       };
       const fileState = {
         gitsliceBrowserState: true,
-        browserState: { slice: 'root_slice', dir: '', file },
+        browserState: { slice: 'root', dir: '', file },
       };
-      window.history.replaceState(folderState, '', `/slices/root_slice?dir=${encodeURIComponent(dir)}`);
-      window.history.pushState(fileState, '', `/slices/root_slice?file=${encodeURIComponent(file)}`);
+      window.history.replaceState(folderState, '', `/slices/root?dir=${encodeURIComponent(dir)}`);
+      window.history.pushState(fileState, '', `/slices/root?file=${encodeURIComponent(file)}`);
     }, { dir: directoryPath, file: filePath });
 
     await page.evaluate(() => {
@@ -408,7 +408,7 @@ test.describe('Repo Browser File Preview Layout', () => {
 
     await page.goBack();
 
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
     await expect(page.locator('.folder-preview-list').getByRole('button', { name: /^README\.md\b/i })).toBeVisible();
     const sawFolderLoading = await page.evaluate(() => {
@@ -435,7 +435,7 @@ test.describe('Repo Browser File Preview Layout', () => {
         body: JSON.stringify({
           slices: [
             {
-              slice_id: 'root_slice',
+              slice_id: 'root',
               name: 'Root Slice',
               description: 'Root slice',
               owners: ['system'],
@@ -448,14 +448,14 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/entries**', async (route) => {
+    await page.route('**/v1/slices/root/entries**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           entries: [
             {
-              id: 'root_slice:workspaces',
+              id: 'root:workspaces',
               name: 'workspaces',
               path: 'workspaces',
               type: 'ENTRY_TYPE_DIRECTORY',
@@ -466,7 +466,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/files/**', async (route) => {
+    await page.route('**/v1/slices/root/files/**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -479,7 +479,7 @@ test.describe('Repo Browser File Preview Layout', () => {
       });
     });
 
-    await page.goto(`/slices/root_slice?file=${encodeURIComponent(filePath)}`);
+    await page.goto(`/slices/root?file=${encodeURIComponent(filePath)}`);
     await expect(page.locator('.code-header .breadcrumb')).toHaveCount(3);
 
     const layout = await page.locator('.code-header').evaluate((header) => {
@@ -515,76 +515,76 @@ test.describe('Repo Browser File Preview Layout', () => {
   });
 
   test('adds file and directory selections to browser history', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
 
     await openPreviewEntry(page, /^o\b/i);
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o$/);
     await expect(page.getByRole('heading', { name: /^o$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^genesis\b/i);
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis$/);
     await expect(page.getByRole('heading', { name: /^genesis$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^projects\b/i);
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects$/);
     await expect(page.getByRole('heading', { name: /^projects$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^gitslice\b/i);
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
 
     await openPreviewEntry(page, /^README\.md\b/i);
-    await expect(page).toHaveURL(/\/slices\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
+    await expect(page).toHaveURL(/\/slices\/root\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects$/);
     await expect(page.getByRole('heading', { name: /^projects$/i })).toBeVisible();
   });
 
   test('adds sidebar tree file and directory selections to browser history state', async ({ page }) => {
-    await page.goto('/slices/root_slice');
+    await page.goto('/slices/root');
     await expect(page.getByRole('heading', { name: /Root Slice/i })).toBeVisible();
 
     const sidebar = page.locator('.repo-sidebar');
 
     await sidebar.getByRole('button', { name: /^o\b/i }).click();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o$/);
     await expect(page.getByRole('heading', { name: /^o$/i })).toBeVisible();
     await expect.poll(
       () => page.evaluate(() => window.history.state?.browserState),
     ).toMatchObject({
       dir: 'o',
       file: '',
-      slice: 'root_slice',
+      slice: 'root',
     });
 
     await sidebar.getByRole('button', { name: /^genesis\b/i }).click();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis$/);
     await sidebar.getByRole('button', { name: /^projects\b/i }).click();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects$/);
     await sidebar.getByRole('button', { name: /^gitslice\b/i }).click();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
 
     await sidebar.getByRole('button', { name: /^README\.md\b/i }).click();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
+    await expect(page).toHaveURL(/\/slices\/root\?file=o%2Fgenesis%2Fprojects%2Fgitslice%2FREADME\.md$/);
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toBeVisible();
     await expect.poll(
       () => page.evaluate(() => window.history.state?.browserState),
     ).toMatchObject({
       dir: '',
       file: 'o/genesis/projects/gitslice/README.md',
-      slice: 'root_slice',
+      slice: 'root',
     });
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/slices\/root_slice\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
+    await expect(page).toHaveURL(/\/slices\/root\?dir=o%2Fgenesis%2Fprojects%2Fgitslice$/);
     await expect(page.getByRole('heading', { name: /^gitslice$/i })).toBeVisible();
     await expect(page.locator('.code-header .breadcrumb').filter({ hasText: /README\.md/i })).toHaveCount(0);
   });
@@ -593,7 +593,7 @@ test.describe('Repo Browser File Preview Layout', () => {
 test.describe('Slice Home Page', () => {
   test('shows visibility chips without a leading workspace icon', async ({ page }) => {
     const username = `homeicons${Date.now()}`;
-    const privateSliceId = `home.${username}`;
+    const privateSliceId = `home_${username}`;
     const publicSliceId = `${username}.public`;
 
     await page.route('**/v1/slices?limit=200', async (route) => {
@@ -675,7 +675,7 @@ test.describe('Repo Browser Search', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          workspace_id: `home.${username}`,
+          workspace_id: `home_${username}`,
           query: 'TODO:\\s+ship search',
           glob: `/${username}/notes/*.md`,
           matches: [
@@ -705,7 +705,7 @@ test.describe('Repo Browser Search', () => {
 test.describe('Repo Browser Mobile Navigation', () => {
   test('keeps the file tree drawer open while expanding folders', async ({ page }) => {
     const username = `mobiletree${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
 
     await page.setViewportSize({ width: 390, height: 844 });
 
@@ -811,7 +811,7 @@ test.describe('Repo Browser Mobile Navigation', () => {
 test.describe('Slice Activity Pages', () => {
   test('shows slice commits and links to the commit diff view', async ({ page }) => {
     const username = `activity${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
     const commitHash = 'fs-activity-commit-1';
 
     await page.route('**/v1/slices?limit=200', async (route) => {
@@ -899,10 +899,10 @@ test.describe('Slice Activity Pages', () => {
 
   test('shows slice changesets with status filters and links to changeset diff', async ({ page }) => {
     const username = `activitycs${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
     const requests = [];
     const overflowChangesets = Array.from({ length: 12 }, (_, index) => ({
-      changesetId: `cs-pending-overflow-${index}`,
+      changesetId: `chg_pending-overflow-${index}`,
       changesetHash: `hash-pending-overflow-${index}`,
       sliceId,
       baseCommitHash: `fs-base-${index + 3}`,
@@ -944,7 +944,7 @@ test.describe('Slice Activity Pages', () => {
       }
       const allChangesets = [
         {
-          changesetId: 'cs-pending-review',
+          changesetId: 'chg_pending-review',
           changesetHash: 'hash-pending',
           sliceId,
           baseCommitHash: 'fs-base-1',
@@ -956,7 +956,7 @@ test.describe('Slice Activity Pages', () => {
         },
         ...overflowChangesets,
         {
-          changesetId: 'cs-merged-review',
+          changesetId: 'chg_merged-review',
           changesetHash: 'hash-merged',
           sliceId,
           baseCommitHash: 'fs-base-2',
@@ -979,7 +979,7 @@ test.describe('Slice Activity Pages', () => {
       });
     });
 
-    await page.route('**/v1/changesets/cs-merged-review/snapshots**', async (route) => {
+    await page.route('**/v1/changesets/chg_merged-review/snapshots**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -987,13 +987,13 @@ test.describe('Slice Activity Pages', () => {
       });
     });
 
-    await page.route('**/v1/changesets/cs-merged-review/diff**', async (route) => {
+    await page.route('**/v1/changesets/chg_merged-review/diff**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           changeset: {
-            changesetId: 'cs-merged-review',
+            changesetId: 'chg_merged-review',
             sliceId,
             status: 'MERGED',
             author: username,
@@ -1088,15 +1088,15 @@ test.describe('Slice Activity Pages', () => {
     expect(requests).toContain('3');
 
     await page.getByTestId('slice-changeset-row').first().click();
-    await expect(page).toHaveURL(/\/changesets\/cs-merged-review/);
+    await expect(page).toHaveURL(/\/changesets\/chg_merged-review/);
     await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
   });
 
   test('keeps slice changeset rows readable at mobile width', async ({ page }) => {
     const username = `activitymobile${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
     const changesets = Array.from({ length: 10 }, (_, index) => ({
-      changesetId: `cs-mobile-review-${index}`,
+      changesetId: `chg_mobile-review-${index}`,
       changesetHash: `hash-mobile-review-${index}`,
       sliceId,
       baseCommitHash: `fs-mobile-base-${index}`,
@@ -1205,9 +1205,9 @@ test.describe('Slice Activity Pages', () => {
 
   test('keeps commit and changeset detail controls readable at mobile width', async ({ page }) => {
     const username = `detailmobile${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
     const commitHash = 'fs-mobile-detail-commit-abcdef123456';
-    const changesetId = 'cs-mobile-detail-review-abcdef123456';
+    const changesetId = 'chg_mobile-detail-review-abcdef123456';
     const patch = [
       '--- a/apps/mobile/detail-layout.jsx',
       '+++ b/apps/mobile/detail-layout.jsx',
@@ -1450,7 +1450,7 @@ test.describe('Slice Activity Pages', () => {
 test.describe('Repo Browser Settings', () => {
   test('manages slice visibility without link panels', async ({ page }) => {
     const username = `webvisibility${Date.now()}`;
-    const sliceId = `home.${username}`;
+    const sliceId = `home_${username}`;
     const sliceName = `visibility-${username}`;
     const sliceSetBodies = [];
     let sliceVisibility = 1;

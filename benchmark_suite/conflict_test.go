@@ -27,7 +27,7 @@ func TestConflictDetection(t *testing.T) {
 	// Create two independent slices from root.
 	for _, sid := range []string{sliceA, sliceB} {
 		_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-			ParentSliceId: "root_slice",
+			ParentSliceId: "root",
 			NewSliceId:    sid,
 			Name:          sid,
 			FolderPaths:   []string{"conflict"},
@@ -216,7 +216,7 @@ func TestConflictDetectionUnderLoad(t *testing.T) {
 		entries[i].sliceID = sid
 
 		_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-			ParentSliceId: "root_slice",
+			ParentSliceId: "root",
 			NewSliceId:    sid,
 			Name:          sid,
 			FolderPaths:   []string{"hotfile"},

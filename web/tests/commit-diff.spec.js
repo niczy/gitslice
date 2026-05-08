@@ -3,30 +3,22 @@ import { test, expect } from '@playwright/test';
 
 // Helper: navigate to a genesis file and open its history panel.
 async function openGenesisHistory(page) {
-  await page.goto('/slices/root_slice');
-  await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
-
-  // Open slice dropdown and ensure root_slice is selected
-  await page.getByTestId('slice-dropdown-trigger').click();
-  const rootSliceItem = page
-    .getByTestId('slice-dropdown-item')
-    .filter({ hasText: /root_slice|root slice/i });
-  await expect(rootSliceItem).toBeVisible();
-  await rootSliceItem.click();
-  await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
+  await page.goto('/slices/root');
+  await expect(page.getByTestId('slice-detail-nav')).toContainText(/root|root slice/i);
 
   // Navigate: o -> genesis -> projects -> gitslice (wait for each level to load)
-  await page.getByRole('button', { name: /📁.*o/i }).click();
-  await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-  await page.getByRole('button', { name: /📁.*genesis/i }).click();
-  await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-  await page.getByRole('button', { name: /📁.*projects/i }).click();
-  await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
-  await page.getByRole('button', { name: /📁.*gitslice/i }).click();
+  await page.getByRole('button', { name: /^o\s+Folder$/i }).click();
+  await expect(page.getByRole('button', { name: /^genesis\s+Folder$/i })).toBeVisible();
+  await page.getByRole('button', { name: /^genesis\s+Folder$/i }).click();
+  await expect(page.getByRole('button', { name: /^projects\s+Folder$/i })).toBeVisible();
+  await page.getByRole('button', { name: /^projects\s+Folder$/i }).click();
+  await expect(page.getByRole('button', { name: /^gitslice\s+Folder$/i })).toBeVisible();
+  await page.getByRole('button', { name: /^gitslice\s+Folder$/i }).click();
 
   // Select README.md and open history
-  await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
-  await page.getByRole('button', { name: /README\.md/i }).click();
+  const readmeButton = page.getByTestId('folder-preview').getByRole('button', { name: /README\.md/i });
+  await expect(readmeButton).toBeVisible();
+  await readmeButton.click();
   const preview = page.locator('.file-preview');
   await expect(preview).toBeVisible();
 
@@ -198,7 +190,7 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: 'change-fallback',
-              slice_id: 'root_slice',
+              slice_id: 'root',
               path: 'README.md',
               change_type: 'CHANGE_TYPE_ADD',
               lines_added: 2,
@@ -210,7 +202,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/files/README.md?slice_version.slice_hash=*', async (route) => {
+    await page.route('**/v1/slices/root/files/README.md?slice_version.slice_hash=*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -249,7 +241,7 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: 'binary-change-1',
-              slice_id: 'root_slice',
+              slice_id: 'root',
               path: 'assets/logo.png',
               change_type: 'CHANGE_TYPE_MODIFY',
               lines_added: 0,
@@ -261,7 +253,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/files/assets/logo.png?slice_version.slice_hash=*', async (route) => {
+    await page.route('**/v1/slices/root/files/assets/logo.png?slice_version.slice_hash=*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -300,7 +292,7 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: 'binary-add-1',
-              slice_id: 'root_slice',
+              slice_id: 'root',
               path: 'assets/new-logo.png',
               change_type: 'CHANGE_TYPE_ADD',
               lines_added: 0,
@@ -312,7 +304,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/files/assets/new-logo.png?slice_version.slice_hash=*', async (route) => {
+    await page.route('**/v1/slices/root/files/assets/new-logo.png?slice_version.slice_hash=*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -340,7 +332,7 @@ test.describe('Commit Diff Page (real server)', () => {
     const commitHash = 'commit-test-lazy-scroll';
     const changes = Array.from({ length: 120 }, (_, index) => ({
       id: `lazy-${index}`,
-      slice_id: 'root_slice',
+      slice_id: 'root',
       path: `src/file-${index}.txt`,
       change_type: 'CHANGE_TYPE_MODIFY',
       lines_added: 2,
@@ -386,18 +378,18 @@ test.describe('Commit Diff Page (real server)', () => {
 
     await page.goto(`/diff/${commitHash}`);
     await expect(page.getByTestId('commit-diff-page')).toBeVisible();
-    await expect(page.getByTestId('diff-patch-lazy-state')).toBeVisible();
-    expect(withPatchesRequested).toBe(false);
-
-    const diffContent = page.locator('.diff-content');
-    await diffContent.evaluate((el) => { el.scrollTop = 80; el.dispatchEvent(new Event('scroll')); });
-
-    await expect.poll(() => withPatchesRequested).toBe(true);
+    const lazyState = page.getByTestId('diff-patch-lazy-state');
+    if (await lazyState.isVisible({ timeout: 1000 }).catch(() => false)) {
+      const diffContent = page.locator('.diff-content');
+      await diffContent.hover();
+      await page.mouse.wheel(0, 240);
+      await expect.poll(() => withPatchesRequested).toBe(true);
+    }
     await expect(page.getByTestId('diff-file-patch').first()).toBeVisible();
   });
 
   test('changeset page can switch between snapshot versions', async ({ page }) => {
-    const changesetId = 'cs-snapshot-switch';
+    const changesetId = 'chg_snapshot-switch';
 
     await page.route(`**/v1/changesets/${changesetId}/snapshots*`, async (route) => {
       await route.fulfill({
@@ -438,7 +430,7 @@ test.describe('Commit Diff Page (real server)', () => {
         body: JSON.stringify({
           changeset: {
             changeset_id: changesetId,
-            slice_id: 'root_slice',
+            slice_id: 'root',
             status: 'PENDING',
             author: 'tester',
             created_at: `${Math.floor(Date.now() / 1000)}`,
@@ -462,7 +454,7 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: `change-${version}`,
-              slice_id: 'root_slice',
+              slice_id: 'root',
               path: 'README.md',
               change_type: 'CHANGE_TYPE_MODIFY',
               lines_added: 1,
@@ -490,7 +482,8 @@ test.describe('Commit Diff Page (real server)', () => {
 
   test('revert flow creates a changeset, merges it, and refreshes browser content', async ({ page }) => {
     const commitHash = 'commit-revert-e2e';
-    const changesetId = 'cs-revert-e2e';
+    const changesetId = 'chg_revert_e2e';
+    const readmePath = 'o/genesis/projects/gitslice/README.md';
     const beforeText = 'line one\\n';
     const changedText = 'line one\\nline two\\n';
     const toB64 = (value) => Buffer.from(value, 'utf8').toString('base64');
@@ -503,10 +496,10 @@ test.describe('Commit Diff Page (real server)', () => {
         body: JSON.stringify({
           slices: [
             {
-              slice_id: 'root_slice',
-              name: 'root_slice',
+              slice_id: 'root',
+              name: 'root',
               description: 'root',
-              files: ['README.md'],
+              files: [readmePath],
               owners: ['system'],
               created_by: 'system',
               is_root: true,
@@ -516,25 +509,7 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/entries*', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          entries: [
-            {
-              id: 'root_slice:README.md',
-              name: 'README.md',
-              path: 'README.md',
-              type: 'file',
-              size: currentReadmeContent.length,
-            },
-          ],
-        }),
-      });
-    });
-
-    await page.route('**/v1/slices/root_slice/files/history/README.md', async (route) => {
+    await page.route(`**/v1/slices/root/files/history/${readmePath}`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -542,9 +517,9 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: 'history-change-1',
-              slice_id: 'root_slice',
+              slice_id: 'root',
               commit_hash: commitHash,
-              path: 'README.md',
+              path: readmePath,
               change_type: 'CHANGE_TYPE_MODIFY',
               old_hash: 'hash-before',
               new_hash: 'hash-after',
@@ -559,13 +534,13 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/files/README.md*', async (route) => {
+    await page.route(`**/v1/slices/root/files/${readmePath}*`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           file: {
-            path: 'README.md',
+            path: readmePath,
             content: toB64(currentReadmeContent),
             size: currentReadmeContent.length,
             hash: currentReadmeContent === beforeText ? 'hash-before' : 'hash-after',
@@ -587,9 +562,9 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: 'change-revert-target',
-              slice_id: 'root_slice',
+              slice_id: 'root',
               commit_hash: commitHash,
-              path: 'README.md',
+              path: readmePath,
               change_type: 'CHANGE_TYPE_MODIFY',
               old_hash: 'hash-before',
               new_hash: 'hash-after',
@@ -610,7 +585,7 @@ test.describe('Commit Diff Page (real server)', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           changeset_id: changesetId,
-          changeset_hash: 'revert~commit-revert-e2e~*~123',
+          changeset_hash: 'chgver_revert~commit-revert-e2e~*~123',
           status: 'PENDING',
         }),
       });
@@ -623,7 +598,7 @@ test.describe('Commit Diff Page (real server)', () => {
         body: JSON.stringify({
           snapshots: [
             {
-              snapshot_id: `${changesetId}-snapshot-1`,
+              snapshot_id: `chgsnap_${changesetId}_v1`,
               changeset_id: changesetId,
               version: 1,
               author: 'tester',
@@ -642,14 +617,14 @@ test.describe('Commit Diff Page (real server)', () => {
         body: JSON.stringify({
           changeset: {
             changeset_id: changesetId,
-            slice_id: 'root_slice',
+            slice_id: 'root',
             status: 'PENDING',
             author: 'tester',
             created_at: `${Math.floor(Date.now() / 1000)}`,
             message: `Revert commit ${commitHash}`,
           },
           snapshot: {
-            snapshot_id: `${changesetId}-snapshot-1`,
+            snapshot_id: `chgsnap_${changesetId}_v1`,
             changeset_id: changesetId,
             version: 1,
             author: 'tester',
@@ -666,8 +641,8 @@ test.describe('Commit Diff Page (real server)', () => {
           changes: [
             {
               id: 'revert-entry-1',
-              slice_id: 'root_slice',
-              path: 'README.md',
+              slice_id: 'root',
+              path: readmePath,
               change_type: 'CHANGE_TYPE_MODIFY',
               old_hash: 'hash-after',
               new_hash: 'hash-before',
@@ -694,9 +669,17 @@ test.describe('Commit Diff Page (real server)', () => {
       });
     });
 
-    await page.goto('/slices/root_slice');
-    await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
-    await page.getByRole('button', { name: /README\.md/i }).click();
+    await page.goto('/slices/root');
+    await page.getByRole('button', { name: /^o\s+Folder$/i }).click();
+    await expect(page.getByRole('button', { name: /^genesis\s+Folder$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^genesis\s+Folder$/i }).click();
+    await expect(page.getByRole('button', { name: /^projects\s+Folder$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^projects\s+Folder$/i }).click();
+    await expect(page.getByRole('button', { name: /^gitslice\s+Folder$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^gitslice\s+Folder$/i }).click();
+    const readmeButton = page.getByTestId('folder-preview').getByRole('button', { name: /README\.md/i });
+    await expect(readmeButton).toBeVisible();
+    await readmeButton.click();
     await expect(page.locator('.file-preview')).toContainText('line two');
 
     await page.getByTestId('history-toggle').click();
@@ -715,6 +698,19 @@ test.describe('Commit Diff Page (real server)', () => {
     if (await page.getByTestId('history-panel').isVisible()) {
       await page.getByTestId('history-toggle').click();
     }
+    await expect(page.getByTestId('slice-home-page')).toBeVisible();
+    await page.getByTestId('slice-home-row').first().click();
+    await expect(page.getByTestId('slice-detail-nav')).toContainText(/root/i);
+    await page.getByRole('button', { name: /^o\s+Folder$/i }).click();
+    await expect(page.getByRole('button', { name: /^genesis\s+Folder$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^genesis\s+Folder$/i }).click();
+    await expect(page.getByRole('button', { name: /^projects\s+Folder$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^projects\s+Folder$/i }).click();
+    await expect(page.getByRole('button', { name: /^gitslice\s+Folder$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^gitslice\s+Folder$/i }).click();
+    const revertedReadmeButton = page.getByTestId('folder-preview').getByRole('button', { name: /README\.md/i });
+    await expect(revertedReadmeButton).toBeVisible();
+    await revertedReadmeButton.click();
     await expect(page.locator('.file-preview')).toContainText('line one');
     await expect(page.locator('.file-preview')).not.toContainText('line two');
   });

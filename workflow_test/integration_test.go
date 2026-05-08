@@ -686,11 +686,11 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
 	output := runCLIOrFail(t, workdir, "root")
-	if !strings.Contains(output, "Root Slice ID: root_slice") {
+	if !strings.Contains(output, "Root Slice ID: root") {
 		t.Fatalf("Expected root slice info, got: %s", output)
 	}
 
-	rootSliceArg := sliceIDArg("root_slice")
+	rootSliceArg := sliceIDArg("root")
 	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("Expected init output, got: %s", output)
@@ -995,11 +995,11 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	workdir := t.TempDir()
 
 	output := runCLIOrFail(t, workdir, "root")
-	if !strings.Contains(output, "Root Slice ID: root_slice") {
+	if !strings.Contains(output, "Root Slice ID: root") {
 		t.Fatalf("expected root slice info, got: %s", output)
 	}
 
-	rootSliceArg := sliceIDArg("root_slice")
+	rootSliceArg := sliceIDArg("root")
 	output = runCLIOrFail(t, workdir, "init", rootSliceArg)
 	if !strings.Contains(output, "Initialized empty gitslice checkout") {
 		t.Fatalf("expected init output, got: %s", output)
@@ -1089,7 +1089,7 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected focused file under %q in slice checkout, got: %+v", appsFolder, checkoutResp)
 	}
 
-	rootCheckoutArg := sliceIDArg("root_slice")
+	rootCheckoutArg := sliceIDArg("root")
 	var rootCheckoutResp sliceCheckoutJSON
 	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
 		rootCheckoutDir := t.TempDir()
@@ -2406,7 +2406,7 @@ func TestBatchMergeClearsConflictsAndPromotesFiles(t *testing.T) {
 		t.Fatalf("expected 2 merged slices, got %d", mergeResp.MergedSliceCount)
 	}
 
-	rootMetadata, err := st.GetSliceMetadata(ctx, "root_slice")
+	rootMetadata, err := st.GetSliceMetadata(ctx, "root")
 	if err != nil {
 		t.Fatalf("failed to load root metadata: %v", err)
 	}
@@ -2519,7 +2519,7 @@ func TestGlobalStateTrackingIntegration(t *testing.T) {
 		t.Fatalf("expected merged slice %s to be recorded in history", sliceID)
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root"})
 	if err != nil {
 		t.Fatalf("failed to get root slice state: %v", err)
 	}
@@ -2853,7 +2853,7 @@ func TestConcurrentSlicePushesPromoteHistory(t *testing.T) {
 		t.Fatalf("expected %d new promoted history entries after concurrent merges, got %d: %v", mergeCount, gotLen-len(initialState.History), err)
 	}
 
-	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root_slice"})
+	rootState, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: "root"})
 	if err != nil {
 		t.Fatalf("failed to fetch root slice state: %v", err)
 	}

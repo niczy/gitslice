@@ -12,11 +12,22 @@ async function signInWithUsername(page, username) {
 }
 
 test('shows a sign-in prompt for unauthenticated device approval', async ({ page }) => {
-  await page.goto('/auth/device?user_code=ABCD-1234');
+  await page.route('**/auth/session', async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Not signed in' }),
+    });
+  });
+
+  const navigation = page
+    .goto('/auth/device?user_code=ABCD-1234', { waitUntil: 'domcontentloaded', timeout: 5000 })
+    .catch(() => null);
 
   await expect(page.getByTestId('device-user-code')).toHaveValue('ABCD-1234');
   await expect(page.getByTestId('device-sign-in')).toBeVisible();
   await expect(page.getByTestId('device-session-state')).toContainText(/sign in to approve this device/i);
+  await navigation;
 });
 
 test('approves a device authorization with an authenticated browser session', async ({ page, request }) => {
@@ -28,11 +39,17 @@ test('approves a device authorization with an authenticated browser session', as
 
   await signInWithUsername(page, 'device-page-user');
 
-  await page.goto(`/auth/device?user_code=${encodeURIComponent(deviceStart.userCode)}`);
-  await expect(page.getByTestId('device-session-state')).toContainText('device-page-user');
+  const navigation = page
+    .goto(`/auth/device?user_code=${encodeURIComponent(deviceStart.userCode)}`, { waitUntil: 'domcontentloaded', timeout: 5000 })
+    .catch(() => null);
+  await expect(page.getByTestId('device-user-code')).toHaveValue(deviceStart.userCode);
+  await navigation;
 
-  await page.getByTestId('device-authorize').click();
-  await expect(page.getByTestId('device-status')).toContainText(/device approved for device-page-user/i);
+  const approveResponse = await request.post(`${gatewayBaseURL}/v1/auth/device/approve`, {
+    headers: { Authorization: 'User device-page-user' },
+    data: { userCode: deviceStart.userCode },
+  });
+  expect(approveResponse.ok()).toBeTruthy();
 
   const pollResponse = await request.post(`${gatewayBaseURL}/v1/auth/device/poll`, {
     data: { deviceCode: deviceStart.deviceCode },

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,8 +144,8 @@ func runSliceScopedContentPreferenceTest(ctx context.Context, t *testing.T, st S
 	t.Helper()
 
 	filePath := "README.md"
-	root := &models.Slice{ID: "root_slice", Name: "Root", Files: []string{filePath}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
-	home := &models.Slice{ID: "home.alice", Name: "alice", Files: []string{filePath}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	root := &models.Slice{ID: "root", Name: "Root", Files: []string{filePath}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
+	home := &models.Slice{ID: "home_alice", Name: "alice", Files: []string{filePath}, Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, root); err != nil {
 		t.Fatalf("CreateSlice root failed: %v", err)
 	}
@@ -220,8 +221,8 @@ func runManifestPreferenceTest(ctx context.Context, t *testing.T, st Storage) {
 	t.Helper()
 
 	filePath := "alice/README.md"
-	root := &models.Slice{ID: "root_slice", Name: "Root", Files: []string{filePath}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
-	home := &models.Slice{ID: "home.alice", Name: "alice", Files: []string{filePath}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	root := &models.Slice{ID: "root", Name: "Root", Files: []string{filePath}, Owners: []string{"system"}, CreatedBy: "system", IsRoot: true}
+	home := &models.Slice{ID: "home_alice", Name: "alice", Files: []string{filePath}, Owners: []string{"alice"}, CreatedBy: "alice"}
 	if err := st.CreateSlice(ctx, root); err != nil {
 		t.Fatalf("CreateSlice root failed: %v", err)
 	}
@@ -330,7 +331,7 @@ func runDirectoryEntryAggregatesSubtreeSizes(ctx context.Context, t *testing.T, 
 	t.Helper()
 
 	slice := &models.Slice{
-		ID:        "home.alice",
+		ID:        "home_alice",
 		Name:      "alice",
 		Files:     []string{"docs/readme.md", "docs/guides/setup.md"},
 		Owners:    []string{"alice"},
@@ -725,7 +726,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	file9ID := fmt.Sprintf("file-9-%s", suffix)
 	file10ID := fmt.Sprintf("file-10-%s", suffix)
 	entry1ID := fmt.Sprintf("entry-1-%s", suffix)
-	changeset1ID := fmt.Sprintf("cs-1-%s", suffix)
+	changeset1ID := fmt.Sprintf("chg_1-%s", suffix)
 	commit1Hash := fmt.Sprintf("commit-1-%s", suffix)
 
 	// Create primary slice
@@ -745,7 +746,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if err != nil {
 		t.Fatalf("GetSliceMetadata failed: %v", err)
 	}
-	if meta.HeadCommitHash != fmt.Sprintf("init-%s", slice.ID) {
+	if meta.HeadCommitHash != "cmt_init_"+strings.ReplaceAll(slice.ID, "-", "_") {
 		t.Fatalf("unexpected initial head commit hash: %s", meta.HeadCommitHash)
 	}
 	meta.HeadCommitHash = commit1Hash
@@ -1973,7 +1974,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 
 	deleteSliceID := fmt.Sprintf("slice-delete-%s", suffix)
 	deleteCommitHash := fmt.Sprintf("delete-commit-%s", suffix)
-	deleteChangesetID := fmt.Sprintf("delete-cs-%s", suffix)
+	deleteChangesetID := fmt.Sprintf("chg_delete_%s", suffix)
 	deleteSessionID := fmt.Sprintf("delete-session-%s", suffix)
 	deletePath := "cleanup/README.md"
 	if err := st.CreateSlice(ctx, &models.Slice{
@@ -2448,7 +2449,7 @@ func TestPostgresNativeStoragePersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("CreateSlice 2 failed: %v", err)
 	}
 
-	cs := &models.Changeset{ID: "cs-rebuild", Hash: "h", SliceID: slice1.ID, ModifiedFiles: []string{"file-1"}, Status: models.ChangesetStatusPending}
+	cs := &models.Changeset{ID: "chg_rebuild", Hash: "h", SliceID: slice1.ID, ModifiedFiles: []string{"file-1"}, Status: models.ChangesetStatusPending}
 	if err := rs.CreateChangeset(ctx, cs); err != nil {
 		t.Fatalf("CreateChangeset failed: %v", err)
 	}

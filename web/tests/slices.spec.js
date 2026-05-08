@@ -12,7 +12,7 @@ test.describe('Slice creation', () => {
         body: JSON.stringify({
           slices: [
             {
-              slice_id: `home.${username}`,
+              slice_id: `home_${username}`,
               name: `${username} home`,
               slug: username,
               description: 'Home slice',
@@ -22,7 +22,7 @@ test.describe('Slice creation', () => {
               file_count: 2,
             },
             {
-              slice_id: 'root_slice',
+              slice_id: 'root',
               name: 'Root Slice',
               slug: 'root',
               description: 'Root slice',
@@ -36,19 +36,19 @@ test.describe('Slice creation', () => {
       });
     });
 
-    await page.route('**/v1/slices/root_slice/entries**', async (route) => {
+    await page.route('**/v1/slices/root/entries**', async (route) => {
       const url = new URL(route.request().url());
-      const path = decodeURIComponent(url.pathname.replace('/v1/slices/root_slice/entries', '').replace(/^\/+/, ''));
+      const path = decodeURIComponent(url.pathname.replace('/v1/slices/root/entries', '').replace(/^\/+/, ''));
       const entries = path === username
         ? [
             {
-              id: `root_slice:${username}/web`,
+              id: `root:${username}/web`,
               name: 'web',
               path: `${username}/web`,
               type: 'ENTRY_TYPE_DIRECTORY',
             },
             {
-              id: `root_slice:${username}/services`,
+              id: `root:${username}/services`,
               name: 'services',
               path: `${username}/services`,
               type: 'ENTRY_TYPE_DIRECTORY',
@@ -96,7 +96,7 @@ test.describe('Slice creation', () => {
 
     await expect.poll(() => createPayload).not.toBeNull();
     expect(createPayload).toMatchObject({
-      parentSliceId: 'root_slice',
+      parentSliceId: 'root',
       folderPaths: ['web', 'services/slice'],
       name: 'Web work',
     });

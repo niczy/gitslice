@@ -171,7 +171,7 @@ Track checked-out slices globally and clean local cache state. Git Slice keeps a
 
 ```sh
 gs slice checkouts
-gs slice checkouts --slice home.$USER
+gs slice checkouts --slice home_$USER
 gs cache stats --checkouts
 gs cache prune
 gs cache clear --objects

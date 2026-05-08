@@ -121,7 +121,7 @@ BENCHMARK_WORKERS=64 go test -v -timeout 600s ./benchmark_suite/ -run TestSimula
 
 Each simulated user performs three sequential gRPC calls:
 
-1. **`CreateSliceFromFolder`** – Creates a new slice branched from `root_slice`
+1. **`CreateSliceFromFolder`** – Creates a new slice branched from `root`
 2. **`CreateChangeset`** – Registers a changeset touching one unique file
    (`bench/<padded-index>/main.go`)
 3. **`MergeChangeset`** – Merges the changeset into the slice
@@ -153,7 +153,7 @@ at random and asserts:
 
 `TestConflictDetection` verifies the conflict model:
 
-1. Two slices (`conflict-a-*`, `conflict-b-*`) are created from `root_slice`
+1. Two slices (`conflict-a-*`, `conflict-b-*`) are created from `root`
 2. Both create a changeset touching `conflict/shared-*.go`
 3. Slice A merges first → `MERGE_STATUS_SUCCESS`
 4. Slice B merges second → `MERGE_STATUS_CONFLICT`

@@ -103,7 +103,7 @@ func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRootSlice failed: %v", err)
 	}
-	if rootResp.GetSliceId() != "root_slice" {
+	if rootResp.GetSliceId() != "root" {
 		t.Fatalf("unexpected root slice response: %+v", rootResp)
 	}
 }

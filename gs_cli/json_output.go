@@ -492,7 +492,7 @@ type jsonDoctorServiceStatus struct {
 	OK          bool   `json:"ok"`
 	Error       string `json:"error,omitempty"`
 	Username    string `json:"username,omitempty"`
-	RootSliceID string `json:"root_slice_id,omitempty"`
+	RootSliceID string `json:"root_id,omitempty"`
 	Head        string `json:"head,omitempty"`
 	HomeSliceID string `json:"home_slice_id,omitempty"`
 }

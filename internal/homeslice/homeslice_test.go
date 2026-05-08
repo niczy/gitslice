@@ -26,14 +26,14 @@ func TestEnsureUserHomeSliceProvisionsRootAndHomeSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
 	}
-	if slice.ID != "home.alice" {
+	if slice.ID != "home_alice" {
 		t.Fatalf("unexpected slice id: %q", slice.ID)
 	}
 
-	if _, err := st.GetSlice(ctx, "home.alice"); err != nil {
+	if _, err := st.GetSlice(ctx, "home_alice"); err != nil {
 		t.Fatalf("home slice not found: %v", err)
 	}
-	if _, err := st.GetEntryByPath(ctx, "home.alice", "alice"); err != nil {
+	if _, err := st.GetEntryByPath(ctx, "home_alice", "alice"); err != nil {
 		t.Fatalf("home slice directory not found: %v", err)
 	}
 
@@ -45,15 +45,15 @@ func TestEnsureUserHomeSliceProvisionsRootAndHomeSlice(t *testing.T) {
 		t.Fatalf("root slice directory not found: %v", err)
 	}
 
-	meta, err := st.GetSliceMetadata(ctx, "home.alice")
+	meta, err := st.GetSliceMetadata(ctx, "home_alice")
 	if err != nil {
 		t.Fatalf("GetSliceMetadata failed: %v", err)
 	}
-	expectedHead := "init-home.alice"
+	expectedHead := common.GenerateInitialCommitID("home_alice")
 	if meta.HeadCommitHash != expectedHead {
 		t.Fatalf("unexpected head commit: %q", meta.HeadCommitHash)
 	}
-	if _, err := st.GetCommitByHash(ctx, "home.alice", expectedHead); err != nil {
+	if _, err := st.GetCommitByHash(ctx, "home_alice", expectedHead); err != nil {
 		t.Fatalf("initial commit not found: %v", err)
 	}
 	if snapshot, err := st.GetCommitSnapshot(ctx, expectedHead); err != nil {
@@ -74,14 +74,14 @@ func TestEnsureUserHomeSliceIsIdempotent(t *testing.T) {
 		t.Fatalf("second EnsureUserHomeSlice failed: %v", err)
 	}
 
-	commits, err := st.ListSliceCommits(ctx, "home.alice", 10, "")
+	commits, err := st.ListSliceCommits(ctx, "home_alice", 10, "")
 	if err != nil {
 		t.Fatalf("ListSliceCommits failed: %v", err)
 	}
 	if len(commits) != 1 {
 		t.Fatalf("expected one initial commit, got %d", len(commits))
 	}
-	if commits[0].CommitHash != "init-home.alice" {
+	if commits[0].CommitHash != common.GenerateInitialCommitID("home_alice") {
 		t.Fatalf("unexpected commit hash: %q", commits[0].CommitHash)
 	}
 }
@@ -130,7 +130,7 @@ func TestBackfillUserHomeSliceCopiesRootFilesOnce(t *testing.T) {
 		t.Fatalf("unexpected backfill result: %#v", result)
 	}
 
-	copied, err := storage.ReadSliceFileContent(ctx, st, "home.legacyuser", filePath)
+	copied, err := storage.ReadSliceFileContent(ctx, st, "home_legacyuser", filePath)
 	if err != nil {
 		t.Fatalf("ReadSliceFileContent failed: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestBackfillUserHomeSliceCopiesRootFilesOnce(t *testing.T) {
 		t.Fatalf("unexpected copied content: %q", string(copied.Content))
 	}
 
-	commits, err := st.ListSliceCommits(ctx, "home.legacyuser", 10, "")
+	commits, err := st.ListSliceCommits(ctx, "home_legacyuser", 10, "")
 	if err != nil {
 		t.Fatalf("ListSliceCommits failed: %v", err)
 	}

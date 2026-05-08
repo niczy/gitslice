@@ -569,7 +569,7 @@ func TestSearchUsesMountedLiveBackingSlice(t *testing.T) {
 	}
 
 	mountedSlice := &models.Slice{
-		ID:          "sl-mounted-live-search",
+		ID:          "sl_mounted-live-search",
 		Name:        "mounted-live-search",
 		Owners:      []string{"tester"},
 		CreatedBy:   "tester",
@@ -665,13 +665,13 @@ func TestSearchCachesSliceSearchArtifactByCommit(t *testing.T) {
 
 	svc := NewService(st)
 	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
-		WorkspaceId: "sl-search-cache",
+		WorkspaceId: "sl_search-cache",
 		Name:        "Search Cache Workspace",
 	}); err != nil {
 		t.Fatalf("CreateWorkspace failed: %v", err)
 	}
 	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
-		WorkspaceId: "sl-search-cache",
+		WorkspaceId: "sl_search-cache",
 		Path:        "docs/one.txt",
 		Content:     []byte("needle one\n"),
 	}); err != nil {
@@ -681,7 +681,7 @@ func TestSearchCachesSliceSearchArtifactByCommit(t *testing.T) {
 	waitForSearchIndexForTest(t, svc)
 	for i := 0; i < 2; i++ {
 		searchResp, err := svc.Search(ctx, &filesystemv1.SearchRequest{
-			WorkspaceId: "sl-search-cache",
+			WorkspaceId: "sl_search-cache",
 			Query:       "needle",
 		})
 		if err != nil {
@@ -696,7 +696,7 @@ func TestSearchCachesSliceSearchArtifactByCommit(t *testing.T) {
 	}
 
 	if _, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
-		WorkspaceId: "sl-search-cache",
+		WorkspaceId: "sl_search-cache",
 		Path:        "docs/two.txt",
 		Content:     []byte("needle two\n"),
 	}); err != nil {
@@ -704,7 +704,7 @@ func TestSearchCachesSliceSearchArtifactByCommit(t *testing.T) {
 	}
 	waitForSearchIndexForTest(t, svc)
 	if _, err := svc.Search(ctx, &filesystemv1.SearchRequest{
-		WorkspaceId: "sl-search-cache",
+		WorkspaceId: "sl_search-cache",
 		Query:       "needle",
 	}); err != nil {
 		t.Fatalf("Search(after mutation) failed: %v", err)

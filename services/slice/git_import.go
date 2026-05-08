@@ -401,7 +401,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 		mountPath = defaultMountPathFromName(repoName)
 	}
 	if sliceID == "" {
-		sliceID = "root_slice"
+		sliceID = common.RootSliceID
 	}
 
 	warnings := []string{}
@@ -441,7 +441,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 				return err
 			}
 			if _, err := st.GetSlice(ctx, sliceID); err != nil {
-				if errors.Is(err, storage.ErrSliceNotFound) && sliceID == "root_slice" {
+				if errors.Is(err, storage.ErrSliceNotFound) && sliceID == common.RootSliceID {
 					if err := st.InitializeRootSlice(ctx); err != nil {
 						return err
 					}
@@ -549,7 +549,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 							ct = models.ChangeTypeAdd
 						}
 						changeRecs = append(changeRecs, &models.FileChangeRecord{
-							ID:         fmt.Sprintf("%s-%s-%s", meta.Hash, ct, mountedPath),
+							ID:         common.GenerateFileChangeID(meta.Hash, mountedPath),
 							SliceID:    sliceID,
 							CommitHash: meta.Hash,
 							Path:       mountedPath,
@@ -576,7 +576,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 						modifiedSet[mountedPath] = struct{}{}
 
 						changeRecs = append(changeRecs, &models.FileChangeRecord{
-							ID:         fmt.Sprintf("%s-%s-%s", meta.Hash, models.ChangeTypeDelete, mountedPath),
+							ID:         common.GenerateFileChangeID(meta.Hash, mountedPath),
 							SliceID:    sliceID,
 							CommitHash: meta.Hash,
 							Path:       mountedPath,
@@ -632,7 +632,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 						modifiedSet[newMounted] = struct{}{}
 
 						changeRecs = append(changeRecs, &models.FileChangeRecord{
-							ID:         fmt.Sprintf("%s-%s-%s", meta.Hash, models.ChangeTypeRename, newMounted),
+							ID:         common.GenerateFileChangeID(meta.Hash, newMounted),
 							SliceID:    sliceID,
 							CommitHash: meta.Hash,
 							Path:       newMounted,
@@ -726,7 +726,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 		return nil, err
 	}
 	if _, err := st.GetSlice(ctx, sliceID); err != nil {
-		if errors.Is(err, storage.ErrSliceNotFound) && sliceID == "root_slice" {
+		if errors.Is(err, storage.ErrSliceNotFound) && sliceID == common.RootSliceID {
 			if err := st.InitializeRootSlice(ctx); err != nil {
 				return nil, err
 			}
@@ -831,7 +831,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 					ct = models.ChangeTypeAdd
 				}
 				changeRecs = append(changeRecs, &models.FileChangeRecord{
-					ID:         fmt.Sprintf("%s-%s-%s", meta.Hash, ct, mountedPath),
+					ID:         common.GenerateFileChangeID(meta.Hash, mountedPath),
 					SliceID:    sliceID,
 					CommitHash: meta.Hash,
 					Path:       mountedPath,
@@ -858,7 +858,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 				modifiedSet[mountedPath] = struct{}{}
 
 				changeRecs = append(changeRecs, &models.FileChangeRecord{
-					ID:         fmt.Sprintf("%s-%s-%s", meta.Hash, models.ChangeTypeDelete, mountedPath),
+					ID:         common.GenerateFileChangeID(meta.Hash, mountedPath),
 					SliceID:    sliceID,
 					CommitHash: meta.Hash,
 					Path:       mountedPath,
@@ -914,7 +914,7 @@ func importGitRepo(ctx context.Context, st storage.Storage, repoPath string, rep
 				modifiedSet[newMounted] = struct{}{}
 
 				changeRecs = append(changeRecs, &models.FileChangeRecord{
-					ID:         fmt.Sprintf("%s-%s-%s", meta.Hash, models.ChangeTypeRename, newMounted),
+					ID:         common.GenerateFileChangeID(meta.Hash, newMounted),
 					SliceID:    sliceID,
 					CommitHash: meta.Hash,
 					Path:       newMounted,

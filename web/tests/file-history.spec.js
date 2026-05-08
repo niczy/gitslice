@@ -3,31 +3,23 @@ import { test, expect } from '@playwright/test';
 // Helper: navigate from browser root to the gitslice project directory
 // and select a specific file.
 async function navigateToGenesisFile(page, fileName) {
-  await page.goto('/slices/root_slice');
-  await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
-
-  // Open slice dropdown and ensure root_slice is selected
-  await page.getByTestId('slice-dropdown-trigger').click();
-  const rootSliceItem = page
-    .getByTestId('slice-dropdown-item')
-    .filter({ hasText: /root_slice|root slice/i });
-  await expect(rootSliceItem).toBeVisible();
-  await rootSliceItem.click();
-  await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
+  await page.goto('/slices/root');
+  await expect(page.getByTestId('slice-detail-nav')).toContainText(/root|root slice/i);
 
   // Navigate: o -> genesis -> projects -> gitslice (wait for each level to load)
-  await page.getByRole('button', { name: /📁.*o/i }).click();
-  await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-  await page.getByRole('button', { name: /📁.*genesis/i }).click();
-  await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-  await page.getByRole('button', { name: /📁.*projects/i }).click();
-  await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
-  await page.getByRole('button', { name: /📁.*gitslice/i }).click();
+  await page.getByRole('button', { name: /^o\s+Folder$/i }).click();
+  await expect(page.getByRole('button', { name: /^genesis\s+Folder$/i })).toBeVisible();
+  await page.getByRole('button', { name: /^genesis\s+Folder$/i }).click();
+  await expect(page.getByRole('button', { name: /^projects\s+Folder$/i })).toBeVisible();
+  await page.getByRole('button', { name: /^projects\s+Folder$/i }).click();
+  await expect(page.getByRole('button', { name: /^gitslice\s+Folder$/i })).toBeVisible();
+  await page.getByRole('button', { name: /^gitslice\s+Folder$/i }).click();
 
   // Select the requested file
   const fileRegex = new RegExp(fileName.replace('.', '\\.'), 'i');
-  await expect(page.getByRole('button', { name: fileRegex })).toBeVisible();
-  await page.getByRole('button', { name: fileRegex }).click();
+  const fileButton = page.getByTestId('folder-preview').getByRole('button', { name: fileRegex });
+  await expect(fileButton).toBeVisible();
+  await fileButton.click();
 }
 
 test.describe('File History (real server)', () => {
@@ -93,7 +85,7 @@ test.describe('File History (real server)', () => {
     await expect(page.getByTestId('history-panel')).toBeVisible();
 
     // Select a different file (go.mod)
-    await page.getByRole('button', { name: /go\.mod/i }).click();
+    await page.getByLabel('Selected slice files').getByRole('button', { name: /go\.mod/i }).click();
 
     // Should reset to content view
     await expect(page.getByTestId('history-panel')).not.toBeVisible();
@@ -117,29 +109,8 @@ test.describe('File History (real server)', () => {
 });
 
 test.describe('File History (Slice Mode)', () => {
-  test('shows history for root_slice files', async ({ page }) => {
-    await page.goto('/slices/root_slice');
-    await expect(page.getByTestId('slice-dropdown-trigger')).toBeVisible();
-
-    // Open slice dropdown and ensure root_slice is selected
-    await page.getByTestId('slice-dropdown-trigger').click();
-    const rootSliceItem = page
-      .getByTestId('slice-dropdown-item')
-      .filter({ hasText: /root_slice|root slice/i });
-    await expect(rootSliceItem).toBeVisible();
-    await rootSliceItem.click();
-    await expect(page.getByTestId('slice-dropdown-trigger')).toContainText(/root_slice|root slice/i);
-
-    // Navigate to a file: o -> genesis -> projects -> gitslice -> README.md
-    await page.getByRole('button', { name: /📁.*o/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*genesis/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*genesis/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*projects/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*projects/i }).click();
-    await expect(page.getByRole('button', { name: /📁.*gitslice/i })).toBeVisible();
-    await page.getByRole('button', { name: /📁.*gitslice/i }).click();
-    await expect(page.getByRole('button', { name: /README\.md/i })).toBeVisible();
-    await page.getByRole('button', { name: /README\.md/i }).click();
+  test('shows history for root files', async ({ page }) => {
+    await navigateToGenesisFile(page, 'README.md');
 
     // Open history
     await page.getByTestId('history-toggle').click();

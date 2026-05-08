@@ -139,8 +139,8 @@ CREATE TABLE IF NOT EXISTS versioned_content (
 
 CREATE TABLE IF NOT EXISTS global_state (
     id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
-    root_slice_id TEXT DEFAULT '',
-    global_commit_hash TEXT NOT NULL DEFAULT 'global-init',
+    root_id TEXT DEFAULT '',
+    global_commit_hash TEXT NOT NULL DEFAULT 'cmt_init_root',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     state_json JSONB NOT NULL DEFAULT '{}'
 );

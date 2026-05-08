@@ -90,12 +90,12 @@ func TestAdminDeleteUserByEmailRemovesOwnedData(t *testing.T) {
 		t.Fatalf("CreateUser(target) failed: %v", err)
 	}
 	if err := st.CreateSlice(ctx, &models.Slice{
-		ID:        "home.target",
+		ID:        "home_target",
 		Name:      "target",
 		Owners:    []string{"target"},
 		CreatedBy: "target",
 	}); err != nil {
-		t.Fatalf("CreateSlice(home.target) failed: %v", err)
+		t.Fatalf("CreateSlice(home_target) failed: %v", err)
 	}
 	if err := st.CreateSlice(ctx, &models.Slice{
 		ID:        "target/custom",
@@ -133,7 +133,7 @@ func TestAdminDeleteUserByEmailRemovesOwnedData(t *testing.T) {
 	if _, err := st.GetUser(ctx, "target"); err != storage.ErrEntryNotFound {
 		t.Fatalf("expected target user deleted, got %v", err)
 	}
-	if _, err := st.GetSlice(ctx, "home.target"); err != storage.ErrSliceNotFound {
+	if _, err := st.GetSlice(ctx, "home_target"); err != storage.ErrSliceNotFound {
 		t.Fatalf("expected home slice deleted, got %v", err)
 	}
 	if keys, err := st.ListAgentKeysByUser(ctx, "target"); err != nil || len(keys) != 0 {

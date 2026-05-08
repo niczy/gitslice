@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/authz"
+	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -211,7 +212,7 @@ func (s *sliceServiceServer) BatchMerge(ctx context.Context, req *slicev1.BatchM
 			mergedFiles[fileID] = true
 		}
 
-		metadata.HeadCommitHash = fmt.Sprintf("merged-%s-%d", slice.ID, time.Now().UnixNano())
+		metadata.HeadCommitHash = common.GenerateCommitID()
 		metadata.ModifiedFiles = []string{}
 		metadata.ModifiedFilesCount = 0
 		if err := s.storage.UpdateSliceMetadata(ctx, slice.ID, metadata); err != nil {
@@ -226,7 +227,7 @@ func (s *sliceServiceServer) BatchMerge(ctx context.Context, req *slicev1.BatchM
 	sort.Strings(mergedFileList)
 
 	commitTime := time.Now()
-	globalCommitHash := fmt.Sprintf("global-%d", commitTime.UnixNano())
+	globalCommitHash := common.GenerateCommitID()
 	rootMetadata.HeadCommitHash = globalCommitHash
 	rootMetadata.ModifiedFiles = mergedFileList
 	rootMetadata.ModifiedFilesCount = len(mergedFileList)

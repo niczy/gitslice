@@ -41,7 +41,7 @@ func printHelp() {
 	fmt.Println("  gs auth status --json")
 	fmt.Println("  git config --global credential.https://api.agenttools.dev.helper \"!gs git credential\"")
 	fmt.Println("  gs context --json")
-	fmt.Println("  gs slice checkout home.nic --json")
+	fmt.Println("  gs slice checkout home_nic --json")
 	fmt.Println("  gs slice status --json")
 	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
 	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
@@ -153,7 +153,7 @@ func printSliceHelp() {
 	fmt.Println("  rename    Rename a slice (update display name)")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs slice list --json")
-	fmt.Println("  gs slice bind root_slice --json")
+	fmt.Println("  gs slice bind root --json")
 	fmt.Println("  gs slice ensure ui-refresh apps/web --json")
 	fmt.Println("  gs slice checkout nic/ui-refresh --json")
 	fmt.Println("  gs slice checkout nic/ui-refresh --here --json")
@@ -249,7 +249,7 @@ func printInitHelp() {
 	fmt.Println("\nOptions:")
 	fmt.Println("  --json   Print structured JSON output")
 	fmt.Println("\nExamples:")
-	fmt.Println("  gs init root_slice --json")
+	fmt.Println("  gs init root --json")
 }
 
 func printLogHelp() {
@@ -338,9 +338,9 @@ func printFileHelp() {
 	fmt.Println("  dir-history    Show directory change history")
 	fmt.Println("  commit-changes Show all file changes in a commit")
 	fmt.Println("\nExamples:")
-	fmt.Println("  gs file ls apps/web --slice root_slice --json")
-	fmt.Println("  gs file cat README.md --slice root_slice --json")
-	fmt.Println("  gs file history apps/web/main.go --slice root_slice --json")
+	fmt.Println("  gs file ls apps/web --slice root --json")
+	fmt.Println("  gs file cat README.md --slice root --json")
+	fmt.Println("  gs file history apps/web/main.go --slice root --json")
 	fmt.Println("  gs file commit-changes <commit-hash> --json")
 }
 

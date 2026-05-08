@@ -25,7 +25,7 @@ func TestQueueBatchesJobs(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		if err := q.Enqueue(context.Background(), Job{
-			SliceID:    "home.alice",
+			SliceID:    "home_alice",
 			CommitHash: "c" + string(rune('1'+i)),
 			Files:      []string{"alice/file.txt"},
 			CommitTime: time.Unix(int64(i+1), 0),

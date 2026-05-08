@@ -74,7 +74,7 @@ The schema below focuses on correctness and query behavior used by the existing 
 ### History and global state
 
 - `file_changes(change_id bigserial PK, slice_id FK->slices, path text, old_path text NULL, commit_hash text, change_type text, old_hash text NULL, new_hash text NULL, lines_added int, lines_deleted int, author text, message text, committed_at timestamptz, metadata jsonb)`
-- `global_state(id bool PRIMARY KEY DEFAULT true CHECK (id), root_slice_id text FK->slices, global_commit_hash text NULL, updated_at)`
+- `global_state(id bool PRIMARY KEY DEFAULT true CHECK (id), root_id text FK->slices, global_commit_hash text NULL, updated_at)`
 - `global_commits(global_commit_hash PK, committed_at timestamptz, merged_slice_ids text[])`
 - `object_gc_candidates(object_key PK, reason text, marked_at timestamptz, not_before timestamptz)`
 

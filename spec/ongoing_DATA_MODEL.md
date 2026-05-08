@@ -27,7 +27,7 @@ This document describes the planned data models for the slice-based version cont
 
 Slices are identified by stable slice IDs stored in the metadata layer (in-memory or PostgreSQL-backed storage), not by files in the repository. The slice ID is the canonical identifier used by the API and CLI, for example:
 
-- `root_slice`
+- `root`
 - `payments_slice`
 - `platform-core-api`
 

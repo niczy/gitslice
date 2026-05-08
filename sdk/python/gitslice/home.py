@@ -11,7 +11,7 @@ class HomeFilesystem:
     def __init__(self, client: Any, username: str) -> None:
         self._client = client
         self.username = username.strip()
-        self.workspace_id = f"home.{self.username}"
+        self.workspace_id = f"home_{self.username}"
         self.root_path = f"/{self.username}"
 
     def read(self, path: str, *, encoding: str = "utf-8") -> str:

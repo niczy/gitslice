@@ -14,7 +14,7 @@ Replace the current workspace-oriented `gs fs` UX with an implicit per-user home
 - `gs fs` operates on absolute paths like `/nic/src/main.py`.
 - `gs fs` no longer asks the user to name a workspace or slice.
 - The user's home slice is the authoritative working tree for `/username/**`.
-- `root_slice` remains the published shared tree and is updated asynchronously from home-slice commits in batches.
+- `root` remains the published shared tree and is updated asynchronously from home-slice commits in batches.
 - Slices remain the internal unit of ownership, history, batching, and promotion. They are just hidden from the `gs fs` UX.
 
 This keeps the existing storage architecture intact while removing the main user-facing complexity.
@@ -46,7 +46,7 @@ That is the model this plan implements.
 - Standardize all user-facing remote paths as absolute paths in a global namespace: `/<username>/...`.
 - Create the user's home slice automatically on account creation.
 - Keep the user's home slice authoritative for their subtree.
-- Publish home-slice commits into `root_slice` asynchronously using batch promotion.
+- Publish home-slice commits into `root` asynchronously using batch promotion.
 - Preserve snapshot, diff, restore, upload, download, and shell workflows for the user's home slice.
 - Remove `workspace:path` syntax from the CLI with no backward-compatibility layer.
 
@@ -74,11 +74,11 @@ The path prefix is the ownership boundary.
 
 ### Internal Storage Mapping
 
-- `root_slice` remains the published shared tree.
+- `root` remains the published shared tree.
 - Each user gets a dedicated home slice.
-- Proposed internal home-slice ID format: `home.<username>`.
+- Proposed internal home-slice ID format: `home_<username>`.
 
-`home.<username>` is preferred over `home/<username>` because the current filesystem HTTP routes bind `workspace_id` in URL path segments, and slash-containing IDs are harder to route safely through the existing gateway surface.
+`home_<username>` is preferred over `home/<username>` because the current filesystem HTTP routes bind `workspace_id` in URL path segments, and slash-containing IDs are harder to route safely through the existing gateway surface.
 
 ### Path Storage Rule
 
@@ -87,19 +87,19 @@ The home slice stores full global-relative paths without the leading slash.
 Examples:
 
 - user-visible path `/nic/src/main.py`
-- stored path in `home.nic`: `nic/src/main.py`
-- stored path in `root_slice`: `nic/src/main.py`
+- stored path in `home_nic`: `nic/src/main.py`
+- stored path in `root`: `nic/src/main.py`
 
-This is an important design choice. It means promotion from a home slice into `root_slice` can copy the same path keys without path rewriting.
+This is an important design choice. It means promotion from a home slice into `root` can copy the same path keys without path rewriting.
 
 ### Authority Model
 
 For `/username/**`:
 
-- `home.<username>` is the private authoritative working tree.
-- `root_slice` is the asynchronously published mirror.
+- `home_<username>` is the private authoritative working tree.
+- `root` is the asynchronously published mirror.
 
-The user reads and writes their home slice. `root_slice` is not the source of truth for the user's own ongoing work.
+The user reads and writes their home slice. `root` is not the source of truth for the user's own ongoing work.
 
 ### Ownership Model
 
@@ -119,7 +119,7 @@ The visible path is global-looking, but the home slice is still required interna
 - commit history
 - snapshot lineage
 - promotion state
-- merge inputs into `root_slice`
+- merge inputs into `root`
 - access control rules
 
 The existing data model already makes slice ID the unit of metadata and history in [internal/models/slice.go](/home/nic/workspace/gitslice/internal/models/slice.go) and [internal/storage/storage.go](/home/nic/workspace/gitslice/internal/storage/storage.go).
@@ -137,10 +137,10 @@ Home-slice provisioning happens during account lifecycle flows.
 When a new user is created:
 
 1. Create the user record.
-2. Ensure `root_slice` exists.
-3. Create the home slice `home.<username>` if missing.
+2. Ensure `root` exists.
+3. Create the home slice `home_<username>` if missing.
 4. Create the top-level directory entry `<username>` in the home slice.
-5. Create the top-level directory entry `<username>` in `root_slice` if missing.
+5. Create the top-level directory entry `<username>` in `root` if missing.
 6. Initialize home-slice metadata and initial commit/snapshot just like any other slice.
 
 ### On Login / Device Authorization
@@ -158,9 +158,9 @@ This backfills existing users automatically without requiring a separate hard cu
 Add an admin-safe idempotent backfill path that:
 
 - lists all existing users
-- ensures `home.<username>` exists
-- ensures `/username` exists in `root_slice`
-- seeds the home slice from any existing `/username/**` files already present in `root_slice`
+- ensures `home_<username>` exists
+- ensures `/username` exists in `root`
+- seeds the home slice from any existing `/username/**` files already present in `root`
 
 This backfill is necessary if any historical data already lives directly in root.
 
@@ -170,18 +170,18 @@ This backfill is necessary if any historical data already lives directly in root
 
 ### Home Slice Is The Read Source
 
-`gs fs` reads from the user's home slice, not from `root_slice`.
+`gs fs` reads from the user's home slice, not from `root`.
 
-This is deliberate. If reads fell back to `root_slice`, delete semantics would require tombstones to hide published files that were deleted locally but not yet promoted. Using the home slice as the only read source avoids that complexity.
+This is deliberate. If reads fell back to `root`, delete semantics would require tombstones to hide published files that were deleted locally but not yet promoted. Using the home slice as the only read source avoids that complexity.
 
 ### Initialization From Root
 
-When a home slice is first created for an existing user, bootstrap it from the current `root_slice` subtree `/username/**`.
+When a home slice is first created for an existing user, bootstrap it from the current `root` subtree `/username/**`.
 
 After that:
 
 - the home slice remains authoritative for `/username/**`
-- root promotion is one-way from home slice to `root_slice`
+- root promotion is one-way from home slice to `root`
 - no fallback read path is required
 
 ### Mutation Rules
@@ -192,7 +192,7 @@ For any `gs fs` mutation:
 2. Validate the first path segment matches the authenticated username.
 3. Strip the leading slash and operate on the stored path in the user's home slice.
 4. Record the slice-local commit/snapshot exactly as the filesystem service already does.
-5. Enqueue asynchronous promotion of the changed paths to `root_slice`.
+5. Enqueue asynchronous promotion of the changed paths to `root`.
 
 ### Forbidden Paths
 
@@ -217,16 +217,16 @@ This home-slice design should reuse that model instead of inventing a second bat
 
 For each home-slice commit:
 
-1. Filesystem mutation updates `home.<username>`.
+1. Filesystem mutation updates `home_<username>`.
 2. Filesystem service creates or extends the slice-local commit.
 3. Filesystem service enqueues root promotion for the changed files.
 4. The existing promotion worker batches queued promotions.
-5. The worker applies those changes to `root_slice`.
+5. The worker applies those changes to `root`.
 
 ### Expected Consistency
 
 - Home slice: strongly consistent for the user.
-- `root_slice`: eventually consistent.
+- `root`: eventually consistent.
 
 This is the intended behavior. The user's CLI should reflect home-slice state immediately, while the published root may lag briefly.
 
@@ -310,7 +310,7 @@ The initial rollout should minimize wire-level churn.
 
 ### Change In Behavior
 
-- `gs fs` and SDKs resolve `workspace_id` internally as `home.<username>`
+- `gs fs` and SDKs resolve `workspace_id` internally as `home_<username>`
 - filesystem service enforces that home-slice operations only touch `/username/**`
 - workspace lifecycle endpoints are no longer part of the primary user workflow
 
@@ -325,8 +325,8 @@ This avoids a destabilizing API rewrite while still delivering the simpler produ
 1. Every user has at most one home slice.
 2. Home slice ID is deterministic from username.
 3. Home slice stores only paths under its owner's top-level prefix.
-4. `root_slice` may contain `/username/**`, but that subtree is promoted only from `home.<username>`.
-5. `gs fs` mutating commands never bypass the home slice and write directly to `root_slice`.
+4. `root` may contain `/username/**`, but that subtree is promoted only from `home_<username>`.
+5. `gs fs` mutating commands never bypass the home slice and write directly to `root`.
 
 ### Recommended Helper Layer
 
@@ -372,7 +372,7 @@ Root will lag the home slice. This is expected, but it must be visible in logs a
 
 ### Historical Root Data
 
-If older systems wrote directly to `root_slice` under `/username/**`, the initial bootstrap must copy that subtree into the user's home slice or those files will disappear from `gs fs`.
+If older systems wrote directly to `root` under `/username/**`, the initial bootstrap must copy that subtree into the user's home slice or those files will disappear from `gs fs`.
 
 ### Hidden Direct API Use
 
@@ -391,10 +391,10 @@ Removing workspace lifecycle commands from `gs fs` is intentionally breaking. Re
 Scope:
 
 - add shared home-slice helper package
-- define internal ID format `home.<username>`
+- define internal ID format `home_<username>`
 - add idempotent `EnsureHomeSlice(...)` logic
 - call it from account creation, login, and device approval flows
-- reserve `/username` directory in both home slice and `root_slice`
+- reserve `/username` directory in both home slice and `root`
 
 Files likely touched:
 
@@ -417,7 +417,7 @@ Deploy:
 Scope:
 
 - add admin/backfill path for all existing users
-- copy existing `/username/**` subtree from `root_slice` into a missing home slice
+- copy existing `/username/**` subtree from `root` into a missing home slice
 - keep operation idempotent and resumable
 
 Files likely touched:
@@ -440,7 +440,7 @@ Deploy:
 Scope:
 
 - make filesystem mutations validate absolute paths
-- map authenticated user to `home.<username>`
+- map authenticated user to `home_<username>`
 - reject paths outside `/username/**`
 - keep backend writes on the home slice only
 - stop exposing workspace lifecycle as part of the primary filesystem path
@@ -466,7 +466,7 @@ Deploy:
 Scope:
 
 - extract or reuse the existing root-promotion queue so filesystem commits can enqueue promotions too
-- enqueue home-slice mutations for asynchronous publish into `root_slice`
+- enqueue home-slice mutations for asynchronous publish into `root`
 - preserve batching semantics and eventual consistency
 
 Files likely touched:

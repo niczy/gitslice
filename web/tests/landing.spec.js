@@ -21,7 +21,8 @@ test('renders Git Slice landing content and navigation', async ({ page }) => {
   await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice checkout <slice-id-or-slug>/i }).first()).toBeVisible();
   await expect(page.getByText(/gs slice diff/i)).toBeVisible();
-  await expect(page.getByText(/gs slice publish --message "refresh settings page" --files src\/routes\/settings\.tsx/i)).toBeVisible();
+  await expect(page.getByText(/gs slice export --message "refresh settings page" --files src\/routes\/settings\.tsx/i)).toBeVisible();
+  await expect(page.getByText(/gs changeset merge/i)).toBeVisible();
   await expect(page.getByText(/gs fs write \/\$USER\/app\/NOTICE\.txt --text "hotfix shipped remotely"/i)).toBeVisible();
   await expect(page.getByText(/plain checkout now covers local status, diff, restore, sync, and publish on its own/i)).toBeVisible();
 });
@@ -60,7 +61,7 @@ test('top navigation uses durable links and stays fixed while scrolling', async 
   const slicesBrandIconLeft = await brandIcon.evaluate((element) => element.getBoundingClientRect().left);
   const slicesNavButtonHeight = await slicesLink.evaluate((element) => element.getBoundingClientRect().height);
 
-  await page.goto('/slices/root_slice');
+  await page.goto('/slices/root');
   await expect(page.getByTestId('slice-detail-nav')).toBeVisible();
   const sliceDetailHeaderHeight = await page.locator('.top-bar').evaluate((element) => element.getBoundingClientRect().height);
   expect(sliceDetailHeaderHeight).toBe(slicesHeaderHeight);

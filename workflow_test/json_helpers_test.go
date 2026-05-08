@@ -416,7 +416,7 @@ type doctorJSON struct {
 		} `json:"admin"`
 		Slice struct {
 			OK          bool   `json:"ok"`
-			RootSliceID string `json:"root_slice_id"`
+			RootSliceID string `json:"root_id"`
 			Head        string `json:"head"`
 			Error       string `json:"error"`
 		} `json:"slice"`

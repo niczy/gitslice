@@ -30,7 +30,7 @@ func TestTrackedChangesetConfigRoundTrip(t *testing.T) {
 		t.Fatalf("expected empty tracked id for missing file, got %q", got)
 	}
 
-	if err := writeTrackedChangesetIDConfig("cs-123"); err != nil {
+	if err := writeTrackedChangesetIDConfig("chg_123"); err != nil {
 		t.Fatalf("write tracked id failed: %v", err)
 	}
 
@@ -38,7 +38,7 @@ func TestTrackedChangesetConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read tracked changeset file directly: %v", err)
 	}
-	if string(raw) != "cs-123" {
+	if string(raw) != "chg_123" {
 		t.Fatalf("unexpected tracked changeset file contents: %q", string(raw))
 	}
 
@@ -46,8 +46,8 @@ func TestTrackedChangesetConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read tracked id failed: %v", err)
 	}
-	if got != "cs-123" {
-		t.Fatalf("expected tracked id cs-123, got %q", got)
+	if got != "chg_123" {
+		t.Fatalf("expected tracked id chg_123, got %q", got)
 	}
 
 	if err := clearTrackedChangesetIDConfig(); err != nil {
@@ -64,19 +64,19 @@ func TestClearTrackedChangesetIDIfMatches(t *testing.T) {
 	tmp := t.TempDir()
 	withWorkingDir(t, tmp)
 
-	if err := writeTrackedChangesetIDConfig("cs-keep"); err != nil {
+	if err := writeTrackedChangesetIDConfig("chg_keep"); err != nil {
 		t.Fatalf("write tracked id failed: %v", err)
 	}
-	if err := clearTrackedChangesetIDIfMatches("cs-other"); err != nil {
+	if err := clearTrackedChangesetIDIfMatches("chg_other"); err != nil {
 		t.Fatalf("clear-if-matches(other) failed: %v", err)
 	}
 	if got, err := readTrackedChangesetIDFromConfig(); err != nil {
 		t.Fatalf("read tracked id failed: %v", err)
-	} else if got != "cs-keep" {
-		t.Fatalf("expected tracked id cs-keep, got %q", got)
+	} else if got != "chg_keep" {
+		t.Fatalf("expected tracked id chg_keep, got %q", got)
 	}
 
-	if err := clearTrackedChangesetIDIfMatches("cs-keep"); err != nil {
+	if err := clearTrackedChangesetIDIfMatches("chg_keep"); err != nil {
 		t.Fatalf("clear-if-matches(match) failed: %v", err)
 	}
 	if got, err := readTrackedChangesetIDFromConfig(); err != nil {
@@ -98,22 +98,22 @@ func TestResolveChangesetIDForExport(t *testing.T) {
 		t.Fatalf("expected new changeset mode, got id=%q isUpdate=%v", id, isUpdate)
 	}
 
-	id, isUpdate, err = resolveChangesetIDForExport("cs-explicit")
+	id, isUpdate, err = resolveChangesetIDForExport("chg_explicit")
 	if err != nil {
 		t.Fatalf("resolve with explicit id failed: %v", err)
 	}
-	if id != "cs-explicit" || !isUpdate {
+	if id != "chg_explicit" || !isUpdate {
 		t.Fatalf("expected explicit update mode, got id=%q isUpdate=%v", id, isUpdate)
 	}
 
-	if err := writeTrackedChangesetIDConfig("cs-tracked"); err != nil {
+	if err := writeTrackedChangesetIDConfig("chg_tracked"); err != nil {
 		t.Fatalf("write tracked id failed: %v", err)
 	}
 	id, isUpdate, err = resolveChangesetIDForExport("")
 	if err != nil {
 		t.Fatalf("resolve with tracked id failed: %v", err)
 	}
-	if id != "cs-tracked" || !isUpdate {
+	if id != "chg_tracked" || !isUpdate {
 		t.Fatalf("expected tracked update mode, got id=%q isUpdate=%v", id, isUpdate)
 	}
 }

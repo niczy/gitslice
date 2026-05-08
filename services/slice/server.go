@@ -67,7 +67,7 @@ func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, erro
 const (
 	defaultPromotionBatchWindow  = rootpromote.DefaultBatchWindow
 	defaultPromotionBatchMaxSize = rootpromote.DefaultBatchMaxSize
-	revertChangesetHashPrefix    = "revert~"
+	revertChangesetHashPrefix    = common.ChangesetVersionIDPrefix + "revert~"
 	revertAllChangesToken        = "*"
 	checkoutManifestChunkSize    = 256
 )
@@ -428,7 +428,7 @@ func (s *sliceServiceServer) collectMountedBackingFileEntriesFromSlice(ctx conte
 
 func (s *sliceServiceServer) resolveCheckoutEffectiveCommit(ctx context.Context, primarySliceID, resolvedCommit string) string {
 	effectiveCommit := strings.TrimSpace(resolvedCommit)
-	if strings.TrimSpace(primarySliceID) != "" && (effectiveCommit == "" || strings.HasPrefix(effectiveCommit, "init-")) {
+	if strings.TrimSpace(primarySliceID) != "" && (effectiveCommit == "" || common.IsInitialCommitID(effectiveCommit)) {
 		if meta, err := s.storage.GetSliceMetadata(ctx, primarySliceID); err == nil && meta != nil {
 			effectiveCommit = strings.TrimSpace(meta.HeadCommitHash)
 		}
@@ -1125,7 +1125,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
 		}
 
-		existing.Hash = fmt.Sprintf("hash-%d", time.Now().UnixNano())
+		existing.Hash = common.GenerateChangesetVersionHash()
 		existing.BaseCommitHash = baseCommitHash
 		existing.ModifiedFiles = modifiedFiles
 		existing.Author = username
@@ -1165,7 +1165,7 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	}
 
 	id := ""
-	hash := fmt.Sprintf("hash-%d", time.Now().UnixNano())
+	hash := common.GenerateChangesetVersionHash()
 
 	cs := &models.Changeset{
 		ID:             id,
@@ -1416,7 +1416,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply revert changeset content: %v", err))
 	}
 
-	newCommit := fmt.Sprintf("commit-%d", time.Now().UnixNano())
+	newCommit := common.GenerateCommitID()
 	cs.Status = models.ChangesetStatusMerged
 	now := time.Now()
 	cs.MergedAt = &now
@@ -1971,7 +1971,8 @@ func buildRevertChangesetHash(commitHash, changeID string) string {
 		selectedChange = revertAllChangesToken
 	}
 	encodedChange := base64.RawURLEncoding.EncodeToString([]byte(selectedChange))
-	return fmt.Sprintf("%s%s~%s~%d", revertChangesetHashPrefix, encodedCommit, encodedChange, time.Now().UnixNano())
+	suffix := strings.TrimPrefix(common.GenerateChangesetVersionHash(), common.ChangesetVersionIDPrefix)
+	return fmt.Sprintf("%s%s~%s~%s", revertChangesetHashPrefix, encodedCommit, encodedChange, suffix)
 }
 
 func parseRevertChangesetHash(hash string) (commitHash, changeID string, ok bool) {
@@ -2055,7 +2056,7 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 	warnings := make([]string, 0, 1)
 	missingPatchCount := 0
 
-	for idx, rawPath := range paths {
+	for _, rawPath := range paths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
 			continue
@@ -2094,7 +2095,7 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 		linesAdded, linesDeleted := summarizePatchLineDelta(patch)
 
 		reviewChanges = append(reviewChanges, modelToProtoReviewChange(&models.FileChangeRecord{
-			ID:           fmt.Sprintf("%s-review-%d", cs.ID, idx+1),
+			ID:           common.GenerateFileChangeID(cs.ID, filePath),
 			SliceID:      cs.SliceID,
 			CommitHash:   cs.Hash,
 			Path:         filePath,
@@ -2522,7 +2523,7 @@ func buildRevertReviewChange(target *models.FileChangeRecord, cs *models.Changes
 	}
 
 	return &models.FileChangeRecord{
-		ID:           fmt.Sprintf("%s-revert-%s", cs.ID, target.ID),
+		ID:           common.GenerateFileChangeID(cs.ID, target.ID),
 		SliceID:      cs.SliceID,
 		CommitHash:   cs.Hash,
 		Path:         revertPath,
@@ -2741,7 +2742,7 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 	}
 
 	snapshot := &models.ChangesetSnapshot{
-		ID:             fmt.Sprintf("%s-snapshot-%d", cs.ID, nextVersion),
+		ID:             common.GenerateChangesetSnapshotID(cs.ID, int64(nextVersion)),
 		ChangesetID:    cs.ID,
 		Version:        nextVersion,
 		Hash:           cs.Hash,
@@ -2764,7 +2765,7 @@ func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnap
 		createdAt = time.Now()
 	}
 	return &models.ChangesetSnapshot{
-		ID:             fmt.Sprintf("%s-snapshot-1", cs.ID),
+		ID:             common.GenerateChangesetSnapshotID(cs.ID, 1),
 		ChangesetID:    cs.ID,
 		Version:        1,
 		Hash:           cs.Hash,
@@ -3164,7 +3165,7 @@ func (s *sliceServiceServer) initializeSliceFromFolderHead(ctx context.Context, 
 	}
 	commitHash := strings.TrimSpace(meta.HeadCommitHash)
 	if commitHash == "" {
-		commitHash = "init-" + slice.ID
+		commitHash = common.GenerateInitialCommitID(slice.ID)
 	}
 
 	files := make(map[string]string)
@@ -3256,7 +3257,7 @@ func (s *sliceServiceServer) DeleteSlice(ctx context.Context, req *slicev1.Delet
 	if slice.IsRoot {
 		return nil, status.Error(codes.FailedPrecondition, "root slice cannot be deleted")
 	}
-	if strings.HasPrefix(slice.ID, "home.") {
+	if _, ok := homeslice.ExternalSlugForSlice(slice); ok {
 		return nil, status.Error(codes.FailedPrecondition, "home slices cannot be deleted")
 	}
 
@@ -4151,7 +4152,7 @@ func (s *sliceServiceServer) recordFileChangesWithStorage(ctx context.Context, s
 		}
 
 		changes = append(changes, &models.FileChangeRecord{
-			ID:           fmt.Sprintf("%s-%s", commitHash, filePath),
+			ID:           common.GenerateFileChangeID(commitHash, filePath),
 			SliceID:      cs.SliceID,
 			CommitHash:   commitHash,
 			Path:         filePath,

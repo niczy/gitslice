@@ -155,7 +155,7 @@ func (c *filesystemPromotionCounter) UpdateGlobalState(ctx context.Context, stat
 }
 
 func (c *filesystemPromotionCounter) UpdateSliceMetadata(ctx context.Context, sliceID string, metadata *models.SliceMetadata) error {
-	if sliceID == "root_slice" {
+	if sliceID == "root" {
 		c.mu.Lock()
 		c.counts["root_metadata"]++
 		c.mu.Unlock()

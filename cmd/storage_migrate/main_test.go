@@ -14,7 +14,7 @@ func TestRunSearchIndexMaintenanceBuildsAndReusesArtifacts(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 
-	slice := &models.Slice{ID: "home.tester", Name: "home.tester", Owners: []string{"tester"}, CreatedBy: "tester"}
+	slice := &models.Slice{ID: "home_tester", Name: "home_tester", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, slice); err != nil {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}

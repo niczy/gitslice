@@ -85,11 +85,11 @@ func TestApplyGetFileVersion(t *testing.T) {
 
 func TestResolveFileSliceID(t *testing.T) {
 	t.Run("explicit", func(t *testing.T) {
-		got, err := resolveFileSliceID("root_slice")
+		got, err := resolveFileSliceID("root")
 		if err != nil {
 			t.Fatalf("resolve explicit slice failed: %v", err)
 		}
-		if got != "root_slice" {
+		if got != "root" {
 			t.Fatalf("unexpected explicit slice id: %q", got)
 		}
 	})
@@ -114,14 +114,14 @@ func TestResolveFileSliceID(t *testing.T) {
 		if err := os.MkdirAll(".gs", 0o755); err != nil {
 			t.Fatalf("mkdir .gs failed: %v", err)
 		}
-		if err := writeSliceIDConfig("root_slice"); err != nil {
+		if err := writeSliceIDConfig("root"); err != nil {
 			t.Fatalf("write config failed: %v", err)
 		}
 		got, err := resolveFileSliceID("")
 		if err != nil {
 			t.Fatalf("resolve from config failed: %v", err)
 		}
-		if got != "root_slice" {
+		if got != "root" {
 			t.Fatalf("unexpected config slice id: %q", got)
 		}
 	})

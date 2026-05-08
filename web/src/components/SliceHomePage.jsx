@@ -79,8 +79,8 @@ function getHomeRootPath(username, homeSliceId) {
     return usernameRoot;
   }
   const id = String(homeSliceId || '').trim();
-  if (id.toLowerCase().startsWith('home.')) {
-    return cleanFolderPath(id.slice('home.'.length));
+  if (id.toLowerCase().startsWith('home_')) {
+    return cleanFolderPath(id.slice('home_'.length));
   }
   return '';
 }
@@ -161,7 +161,7 @@ export default function SliceHomePage({
   const [createError, setCreateError] = useState('');
   const [createLoading, setCreateLoading] = useState(false);
   const homeRootPath = getHomeRootPath(username, homeSliceId);
-  const createParentSliceId = 'root_slice';
+  const createParentSliceId = 'root';
 
   const filteredSlices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();

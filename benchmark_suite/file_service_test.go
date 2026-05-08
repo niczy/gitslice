@@ -44,7 +44,7 @@ func TestFileServiceReadLoad(t *testing.T) {
 		fid := fmt.Sprintf("fsread/%d-%d/file.go", i, ts)
 
 		_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-			ParentSliceId: "root_slice",
+			ParentSliceId: "root",
 			NewSliceId:    sid,
 			Name:          sid,
 			FolderPaths:   []string{"fsread"},
@@ -172,7 +172,7 @@ func TestFileServiceCommitChangesConsistency(t *testing.T) {
 	}
 
 	_, err := benchSliceClient.CreateSliceFromFolder(ctx, &slicev1.CreateSliceFromFolderRequest{
-		ParentSliceId: "root_slice",
+		ParentSliceId: "root",
 		NewSliceId:    sid,
 		Name:          sid,
 		FolderPaths:   []string{"cc"},

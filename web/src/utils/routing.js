@@ -179,13 +179,13 @@ export function resolveHomeRouteForUsername(routeInfo, username) {
   if (
     isSliceScopedRoute(routeInfo?.page)
     && requestedSlice
-    && (normalizedRequestedSlice === normalizedUser || normalizedRequestedSlice === `home.${normalizedUser}`)
+    && (normalizedRequestedSlice === normalizedUser || normalizedRequestedSlice === `home_${normalizedUser}`)
   ) {
     return {
       ...routeInfo,
       browserState: {
         ...(routeInfo?.browserState || {}),
-        slice: `home.${normalizedUser}`,
+        slice: `home_${normalizedUser}`,
       },
     };
   }
