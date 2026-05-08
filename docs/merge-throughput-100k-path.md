@@ -908,6 +908,21 @@ Scope:
 - Keep the current in-process queue as the default until the durable worker has
   parity.
 
+Feature flag:
+
+```text
+MERGE_EVENT_PROMOTION_ENABLED=false
+MERGE_EVENT_PROMOTION_WORKERS=1
+MERGE_EVENT_PROMOTION_BATCH_SIZE=256
+MERGE_EVENT_PROMOTION_SHARDS=1024
+MERGE_EVENT_PROMOTION_POLL_INTERVAL=250ms
+```
+
+When enabled, the worker holds a projection claim while applying the existing
+promotion logic. A dedicated promotion pool should therefore be shared or have
+at least two connections so a claim holder does not starve its own promotion
+writes.
+
 Validation:
 
 - Worker can replay events without corrupting materialized state.

@@ -36,6 +36,14 @@ type Config struct {
 	PostgresMaxConnLifetime   time.Duration
 	PostgresPromotionMaxConns int32
 
+	// Merge-event promotion worker. Disabled by default while durable workers
+	// run behind a feature flag.
+	MergeEventPromotionEnabled      bool
+	MergeEventPromotionWorkers      int
+	MergeEventPromotionBatchSize    int
+	MergeEventPromotionShardCount   int32
+	MergeEventPromotionPollInterval time.Duration
+
 	// Object store configuration (filesystem, GCS)
 	//
 	// For STORAGE_TYPE=postgres we persist metadata/state in Postgres and store blob
@@ -136,28 +144,36 @@ func LoadConfig() (*Config, error) {
 		PostgresMinConns:          postgresMinConns,
 		PostgresMaxConnLifetime:   postgresMaxConnLifetime,
 		PostgresPromotionMaxConns: postgresPromotionMaxConns,
-		ObjectStoreType:           getEnv("OBJECT_STORE_TYPE", "gcs"),
-		ObjectStoreDir:            getEnv("OBJECT_STORE_DIR", ""),
-		GCSBucket:                 getEnv("GCS_BUCKET", "gitslice-objects"),
-		GCSEndpoint:               getEnv("GCS_ENDPOINT", ""),
-		GCSCredentialsFile:        getEnv("GCS_CREDENTIALS_FILE", ""),
-		GCSCredentialsJSON:        getEnv("GCS_CREDENTIALS_JSON", ""),
-		GCSDisableAuth:            getEnvBool("GCS_DISABLE_AUTH", false),
-		R2Bucket:                  getEnv("R2_BUCKET", ""),
-		R2Prefix:                  getEnv("R2_PREFIX", ""),
-		R2Endpoint:                getEnv("R2_ENDPOINT", ""),
-		R2Region:                  getEnv("R2_REGION", "auto"),
-		R2AccessKeyID:             getEnv("R2_ACCESS_KEY_ID", ""),
-		R2SecretAccessKey:         getEnv("R2_SECRET_ACCESS_KEY", ""),
-		R2UsePathStyle:            getEnvBool("R2_USE_PATH_STYLE", false),
-		AgentWSTokenSecret:        getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
-		ClerkWebhookSecret:        getEnv("CLERK_WEBHOOK_SECRET", ""),
-		E2BAPIURL:                 getEnv("E2B_API_URL", ""),
-		E2BDomain:                 getEnv("E2B_DOMAIN", "e2b.app"),
-		E2BAPIKey:                 getEnv("E2B_API_KEY", ""),
-		E2BAccessToken:            getEnv("E2B_ACCESS_TOKEN", ""),
-		CodexAPIKey:               getEnv("OPENAI_API_KEY", ""),
-		ClaudeAPIKey:              getEnv("ANTHROPIC_API_KEY", ""),
+		MergeEventPromotionEnabled: getEnvBool(
+			"MERGE_EVENT_PROMOTION_ENABLED",
+			false,
+		),
+		MergeEventPromotionWorkers:      getEnvInt("MERGE_EVENT_PROMOTION_WORKERS", 1),
+		MergeEventPromotionBatchSize:    getEnvInt("MERGE_EVENT_PROMOTION_BATCH_SIZE", 256),
+		MergeEventPromotionShardCount:   int32(getEnvInt("MERGE_EVENT_PROMOTION_SHARDS", 1024)),
+		MergeEventPromotionPollInterval: getEnvDuration("MERGE_EVENT_PROMOTION_POLL_INTERVAL", 250*time.Millisecond),
+		ObjectStoreType:                 getEnv("OBJECT_STORE_TYPE", "gcs"),
+		ObjectStoreDir:                  getEnv("OBJECT_STORE_DIR", ""),
+		GCSBucket:                       getEnv("GCS_BUCKET", "gitslice-objects"),
+		GCSEndpoint:                     getEnv("GCS_ENDPOINT", ""),
+		GCSCredentialsFile:              getEnv("GCS_CREDENTIALS_FILE", ""),
+		GCSCredentialsJSON:              getEnv("GCS_CREDENTIALS_JSON", ""),
+		GCSDisableAuth:                  getEnvBool("GCS_DISABLE_AUTH", false),
+		R2Bucket:                        getEnv("R2_BUCKET", ""),
+		R2Prefix:                        getEnv("R2_PREFIX", ""),
+		R2Endpoint:                      getEnv("R2_ENDPOINT", ""),
+		R2Region:                        getEnv("R2_REGION", "auto"),
+		R2AccessKeyID:                   getEnv("R2_ACCESS_KEY_ID", ""),
+		R2SecretAccessKey:               getEnv("R2_SECRET_ACCESS_KEY", ""),
+		R2UsePathStyle:                  getEnvBool("R2_USE_PATH_STYLE", false),
+		AgentWSTokenSecret:              getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
+		ClerkWebhookSecret:              getEnv("CLERK_WEBHOOK_SECRET", ""),
+		E2BAPIURL:                       getEnv("E2B_API_URL", ""),
+		E2BDomain:                       getEnv("E2B_DOMAIN", "e2b.app"),
+		E2BAPIKey:                       getEnv("E2B_API_KEY", ""),
+		E2BAccessToken:                  getEnv("E2B_ACCESS_TOKEN", ""),
+		CodexAPIKey:                     getEnv("OPENAI_API_KEY", ""),
+		ClaudeAPIKey:                    getEnv("ANTHROPIC_API_KEY", ""),
 		AgentEgressAllowlist: getEnv(
 			"AGENT_EGRESS_ALLOWLIST",
 			"",
@@ -214,6 +230,21 @@ func (c *Config) Validate() error {
 	}
 	if c.PostgresPromotionMaxConns < 0 {
 		return fmt.Errorf("POSTGRES_PROMOTION_MAX_CONNS must be >= 0")
+	}
+	if c.MergeEventPromotionWorkers < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROMOTION_WORKERS must be >= 0")
+	}
+	if c.MergeEventPromotionBatchSize < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROMOTION_BATCH_SIZE must be >= 0")
+	}
+	if c.MergeEventPromotionShardCount < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROMOTION_SHARDS must be >= 0")
+	}
+	if c.MergeEventPromotionPollInterval < 0 {
+		return fmt.Errorf("MERGE_EVENT_PROMOTION_POLL_INTERVAL must be >= 0")
+	}
+	if c.MergeEventPromotionEnabled && c.PostgresPromotionMaxConns == 1 {
+		return fmt.Errorf("MERGE_EVENT_PROMOTION_ENABLED requires POSTGRES_PROMOTION_MAX_CONNS to be 0/shared or at least 2")
 	}
 	summary, err := c.PostgresTargetSummary()
 	if err != nil {

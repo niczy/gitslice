@@ -191,6 +191,49 @@ func runMergeEventStoreContract(ctx context.Context, t *testing.T, store MergeEv
 	if offset.MergeSeq != 3 {
 		t.Fatalf("expected offset seq 3, got %d", offset.MergeSeq)
 	}
+
+	processor, ok := store.(MergeEventProjectionBatchProcessor)
+	if !ok {
+		t.Fatalf("storage implementation does not implement MergeEventProjectionBatchProcessor")
+	}
+	var processed []*models.MergeEvent
+	claimed, err := processor.ProcessMergeEventProjectionBatch(ctx, "root-promotion-test", 4, 10, func(_ context.Context, events []*models.MergeEvent) error {
+		processed = append(processed, events...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ProcessMergeEventProjectionBatch failed: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("expected projection batch to be claimed")
+	}
+	if len(processed) != 2 || processed[0].MergeSeq != 1 || processed[1].MergeSeq != 2 {
+		t.Fatalf("expected shard 1 events in order, got %#v", processed)
+	}
+	offset, err = store.GetProjectionOffset(ctx, "root-promotion-test", 1)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset after projection batch failed: %v", err)
+	}
+	if offset.MergeSeq != 2 {
+		t.Fatalf("expected projection offset seq 2, got %d", offset.MergeSeq)
+	}
+	claimed, err = processor.ProcessMergeEventProjectionBatch(ctx, "root-promotion-test", 4, 10, func(_ context.Context, events []*models.MergeEvent) error {
+		processed = append(processed, events...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ProcessMergeEventProjectionBatch second claim failed: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("expected shard 2 projection batch to be claimed")
+	}
+	offset, err = store.GetProjectionOffset(ctx, "root-promotion-test", 2)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset shard 2 after projection batch failed: %v", err)
+	}
+	if offset.MergeSeq != 1 {
+		t.Fatalf("expected shard 2 projection offset seq 1, got %d", offset.MergeSeq)
+	}
 }
 
 func sampleMergeEvent(homeID string, shardID int32, mergeSeq int64, eventID, changesetID string) *models.MergeEvent {

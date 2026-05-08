@@ -52,6 +52,12 @@ type MergeEventStore interface {
 	GetProjectionOffset(ctx context.Context, projectionName string, shardID int32) (*models.ProjectionOffset, error)
 }
 
+// MergeEventProjectionBatchProcessor claims and processes one ordered projection
+// batch while preventing concurrent workers from claiming the same offset range.
+type MergeEventProjectionBatchProcessor interface {
+	ProcessMergeEventProjectionBatch(ctx context.Context, projectionName string, shardCount int32, limit int, fn func(context.Context, []*models.MergeEvent) error) (bool, error)
+}
+
 func normalizeSliceCommitLimit(limit int) int {
 	if limit <= 0 {
 		return defaultSliceCommitListLimit

@@ -54,7 +54,13 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	sliceservice.RegisterGRPCServerWithPromotionStorage(grpcServer, st, promotionSt)
+	sliceservice.RegisterGRPCServerWithPromotionStorageAndDurablePromotion(grpcServer, st, promotionSt, sliceservice.DurablePromotionConfig{
+		Enabled:      cfg.MergeEventPromotionEnabled,
+		WorkerCount:  cfg.MergeEventPromotionWorkers,
+		ShardCount:   cfg.MergeEventPromotionShardCount,
+		BatchSize:    cfg.MergeEventPromotionBatchSize,
+		PollInterval: cfg.MergeEventPromotionPollInterval,
+	})
 	fileservice.RegisterGRPCServer(grpcServer, st)
 	filesystemservice.RegisterGRPCServerWithPromotionStorage(grpcServer, st, promotionSt)
 	adminservice.RegisterGRPCServer(grpcServer, st)
@@ -262,7 +268,7 @@ func logPostgresRuntimeConfig(cfg *config.Config) {
 		promotionMaxConns = fmt.Sprintf("%d", cfg.PostgresPromotionMaxConns)
 	}
 	log.Printf(
-		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s promotion_max_conns=%s max_conn_lifetime=%s deploy_env=%s",
+		"Postgres runtime target host=%s database=%s remote=%t tls=%t max_conns=%s min_conns=%s promotion_max_conns=%s durable_promotion=%t durable_promotion_workers=%d durable_promotion_batch=%d max_conn_lifetime=%s deploy_env=%s",
 		summary.Host,
 		summary.Database,
 		summary.Remote,
@@ -270,6 +276,9 @@ func logPostgresRuntimeConfig(cfg *config.Config) {
 		maxConns,
 		minConns,
 		promotionMaxConns,
+		cfg.MergeEventPromotionEnabled,
+		cfg.MergeEventPromotionWorkers,
+		cfg.MergeEventPromotionBatchSize,
 		maxConnLifetime,
 		strings.TrimSpace(cfg.DeployEnv),
 	)

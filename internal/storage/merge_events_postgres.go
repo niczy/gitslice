@@ -235,6 +235,91 @@ func getProjectionOffset(ctx context.Context, q queryable, projectionName string
 	return &offset, nil
 }
 
+func (s *PostgresNativeStorage) ProcessMergeEventProjectionBatch(ctx context.Context, projectionName string, shardCount int32, limit int, fn func(context.Context, []*models.MergeEvent) error) (bool, error) {
+	ctx = ensureCtx(ctx)
+	projectionName = normalizeProjectionName(projectionName)
+	if projectionName == "" || shardCount <= 0 || fn == nil {
+		return false, ErrInvalidInput
+	}
+	limit = normalizeMergeEventListLimit(limit)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO projection_offsets (projection_name, shard_id, merge_seq, updated_at)
+		SELECT $1, shards.shard_id, 0, NOW()
+		FROM generate_series(0, $2::int - 1) AS shards(shard_id)
+		WHERE EXISTS (
+		    SELECT 1
+		    FROM merge_events e
+		    WHERE e.shard_id = shards.shard_id
+		)
+		ON CONFLICT (projection_name, shard_id) DO NOTHING
+	`, projectionName, shardCount); err != nil {
+		return false, err
+	}
+
+	var shardID int32
+	var afterSeq int64
+	err = tx.QueryRow(ctx, `
+		SELECT po.shard_id, po.merge_seq
+		FROM projection_offsets po
+		WHERE po.projection_name = $1
+		  AND po.shard_id >= 0
+		  AND po.shard_id < $2
+		  AND EXISTS (
+		      SELECT 1
+		      FROM merge_events e
+		      WHERE e.shard_id = po.shard_id
+		        AND e.merge_seq > po.merge_seq
+		  )
+		ORDER BY po.updated_at ASC, po.shard_id ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED
+	`, projectionName, shardCount).Scan(&shardID, &afterSeq)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		return false, err
+	}
+
+	events, err := listMergeEvents(ctx, tx, shardID, afterSeq, limit)
+	if err != nil {
+		return false, err
+	}
+	if len(events) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	if err := fn(ctx, events); err != nil {
+		return true, err
+	}
+	latestSeq := events[len(events)-1].MergeSeq
+	if err := updateProjectionOffset(ctx, tx, &models.ProjectionOffset{
+		ProjectionName: projectionName,
+		ShardID:        shardID,
+		MergeSeq:       latestSeq,
+		UpdatedAt:      time.Now(),
+	}); err != nil {
+		return true, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 type mergeEventScanner interface {
 	Scan(dest ...interface{}) error
 }
@@ -307,17 +392,21 @@ func normalizeMergeEvent(event *models.MergeEvent) (*models.MergeEvent, error) {
 
 func normalizeProjectionOffset(offset *models.ProjectionOffset) (*models.ProjectionOffset, error) {
 	if offset == nil ||
-		strings.TrimSpace(offset.ProjectionName) == "" ||
+		normalizeProjectionName(offset.ProjectionName) == "" ||
 		offset.ShardID < 0 ||
 		offset.MergeSeq < 0 {
 		return nil, ErrInvalidInput
 	}
 	normalized := *offset
-	normalized.ProjectionName = strings.TrimSpace(offset.ProjectionName)
+	normalized.ProjectionName = normalizeProjectionName(offset.ProjectionName)
 	if normalized.UpdatedAt.IsZero() {
 		normalized.UpdatedAt = time.Now()
 	}
 	return &normalized, nil
+}
+
+func normalizeProjectionName(projectionName string) string {
+	return strings.TrimSpace(projectionName)
 }
 
 func cloneMergeEvent(event *models.MergeEvent) *models.MergeEvent {
