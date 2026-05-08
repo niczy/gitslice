@@ -1187,6 +1187,7 @@ func (s *InMemoryStorage) CreateChangesetSnapshot(ctx context.Context, snapshot 
 
 	copySnapshot := *snapshot
 	copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+	copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 	s.changesetSnapshots[snapshot.ID] = &copySnapshot
 	s.changesetSnapshotVersions[snapshot.ChangesetID] = append(
 		[]string{snapshot.ID},
@@ -1211,6 +1212,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		}
 		copySnapshot := *latest
 		copySnapshot.ModifiedFiles = append([]string(nil), latest.ModifiedFiles...)
+		copySnapshot.FileHashes = cloneStringMap(latest.FileHashes)
 		return &copySnapshot, nil
 	}
 
@@ -1224,6 +1226,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		}
 		copySnapshot := *snapshot
 		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		return &copySnapshot, nil
 	}
 
@@ -1251,6 +1254,7 @@ func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetI
 		}
 		copySnapshot := *snapshot
 		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		result = append(result, &copySnapshot)
 	}
 	return result, nil
@@ -2782,4 +2786,15 @@ func cloneAgentSessionAudit(in *models.AgentSessionAudit) *models.AgentSessionAu
 		out.Metadata = append([]byte(nil), in.Metadata...)
 	}
 	return &out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

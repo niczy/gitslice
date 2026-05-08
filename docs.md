@@ -149,7 +149,7 @@ gs changeset show
 
 ## Changesets
 
-Publish local work through a tracked changeset. Changesets are the publish unit for checked-out slices. `gs slice publish` creates, updates, or reuses the checkout's tracked changeset and merges it back into the published tree by default. Pass `--review-only` or `--no-merge` when you want to inspect or hand off the changeset before merging.
+Publish local work through a tracked changeset. Changesets are the publish unit for checked-out slices. `gs slice export` creates or updates the checkout's tracked changeset without merging; `gs slice publish` does the same export and then merges by default. `gs changeset create` starts a fresh changeset and refuses to replace an already tracked one unless you pass `--replace-tracked`.
 
 ```sh
 $EDITOR src/routes/settings.tsx

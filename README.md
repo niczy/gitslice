@@ -372,7 +372,7 @@ gs changeset merge
 gs slice publish --message "refresh settings page"
 ```
 
-`gs slice export` creates or updates the tracked changeset without merging it. `gs changeset merge` uses the changeset tracked by the current checkout when no ID is passed. `gs slice publish` is the convenience form for export plus merge; if the working tree is already clean but a tracked changeset exists, it reuses that tracked changeset instead of failing.
+`gs slice export` creates or updates the tracked changeset without merging it. `gs changeset create` always starts a fresh changeset; if the checkout already tracks one, use `gs slice export` to append another version or pass `--replace-tracked` to replace the local association. `gs changeset merge` uses the changeset tracked by the current checkout when no ID is passed. `gs slice publish` is the convenience form for export plus merge; if the working tree is already clean but a tracked changeset exists, it reuses that tracked changeset instead of failing.
 
 Useful day-to-day helpers:
 

@@ -5,6 +5,7 @@ import "encoding/json"
 type changesetCreateJSON struct {
 	ChangesetID string `json:"changeset_id"`
 	Status      string `json:"status"`
+	Updated     bool   `json:"updated"`
 }
 
 type mergeJSON struct {
@@ -152,11 +153,22 @@ type sliceHistoryJSON struct {
 type changesetReviewJSON struct {
 	ChangesetID  string `json:"changeset_id"`
 	ReviewStatus string `json:"review_status"`
-	Diff         struct {
+	Snapshot     *struct {
+		Version int32  `json:"version"`
+		Hash    string `json:"hash"`
+	} `json:"snapshot"`
+	Diff struct {
 		FilesAdded    int32 `json:"files_added"`
 		FilesModified int32 `json:"files_modified"`
 		FilesDeleted  int32 `json:"files_deleted"`
 	} `json:"diff"`
+	Changes []struct {
+		Path         string `json:"path"`
+		ChangeType   string `json:"change_type"`
+		LinesAdded   int32  `json:"lines_added"`
+		LinesDeleted int32  `json:"lines_deleted"`
+		Patch        string `json:"patch"`
+	} `json:"changes"`
 }
 
 type slicePublishJSON struct {

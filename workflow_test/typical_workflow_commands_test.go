@@ -452,6 +452,88 @@ func TestSlicePublishAndChangesetShowWorkflow(t *testing.T) {
 	}
 }
 
+func TestChangesetCreateFreshAndSliceExportVersionDiffs(t *testing.T) {
+	sliceID := fmt.Sprintf("slice-export-version-diff-%d", time.Now().UnixNano())
+	fileRel := filepath.ToSlash(filepath.Join("src", "versioned.txt"))
+	baseContent := "version one\n"
+	versionTwoContent := "version two\n"
+	versionThreeContent := "version three\n"
+
+	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
+		fileRel: {content: []byte(baseContent)},
+	})
+
+	checkoutDir := checkoutFocusedSliceRef(t, sliceID)
+	history := runCLIJSONOrFail[sliceHistoryJSON](t, checkoutDir, "slice", "history")
+	if len(history.Commits) == 0 || history.Commits[0].CommitHash == "" {
+		t.Fatalf("expected seeded slice history, got: %+v", history)
+	}
+	baseCommit := history.Commits[0].CommitHash
+
+	if err := os.WriteFile(filepath.Join(checkoutDir, filepath.FromSlash(fileRel)), []byte(versionTwoContent), 0o644); err != nil {
+		t.Fatalf("write version two: %v", err)
+	}
+	exportV1 := runCLIJSONOrFail[slicePublishJSON](t, checkoutDir, "slice", "export", "--base", baseCommit, "--message", "export v1")
+	changesetID := exportV1.Changeset.ChangesetID
+	if changesetID == "" || !exportV1.ReviewOnly || exportV1.ReusedExisting {
+		t.Fatalf("expected first export to create tracked changeset, got: %+v", exportV1)
+	}
+
+	reviewV1 := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--snapshot", "1", "--patches")
+	assertChangesetReviewPatch(t, reviewV1, changesetID, 1, fileRel, "version one", "version two")
+
+	if err := os.WriteFile(filepath.Join(checkoutDir, filepath.FromSlash(fileRel)), []byte(versionThreeContent), 0o644); err != nil {
+		t.Fatalf("write version three: %v", err)
+	}
+	exportV2 := runCLIJSONOrFail[slicePublishJSON](t, checkoutDir, "slice", "export", "--base", baseCommit, "--message", "export v2")
+	if exportV2.Changeset.ChangesetID != changesetID || !exportV2.ReviewOnly || exportV2.ReusedExisting {
+		t.Fatalf("expected second export to append to tracked changeset, got: %+v", exportV2)
+	}
+
+	reviewV1Again := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--snapshot", "1", "--patches")
+	assertChangesetReviewPatch(t, reviewV1Again, changesetID, 1, fileRel, "version one", "version two")
+	reviewV2 := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--snapshot", "2", "--patches")
+	assertChangesetReviewPatch(t, reviewV2, changesetID, 2, fileRel, "version one", "version three")
+	latestReview := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--patches")
+	assertChangesetReviewPatch(t, latestReview, changesetID, 2, fileRel, "version one", "version three")
+
+	errResp := runCLIJSONErrorOrFail[cliErrorJSON](t, checkoutDir, "changeset", "create", "--message", "fresh attempt")
+	if errResp.ErrorCode != "CHANGESET_ALREADY_TRACKED" || !strings.Contains(errResp.Message, changesetID) {
+		t.Fatalf("expected tracked changeset error for fresh create, got: %+v", errResp)
+	}
+
+	freshResp := runCLIJSONOrFail[changesetCreateJSON](t, checkoutDir, "changeset", "create", "--replace-tracked", "--base", baseCommit, "--message", "fresh attempt")
+	if freshResp.ChangesetID == "" || freshResp.ChangesetID == changesetID || freshResp.Updated {
+		t.Fatalf("expected replace-tracked create to create a fresh changeset ID, got: %+v old=%s", freshResp, changesetID)
+	}
+	trackedReview := runCLIJSONOrFail[changesetReviewJSON](t, checkoutDir, "changeset", "show", "--patches")
+	assertChangesetReviewPatch(t, trackedReview, freshResp.ChangesetID, 1, fileRel, "version one", "version three")
+}
+
+func assertChangesetReviewPatch(t *testing.T, review changesetReviewJSON, changesetID string, snapshotVersion int32, fileRel, oldLine, newLine string) {
+	t.Helper()
+
+	if review.ChangesetID != changesetID {
+		t.Fatalf("expected review for changeset %s, got: %+v", changesetID, review)
+	}
+	if review.Snapshot == nil || review.Snapshot.Version != snapshotVersion {
+		t.Fatalf("expected snapshot version %d, got: %+v", snapshotVersion, review)
+	}
+	if review.Diff.FilesModified != 1 || review.Diff.FilesAdded != 0 || review.Diff.FilesDeleted != 0 {
+		t.Fatalf("expected one modified file in review diff, got: %+v", review)
+	}
+	if len(review.Changes) != 1 {
+		t.Fatalf("expected one review change, got: %+v", review)
+	}
+	change := review.Changes[0]
+	if change.Path != fileRel || !strings.Contains(change.ChangeType, "MODIFY") {
+		t.Fatalf("expected modify change for %s, got: %+v", fileRel, change)
+	}
+	if !strings.Contains(change.Patch, "-"+oldLine+"\n") || !strings.Contains(change.Patch, "+"+newLine+"\n") {
+		t.Fatalf("expected patch to replace %q with %q, got:\n%s", oldLine, newLine, change.Patch)
+	}
+}
+
 func TestSliceExportThenTrackedChangesetMergeAppendsCommitAndUpdatesTree(t *testing.T) {
 	sliceID := fmt.Sprintf("slice-export-merge-%d", time.Now().UnixNano())
 	fileRel := filepath.ToSlash(filepath.Join("src", "app.txt"))

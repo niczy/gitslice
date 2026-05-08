@@ -76,7 +76,7 @@ func exitCodeForCLIError(code string, retryable bool) int {
 	switch normalized {
 	case "INVALID_ARGUMENT", "INPUT_REQUIRED", "INTERACTIVE_REQUIRED", "INVALID_SLICE_REFERENCE":
 		return cliExitUsage
-	case "CHECKOUT_METADATA_MISSING", "DIRECTORY_NOT_EMPTY", "NO_LOCAL_CHANGES", "SLICE_NOT_BOUND", "WORKING_TREE_DIRTY":
+	case "CHANGESET_ALREADY_TRACKED", "CHECKOUT_METADATA_MISSING", "DIRECTORY_NOT_EMPTY", "NO_LOCAL_CHANGES", "SLICE_NOT_BOUND", "WORKING_TREE_DIRTY":
 		return cliExitState
 	}
 	if strings.HasPrefix(normalized, "AUTH_") {
