@@ -122,11 +122,13 @@ func TestSimulate100kUsers(t *testing.T) {
 
 	// Collect all results.
 	allResults := make([]userResult, 0, numUsers)
+	foregroundPoolObserver := startBenchmarkPostgresPoolObserver()
 	start := time.Now()
 	for r := range results {
 		allResults = append(allResults, r)
 	}
 	elapsed := time.Since(start).Seconds()
+	foregroundPoolReport, foregroundPoolStatsOK := foregroundPoolObserver.stopAndReport()
 
 	// Build metrics.
 	var m loadMetrics
@@ -153,7 +155,7 @@ func TestSimulate100kUsers(t *testing.T) {
 	t.Logf("=== Load Test Results ===")
 	t.Logf("Users simulated:   %d", numUsers)
 	t.Logf("Workers:           %d", numWorkers)
-	t.Logf("Elapsed:           %.2f s", elapsed)
+	t.Logf("Elapsed:           %.2f s (foreground workflow)", elapsed)
 	t.Logf("Throughput:        %.1f users/sec", throughput)
 	t.Logf("")
 	t.Logf("Outcomes:")
@@ -183,6 +185,21 @@ func TestSimulate100kUsers(t *testing.T) {
 		t.Logf("  P95:  %.2f", percentile(m.mergeLatencies, 95))
 		t.Logf("  P99:  %.2f", percentile(m.mergeLatencies, 99))
 	}
+	logBenchmarkPostgresPoolReport(t, "Foreground workload", foregroundPoolReport, foregroundPoolStatsOK)
+
+	drainPoolObserver := startBenchmarkPostgresPoolObserver()
+	promotionDrainElapsed, promotionDrainObserved, promotionDrainErr := drainBenchmarkPromotions(30 * time.Second)
+	drainPoolReport, drainPoolStatsOK := drainPoolObserver.stopAndReport()
+	if promotionDrainObserved {
+		if promotionDrainErr != nil {
+			t.Logf("Promotion drain elapsed: %.2f s (error: %v)", promotionDrainElapsed.Seconds(), promotionDrainErr)
+		} else {
+			t.Logf("Promotion drain elapsed: %.2f s", promotionDrainElapsed.Seconds())
+		}
+	} else {
+		t.Logf("Promotion drain elapsed: unavailable")
+	}
+	logBenchmarkPostgresPoolReport(t, "Promotion drain", drainPoolReport, drainPoolStatsOK)
 
 	// Integrity assertions.
 	if m.errorCount > 0 {
