@@ -19,6 +19,7 @@ import (
 	commonv1 "github.com/niczy/gitslice/proto/common"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	fileservice "github.com/niczy/gitslice/services/file"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -111,6 +112,32 @@ func mustAssembleCheckoutContent(tb testing.TB, resp *slicev1.CheckoutResponse, 
 		tb.Fatalf("failed to assemble checkout content: %v", err)
 	}
 	return content
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func listEntriesContainPath(entries []*filev1.DirectoryEntry, target string) bool {
+	for _, entry := range entries {
+		if entry.GetPath() == target {
+			return true
+		}
+	}
+	return false
+}
+
+func listEntryPaths(entries []*filev1.DirectoryEntry) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.GetPath())
+	}
+	return paths
 }
 
 type checkoutStreamRecorder struct {
@@ -2068,6 +2095,178 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 	if len(updatedCS.ModifiedFiles) != 1 || updatedCS.ModifiedFiles[0] != "dup.txt" {
 		t.Fatalf("expected deduplicated modified files, got %#v", updatedCS.ModifiedFiles)
+	}
+}
+
+func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       "root_slice:existing.txt",
+		Path:     "existing.txt",
+		Type:     "file",
+		ParentID: "root_slice",
+		Size:     8,
+	}); err != nil {
+		t.Fatalf("failed to seed root entry: %v", err)
+	}
+	if err := base.AddFileToSlice(ctx, "existing.txt", "root_slice"); err != nil {
+		t.Fatalf("failed to seed root file ownership: %v", err)
+	}
+
+	slice := &models.Slice{ID: "slice-tree-promotion", Name: "slice-tree-promotion", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	filePath := "docs/new.md"
+	content := []byte("new file\n")
+	contentHash := mustWriteSliceManifest(t, ctx, base, slice.ID, filePath, content)
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+		Hash:     contentHash,
+	}); err != nil {
+		t.Fatalf("failed to add slice file entry: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "cs-tree-promotion",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(base)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	}
+
+	rootSlice, err := base.GetRootSlice(ctx)
+	if err != nil {
+		t.Fatalf("failed to load root slice: %v", err)
+	}
+	if !containsString(rootSlice.Files, filePath) {
+		t.Fatalf("expected promoted file ownership %q in root slice files, got %#v", filePath, rootSlice.Files)
+	}
+
+	fileSvc := fileservice.NewService(base)
+	listResp, err := fileSvc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: "root_slice"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries(root) failed: %v", err)
+	}
+	if !listEntriesContainPath(listResp.GetEntries(), "docs") {
+		t.Fatalf("expected root file tree to include promoted directory %q, got paths %#v", "docs", listEntryPaths(listResp.GetEntries()))
+	}
+}
+
+func TestMergeChangesetMountedSliceListsMergedFile(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	if err := base.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	mountedDir := "nicholas/test2"
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       "root_slice:" + mountedDir,
+		Path:     mountedDir,
+		Type:     "directory",
+		ParentID: "root_slice",
+	}); err != nil {
+		t.Fatalf("failed to seed mounted root directory: %v", err)
+	}
+
+	slice := &models.Slice{
+		ID:          "nicholas/api-cross-b-20260504232313",
+		Name:        "api-cross-b-20260504232313",
+		Owners:      []string{"tester"},
+		CreatedBy:   "tester",
+		ParentSlice: "root_slice",
+		FolderMounts: []models.SliceFolderMount{{
+			SourcePath: mountedDir,
+			Alias:      mountedDir,
+		}},
+	}
+	if err := base.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create mounted slice: %v", err)
+	}
+
+	filePath := mountedDir + "/hello.txt"
+	content := []byte("hello\n")
+	contentHash := mustWriteSliceManifest(t, ctx, base, slice.ID, filePath, content)
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + filePath,
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(content)),
+		Hash:     contentHash,
+	}); err != nil {
+		t.Fatalf("failed to add mounted slice file entry: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "cs-mounted-slice-file",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		CreatedAt:     time.Now(),
+	}
+	if err := base.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(base)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for root promotion queue: %v", err)
+	}
+
+	fileSvc := fileservice.NewService(base)
+	listResp, err := fileSvc.ListEntries(ctx, &filev1.ListEntriesRequest{
+		Path: mountedDir,
+		Version: &filev1.ListEntriesRequest_SliceVersion{
+			SliceVersion: &filev1.SliceVersion{SliceId: slice.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListEntries(%s) failed: %v", mountedDir, err)
+	}
+	if !listEntriesContainPath(listResp.GetEntries(), filePath) {
+		t.Fatalf("expected mounted slice file tree to include merged file %q, got paths %#v", filePath, listEntryPaths(listResp.GetEntries()))
 	}
 }
 
