@@ -825,6 +825,12 @@ POSTGRES_MAX_CONNS=64
 POSTGRES_PROMOTION_MAX_CONNS=4
 ```
 
+Benchmark override:
+
+```text
+BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+```
+
 Validation:
 
 - Existing tests pass.

@@ -187,7 +187,7 @@ func TestSimulate100kUsers(t *testing.T) {
 	}
 	logBenchmarkPostgresPoolReport(t, "Foreground workload", foregroundPoolReport, foregroundPoolStatsOK)
 
-	drainPoolObserver := startBenchmarkPostgresPoolObserver()
+	drainPoolObserver := startBenchmarkPromotionPostgresPoolObserver()
 	promotionDrainElapsed, promotionDrainObserved, promotionDrainErr := drainBenchmarkPromotions(30 * time.Second)
 	drainPoolReport, drainPoolStatsOK := drainPoolObserver.stopAndReport()
 	if promotionDrainObserved {

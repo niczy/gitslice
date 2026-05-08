@@ -36,6 +36,7 @@ import (
 type filesystemServiceServer struct {
 	filesystemv1.UnimplementedFilesystemServiceServer
 	storage                 storage.Storage
+	promotionStorage        storage.Storage
 	promotionQueueMu        sync.Mutex
 	promotionQueue          *rootpromote.Queue
 	promotionBatchWindow    time.Duration
@@ -218,8 +219,16 @@ type fileSliceBatchAdder interface {
 }
 
 func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
+	return newFilesystemServiceServerWithPromotionStorage(st, st)
+}
+
+func newFilesystemServiceServerWithPromotionStorage(st storage.Storage, promotionSt storage.Storage) *filesystemServiceServer {
+	if promotionSt == nil {
+		promotionSt = st
+	}
 	return &filesystemServiceServer{
 		storage:                 st,
+		promotionStorage:        promotionSt,
 		promotionBatchWindow:    rootpromote.DefaultBatchWindow,
 		promotionBatchMaxSize:   rootpromote.DefaultBatchMaxSize,
 		searchIndexBatchWindow:  rootpromote.DefaultBatchWindow,
@@ -229,9 +238,22 @@ func newFilesystemServiceServer(st storage.Storage) *filesystemServiceServer {
 	}
 }
 
+func (s *filesystemServiceServer) promotionStore() storage.Storage {
+	if s.promotionStorage != nil {
+		return s.promotionStorage
+	}
+	return s.storage
+}
+
 // RegisterGRPCServer registers the filesystem service handlers on an existing gRPC server.
 func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	filesystemv1.RegisterFilesystemServiceServer(srv, newFilesystemServiceServer(st))
+}
+
+// RegisterGRPCServerWithPromotionStorage registers the filesystem service with
+// a separate storage backend for async promotion workers.
+func RegisterGRPCServerWithPromotionStorage(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage) {
+	filesystemv1.RegisterFilesystemServiceServer(srv, newFilesystemServiceServerWithPromotionStorage(st, promotionSt))
 }
 
 // NewService constructs the filesystem service implementation for use without gRPC.

@@ -37,7 +37,15 @@ type benchmarkPostgresPoolReport struct {
 }
 
 func startBenchmarkPostgresPoolObserver() *benchmarkPostgresPoolObserver {
-	provider, ok := benchStorage.(benchmarkPostgresPoolStatsProvider)
+	return startBenchmarkPostgresPoolObserverForStorage(benchStorage)
+}
+
+func startBenchmarkPromotionPostgresPoolObserver() *benchmarkPostgresPoolObserver {
+	return startBenchmarkPostgresPoolObserverForStorage(benchPromotionStorage)
+}
+
+func startBenchmarkPostgresPoolObserverForStorage(st storage.Storage) *benchmarkPostgresPoolObserver {
+	provider, ok := st.(benchmarkPostgresPoolStatsProvider)
 	if !ok || provider == nil {
 		return nil
 	}

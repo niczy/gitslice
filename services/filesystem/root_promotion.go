@@ -55,17 +55,18 @@ func (s *filesystemServiceServer) promoteHomeSliceBatch(ctx context.Context, bat
 	if len(batch) == 0 {
 		return nil
 	}
-	if err := common.EnsureRootSliceInitialized(ctx, s.storage); err != nil {
+	st := s.promotionStore()
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		return err
 	}
 
-	sliceSvc := sliceservice.NewInternalService(s.storage)
+	sliceSvc := sliceservice.NewInternalServiceWithPromotionStorage(st, st)
 	mergedAny := false
 	for _, job := range latestPromotionJobs(batch) {
 		if !homeslice.IsHomeSliceID(job.SliceID) {
 			continue
 		}
-		modifiedPaths, err := homeslice.PendingPromotionPaths(ctx, s.storage, job.SliceID)
+		modifiedPaths, err := homeslice.PendingPromotionPaths(ctx, st, job.SliceID)
 		if err != nil {
 			return fmt.Errorf("failed to compute pending promotion paths for %s: %w", job.SliceID, err)
 		}

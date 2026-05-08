@@ -36,10 +36,11 @@ import (
 )
 
 var (
-	benchGRPCAddr string
-	benchGRPCConn *grpc.ClientConn
-	benchServer   *grpc.Server
-	benchStorage  storage.Storage
+	benchGRPCAddr         string
+	benchGRPCConn         *grpc.ClientConn
+	benchServer           *grpc.Server
+	benchStorage          storage.Storage
+	benchPromotionStorage storage.Storage
 
 	benchSliceClient slicev1.SliceServiceClient
 	benchFileClient  filev1.FileServiceClient
@@ -59,12 +60,13 @@ func TestMain(m *testing.M) {
 	flag.Parse()
 
 	ctx := context.Background()
-	st, cleanup, err := newBenchmarkStorage(ctx)
+	st, promotionSt, cleanup, err := newBenchmarkStorage(ctx)
 	if err != nil {
 		fmt.Printf("Failed to initialize benchmark storage: %v\n", err)
 		os.Exit(1)
 	}
 	benchStorage = st
+	benchPromotionStorage = promotionSt
 
 	if err = common.EnsureRootSliceInitialized(ctx, benchStorage); err != nil {
 		fmt.Printf("Failed to initialize root slice: %v\n", err)
@@ -81,7 +83,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	benchGRPCAddr, benchServer, err = startBenchGRPCServer(benchStorage)
+	benchGRPCAddr, benchServer, err = startBenchGRPCServer(benchStorage, benchPromotionStorage)
 	if err != nil {
 		fmt.Printf("Failed to start gRPC server: %v\n", err)
 		if cleanup != nil {
@@ -121,18 +123,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func newBenchmarkStorage(ctx context.Context) (storage.Storage, func(), error) {
+func newBenchmarkStorage(ctx context.Context) (storage.Storage, storage.Storage, func(), error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("BENCHMARK_STORAGE")))
 	switch backend {
 	case "", "memory", "in-memory":
-		return storage.NewInMemoryStorage(), nil, nil
+		st := storage.NewInMemoryStorage()
+		return st, st, nil, nil
 	case "postgres", "postgres-native":
 		dsn := strings.TrimSpace(os.Getenv("BENCHMARK_POSTGRES_DSN"))
 		if dsn == "" {
 			dsn = strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 		}
 		if dsn == "" {
-			return nil, nil, fmt.Errorf("BENCHMARK_POSTGRES_DSN or TEST_POSTGRES_DSN is required for BENCHMARK_STORAGE=postgres")
+			return nil, nil, nil, fmt.Errorf("BENCHMARK_POSTGRES_DSN or TEST_POSTGRES_DSN is required for BENCHMARK_STORAGE=postgres")
 		}
 		namespace := strings.TrimSpace(os.Getenv("BENCHMARK_POSTGRES_NAMESPACE"))
 		if namespace == "" {
@@ -140,15 +143,37 @@ func newBenchmarkStorage(ctx context.Context) (storage.Storage, func(), error) {
 		}
 		options, err := benchmarkPostgresOptions()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		st, err := storage.NewPostgresNativeStorageWithOptions(ctx, dsn, storage.NewInMemoryObjectStore(), namespace, options)
+		objectStore := storage.NewInMemoryObjectStore()
+		st, err := storage.NewPostgresNativeStorageWithOptions(ctx, dsn, objectStore, namespace, options)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return st, func() { _ = st.Close() }, nil
+		promotionSt := storage.Storage(st)
+		promotionOptions, ok, err := benchmarkPostgresPromotionOptions()
+		if err != nil {
+			_ = st.Close()
+			return nil, nil, nil, err
+		}
+		if ok {
+			promo, err := storage.NewPostgresNativeStorageWithOptions(ctx, dsn, objectStore, namespace, promotionOptions)
+			if err != nil {
+				_ = st.Close()
+				return nil, nil, nil, err
+			}
+			promotionSt = promo
+		}
+		return st, promotionSt, func() {
+			if promotionSt != st {
+				if closer, ok := promotionSt.(interface{ Close() error }); ok {
+					_ = closer.Close()
+				}
+			}
+			_ = st.Close()
+		}, nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported BENCHMARK_STORAGE %q", backend)
+		return nil, nil, nil, fmt.Errorf("unsupported BENCHMARK_STORAGE %q", backend)
 	}
 }
 
@@ -164,6 +189,20 @@ func benchmarkPostgresOptions() (storage.PostgresNativeStorageOptions, error) {
 	}
 	options.MaxConns = int32(maxConns)
 	return options, nil
+}
+
+func benchmarkPostgresPromotionOptions() (storage.PostgresNativeStorageOptions, bool, error) {
+	var options storage.PostgresNativeStorageOptions
+	rawMaxConns := strings.TrimSpace(os.Getenv("BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS"))
+	if rawMaxConns == "" {
+		return options, false, nil
+	}
+	maxConns, err := strconv.Atoi(rawMaxConns)
+	if err != nil || maxConns <= 0 {
+		return options, false, fmt.Errorf("BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS must be a positive integer, got %q", rawMaxConns)
+	}
+	options.MaxConns = int32(maxConns)
+	return options, true, nil
 }
 
 func benchmarkUserCountFromEnv() (int, error) {
@@ -258,14 +297,14 @@ func shouldSeedBenchmarkUserFolders() bool {
 	return re.MatchString("TestSimulate100kUsers")
 }
 
-func startBenchGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
+func startBenchGRPCServer(st storage.Storage, promotionSt storage.Storage) (string, *grpc.Server, error) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
 	}
 
 	srv := grpc.NewServer()
-	sliceServer := sliceservice.NewInternalService(st)
+	sliceServer := sliceservice.NewInternalServiceWithPromotionStorage(st, promotionSt)
 	benchPromotionWaiter = sliceServer
 	slicev1.RegisterSliceServiceServer(srv, sliceServer)
 	fileservice.RegisterGRPCServer(srv, st)

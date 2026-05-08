@@ -15,6 +15,7 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	t.Setenv("POSTGRES_MAX_CONNS", "25")
 	t.Setenv("POSTGRES_MIN_CONNS", "3")
 	t.Setenv("POSTGRES_MAX_CONN_LIFETIME", "45m")
+	t.Setenv("POSTGRES_PROMOTION_MAX_CONNS", "5")
 	t.Setenv("CLERK_WEBHOOK_SECRET", "whsec_clerk_test_123")
 
 	cfg, err := LoadConfig()
@@ -41,6 +42,9 @@ func TestLoadConfigParsesPostgresPoolSettings(t *testing.T) {
 	}
 	if cfg.PostgresMaxConnLifetime != 45*time.Minute {
 		t.Fatalf("expected max conn lifetime 45m, got %s", cfg.PostgresMaxConnLifetime)
+	}
+	if cfg.PostgresPromotionMaxConns != 5 {
+		t.Fatalf("expected promotion max conns 5, got %d", cfg.PostgresPromotionMaxConns)
 	}
 	if cfg.ClerkWebhookSecret != "whsec_clerk_test_123" {
 		t.Fatalf("unexpected Clerk webhook secret: %q", cfg.ClerkWebhookSecret)

@@ -37,6 +37,7 @@ import (
 type sliceServiceServer struct {
 	slicev1.UnimplementedSliceServiceServer
 	storage               storage.Storage
+	promotionStorage      storage.Storage
 	rootSliceMu           sync.RWMutex
 	rootSliceID           string
 	promotionQueueMu      sync.Mutex
@@ -75,16 +76,37 @@ const (
 )
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
+	return newSliceServiceServerWithPromotionStorage(st, st)
+}
+
+func newSliceServiceServerWithPromotionStorage(st storage.Storage, promotionSt storage.Storage) *sliceServiceServer {
+	if promotionSt == nil {
+		promotionSt = st
+	}
 	return &sliceServiceServer{
 		storage:               st,
+		promotionStorage:      promotionSt,
 		promotionBatchWindow:  defaultPromotionBatchWindow,
 		promotionBatchMaxSize: defaultPromotionBatchMaxSize,
 	}
 }
 
+func (s *sliceServiceServer) promotionStore() storage.Storage {
+	if s.promotionStorage != nil {
+		return s.promotionStorage
+	}
+	return s.storage
+}
+
 // RegisterGRPCServer registers the slice service handlers on an existing gRPC server.
 func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServer(st))
+}
+
+// RegisterGRPCServerWithPromotionStorage registers the slice service with a
+// separate storage backend for async promotion workers.
+func RegisterGRPCServerWithPromotionStorage(srv *grpc.Server, st storage.Storage, promotionSt storage.Storage) {
+	slicev1.RegisterSliceServiceServer(srv, newSliceServiceServerWithPromotionStorage(st, promotionSt))
 }
 
 // NewGRPCServer constructs a gRPC server for the slice service using the provided storage backend.
@@ -102,6 +124,12 @@ func NewService(st storage.Storage) slicev1.SliceServiceServer {
 // NewInternalService constructs the concrete slice service for cross-package reuse.
 func NewInternalService(st storage.Storage) *sliceServiceServer {
 	return newSliceServiceServer(st)
+}
+
+// NewInternalServiceWithPromotionStorage constructs the concrete slice service
+// with a separate storage backend for async promotion workers.
+func NewInternalServiceWithPromotionStorage(st storage.Storage, promotionSt storage.Storage) *sliceServiceServer {
+	return newSliceServiceServerWithPromotionStorage(st, promotionSt)
 }
 
 func modelVisibilityToProto(v models.Visibility) commonv1.Visibility {
@@ -3886,23 +3914,24 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 	if len(batch) == 0 {
 		return nil
 	}
+	st := s.promotionStore()
 
 	if promoted, err := s.promoteSliceBatchToHomeViews(ctx, batch); err != nil || promoted {
 		return err
 	}
 
-	if _, ok := s.storage.(rootPromotionFilePromoter); !ok || hasHomePromotionJob(batch) {
+	if _, ok := st.(rootPromotionFilePromoter); !ok || hasHomePromotionJob(batch) {
 		return s.promoteSliceBatchWithGlobalLock(ctx, batch)
 	}
 
 	start := time.Now()
-	rootSliceID, err := s.getRootSliceID(ctx)
+	rootSliceID, err := s.getRootSliceIDWithStorage(ctx, st)
 	if err != nil {
 		return err
 	}
 
 	fileStart := time.Now()
-	if err := s.storage.(rootPromotionFilePromoter).PromoteFilesToRoot(ctx, rootSliceID, storageRootPromotionJobs(batch)); err != nil {
+	if err := st.(rootPromotionFilePromoter).PromoteFilesToRoot(ctx, rootSliceID, storageRootPromotionJobs(batch)); err != nil {
 		return err
 	}
 	fileDuration := time.Since(fileStart)
@@ -3937,7 +3966,7 @@ func (s *sliceServiceServer) promoteSliceBatchToHomeViews(ctx context.Context, b
 	}
 
 	start := time.Now()
-	rootSliceID, err := s.getRootSliceID(ctx)
+	rootSliceID, err := s.getRootSliceIDWithStorage(ctx, s.promotionStore())
 	if err != nil {
 		return false, err
 	}
@@ -4003,13 +4032,14 @@ func (s *sliceServiceServer) promoteHomeGroups(ctx context.Context, groups map[s
 }
 
 func (s *sliceServiceServer) promoteHomeGroup(ctx context.Context, username string, jobs []rootpromote.Job) error {
-	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, s.storage, username)
+	st := s.promotionStore()
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, st, username)
 	if err != nil {
 		return fmt.Errorf("failed to ensure home slice for %s: %w", username, err)
 	}
 	copyJobs := nonHomeSourcePromotionJobs(homeSlice.ID, jobs)
 	if len(copyJobs) > 0 {
-		if promoter, ok := s.storage.(sliceFilePromoter); ok {
+		if promoter, ok := st.(sliceFilePromoter); ok {
 			if err := promoter.PromoteFilesToSlice(ctx, homeSlice.ID, storageRootPromotionJobs(copyJobs)); err != nil {
 				return fmt.Errorf("failed to publish files into home slice %s: %w", homeSlice.ID, err)
 			}
@@ -4019,7 +4049,7 @@ func (s *sliceServiceServer) promoteHomeGroup(ctx context.Context, username stri
 					return err
 				}
 			}
-			if err := addFilesToSlice(ctx, s.storage, collectUniquePromotionFiles(copyJobs), homeSlice.ID); err != nil {
+			if err := addFilesToSlice(ctx, st, collectUniquePromotionFiles(copyJobs), homeSlice.ID); err != nil {
 				return fmt.Errorf("failed to add promoted files to home slice: %w", err)
 			}
 		}
@@ -4031,6 +4061,7 @@ func (s *sliceServiceServer) promoteHomeGroup(ctx context.Context, username stri
 }
 
 func (s *sliceServiceServer) promotionHomeUsername(ctx context.Context, job rootpromote.Job) (string, bool, error) {
+	st := s.promotionStore()
 	if username := homeslice.UsernameFromSliceID(job.SliceID); username != "" {
 		return username, true, nil
 	}
@@ -4038,7 +4069,7 @@ func (s *sliceServiceServer) promotionHomeUsername(ctx context.Context, job root
 	if homeRoot == "" {
 		return "", false, nil
 	}
-	if user, err := s.storage.GetUser(ctx, homeRoot); err == nil && user != nil {
+	if user, err := st.GetUser(ctx, homeRoot); err == nil && user != nil {
 		rootPath := strings.TrimPrefix(strings.TrimSpace(user.RootPath), "/")
 		if rootPath == "" {
 			rootPath = homeslice.RelativeRootPath(user.Username)
@@ -4047,7 +4078,7 @@ func (s *sliceServiceServer) promotionHomeUsername(ctx context.Context, job root
 			return user.Username, true, nil
 		}
 	}
-	sourceSlice, err := s.storage.GetSlice(ctx, strings.TrimSpace(job.SliceID))
+	sourceSlice, err := st.GetSlice(ctx, strings.TrimSpace(job.SliceID))
 	if err != nil {
 		if errors.Is(err, storage.ErrSliceNotFound) {
 			return "", false, nil
@@ -4094,7 +4125,8 @@ func (s *sliceServiceServer) updateHomePromotionState(ctx context.Context, homeS
 	if homeSliceID == "" || len(jobs) == 0 {
 		return nil
 	}
-	metadata, err := s.storage.GetSliceMetadata(ctx, homeSliceID)
+	st := s.promotionStore()
+	metadata, err := st.GetSliceMetadata(ctx, homeSliceID)
 	if err != nil {
 		return fmt.Errorf("failed to load home metadata: %w", err)
 	}
@@ -4119,7 +4151,7 @@ func (s *sliceServiceServer) updateHomePromotionState(ctx context.Context, homeS
 			if commitTime.IsZero() {
 				commitTime = time.Now()
 			}
-			if err := s.storage.AddSliceCommit(ctx, homeSliceID, &models.Commit{
+			if err := st.AddSliceCommit(ctx, homeSliceID, &models.Commit{
 				CommitHash: commitHash,
 				ParentHash: parentHash,
 				Timestamp:  commitTime,
@@ -4143,26 +4175,27 @@ func (s *sliceServiceServer) updateHomePromotionState(ctx context.Context, homeS
 	} else {
 		metadata.LastModified = latest.CommitTime
 	}
-	if err := s.storage.UpdateSliceMetadata(ctx, homeSliceID, metadata); err != nil {
+	if err := st.UpdateSliceMetadata(ctx, homeSliceID, metadata); err != nil {
 		return fmt.Errorf("failed to update home metadata: %w", err)
 	}
 	return nil
 }
 
 func (s *sliceServiceServer) promoteSliceBatchWithGlobalLock(ctx context.Context, batch []rootpromote.Job) error {
+	st := s.promotionStore()
 	return rootpromote.WithGlobalLock(func() error {
-		rootSliceID, err := s.getRootSliceID(ctx)
+		rootSliceID, err := s.getRootSliceIDWithStorage(ctx, st)
 		if err != nil {
 			return err
 		}
 
-		rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSliceID)
+		rootMetadata, err := st.GetSliceMetadata(ctx, rootSliceID)
 		if err != nil {
 			return fmt.Errorf("failed to load root metadata: %w", err)
 		}
 
 		for _, job := range latestHomeSlicePromotionJobs(batch) {
-			if _, err := homeslice.SyncHomeSliceToRoot(ctx, s.storage, job.SliceID); err != nil {
+			if _, err := homeslice.SyncHomeSliceToRoot(ctx, st, job.SliceID); err != nil {
 				return fmt.Errorf("failed to sync %s into root: %w", job.SliceID, err)
 			}
 		}
@@ -4176,12 +4209,12 @@ func (s *sliceServiceServer) promoteSliceBatchWithGlobalLock(ctx context.Context
 			}
 		}
 
-		if err := addFilesToSlice(ctx, s.storage, collectUniquePromotionFiles(batch), rootSliceID); err != nil {
+		if err := addFilesToSlice(ctx, st, collectUniquePromotionFiles(batch), rootSliceID); err != nil {
 			return fmt.Errorf("failed to add promoted files to root slice: %w", err)
 		}
 
 		latest := batch[len(batch)-1]
-		if err := updateRootPromotionStateFallback(ctx, s.storage, rootSliceID, rootMetadata, latest, promotionGlobalCommits(batch)); err != nil {
+		if err := updateRootPromotionStateFallback(ctx, st, rootSliceID, rootMetadata, latest, promotionGlobalCommits(batch)); err != nil {
 			return err
 		}
 
@@ -4190,16 +4223,17 @@ func (s *sliceServiceServer) promoteSliceBatchWithGlobalLock(ctx context.Context
 }
 
 func (s *sliceServiceServer) updateRootPromotionState(ctx context.Context, rootSliceID string, latest rootpromote.Job, history []*models.GlobalCommit) error {
-	if updater, ok := s.storage.(rootPromotionStateUpdater); ok {
+	st := s.promotionStore()
+	if updater, ok := st.(rootPromotionStateUpdater); ok {
 		latestFiles := normalizeModifiedFiles(latest.Files)
 		return updater.UpdateRootPromotionState(ctx, rootSliceID, latest.CommitHash, latest.CommitTime, latestFiles, history)
 	}
 	return rootpromote.WithGlobalLock(func() error {
-		rootMetadata, err := s.storage.GetSliceMetadata(ctx, rootSliceID)
+		rootMetadata, err := st.GetSliceMetadata(ctx, rootSliceID)
 		if err != nil {
 			return fmt.Errorf("failed to load root metadata: %w", err)
 		}
-		return updateRootPromotionStateFallback(ctx, s.storage, rootSliceID, rootMetadata, latest, history)
+		return updateRootPromotionStateFallback(ctx, st, rootSliceID, rootMetadata, latest, history)
 	})
 }
 
@@ -4235,12 +4269,13 @@ func (s *sliceServiceServer) syncPromotionJobToRoot(ctx context.Context, rootSli
 }
 
 func (s *sliceServiceServer) syncPromotionJobToSlice(ctx context.Context, targetSliceID string, job rootpromote.Job) error {
+	st := s.promotionStore()
 	sliceID := strings.TrimSpace(job.SliceID)
 	targetSliceID = strings.TrimSpace(targetSliceID)
 	if sliceID == "" || targetSliceID == "" {
 		return nil
 	}
-	if _, err := s.storage.GetSlice(ctx, sliceID); err != nil {
+	if _, err := st.GetSlice(ctx, sliceID); err != nil {
 		if errors.Is(err, storage.ErrSliceNotFound) {
 			return nil
 		}
@@ -4253,7 +4288,7 @@ func (s *sliceServiceServer) syncPromotionJobToSlice(ctx context.Context, target
 			continue
 		}
 
-		content, err := storage.ReadSliceFileContent(ctx, s.storage, sliceID, filePath)
+		content, err := storage.ReadSliceFileContent(ctx, st, sliceID, filePath)
 		if err != nil {
 			if errors.Is(err, storage.ErrEntryNotFound) {
 				continue
@@ -4263,18 +4298,18 @@ func (s *sliceServiceServer) syncPromotionJobToSlice(ctx context.Context, target
 
 		var executable bool
 		var symlinkTarget string
-		if entry, entryErr := s.storage.GetEntryByPath(ctx, sliceID, filePath); entryErr == nil && entry != nil {
+		if entry, entryErr := st.GetEntryByPath(ctx, sliceID, filePath); entryErr == nil && entry != nil {
 			executable = entry.Executable
 			symlinkTarget = entry.SymlinkTarget
 		} else if entryErr != nil && !errors.Is(entryErr, storage.ErrEntryNotFound) {
 			return fmt.Errorf("failed to load promoted entry metadata for %s: %w", filePath, entryErr)
 		}
 
-		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, s.storage, targetSliceID, filePath, append([]byte(nil), content.Content...), executable, symlinkTarget)
+		manifest, err := storage.WriteSliceFileManifestWithMetadata(ctx, st, targetSliceID, filePath, append([]byte(nil), content.Content...), executable, symlinkTarget)
 		if err != nil {
 			return fmt.Errorf("failed to write promoted manifest for %s in %s: %w", filePath, targetSliceID, err)
 		}
-		if err := s.storage.AddEntry(ctx, &models.DirectoryEntry{
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
 			ID:            common.GenerateEntryID(targetSliceID, filePath),
 			Path:          filePath,
 			Type:          "file",
@@ -4452,7 +4487,7 @@ func (s *sliceServiceServer) rootPromotionQueue() *rootpromote.Queue {
 	workerCount := s.promotionWorkerCount
 	if workerCount <= 0 {
 		workerCount = 1
-		if _, ok := s.storage.(rootPromotionFilePromoter); ok {
+		if _, ok := s.promotionStore().(rootPromotionFilePromoter); ok {
 			workerCount = defaultPromotionWorkerCount
 		}
 	}
@@ -4495,6 +4530,10 @@ func latestHomeSlicePromotionJobs(batch []rootpromote.Job) []rootpromote.Job {
 }
 
 func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error) {
+	return s.getRootSliceIDWithStorage(ctx, s.storage)
+}
+
+func (s *sliceServiceServer) getRootSliceIDWithStorage(ctx context.Context, st storage.Storage) (string, error) {
 	s.rootSliceMu.RLock()
 	if s.rootSliceID != "" {
 		id := s.rootSliceID
@@ -4509,15 +4548,15 @@ func (s *sliceServiceServer) getRootSliceID(ctx context.Context) (string, error)
 		return s.rootSliceID, nil
 	}
 
-	rootSlice, err := s.storage.GetRootSlice(ctx)
+	rootSlice, err := st.GetRootSlice(ctx)
 	if err != nil {
 		if !errors.Is(err, storage.ErrSliceNotFound) {
 			return "", fmt.Errorf("failed to load root slice: %w", err)
 		}
-		if err := s.storage.InitializeRootSlice(ctx); err != nil {
+		if err := st.InitializeRootSlice(ctx); err != nil {
 			return "", fmt.Errorf("failed to initialize root slice: %w", err)
 		}
-		rootSlice, err = s.storage.GetRootSlice(ctx)
+		rootSlice, err = st.GetRootSlice(ctx)
 		if err != nil {
 			return "", fmt.Errorf("failed to load root slice after initialization: %w", err)
 		}
