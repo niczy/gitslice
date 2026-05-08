@@ -66,9 +66,9 @@ func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, erro
 }
 
 const (
-	defaultPromotionBatchWindow  = 10 * time.Millisecond
-	defaultPromotionBatchMaxSize = 128
-	defaultPromotionWorkerCount  = 8
+	defaultPromotionBatchWindow  = 50 * time.Millisecond
+	defaultPromotionBatchMaxSize = 512
+	defaultPromotionWorkerCount  = 2
 	revertChangesetHashPrefix    = common.ChangesetVersionIDPrefix + "revert~"
 	revertAllChangesToken        = "*"
 	checkoutManifestChunkSize    = 256
@@ -1484,9 +1484,15 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 
 	promotionStartedAt := time.Now()
 	if promotionCommitHash != "" {
-		if err := s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime); err != nil {
+		var promotionErr error
+		if changesetTouchesConfig(modifiedFiles) {
+			promotionErr = s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime)
+		} else {
+			promotionErr = s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime)
+		}
+		if promotionErr != nil {
 			profile.markPromotion(time.Since(promotionStartedAt))
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to promote merged changeset to root: %v", err))
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", promotionErr))
 		}
 		if useCurrentHead {
 			newCommit = promotionCommitHash
