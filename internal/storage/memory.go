@@ -1938,6 +1938,49 @@ func (s *InMemoryStorage) ListEntries(ctx context.Context, sliceID, parentID str
 	return result, nil
 }
 
+func (s *InMemoryStorage) ListEntriesByPathPrefixes(ctx context.Context, sliceID string, prefixes []string) ([]*models.DirectoryEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cleanedPrefixes := normalizeRelativePaths(prefixes)
+	if len(cleanedPrefixes) == 0 {
+		return nil, nil
+	}
+
+	cleanedSliceID := strings.TrimSpace(sliceID)
+	result := make([]*models.DirectoryEntry, 0)
+	seen := make(map[string]struct{})
+	for _, entry := range s.entries {
+		if entry == nil {
+			continue
+		}
+		if cleanedSliceID != "" {
+			if entrySlice := sliceIDFromEntryID(entry.ID); entrySlice != "" && entrySlice != cleanedSliceID {
+				continue
+			}
+		}
+		entryPath := cleanRelativePath(entry.Path)
+		if !pathMatchesAnyPrefix(entryPath, cleanedPrefixes) {
+			continue
+		}
+		key := entry.ID + "\x00" + entryPath
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		copy := *entry
+		copy.Hash = s.entryHashLocked(entry)
+		result = append(result, &copy)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Path == result[j].Path {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].Path < result[j].Path
+	})
+	return result, nil
+}
+
 func (s *InMemoryStorage) entryHashLocked(entry *models.DirectoryEntry) string {
 	if entry == nil || entry.Type != "file" {
 		return ""

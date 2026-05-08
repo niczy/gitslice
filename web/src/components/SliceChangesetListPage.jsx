@@ -30,6 +30,23 @@ function statusLabel(status) {
   return status || 'pending';
 }
 
+function changesetBadge(changeset) {
+  const lifecycle = statusLabel(changeset?.status);
+  if (lifecycle !== 'pending' && lifecycle !== 'approved') {
+    return { label: lifecycle, tone: lifecycle };
+  }
+  switch (changeset?.review_status) {
+    case 'needs_sync':
+      return { label: 'sync', tone: 'needs-sync' };
+    case 'has_conflicts':
+      return { label: 'conflict', tone: 'conflict' };
+    case 'ready_for_merge':
+      return { label: 'ready', tone: 'ready' };
+    default:
+      return { label: lifecycle, tone: lifecycle };
+  }
+}
+
 export default function SliceChangesetListPage({
   sliceId,
   slices,
@@ -187,7 +204,7 @@ export default function SliceChangesetListPage({
             <ul className="slice-activity-list" data-testid="slice-changesets-list">
               {changesets.map((changeset) => {
                 const files = changeset.modified_files || [];
-                const status = statusLabel(changeset.status);
+                const badge = changesetBadge(changeset);
                 return (
                   <li key={changeset.changeset_id}>
                     <Button
@@ -203,8 +220,8 @@ export default function SliceChangesetListPage({
                       <span className="slice-activity-row-main">
                         <span className="slice-activity-row-heading">
                           <span className="slice-activity-row-title">{getChangesetTitle(changeset)}</span>
-                          <span className={`slice-activity-status slice-activity-status--${status}`}>
-                            {status}
+                          <span className={`slice-activity-status slice-activity-status--${badge.tone}`}>
+                            {badge.label}
                           </span>
                         </span>
                         <span className="slice-activity-row-subtitle">

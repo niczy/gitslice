@@ -3,6 +3,7 @@ package sliceservice
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
@@ -26,6 +27,22 @@ type fileManifestHashBatchReader interface {
 
 type existingEntriesBatchReader interface {
 	GetExistingEntriesByPaths(ctx context.Context, sliceID string, paths []string) (map[string]bool, error)
+}
+
+type pathPrefixEntryReader interface {
+	ListEntriesByPathPrefixes(ctx context.Context, sliceID string, prefixes []string) ([]*models.DirectoryEntry, error)
+}
+
+type rootPromotionFilePromoter interface {
+	PromoteFilesToRoot(ctx context.Context, rootSliceID string, jobs []storage.RootPromotionJob) error
+}
+
+type sliceFilePromoter interface {
+	PromoteFilesToSlice(ctx context.Context, targetSliceID string, jobs []storage.RootPromotionJob) error
+}
+
+type rootPromotionStateUpdater interface {
+	UpdateRootPromotionState(ctx context.Context, rootSliceID string, latestCommitHash string, latestTime time.Time, latestFiles []string, commits []*models.GlobalCommit) error
 }
 
 func withMergeStorage(ctx context.Context, st storage.Storage, fn func(storage.Storage) error) error {
@@ -64,6 +81,14 @@ func addFilesToSlice(ctx context.Context, st storage.Storage, fileIDs []string, 
 		}
 	}
 	return nil
+}
+
+func listEntriesByPathPrefixes(ctx context.Context, st storage.Storage, sliceID string, prefixes []string) ([]*models.DirectoryEntry, bool, error) {
+	if reader, ok := st.(pathPrefixEntryReader); ok {
+		entries, err := reader.ListEntriesByPathPrefixes(ctx, strings.TrimSpace(sliceID), prefixes)
+		return entries, true, err
+	}
+	return nil, false, nil
 }
 
 func getFileManifestHashes(ctx context.Context, st storage.Storage, sliceID string, paths []string) (map[string]string, error) {

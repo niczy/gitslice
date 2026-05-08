@@ -431,6 +431,7 @@ message ChangesetInfo {
   int64 created_at = 8;
   int64 merged_at = 9;
   string message = 10;
+  ReviewStatus review_status = 11;
 }
 
 enum ChangesetStatus {
@@ -441,7 +442,9 @@ enum ChangesetStatus {
 }
 
 enum ReviewStatus {
+  option allow_alias = true;
   READY_FOR_MERGE = 0;
+  NEEDS_SYNC = 1;
   NEEDS_REBASE = 1;
   HAS_CONFLICTS = 2;
 }

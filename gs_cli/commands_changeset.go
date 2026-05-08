@@ -425,10 +425,11 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 		}
 		for _, cs := range resp.Changesets {
 			out.Changesets = append(out.Changesets, jsonChangesetListItem{
-				ChangesetID: cs.GetChangesetId(),
-				Status:      cs.GetStatus().String(),
-				Message:     cs.GetMessage(),
-				CreatedAt:   cs.GetCreatedAt(),
+				ChangesetID:  cs.GetChangesetId(),
+				Status:       cs.GetStatus().String(),
+				ReviewStatus: reviewStatusForChangesetInfo(cs),
+				Message:      cs.GetMessage(),
+				CreatedAt:    cs.GetCreatedAt(),
 			})
 		}
 		writeJSONOutput(out)
@@ -437,7 +438,11 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 
 	fmt.Printf("Found %d changeset(s) for slice %s\n", len(resp.Changesets), sliceID)
 	for _, cs := range resp.Changesets {
-		fmt.Printf("- %s [%s] %s\n", cs.ChangesetId, cs.Status.String(), cs.Message)
+		statusText := cs.GetStatus().String()
+		if reviewStatus := reviewStatusForChangesetInfo(cs); reviewStatus != "" {
+			statusText = fmt.Sprintf("%s/%s", statusText, reviewStatus)
+		}
+		fmt.Printf("- %s [%s] %s\n", cs.ChangesetId, statusText, cs.Message)
 	}
 }
 
@@ -502,7 +507,7 @@ func printMergeResult(resp *slicev1.MergeChangesetResponse) {
 		printMergeConflicts(resp.GetConflicts())
 		printSliceConflictGuidance()
 	case slicev1.MergeStatus_MERGE_STATUS_STALE_BASE:
-		fmt.Println("Hint: rebase the changeset onto the latest slice head, then merge again.")
+		fmt.Println("Hint: sync the changeset onto the latest slice head, then merge again.")
 		fmt.Printf("      Suggested flow: gs changeset rebase %s && gs changeset merge\n", resp.GetChangesetId())
 	case slicev1.MergeStatus_MERGE_STATUS_LOCKED:
 		fmt.Println("Hint: another merge is already operating on this slice or file set. Retry shortly.")

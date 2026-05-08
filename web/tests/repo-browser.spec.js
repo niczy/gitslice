@@ -950,6 +950,7 @@ test.describe('Slice Activity Pages', () => {
           baseCommitHash: 'fs-base-1',
           modifiedFiles: [`${username}/todo.md`],
           status: 'PENDING',
+          reviewStatus: 'NEEDS_SYNC',
           author: username,
           createdAt: 1777955400,
           message: 'draft todo update with a long reviewer note that should stay clipped inside the row',
@@ -1014,6 +1015,7 @@ test.describe('Slice Activity Pages', () => {
     await expect(page.getByTestId('slice-changesets-page')).toBeVisible();
     await expect(page.getByTestId('slice-detail-tab-changesets')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('slice-changeset-row')).toHaveCount(14);
+    await expect(page.getByTestId('slice-changesets-list')).toContainText('sync');
     expect(requests).toContain('all:true');
     const statusMetrics = await page.getByTestId('slice-changeset-row').evaluateAll((rows) => rows.map((row) => {
       const status = row.querySelector('.slice-activity-status');

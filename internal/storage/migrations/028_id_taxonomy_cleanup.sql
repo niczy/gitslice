@@ -20,17 +20,17 @@ ALTER TABLE IF EXISTS changeset_snapshots DROP CONSTRAINT IF EXISTS changeset_sn
 
 DO $$
 BEGIN
-  IF to_regclass('public.global_state') IS NOT NULL THEN
+  IF to_regclass('global_state') IS NOT NULL THEN
     IF EXISTS (
       SELECT 1
       FROM information_schema.columns
-      WHERE table_schema = 'public'
+      WHERE table_schema = current_schema()
         AND table_name = 'global_state'
         AND column_name = 'root_slice_id'
     ) AND NOT EXISTS (
       SELECT 1
       FROM information_schema.columns
-      WHERE table_schema = 'public'
+      WHERE table_schema = current_schema()
         AND table_name = 'global_state'
         AND column_name = 'root_id'
     ) THEN
@@ -38,7 +38,7 @@ BEGIN
     ELSIF NOT EXISTS (
       SELECT 1
       FROM information_schema.columns
-      WHERE table_schema = 'public'
+      WHERE table_schema = current_schema()
         AND table_name = 'global_state'
         AND column_name = 'root_id'
     ) THEN
@@ -46,7 +46,7 @@ BEGIN
     ELSIF EXISTS (
       SELECT 1
       FROM information_schema.columns
-      WHERE table_schema = 'public'
+      WHERE table_schema = current_schema()
         AND table_name = 'global_state'
         AND column_name = 'root_slice_id'
     ) THEN

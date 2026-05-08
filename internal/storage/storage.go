@@ -29,6 +29,15 @@ const (
 	maxSliceCommitListLimit     = 10000
 )
 
+// RootPromotionJob describes a slice commit whose changed files should be
+// published into the canonical tree for their path scope.
+type RootPromotionJob struct {
+	SliceID    string
+	CommitHash string
+	Files      []string
+	CommitTime time.Time
+}
+
 func normalizeSliceCommitLimit(limit int) int {
 	if limit <= 0 {
 		return defaultSliceCommitListLimit

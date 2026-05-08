@@ -14,7 +14,7 @@ import (
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 )
 
-func TestHomeSlicePromotionPublishesAndDeletesFromRoot(t *testing.T) {
+func TestHomeSlicePromotionUpdatesRootStateWithoutMaterializingRootFiles(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
 	if err := common.EnsureRootSliceInitialized(context.Background(), st); err != nil {
@@ -45,12 +45,15 @@ func TestHomeSlicePromotionPublishesAndDeletesFromRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get root slice: %v", err)
 	}
-	rootFile, err := storage.ReadSliceFileContent(context.Background(), st, rootSlice.ID, "tester/docs/readme.md")
+	homeFile, err := storage.ReadSliceFileContent(context.Background(), st, homeID, "tester/docs/readme.md")
 	if err != nil {
-		t.Fatalf("root file missing after promotion: %v", err)
+		t.Fatalf("home file missing after write: %v", err)
 	}
-	if got := string(rootFile.Content); got != "published from home\n" {
-		t.Fatalf("unexpected root file content: %q", got)
+	if got := string(homeFile.Content); got != "published from home\n" {
+		t.Fatalf("unexpected home file content: %q", got)
+	}
+	if _, err := st.GetEntryByPath(context.Background(), rootSlice.ID, "tester/docs/readme.md"); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected no physical root file after logical promotion, got %v", err)
 	}
 	state, err := st.GetGlobalState(context.Background())
 	if err != nil {
@@ -79,8 +82,11 @@ func TestHomeSlicePromotionPublishesAndDeletesFromRoot(t *testing.T) {
 	if err := srv.waitForQueuedPromotions(waitCtx); err != nil {
 		t.Fatalf("wait for delete promotion: %v", err)
 	}
+	if _, err := st.GetEntryByPath(context.Background(), homeID, "tester/docs/readme.md"); err != storage.ErrEntryNotFound {
+		t.Fatalf("expected home file removal after delete, got %v", err)
+	}
 	if _, err := st.GetEntryByPath(context.Background(), rootSlice.ID, "tester/docs/readme.md"); err != storage.ErrEntryNotFound {
-		t.Fatalf("expected root file removal after promotion, got %v", err)
+		t.Fatalf("expected root to remain a logical view without a physical file, got %v", err)
 	}
 }
 

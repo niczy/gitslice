@@ -13,6 +13,20 @@ import { Button } from './ui/button.jsx';
 // Changeset Diff Page Component
 // ---------------------------------------------------------------------------
 
+function reviewStatusLabel(reviewStatus) {
+  if (reviewStatus === 'needs_sync') return 'sync';
+  if (reviewStatus === 'has_conflicts') return 'conflict';
+  return 'ready';
+}
+
+function changesetStatusText(changeset) {
+  const lifecycle = changeset?.status || 'pending';
+  if (lifecycle !== 'pending' && lifecycle !== 'approved') {
+    return lifecycle;
+  }
+  return `${lifecycle} · ${reviewStatusLabel(changeset?.review_status)}`;
+}
+
 export default function ChangesetDiffPage({
   changesetId,
   onBack,
@@ -254,7 +268,7 @@ export default function ChangesetDiffPage({
           </h2>
           {changeset && (
             <p className="changeset-title-meta">
-              {changeset.status || 'pending'} on {changeset.slice_id || changeset.sliceId} by {changeset.author || 'unknown'} · {formatTimestamp(changeset.created_at || changeset.createdAt)}
+              {changesetStatusText(changeset)} on {changeset.slice_id || changeset.sliceId} by {changeset.author || 'unknown'} · {formatTimestamp(changeset.created_at || changeset.createdAt)}
             </p>
           )}
           {selectedSnapshot?.version > 0 && (

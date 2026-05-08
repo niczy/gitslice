@@ -44,6 +44,23 @@ func ancestorDirectoryPaths(filePath string) []string {
 	return dirs
 }
 
+func pathMatchesAnyPrefix(filePath string, prefixes []string) bool {
+	cleanedPath := cleanRelativePath(filePath)
+	if cleanedPath == "" {
+		return false
+	}
+	for _, rawPrefix := range prefixes {
+		prefix := cleanRelativePath(rawPrefix)
+		if prefix == "" {
+			continue
+		}
+		if cleanedPath == prefix || strings.HasPrefix(cleanedPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func directoryEntryAggregateContribution(entry *models.DirectoryEntry) int64 {
 	if entry == nil {
 		return 0

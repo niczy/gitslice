@@ -99,6 +99,7 @@ type jsonChangesetCreateOutput struct {
 	ChangesetID   string   `json:"changeset_id"`
 	ChangesetHash string   `json:"changeset_hash"`
 	Status        string   `json:"status"`
+	ReviewStatus  string   `json:"review_status,omitempty"`
 	Updated       bool     `json:"updated"`
 	SliceID       string   `json:"slice_id,omitempty"`
 	ModifiedFiles []string `json:"modified_files,omitempty"`
@@ -585,10 +586,11 @@ type jsonConflictShowOutput struct {
 }
 
 type jsonChangesetListItem struct {
-	ChangesetID string `json:"changeset_id"`
-	Status      string `json:"status"`
-	Message     string `json:"message,omitempty"`
-	CreatedAt   int64  `json:"created_at,omitempty"`
+	ChangesetID  string `json:"changeset_id"`
+	Status       string `json:"status"`
+	ReviewStatus string `json:"review_status,omitempty"`
+	Message      string `json:"message,omitempty"`
+	CreatedAt    int64  `json:"created_at,omitempty"`
 }
 
 type jsonChangesetListOutput struct {
@@ -778,9 +780,22 @@ func buildChangesetOutputFromInfo(info *slicev1.ChangesetInfo) jsonChangesetCrea
 		ChangesetID:   info.GetChangesetId(),
 		ChangesetHash: info.GetChangesetHash(),
 		Status:        info.GetStatus().String(),
+		ReviewStatus:  reviewStatusForChangesetInfo(info),
 		Updated:       true,
 		SliceID:       info.GetSliceId(),
 		ModifiedFiles: append([]string(nil), info.GetModifiedFiles()...),
+	}
+}
+
+func reviewStatusForChangesetInfo(info *slicev1.ChangesetInfo) string {
+	if info == nil {
+		return ""
+	}
+	switch info.GetStatus() {
+	case slicev1.ChangesetStatus_PENDING, slicev1.ChangesetStatus_APPROVED:
+		return info.GetReviewStatus().String()
+	default:
+		return ""
 	}
 }
 

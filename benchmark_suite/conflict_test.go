@@ -9,7 +9,6 @@ import (
 
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
-	adminv1 "github.com/niczy/gitslice/proto/admin"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -134,8 +133,8 @@ func TestConflictResolution(t *testing.T) {
 	seedBenchmarkSliceFileState(t, ctx, sliceA, sharedFile, []byte("slice A content\n"))
 	seedBenchmarkSliceFileState(t, ctx, sliceB, sharedFile, []byte("slice B content\n"))
 
-	// Confirm the conflict is visible via the admin API.
-	conflictsResp, err := benchAdminClient.GetConflicts(ctx, &adminv1.ConflictsRequest{})
+	// Confirm the conflict is visible via the slice API.
+	conflictsResp, err := benchSliceClient.GetConflicts(ctx, &slicev1.ConflictsRequest{})
 	if err != nil {
 		t.Fatalf("GetConflicts: %v", err)
 	}
@@ -151,7 +150,7 @@ func TestConflictResolution(t *testing.T) {
 	}
 
 	// Resolve: prefer B.
-	_, err = benchAdminClient.ResolveConflict(ctx, &adminv1.ResolveConflictRequest{
+	_, err = benchSliceClient.ResolveConflict(ctx, &slicev1.ResolveConflictRequest{
 		FileId:           sharedFile,
 		PreferredSliceId: sliceB,
 	})
