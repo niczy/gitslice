@@ -146,7 +146,7 @@ function buildRootFileURL(rawTarget, requestURL) {
   return buildTargetURL(`/v1/files${suffix}`, params);
 }
 
-async function buildHeadersForUpstream(request, authenticated) {
+async function buildHeadersForUpstream(request, authenticated, options = {}) {
   const headers = new Headers();
   headers.set('Accept', 'application/json');
   headers.set('x-forwarded-host', new URL(request.url).host);
@@ -166,7 +166,7 @@ async function buildHeadersForUpstream(request, authenticated) {
   }
 
   if (getAuthProvider() === 'clerk') {
-    const authResult = await getProxyAuthorizationResult(request);
+    const authResult = await getProxyAuthorizationResult(request, options);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
@@ -183,8 +183,8 @@ async function buildHeadersForUpstream(request, authenticated) {
   return { headers, responseCookies, hasAuthorization: false, rejectUnauthenticated: false };
 }
 
-async function fetchJSONFile(request, targetURL, authenticated) {
-  const { headers, responseCookies, hasAuthorization, rejectUnauthenticated } = await buildHeadersForUpstream(request, authenticated);
+async function fetchJSONFile(request, targetURL, authenticated, options = {}) {
+  const { headers, responseCookies, hasAuthorization, rejectUnauthenticated } = await buildHeadersForUpstream(request, authenticated, options);
   if (authenticated && !hasAuthorization) {
     return {
       skipped: true,
@@ -392,9 +392,9 @@ async function rawResponseFromUpstream({ request, response, source, rawTarget, r
   });
 }
 
-async function tryAuthenticatedRaw(request, rawTarget, requestURL) {
+async function tryAuthenticatedRaw(request, rawTarget, requestURL, options = {}) {
   const authenticatedURL = buildAuthenticatedFileURL(rawTarget, requestURL);
-  const result = await fetchJSONFile(request, authenticatedURL, true);
+  const result = await fetchJSONFile(request, authenticatedURL, true, options);
   if (result.skipped) {
     return {
       skipped: true,
@@ -462,7 +462,7 @@ async function rootRawResponse(request, rawTarget, requestURL) {
   });
 }
 
-export async function handleRawContentRequest(request, suffix = '') {
+export async function handleRawContentRequest(request, suffix = '', options = {}) {
   const method = request.method.toUpperCase();
   if (!['GET', 'HEAD'].includes(method)) {
     return new Response('Raw file content only supports GET and HEAD.', {
@@ -482,7 +482,7 @@ export async function handleRawContentRequest(request, suffix = '') {
 
   const requestURL = new URL(request.url);
   if (rawTarget.mode === 'slice') {
-    const authenticatedResult = await tryAuthenticatedRaw(request, rawTarget, requestURL);
+    const authenticatedResult = await tryAuthenticatedRaw(request, rawTarget, requestURL, options);
     if (authenticatedResult.finalResponse) {
       return authenticatedResult.finalResponse;
     }

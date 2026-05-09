@@ -1,4 +1,5 @@
 import { createClerkClient } from '@clerk/backend';
+import { getAuth } from '@clerk/react-router/server';
 import {
   base64URLToBytes,
   bytesToBase64URL,
@@ -592,25 +593,46 @@ function redirectWithCookies(location, cookies = []) {
   return new Response(null, { status: 302, headers });
 }
 
-async function authenticateClerkSession(request, authContext) {
+async function clerkAuthFromRouteContext(request, options = {}) {
+  if (options.clerkAuth) {
+    return options.clerkAuth;
+  }
+  const routeContext = options.routeContext;
+  if (!routeContext) {
+    return null;
+  }
+  try {
+    return await getAuth(
+      { request, context: routeContext },
+      { acceptsToken: 'any', treatPendingAsSignedOut: false },
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function authenticateClerkSession(request, authContext, options = {}) {
   if (!authContext?.clerk) {
     return { session: null };
   }
   try {
-    const requestState = await authContext.clerk.authenticateRequest(request, {
-      authorizedParties: authContext.clerkAuthorizedParties,
-      jwtKey: authContext.clerkJWTKey || undefined,
-      acceptsToken: 'session_token',
-    });
-    if (!requestState?.isAuthenticated) {
-      return { session: null };
+    let authObject = await clerkAuthFromRouteContext(request, options);
+    if (!authObject?.userId) {
+      const requestState = await authContext.clerk.authenticateRequest(request, {
+        authorizedParties: authContext.clerkAuthorizedParties,
+        jwtKey: authContext.clerkJWTKey || undefined,
+        acceptsToken: 'session_token',
+      });
+      if (!requestState?.isAuthenticated) {
+        return { session: null };
+      }
+      authObject = requestState.toAuth();
     }
-    const authObject = requestState.toAuth();
     const userID = String(authObject?.userId || '').trim();
     if (!userID) {
       return { session: null };
     }
-    const user = await authContext.clerk.users.getUser(userID);
+    const user = options.clerkUser || await authContext.clerk.users.getUser(userID);
     return {
       session: buildClerkSessionPayload(authObject, user),
     };
@@ -779,7 +801,7 @@ async function resolveClerkBackedLocalSession(request, authContext, options = {}
     clearLocalCookie = clearLocalCookie || refreshedSession.clearCookie;
   }
 
-  const clerkAuthSession = await authenticateClerkSession(request, authContext);
+  const clerkAuthSession = await authenticateClerkSession(request, authContext, options);
   if (!clerkAuthSession.session) {
     return {
       localSession: null,
@@ -814,17 +836,17 @@ async function resolveClerkBackedLocalSession(request, authContext, options = {}
   };
 }
 
-export async function getProxyAuthorizationHeader(request) {
-  const { authorization } = await getProxyAuthorizationResult(request);
+export async function getProxyAuthorizationHeader(request, options = {}) {
+  const { authorization } = await getProxyAuthorizationResult(request, options);
   return authorization;
 }
 
-export async function getClerkAdminClaimsResult(request) {
+export async function getClerkAdminClaimsResult(request, options = {}) {
   const authContext = createAuthContext(request);
   if (authContext.authProvider !== 'clerk' || authContext.startupError) {
     return { signedClaims: '', rejectUnauthenticated: false };
   }
-  const clerkAuthSession = await authenticateClerkSession(request, authContext);
+  const clerkAuthSession = await authenticateClerkSession(request, authContext, options);
   if (!clerkAuthSession.session) {
     return { signedClaims: '', rejectUnauthenticated: true };
   }
@@ -834,14 +856,14 @@ export async function getClerkAdminClaimsResult(request) {
   };
 }
 
-export async function getProxyAuthorizationResult(request) {
+export async function getProxyAuthorizationResult(request, options = {}) {
   const authContext = createAuthContext(request);
   if (authContext.authProvider !== 'clerk' || authContext.startupError) {
     return { authorization: '', setCookies: [], rejectUnauthenticated: false };
   }
   const cookieHeader = String(request.headers.get('cookie') || '');
   const hadSessionCookie = cookieHeader.includes(`${LOCAL_SESSION_COOKIE}=`);
-  const authSession = await resolveClerkBackedLocalSession(request, authContext);
+  const authSession = await resolveClerkBackedLocalSession(request, authContext, options);
   const setCookies = [...(authSession.setCookies || [])];
   if (authSession.clearLocalCookie) {
     setCookies.push(clearLocalSessionCookie(request));
@@ -853,14 +875,14 @@ export async function getProxyAuthorizationResult(request) {
   };
 }
 
-export async function loadSession(request) {
+export async function loadSession(request, options = {}) {
   const authContext = createAuthContext(request);
   if (!authContext?.authSecret) {
     return null;
   }
   const allowDevLogin = isDevLoginEnabled(request, authContext);
   if (authContext.authProvider === 'clerk') {
-    const resolvedSession = await resolveClerkBackedLocalSession(request, authContext);
+    const resolvedSession = await resolveClerkBackedLocalSession(request, authContext, options);
     if (!resolvedSession.publicSession) {
       if (!allowDevLogin) {
         return null;
@@ -895,7 +917,7 @@ export async function loadSession(request) {
   });
 }
 
-export async function handleSessionRequest(request) {
+export async function handleSessionRequest(request, options = {}) {
   const authContext = createAuthContext(request);
   const allowDevLogin = isDevLoginEnabled(request, authContext);
   if (authContext.startupError && !(allowDevLogin && authContext.authSecret)) {
@@ -907,7 +929,7 @@ export async function handleSessionRequest(request) {
     const setCookies = [];
     if (!authContext.startupError) {
       try {
-        const resolvedSession = await resolveClerkBackedLocalSession(request, authContext);
+        const resolvedSession = await resolveClerkBackedLocalSession(request, authContext, options);
         session = resolvedSession.publicSession;
         setCookies.push(...(resolvedSession.setCookies || []));
         if (resolvedSession.clearLocalCookie) {
@@ -1022,7 +1044,7 @@ export function handleDevLogoutRequest(request) {
   return response;
 }
 
-async function handleClerkClaimAccountRequest(request, authContext) {
+async function handleClerkClaimAccountRequest(request, authContext, options = {}) {
   const url = new URL(request.url);
   const claimToken = String(url.searchParams.get('token') || '').trim();
   const callbackURL = normalizeReturnTo(request, url.searchParams.get('callbackUrl'), '/browser');
@@ -1030,7 +1052,7 @@ async function handleClerkClaimAccountRequest(request, authContext) {
     return Response.json({ error: 'claim token is required' }, { status: 400 });
   }
 
-  const { session } = await authenticateClerkSession(request, authContext);
+  const { session } = await authenticateClerkSession(request, authContext, options);
   if (!session) {
     const signinURL = new URL('/sign-in', request.url);
     signinURL.searchParams.set('redirect_url', url.toString());
@@ -1053,7 +1075,7 @@ async function handleClerkClaimAccountRequest(request, authContext) {
   }
 }
 
-async function handleClerkCompleteUsernameRequest(request, authContext) {
+async function handleClerkCompleteUsernameRequest(request, authContext, options = {}) {
   if (request.method !== 'POST') {
     return Response.json({ error: 'Method not allowed' }, { status: 405 });
   }
@@ -1070,7 +1092,7 @@ async function handleClerkCompleteUsernameRequest(request, authContext) {
     return Response.json({ error: 'Invalid username' }, { status: 400 });
   }
 
-  const { session } = await authenticateClerkSession(request, authContext);
+  const { session } = await authenticateClerkSession(request, authContext, options);
   if (!session) {
     return Response.json({ error: 'Not signed in' }, { status: 401 });
   }
@@ -1099,7 +1121,7 @@ async function handleClerkCompleteUsernameRequest(request, authContext) {
   }
 }
 
-export async function handleAuthRequest(request) {
+export async function handleAuthRequest(request, options = {}) {
   const authContext = createAuthContext(request);
   if (authContext.startupError) {
     return Response.json({ error: authContext.startupError || 'Auth is not configured' }, { status: 500 });
@@ -1107,10 +1129,10 @@ export async function handleAuthRequest(request) {
   if (authContext.authProvider === 'clerk') {
     const pathname = new URL(request.url).pathname.replace(/^\/auth\/?/, '');
     if (pathname === 'claim-account') {
-      return handleClerkClaimAccountRequest(request, authContext);
+      return handleClerkClaimAccountRequest(request, authContext, options);
     }
     if (pathname === 'clerk/complete-username') {
-      return handleClerkCompleteUsernameRequest(request, authContext);
+      return handleClerkCompleteUsernameRequest(request, authContext, options);
     }
     return Response.json({ error: 'Clerk auth route not found' }, { status: 404 });
   }

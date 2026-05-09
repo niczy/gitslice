@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { __test, getProxyAuthorizationResult, handleSessionRequest } from './auth.js';
+import { __test, getProxyAuthorizationResult, handleAuthRequest, handleSessionRequest } from './auth.js';
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_FETCH = global.fetch;
@@ -158,4 +158,67 @@ test('handleSessionRequest returns a cached local session for Clerk users', asyn
   assert.equal(session.apiAuthSource, 'local_session');
   assert.equal(session.user.username, 'nic');
   assert.equal(session.user.clerkUserId, 'user_clerk_123');
+});
+
+test('handleAuthRequest completes Clerk username using route auth context', async () => {
+  configureClerkEnv();
+
+  global.fetch = async (url, options = {}) => {
+    assert.equal(url.toString(), 'http://localhost:50051/v1/auth/clerk/ensure-local-identity');
+    assert.equal(options.method, 'POST');
+    const payload = JSON.parse(String(options.body || '{}'));
+    assert.equal(payload.preferredUsername, 'newclerkuser');
+    assert.equal(payload.issueLocalSession, true);
+    assert.ok(payload.signedClaims);
+    return Response.json({
+      accountId: 'acct_context',
+      linkedExistingUser: false,
+      localAuth: {
+        sessionId: 'local_sess_context',
+        accessToken: 'access_context',
+        refreshToken: 'refresh_context',
+        accessTokenExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        refreshTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        user: {
+          username: 'newclerkuser',
+          name: 'New Clerk User',
+          primaryEmail: 'newclerkuser@example.com',
+        },
+      },
+      user: {
+        username: 'newclerkuser',
+        name: 'New Clerk User',
+        primaryEmail: 'newclerkuser@example.com',
+      },
+    });
+  };
+
+  const response = await handleAuthRequest(new Request('https://agenttools.dev/auth/clerk/complete-username', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'newclerkuser' }),
+  }), {
+    clerkAuth: {
+      userId: 'user_context_123',
+      sessionId: 'sess_context_123',
+      orgId: '',
+    },
+    clerkUser: {
+      id: 'user_context_123',
+      fullName: 'New Clerk User',
+      primaryEmailAddressId: 'email_context_123',
+      emailAddresses: [
+        { id: 'email_context_123', emailAddress: 'newclerkuser@example.com' },
+      ],
+      imageUrl: '',
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(response.headers.get('set-cookie')?.includes('gs_local_session='));
+  const session = await response.json();
+  assert.equal(session.source, 'clerk');
+  assert.equal(session.apiAuthSource, 'local_session');
+  assert.equal(session.user.username, 'newclerkuser');
+  assert.equal(session.user.clerkUserId, 'user_context_123');
 });
