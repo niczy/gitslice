@@ -1401,45 +1401,80 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	}
 	defer s.storage.UnlockSliceAndFiles(ctx, cs.SliceID, modifiedFiles)
 
-	if !useCurrentHead {
-		stale, currentHead, err := s.changesetNeedsRebase(ctx, cs)
+	pathHeadSnapshot, pathHeadAuthority, err := s.loadPathHeadMergeAuthority(ctx, cs, modifiedFiles)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load path-head merge authority: %v", err))
+	}
+
+	if pathHeadAuthority {
+		drifts, _, err := s.changesetPathHeadDrifts(ctx, cs, pathHeadSnapshot)
 		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head merge authority: %v", err))
 		}
-		if stale {
-			s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "stale_base")
+		if len(drifts) > 0 {
 			return &slicev1.MergeChangesetResponse{
 				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
 				ChangesetId: cs.ID,
-				Message: fmt.Sprintf(
-					"changeset base commit %s is stale; current slice head is %s. Rebase the changeset before merging.",
-					shortHash(cs.BaseCommitHash),
-					shortHash(currentHead),
-				),
+				Message:     pathHeadDriftMergeMessage(drifts),
 			}, nil
 		}
-	}
-
-	if !isRevertChangesetHash(cs.Hash) {
-		conflictStartedAt := time.Now()
-		conflicts, _, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, modifiedFiles)
-		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
+		if !isRevertChangesetHash(cs.Hash) {
+			conflictStartedAt := time.Now()
+			conflicts, _, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, modifiedFiles)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
+			}
+			profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
+			if len(conflicts) > 0 {
+				return &slicev1.MergeChangesetResponse{
+					Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
+					NewCommitHash: "",
+					ChangesetId:   cs.ID,
+					Conflicts:     conflicts,
+				}, nil
+			}
 		}
-		profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
-
-		if len(conflicts) > 0 {
-			s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "file_conflict")
-			return &slicev1.MergeChangesetResponse{
-				Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
-				NewCommitHash: "",
-				ChangesetId:   cs.ID,
-				Conflicts:     conflicts,
-			}, nil
+	} else {
+		if !useCurrentHead {
+			stale, currentHead, err := s.changesetNeedsRebase(ctx, cs)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
+			}
+			if stale {
+				s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "stale_base")
+				return &slicev1.MergeChangesetResponse{
+					Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+					ChangesetId: cs.ID,
+					Message: fmt.Sprintf(
+						"changeset base commit %s is stale; current slice head is %s. Rebase the changeset before merging.",
+						shortHash(cs.BaseCommitHash),
+						shortHash(currentHead),
+					),
+				}, nil
+			}
 		}
-	}
 
-	s.logPathHeadShadowMergeDisagreement(ctx, cs, false, "accepted")
+		if !isRevertChangesetHash(cs.Hash) {
+			conflictStartedAt := time.Now()
+			conflicts, _, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, modifiedFiles)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
+			}
+			profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
+
+			if len(conflicts) > 0 {
+				s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "file_conflict")
+				return &slicev1.MergeChangesetResponse{
+					Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
+					NewCommitHash: "",
+					ChangesetId:   cs.ID,
+					Conflicts:     conflicts,
+				}, nil
+			}
+		}
+
+		s.logPathHeadShadowMergeDisagreement(ctx, cs, false, "accepted")
+	}
 
 	if err := s.validateChangesetSnapshotContentRefs(ctx, s.storage, cs); err != nil {
 		return nil, err
@@ -1460,11 +1495,15 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	var promotionCommitHash string
 	var promotionCommitTime time.Time
 	var acceptedMergeEvent *models.MergeEvent
+	eventPathHeadSnapshot := pathHeadSnapshot
+	if !pathHeadAuthority {
+		eventPathHeadSnapshot = nil
+	}
 	finalizeStartedAt := time.Now()
 	if err := withMergeStorage(ctx, s.storage, func(st storage.Storage) error {
 		if len(appliedRevertChanges) == 0 {
-			// Conflicts were already checked under lock above. At this point either
-			// no owner exists or this slice is already the sole owner.
+			// Conflicts were already checked under lock above. At this point no
+			// divergent owner exists for the touched paths.
 			if err := addFilesToSlice(ctx, st, modifiedFiles, cs.SliceID); err != nil {
 				return fmt.Errorf("failed to mark file ownership: %w", err)
 			}
@@ -1492,7 +1531,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
 				promotionCommitTime = existingCommit.Timestamp
 			}
-			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, modifiedFiles, promotionCommitTime)
+			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, modifiedFiles, promotionCommitTime, eventPathHeadSnapshot, pathHeadAuthority)
 			if err != nil {
 				return fmt.Errorf("failed to append merge event: %w", err)
 			}
@@ -1524,7 +1563,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		if err := s.recordFileChangesWithStorage(ctx, st, cs, newCommit, parentHash, now); err != nil {
 			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
 		}
-		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, modifiedFiles, now)
+		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority)
 		if err != nil {
 			return fmt.Errorf("failed to append merge event: %w", err)
 		}
@@ -1532,6 +1571,17 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		return nil
 	}); err != nil {
 		profile.markFinalize(time.Since(finalizeStartedAt))
+		if pathHeadAuthority && errors.Is(err, storage.ErrHomePathHeadConflict) {
+			drifts, _, driftErr := s.changesetPathHeadDrifts(ctx, cs, pathHeadSnapshot)
+			if driftErr != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head conflict: %v", driftErr))
+			}
+			return &slicev1.MergeChangesetResponse{
+				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+				ChangesetId: cs.ID,
+				Message:     pathHeadDriftMergeMessage(drifts),
+			}, nil
+		}
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
@@ -1581,7 +1631,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 
 const mergeEventShardCount = 1024
 
-func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, modifiedFiles []string, mergedAt time.Time) (*models.MergeEvent, error) {
+func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, modifiedFiles []string, mergedAt time.Time, snapshot *models.ChangesetSnapshot, requirePathHeadCAS bool) (*models.MergeEvent, error) {
 	eventStore, ok := st.(storage.MergeEventStore)
 	if !ok || cs == nil {
 		return nil, nil
@@ -1603,12 +1653,18 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		return nil, err
 	}
 
+	baseVersions, err := s.mergeEventBasePathVersions(ctx, st, homeID, paths, snapshot)
+	if err != nil {
+		return nil, err
+	}
 	pathUpdates := make([]*models.MergePathUpdate, 0, len(paths))
 	for _, filePath := range paths {
 		hash := strings.TrimSpace(fileHashes[filePath])
+		baseVersion := baseVersions[filePath]
 		pathUpdates = append(pathUpdates, &models.MergePathUpdate{
 			Path:             filePath,
-			NewVersion:       mergeSeq,
+			BaseVersion:      baseVersion,
+			NewVersion:       baseVersion + 1,
 			ContentHash:      hash,
 			ManifestHash:     hash,
 			SourceSliceID:    cs.SliceID,
@@ -1638,10 +1694,144 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		PathUpdates:      pathUpdates,
 		CreatedAt:        mergedAt,
 	}
+
+	if requirePathHeadCAS {
+		casStore, ok := st.(storage.MergeEventPathHeadCASStore)
+		if !ok {
+			return nil, storage.ErrInvalidInput
+		}
+		if err := casStore.AppendMergeEventWithPathHeadCAS(ctx, event); err != nil {
+			return nil, err
+		}
+		return event, nil
+	}
+
 	if err := eventStore.AppendMergeEvent(ctx, event); err != nil {
 		return nil, err
 	}
+	if headStore, ok := st.(storage.HomePathHeadStore); ok {
+		if err := headStore.UpsertHomePathHeads(ctx, mergeEventHomePathHeads(event)); err != nil {
+			return nil, err
+		}
+	}
 	return event, nil
+}
+
+func (s *sliceServiceServer) loadPathHeadMergeAuthority(ctx context.Context, cs *models.Changeset, modifiedFiles []string) (*models.ChangesetSnapshot, bool, error) {
+	if cs == nil {
+		return nil, false, nil
+	}
+	if _, ok := s.storage.(storage.MergeEventPathHeadCASStore); !ok {
+		return nil, false, nil
+	}
+	snapshot, err := s.storage.GetChangesetSnapshot(ctx, cs.ID, 0)
+	if err != nil {
+		if errors.Is(err, storage.ErrChangesetNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if !snapshotHasBaseVersionsForPaths(snapshot, modifiedFiles) {
+		return snapshot, false, nil
+	}
+	return snapshot, true, nil
+}
+
+func snapshotHasBaseVersionsForPaths(snapshot *models.ChangesetSnapshot, paths []string) bool {
+	cleaned := normalizeModifiedFiles(paths)
+	if snapshot == nil || len(cleaned) == 0 || len(snapshot.BasePathVersions) == 0 {
+		return false
+	}
+	for _, rawPath := range cleaned {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		if _, ok := snapshot.BasePathVersions[filePath]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *sliceServiceServer) mergeEventBasePathVersions(ctx context.Context, st storage.Storage, homeID string, paths []string, snapshot *models.ChangesetSnapshot) (map[string]int64, error) {
+	cleaned := normalizeModifiedFiles(paths)
+	baseVersions := make(map[string]int64, len(cleaned))
+	for _, rawPath := range cleaned {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		if snapshot != nil && snapshot.BasePathVersions != nil {
+			if version, ok := snapshot.BasePathVersions[filePath]; ok && version >= 0 {
+				baseVersions[filePath] = version
+				continue
+			}
+		}
+		baseVersions[filePath] = 0
+	}
+	if headStore, ok := st.(storage.HomePathHeadStore); ok && snapshot == nil {
+		heads, err := headStore.GetHomePathHeads(ctx, homeID, cleaned)
+		if err != nil {
+			return nil, err
+		}
+		for _, rawPath := range cleaned {
+			filePath := cleanDiffPath(rawPath)
+			if filePath == "" {
+				continue
+			}
+			if head := heads[filePath]; head != nil && head.PathVersion > 0 {
+				baseVersions[filePath] = head.PathVersion
+			}
+		}
+	}
+	return baseVersions, nil
+}
+
+func mergeEventHomePathHeads(event *models.MergeEvent) []*models.HomePathHead {
+	if event == nil {
+		return nil
+	}
+	heads := make([]*models.HomePathHead, 0, len(event.PathUpdates))
+	for _, update := range event.PathUpdates {
+		if update == nil {
+			continue
+		}
+		sourceSliceID := strings.TrimSpace(update.SourceSliceID)
+		if sourceSliceID == "" {
+			sourceSliceID = event.SourceSliceID
+		}
+		sourceCommitHash := strings.TrimSpace(update.SourceCommitHash)
+		if sourceCommitHash == "" {
+			sourceCommitHash = event.SourceCommitHash
+		}
+		heads = append(heads, &models.HomePathHead{
+			HomeID:           event.HomeID,
+			Path:             update.Path,
+			PathVersion:      update.NewVersion,
+			ContentHash:      update.ContentHash,
+			ManifestHash:     update.ManifestHash,
+			SourceSliceID:    sourceSliceID,
+			SourceCommitHash: sourceCommitHash,
+			LastMergeSeq:     event.MergeSeq,
+			Deleted:          update.Deleted,
+			UpdatedAt:        event.CreatedAt,
+		})
+	}
+	return heads
+}
+
+func pathHeadDriftMergeMessage(drifts []changesetPathHeadDrift) string {
+	if len(drifts) == 0 {
+		return "changeset paths changed since export. Sync the changeset before merging."
+	}
+	first := drifts[0]
+	return fmt.Sprintf(
+		"path %s changed from version %d to %d. Sync the changeset before merging.",
+		first.Path,
+		first.BaseVersion,
+		first.CurrentVersion,
+	)
 }
 
 func mergeEventHomeID(sourceSlice *models.Slice, cs *models.Changeset, modifiedFiles []string) string {
@@ -3001,7 +3191,7 @@ func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *
 			continue
 		}
 		version := int64(0)
-		if head := heads[filePath]; head != nil && !head.Deleted {
+		if head := heads[filePath]; head != nil && head.PathVersion > 0 {
 			version = head.PathVersion
 		}
 		baseVersions[filePath] = version
@@ -3406,7 +3596,7 @@ func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *mo
 		}
 		compared++
 		currentVersion := int64(0)
-		if head := heads[filePath]; head != nil && !head.Deleted {
+		if head := heads[filePath]; head != nil && head.PathVersion > 0 {
 			currentVersion = head.PathVersion
 		}
 		if currentVersion == baseVersion {

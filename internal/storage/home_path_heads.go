@@ -28,6 +28,13 @@ func homePathHeadKey(homeID, filePath string) string {
 	return normalizeHomePathHeadHomeID(homeID) + ":" + cleanRelativePath(filePath)
 }
 
+func homePathHeadCurrentVersion(head *models.HomePathHead) int64 {
+	if head == nil || head.PathVersion < 0 {
+		return 0
+	}
+	return head.PathVersion
+}
+
 func cloneHomePathHead(head *models.HomePathHead) *models.HomePathHead {
 	if head == nil {
 		return nil
@@ -97,6 +104,48 @@ func normalizeHomePathHeadPaths(paths []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func homePathHeadsFromMergeEvent(event *models.MergeEvent) ([]*models.HomePathHead, error) {
+	normalized, err := normalizeMergeEvent(event)
+	if err != nil {
+		return nil, err
+	}
+	heads := make([]*models.HomePathHead, 0, len(normalized.PathUpdates))
+	for _, update := range normalized.PathUpdates {
+		if update == nil {
+			continue
+		}
+		path := cleanRelativePath(update.Path)
+		if path == "" || update.NewVersion <= 0 {
+			return nil, ErrInvalidInput
+		}
+		sourceSliceID := strings.TrimSpace(update.SourceSliceID)
+		if sourceSliceID == "" {
+			sourceSliceID = normalized.SourceSliceID
+		}
+		sourceCommitHash := strings.TrimSpace(update.SourceCommitHash)
+		if sourceCommitHash == "" {
+			sourceCommitHash = normalized.SourceCommitHash
+		}
+		head, err := normalizeHomePathHead(&models.HomePathHead{
+			HomeID:           normalized.HomeID,
+			Path:             path,
+			PathVersion:      update.NewVersion,
+			ContentHash:      update.ContentHash,
+			ManifestHash:     update.ManifestHash,
+			SourceSliceID:    sourceSliceID,
+			SourceCommitHash: sourceCommitHash,
+			LastMergeSeq:     normalized.MergeSeq,
+			Deleted:          update.Deleted,
+			UpdatedAt:        normalized.CreatedAt,
+		})
+		if err != nil {
+			return nil, err
+		}
+		heads = append(heads, head)
+	}
+	return heads, nil
 }
 
 func collectMaterializedHomePathHeads(ctx context.Context, st Storage, homeID string) ([]*models.HomePathHead, string, error) {
