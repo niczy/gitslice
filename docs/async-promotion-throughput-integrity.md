@@ -424,18 +424,24 @@ This reduces write amplification before changing consistency behavior.
 
 - Keep `WaitForQueuedPromotions` or equivalent for integration tests and
   benchmark integrity checks.
-- Add optional CLI/UI wait behavior where users expect immediate home/root
-  visibility.
+- Treat `GetSliceCommits` and `gs slice history` as projection-backed reads.
+- Add optional CLI/UI wait behavior where users expect immediate history or
+  home/root visibility. `gs changeset merge --wait` waits for
+  `history-projection`, while default merge returns after the accepted merge
+  event commits.
 - Surface promotion lag in admin/debug endpoints.
 - Surface proactive changeset state in list/detail APIs so users see whether to
   merge, sync, or resolve conflicts before attempting the merge.
+- Backfill older merge events with
+  `storage_migrate backfill-history-projection --dsn <dsn> --namespace <ns>`.
 
 ### Phase 5: Defer non-critical stats
 
 - Move line-count/diff-stat computation out of the critical merge path, or store
   line counts in file manifests at write time.
-- Keep the commit/file history rows synchronous only if product behavior
-  requires immediate file history after merge.
+- Keep commit/file history out of the synchronous merge path. Product flows that
+  need immediate file history should wait on the projection token rather than
+  reintroducing foreground writes.
 
 ---
 
@@ -449,7 +455,8 @@ The design is correct only if these invariants hold:
 3. Promotion workers never overwrite a path with an older `merge_seq`.
 4. Promotion is idempotent and safe to retry.
 5. Home/root view lag never participates in conflict authority.
-6. APIs that require home/root freshness explicitly wait for promotion.
+6. APIs that require history or home/root freshness explicitly wait for the
+   relevant projection.
 7. File/folder overlap within the same home is treated the same as overlap
    across different homes: active source slices decide conflicts.
 8. Proactive changeset state is advisory; the merge transaction repeats all
@@ -479,8 +486,8 @@ from corrupting home/root materialization.
 
 ## Open Questions
 
-1. Should CLI `gs changeset merge` wait for home/root promotion by default, or
-   return immediately with a "publishing" status?
+1. Should CLI `gs changeset merge` ever wait for home/root promotion by default,
+   or should only explicit wait modes block after the accepted merge event?
 2. Should the web UI read source slices immediately after merge and only use
    home/root views when promotion is current?
 3. How much promotion lag is acceptable before surfacing an admin warning?

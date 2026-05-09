@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
+
+const cliHistoryProjectionName = "history-projection"
 
 func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 	if len(args) < 1 {
@@ -263,16 +266,21 @@ func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
 func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("changeset merge")
+	waitForHistory := fs.Bool("wait", false, "Wait for commit history projection before returning")
+	waitTimeout := fs.Duration("wait-timeout", 30*time.Second, "Maximum time to wait for commit history projection")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	parseCommandFlags(fs, args)
+	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	changesetID, err := resolveChangesetIDForRead("")
 	if fs.NArg() == 1 {
 		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
 	} else if fs.NArg() > 1 {
-		commandUsage("Usage: gs changeset merge [<changeset-id>] [--json]")
+		commandUsage("Usage: gs changeset merge [<changeset-id>] [--wait] [--wait-timeout <duration>] [--json]")
 		return
+	}
+	if *waitTimeout < 0 {
+		commandFatal("INVALID_ARGUMENT", "--wait-timeout must be non-negative", false, "")
 	}
 	if err != nil {
 		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
@@ -288,6 +296,12 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		if err := clearTrackedChangesetIDIfMatches(req.ChangesetId); err != nil {
 			log.Printf("Warning: failed to clear tracked changeset ID: %v", err)
 		}
+		if *waitForHistory {
+			resp, err = waitForMergeHistoryProjection(ctx, cli, resp, *waitTimeout)
+			if err != nil {
+				commandFatalf("PROJECTION_WAIT_FAILED", true, "gs changeset merge --wait --wait-timeout 60s", "Failed waiting for commit history projection: %v", err)
+			}
+		}
 	}
 
 	if jsonEnabled {
@@ -295,6 +309,70 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 	printMergeResult(resp)
+}
+
+func waitForMergeHistoryProjection(ctx context.Context, cli *CLI, resp *slicev1.MergeChangesetResponse, timeout time.Duration) (*slicev1.MergeChangesetResponse, error) {
+	if resp == nil {
+		return resp, nil
+	}
+	projectionIndex := -1
+	var projection *slicev1.ProjectionStatus
+	for i, candidate := range resp.GetProjections() {
+		if candidate != nil && candidate.GetProjectionName() == cliHistoryProjectionName {
+			projectionIndex = i
+			projection = candidate
+			break
+		}
+	}
+	if projection == nil || projection.GetRequestedSeq() <= 0 {
+		return resp, nil
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		wait := timeout
+		if timeout > 0 {
+			wait = time.Until(deadline)
+			if wait < 0 {
+				wait = 0
+			}
+			if wait > 30*time.Second {
+				wait = 30 * time.Second
+			}
+		}
+		updated, err := cli.sliceClient.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
+			ProjectionName: projection.GetProjectionName(),
+			ShardId:        projection.GetShardId(),
+			MergeSeq:       projection.GetRequestedSeq(),
+			WaitMs:         durationMilliseconds(wait),
+		})
+		if err != nil {
+			return resp, err
+		}
+		if projectionIndex >= 0 && projectionIndex < len(resp.Projections) {
+			resp.Projections[projectionIndex] = updated
+		}
+		if updated.GetState() == slicev1.ProjectionState_PROJECTION_STATE_CAUGHT_UP {
+			return resp, nil
+		}
+		if timeout <= 0 || !time.Now().Before(deadline) {
+			return resp, fmt.Errorf("%s is pending: applied=%d requested=%d", updated.GetProjectionName(), updated.GetAppliedSeq(), updated.GetRequestedSeq())
+		}
+	}
+}
+
+func durationMilliseconds(duration time.Duration) int32 {
+	if duration <= 0 {
+		return 0
+	}
+	ms := duration.Milliseconds()
+	if ms > 30000 {
+		ms = 30000
+	}
+	if ms < 1 {
+		ms = 1
+	}
+	return int32(ms)
 }
 
 func handleChangesetClose(ctx context.Context, cli *CLI, args []string) {

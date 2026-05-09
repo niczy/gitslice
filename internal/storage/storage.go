@@ -9,22 +9,24 @@ import (
 )
 
 var (
-	ErrSliceNotFound          = errors.New("slice not found")
-	ErrSliceAlreadyExists     = errors.New("slice already exists")
-	ErrInvalidInput           = errors.New("invalid input")
-	ErrChangesetNotFound      = errors.New("changeset not found")
-	ErrEntryNotFound          = errors.New("entry not found")
-	ErrEntryExists            = errors.New("entry already exists")
-	ErrLockHeld               = errors.New("resource locked")
-	ErrCommitNotFound         = errors.New("commit not found")
-	ErrSliceFilesImmutable    = errors.New("slice files are immutable")
-	ErrRepoBindingNotFound    = errors.New("repo binding not found")
-	ErrAgentSessionNotFound   = errors.New("agent session not found")
-	ErrAgentSessionConflict   = errors.New("agent session conflict")
-	ErrSearchArtifactNotReady = errors.New("search artifact not ready")
-	ErrMergeEventNotFound     = errors.New("merge event not found")
-	ErrMergeEventConflict     = errors.New("merge event conflict")
-	ErrHomePathHeadConflict   = errors.New("home path head conflict")
+	ErrSliceNotFound            = errors.New("slice not found")
+	ErrSliceAlreadyExists       = errors.New("slice already exists")
+	ErrInvalidInput             = errors.New("invalid input")
+	ErrChangesetNotFound        = errors.New("changeset not found")
+	ErrEntryNotFound            = errors.New("entry not found")
+	ErrEntryExists              = errors.New("entry already exists")
+	ErrLockHeld                 = errors.New("resource locked")
+	ErrCommitNotFound           = errors.New("commit not found")
+	ErrSliceFilesImmutable      = errors.New("slice files are immutable")
+	ErrRepoBindingNotFound      = errors.New("repo binding not found")
+	ErrAgentSessionNotFound     = errors.New("agent session not found")
+	ErrAgentSessionConflict     = errors.New("agent session conflict")
+	ErrSearchArtifactNotReady   = errors.New("search artifact not ready")
+	ErrMergeEventNotFound       = errors.New("merge event not found")
+	ErrMergeEventConflict       = errors.New("merge event conflict")
+	ErrHomePathHeadConflict     = errors.New("home path head conflict")
+	ErrMergeFastPathUnsupported = errors.New("merge fast path unsupported")
+	ErrPermissionDenied         = errors.New("permission denied")
 )
 
 const (
@@ -65,6 +67,42 @@ type MergeEventProjectionBatchProcessor interface {
 // updates and appends the accepted merge event.
 type MergeEventPathHeadCASStore interface {
 	AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error
+}
+
+// AcceptChangesetMergeRequest contains the already-authorized inputs required
+// to accept a standard changeset merge on the storage hot path.
+type AcceptChangesetMergeRequest struct {
+	Changeset     *models.Changeset
+	SourceSlice   *models.Slice
+	ModifiedFiles []string
+	HomeID        string
+	ShardID       int32
+	CommitHash    string
+	MergedAt      time.Time
+}
+
+// AcceptChangesetMergeResult contains the durable merge fact and source-slice
+// parent metadata produced by the storage hot path.
+type AcceptChangesetMergeResult struct {
+	Changeset   *models.Changeset
+	SourceSlice *models.Slice
+	Event       *models.MergeEvent
+	ParentHash  string
+	CommitHash  string
+	MergedAt    time.Time
+}
+
+// ChangesetMergeAccepter atomically accepts a prepared changeset merge. The
+// implementation should use path-head CAS as the conflict authority and append
+// the accepted merge event in the same transaction.
+type ChangesetMergeAccepter interface {
+	AcceptChangesetMerge(ctx context.Context, req *AcceptChangesetMergeRequest) (*AcceptChangesetMergeResult, error)
+}
+
+// ChangesetMergeByIDAccepter loads, authorizes, and accepts a changeset merge
+// inside one storage transaction.
+type ChangesetMergeByIDAccepter interface {
+	AcceptChangesetMergeByID(ctx context.Context, changesetID string, username string, commitHash string, mergedAt time.Time) (*AcceptChangesetMergeResult, error)
 }
 
 // HomePathHeadStore persists home-scoped path heads for future merge conflict authority.

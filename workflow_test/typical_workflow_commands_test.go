@@ -589,7 +589,7 @@ func TestSliceExportThenTrackedChangesetMergeAppendsCommitAndUpdatesTree(t *test
 		t.Fatalf("expected export to leave history unchanged, before=%+v after=%+v", beforeHistory, afterExportHistory)
 	}
 
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutDir, "changeset", "merge")
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutDir, "changeset", "merge", "--wait")
 	if mergeResp.Status != "MERGE_STATUS_SUCCESS" ||
 		mergeResp.ChangesetID != createResp.ChangesetID ||
 		mergeResp.NewCommitHash == "" ||

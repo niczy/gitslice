@@ -1349,7 +1349,9 @@ func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *sl
 }
 
 func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.MergeChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
-	log.Printf("MergeChangeset called: changeset_id=%s", req.ChangesetId)
+	if shouldLogProfiles() {
+		log.Printf("MergeChangeset called: changeset_id=%s", req.ChangesetId)
+	}
 
 	username, err := s.requireUsername(ctx)
 	if err != nil {
@@ -1370,6 +1372,10 @@ func (s *sliceServiceServer) MergeChangesetUsingCurrentHead(ctx context.Context,
 }
 
 func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool) (_ *slicev1.MergeChangesetResponse, retErr error) {
+	if resp, handled, err := s.tryMergeChangesetByIDFastPath(ctx, changesetID, username, useCurrentHead); handled {
+		return resp, err
+	}
+
 	cs, err := s.storage.GetChangeset(ctx, changesetID)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
@@ -1389,6 +1395,10 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		profile.finish()
 		profile.logResult(retErr)
 	}()
+
+	if resp, handled, err := s.tryMergeChangesetFastPath(ctx, cs, slice, modifiedFiles, useCurrentHead, profile); handled {
+		return resp, err
+	}
 
 	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, modifiedFiles); err != nil {
 		if errors.Is(err, storage.ErrLockHeld) {
@@ -1554,15 +1564,6 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
 		}
 
-		if err := st.AddSliceCommit(ctx, cs.SliceID, &models.Commit{
-			CommitHash: newCommit,
-			ParentHash: parentHash,
-			Timestamp:  now,
-			Message:    cs.Message,
-		}); err != nil {
-			log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
-		}
-
 		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, parentHash, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority)
 		if err != nil {
 			return fmt.Errorf("failed to append merge event: %w", err)
@@ -1631,6 +1632,147 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		MergeSeq:      mergeEventSeqFromEvent(acceptedMergeEvent),
 		Projections:   s.mergeProjectionStatuses(ctx, acceptedMergeEvent),
 	}, nil
+}
+
+func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, changesetID, username string, useCurrentHead bool) (_ *slicev1.MergeChangesetResponse, _ bool, retErr error) {
+	accepter, ok := s.storage.(storage.ChangesetMergeByIDAccepter)
+	if !ok || useCurrentHead {
+		return nil, false, nil
+	}
+	profile := newMergeProfile(strings.TrimSpace(changesetID), "", 0)
+	defer func() {
+		profile.finish()
+		profile.logResult(retErr)
+	}()
+
+	now := time.Now()
+	newCommit := common.GenerateCommitID()
+	finalizeStartedAt := time.Now()
+	result, err := accepter.AcceptChangesetMergeByID(ctx, changesetID, username, newCommit, now)
+	profile.markFinalize(time.Since(finalizeStartedAt))
+	if err != nil {
+		if errors.Is(err, storage.ErrMergeFastPathUnsupported) {
+			return nil, false, nil
+		}
+		if errors.Is(err, storage.ErrChangesetNotFound) {
+			return nil, true, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
+		}
+		if errors.Is(err, storage.ErrSliceNotFound) {
+			return nil, true, status.Error(codes.NotFound, "slice not found")
+		}
+		if errors.Is(err, storage.ErrPermissionDenied) {
+			return nil, true, status.Error(codes.PermissionDenied, "not authorized for slice")
+		}
+		if errors.Is(err, storage.ErrHomePathHeadConflict) {
+			return &slicev1.MergeChangesetResponse{
+				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+				ChangesetId: strings.TrimSpace(changesetID),
+				Message:     "changeset paths changed since export. Sync the changeset before merging.",
+			}, true, nil
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to accept changeset merge: %v", err))
+	}
+	if result == nil || result.Event == nil || result.Changeset == nil {
+		return nil, false, nil
+	}
+	profile.sliceID = strings.TrimSpace(result.Changeset.SliceID)
+	profile.modifiedFiles = len(result.Event.TouchedPaths)
+
+	s.enqueueHistoryProjection(ctx, result.Event)
+	promotionStartedAt := time.Now()
+	if s.durablePromotion {
+		// Durable promotion workers consume the accepted merge event.
+	} else if err := s.enqueueRootPromotion(ctx, result.Changeset.SliceID, newCommit, result.Event.TouchedPaths, now); err != nil {
+		profile.markPromotion(time.Since(promotionStartedAt))
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
+	}
+	profile.markPromotion(time.Since(promotionStartedAt))
+
+	return &slicev1.MergeChangesetResponse{
+		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
+		NewCommitHash: newCommit,
+		ChangesetId:   result.Changeset.ID,
+		Conflicts:     []*slicev1.Conflict{},
+		MergeHomeId:   mergeEventHomeIDFromEvent(result.Event),
+		MergeShard:    mergeEventShardFromEvent(result.Event),
+		MergeSeq:      mergeEventSeqFromEvent(result.Event),
+		Projections:   s.mergeProjectionStatuses(ctx, result.Event),
+	}, true, nil
+}
+
+func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *models.Changeset, sourceSlice *models.Slice, modifiedFiles []string, useCurrentHead bool, profile *mergeProfile) (*slicev1.MergeChangesetResponse, bool, error) {
+	accepter, ok := s.storage.(storage.ChangesetMergeAccepter)
+	if !ok || cs == nil || sourceSlice == nil {
+		return nil, false, nil
+	}
+	if useCurrentHead || isRevertChangesetHash(cs.Hash) || changesetTouchesConfig(modifiedFiles) {
+		return nil, false, nil
+	}
+
+	now := time.Now()
+	newCommit := common.GenerateCommitID()
+	homeID := mergeEventHomeID(sourceSlice, cs, modifiedFiles)
+	shardID := mergeEventShardID(homeID)
+
+	finalizeStartedAt := time.Now()
+	result, err := accepter.AcceptChangesetMerge(ctx, &storage.AcceptChangesetMergeRequest{
+		Changeset:     cs,
+		SourceSlice:   sourceSlice,
+		ModifiedFiles: modifiedFiles,
+		HomeID:        homeID,
+		ShardID:       shardID,
+		CommitHash:    newCommit,
+		MergedAt:      now,
+	})
+	profile.markFinalize(time.Since(finalizeStartedAt))
+	if err != nil {
+		if errors.Is(err, storage.ErrMergeFastPathUnsupported) {
+			return nil, false, nil
+		}
+		if errors.Is(err, storage.ErrHomePathHeadConflict) {
+			snapshot, snapshotErr := s.storage.GetChangesetSnapshot(ctx, cs.ID, 0)
+			if snapshotErr != nil && !errors.Is(snapshotErr, storage.ErrChangesetNotFound) {
+				return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to load changeset snapshot: %v", snapshotErr))
+			}
+			drifts, _, driftErr := s.changesetPathHeadDrifts(ctx, cs, snapshot)
+			if driftErr != nil {
+				return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate path-head conflict: %v", driftErr))
+			}
+			return &slicev1.MergeChangesetResponse{
+				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+				ChangesetId: cs.ID,
+				Message:     pathHeadDriftMergeMessage(drifts),
+			}, true, nil
+		}
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to accept changeset merge: %v", err))
+	}
+	if result == nil || result.Event == nil {
+		return nil, false, nil
+	}
+
+	cs.Status = models.ChangesetStatusMerged
+	cs.MergedAt = &now
+	s.enqueueHistoryProjection(ctx, result.Event)
+
+	promotionStartedAt := time.Now()
+	if s.durablePromotion {
+		// Durable promotion workers consume the accepted merge event.
+	} else if err := s.enqueueRootPromotion(ctx, cs.SliceID, newCommit, modifiedFiles, now); err != nil {
+		profile.markPromotion(time.Since(promotionStartedAt))
+		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
+	}
+	profile.markPromotion(time.Since(promotionStartedAt))
+
+	return &slicev1.MergeChangesetResponse{
+		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
+		NewCommitHash: newCommit,
+		ChangesetId:   cs.ID,
+		Conflicts:     []*slicev1.Conflict{},
+		MergeHomeId:   mergeEventHomeIDFromEvent(result.Event),
+		MergeShard:    mergeEventShardFromEvent(result.Event),
+		MergeSeq:      mergeEventSeqFromEvent(result.Event),
+		Projections:   s.mergeProjectionStatuses(ctx, result.Event),
+	}, true, nil
 }
 
 const mergeEventShardCount = 1024
@@ -3178,12 +3320,6 @@ func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *
 	if strings.TrimSpace(homeID) == "" {
 		return nil, nil
 	}
-	if existingHeads, err := headStore.ListHomePathHeads(ctx, homeID, 1); err != nil {
-		return nil, err
-	} else if len(existingHeads) == 0 {
-		return nil, nil
-	}
-
 	paths := normalizeModifiedFiles(modifiedFiles)
 	heads, err := headStore.GetHomePathHeads(ctx, homeID, paths)
 	if err != nil {

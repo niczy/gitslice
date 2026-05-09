@@ -55,16 +55,12 @@ func (s *sliceServiceServer) mergeProjectionStatuses(ctx context.Context, event 
 	projectionNames := []string{durablePromotionProjectionName, historyProjectionName}
 	projections := make([]*slicev1.ProjectionStatus, 0, len(projectionNames))
 	for _, projectionName := range projectionNames {
-		projection, err := s.projectionStatus(ctx, projectionName, event.ShardID, event.MergeSeq)
-		if err != nil {
-			projection = &slicev1.ProjectionStatus{
-				ProjectionName: projectionName,
-				ShardId:        event.ShardID,
-				RequestedSeq:   event.MergeSeq,
-				State:          slicev1.ProjectionState_PROJECTION_STATE_PENDING,
-			}
-		}
-		projections = append(projections, projection)
+		projections = append(projections, &slicev1.ProjectionStatus{
+			ProjectionName: projectionName,
+			ShardId:        event.ShardID,
+			RequestedSeq:   event.MergeSeq,
+			State:          slicev1.ProjectionState_PROJECTION_STATE_PENDING,
+		})
 	}
 	return projections
 }

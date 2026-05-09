@@ -15,6 +15,11 @@ import (
 
 const historyProjectionName = "history-projection"
 
+type HistoryProjectionBackfillResult struct {
+	Batches int
+	Events  int
+}
+
 func (s *sliceServiceServer) enqueueHistoryProjection(ctx context.Context, event *models.MergeEvent) {
 	if event == nil || s.durablePromotion {
 		return
@@ -68,14 +73,41 @@ func (s *sliceServiceServer) runDurableHistoryProjectionWorker(ctx context.Conte
 }
 
 func (s *sliceServiceServer) processDurableHistoryProjectionOnce(ctx context.Context, cfg DurablePromotionConfig) (bool, error) {
+	processed, _, err := s.processDurableHistoryProjectionBatch(ctx, cfg)
+	return processed, err
+}
+
+func (s *sliceServiceServer) processDurableHistoryProjectionBatch(ctx context.Context, cfg DurablePromotionConfig) (bool, int, error) {
 	cfg = cfg.normalized()
 	processor, ok := s.promotionStore().(storage.MergeEventProjectionBatchProcessor)
 	if !ok {
-		return false, nil
+		return false, 0, nil
 	}
-	return processor.ProcessMergeEventProjectionBatch(ctx, historyProjectionName, cfg.ShardCount, cfg.BatchSize, func(processCtx context.Context, events []*models.MergeEvent) error {
+	eventCount := 0
+	processed, err := processor.ProcessMergeEventProjectionBatch(ctx, historyProjectionName, cfg.ShardCount, cfg.BatchSize, func(processCtx context.Context, events []*models.MergeEvent) error {
+		eventCount = len(events)
 		return s.projectMergeEventHistoryBatch(processCtx, events)
 	})
+	return processed, eventCount, err
+}
+
+func (s *sliceServiceServer) BackfillHistoryProjection(ctx context.Context, cfg DurablePromotionConfig, maxBatches int) (HistoryProjectionBackfillResult, error) {
+	var result HistoryProjectionBackfillResult
+	for maxBatches <= 0 || result.Batches < maxBatches {
+		processed, events, err := s.processDurableHistoryProjectionBatch(ctx, cfg)
+		if err != nil {
+			return result, err
+		}
+		if !processed {
+			return result, nil
+		}
+		result.Batches++
+		result.Events += events
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 func (s *sliceServiceServer) projectMergeEventHistoryBatch(ctx context.Context, events []*models.MergeEvent) error {

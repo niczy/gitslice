@@ -106,5 +106,8 @@ func (p *checkoutProfile) logResult(err error) {
 		log.Printf("%s err=%v", p.summary(), err)
 		return
 	}
+	if !shouldLogProfiles() {
+		return
+	}
 	log.Print(p.summary())
 }

@@ -55,6 +55,10 @@ func (s *sliceServiceServer) StartDurablePromotionWorkers(ctx context.Context, c
 	log.Printf("durable promotion/history workers started workers=%d shards=%d batch_size=%d poll_interval=%s", cfg.WorkerCount, cfg.ShardCount, cfg.BatchSize, cfg.PollInterval)
 }
 
+func (s *sliceServiceServer) EnableDurableProjectionModeForTesting() {
+	s.durablePromotion = true
+}
+
 func (s *sliceServiceServer) runDurablePromotionWorker(ctx context.Context, cfg DurablePromotionConfig, workerID int) {
 	for {
 		processed, err := s.processDurablePromotionOnce(ctx, cfg)

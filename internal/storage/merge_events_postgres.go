@@ -43,14 +43,17 @@ func nextMergeEventSequence(ctx context.Context, q queryable, exec execable, sha
 	if shardID < 0 {
 		return 0, ErrInvalidInput
 	}
-	if _, err := exec.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, mergeEventSequenceAdvisoryLockClass, shardID); err != nil {
+	var seq int64
+	if err := q.QueryRow(ctx, `
+		INSERT INTO merge_event_shard_sequences (shard_id, next_seq)
+		VALUES ($1, 2)
+		ON CONFLICT (shard_id) DO UPDATE
+		SET next_seq = merge_event_shard_sequences.next_seq + 1
+		RETURNING next_seq - 1
+	`, shardID).Scan(&seq); err != nil {
 		return 0, err
 	}
-	var lastSeq int64
-	if err := q.QueryRow(ctx, `SELECT COALESCE(MAX(merge_seq), 0) FROM merge_events WHERE shard_id = $1`, shardID).Scan(&lastSeq); err != nil {
-		return 0, err
-	}
-	return lastSeq + 1, nil
+	return seq, nil
 }
 
 func (s *PostgresNativeStorage) AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error {

@@ -2444,7 +2444,7 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("expected merge success, got: %s", output)
 	}

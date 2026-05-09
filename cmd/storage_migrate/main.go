@@ -21,6 +21,7 @@ import (
 	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
+	sliceservice "github.com/niczy/gitslice/services/slice"
 )
 
 func main() {
@@ -36,6 +37,8 @@ func main() {
 		cmdBackfillNative(os.Args[2:])
 	case "backfill-search-index":
 		cmdBackfillSearchIndex(os.Args[2:])
+	case "backfill-history-projection":
+		cmdBackfillHistoryProjection(os.Args[2:])
 	case "repair-native-content":
 		cmdRepairNativeContent(os.Args[2:])
 	case "repair-search-index":
@@ -60,6 +63,7 @@ func usage() {
 	log.Printf("Usage:")
 	log.Printf("  storage_migrate backfill-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate backfill-search-index --dsn <dsn> --namespace <ns> [--slice <slice-id>] [--commits <n>] [--workspace-heads]")
+	log.Printf("  storage_migrate backfill-history-projection --dsn <dsn> --namespace <ns> [--batch-size <n>] [--shards <n>] [--max-batches <n>]")
 	log.Printf("  storage_migrate repair-native-content --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate repair-search-index --dsn <dsn> --namespace <ns> [--slice <slice-id>] [--commit <hash>] [--workspace <slice-id>] [--commits <n>]")
 	log.Printf("  storage_migrate prune-broken-entries --dsn <dsn> --namespace <ns> [--dry-run]")
@@ -378,6 +382,31 @@ func cmdDropSnapshot(args []string) {
 		log.Fatalf("drop snapshot: %v", err)
 	}
 	log.Printf("Dropped snapshot namespace=%s", *namespace)
+}
+
+func cmdBackfillHistoryProjection(args []string) {
+	fs := flag.NewFlagSet("backfill-history-projection", flag.ExitOnError)
+	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
+	namespace := fs.String("namespace", "core", "Storage namespace")
+	batchSize := fs.Int("batch-size", 512, "Projection batch size")
+	shards := fs.Int("shards", 64, "Projection shard count")
+	maxBatches := fs.Int("max-batches", 0, "Maximum batches to process; 0 means until caught up")
+	fs.Parse(args)
+
+	ctx := context.Background()
+	native, closeObjectStore := mustNativeStorage(ctx, *dsn, *namespace)
+	defer native.Close()
+	defer closeObjectStore()
+
+	svc := sliceservice.NewInternalServiceWithPromotionStorage(native, native)
+	result, err := svc.BackfillHistoryProjection(ctx, sliceservice.DurablePromotionConfig{
+		ShardCount: int32(*shards),
+		BatchSize:  *batchSize,
+	}, *maxBatches)
+	if err != nil {
+		log.Fatalf("backfill history projection: %v", err)
+	}
+	log.Printf("History projection backfill complete: batches=%d events=%d", result.Batches, result.Events)
 }
 
 func mustNativeStorage(ctx context.Context, dsn, namespace string) (*storage.PostgresNativeStorage, func()) {
