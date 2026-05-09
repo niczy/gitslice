@@ -68,6 +68,8 @@ type InMemoryStorage struct {
 	ciChecks           map[string]*CICheck       // changesetID:version:plan:manifest:job -> check
 	ciLogChunks        map[string]*CILogChunk    // chunkID -> log chunk
 	ciLogChunkIDsByJob map[string][]string       // jobID -> chunkID
+	ciArtifacts        map[string]*CIArtifact    // artifactID -> artifact
+	ciArtifactIDsByJob map[string][]string       // jobID -> artifactID
 	ciRunners          map[string]*CIRunner      // runnerID -> runner
 	ciRunnerByToken    map[string]string         // tokenHash -> runnerID
 	ciRunnerRegTokens  map[string]*CIRunnerRegistrationToken
@@ -162,6 +164,8 @@ func NewInMemoryStorage() *InMemoryStorage {
 		ciChecks:                         make(map[string]*CICheck),
 		ciLogChunks:                      make(map[string]*CILogChunk),
 		ciLogChunkIDsByJob:               make(map[string][]string),
+		ciArtifacts:                      make(map[string]*CIArtifact),
+		ciArtifactIDsByJob:               make(map[string][]string),
 		ciRunners:                        make(map[string]*CIRunner),
 		ciRunnerByToken:                  make(map[string]string),
 		ciRunnerRegTokens:                make(map[string]*CIRunnerRegistrationToken),
@@ -260,6 +264,8 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.ciChecks = fresh.ciChecks
 	s.ciLogChunks = fresh.ciLogChunks
 	s.ciLogChunkIDsByJob = fresh.ciLogChunkIDsByJob
+	s.ciArtifacts = fresh.ciArtifacts
+	s.ciArtifactIDsByJob = fresh.ciArtifactIDsByJob
 	s.ciRunners = fresh.ciRunners
 	s.ciRunnerByToken = fresh.ciRunnerByToken
 	s.ciRunnerRegTokens = fresh.ciRunnerRegTokens

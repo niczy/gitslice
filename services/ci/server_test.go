@@ -165,9 +165,14 @@ version: 1
 defaults:
   runner_pool: default
   shell: bash
+  timeout_seconds: 120
 runner_pools:
   default:
     executor: shell
+cache:
+  enabled: true
+  paths:
+    - ".cache/go"
 `))
 	folderManifest := writeCIFile(t, st, homeSliceID, "alice/api/.gs-ci.yaml", []byte(`
 version: 1
@@ -177,6 +182,13 @@ watch:
 jobs:
   unit:
     required: true
+    env:
+      FOO: bar
+    artifacts:
+      - "dist/**"
+    cache:
+      paths:
+        - ".cache/npm"
     commands:
       - printf ok
 `))
@@ -258,6 +270,28 @@ jobs:
 	if !payloadContainsPath(payload.GetFiles(), "/api/main.go") || !payloadContainsPath(payload.GetFiles(), "/api/.gs-ci.yaml") {
 		t.Fatalf("payload did not include expected workspace files: %#v", payload.GetFiles())
 	}
+	if payload.GetEnv()["FOO"] != "bar" {
+		t.Fatalf("payload env = %#v, want FOO", payload.GetEnv())
+	}
+	if payload.GetTimeoutSeconds() != 120 {
+		t.Fatalf("timeout = %d, want 120", payload.GetTimeoutSeconds())
+	}
+	if !stringSliceContains(payload.GetArtifacts(), "/api/dist/**") {
+		t.Fatalf("artifacts = %#v, want /api/dist/**", payload.GetArtifacts())
+	}
+	if !stringSliceContains(payload.GetCachePaths(), ".cache/go") || !stringSliceContains(payload.GetCachePaths(), ".cache/npm") {
+		t.Fatalf("cache paths = %#v, want platform and job cache paths", payload.GetCachePaths())
+	}
+	if _, err := svc.UploadArtifact(runnerCtx, &civ1.UploadArtifactRequest{JobId: jobID, LeaseId: claimResp.GetLeaseId(), Path: "/api/dist/result.txt", Payload: []byte("artifact")}); err != nil {
+		t.Fatalf("UploadArtifact failed: %v", err)
+	}
+	artifacts, err := st.ListCIArtifacts(context.Background(), storage.CIArtifactListFilter{JobID: jobID})
+	if err != nil {
+		t.Fatalf("ListCIArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Path != "/api/dist/result.txt" || string(artifacts[0].Payload) != "artifact" {
+		t.Fatalf("artifacts = %#v, want uploaded result", artifacts)
+	}
 	if _, err := svc.AppendLog(runnerCtx, &civ1.AppendLogRequest{JobId: jobID, LeaseId: claimResp.GetLeaseId(), ChunkIndex: 0, Stream: "stdout", Payload: []byte("ok\n")}); err != nil {
 		t.Fatalf("AppendLog failed: %v", err)
 	}
@@ -286,6 +320,15 @@ jobs:
 func payloadContainsPath(files []*civ1.WorkspaceFile, want string) bool {
 	for _, file := range files {
 		if file.GetPath() == want {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

@@ -71,8 +71,8 @@ type PlanJob struct {
 	WorkingDirectory    string
 	TimeoutSeconds      int
 	Commands            []string
-	Env                 map[string]any
-	Cache               map[string]any
+	Env                 map[string]string
+	CachePaths          []string
 	Artifacts           []string
 	MatchedChangedPaths []string
 }
@@ -205,7 +205,7 @@ func (p *Planner) planManifest(ctx context.Context, platform *PlatformConfig, ma
 	sort.Strings(jobKeys)
 	jobs := make([]PlanJob, 0, len(jobKeys))
 	for _, key := range jobKeys {
-		job, err := planJob(defaults, manifestName, manifestPath, dir, hash, key, manifest.Jobs[key], matches)
+		job, err := planJob(platform, defaults, manifestName, manifestPath, dir, hash, key, manifest.Jobs[key], matches)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s jobs.%s: %w", manifestPath, key, err)
 		}
@@ -214,7 +214,7 @@ func (p *Planner) planManifest(ctx context.Context, platform *PlatformConfig, ma
 	return plannedManifest, jobs, nil
 }
 
-func planJob(defaults JobDefaults, manifestName, manifestPath, manifestDir, manifestHash, key string, job ManifestJob, matches []string) (PlanJob, error) {
+func planJob(platform *PlatformConfig, defaults JobDefaults, manifestName, manifestPath, manifestDir, manifestHash, key string, job ManifestJob, matches []string) (PlanJob, error) {
 	runnerPool := firstNonEmpty(job.RunnerPool, defaults.RunnerPool, defaultRunnerPool)
 	image := firstNonEmpty(job.Image, defaults.Image)
 	shell := firstNonEmpty(job.Shell, defaults.Shell, defaultShell)
@@ -225,6 +225,21 @@ func planJob(defaults JobDefaults, manifestName, manifestPath, manifestDir, mani
 	workingDir := firstNonEmpty(job.WorkingDir, defaults.WorkingDir, defaultWorkingDir)
 	normalizedWorkingDir, err := normalizeHomePattern(manifestDir, workingDir)
 	if err != nil {
+		return PlanJob{}, err
+	}
+	env, err := normalizeJobEnv(job.Env)
+	if err != nil {
+		return PlanJob{}, err
+	}
+	cachePaths, err := normalizeCachePaths(platform, job.Cache)
+	if err != nil {
+		return PlanJob{}, err
+	}
+	artifacts, err := normalizeArtifactPatterns(manifestDir, job.Artifacts)
+	if err != nil {
+		return PlanJob{}, err
+	}
+	if err := validateJobRuntime(platform, runnerPool, image); err != nil {
 		return PlanJob{}, err
 	}
 	needs := append([]string(nil), job.Needs...)
@@ -243,9 +258,9 @@ func planJob(defaults JobDefaults, manifestName, manifestPath, manifestDir, mani
 		WorkingDirectory:    normalizedWorkingDir,
 		TimeoutSeconds:      timeout,
 		Commands:            append([]string(nil), job.Commands...),
-		Env:                 copyAnyMap(job.Env),
-		Cache:               copyAnyMap(job.Cache),
-		Artifacts:           append([]string(nil), job.Artifacts...),
+		Env:                 env,
+		CachePaths:          cachePaths,
+		Artifacts:           artifacts,
 		MatchedChangedPaths: append([]string(nil), matches...),
 	}, nil
 }
@@ -351,13 +366,175 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func copyAnyMap(src map[string]any) map[string]any {
+func normalizeJobEnv(src map[string]any) (map[string]string, error) {
 	if len(src) == 0 {
-		return nil
+		return nil, nil
 	}
-	dst := make(map[string]any, len(src))
+	dst := make(map[string]string, len(src))
 	for key, value := range src {
-		dst[key] = value
+		key = strings.TrimSpace(key)
+		if !validEnvKey(key) {
+			return nil, fmt.Errorf("env key %q is invalid", key)
+		}
+		switch v := value.(type) {
+		case string:
+			if strings.Contains(v, "\x00") {
+				return nil, fmt.Errorf("env.%s contains null byte", key)
+			}
+			dst[key] = v
+		default:
+			return nil, fmt.Errorf("env.%s must be a string", key)
+		}
 	}
-	return dst
+	return dst, nil
+}
+
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	first := key[0]
+	return first == '_' || (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z')
+}
+
+func normalizeArtifactPatterns(manifestDir string, raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, artifact := range raw {
+		normalized, err := normalizeHomePattern(manifestDir, artifact)
+		if err != nil {
+			return nil, fmt.Errorf("artifacts path %q: %w", artifact, err)
+		}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func normalizeCachePaths(platform *PlatformConfig, jobCache map[string]any) ([]string, error) {
+	var paths []string
+	if platform != nil && platform.Cache.Enabled {
+		paths = append(paths, platform.Cache.Paths...)
+	}
+	if raw, ok := jobCache["paths"]; ok {
+		jobPaths, err := stringListFromYAML(raw)
+		if err != nil {
+			return nil, fmt.Errorf("cache.paths must be a list of strings")
+		}
+		paths = append(paths, jobPaths...)
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		normalized, err := normalizeCachePath(raw)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func stringListFromYAML(raw any) ([]string, error) {
+	switch v := raw.(type) {
+	case []string:
+		return append([]string(nil), v...), nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			str, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("not a string")
+			}
+			out = append(out, str)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("not a string list")
+	}
+}
+
+func normalizeCachePath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("cache path is required")
+	}
+	if strings.Contains(trimmed, "\x00") {
+		return "", fmt.Errorf("cache path contains null byte")
+	}
+	if strings.Contains(trimmed, "\\") {
+		return "", fmt.Errorf("cache path must use '/' separators")
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return "", fmt.Errorf("cache path must be relative or use ~/")
+	}
+	if strings.HasPrefix(trimmed, "~/") {
+		rest := strings.TrimPrefix(trimmed, "~/")
+		if rest == "" || strings.HasPrefix(path.Clean(rest), "..") {
+			return "", fmt.Errorf("cache path escapes home: %s", raw)
+		}
+		return "~/" + path.Clean(rest), nil
+	}
+	cleaned := path.Clean(trimmed)
+	if cleaned == "." || strings.HasPrefix(cleaned, "..") {
+		return "", fmt.Errorf("cache path escapes workspace: %s", raw)
+	}
+	return cleaned, nil
+}
+
+func validateJobRuntime(platform *PlatformConfig, runnerPool, image string) error {
+	pools := normalizedPools(platform)
+	pool, ok := pools[runnerPool]
+	if !ok {
+		return fmt.Errorf("runner_pool %q is not defined", runnerPool)
+	}
+	executor := strings.TrimSpace(pool.Executor)
+	if executor == "" {
+		executor = "shell"
+	}
+	if executor == "docker" && strings.TrimSpace(image) == "" {
+		return fmt.Errorf("image is required for docker runner_pool %q", runnerPool)
+	}
+	if len(pool.AllowedImages) > 0 && strings.TrimSpace(image) != "" {
+		for _, allowed := range pool.AllowedImages {
+			if strings.TrimSpace(allowed) == strings.TrimSpace(image) {
+				return nil
+			}
+		}
+		return fmt.Errorf("image %q is not allowed by runner_pool %q", image, runnerPool)
+	}
+	return nil
+}
+
+func normalizedPools(platform *PlatformConfig) map[string]RunnerPool {
+	pools := make(map[string]RunnerPool)
+	if platform != nil {
+		for name, pool := range platform.RunnerPools {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			pools[name] = pool
+		}
+	}
+	if len(pools) == 0 {
+		pools[defaultRunnerPool] = RunnerPool{Executor: "shell"}
+	}
+	return pools
 }

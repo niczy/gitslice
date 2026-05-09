@@ -291,6 +291,63 @@ func (s *InMemoryStorage) AppendCILogChunk(ctx context.Context, chunk *CILogChun
 	return nil
 }
 
+func (s *InMemoryStorage) CreateCIArtifact(ctx context.Context, artifact *CIArtifact) error {
+	_ = ctx
+	if artifact == nil || strings.TrimSpace(artifact.ID) == "" || strings.TrimSpace(artifact.JobID) == "" {
+		return ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job := s.ciJobs[strings.TrimSpace(artifact.JobID)]
+	if job == nil {
+		return ErrEntryNotFound
+	}
+	copyArtifact := cloneCIArtifact(artifact)
+	if copyArtifact.RunID == "" {
+		copyArtifact.RunID = job.RunID
+	}
+	if copyArtifact.CreatedAt.IsZero() {
+		copyArtifact.CreatedAt = time.Now()
+	}
+	if copyArtifact.ByteCount == 0 && len(copyArtifact.Payload) > 0 {
+		copyArtifact.ByteCount = int64(len(copyArtifact.Payload))
+	}
+	if _, exists := s.ciArtifacts[copyArtifact.ID]; exists {
+		return ErrInvalidInput
+	}
+	s.ciArtifacts[copyArtifact.ID] = copyArtifact
+	s.ciArtifactIDsByJob[copyArtifact.JobID] = append(s.ciArtifactIDsByJob[copyArtifact.JobID], copyArtifact.ID)
+	sort.Strings(s.ciArtifactIDsByJob[copyArtifact.JobID])
+	return nil
+}
+
+func (s *InMemoryStorage) ListCIArtifacts(ctx context.Context, filter CIArtifactListFilter) ([]*CIArtifact, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	limit := normalizeCIListLimit(filter.Limit)
+	out := make([]*CIArtifact, 0)
+	for _, artifact := range s.ciArtifacts {
+		if filter.RunID != "" && artifact.RunID != filter.RunID {
+			continue
+		}
+		if filter.JobID != "" && artifact.JobID != filter.JobID {
+			continue
+		}
+		out = append(out, cloneCIArtifact(artifact))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *InMemoryStorage) CompleteCIJob(ctx context.Context, jobID string, leaseID string, status string, exitCode int, infraFailure bool, finishedAt time.Time) (*CIJob, error) {
 	_ = ctx
 	s.mu.Lock()
@@ -571,6 +628,9 @@ func cloneCIJob(src *CIJob) *CIJob {
 		return nil
 	}
 	dst := *src
+	dst.Env = cloneStringMap(src.Env)
+	dst.CachePaths = append([]string(nil), src.CachePaths...)
+	dst.Artifacts = append([]string(nil), src.Artifacts...)
 	dst.LeaseExpiresAt = cloneTimePtr(src.LeaseExpiresAt)
 	dst.StartedAt = cloneTimePtr(src.StartedAt)
 	dst.FinishedAt = cloneTimePtr(src.FinishedAt)
@@ -597,6 +657,15 @@ func cloneCICheck(src *CICheck) *CICheck {
 }
 
 func cloneCILogChunk(src *CILogChunk) *CILogChunk {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.Payload = append([]byte(nil), src.Payload...)
+	return &dst
+}
+
+func cloneCIArtifact(src *CIArtifact) *CIArtifact {
 	if src == nil {
 		return nil
 	}

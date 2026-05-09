@@ -215,6 +215,61 @@ jobs:
 	}
 }
 
+func TestPlannerRejectsDisallowedImage(t *testing.T) {
+	planner := Planner{Tree: mapTree{
+		PlatformConfigPath: platformYAML,
+		"/api/.gs-ci.yaml": `
+version: 1
+jobs:
+  unit:
+    image: node:22
+    commands:
+      - npm test
+`,
+	}}
+	_, err := planner.Plan(context.Background(), PlanInput{ChangedPaths: []string{"/api/main.go"}})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("Plan error = %v, want disallowed image", err)
+	}
+}
+
+func TestPlannerNormalizesEnvCacheAndArtifacts(t *testing.T) {
+	planner := Planner{Tree: mapTree{
+		PlatformConfigPath: strings.Replace(platformYAML, "merge_policy:", `cache:
+  enabled: true
+  paths:
+    - ".cache/go"
+merge_policy:`, 1),
+		"/api/.gs-ci.yaml": `
+version: 1
+jobs:
+  unit:
+    env:
+      FOO: bar
+    cache:
+      paths:
+        - ".cache/npm"
+    artifacts:
+      - "dist/**"
+    commands:
+      - go test ./...
+`,
+	}}
+	plan, err := planner.Plan(context.Background(), PlanInput{ChangedPaths: []string{"/api/main.go"}})
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if got := plan.Jobs[0].Env["FOO"]; got != "bar" {
+		t.Fatalf("env FOO = %q, want bar", got)
+	}
+	if !containsString(plan.Jobs[0].CachePaths, ".cache/go") || !containsString(plan.Jobs[0].CachePaths, ".cache/npm") {
+		t.Fatalf("cache paths = %#v, want platform and job paths", plan.Jobs[0].CachePaths)
+	}
+	if got := plan.Jobs[0].Artifacts; len(got) != 1 || got[0] != "/api/dist/**" {
+		t.Fatalf("artifacts = %#v, want /api/dist/**", got)
+	}
+}
+
 func TestPlannerPlanHashIsStableAndChangesWhenInputsChange(t *testing.T) {
 	tree := mapTree{
 		PlatformConfigPath: platformYAML,
@@ -276,7 +331,7 @@ jobs:
 		t.Fatalf("plan hash should change when manifest content changes")
 	}
 
-	tree[PlatformConfigPath] = strings.Replace(tree[PlatformConfigPath], "image: golang:1.24", "image: golang:1.25", 1)
+	tree[PlatformConfigPath] = strings.ReplaceAll(tree[PlatformConfigPath], "golang:1.24", "golang:1.25")
 	platformChanged, err := planner.Plan(context.Background(), PlanInput{
 		HomeID:             "home-1",
 		SliceID:            "slice-1",
@@ -300,4 +355,13 @@ func TestPlannerRequiresPlatformConfig(t *testing.T) {
 	if !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("Plan error = %v, want ErrFileNotFound", err)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

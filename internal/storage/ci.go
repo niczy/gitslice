@@ -19,6 +19,8 @@ type CIStore interface {
 	ClaimCIJob(ctx context.Context, jobID string, runnerID string, leaseID string, leaseExpiresAt time.Time, startedAt time.Time) (*CIJob, error)
 	UpdateCIStepStatus(ctx context.Context, jobID string, stepIndex int, status string, exitCode int, startedAt *time.Time, finishedAt *time.Time) error
 	AppendCILogChunk(ctx context.Context, chunk *CILogChunk) error
+	CreateCIArtifact(ctx context.Context, artifact *CIArtifact) error
+	ListCIArtifacts(ctx context.Context, filter CIArtifactListFilter) ([]*CIArtifact, error)
 	CompleteCIJob(ctx context.Context, jobID string, leaseID string, status string, exitCode int, infraFailure bool, finishedAt time.Time) (*CIJob, error)
 
 	UpsertCICheck(ctx context.Context, check *CICheck) error
@@ -95,6 +97,9 @@ type CIJob struct {
 	Shell            string
 	WorkingDirectory string
 	TimeoutSeconds   int
+	Env              map[string]string
+	CachePaths       []string
+	Artifacts        []string
 	Status           string
 	RunnerID         string
 	LeaseID          string
@@ -155,6 +160,23 @@ type CILogChunkListFilter struct {
 	JobID      string
 	SinceChunk int64
 	Limit      int
+}
+
+type CIArtifact struct {
+	ID        string
+	JobID     string
+	RunID     string
+	Path      string
+	ObjectKey string
+	Payload   []byte
+	ByteCount int64
+	CreatedAt time.Time
+}
+
+type CIArtifactListFilter struct {
+	RunID string
+	JobID string
+	Limit int
 }
 
 type CIRunner struct {
