@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS changeset_snapshots (
     hash TEXT NOT NULL DEFAULT '',
     base_commit_hash TEXT NOT NULL DEFAULT '',
     modified_files JSONB NOT NULL DEFAULT '[]',
+    file_hashes JSONB,
+    base_path_versions JSONB,
     author TEXT NOT NULL DEFAULT '',
     message TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

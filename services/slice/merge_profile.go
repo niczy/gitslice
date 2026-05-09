@@ -12,13 +12,11 @@ type mergeProfile struct {
 	sliceID           string
 	modifiedFiles     int
 	startedAt         time.Time
-	conflictDuration  time.Duration
 	revertDuration    time.Duration
 	finalizeDuration  time.Duration
 	promotionDuration time.Duration
 	configDuration    time.Duration
 	totalDuration     time.Duration
-	conflictsFound    int
 }
 
 func newMergeProfile(changesetID, sliceID string, modifiedFiles int) *mergeProfile {
@@ -28,14 +26,6 @@ func newMergeProfile(changesetID, sliceID string, modifiedFiles int) *mergeProfi
 		modifiedFiles: modifiedFiles,
 		startedAt:     time.Now(),
 	}
-}
-
-func (p *mergeProfile) markConflictCheck(conflicts int, duration time.Duration) {
-	if p == nil {
-		return
-	}
-	p.conflictsFound = conflicts
-	p.conflictDuration = duration
 }
 
 func (p *mergeProfile) markRevertApply(duration time.Duration) {
@@ -78,12 +68,10 @@ func (p *mergeProfile) summary() string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"Merge profile: changeset_id=%s slice_id=%s modified_files=%d conflicts=%d conflict_ms=%d revert_ms=%d finalize_ms=%d promotion_ms=%d config_ms=%d total_ms=%d",
+		"Merge profile: changeset_id=%s slice_id=%s modified_files=%d revert_ms=%d finalize_ms=%d promotion_ms=%d config_ms=%d total_ms=%d",
 		p.changesetID,
 		p.sliceID,
 		p.modifiedFiles,
-		p.conflictsFound,
-		p.conflictDuration.Milliseconds(),
 		p.revertDuration.Milliseconds(),
 		p.finalizeDuration.Milliseconds(),
 		p.promotionDuration.Milliseconds(),

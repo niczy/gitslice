@@ -168,3 +168,51 @@ func (c *filesystemPromotionCounter) UpdateSliceMetadata(ctx context.Context, sl
 	}
 	return c.Storage.UpdateSliceMetadata(ctx, sliceID, metadata)
 }
+
+func (c *filesystemPromotionCounter) NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error) {
+	return c.Storage.(storage.MergeEventStore).NextMergeEventSequence(ctx, shardID)
+}
+
+func (c *filesystemPromotionCounter) AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error {
+	return c.Storage.(storage.MergeEventStore).AppendMergeEvent(ctx, event)
+}
+
+func (c *filesystemPromotionCounter) AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error {
+	return c.Storage.(storage.MergeEventPathHeadCASStore).AppendMergeEventWithPathHeadCAS(ctx, event)
+}
+
+func (c *filesystemPromotionCounter) GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error) {
+	return c.Storage.(storage.MergeEventStore).GetMergeEventByChangeset(ctx, changesetID)
+}
+
+func (c *filesystemPromotionCounter) ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error) {
+	return c.Storage.(storage.MergeEventStore).ListMergeEvents(ctx, shardID, afterSeq, limit)
+}
+
+func (c *filesystemPromotionCounter) UpdateProjectionOffset(ctx context.Context, offset *models.ProjectionOffset) error {
+	return c.Storage.(storage.MergeEventStore).UpdateProjectionOffset(ctx, offset)
+}
+
+func (c *filesystemPromotionCounter) GetProjectionOffset(ctx context.Context, projectionName string, shardID int32) (*models.ProjectionOffset, error) {
+	return c.Storage.(storage.MergeEventStore).GetProjectionOffset(ctx, projectionName, shardID)
+}
+
+func (c *filesystemPromotionCounter) UpsertHomePathHeads(ctx context.Context, heads []*models.HomePathHead) error {
+	return c.Storage.(storage.HomePathHeadStore).UpsertHomePathHeads(ctx, heads)
+}
+
+func (c *filesystemPromotionCounter) GetHomePathHeads(ctx context.Context, homeID string, paths []string) (map[string]*models.HomePathHead, error) {
+	return c.Storage.(storage.HomePathHeadStore).GetHomePathHeads(ctx, homeID, paths)
+}
+
+func (c *filesystemPromotionCounter) ListHomePathHeads(ctx context.Context, homeID string, limit int) ([]*models.HomePathHead, error) {
+	return c.Storage.(storage.HomePathHeadStore).ListHomePathHeads(ctx, homeID, limit)
+}
+
+func (c *filesystemPromotionCounter) BackfillHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadBackfillResult, error) {
+	return c.Storage.(storage.HomePathHeadStore).BackfillHomePathHeads(ctx, homeID)
+}
+
+func (c *filesystemPromotionCounter) ValidateHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadValidationResult, error) {
+	return c.Storage.(storage.HomePathHeadStore).ValidateHomePathHeads(ctx, homeID)
+}

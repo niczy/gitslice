@@ -52,10 +52,15 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 	defer cancel()
 
 	username := fmt.Sprintf("repocli%d", time.Now().UnixNano()%1_000_000_000)
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("mkdir CLI home: %v", err)
+	}
+	env := map[string]string{"HOME": homeDir}
 
 	runCLIForUser := func(workdir string, args ...string) string {
 		t.Helper()
-		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", nil, true, username, args...)
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
 		if err != nil {
 			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
 		}

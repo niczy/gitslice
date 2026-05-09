@@ -14,6 +14,7 @@ import (
 	"github.com/niczy/gitslice/internal/common"
 	"github.com/niczy/gitslice/internal/homeslice"
 	"github.com/niczy/gitslice/internal/models"
+	"github.com/niczy/gitslice/internal/rootpromote"
 	"github.com/niczy/gitslice/internal/searchindex"
 	"github.com/niczy/gitslice/internal/storage"
 	commonv1 "github.com/niczy/gitslice/proto/common"
@@ -56,6 +57,13 @@ func mustWriteSliceManifestWithMetadata(tb testing.TB, ctx context.Context, st s
 		tb.Fatalf("WriteSliceFileManifestWithMetadata failed: %v", err)
 	}
 	return manifest.Hash
+}
+
+func mustCreateChangesetSnapshot(tb testing.TB, ctx context.Context, srv *sliceServiceServer, cs *models.Changeset) {
+	tb.Helper()
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		tb.Fatalf("createChangesetSnapshot(%s) failed: %v", cs.ID, err)
+	}
 }
 
 func mustWriteVersionedManifest(tb testing.TB, ctx context.Context, st storage.Storage, filePath, hash string, content []byte) {
@@ -224,6 +232,54 @@ func (s *blockingLockStorage) LockSliceAndFiles(ctx context.Context, sliceID str
 		s.Storage.UnlockSliceAndFiles(context.Background(), sliceID, fileIDs)
 		return ctx.Err()
 	}
+}
+
+func (s *blockingLockStorage) NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error) {
+	return forwardNextMergeEventSequence(ctx, s.Storage, shardID)
+}
+
+func (s *blockingLockStorage) AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error {
+	return forwardAppendMergeEvent(ctx, s.Storage, event)
+}
+
+func (s *blockingLockStorage) AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error {
+	return forwardAppendMergeEventWithPathHeadCAS(ctx, s.Storage, event)
+}
+
+func (s *blockingLockStorage) GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error) {
+	return forwardGetMergeEventByChangeset(ctx, s.Storage, changesetID)
+}
+
+func (s *blockingLockStorage) ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error) {
+	return forwardListMergeEvents(ctx, s.Storage, shardID, afterSeq, limit)
+}
+
+func (s *blockingLockStorage) UpdateProjectionOffset(ctx context.Context, offset *models.ProjectionOffset) error {
+	return forwardUpdateProjectionOffset(ctx, s.Storage, offset)
+}
+
+func (s *blockingLockStorage) GetProjectionOffset(ctx context.Context, projectionName string, shardID int32) (*models.ProjectionOffset, error) {
+	return forwardGetProjectionOffset(ctx, s.Storage, projectionName, shardID)
+}
+
+func (s *blockingLockStorage) UpsertHomePathHeads(ctx context.Context, heads []*models.HomePathHead) error {
+	return forwardUpsertHomePathHeads(ctx, s.Storage, heads)
+}
+
+func (s *blockingLockStorage) GetHomePathHeads(ctx context.Context, homeID string, paths []string) (map[string]*models.HomePathHead, error) {
+	return forwardGetHomePathHeads(ctx, s.Storage, homeID, paths)
+}
+
+func (s *blockingLockStorage) ListHomePathHeads(ctx context.Context, homeID string, limit int) ([]*models.HomePathHead, error) {
+	return forwardListHomePathHeads(ctx, s.Storage, homeID, limit)
+}
+
+func (s *blockingLockStorage) BackfillHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadBackfillResult, error) {
+	return forwardBackfillHomePathHeads(ctx, s.Storage, homeID)
+}
+
+func (s *blockingLockStorage) ValidateHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadValidationResult, error) {
+	return forwardValidateHomePathHeads(ctx, s.Storage, homeID)
 }
 
 func (s *countingCheckoutStorage) GetBlock(ctx context.Context, hash string) ([]byte, error) {
@@ -1027,7 +1083,6 @@ func TestCheckoutProfileSummary(t *testing.T) {
 
 func TestMergeProfileSummary(t *testing.T) {
 	profile := newMergeProfile("chg_123", "slice-123", 256)
-	profile.markConflictCheck(3, 120*time.Millisecond)
 	profile.markRevertApply(15 * time.Millisecond)
 	profile.markFinalize(230 * time.Millisecond)
 	profile.markPromotion(40 * time.Millisecond)
@@ -1039,8 +1094,6 @@ func TestMergeProfileSummary(t *testing.T) {
 		"changeset_id=chg_123",
 		"slice_id=slice-123",
 		"modified_files=256",
-		"conflicts=3",
-		"conflict_ms=120",
 		"revert_ms=15",
 		"finalize_ms=230",
 		"promotion_ms=40",
@@ -1224,79 +1277,69 @@ func TestListChangesetsIncludesProactiveReviewStatus(t *testing.T) {
 	st := storage.NewInMemoryStorage()
 
 	sliceA := &models.Slice{ID: "slice-list-review-a", Name: "slice-list-review-a", Owners: []string{"tester"}, CreatedBy: "tester"}
-	sliceB := &models.Slice{ID: "slice-list-review-b", Name: "slice-list-review-b", Owners: []string{"tester"}, CreatedBy: "tester"}
 	if err := st.CreateSlice(ctx, sliceA); err != nil {
 		t.Fatalf("failed to create slice A: %v", err)
 	}
-	if err := st.CreateSlice(ctx, sliceB); err != nil {
-		t.Fatalf("failed to create slice B: %v", err)
-	}
-	meta, err := st.GetSliceMetadata(ctx, sliceA.ID)
-	if err != nil {
-		t.Fatalf("failed to load slice metadata: %v", err)
-	}
-	meta.HeadCommitHash = "head-current"
-	if err := st.UpdateSliceMetadata(ctx, sliceA.ID, meta); err != nil {
-		t.Fatalf("failed to update slice metadata: %v", err)
-	}
 
-	conflictPath := "README.md"
-	for _, setup := range []struct {
-		sliceID string
-		content string
-	}{
-		{sliceA.ID, "alpha\n"},
-		{sliceB.ID, "beta\n"},
-	} {
-		hash := mustWriteSliceManifest(t, ctx, st, setup.sliceID, conflictPath, []byte(setup.content))
+	writePath := func(filePath, content string, version int64) {
+		t.Helper()
+		hash := mustWriteSliceManifest(t, ctx, st, sliceA.ID, filePath, []byte(content))
 		if err := st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:       fmt.Sprintf("%s:%s", setup.sliceID, conflictPath),
-			Path:     conflictPath,
+			ID:       common.GenerateEntryID(sliceA.ID, filePath),
+			Path:     filePath,
 			Type:     "file",
-			ParentID: setup.sliceID,
+			ParentID: sliceA.ID,
 			Hash:     hash,
-			Size:     int64(len(setup.content)),
+			Size:     int64(len(content)),
 		}); err != nil {
-			t.Fatalf("failed to add entry for %s: %v", setup.sliceID, err)
+			t.Fatalf("failed to add entry for %s: %v", filePath, err)
 		}
-		if err := st.AddFileToSlice(ctx, conflictPath, setup.sliceID); err != nil {
-			t.Fatalf("failed to index file for %s: %v", setup.sliceID, err)
+		if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+			HomeID:       "tester",
+			Path:         filePath,
+			PathVersion:  version,
+			ManifestHash: hash,
+			ContentHash:  hash,
+		}}); err != nil {
+			t.Fatalf("failed to seed path head for %s: %v", filePath, err)
 		}
 	}
+	writePath("tester/ready.txt", "ready\n", 1)
+	writePath("tester/stale.txt", "stale\n", 1)
 
 	now := time.Now()
+	srv := newSliceServiceServer(st)
 	for _, cs := range []*models.Changeset{
 		{
-			ID:             "chg_ready-list",
-			SliceID:        sliceA.ID,
-			BaseCommitHash: "head-current",
-			ModifiedFiles:  []string{"ready.txt"},
-			Status:         models.ChangesetStatusPending,
-			CreatedAt:      now,
+			ID:            "chg_ready-list",
+			SliceID:       sliceA.ID,
+			ModifiedFiles: []string{"tester/ready.txt"},
+			Status:        models.ChangesetStatusPending,
+			CreatedAt:     now,
 		},
 		{
-			ID:             "chg_stale-list",
-			SliceID:        sliceA.ID,
-			BaseCommitHash: "head-old",
-			ModifiedFiles:  []string{"stale.txt"},
-			Status:         models.ChangesetStatusPending,
-			CreatedAt:      now.Add(time.Second),
-		},
-		{
-			ID:             "chg_conflict-list",
-			SliceID:        sliceA.ID,
-			BaseCommitHash: "head-current",
-			ModifiedFiles:  []string{conflictPath},
-			Status:         models.ChangesetStatusPending,
-			CreatedAt:      now.Add(2 * time.Second),
+			ID:            "chg_stale-list",
+			SliceID:       sliceA.ID,
+			ModifiedFiles: []string{"tester/stale.txt"},
+			Status:        models.ChangesetStatusPending,
+			CreatedAt:     now.Add(time.Second),
 		},
 	} {
 		if err := st.CreateChangeset(ctx, cs); err != nil {
 			t.Fatalf("failed to create changeset %s: %v", cs.ID, err)
 		}
+		if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+			t.Fatalf("createChangesetSnapshot(%s) failed: %v", cs.ID, err)
+		}
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:      "tester",
+		Path:        "tester/stale.txt",
+		PathVersion: 2,
+	}}); err != nil {
+		t.Fatalf("failed to advance stale path head: %v", err)
 	}
 
-	srv := newSliceServiceServer(st)
 	resp, err := srv.ListChangesets(ctx, &slicev1.ListChangesetsRequest{SliceId: sliceA.ID, StatusFilter: slicev1.ChangesetStatus_PENDING})
 	if err != nil {
 		t.Fatalf("ListChangesets failed: %v", err)
@@ -1311,9 +1354,6 @@ func TestListChangesetsIncludesProactiveReviewStatus(t *testing.T) {
 	}
 	if got["chg_stale-list"] != slicev1.ReviewStatus_NEEDS_SYNC {
 		t.Fatalf("stale review status = %v", got["chg_stale-list"])
-	}
-	if got["chg_conflict-list"] != slicev1.ReviewStatus_HAS_CONFLICTS {
-		t.Fatalf("conflict review status = %v", got["chg_conflict-list"])
 	}
 }
 
@@ -2151,6 +2191,150 @@ func (c *addFileToSliceCounter) AddFileToSlice(ctx context.Context, fileID, slic
 	return c.Storage.AddFileToSlice(ctx, fileID, sliceID)
 }
 
+func (c *addFileToSliceCounter) NextMergeEventSequence(ctx context.Context, shardID int32) (int64, error) {
+	return forwardNextMergeEventSequence(ctx, c.Storage, shardID)
+}
+
+func (c *addFileToSliceCounter) AppendMergeEvent(ctx context.Context, event *models.MergeEvent) error {
+	return forwardAppendMergeEvent(ctx, c.Storage, event)
+}
+
+func (c *addFileToSliceCounter) AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error {
+	return forwardAppendMergeEventWithPathHeadCAS(ctx, c.Storage, event)
+}
+
+func (c *addFileToSliceCounter) GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error) {
+	return forwardGetMergeEventByChangeset(ctx, c.Storage, changesetID)
+}
+
+func (c *addFileToSliceCounter) ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error) {
+	return forwardListMergeEvents(ctx, c.Storage, shardID, afterSeq, limit)
+}
+
+func (c *addFileToSliceCounter) UpdateProjectionOffset(ctx context.Context, offset *models.ProjectionOffset) error {
+	return forwardUpdateProjectionOffset(ctx, c.Storage, offset)
+}
+
+func (c *addFileToSliceCounter) GetProjectionOffset(ctx context.Context, projectionName string, shardID int32) (*models.ProjectionOffset, error) {
+	return forwardGetProjectionOffset(ctx, c.Storage, projectionName, shardID)
+}
+
+func (c *addFileToSliceCounter) UpsertHomePathHeads(ctx context.Context, heads []*models.HomePathHead) error {
+	return forwardUpsertHomePathHeads(ctx, c.Storage, heads)
+}
+
+func (c *addFileToSliceCounter) GetHomePathHeads(ctx context.Context, homeID string, paths []string) (map[string]*models.HomePathHead, error) {
+	return forwardGetHomePathHeads(ctx, c.Storage, homeID, paths)
+}
+
+func (c *addFileToSliceCounter) ListHomePathHeads(ctx context.Context, homeID string, limit int) ([]*models.HomePathHead, error) {
+	return forwardListHomePathHeads(ctx, c.Storage, homeID, limit)
+}
+
+func (c *addFileToSliceCounter) BackfillHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadBackfillResult, error) {
+	return forwardBackfillHomePathHeads(ctx, c.Storage, homeID)
+}
+
+func (c *addFileToSliceCounter) ValidateHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadValidationResult, error) {
+	return forwardValidateHomePathHeads(ctx, c.Storage, homeID)
+}
+
+func forwardNextMergeEventSequence(ctx context.Context, st storage.Storage, shardID int32) (int64, error) {
+	events, ok := st.(storage.MergeEventStore)
+	if !ok {
+		return 0, storage.ErrInvalidInput
+	}
+	return events.NextMergeEventSequence(ctx, shardID)
+}
+
+func forwardAppendMergeEvent(ctx context.Context, st storage.Storage, event *models.MergeEvent) error {
+	events, ok := st.(storage.MergeEventStore)
+	if !ok {
+		return storage.ErrInvalidInput
+	}
+	return events.AppendMergeEvent(ctx, event)
+}
+
+func forwardAppendMergeEventWithPathHeadCAS(ctx context.Context, st storage.Storage, event *models.MergeEvent) error {
+	cas, ok := st.(storage.MergeEventPathHeadCASStore)
+	if !ok {
+		return storage.ErrInvalidInput
+	}
+	return cas.AppendMergeEventWithPathHeadCAS(ctx, event)
+}
+
+func forwardGetMergeEventByChangeset(ctx context.Context, st storage.Storage, changesetID string) (*models.MergeEvent, error) {
+	events, ok := st.(storage.MergeEventStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return events.GetMergeEventByChangeset(ctx, changesetID)
+}
+
+func forwardListMergeEvents(ctx context.Context, st storage.Storage, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error) {
+	events, ok := st.(storage.MergeEventStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return events.ListMergeEvents(ctx, shardID, afterSeq, limit)
+}
+
+func forwardUpdateProjectionOffset(ctx context.Context, st storage.Storage, offset *models.ProjectionOffset) error {
+	events, ok := st.(storage.MergeEventStore)
+	if !ok {
+		return storage.ErrInvalidInput
+	}
+	return events.UpdateProjectionOffset(ctx, offset)
+}
+
+func forwardGetProjectionOffset(ctx context.Context, st storage.Storage, projectionName string, shardID int32) (*models.ProjectionOffset, error) {
+	events, ok := st.(storage.MergeEventStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return events.GetProjectionOffset(ctx, projectionName, shardID)
+}
+
+func forwardUpsertHomePathHeads(ctx context.Context, st storage.Storage, heads []*models.HomePathHead) error {
+	headStore, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return storage.ErrInvalidInput
+	}
+	return headStore.UpsertHomePathHeads(ctx, heads)
+}
+
+func forwardGetHomePathHeads(ctx context.Context, st storage.Storage, homeID string, paths []string) (map[string]*models.HomePathHead, error) {
+	headStore, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return headStore.GetHomePathHeads(ctx, homeID, paths)
+}
+
+func forwardListHomePathHeads(ctx context.Context, st storage.Storage, homeID string, limit int) ([]*models.HomePathHead, error) {
+	headStore, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return headStore.ListHomePathHeads(ctx, homeID, limit)
+}
+
+func forwardBackfillHomePathHeads(ctx context.Context, st storage.Storage, homeID string) (*models.HomePathHeadBackfillResult, error) {
+	headStore, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return headStore.BackfillHomePathHeads(ctx, homeID)
+}
+
+func forwardValidateHomePathHeads(ctx context.Context, st storage.Storage, homeID string) (*models.HomePathHeadValidationResult, error) {
+	headStore, ok := st.(storage.HomePathHeadStore)
+	if !ok {
+		return nil, storage.ErrInvalidInput
+	}
+	return headStore.ValidateHomePathHeads(ctx, homeID)
+}
+
 func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()
@@ -2176,6 +2360,7 @@ func TestMergeChangesetDeduplicatesModifiedFiles(t *testing.T) {
 
 	countingStorage := &addFileToSliceCounter{Storage: base, counts: map[string]int{}}
 	srv := newSliceServiceServer(countingStorage)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
@@ -2250,6 +2435,7 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(st)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
@@ -2320,36 +2506,18 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	}
 }
 
-func TestMergeChangesetConflictDoesNotAppendMergeEvent(t *testing.T) {
+func TestMergeChangesetMissingPathHeadSnapshotDoesNotAppendMergeEvent(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()
 
 	const sharedFile = "alice/shared.txt"
-	sliceA := &models.Slice{ID: "slice-event-conflict-a", Name: "slice-event-conflict-a", Files: []string{sharedFile}, Owners: []string{"alice"}, CreatedBy: "alice"}
-	sliceB := &models.Slice{ID: "slice-event-conflict-b", Name: "slice-event-conflict-b", Files: []string{sharedFile}, Owners: []string{"alice"}, CreatedBy: "alice"}
-	if err := st.CreateSlice(ctx, sliceA); err != nil {
-		t.Fatalf("failed to create slice A: %v", err)
-	}
-	if err := st.CreateSlice(ctx, sliceB); err != nil {
-		t.Fatalf("failed to create slice B: %v", err)
-	}
-	if err := st.AddFileToSlice(ctx, sharedFile, sliceA.ID); err != nil {
-		t.Fatalf("failed to index slice A file: %v", err)
-	}
-	if err := st.AddFileToSlice(ctx, sharedFile, sliceB.ID); err != nil {
-		t.Fatalf("failed to index slice B file: %v", err)
-	}
-	hashA := mustWriteSliceManifest(t, ctx, st, sliceA.ID, sharedFile, []byte("a"))
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: common.GenerateEntryID(sliceA.ID, sharedFile), Path: sharedFile, Type: "file", ParentID: sliceA.ID, Hash: hashA, Size: 1}); err != nil {
-		t.Fatalf("failed to add slice A entry: %v", err)
-	}
-	hashB := mustWriteSliceManifest(t, ctx, st, sliceB.ID, sharedFile, []byte("b"))
-	if err := st.AddEntry(ctx, &models.DirectoryEntry{ID: common.GenerateEntryID(sliceB.ID, sharedFile), Path: sharedFile, Type: "file", ParentID: sliceB.ID, Hash: hashB, Size: 1}); err != nil {
-		t.Fatalf("failed to add slice B entry: %v", err)
+	slice := &models.Slice{ID: "slice-event-missing-path-head", Name: "slice-event-missing-path-head", Files: []string{sharedFile}, Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
 	}
 	cs := &models.Changeset{
-		ID:            "chg_merge-event-conflict",
-		SliceID:       sliceB.ID,
+		ID:            "chg_merge-event-missing-path-head",
+		SliceID:       slice.ID,
 		ModifiedFiles: []string{sharedFile},
 		Status:        models.ChangesetStatusPending,
 		Author:        "alice",
@@ -2364,11 +2532,11 @@ func TestMergeChangesetConflictDoesNotAppendMergeEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
 	}
-	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
-		t.Fatalf("expected conflict, got %v", resp.GetStatus())
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("expected stale base, got %v", resp.GetStatus())
 	}
 	if _, err := st.GetMergeEventByChangeset(ctx, cs.ID); !errors.Is(err, storage.ErrMergeEventNotFound) {
-		t.Fatalf("expected no merge event for conflicted changeset, got %v", err)
+		t.Fatalf("expected no merge event for changeset without path-head snapshot, got %v", err)
 	}
 }
 
@@ -2403,10 +2571,11 @@ func TestMergeChangesetRejectsMissingChangesetContentRef(t *testing.T) {
 		t.Fatalf("failed to create changeset: %v", err)
 	}
 	if err := st.CreateChangesetSnapshot(ctx, &models.ChangesetSnapshot{
-		ID:            common.GenerateChangesetSnapshotID(cs.ID, 1),
-		ChangesetID:   cs.ID,
-		Version:       1,
-		ModifiedFiles: []string{filePath},
+		ID:               common.GenerateChangesetSnapshotID(cs.ID, 1),
+		ChangesetID:      cs.ID,
+		Version:          1,
+		ModifiedFiles:    []string{filePath},
+		BasePathVersions: map[string]int64{filePath: 0},
 		FileHashes: map[string]string{
 			filePath: "missing-manifest-hash",
 		},
@@ -2489,6 +2658,10 @@ func TestMergeChangesetAcceptsRepeatedSnapshotContentRefs(t *testing.T) {
 		ChangesetID:   cs.ID,
 		Version:       1,
 		ModifiedFiles: []string{firstPath, secondPath},
+		BasePathVersions: map[string]int64{
+			firstPath:  0,
+			secondPath: 0,
+		},
 		FileHashes: map[string]string{
 			firstPath:  firstHash,
 			secondPath: firstHash,
@@ -2500,6 +2673,7 @@ func TestMergeChangesetAcceptsRepeatedSnapshotContentRefs(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(st)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
@@ -2561,6 +2735,7 @@ func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 
 	srv := newSliceServiceServer(base)
 	srv.promotionBatchWindow = 200 * time.Millisecond
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
@@ -2634,6 +2809,7 @@ func TestMergeChangesetReturnsBeforePromotionMaterializesRoot(t *testing.T) {
 
 	srv := newSliceServiceServer(base)
 	srv.promotionBatchWindow = 300 * time.Millisecond
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	start := time.Now()
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
@@ -2726,6 +2902,7 @@ func TestMergeChangesetMountedSliceListsMergedFile(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(base)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
@@ -2821,6 +2998,8 @@ func TestMergeChangesetConcurrentSameSliceOneAborts(t *testing.T) {
 
 	blocking := newBlockingLockStorage(base)
 	srv := newSliceServiceServer(blocking)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs1)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs2)
 
 	type mergeResult struct {
 		resp *slicev1.MergeChangesetResponse
@@ -2896,6 +3075,8 @@ func TestMergeChangesetConcurrentOverlappingFilesOneAborts(t *testing.T) {
 
 	blocking := newBlockingLockStorage(base)
 	srv := newSliceServiceServer(blocking)
+	mustCreateChangesetSnapshot(t, ctx, srv, csA)
+	mustCreateChangesetSnapshot(t, ctx, srv, csB)
 
 	type mergeResult struct {
 		resp *slicev1.MergeChangesetResponse
@@ -3081,7 +3262,7 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	}
 }
 
-func TestReviewChangesetMarksStaleBaseAsNeedsSync(t *testing.T) {
+func TestReviewChangesetMissingPathHeadSnapshotNeedsSync(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
@@ -3118,15 +3299,15 @@ func TestReviewChangesetMarksStaleBaseAsNeedsSync(t *testing.T) {
 	if resp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_SYNC {
 		t.Fatalf("expected NEEDS_SYNC, got %v", resp.GetReviewStatus())
 	}
-	if len(resp.GetWarnings()) == 0 || !strings.Contains(resp.GetWarnings()[0], "stale") {
-		t.Fatalf("expected stale-base warning, got %#v", resp.GetWarnings())
+	if len(resp.GetWarnings()) == 0 || !strings.Contains(resp.GetWarnings()[0], "path-head") {
+		t.Fatalf("expected path-head warning, got %#v", resp.GetWarnings())
 	}
 	if len(resp.GetIssues()) == 0 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE {
 		t.Fatalf("expected stale-base issue, got %#v", resp.GetIssues())
 	}
 }
 
-func TestMergeChangesetRejectsStaleBase(t *testing.T) {
+func TestMergeChangesetRejectsMissingPathHeadSnapshot(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 
@@ -3163,124 +3344,8 @@ func TestMergeChangesetRejectsStaleBase(t *testing.T) {
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
 		t.Fatalf("expected STALE_BASE status, got %v", resp.GetStatus())
 	}
-	if !strings.Contains(resp.GetMessage(), "stale") {
-		t.Fatalf("expected stale-base message, got %q", resp.GetMessage())
-	}
-}
-
-func TestReviewChangesetReportsContentConflictIssue(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
-	st := storage.NewInMemoryStorage()
-
-	sliceA := &models.Slice{ID: "slice-review-conflict-a", Name: "slice-review-conflict-a", Owners: []string{"tester"}, CreatedBy: "tester"}
-	sliceB := &models.Slice{ID: "slice-review-conflict-b", Name: "slice-review-conflict-b", Owners: []string{"tester"}, CreatedBy: "tester"}
-	if err := st.CreateSlice(ctx, sliceA); err != nil {
-		t.Fatalf("failed to create slice A: %v", err)
-	}
-	if err := st.CreateSlice(ctx, sliceB); err != nil {
-		t.Fatalf("failed to create slice B: %v", err)
-	}
-
-	filePath := "README.md"
-	for _, setup := range []struct {
-		sliceID string
-		content string
-	}{
-		{sliceA.ID, "alpha\n"},
-		{sliceB.ID, "beta\n"},
-	} {
-		hash := mustWriteSliceManifest(t, ctx, st, setup.sliceID, filePath, []byte(setup.content))
-		if err := st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:       fmt.Sprintf("%s:%s", setup.sliceID, filePath),
-			Path:     filePath,
-			Type:     "file",
-			ParentID: setup.sliceID,
-			Hash:     hash,
-			Size:     int64(len(setup.content)),
-		}); err != nil {
-			t.Fatalf("failed to add entry for %s: %v", setup.sliceID, err)
-		}
-		if err := st.AddFileToSlice(ctx, filePath, setup.sliceID); err != nil {
-			t.Fatalf("failed to add file to %s: %v", setup.sliceID, err)
-		}
-	}
-
-	cs := &models.Changeset{
-		ID:            "chg_review-content-conflict",
-		SliceID:       sliceA.ID,
-		ModifiedFiles: []string{filePath},
-		Status:        models.ChangesetStatusPending,
-		CreatedAt:     time.Now(),
-	}
-	if err := st.CreateChangeset(ctx, cs); err != nil {
-		t.Fatalf("failed to create changeset: %v", err)
-	}
-
-	srv := NewService(st)
-	resp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
-	if err != nil {
-		t.Fatalf("ReviewChangeset failed: %v", err)
-	}
-	if resp.GetReviewStatus() != slicev1.ReviewStatus_HAS_CONFLICTS {
-		t.Fatalf("expected HAS_CONFLICTS, got %v", resp.GetReviewStatus())
-	}
-	if len(resp.GetIssues()) == 0 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_CONTENT_CONFLICT {
-		t.Fatalf("expected content-conflict issue, got %#v", resp.GetIssues())
-	}
-}
-
-func TestReviewChangesetReportsOwnershipIssueWithoutBlockingMerge(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
-	st := storage.NewInMemoryStorage()
-
-	sliceA := &models.Slice{ID: "slice-review-ownership-a", Name: "slice-review-ownership-a", Owners: []string{"tester"}, CreatedBy: "tester"}
-	sliceB := &models.Slice{ID: "slice-review-ownership-b", Name: "slice-review-ownership-b", Owners: []string{"tester"}, CreatedBy: "tester"}
-	if err := st.CreateSlice(ctx, sliceA); err != nil {
-		t.Fatalf("failed to create slice A: %v", err)
-	}
-	if err := st.CreateSlice(ctx, sliceB); err != nil {
-		t.Fatalf("failed to create slice B: %v", err)
-	}
-
-	filePath := "README.md"
-	for _, sliceID := range []string{sliceA.ID, sliceB.ID} {
-		hash := mustWriteSliceManifest(t, ctx, st, sliceID, filePath, []byte("shared\n"))
-		if err := st.AddEntry(ctx, &models.DirectoryEntry{
-			ID:       fmt.Sprintf("%s:%s", sliceID, filePath),
-			Path:     filePath,
-			Type:     "file",
-			ParentID: sliceID,
-			Hash:     hash,
-			Size:     int64(len("shared\n")),
-		}); err != nil {
-			t.Fatalf("failed to add entry for %s: %v", sliceID, err)
-		}
-		if err := st.AddFileToSlice(ctx, filePath, sliceID); err != nil {
-			t.Fatalf("failed to add file to %s: %v", sliceID, err)
-		}
-	}
-
-	cs := &models.Changeset{
-		ID:            "chg_review-ownership",
-		SliceID:       sliceA.ID,
-		ModifiedFiles: []string{filePath},
-		Status:        models.ChangesetStatusPending,
-		CreatedAt:     time.Now(),
-	}
-	if err := st.CreateChangeset(ctx, cs); err != nil {
-		t.Fatalf("failed to create changeset: %v", err)
-	}
-
-	srv := NewService(st)
-	resp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
-	if err != nil {
-		t.Fatalf("ReviewChangeset failed: %v", err)
-	}
-	if resp.GetReviewStatus() != slicev1.ReviewStatus_READY_FOR_MERGE {
-		t.Fatalf("expected READY_FOR_MERGE, got %v", resp.GetReviewStatus())
-	}
-	if len(resp.GetIssues()) == 0 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_OWNERSHIP_CONFLICT {
-		t.Fatalf("expected ownership issue, got %#v", resp.GetIssues())
+	if !strings.Contains(resp.GetMessage(), "path-head") {
+		t.Fatalf("expected path-head message, got %q", resp.GetMessage())
 	}
 }
 
@@ -3614,6 +3679,115 @@ func TestMergeChangesetPathHeadAuthorityAllowsDisjointStaleSliceHead(t *testing.
 	}
 }
 
+func TestMergeChangesetPathHeadAuthorityIgnoresLegacyActiveSliceConflict(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	filePath := "tester/app/shared.go"
+	sliceA := &models.Slice{
+		ID:        "slice-path-head-active-a",
+		Name:      "slice-path-head-active-a",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	sliceB := &models.Slice{
+		ID:        "slice-path-head-active-b",
+		Name:      "slice-path-head-active-b",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	for _, sl := range []*models.Slice{sliceA, sliceB} {
+		if err := st.CreateSlice(ctx, sl); err != nil {
+			t.Fatalf("failed to create slice %s: %v", sl.ID, err)
+		}
+		if err := st.AddFileToSlice(ctx, filePath, sl.ID); err != nil {
+			t.Fatalf("failed to index file for %s: %v", sl.ID, err)
+		}
+	}
+	hashA := mustWriteSliceManifest(t, ctx, st, sliceA.ID, filePath, []byte("package app\n\nconst Value = \"a\"\n"))
+	hashB := mustWriteSliceManifest(t, ctx, st, sliceB.ID, filePath, []byte("package app\n\nconst Value = \"b\"\n"))
+	for _, setup := range []struct {
+		sliceID string
+		hash    string
+	}{
+		{sliceA.ID, hashA},
+		{sliceB.ID, hashB},
+	} {
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(setup.sliceID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: setup.sliceID,
+			Hash:     setup.hash,
+			Size:     32,
+		}); err != nil {
+			t.Fatalf("failed to add entry for %s: %v", setup.sliceID, err)
+		}
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "tester",
+		Path:             filePath,
+		PathVersion:      3,
+		ManifestHash:     hashA,
+		ContentHash:      hashA,
+		SourceSliceID:    sliceA.ID,
+		SourceCommitHash: "commit-a",
+		LastMergeSeq:     2,
+	}}); err != nil {
+		t.Fatalf("failed to seed path head: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_path-head-active-conflict",
+		SliceID:       sliceB.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		Message:       "path head is authority",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		t.Fatalf("createChangesetSnapshot failed: %v", err)
+	}
+
+	review, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if review.GetReviewStatus() != slicev1.ReviewStatus_READY_FOR_MERGE {
+		t.Fatalf("expected path-head clean changeset to be ready, got %v issues=%#v", review.GetReviewStatus(), review.GetIssues())
+	}
+
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected path-head authority to ignore active-slice index divergence, got %v", resp.GetStatus())
+	}
+	event, err := st.GetMergeEventByChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("expected merge event: %v", err)
+	}
+	if len(event.PathUpdates) != 1 || event.PathUpdates[0].BaseVersion != 3 || event.PathUpdates[0].NewVersion != 4 {
+		t.Fatalf("unexpected path-head event update: %#v", event.PathUpdates)
+	}
+	heads, err := st.GetHomePathHeads(ctx, "tester", []string{filePath})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads failed: %v", err)
+	}
+	if head := heads[filePath]; head == nil || head.PathVersion != 4 || head.ManifestHash != hashB {
+		t.Fatalf("unexpected updated head: %#v", head)
+	}
+}
+
 func TestMergeChangesetIgnoresNormalizedCrossSliceFileState(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
@@ -3670,6 +3844,7 @@ func TestMergeChangesetIgnoresNormalizedCrossSliceFileState(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(st)
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
@@ -4006,6 +4181,102 @@ func TestRootPromotionUsesPromotionStorage(t *testing.T) {
 	}
 }
 
+func TestHomePromotionIgnoresStaleHomeSourceJobs(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	username := "tester"
+	homeSlice, err := homeslice.EnsureUserHomeSlice(ctx, st, username)
+	if err != nil {
+		t.Fatalf("failed to ensure home slice: %v", err)
+	}
+
+	oldCommit := "home-old"
+	newCommit := "home-new"
+	oldTime := time.Now().Add(-2 * time.Minute)
+	newTime := time.Now().Add(-time.Minute)
+	if err := st.AddSliceCommit(ctx, homeSlice.ID, &models.Commit{CommitHash: oldCommit, Timestamp: oldTime, Message: "old home write"}); err != nil {
+		t.Fatalf("failed to add old home commit: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, homeSlice.ID, &models.Commit{CommitHash: newCommit, ParentHash: oldCommit, Timestamp: newTime, Message: "new home write"}); err != nil {
+		t.Fatalf("failed to add new home commit: %v", err)
+	}
+	if err := st.UpdateSliceMetadata(ctx, homeSlice.ID, &models.SliceMetadata{
+		SliceID:            homeSlice.ID,
+		HeadCommitHash:     newCommit,
+		ModifiedFiles:      []string{"tester/current.txt"},
+		ModifiedFilesCount: 1,
+		LastModified:       newTime,
+	}); err != nil {
+		t.Fatalf("failed to seed home metadata: %v", err)
+	}
+
+	sourceSliceID := "slice-home-promotion-source"
+	filePath := "tester/promoted.txt"
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        sourceSliceID,
+		Name:      sourceSliceID,
+		Owners:    []string{username},
+		CreatedBy: username,
+	}); err != nil {
+		t.Fatalf("failed to create source slice: %v", err)
+	}
+	manifestHash := mustWriteSliceManifest(t, ctx, st, sourceSliceID, filePath, []byte("promoted\n"))
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(sourceSliceID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: sourceSliceID,
+		Hash:     manifestHash,
+		Size:     int64(len("promoted\n")),
+	}); err != nil {
+		t.Fatalf("failed to add source entry: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, filePath, sourceSliceID); err != nil {
+		t.Fatalf("failed to index source file: %v", err)
+	}
+
+	sourceCommit := "source-promoted"
+	srv := newSliceServiceServer(st)
+	if err := srv.promoteHomeGroup(ctx, username, []rootpromote.Job{
+		{SliceID: homeSlice.ID, CommitHash: oldCommit, Files: []string{"tester/old.txt"}, CommitTime: oldTime},
+		{SliceID: sourceSliceID, CommitHash: sourceCommit, Files: []string{filePath}, CommitTime: oldTime.Add(30 * time.Second)},
+	}); err != nil {
+		t.Fatalf("promoteHomeGroup failed: %v", err)
+	}
+
+	promotedCommit, err := st.GetCommitByHash(ctx, homeSlice.ID, sourceCommit)
+	if err != nil {
+		t.Fatalf("expected promoted home commit: %v", err)
+	}
+	if promotedCommit.ParentHash != newCommit {
+		t.Fatalf("expected promoted commit parent to preserve newest home head %s, got %s", newCommit, promotedCommit.ParentHash)
+	}
+	meta, err := st.GetSliceMetadata(ctx, homeSlice.ID)
+	if err != nil {
+		t.Fatalf("failed to load home metadata: %v", err)
+	}
+	if meta.HeadCommitHash != sourceCommit {
+		t.Fatalf("expected non-home promotion to advance head to %s, got %s", sourceCommit, meta.HeadCommitHash)
+	}
+
+	if err := srv.promoteHomeGroup(ctx, username, []rootpromote.Job{
+		{SliceID: homeSlice.ID, CommitHash: oldCommit, Files: []string{"tester/old.txt"}, CommitTime: oldTime},
+	}); err != nil {
+		t.Fatalf("home-only promoteHomeGroup failed: %v", err)
+	}
+	meta, err = st.GetSliceMetadata(ctx, homeSlice.ID)
+	if err != nil {
+		t.Fatalf("failed to reload home metadata: %v", err)
+	}
+	if meta.HeadCommitHash != sourceCommit {
+		t.Fatalf("expected stale home-source promotion to preserve head %s, got %s", sourceCommit, meta.HeadCommitHash)
+	}
+}
+
 func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T) {
 	ctx := context.Background()
 	base := storage.NewInMemoryStorage()
@@ -4279,6 +4550,7 @@ func TestMergeChangesetDurablePromotionFlagSkipsInProcessQueue(t *testing.T) {
 
 	srv := newSliceServiceServer(base)
 	srv.durablePromotion = true
+	mustCreateChangesetSnapshot(t, ctx, srv, cs)
 	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
