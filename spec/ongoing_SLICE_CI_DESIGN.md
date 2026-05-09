@@ -869,17 +869,72 @@ Inside a checkout, `gs ci run` should default to the tracked changeset for that
 checkout. If no tracked changeset exists, it should explain that the user needs
 to run `gs slice export` or pass `--changeset`.
 
-### Runner Commands
+### Runner Management Commands
+
+These commands use normal user or org admin authentication. They are the CLI
+equivalent of the web runner management UI.
 
 ```bash
-gs runner token create --name vm-1 --pool default
+gs runner pool list
+gs runner pool show default
+
 gs runner list
+gs runner list --pool default
+gs runner list --status idle
+gs runner show runner_...
+
+gs runner token create --name vm-1 --pool default --label linux --label docker --ttl 30m
+
+gs runner disable runner_...
+gs runner enable runner_...
 gs runner revoke runner_...
-gs runner register --token <token>
-gs runner start
-gs runner start --executor shell
-gs runner doctor
+gs runner revoke runner_... --requeue-leased
+gs runner revoke runner_... --cancel-leased
+
+gs runner jobs runner_... --limit 20
+gs runner queue list
+gs runner queue list --pool default
+gs runner queue explain --pool default --image golang:1.24
 ```
+
+`gs runner queue explain` should diagnose why a queued job cannot run, for
+example no online runner in the pool, missing labels, disallowed image, stale
+runner version, or exhausted concurrency.
+
+Equivalent web and CLI actions:
+
+| Web action | CLI command |
+| --- | --- |
+| View pools | `gs runner pool list` |
+| View pool details | `gs runner pool show <pool>` |
+| View runners | `gs runner list` |
+| View runner details | `gs runner show <runner-id>` |
+| Create registration token | `gs runner token create --name <name> --pool <pool>` |
+| Disable runner | `gs runner disable <runner-id>` |
+| Enable runner | `gs runner enable <runner-id>` |
+| Revoke runner | `gs runner revoke <runner-id>` |
+| View runner jobs | `gs runner jobs <runner-id>` |
+| View queued jobs | `gs runner queue list` |
+| Diagnose blocked queue | `gs runner queue explain` |
+
+### Runner Host Commands
+
+These commands run on the VM that will execute jobs. They use runner
+credentials, not user session credentials.
+
+```bash
+gs runner enroll --token <runner-registration-token>
+gs runner register --token <runner-registration-token> # alias for enroll
+gs runner start
+gs runner start --executor docker
+gs runner start --executor shell
+gs runner status
+gs runner doctor
+gs runner unenroll
+```
+
+`gs runner enroll` should store the runner credential locally. `gs runner start`
+should read that credential and poll Gitslice for jobs.
 
 Runner local state should live under `~/.gitslice/runner/`, separate from slice
 checkout `.gs/` metadata.
@@ -1104,6 +1159,8 @@ Health endpoints:
 - Add disable, enable, revoke, and runner job history actions.
 - Add changeset CI panels with exact version and `plan_hash` status.
 - Add stale CI and missing compatible runner warnings.
+- Add equivalent CLI commands for runner pool, runner, token, job history, and
+  queue management.
 
 ---
 
@@ -1117,6 +1174,7 @@ Health endpoints:
 - `gs runner start` on a user VM can execute queued jobs.
 - Web users can view runner pools, register runners, disable/revoke runners, and
   diagnose queued jobs with no compatible executor.
+- CLI users can perform the same runner management actions as the web UI.
 - Required checks gate `gs changeset merge`.
 - A file included in two custom slices resolves the same canonical home-path CI
   plan.
