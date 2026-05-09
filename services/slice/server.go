@@ -3200,6 +3200,7 @@ func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *
 		return nil, err
 	}
 	baseVersions := make(map[string]int64, len(paths))
+	missingHeadPaths := make([]string, 0)
 	for _, rawPath := range paths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
@@ -3208,13 +3209,76 @@ func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *
 		version := int64(0)
 		if head := heads[filePath]; head != nil && head.PathVersion > 0 {
 			version = head.PathVersion
+		} else {
+			missingHeadPaths = append(missingHeadPaths, filePath)
 		}
 		baseVersions[filePath] = version
+	}
+	if len(missingHeadPaths) > 0 {
+		synthesized, err := s.synthesizeBasePathHeadsFromCommit(ctx, headStore, homeID, cs, missingHeadPaths)
+		if err != nil {
+			return nil, err
+		}
+		for filePath, version := range synthesized {
+			baseVersions[filePath] = version
+		}
 	}
 	if len(baseVersions) == 0 {
 		return nil, nil
 	}
 	return baseVersions, nil
+}
+
+func (s *sliceServiceServer) synthesizeBasePathHeadsFromCommit(ctx context.Context, headStore storage.HomePathHeadStore, homeID string, cs *models.Changeset, paths []string) (map[string]int64, error) {
+	result := make(map[string]int64)
+	if headStore == nil || cs == nil || strings.TrimSpace(homeID) == "" {
+		return result, nil
+	}
+	baseCommitHash := strings.TrimSpace(cs.BaseCommitHash)
+	if baseCommitHash == "" {
+		return result, nil
+	}
+	snapshot, err := s.storage.GetCommitSnapshot(ctx, baseCommitHash)
+	if err != nil {
+		if errors.Is(err, storage.ErrCommitNotFound) {
+			return result, nil
+		}
+		return nil, err
+	}
+	if snapshot == nil || len(snapshot.Files) == 0 {
+		return result, nil
+	}
+
+	heads := make([]*models.HomePathHead, 0, len(paths))
+	for _, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		manifestHash := strings.TrimSpace(snapshot.Files[filePath])
+		if manifestHash == "" {
+			continue
+		}
+		heads = append(heads, &models.HomePathHead{
+			HomeID:           homeID,
+			Path:             filePath,
+			PathVersion:      1,
+			ContentHash:      manifestHash,
+			ManifestHash:     manifestHash,
+			SourceSliceID:    cs.SliceID,
+			SourceCommitHash: baseCommitHash,
+			LastMergeSeq:     0,
+			UpdatedAt:        time.Now(),
+		})
+		result[filePath] = 1
+	}
+	if len(heads) == 0 {
+		return result, nil
+	}
+	if err := headStore.UpsertHomePathHeads(ctx, heads); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnapshot {

@@ -3432,6 +3432,93 @@ func TestReviewChangesetUsesSnapshotBasePathVersions(t *testing.T) {
 	}
 }
 
+func TestCreateChangesetSnapshotSynthesizesMissingBasePathHead(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	filePath := "tester/app/main.go"
+	slice := &models.Slice{
+		ID:        "home_tester",
+		Name:      "tester",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	content := []byte("package main\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add entry: %v", err)
+	}
+	baseCommit := "commit-synth-base-head"
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: baseCommit,
+		SliceID:    slice.ID,
+		Files: map[string]string{
+			filePath: manifestHash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+	if err := st.AddSliceCommit(ctx, slice.ID, &models.Commit{
+		CommitHash: baseCommit,
+		Message:    "seed",
+		Timestamp:  time.Now(),
+	}); err != nil {
+		t.Fatalf("AddSliceCommit failed: %v", err)
+	}
+	meta, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = baseCommit
+	if err := st.UpdateSliceMetadata(ctx, slice.ID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "chg_synth-base-path-head",
+		SliceID:        slice.ID,
+		BaseCommitHash: baseCommit,
+		ModifiedFiles:  []string{filePath},
+		Status:         models.ChangesetStatusPending,
+		Author:         "tester",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		t.Fatalf("createChangesetSnapshot failed: %v", err)
+	}
+	snapshot, err := st.GetChangesetSnapshot(ctx, cs.ID, 0)
+	if err != nil {
+		t.Fatalf("failed to load snapshot: %v", err)
+	}
+	if snapshot.BasePathVersions[filePath] != 1 {
+		t.Fatalf("expected synthesized base path version 1, got %#v", snapshot.BasePathVersions)
+	}
+	heads, err := st.GetHomePathHeads(ctx, "tester", []string{filePath})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads failed: %v", err)
+	}
+	if heads[filePath] == nil || heads[filePath].PathVersion != 1 {
+		t.Fatalf("expected synthesized stored path head version 1, got %#v", heads[filePath])
+	}
+}
+
 func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
