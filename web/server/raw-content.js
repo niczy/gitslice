@@ -161,8 +161,11 @@ async function buildHeadersForUpstream(request, authenticated, options = {}) {
   }
 
   if (request.headers.has('Authorization')) {
-    headers.set('Authorization', request.headers.get('Authorization'));
-    return { headers, responseCookies, hasAuthorization: true, rejectUnauthenticated: false };
+    const requestAuthorization = request.headers.get('Authorization');
+    headers.set('Authorization', requestAuthorization);
+    if (!(getAuthProvider() === 'clerk' && /^Bearer\s+/i.test(String(requestAuthorization || '').trim()))) {
+      return { headers, responseCookies, hasAuthorization: true, rejectUnauthenticated: false };
+    }
   }
 
   if (getAuthProvider() === 'clerk') {

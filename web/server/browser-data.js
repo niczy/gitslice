@@ -45,7 +45,9 @@ async function createGatewayHeaders(request, session, options = {}) {
   const requestAuthorization = request.headers.get('Authorization');
   if (requestAuthorization) {
     headers.set('Authorization', requestAuthorization);
-    return { headers, setCookies: [] };
+    if (!(getAuthProvider() === 'clerk' && /^Bearer\s+/i.test(String(requestAuthorization || '').trim()))) {
+      return { headers, setCookies: [] };
+    }
   }
 
   if (getAuthProvider() === 'clerk') {

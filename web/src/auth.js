@@ -19,7 +19,7 @@ function getCurrentOAuthReturnUrl() {
   return url.toString();
 }
 
-async function getActiveClerkSessionToken() {
+export async function getActiveClerkSessionToken() {
   if (typeof window === 'undefined') {
     return '';
   }
@@ -33,6 +33,15 @@ async function getActiveClerkSessionToken() {
           new Promise((resolve) => setTimeout(resolve, 2000)),
         ]);
         clerk = window.Clerk;
+      } else if (clerk) {
+        const deadline = Date.now() + 2000;
+        while (
+          Date.now() < deadline
+          && !(clerk?.status === 'ready' || clerk?.status === 'degraded' || (clerk?.loaded && !clerk?.status))
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          clerk = window.Clerk;
+        }
       }
     }
     const token = await clerk?.session?.getToken?.({ skipCache: true });
@@ -96,9 +105,14 @@ export async function signInWithAccount(_apiBaseUrl, username) {
 }
 
 export async function fetchOAuthSession() {
+  const headers = new Headers({ Accept: 'application/json' });
+  const clerkToken = await getActiveClerkSessionToken();
+  if (clerkToken) {
+    headers.set('Authorization', `Bearer ${clerkToken}`);
+  }
   const response = await fetch('/auth/session', {
     credentials: 'include',
-    headers: { Accept: 'application/json' },
+    headers,
   });
   if (!response.ok) {
     setCachedSession(null);
