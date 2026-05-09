@@ -4848,6 +4848,72 @@ func TestDurableHistoryProjectionWorkerProcessesMergeEvents(t *testing.T) {
 	}
 }
 
+func TestHistoryProjectionKeepsExistingSourceCommitSnapshot(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+	srv := newSliceServiceServer(base)
+
+	sourceCommit := "commit-existing-source-snapshot"
+	appHash := strings.Repeat("a", 64)
+	configHash := strings.Repeat("b", 64)
+	if err := base.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: sourceCommit,
+		SliceID:    "home_tester",
+		Files: map[string]string{
+			"tester/app/app.txt":       appHash,
+			"tester/.gitslice/ci.yaml": configHash,
+		},
+		Timestamp: time.Now().Add(-time.Second),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot(source) failed: %v", err)
+	}
+	if err := base.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: "root-parent",
+		SliceID:    "root",
+		Files: map[string]string{
+			"tester/.gitslice/ci.yaml": configHash,
+		},
+		Timestamp: time.Now().Add(-2 * time.Second),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot(parent) failed: %v", err)
+	}
+
+	event := &models.MergeEvent{
+		HomeID:           "tester",
+		ShardID:          0,
+		MergeSeq:         1,
+		EventID:          common.GenerateMergeEventID(),
+		ChangesetID:      "chg_projection-existing-snapshot",
+		SourceSliceID:    "home_tester",
+		SourceCommitHash: sourceCommit,
+		Author:           "tester",
+		Message:          "project config",
+		TouchedPaths:     []string{"tester/.gitslice/ci.yaml"},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             "tester/.gitslice/ci.yaml",
+			NewVersion:       1,
+			ManifestHash:     configHash,
+			SourceSliceID:    "home_tester",
+			SourceCommitHash: sourceCommit,
+		}},
+		CreatedAt: time.Now(),
+	}
+	if _, err := srv.createCommitSnapshotFromMergeEvent(ctx, base, event, "root-parent", time.Now()); err != nil {
+		t.Fatalf("createCommitSnapshotFromMergeEvent failed: %v", err)
+	}
+
+	snapshot, err := base.GetCommitSnapshot(ctx, sourceCommit)
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot(source) failed: %v", err)
+	}
+	if got := snapshot.Files["tester/app/app.txt"]; got != appHash {
+		t.Fatalf("source snapshot app hash = %q, want %q", got, appHash)
+	}
+	if got := len(snapshot.Files); got != 2 {
+		t.Fatalf("source snapshot was overwritten: %#v", snapshot.Files)
+	}
+}
+
 func TestMergeChangesetDurablePromotionFlagSkipsInProcessQueue(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()
