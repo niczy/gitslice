@@ -3339,6 +3339,81 @@ func TestReviewChangesetUsesSnapshotBasePathVersions(t *testing.T) {
 	}
 }
 
+func TestMergeChangesetPathHeadShadowDoesNotBlock(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "tester/app/shadow.go"
+	slice := &models.Slice{
+		ID:        "slice-path-head-shadow",
+		Name:      "slice-path-head-shadow",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	content := []byte("package shadow\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add entry: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "tester",
+		Path:         filePath,
+		PathVersion:  10,
+		ManifestHash: manifestHash,
+		ContentHash:  manifestHash,
+	}}); err != nil {
+		t.Fatalf("failed to seed path head: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_path-head-shadow",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		t.Fatalf("createChangesetSnapshot failed: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "tester",
+		Path:         filePath,
+		PathVersion:  11,
+		ManifestHash: manifestHash,
+		ContentHash:  manifestHash,
+	}}); err != nil {
+		t.Fatalf("failed to advance path head: %v", err)
+	}
+
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success despite shadow path-head drift, got %v", resp.GetStatus())
+	}
+}
+
 func TestMergeChangesetIgnoresNormalizedCrossSliceFileState(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

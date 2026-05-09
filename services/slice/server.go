@@ -1407,6 +1407,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
 		}
 		if stale {
+			s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "stale_base")
 			return &slicev1.MergeChangesetResponse{
 				Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
 				ChangesetId: cs.ID,
@@ -1428,6 +1429,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
 
 		if len(conflicts) > 0 {
+			s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "file_conflict")
 			return &slicev1.MergeChangesetResponse{
 				Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
 				NewCommitHash: "",
@@ -1436,6 +1438,8 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			}, nil
 		}
 	}
+
+	s.logPathHeadShadowMergeDisagreement(ctx, cs, false, "accepted")
 
 	if err := s.validateChangesetSnapshotContentRefs(ctx, s.storage, cs); err != nil {
 		return nil, err
@@ -1673,6 +1677,55 @@ func mergeEventShardID(homeID string) int32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(homeID))
 	return int32(h.Sum32() % mergeEventShardCount)
+}
+
+func (s *sliceServiceServer) logPathHeadShadowMergeDisagreement(ctx context.Context, cs *models.Changeset, legacyBlocked bool, legacyReason string) {
+	if cs == nil {
+		return
+	}
+	snapshot, err := s.storage.GetChangesetSnapshot(ctx, cs.ID, 0)
+	if err != nil {
+		if !errors.Is(err, storage.ErrChangesetNotFound) {
+			log.Printf("path-head shadow merge check failed to load snapshot changeset=%s slice=%s: %v", cs.ID, cs.SliceID, err)
+		}
+		return
+	}
+	drifts, compared, err := s.changesetPathHeadDrifts(ctx, cs, snapshot)
+	if err != nil {
+		log.Printf("path-head shadow merge check failed changeset=%s slice=%s: %v", cs.ID, cs.SliceID, err)
+		return
+	}
+	if !compared {
+		return
+	}
+	pathHeadBlocked := len(drifts) > 0
+	if pathHeadBlocked == legacyBlocked {
+		return
+	}
+	log.Printf(
+		"path-head shadow merge disagreement changeset=%s slice=%s legacy_blocked=%t legacy_reason=%s path_head_blocked=%t path_head_drifts=%s",
+		cs.ID,
+		cs.SliceID,
+		legacyBlocked,
+		legacyReason,
+		pathHeadBlocked,
+		formatPathHeadDriftsForLog(drifts),
+	)
+}
+
+func formatPathHeadDriftsForLog(drifts []changesetPathHeadDrift) string {
+	if len(drifts) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(drifts))
+	for i, drift := range drifts {
+		if i >= 5 {
+			parts = append(parts, fmt.Sprintf("...(+%d more)", len(drifts)-i))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d->%d", drift.Path, drift.BaseVersion, drift.CurrentVersion))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
 func (s *sliceServiceServer) changesetNeedsRebase(ctx context.Context, cs *models.Changeset) (bool, string, error) {
@@ -3282,30 +3335,66 @@ func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, c
 }
 
 func (s *sliceServiceServer) evaluateChangesetPathHeadReviewState(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) (bool, slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
-	if cs == nil || snapshot == nil || len(snapshot.BasePathVersions) == 0 {
+	drifts, compared, err := s.changesetPathHeadDrifts(ctx, cs, snapshot)
+	if err != nil {
+		return compared, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
+	}
+	if !compared {
 		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	if len(drifts) == 0 {
+		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+
+	issues := make([]*slicev1.ReviewIssue, 0, len(drifts))
+	warnings := make([]string, 0, len(drifts))
+	for _, drift := range drifts {
+		message := fmt.Sprintf(
+			"path %s changed from version %d to %d. Sync the changeset before merging.",
+			drift.Path,
+			drift.BaseVersion,
+			drift.CurrentVersion,
+		)
+		warnings = append(warnings, message)
+		issues = append(issues, &slicev1.ReviewIssue{
+			Type:    slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE,
+			FileId:  drift.Path,
+			Message: message,
+		})
+	}
+	return true, slicev1.ReviewStatus_NEEDS_SYNC, issues, warnings, nil
+}
+
+type changesetPathHeadDrift struct {
+	Path           string
+	BaseVersion    int64
+	CurrentVersion int64
+}
+
+func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) ([]changesetPathHeadDrift, bool, error) {
+	if cs == nil || snapshot == nil || len(snapshot.BasePathVersions) == 0 {
+		return nil, false, nil
 	}
 	headStore, ok := s.storage.(storage.HomePathHeadStore)
 	if !ok {
-		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+		return nil, false, nil
 	}
 	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
 	if err != nil {
-		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
+		return nil, true, err
 	}
 	paths := normalizeModifiedFiles(cs.ModifiedFiles)
 	homeID := mergeEventHomeID(slice, cs, paths)
 	if strings.TrimSpace(homeID) == "" {
-		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+		return nil, false, nil
 	}
 	heads, err := headStore.GetHomePathHeads(ctx, homeID, paths)
 	if err != nil {
-		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
+		return nil, true, err
 	}
 
-	issues := make([]*slicev1.ReviewIssue, 0)
-	warnings := make([]string, 0)
 	compared := 0
+	drifts := make([]changesetPathHeadDrift, 0)
 	for _, rawPath := range paths {
 		filePath := cleanDiffPath(rawPath)
 		if filePath == "" {
@@ -3323,26 +3412,13 @@ func (s *sliceServiceServer) evaluateChangesetPathHeadReviewState(ctx context.Co
 		if currentVersion == baseVersion {
 			continue
 		}
-		message := fmt.Sprintf(
-			"path %s changed from version %d to %d. Sync the changeset before merging.",
-			filePath,
-			baseVersion,
-			currentVersion,
-		)
-		warnings = append(warnings, message)
-		issues = append(issues, &slicev1.ReviewIssue{
-			Type:    slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE,
-			FileId:  filePath,
-			Message: message,
+		drifts = append(drifts, changesetPathHeadDrift{
+			Path:           filePath,
+			BaseVersion:    baseVersion,
+			CurrentVersion: currentVersion,
 		})
 	}
-	if compared == 0 {
-		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
-	}
-	if len(issues) > 0 {
-		return true, slicev1.ReviewStatus_NEEDS_SYNC, issues, warnings, nil
-	}
-	return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	return drifts, compared > 0, nil
 }
 
 func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
