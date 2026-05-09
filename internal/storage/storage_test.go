@@ -2141,7 +2141,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if len(agentKeysByUser) != 1 || agentKeysByUser[0].KeyID != agentKey.KeyID {
 		t.Fatalf("unexpected agent keys by user: %#v", agentKeysByUser)
 	}
-	lastUsedAt := time.Now().Add(3 * time.Minute)
+	lastUsedAt := time.Now().Add(3 * time.Minute).Truncate(time.Microsecond)
 	if err := st.TouchAgentKey(ctx, agentKey.KeyID, lastUsedAt); err != nil {
 		t.Fatalf("TouchAgentKey failed: %v", err)
 	}
@@ -2208,7 +2208,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if challengeByID.AgentKeyID != agentKey.KeyID || !bytes.Equal(challengeByID.Challenge, agentChallenge.Challenge) {
 		t.Fatalf("agent key challenge mismatch: %#v", challengeByID)
 	}
-	usedAt := time.Now().Add(4 * time.Minute)
+	usedAt := time.Now().Add(4 * time.Minute).Truncate(time.Microsecond)
 	if err := st.MarkAgentKeyChallengeUsed(ctx, agentChallenge.ChallengeID, usedAt); err != nil {
 		t.Fatalf("MarkAgentKeyChallengeUsed failed: %v", err)
 	}
@@ -2222,7 +2222,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if usedChallenge.UsedAt == nil || !usedChallenge.UsedAt.Equal(usedAt) {
 		t.Fatalf("expected used_at %v, got %#v", usedAt, usedChallenge)
 	}
-	revokedAt := time.Now().Add(5 * time.Minute)
+	revokedAt := time.Now().Add(5 * time.Minute).Truncate(time.Microsecond)
 	if err := st.RevokeAgentKey(ctx, accountUsername, agentKey.KeyID, revokedAt); err != nil {
 		t.Fatalf("RevokeAgentKey failed: %v", err)
 	}
