@@ -445,6 +445,58 @@ func (s *InMemoryStorage) ListCILogChunks(ctx context.Context, filter CILogChunk
 	return chunks, nil
 }
 
+func (s *InMemoryStorage) ReplaceCIManifestIndex(ctx context.Context, homeID string, homeCommitHash string, entries []*CIManifestIndexEntry) error {
+	_ = ctx
+	homeID = strings.TrimSpace(homeID)
+	homeCommitHash = strings.TrimSpace(homeCommitHash)
+	if homeID == "" || homeCommitHash == "" {
+		return ErrInvalidInput
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := ciManifestIndexPrefix(homeID, homeCommitHash)
+	for key := range s.ciManifestIndex {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.ciManifestIndex, key)
+		}
+	}
+	for _, entry := range entries {
+		if entry == nil || strings.TrimSpace(entry.ManifestPath) == "" {
+			return ErrInvalidInput
+		}
+		copyEntry := cloneCIManifestIndexEntry(entry)
+		copyEntry.HomeID = homeID
+		copyEntry.HomeCommitHash = homeCommitHash
+		if copyEntry.UpdatedAt.IsZero() {
+			copyEntry.UpdatedAt = now
+		}
+		s.ciManifestIndex[ciManifestIndexKey(copyEntry.HomeID, copyEntry.HomeCommitHash, copyEntry.ManifestPath)] = copyEntry
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) ListCIManifestIndex(ctx context.Context, homeID string, homeCommitHash string) ([]*CIManifestIndexEntry, error) {
+	_ = ctx
+	homeID = strings.TrimSpace(homeID)
+	homeCommitHash = strings.TrimSpace(homeCommitHash)
+	if homeID == "" || homeCommitHash == "" {
+		return nil, ErrInvalidInput
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	prefix := ciManifestIndexPrefix(homeID, homeCommitHash)
+	out := make([]*CIManifestIndexEntry, 0)
+	for key, entry := range s.ciManifestIndex {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		out = append(out, cloneCIManifestIndexEntry(entry))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ManifestPath < out[j].ManifestPath })
+	return out, nil
+}
+
 func (s *InMemoryStorage) CreateCIRunnerRegistrationToken(ctx context.Context, token *CIRunnerRegistrationToken) error {
 	_ = ctx
 	if token == nil || strings.TrimSpace(token.TokenHash) == "" {
@@ -594,6 +646,14 @@ func ciCheckKey(check *CICheck) string {
 	}, "\x00")
 }
 
+func ciManifestIndexKey(homeID string, homeCommitHash string, manifestPath string) string {
+	return strings.Join([]string{strings.TrimSpace(homeID), strings.TrimSpace(homeCommitHash), strings.TrimSpace(manifestPath)}, "\x00")
+}
+
+func ciManifestIndexPrefix(homeID string, homeCommitHash string) string {
+	return strings.Join([]string{strings.TrimSpace(homeID), strings.TrimSpace(homeCommitHash), ""}, "\x00")
+}
+
 func normalizeCIListLimit(limit int) int {
 	if limit <= 0 {
 		return defaultCIListLimit
@@ -662,6 +722,17 @@ func cloneCILogChunk(src *CILogChunk) *CILogChunk {
 	}
 	dst := *src
 	dst.Payload = append([]byte(nil), src.Payload...)
+	return &dst
+}
+
+func cloneCIManifestIndexEntry(src *CIManifestIndexEntry) *CIManifestIndexEntry {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.WatchGlobs = append([]string(nil), src.WatchGlobs...)
+	dst.IgnoreGlobs = append([]string(nil), src.IgnoreGlobs...)
+	dst.AppliesToGlobs = append([]string(nil), src.AppliesToGlobs...)
 	return &dst
 }
 

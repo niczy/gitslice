@@ -78,6 +78,16 @@ func TestStorageCompliance(t *testing.T) {
 	}
 }
 
+func TestCIManifestIndexStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runCIManifestIndexStoreContract(ctx, t, tc.factory(t))
+		})
+	}
+}
+
 func TestMergeEventStoreCompliance(t *testing.T) {
 	ctx := context.Background()
 
@@ -89,6 +99,71 @@ func TestMergeEventStoreCompliance(t *testing.T) {
 			}
 			runMergeEventStoreContract(ctx, t, store)
 		})
+	}
+}
+
+func runCIManifestIndexStoreContract(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+	now := time.Now().UTC()
+	first := []*CIManifestIndexEntry{
+		{
+			HomeID:         "alice",
+			HomeCommitHash: "commit-1",
+			ManifestPath:   "/api/.gs-ci.yaml",
+			ManifestDir:    "/api",
+			ManifestHash:   "hash-api",
+			WatchGlobs:     []string{"**/*.go"},
+			IgnoreGlobs:    []string{"vendor/**"},
+			AppliesToGlobs: []string{"/shared/lib/**"},
+			ParseStatus:    "ok",
+			UpdatedAt:      now,
+		},
+		{
+			HomeID:         "alice",
+			HomeCommitHash: "commit-1",
+			ManifestPath:   "/web/.gs-ci.yaml",
+			ManifestDir:    "/web",
+			ManifestHash:   "hash-web",
+			ParseStatus:    "error",
+			ParseError:     "bad yaml",
+			UpdatedAt:      now,
+		},
+	}
+	if err := st.ReplaceCIManifestIndex(ctx, "alice", "commit-1", first); err != nil {
+		t.Fatalf("ReplaceCIManifestIndex failed: %v", err)
+	}
+	listed, err := st.ListCIManifestIndex(ctx, "alice", "commit-1")
+	if err != nil {
+		t.Fatalf("ListCIManifestIndex failed: %v", err)
+	}
+	if len(listed) != 2 || listed[0].ManifestPath != "/api/.gs-ci.yaml" || listed[1].ManifestPath != "/web/.gs-ci.yaml" {
+		t.Fatalf("listed manifest index = %#v, want api and web", listed)
+	}
+	if got := listed[0].AppliesToGlobs; len(got) != 1 || got[0] != "/shared/lib/**" {
+		t.Fatalf("applies_to globs = %#v, want shared lib", got)
+	}
+	replacement := []*CIManifestIndexEntry{{
+		ManifestPath: "/cli/.gs-ci.yaml",
+		ManifestDir:  "/cli",
+		ManifestHash: "hash-cli",
+		ParseStatus:  "ok",
+	}}
+	if err := st.ReplaceCIManifestIndex(ctx, "alice", "commit-1", replacement); err != nil {
+		t.Fatalf("ReplaceCIManifestIndex replacement failed: %v", err)
+	}
+	listed, err = st.ListCIManifestIndex(ctx, "alice", "commit-1")
+	if err != nil {
+		t.Fatalf("ListCIManifestIndex replacement failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ManifestPath != "/cli/.gs-ci.yaml" || listed[0].HomeID != "alice" || listed[0].HomeCommitHash != "commit-1" {
+		t.Fatalf("replacement index = %#v, want only cli for alice commit-1", listed)
+	}
+	other, err := st.ListCIManifestIndex(ctx, "alice", "commit-missing")
+	if err != nil {
+		t.Fatalf("ListCIManifestIndex missing failed: %v", err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("missing commit index = %#v, want empty", other)
 	}
 }
 

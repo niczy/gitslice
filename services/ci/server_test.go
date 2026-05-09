@@ -142,6 +142,126 @@ func TestListChecksRequiresChangeset(t *testing.T) {
 	}
 }
 
+func TestManifestIndexTriggersAppliesToManifest(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	if _, err := st.EnsureUser(context.Background(), "alice"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+	homeSliceID := homeslice.IDForUsername("alice")
+	homeSlice := &models.Slice{
+		ID:        homeSliceID,
+		Name:      "alice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := st.CreateSlice(context.Background(), homeSlice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	platformManifest := writeCIFile(t, st, homeSliceID, "alice/.gitslice/ci.yaml", []byte(`
+version: 1
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+`))
+	apiManifest := writeCIFile(t, st, homeSliceID, "alice/api/.gs-ci.yaml", []byte(`
+version: 1
+name: api
+watch:
+  - "**/*.go"
+applies_to:
+  - "/shared/lib/**"
+jobs:
+  integration:
+    required: true
+    commands:
+      - go test ./...
+`))
+	sharedManifest := writeCIFile(t, st, homeSliceID, "alice/shared/lib/util.go", []byte("package lib\n"))
+	for _, filePath := range []string{"alice/.gitslice/ci.yaml", "alice/api/.gs-ci.yaml", "alice/shared/lib/util.go"} {
+		if err := st.AddFileToSlice(context.Background(), filePath, homeSliceID); err != nil {
+			t.Fatalf("AddFileToSlice(%s) failed: %v", filePath, err)
+		}
+	}
+	meta, err := st.GetSliceMetadata(context.Background(), homeSliceID)
+	if err != nil {
+		t.Fatalf("GetSliceMetadata failed: %v", err)
+	}
+	meta.HeadCommitHash = "base-shared"
+	if err := st.UpdateSliceMetadata(context.Background(), homeSliceID, meta); err != nil {
+		t.Fatalf("UpdateSliceMetadata failed: %v", err)
+	}
+	if err := st.SaveCommitSnapshot(context.Background(), &models.CommitSnapshot{
+		CommitHash: "base-shared",
+		SliceID:    homeSliceID,
+		Files: map[string]string{
+			"alice/.gitslice/ci.yaml":  platformManifest.Hash,
+			"alice/api/.gs-ci.yaml":    apiManifest.Hash,
+			"alice/shared/lib/util.go": sharedManifest.Hash,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveCommitSnapshot failed: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:             "chg_ci_applies_to",
+		Hash:           common.GenerateChangesetVersionHash(),
+		SliceID:        homeSliceID,
+		BaseCommitHash: "base-shared",
+		ModifiedFiles:  []string{"alice/shared/lib/util.go"},
+		Status:         models.ChangesetStatusPending,
+		Author:         "alice",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(context.Background(), cs); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	snapshot := &models.ChangesetSnapshot{
+		ID:             common.GenerateChangesetSnapshotID(cs.ID, 1),
+		ChangesetID:    cs.ID,
+		Version:        1,
+		Hash:           cs.Hash,
+		BaseCommitHash: cs.BaseCommitHash,
+		ModifiedFiles:  []string{"alice/shared/lib/util.go"},
+		FileHashes:     map[string]string{"alice/shared/lib/util.go": sharedManifest.Hash},
+		Author:         "alice",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangesetSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("CreateChangesetSnapshot failed: %v", err)
+	}
+
+	svc := &server{st: st}
+	resp, err := svc.StartRun(ctx, &civ1.StartRunRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("StartRun failed: %v", err)
+	}
+	run, err := svc.GetRun(ctx, &civ1.GetRunRequest{RunId: resp.GetRunId()})
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if len(run.GetJobs()) != 1 {
+		t.Fatalf("job count = %d, want 1: %#v", len(run.GetJobs()), run.GetJobs())
+	}
+	job := run.GetJobs()[0]
+	if job.GetManifestPath() != "/api/.gs-ci.yaml" || job.GetJobKey() != "integration" {
+		t.Fatalf("job = %#v, want api integration from applies_to", job)
+	}
+	index, err := st.ListCIManifestIndex(context.Background(), "alice", "base-shared")
+	if err != nil {
+		t.Fatalf("ListCIManifestIndex failed: %v", err)
+	}
+	if len(index) != 1 || index[0].ManifestPath != "/api/.gs-ci.yaml" || len(index[0].AppliesToGlobs) != 1 {
+		t.Fatalf("manifest index = %#v, want indexed api manifest with applies_to", index)
+	}
+}
+
 func TestRunnerMVPExecutesQueuedJob(t *testing.T) {
 	userCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

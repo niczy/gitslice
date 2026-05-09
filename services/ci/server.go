@@ -388,6 +388,10 @@ func (s *server) planChangesetVersion(ctx context.Context, cs *models.Changeset,
 	}
 	homeID := resolveCIHomeID(sourceSlice, cs, snapshot.ModifiedFiles)
 	changedPaths := logicalChangedPaths(homeID, snapshot.ModifiedFiles)
+	indexedManifestPaths, err := s.indexedManifestPathsForChangedPaths(ctx, homeID, changedPaths)
+	if err != nil {
+		return nil, "", err
+	}
 	tree := &changesetTreeReader{
 		st:       s.st,
 		cs:       cs,
@@ -395,13 +399,14 @@ func (s *server) planChangesetVersion(ctx context.Context, cs *models.Changeset,
 		homeID:   homeID,
 	}
 	plan, err := (&ciinternal.Planner{Tree: tree}).Plan(ctx, ciinternal.PlanInput{
-		HomeID:             homeID,
-		SliceID:            cs.SliceID,
-		ChangesetID:        cs.ID,
-		ChangesetVersionID: snapshot.ID,
-		BaseCommitHash:     snapshot.BaseCommitHash,
-		CandidateTreeHash:  snapshot.Hash,
-		ChangedPaths:       changedPaths,
+		HomeID:               homeID,
+		SliceID:              cs.SliceID,
+		ChangesetID:          cs.ID,
+		ChangesetVersionID:   snapshot.ID,
+		BaseCommitHash:       snapshot.BaseCommitHash,
+		CandidateTreeHash:    snapshot.Hash,
+		ChangedPaths:         changedPaths,
+		IndexedManifestPaths: indexedManifestPaths,
 	})
 	return plan, homeID, err
 }

@@ -138,6 +138,10 @@ func manifestDir(manifestPath string) (string, error) {
 	return dir, nil
 }
 
+func ManifestDir(manifestPath string) (string, error) {
+	return manifestDir(manifestPath)
+}
+
 func pathWithinDir(candidate, dir string) bool {
 	candidate, candidateErr := NormalizeHomePath(candidate)
 	dir, dirErr := NormalizeHomePath(dir)
@@ -165,6 +169,10 @@ func matchManifestPatterns(patterns []string, baseDir, candidate string) (bool, 
 		}
 	}
 	return false, nil
+}
+
+func MatchManifestPatterns(patterns []string, baseDir, candidate string) (bool, error) {
+	return matchManifestPatterns(patterns, baseDir, candidate)
 }
 
 func matchHomePattern(pattern, candidate string) bool {

@@ -1597,6 +1597,11 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 	}
 	profile.markPromotion(time.Since(promotionStartedAt))
+	if username := homeslice.UsernameFromSliceID(cs.SliceID); username != "" {
+		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
+			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
+		}
+	}
 
 	configStartedAt := time.Now()
 	if changesetTouchesConfig(modifiedFiles) {
@@ -1679,6 +1684,11 @@ func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, 
 		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
 	}
 	profile.markPromotion(time.Since(promotionStartedAt))
+	if username := homeslice.UsernameFromSliceID(result.Changeset.SliceID); username != "" {
+		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
+			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
+		}
+	}
 
 	return &slicev1.MergeChangesetResponse{
 		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
@@ -1754,6 +1764,11 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
 	}
 	profile.markPromotion(time.Since(promotionStartedAt))
+	if username := homeslice.UsernameFromSliceID(cs.SliceID); username != "" {
+		if err := ciservice.UpdateManifestIndexForHome(ctx, s.storage, username); err != nil {
+			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
+		}
+	}
 
 	return &slicev1.MergeChangesetResponse{
 		Status:        slicev1.MergeStatus_MERGE_STATUS_SUCCESS,
@@ -4780,6 +4795,11 @@ func (s *sliceServiceServer) updateHomePromotionState(ctx context.Context, homeS
 	}
 	if err := st.UpdateSliceMetadata(ctx, homeSliceID, metadata); err != nil {
 		return fmt.Errorf("failed to update home metadata: %w", err)
+	}
+	if username := homeslice.UsernameFromSliceID(homeSliceID); username != "" {
+		if err := ciservice.UpdateManifestIndexForHome(ctx, st, username); err != nil {
+			log.Printf("Warning: failed to update CI manifest index for home %s: %v", username, err)
+		}
 	}
 	return nil
 }
