@@ -3256,6 +3256,89 @@ func TestReviewChangesetReportsOwnershipIssueWithoutBlockingMerge(t *testing.T) 
 	}
 }
 
+func TestReviewChangesetUsesSnapshotBasePathVersions(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	filePath := "tester/app/main.go"
+	slice := &models.Slice{
+		ID:        "slice-path-head-review",
+		Name:      "slice-path-head-review",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	content := []byte("package main\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add entry: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "tester",
+		Path:         filePath,
+		PathVersion:  3,
+		ManifestHash: manifestHash,
+		ContentHash:  manifestHash,
+	}}); err != nil {
+		t.Fatalf("failed to seed home path head: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_path-head-review",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		t.Fatalf("createChangesetSnapshot failed: %v", err)
+	}
+	snapshot, err := st.GetChangesetSnapshot(ctx, cs.ID, 0)
+	if err != nil {
+		t.Fatalf("failed to load snapshot: %v", err)
+	}
+	if snapshot.BasePathVersions[filePath] != 3 {
+		t.Fatalf("expected snapshot base path version 3, got %#v", snapshot.BasePathVersions)
+	}
+
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "tester",
+		Path:         filePath,
+		PathVersion:  4,
+		ManifestHash: manifestHash,
+		ContentHash:  manifestHash,
+	}}); err != nil {
+		t.Fatalf("failed to advance home path head: %v", err)
+	}
+
+	resp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if resp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_SYNC {
+		t.Fatalf("expected NEEDS_SYNC from path head version drift, got %v", resp.GetReviewStatus())
+	}
+	if len(resp.GetIssues()) != 1 || resp.GetIssues()[0].GetType() != slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE {
+		t.Fatalf("expected stale-base path issue, got %#v", resp.GetIssues())
+	}
+}
+
 func TestMergeChangesetIgnoresNormalizedCrossSliceFileState(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

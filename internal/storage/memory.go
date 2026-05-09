@@ -1201,6 +1201,7 @@ func (s *InMemoryStorage) CreateChangesetSnapshot(ctx context.Context, snapshot 
 	copySnapshot := *snapshot
 	copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
 	copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
+	copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 	s.changesetSnapshots[snapshot.ID] = &copySnapshot
 	s.changesetSnapshotVersions[snapshot.ChangesetID] = append(
 		[]string{snapshot.ID},
@@ -1226,6 +1227,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		copySnapshot := *latest
 		copySnapshot.ModifiedFiles = append([]string(nil), latest.ModifiedFiles...)
 		copySnapshot.FileHashes = cloneStringMap(latest.FileHashes)
+		copySnapshot.BasePathVersions = cloneInt64Map(latest.BasePathVersions)
 		return &copySnapshot, nil
 	}
 
@@ -1240,6 +1242,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		copySnapshot := *snapshot
 		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
+		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 		return &copySnapshot, nil
 	}
 
@@ -1268,6 +1271,7 @@ func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetI
 		copySnapshot := *snapshot
 		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
+		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 		result = append(result, &copySnapshot)
 	}
 	return result, nil
@@ -2849,6 +2853,17 @@ func cloneStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneInt64Map(in map[string]int64) map[string]int64 {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]int64, len(in))
 	for k, v := range in {
 		out[k] = v
 	}
