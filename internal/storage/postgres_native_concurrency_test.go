@@ -141,6 +141,77 @@ func TestPostgresNativeStorageUsesVersionedManifestRefs(t *testing.T) {
 	}
 }
 
+func TestPostgresNativeStorageStartupDoesNotRebuildDirectorySizes(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+
+	ctx := context.Background()
+	namespace := fmt.Sprintf("test-native-no-startup-rebuild-%d", time.Now().UnixNano())
+	objectStore := NewInMemoryObjectStore()
+	st, err := NewPostgresNativeStorage(ctx, dsn, objectStore, namespace)
+	if err != nil {
+		t.Fatalf("NewPostgresNativeStorage failed: %v", err)
+	}
+
+	slice := &models.Slice{ID: "slice-startup-rebuild", Name: "Startup rebuild", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       nativeEntryID(slice.ID, "docs"),
+		Path:     "docs",
+		Type:     "directory",
+		ParentID: slice.ID,
+	}); err != nil {
+		t.Fatalf("AddEntry(docs) failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       nativeEntryID(slice.ID, "docs/readme.md"),
+		Path:     "docs/readme.md",
+		Type:     "file",
+		ParentID: nativeEntryID(slice.ID, "docs"),
+		Size:     7,
+	}); err != nil {
+		t.Fatalf("AddEntry(docs/readme.md) failed: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, `
+		UPDATE directory_entries
+		SET size = 999
+		WHERE slice_id = $1 AND path = 'docs' AND type = 'directory'
+	`, slice.ID); err != nil {
+		t.Fatalf("corrupt directory size: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	st, err = NewPostgresNativeStorage(ctx, dsn, objectStore, namespace)
+	if err != nil {
+		t.Fatalf("NewPostgresNativeStorage reopen failed: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	docs, err := st.GetEntryByPath(ctx, slice.ID, "docs")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(docs) failed: %v", err)
+	}
+	if docs.Size != 999 {
+		t.Fatalf("startup should not rebuild directory sizes, got docs size %d", docs.Size)
+	}
+	if err := st.RebuildIndexes(ctx); err != nil {
+		t.Fatalf("RebuildIndexes failed: %v", err)
+	}
+	docs, err = st.GetEntryByPath(ctx, slice.ID, "docs")
+	if err != nil {
+		t.Fatalf("GetEntryByPath(docs after rebuild) failed: %v", err)
+	}
+	if docs.Size != 7 {
+		t.Fatalf("explicit rebuild should repair docs size to 7, got %d", docs.Size)
+	}
+}
+
 func TestPostgresNativeStorageConcurrentFileLockOneFails(t *testing.T) {
 	ctx := context.Background()
 	st := newPostgresNativeStorageForIsolationTest(t)

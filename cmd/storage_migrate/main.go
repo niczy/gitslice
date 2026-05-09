@@ -45,6 +45,8 @@ func main() {
 		cmdRepairSearchIndex(os.Args[2:])
 	case "prune-broken-entries":
 		cmdPruneBrokenEntries(os.Args[2:])
+	case "rebuild-directory-sizes":
+		cmdRebuildDirectorySizes(os.Args[2:])
 	case "verify-native":
 		cmdVerifyNative(os.Args[2:])
 	case "drop-snapshot":
@@ -67,6 +69,7 @@ func usage() {
 	log.Printf("  storage_migrate repair-native-content --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate repair-search-index --dsn <dsn> --namespace <ns> [--slice <slice-id>] [--commit <hash>] [--workspace <slice-id>] [--commits <n>]")
 	log.Printf("  storage_migrate prune-broken-entries --dsn <dsn> --namespace <ns> [--dry-run]")
+	log.Printf("  storage_migrate rebuild-directory-sizes --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate verify-native --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate drop-snapshot --dsn <dsn> --namespace <ns>")
 	log.Printf("  storage_migrate copy-object-store --dsn <dsn> --namespace <ns> --target-env <env> --source-object-store-type <type> --target-object-store-type r2")
@@ -345,6 +348,26 @@ func cmdPruneBrokenEntries(args []string) {
 	}
 	log.Printf("Prune complete: candidates=%d broken_files=%d affected_slices=%d file_index_rows=%d file_entries=%d directories=%d slice_rows=%d slice_metadata_rows=%d dry_run=%t",
 		stats.Candidates, stats.BrokenFiles, stats.AffectedSlices, stats.FileIndexRowsDeleted, stats.FileEntriesDeleted, stats.DirectoriesDeleted, stats.SliceRowsUpdated, stats.SliceMetadataUpdated, *dryRun)
+}
+
+func cmdRebuildDirectorySizes(args []string) {
+	fs := flag.NewFlagSet("rebuild-directory-sizes", flag.ExitOnError)
+	dsn := fs.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN")
+	namespace := fs.String("namespace", "core", "storage namespace")
+	_ = fs.Parse(args)
+
+	ctx := context.Background()
+	native, err := storage.NewPostgresNativeStorage(ctx, *dsn, storage.NewInMemoryObjectStore(), *namespace)
+	if err != nil {
+		log.Fatalf("NewPostgresNativeStorage: %v", err)
+	}
+	defer native.Close()
+
+	started := time.Now()
+	if err := native.RebuildIndexes(ctx); err != nil {
+		log.Fatalf("RebuildIndexes: %v", err)
+	}
+	log.Printf("Rebuilt directory sizes for namespace %s in %s", *namespace, time.Since(started))
 }
 
 func cmdVerifyNative(args []string) {

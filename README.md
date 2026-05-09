@@ -476,16 +476,24 @@ Cloudflare runtime troubleshooting:
 
 - `CFC_CONTROL_URL_MISSING`: `CFC_CONTROL_BASE_URL` is empty or invalid.
 - `CFC_AUTH_MISSING`: service token id/secret is missing in core config.
+- `CFC_START_UNAUTHORIZED` or `CFC_STOP_UNAUTHORIZED`: service token rejected by Worker/Access.
+- `CFC_RUNTIME_UNAVAILABLE`: Worker/control plane is unreachable or returned 5xx.
+- `CFC_STREAM_DECODE_FAILED`: stream endpoint returned malformed SSE payload.
+- `RUNTIME_BRIDGE_SYNC_FAILED`: core could not sync stream events; inspect control-plane `/stream` response and core logs.
 
 Search index maintenance:
 
 - `storage_migrate backfill-search-index --dsn <dsn> --namespace core --commits 20`
 - `storage_migrate repair-search-index --dsn <dsn> --namespace core --slice <slice-id> --commit <commit-hash>`
 - `storage_migrate repair-search-index --dsn <dsn> --namespace core --workspace <slice-id>`
-- `CFC_START_UNAUTHORIZED` or `CFC_STOP_UNAUTHORIZED`: service token rejected by Worker/Access.
-- `CFC_RUNTIME_UNAVAILABLE`: Worker/control plane is unreachable or returned 5xx.
-- `CFC_STREAM_DECODE_FAILED`: stream endpoint returned malformed SSE payload.
-- `RUNTIME_BRIDGE_SYNC_FAILED`: core could not sync stream events; inspect control-plane `/stream` response and core logs.
+
+Native storage maintenance:
+
+- `storage_migrate rebuild-directory-sizes --dsn <dsn> --namespace core`
+
+Directory size repair is an explicit maintenance command. Core startup runs
+migrations and opens storage pools, but it does not rebuild directory sizes
+before binding health endpoints.
 
 ## Accounts / Organizations
 
