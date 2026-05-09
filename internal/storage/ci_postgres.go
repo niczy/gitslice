@@ -56,15 +56,19 @@ func (s *PostgresNativeStorage) CreateCIPlan(ctx context.Context, plan *CIPlan) 
 		if job == nil || strings.TrimSpace(job.ID) == "" || strings.TrimSpace(job.RunID) != run.ID {
 			return ErrInvalidInput
 		}
+		envJSON, _ := json.Marshal(job.Env)
+		cachePathsJSON, _ := json.Marshal(job.CachePaths)
+		artifactsJSON, _ := json.Marshal(job.Artifacts)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ci_jobs (
 				id, run_id, manifest_run_id, manifest_path, job_key, check_name, required,
-				runner_pool, image, shell, working_directory, timeout_seconds, status, runner_id, lease_id,
-				lease_expires_at, exit_code, infra_failure, started_at, finished_at
+				runner_pool, image, shell, working_directory, timeout_seconds, env, cache_paths, artifacts,
+				status, runner_id, lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
 			) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				NULLIF($13, ''), $14, $15, $16, $17, $18, $19, $20)
+				$13, $14, $15, $16, NULLIF($17, ''), $18, $19, $20, $21, $22, $23)
 		`, job.ID, job.RunID, job.ManifestRunID, job.ManifestPath, job.JobKey, job.CheckName, job.Required,
-			job.RunnerPool, job.Image, job.Shell, job.WorkingDirectory, job.TimeoutSeconds, job.Status, job.RunnerID, job.LeaseID,
+			job.RunnerPool, job.Image, job.Shell, job.WorkingDirectory, job.TimeoutSeconds, envJSON, cachePathsJSON, artifactsJSON,
+			job.Status, job.RunnerID, job.LeaseID,
 			job.LeaseExpiresAt, job.ExitCode, job.InfraFailure, job.StartedAt, job.FinishedAt); err != nil {
 			return err
 		}
@@ -217,7 +221,8 @@ func (s *PostgresNativeStorage) ListCIJobs(ctx context.Context, filter CIJobList
 	limit := normalizeCIListLimit(filter.Limit)
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
-		       required, runner_pool, image, shell, working_directory, timeout_seconds, status, COALESCE(runner_id, ''),
+		       required, runner_pool, image, shell, working_directory, timeout_seconds,
+		       env, cache_paths, artifacts, status, COALESCE(runner_id, ''),
 		       lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
 		FROM ci_jobs
 		WHERE ($1 = '' OR run_id = $1)
@@ -256,7 +261,8 @@ func (s *PostgresNativeStorage) GetCIJob(ctx context.Context, jobID string) (*CI
 	ctx = ensureCtx(ctx)
 	job, err := scanCIJob(s.pool.QueryRow(ctx, `
 		SELECT id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
-		       required, runner_pool, image, shell, working_directory, timeout_seconds, status,
+		       required, runner_pool, image, shell, working_directory, timeout_seconds,
+		       env, cache_paths, artifacts, status,
 		       COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
 		FROM ci_jobs
 		WHERE id = $1
@@ -337,7 +343,8 @@ func (s *PostgresNativeStorage) ClaimCIJob(ctx context.Context, jobID string, ru
 		    started_at = $5
 		WHERE id = $1 AND status = 'queued'
 		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
-		          required, runner_pool, image, shell, working_directory, timeout_seconds, status,
+		          required, runner_pool, image, shell, working_directory, timeout_seconds,
+		          env, cache_paths, artifacts, status,
 		          COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
 	`, strings.TrimSpace(jobID), strings.TrimSpace(runnerID), strings.TrimSpace(leaseID), leaseExpiresAt, startedAt))
 	if err != nil {
@@ -413,6 +420,59 @@ func (s *PostgresNativeStorage) AppendCILogChunk(ctx context.Context, chunk *CIL
 	return err
 }
 
+func (s *PostgresNativeStorage) CreateCIArtifact(ctx context.Context, artifact *CIArtifact) error {
+	ctx = ensureCtx(ctx)
+	if artifact == nil || strings.TrimSpace(artifact.ID) == "" || strings.TrimSpace(artifact.JobID) == "" {
+		return ErrInvalidInput
+	}
+	if artifact.CreatedAt.IsZero() {
+		artifact.CreatedAt = time.Now()
+	}
+	if artifact.ByteCount == 0 && len(artifact.Payload) > 0 {
+		artifact.ByteCount = int64(len(artifact.Payload))
+	}
+	if strings.TrimSpace(artifact.RunID) == "" {
+		job, err := s.GetCIJob(ctx, artifact.JobID)
+		if err != nil {
+			return err
+		}
+		artifact.RunID = job.RunID
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ci_artifacts (id, job_id, run_id, path, object_key, payload, byte_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, artifact.ID, strings.TrimSpace(artifact.JobID), artifact.RunID, artifact.Path,
+		artifact.ObjectKey, artifact.Payload, artifact.ByteCount, artifact.CreatedAt)
+	return err
+}
+
+func (s *PostgresNativeStorage) ListCIArtifacts(ctx context.Context, filter CIArtifactListFilter) ([]*CIArtifact, error) {
+	ctx = ensureCtx(ctx)
+	limit := normalizeCIListLimit(filter.Limit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, job_id, run_id, path, object_key, COALESCE(payload, ''::bytea), byte_count, created_at
+		FROM ci_artifacts
+		WHERE ($1 = '' OR run_id = $1)
+		  AND ($2 = '' OR job_id = $2)
+		ORDER BY created_at, id
+		LIMIT $3
+	`, strings.TrimSpace(filter.RunID), strings.TrimSpace(filter.JobID), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*CIArtifact, 0)
+	for rows.Next() {
+		var artifact CIArtifact
+		if err := rows.Scan(&artifact.ID, &artifact.JobID, &artifact.RunID, &artifact.Path, &artifact.ObjectKey,
+			&artifact.Payload, &artifact.ByteCount, &artifact.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &artifact)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresNativeStorage) CompleteCIJob(ctx context.Context, jobID string, leaseID string, status string, exitCode int, infraFailure bool, finishedAt time.Time) (*CIJob, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.pool.Begin(ctx)
@@ -430,7 +490,8 @@ func (s *PostgresNativeStorage) CompleteCIJob(ctx context.Context, jobID string,
 		    lease_expires_at = NULL
 		WHERE id = $1 AND ($2 = '' OR lease_id = $2)
 		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
-		          required, runner_pool, image, shell, working_directory, timeout_seconds, status,
+		          required, runner_pool, image, shell, working_directory, timeout_seconds,
+		          env, cache_paths, artifacts, status,
 		          COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
 	`, strings.TrimSpace(jobID), strings.TrimSpace(leaseID), strings.TrimSpace(status), exitCode, infraFailure, finishedAt))
 	if err != nil {
@@ -706,6 +767,9 @@ func scanCIRun(row pgx.Row) (*CIRun, error) {
 
 func scanCIJob(row pgx.Row) (*CIJob, error) {
 	var job CIJob
+	var envJSON []byte
+	var cachePathsJSON []byte
+	var artifactsJSON []byte
 	if err := row.Scan(
 		&job.ID,
 		&job.RunID,
@@ -719,6 +783,9 @@ func scanCIJob(row pgx.Row) (*CIJob, error) {
 		&job.Shell,
 		&job.WorkingDirectory,
 		&job.TimeoutSeconds,
+		&envJSON,
+		&cachePathsJSON,
+		&artifactsJSON,
 		&job.Status,
 		&job.RunnerID,
 		&job.LeaseID,
@@ -730,6 +797,9 @@ func scanCIJob(row pgx.Row) (*CIJob, error) {
 	); err != nil {
 		return nil, err
 	}
+	_ = json.Unmarshal(envJSON, &job.Env)
+	_ = json.Unmarshal(cachePathsJSON, &job.CachePaths)
+	_ = json.Unmarshal(artifactsJSON, &job.Artifacts)
 	return &job, nil
 }
 

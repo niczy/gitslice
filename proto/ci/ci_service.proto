@@ -465,6 +465,12 @@ message JobPayload {
   repeated string commands = 10;
   repeated string changed_files = 11;
   repeated WorkspaceFile files = 12;
+  map<string, string> env = 13;
+  repeated string cache_paths = 14;
+  repeated string artifacts = 15;
+  int32 timeout_seconds = 16;
+  string changeset_id = 17;
+  string changeset_version_id = 18;
 }
 
 message WorkspaceFile {

@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	ciinternal "github.com/niczy/gitslice/internal/ci"
 	civ1 "github.com/niczy/gitslice/proto/ci"
 	"google.golang.org/grpc/metadata"
 )
@@ -299,7 +302,7 @@ func handleRunnerEnroll(args []string) {
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	if fs.NArg() > 0 || strings.TrimSpace(*token) == "" {
-		commandUsage("Usage: gs runner enroll --token <runner-registration-token> [--executor shell] [--json]")
+		commandUsage("Usage: gs runner enroll --token <runner-registration-token> [--executor shell|docker] [--json]")
 		return
 	}
 	cli, err := newCLIFromFlags()
@@ -346,7 +349,7 @@ func handleRunnerStart(args []string) {
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	if fs.NArg() > 0 {
-		commandUsage("Usage: gs runner start [--executor shell] [--once] [--workdir <dir>] [--json]")
+		commandUsage("Usage: gs runner start [--executor shell|docker] [--once] [--workdir <dir>] [--json]")
 		return
 	}
 	cfg, err := readRunnerLocalConfig()
@@ -359,8 +362,8 @@ func handleRunnerStart(args []string) {
 	if cfg.Executor == "" {
 		cfg.Executor = "shell"
 	}
-	if cfg.Executor != "shell" {
-		commandFatal("INVALID_ARGUMENT", "Only --executor shell is implemented in this runner MVP", false, "")
+	if cfg.Executor != "shell" && cfg.Executor != "docker" {
+		commandFatal("INVALID_ARGUMENT", "Executor must be shell or docker", false, "")
 	}
 	cli, err := newCLIFromFlags()
 	if err != nil {
@@ -416,14 +419,28 @@ func executeRunnerJob(ctx context.Context, cli *CLI, cfg runnerLocalConfig, job 
 		return err
 	}
 	defer cleanup()
-	env := append(os.Environ(),
-		"GS_HOME_ROOT="+workspace,
-		"GS_MANIFEST_PATH="+payload.GetManifestPath(),
-		"GS_MANIFEST_DIR="+filepath.Join(workspace, strings.TrimPrefix(payload.GetManifestDir(), "/")),
-		"GS_CHANGED_FILES="+strings.Join(payload.GetChangedFiles(), "\n"),
-		"GS_RUN_ID="+payload.GetRunId(),
-		"GS_JOB_ID="+payload.GetJobId(),
-	)
+	timeoutSeconds := payload.GetTimeoutSeconds()
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 900
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+	cacheDir, err := runnerCacheDir()
+	if err != nil {
+		_, _ = cli.runnerClient.CompleteJob(ctx, &civ1.CompleteJobRequest{JobId: payload.GetJobId(), LeaseId: claim.GetLeaseId(), Status: "failed", InfraFailure: true, FailureMessage: err.Error()})
+		return err
+	}
+	executor := strings.TrimSpace(cfg.Executor)
+	if executor == "" {
+		executor = "shell"
+	}
+	if executor == "docker" && strings.TrimSpace(payload.GetImage()) == "" {
+		err := errors.New("docker executor requires a job image")
+		_, _ = cli.runnerClient.CompleteJob(ctx, &civ1.CompleteJobRequest{JobId: payload.GetJobId(), LeaseId: claim.GetLeaseId(), Status: "failed", InfraFailure: true, FailureMessage: err.Error()})
+		return err
+	}
+	shellEnv := runnerJobEnv(payload, workspace, cacheDir, true)
+	dockerEnv := runnerJobEnv(payload, "/workspace", "/gitslice-cache", false)
 	chunkIndex := int64(0)
 	for idx, command := range payload.GetCommands() {
 		appendRunnerLog(ctx, cli, payload.GetJobId(), claim.GetLeaseId(), &chunkIndex, "system", []byte("$ "+command+"\n"))
@@ -432,7 +449,7 @@ func executeRunnerJob(ctx context.Context, cli *CLI, cfg runnerLocalConfig, job 
 			_, _ = cli.runnerClient.CompleteJob(ctx, &civ1.CompleteJobRequest{JobId: payload.GetJobId(), LeaseId: claim.GetLeaseId(), Status: "failed", InfraFailure: true, FailureMessage: err.Error()})
 			return err
 		}
-		exitCode, output := runShellCommand(ctx, payload.GetShell(), commandDir, command, env)
+		exitCode, output := runRunnerCommand(jobCtx, executor, payload, workspace, commandDir, cacheDir, command, shellEnv, dockerEnv)
 		if len(output) > 0 {
 			appendRunnerLog(ctx, cli, payload.GetJobId(), claim.GetLeaseId(), &chunkIndex, "stdout", output)
 		}
@@ -445,9 +462,16 @@ func executeRunnerJob(ctx context.Context, cli *CLI, cfg runnerLocalConfig, job 
 			return err
 		}
 		if exitCode != 0 {
+			if uploadErr := uploadRunnerArtifacts(ctx, cli, payload, claim.GetLeaseId(), workspace, &chunkIndex); uploadErr != nil {
+				appendRunnerLog(ctx, cli, payload.GetJobId(), claim.GetLeaseId(), &chunkIndex, "system", []byte("artifact upload failed: "+uploadErr.Error()+"\n"))
+			}
 			_, err = cli.runnerClient.CompleteJob(ctx, &civ1.CompleteJobRequest{JobId: payload.GetJobId(), LeaseId: claim.GetLeaseId(), Status: "failed", ExitCode: int32(exitCode)})
 			return err
 		}
+	}
+	if err := uploadRunnerArtifacts(ctx, cli, payload, claim.GetLeaseId(), workspace, &chunkIndex); err != nil {
+		_, _ = cli.runnerClient.CompleteJob(ctx, &civ1.CompleteJobRequest{JobId: payload.GetJobId(), LeaseId: claim.GetLeaseId(), Status: "failed", InfraFailure: true, FailureMessage: err.Error()})
+		return err
 	}
 	_, err = cli.runnerClient.CompleteJob(ctx, &civ1.CompleteJobRequest{JobId: payload.GetJobId(), LeaseId: claim.GetLeaseId(), Status: "passed"})
 	return err
@@ -467,6 +491,43 @@ func appendRunnerLog(ctx context.Context, cli *CLI, jobID, leaseID string, chunk
 	*chunkIndex = *chunkIndex + 1
 }
 
+func runnerJobEnv(payload *civ1.JobPayload, workspace, cacheDir string, inheritHost bool) []string {
+	env := make([]string, 0, len(payload.GetEnv())+16)
+	if inheritHost {
+		env = append(env, os.Environ()...)
+	}
+	keys := make([]string, 0, len(payload.GetEnv()))
+	for key := range payload.GetEnv() {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		env = append(env, key+"="+payload.GetEnv()[key])
+	}
+	env = append(env,
+		"GS_HOME_ROOT="+workspace,
+		"GS_MANIFEST_PATH="+payload.GetManifestPath(),
+		"GS_MANIFEST_DIR="+filepath.Join(workspace, strings.TrimPrefix(payload.GetManifestDir(), "/")),
+		"GS_CHANGED_FILES="+strings.Join(payload.GetChangedFiles(), "\n"),
+		"GS_CHANGESET_ID="+payload.GetChangesetId(),
+		"GS_CHANGESET_VERSION="+payload.GetChangesetVersionId(),
+		"GS_RUN_ID="+payload.GetRunId(),
+		"GS_JOB_ID="+payload.GetJobId(),
+		"GS_CACHE_ROOT="+cacheDir,
+		"GS_CACHE_PATHS="+strings.Join(payload.GetCachePaths(), "\n"),
+	)
+	return env
+}
+
+func runRunnerCommand(ctx context.Context, executor string, payload *civ1.JobPayload, workspace, workDir, cacheDir, command string, shellEnv, dockerEnv []string) (int, []byte) {
+	switch strings.TrimSpace(executor) {
+	case "docker":
+		return runDockerCommand(ctx, payload, workspace, workDir, cacheDir, command, dockerEnv)
+	default:
+		return runShellCommand(ctx, payload.GetShell(), workDir, command, shellEnv)
+	}
+}
+
 func runShellCommand(ctx context.Context, shellName, workDir, command string, env []string) (int, []byte) {
 	shellName = strings.TrimSpace(shellName)
 	if shellName == "" {
@@ -484,6 +545,122 @@ func runShellCommand(ctx context.Context, shellName, workDir, command string, en
 		return exitErr.ExitCode(), output
 	}
 	return 127, append(output, []byte(err.Error()+"\n")...)
+}
+
+func runDockerCommand(ctx context.Context, payload *civ1.JobPayload, workspace, workDir, cacheDir, command string, env []string) (int, []byte) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return 127, []byte("docker executable not found\n")
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return 127, []byte(err.Error() + "\n")
+	}
+	relWorkDir, err := filepath.Rel(workspace, workDir)
+	if err != nil || strings.HasPrefix(relWorkDir, "..") {
+		return 127, []byte("working directory escapes workspace\n")
+	}
+	containerWorkDir := "/workspace"
+	if relWorkDir != "." {
+		containerWorkDir = "/workspace/" + filepath.ToSlash(relWorkDir)
+	}
+	shellName := strings.TrimSpace(payload.GetShell())
+	if shellName == "" {
+		shellName = "bash"
+	}
+	args := []string{
+		"run", "--rm",
+		"--pull=missing",
+		"--network", "none",
+		"--volume", workspace + ":/workspace:rw",
+		"--volume", cacheDir + ":/gitslice-cache:rw",
+		"--workdir", containerWorkDir,
+	}
+	for _, entry := range env {
+		if key := envKey(entry); key != "" {
+			args = append(args, "--env", entry)
+		}
+	}
+	args = append(args, payload.GetImage(), shellName, "-lc", command)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return 0, output
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), output
+	}
+	return 127, append(output, []byte(err.Error()+"\n")...)
+}
+
+func envKey(entry string) string {
+	key, _, ok := strings.Cut(entry, "=")
+	if !ok || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	return key
+}
+
+func runnerCacheDir() (string, error) {
+	configDir, err := gitsliceConfigDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(configDir, "runner", "cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func uploadRunnerArtifacts(ctx context.Context, cli *CLI, payload *civ1.JobPayload, leaseID string, workspace string, chunkIndex *int64) error {
+	if len(payload.GetArtifacts()) == 0 {
+		return nil
+	}
+	matched := make(map[string]struct{})
+	err := filepath.WalkDir(workspace, func(localPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(workspace, localPath)
+		if err != nil {
+			return err
+		}
+		logical := "/" + filepath.ToSlash(rel)
+		if !artifactMatches(payload.GetArtifacts(), logical) {
+			return nil
+		}
+		if _, ok := matched[logical]; ok {
+			return nil
+		}
+		matched[logical] = struct{}{}
+		raw, err := os.ReadFile(localPath)
+		if err != nil {
+			return err
+		}
+		_, err = cli.runnerClient.UploadArtifact(ctx, &civ1.UploadArtifactRequest{
+			JobId:   payload.GetJobId(),
+			LeaseId: leaseID,
+			Path:    logical,
+			Payload: raw,
+		})
+		if err == nil {
+			appendRunnerLog(ctx, cli, payload.GetJobId(), leaseID, chunkIndex, "system", []byte("uploaded artifact "+logical+"\n"))
+		}
+		return err
+	})
+	return err
+}
+
+func artifactMatches(patterns []string, logicalPath string) bool {
+	for _, pattern := range patterns {
+		if ciinternal.MatchHomePattern(pattern, logicalPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func materializeRunnerWorkspace(payload *civ1.JobPayload, parent string) (string, func(), error) {

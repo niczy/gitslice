@@ -47,6 +47,8 @@ type server struct {
 	st storage.Storage
 }
 
+const maxCIArtifactPayloadBytes = 32 << 20
+
 func (s *server) StartRun(ctx context.Context, req *civ1.StartRunRequest) (*civ1.StartRunResponse, error) {
 	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
 	if err != nil {
@@ -534,6 +536,9 @@ func (s *server) PollJobs(ctx context.Context, req *civ1.PollJobsRequest) (*civ1
 		if err != nil || run.HomeID != runner.HomeID {
 			continue
 		}
+		if !s.runnerCanRunJob(ctx, runner, job, run) {
+			continue
+		}
 		if !s.jobDependenciesPassed(ctx, job) {
 			continue
 		}
@@ -560,6 +565,9 @@ func (s *server) ClaimJob(ctx context.Context, req *civ1.ClaimJobRequest) (*civ1
 	}
 	if run.HomeID != runner.HomeID || job.RunnerPool != runner.Pool {
 		return nil, status.Error(codes.PermissionDenied, "runner is not allowed to claim this job")
+	}
+	if !s.runnerCanRunJob(ctx, runner, job, run) {
+		return nil, status.Error(codes.FailedPrecondition, "runner executor is not compatible with this job")
 	}
 	if !s.jobDependenciesPassed(ctx, job) {
 		return nil, status.Error(codes.FailedPrecondition, "job dependencies have not passed")
@@ -612,18 +620,24 @@ func (s *server) GetJobPayload(ctx context.Context, req *civ1.GetJobPayloadReque
 		shell = "bash"
 	}
 	return &civ1.JobPayload{
-		JobId:             job.ID,
-		RunId:             run.ID,
-		HomeId:            run.HomeID,
-		CandidateTreeHash: run.CandidateTreeHash,
-		ManifestPath:      job.ManifestPath,
-		ManifestDir:       manifestDir,
-		WorkingDirectory:  job.WorkingDirectory,
-		Image:             job.Image,
-		Shell:             shell,
-		Commands:          commands,
-		ChangedFiles:      changedFiles,
-		Files:             files,
+		JobId:              job.ID,
+		RunId:              run.ID,
+		HomeId:             run.HomeID,
+		CandidateTreeHash:  run.CandidateTreeHash,
+		ManifestPath:       job.ManifestPath,
+		ManifestDir:        manifestDir,
+		WorkingDirectory:   job.WorkingDirectory,
+		Image:              job.Image,
+		Shell:              shell,
+		Commands:           commands,
+		ChangedFiles:       changedFiles,
+		Files:              files,
+		Env:                cloneStringMap(job.Env),
+		CachePaths:         append([]string(nil), job.CachePaths...),
+		Artifacts:          append([]string(nil), job.Artifacts...),
+		TimeoutSeconds:     int32(job.TimeoutSeconds),
+		ChangesetId:        run.ChangesetID,
+		ChangesetVersionId: run.ChangesetVersionID,
 	}, nil
 }
 
@@ -704,8 +718,67 @@ func (s *server) CompleteJob(ctx context.Context, req *civ1.CompleteJobRequest) 
 	return &civ1.CompleteJobResponse{Status: statusValue}, nil
 }
 
-func (s *server) UploadArtifact(context.Context, *civ1.UploadArtifactRequest) (*civ1.UploadArtifactResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) UploadArtifact(ctx context.Context, req *civ1.UploadArtifactRequest) (*civ1.UploadArtifactResponse, error) {
+	_, job, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId())
+	if err != nil {
+		return nil, err
+	}
+	if len(req.GetPayload()) > maxCIArtifactPayloadBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "artifact payload exceeds %d bytes", maxCIArtifactPayloadBytes)
+	}
+	artifactPath, err := validateCIArtifactPath(job, req.GetPath())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	artifactID := "ci_artifact_" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	objectKey := strings.Join([]string{"ci_artifacts", job.RunID, job.ID, artifactID, strings.TrimPrefix(artifactPath, "/")}, "/")
+	artifact := &storage.CIArtifact{
+		ID:        artifactID,
+		JobID:     job.ID,
+		RunID:     job.RunID,
+		Path:      artifactPath,
+		ObjectKey: objectKey,
+		Payload:   append([]byte(nil), req.GetPayload()...),
+		ByteCount: int64(len(req.GetPayload())),
+		CreatedAt: time.Now(),
+	}
+	if err := s.st.CreateCIArtifact(ctx, artifact); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to store artifact: %v", err))
+	}
+	return &civ1.UploadArtifactResponse{ArtifactId: artifactID, ObjectKey: objectKey}, nil
+}
+
+func validateCIArtifactPath(job *storage.CIJob, rawPath string) (string, error) {
+	if job == nil {
+		return "", fmt.Errorf("job is required")
+	}
+	if len(job.Artifacts) == 0 {
+		return "", fmt.Errorf("job does not declare artifacts")
+	}
+	artifactPath, err := ciinternal.NormalizeHomePath(rawPath)
+	if err != nil {
+		return "", err
+	}
+	if artifactPath == "/" {
+		return "", fmt.Errorf("artifact path must not be the home root")
+	}
+	for _, pattern := range job.Artifacts {
+		if ciinternal.MatchHomePattern(pattern, artifactPath) {
+			return artifactPath, nil
+		}
+	}
+	return "", fmt.Errorf("artifact path %s is not declared by this job", artifactPath)
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func (s *server) loadAuthorizedRunner(ctx context.Context, username string, runnerID string) (*storage.CIRunner, error) {
@@ -814,6 +887,29 @@ func normalizedRunnerPools(platform *ciinternal.PlatformConfig) map[string]ciint
 		pools["default"] = ciinternal.RunnerPool{Executor: "shell", MaxParallelJobsPerRunner: 1}
 	}
 	return pools
+}
+
+func (s *server) runnerCanRunJob(ctx context.Context, runner *storage.CIRunner, job *storage.CIJob, run *storage.CIRun) bool {
+	if runner == nil || job == nil || run == nil {
+		return false
+	}
+	platform, err := s.loadPlatformConfigForHome(ctx, run.HomeID)
+	if err != nil {
+		return false
+	}
+	pool, ok := normalizedRunnerPools(platform)[job.RunnerPool]
+	if !ok {
+		return false
+	}
+	expectedExecutor := strings.TrimSpace(pool.Executor)
+	if expectedExecutor == "" {
+		expectedExecutor = "shell"
+	}
+	actualExecutor := strings.TrimSpace(runner.Executor)
+	if actualExecutor == "" {
+		actualExecutor = "shell"
+	}
+	return actualExecutor == expectedExecutor
 }
 
 func (s *server) jobDependenciesPassed(ctx context.Context, job *storage.CIJob) bool {
@@ -1399,6 +1495,9 @@ func buildStorageCIPlan(runID string, attempt int, trigger string, username stri
 			Shell:            job.Shell,
 			WorkingDirectory: job.WorkingDirectory,
 			TimeoutSeconds:   job.TimeoutSeconds,
+			Env:              cloneStringMap(job.Env),
+			CachePaths:       append([]string(nil), job.CachePaths...),
+			Artifacts:        append([]string(nil), job.Artifacts...),
 			Status:           "queued",
 			DependsOnJobIDs:  dependsOn,
 		})

@@ -26,6 +26,10 @@ func normalizeHomePattern(baseDir, raw string) (string, error) {
 	return normalizeLogicalPath(strings.TrimPrefix(baseDir, "/")+"/"+raw, true)
 }
 
+func NormalizeArtifactPattern(baseDir, raw string) (string, error) {
+	return normalizeHomePattern(baseDir, raw)
+}
+
 func normalizeLogicalPath(raw string, allowGlob bool) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -178,6 +182,10 @@ func matchHomePattern(pattern, candidate string) bool {
 	pattern = strings.TrimPrefix(pattern, "/")
 	candidate = strings.TrimPrefix(candidate, "/")
 	return matchGlobSegments(strings.Split(pattern, "/"), strings.Split(candidate, "/"))
+}
+
+func MatchHomePattern(pattern, candidate string) bool {
+	return matchHomePattern(pattern, candidate)
 }
 
 func matchGlobSegments(patternSegments, candidateSegments []string) bool {
