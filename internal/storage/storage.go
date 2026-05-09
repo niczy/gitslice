@@ -27,10 +27,12 @@ var (
 )
 
 const (
-	defaultSliceCommitListLimit = 100
-	maxSliceCommitListLimit     = 10000
-	defaultMergeEventListLimit  = 100
-	maxMergeEventListLimit      = 10000
+	defaultSliceCommitListLimit  = 100
+	maxSliceCommitListLimit      = 10000
+	defaultMergeEventListLimit   = 100
+	maxMergeEventListLimit       = 10000
+	defaultHomePathHeadListLimit = 1000
+	maxHomePathHeadListLimit     = 100000
 )
 
 // RootPromotionJob describes a slice commit whose changed files should be
@@ -58,6 +60,15 @@ type MergeEventProjectionBatchProcessor interface {
 	ProcessMergeEventProjectionBatch(ctx context.Context, projectionName string, shardCount int32, limit int, fn func(context.Context, []*models.MergeEvent) error) (bool, error)
 }
 
+// HomePathHeadStore persists home-scoped path heads for future merge conflict authority.
+type HomePathHeadStore interface {
+	UpsertHomePathHeads(ctx context.Context, heads []*models.HomePathHead) error
+	GetHomePathHeads(ctx context.Context, homeID string, paths []string) (map[string]*models.HomePathHead, error)
+	ListHomePathHeads(ctx context.Context, homeID string, limit int) ([]*models.HomePathHead, error)
+	BackfillHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadBackfillResult, error)
+	ValidateHomePathHeads(ctx context.Context, homeID string) (*models.HomePathHeadValidationResult, error)
+}
+
 func normalizeSliceCommitLimit(limit int) int {
 	if limit <= 0 {
 		return defaultSliceCommitListLimit
@@ -74,6 +85,16 @@ func normalizeMergeEventListLimit(limit int) int {
 	}
 	if limit > maxMergeEventListLimit {
 		return maxMergeEventListLimit
+	}
+	return limit
+}
+
+func normalizeHomePathHeadListLimit(limit int) int {
+	if limit <= 0 {
+		return defaultHomePathHeadListLimit
+	}
+	if limit > maxHomePathHeadListLimit {
+		return maxHomePathHeadListLimit
 	}
 	return limit
 }
