@@ -41,18 +41,20 @@ const (
 
 // CLI holds the gRPC connections and clients for interacting with gitslice services.
 type CLI struct {
-	accountConn      *grpc.ClientConn
-	sliceConn        *grpc.ClientConn
-	adminConn        *grpc.ClientConn
-	fileConn         *grpc.ClientConn
-	filesystemConn   *grpc.ClientConn
-	conns            []*grpc.ClientConn
-	accountClient    accountv1.AccountServiceClient
-	sliceClient      slicev1.SliceServiceClient
-	adminClient      adminv1.AdminServiceClient
-	ciClient         civ1.CIServiceClient
-	fileClient       filev1.FileServiceClient
-	filesystemClient filesystemv1.FilesystemServiceClient
+	accountConn       *grpc.ClientConn
+	sliceConn         *grpc.ClientConn
+	adminConn         *grpc.ClientConn
+	fileConn          *grpc.ClientConn
+	filesystemConn    *grpc.ClientConn
+	conns             []*grpc.ClientConn
+	accountClient     accountv1.AccountServiceClient
+	sliceClient       slicev1.SliceServiceClient
+	adminClient       adminv1.AdminServiceClient
+	ciClient          civ1.CIServiceClient
+	runnerAdminClient civ1.RunnerAdminServiceClient
+	runnerClient      civ1.RunnerServiceClient
+	fileClient        filev1.FileServiceClient
+	filesystemClient  filesystemv1.FilesystemServiceClient
 }
 
 func Main() {
@@ -292,18 +294,20 @@ func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, 
 	}
 
 	return &CLI{
-		accountConn:      accountConn,
-		sliceConn:        sliceConn,
-		adminConn:        adminConn,
-		fileConn:         fileConn,
-		filesystemConn:   filesystemConn,
-		conns:            uniqueConns,
-		accountClient:    accountv1.NewAccountServiceClient(accountConn),
-		sliceClient:      slicev1.NewSliceServiceClient(sliceConn),
-		adminClient:      adminv1.NewAdminServiceClient(adminConn),
-		ciClient:         civ1.NewCIServiceClient(sliceConn),
-		fileClient:       filev1.NewFileServiceClient(fileConn),
-		filesystemClient: filesystemv1.NewFilesystemServiceClient(filesystemConn),
+		accountConn:       accountConn,
+		sliceConn:         sliceConn,
+		adminConn:         adminConn,
+		fileConn:          fileConn,
+		filesystemConn:    filesystemConn,
+		conns:             uniqueConns,
+		accountClient:     accountv1.NewAccountServiceClient(accountConn),
+		sliceClient:       slicev1.NewSliceServiceClient(sliceConn),
+		adminClient:       adminv1.NewAdminServiceClient(adminConn),
+		ciClient:          civ1.NewCIServiceClient(sliceConn),
+		runnerAdminClient: civ1.NewRunnerAdminServiceClient(sliceConn),
+		runnerClient:      civ1.NewRunnerServiceClient(sliceConn),
+		fileClient:        filev1.NewFileServiceClient(fileConn),
+		filesystemClient:  filesystemv1.NewFilesystemServiceClient(filesystemConn),
 	}, nil
 }
 

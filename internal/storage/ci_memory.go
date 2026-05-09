@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,6 +147,17 @@ func (s *InMemoryStorage) ListCIRunManifests(ctx context.Context, runID string) 
 	return out, nil
 }
 
+func (s *InMemoryStorage) GetCIJob(ctx context.Context, jobID string) (*CIJob, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	job := s.ciJobs[strings.TrimSpace(jobID)]
+	if job == nil {
+		return nil, ErrEntryNotFound
+	}
+	return cloneCIJob(job), nil
+}
+
 func (s *InMemoryStorage) ListCIJobs(ctx context.Context, filter CIJobListFilter) ([]*CIJob, error) {
 	_ = ctx
 	s.mu.RLock()
@@ -182,6 +194,35 @@ func (s *InMemoryStorage) ListCIJobs(ctx context.Context, filter CIJobListFilter
 	return jobs, nil
 }
 
+func (s *InMemoryStorage) ClaimCIJob(ctx context.Context, jobID string, runnerID string, leaseID string, leaseExpiresAt time.Time, startedAt time.Time) (*CIJob, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job := s.ciJobs[strings.TrimSpace(jobID)]
+	if job == nil {
+		return nil, ErrEntryNotFound
+	}
+	if job.Status != "queued" {
+		return nil, ErrInvalidInput
+	}
+	runner := s.ciRunners[strings.TrimSpace(runnerID)]
+	if runner == nil {
+		return nil, ErrEntryNotFound
+	}
+	job.Status = "running"
+	job.RunnerID = strings.TrimSpace(runnerID)
+	job.LeaseID = strings.TrimSpace(leaseID)
+	job.LeaseExpiresAt = cloneTimePtr(&leaseExpiresAt)
+	job.StartedAt = cloneTimePtr(&startedAt)
+	runner.Status = "busy"
+	runner.LastSeenAt = cloneTimePtr(&startedAt)
+	if run := s.ciRuns[job.RunID]; run != nil && run.StartedAt == nil {
+		run.Status = "running"
+		run.StartedAt = cloneTimePtr(&startedAt)
+	}
+	return cloneCIJob(job), nil
+}
+
 func (s *InMemoryStorage) ListCISteps(ctx context.Context, jobID string) ([]*CIStep, error) {
 	_ = ctx
 	s.mu.RLock()
@@ -195,6 +236,82 @@ func (s *InMemoryStorage) ListCISteps(ctx context.Context, jobID string) ([]*CIS
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StepIndex < out[j].StepIndex })
 	return out, nil
+}
+
+func (s *InMemoryStorage) UpdateCIStepStatus(ctx context.Context, jobID string, stepIndex int, status string, exitCode int, startedAt *time.Time, finishedAt *time.Time) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, stepID := range s.ciStepIDsByJob[strings.TrimSpace(jobID)] {
+		step := s.ciSteps[stepID]
+		if step == nil || step.StepIndex != stepIndex {
+			continue
+		}
+		step.Status = strings.TrimSpace(status)
+		step.ExitCode = exitCode
+		step.StartedAt = cloneTimePtr(startedAt)
+		step.FinishedAt = cloneTimePtr(finishedAt)
+		return nil
+	}
+	return ErrEntryNotFound
+}
+
+func (s *InMemoryStorage) AppendCILogChunk(ctx context.Context, chunk *CILogChunk) error {
+	_ = ctx
+	if chunk == nil || strings.TrimSpace(chunk.JobID) == "" {
+		return ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.ciJobs[strings.TrimSpace(chunk.JobID)]; !ok {
+		return ErrEntryNotFound
+	}
+	copyChunk := cloneCILogChunk(chunk)
+	if strings.TrimSpace(copyChunk.ID) == "" {
+		copyChunk.ID = strings.Join([]string{copyChunk.JobID, strconv.FormatInt(copyChunk.ChunkIndex, 10)}, ":")
+	}
+	if copyChunk.CreatedAt.IsZero() {
+		copyChunk.CreatedAt = time.Now()
+	}
+	if copyChunk.ByteCount == 0 && len(copyChunk.Payload) > 0 {
+		copyChunk.ByteCount = int64(len(copyChunk.Payload))
+	}
+	if existing := s.ciLogChunks[copyChunk.ID]; existing == nil {
+		s.ciLogChunkIDsByJob[copyChunk.JobID] = append(s.ciLogChunkIDsByJob[copyChunk.JobID], copyChunk.ID)
+	}
+	s.ciLogChunks[copyChunk.ID] = copyChunk
+	sort.Slice(s.ciLogChunkIDsByJob[copyChunk.JobID], func(i, j int) bool {
+		left := s.ciLogChunks[s.ciLogChunkIDsByJob[copyChunk.JobID][i]]
+		right := s.ciLogChunks[s.ciLogChunkIDsByJob[copyChunk.JobID][j]]
+		if left == nil || right == nil {
+			return s.ciLogChunkIDsByJob[copyChunk.JobID][i] < s.ciLogChunkIDsByJob[copyChunk.JobID][j]
+		}
+		return left.ChunkIndex < right.ChunkIndex
+	})
+	return nil
+}
+
+func (s *InMemoryStorage) CompleteCIJob(ctx context.Context, jobID string, leaseID string, status string, exitCode int, infraFailure bool, finishedAt time.Time) (*CIJob, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job := s.ciJobs[strings.TrimSpace(jobID)]
+	if job == nil {
+		return nil, ErrEntryNotFound
+	}
+	if strings.TrimSpace(leaseID) != "" && job.LeaseID != strings.TrimSpace(leaseID) {
+		return nil, ErrPermissionDenied
+	}
+	job.Status = strings.TrimSpace(status)
+	job.ExitCode = exitCode
+	job.InfraFailure = infraFailure
+	job.FinishedAt = cloneTimePtr(&finishedAt)
+	job.LeaseExpiresAt = nil
+	if runner := s.ciRunners[job.RunnerID]; runner != nil && runner.Status != "disabled" && runner.Status != "revoked" {
+		runner.Status = "idle"
+		runner.LastSeenAt = cloneTimePtr(&finishedAt)
+	}
+	return cloneCIJob(job), nil
 }
 
 func (s *InMemoryStorage) UpsertCICheck(ctx context.Context, check *CICheck) error {
@@ -271,6 +388,39 @@ func (s *InMemoryStorage) ListCILogChunks(ctx context.Context, filter CILogChunk
 	return chunks, nil
 }
 
+func (s *InMemoryStorage) CreateCIRunnerRegistrationToken(ctx context.Context, token *CIRunnerRegistrationToken) error {
+	_ = ctx
+	if token == nil || strings.TrimSpace(token.TokenHash) == "" {
+		return ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.ciRunnerRegTokens[token.TokenHash]; exists {
+		return ErrInvalidInput
+	}
+	copyToken := cloneCIRunnerRegistrationToken(token)
+	if copyToken.CreatedAt.IsZero() {
+		copyToken.CreatedAt = time.Now()
+	}
+	s.ciRunnerRegTokens[copyToken.TokenHash] = copyToken
+	return nil
+}
+
+func (s *InMemoryStorage) ConsumeCIRunnerRegistrationToken(ctx context.Context, tokenHash string, usedAt time.Time) (*CIRunnerRegistrationToken, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.ciRunnerRegTokens[strings.TrimSpace(tokenHash)]
+	if token == nil {
+		return nil, ErrEntryNotFound
+	}
+	if token.UsedAt != nil || (!token.ExpiresAt.IsZero() && !token.ExpiresAt.After(usedAt)) {
+		return nil, ErrInvalidInput
+	}
+	token.UsedAt = cloneTimePtr(&usedAt)
+	return cloneCIRunnerRegistrationToken(token), nil
+}
+
 func (s *InMemoryStorage) CreateCIRunner(ctx context.Context, runner *CIRunner) error {
 	_ = ctx
 	if runner == nil || strings.TrimSpace(runner.ID) == "" {
@@ -286,6 +436,9 @@ func (s *InMemoryStorage) CreateCIRunner(ctx context.Context, runner *CIRunner) 
 		copyRunner.CreatedAt = time.Now()
 	}
 	s.ciRunners[copyRunner.ID] = copyRunner
+	if strings.TrimSpace(copyRunner.TokenHash) != "" {
+		s.ciRunnerByToken[copyRunner.TokenHash] = copyRunner.ID
+	}
 	return nil
 }
 
@@ -294,6 +447,22 @@ func (s *InMemoryStorage) GetCIRunner(ctx context.Context, runnerID string) (*CI
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	runner := s.ciRunners[strings.TrimSpace(runnerID)]
+	if runner == nil {
+		return nil, ErrEntryNotFound
+	}
+	return cloneCIRunner(runner), nil
+}
+
+func (s *InMemoryStorage) GetCIRunnerByTokenHash(ctx context.Context, tokenHash string) (*CIRunner, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return nil, ErrEntryNotFound
+	}
+	runnerID := s.ciRunnerByToken[tokenHash]
+	runner := s.ciRunners[runnerID]
 	if runner == nil {
 		return nil, ErrEntryNotFound
 	}
@@ -348,6 +517,9 @@ func (s *InMemoryStorage) RevokeCIRunner(ctx context.Context, runnerID string, r
 	}
 	runner.Status = "revoked"
 	runner.DisabledAt = &revokedAt
+	if runner.TokenHash != "" {
+		delete(s.ciRunnerByToken, runner.TokenHash)
+	}
 	runner.TokenHash = ""
 	return nil
 }
@@ -441,6 +613,16 @@ func cloneCIRunner(src *CIRunner) *CIRunner {
 	dst.Labels = append([]string(nil), src.Labels...)
 	dst.LastSeenAt = cloneTimePtr(src.LastSeenAt)
 	dst.DisabledAt = cloneTimePtr(src.DisabledAt)
+	return &dst
+}
+
+func cloneCIRunnerRegistrationToken(src *CIRunnerRegistrationToken) *CIRunnerRegistrationToken {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.Labels = append([]string(nil), src.Labels...)
+	dst.UsedAt = cloneTimePtr(src.UsedAt)
 	return &dst
 }
 

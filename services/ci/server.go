@@ -2,14 +2,20 @@ package ci
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/niczy/gitslice/internal/auth"
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
 	ciinternal "github.com/niczy/gitslice/internal/ci"
@@ -219,76 +225,829 @@ func (s *server) ListChecks(ctx context.Context, req *civ1.ListChecksRequest) (*
 	return resp, nil
 }
 
-func (s *server) ListRunnerPools(context.Context, *civ1.ListRunnerPoolsRequest) (*civ1.ListRunnerPoolsResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) ListRunnerPools(ctx context.Context, req *civ1.ListRunnerPoolsRequest) (*civ1.ListRunnerPoolsResponse, error) {
+	_ = req
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	platform, err := s.loadPlatformConfigForHome(ctx, identity.Username)
+	if err != nil {
+		return nil, err
+	}
+	runners, err := s.st.ListCIRunners(ctx, storage.CIRunnerListFilter{HomeID: identity.Username, Limit: 1000})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list CI runners: %v", err))
+	}
+	queued, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{Status: "queued", Limit: 1000})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list queued CI jobs: %v", err))
+	}
+	resp := &civ1.ListRunnerPoolsResponse{}
+	for name, pool := range normalizedRunnerPools(platform) {
+		out := &civ1.RunnerPool{
+			Name:                     name,
+			Executor:                 defaultString(pool.Executor, "shell"),
+			Labels:                   append([]string(nil), pool.Labels...),
+			AllowedImages:            append([]string(nil), pool.AllowedImages...),
+			MaxParallelJobsPerRunner: int32(pool.MaxParallelJobsPerRunner),
+		}
+		for _, runner := range runners {
+			if runner.Pool != name {
+				continue
+			}
+			switch runner.Status {
+			case "busy":
+				out.BusyRunners++
+				out.OnlineRunners++
+			case "idle":
+				out.OnlineRunners++
+			}
+		}
+		for _, job := range queued {
+			if job.RunnerPool == name {
+				out.QueuedJobs++
+			}
+		}
+		resp.Pools = append(resp.Pools, out)
+	}
+	sort.Slice(resp.Pools, func(i, j int) bool { return resp.Pools[i].Name < resp.Pools[j].Name })
+	return resp, nil
 }
 
-func (s *server) ListRunners(context.Context, *civ1.ListRunnersRequest) (*civ1.ListRunnersResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) ListRunners(ctx context.Context, req *civ1.ListRunnersRequest) (*civ1.ListRunnersResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	runners, err := s.st.ListCIRunners(ctx, storage.CIRunnerListFilter{
+		HomeID: identity.Username,
+		Pool:   strings.TrimSpace(req.GetPool()),
+		Status: strings.TrimSpace(req.GetStatus()),
+		Limit:  int(req.GetLimit()),
+	})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list CI runners: %v", err))
+	}
+	resp := &civ1.ListRunnersResponse{}
+	for _, runner := range runners {
+		resp.Runners = append(resp.Runners, ciRunnerToProto(runner))
+	}
+	return resp, nil
 }
 
-func (s *server) GetRunner(context.Context, *civ1.GetRunnerRequest) (*civ1.Runner, error) {
-	return nil, ciNotImplemented()
+func (s *server) GetRunner(ctx context.Context, req *civ1.GetRunnerRequest) (*civ1.Runner, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := s.loadAuthorizedRunner(ctx, identity.Username, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	return ciRunnerToProto(runner), nil
 }
 
-func (s *server) CreateRunnerToken(context.Context, *civ1.CreateRunnerTokenRequest) (*civ1.CreateRunnerTokenResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) CreateRunnerToken(ctx context.Context, req *civ1.CreateRunnerTokenRequest) (*civ1.CreateRunnerTokenResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "runner name is required")
+	}
+	pool := strings.TrimSpace(req.GetPool())
+	if pool == "" {
+		pool = "default"
+	}
+	platform, err := s.loadPlatformConfigForHome(ctx, identity.Username)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := normalizedRunnerPools(platform)[pool]; !ok {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("runner pool %q is not defined", pool))
+	}
+	ttl := 30 * time.Minute
+	if raw := strings.TrimSpace(req.GetTtl()); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "ttl must be a positive Go duration, for example 30m")
+		}
+		if parsed > 24*time.Hour {
+			return nil, status.Error(codes.InvalidArgument, "ttl must be 24h or less")
+		}
+		ttl = parsed
+	}
+	rawToken, err := randomToken("gsrt")
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to generate runner token: %v", err))
+	}
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+	if err := s.st.CreateCIRunnerRegistrationToken(ctx, &storage.CIRunnerRegistrationToken{
+		TokenHash:       hashRunnerToken(rawToken),
+		HomeID:          identity.Username,
+		Name:            name,
+		Pool:            pool,
+		Labels:          append([]string(nil), req.GetLabels()...),
+		ExpiresAt:       expiresAt,
+		CreatedByUserID: identity.Username,
+		CreatedAt:       now,
+	}); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create runner registration token: %v", err))
+	}
+	return &civ1.CreateRunnerTokenResponse{Token: rawToken, ExpiresAt: formatTime(expiresAt)}, nil
 }
 
-func (s *server) DisableRunner(context.Context, *civ1.DisableRunnerRequest) (*civ1.DisableRunnerResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) DisableRunner(ctx context.Context, req *civ1.DisableRunnerRequest) (*civ1.DisableRunnerResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := s.loadAuthorizedRunner(ctx, identity.Username, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if err := s.st.UpdateCIRunnerStatus(ctx, runner.ID, "disabled", &now); err != nil {
+		return nil, ciStorageError(err, "runner not found")
+	}
+	return &civ1.DisableRunnerResponse{RunnerId: runner.ID, Status: "disabled"}, nil
 }
 
-func (s *server) EnableRunner(context.Context, *civ1.EnableRunnerRequest) (*civ1.EnableRunnerResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) EnableRunner(ctx context.Context, req *civ1.EnableRunnerRequest) (*civ1.EnableRunnerResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := s.loadAuthorizedRunner(ctx, identity.Username, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if err := s.st.UpdateCIRunnerStatus(ctx, runner.ID, "idle", &now); err != nil {
+		return nil, ciStorageError(err, "runner not found")
+	}
+	return &civ1.EnableRunnerResponse{RunnerId: runner.ID, Status: "idle"}, nil
 }
 
-func (s *server) RevokeRunner(context.Context, *civ1.RevokeRunnerRequest) (*civ1.RevokeRunnerResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) RevokeRunner(ctx context.Context, req *civ1.RevokeRunnerRequest) (*civ1.RevokeRunnerResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := s.loadAuthorizedRunner(ctx, identity.Username, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.st.RevokeCIRunner(ctx, runner.ID, time.Now()); err != nil {
+		return nil, ciStorageError(err, "runner not found")
+	}
+	return &civ1.RevokeRunnerResponse{RunnerId: runner.ID, Status: "revoked"}, nil
 }
 
-func (s *server) ListRunnerJobs(context.Context, *civ1.ListRunnerJobsRequest) (*civ1.ListRunnerJobsResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) ListRunnerJobs(ctx context.Context, req *civ1.ListRunnerJobsRequest) (*civ1.ListRunnerJobsResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := s.loadAuthorizedRunner(ctx, identity.Username, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{RunnerID: runner.ID, Limit: int(req.GetLimit())})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list runner jobs: %v", err))
+	}
+	resp := &civ1.ListRunnerJobsResponse{}
+	for _, job := range jobs {
+		resp.Jobs = append(resp.Jobs, ciJobToProto(job))
+	}
+	return resp, nil
 }
 
-func (s *server) ListQueuedJobs(context.Context, *civ1.ListQueuedJobsRequest) (*civ1.ListQueuedJobsResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) ListQueuedJobs(ctx context.Context, req *civ1.ListQueuedJobsRequest) (*civ1.ListQueuedJobsResponse, error) {
+	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
+	if err != nil {
+		return nil, err
+	}
+	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{Pool: strings.TrimSpace(req.GetPool()), Status: "queued", Limit: int(req.GetLimit())})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list queued jobs: %v", err))
+	}
+	resp := &civ1.ListQueuedJobsResponse{}
+	for _, job := range jobs {
+		run, err := s.st.GetCIRun(ctx, job.RunID)
+		if err != nil || run.HomeID != identity.Username {
+			continue
+		}
+		resp.Jobs = append(resp.Jobs, ciJobToProto(job))
+	}
+	return resp, nil
 }
 
-func (s *server) RegisterRunner(context.Context, *civ1.RegisterRunnerRequest) (*civ1.RegisterRunnerResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) RegisterRunner(ctx context.Context, req *civ1.RegisterRunnerRequest) (*civ1.RegisterRunnerResponse, error) {
+	regToken := strings.TrimSpace(req.GetRegistrationToken())
+	if regToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "registration_token is required")
+	}
+	now := time.Now()
+	consumed, err := s.st.ConsumeCIRunnerRegistrationToken(ctx, hashRunnerToken(regToken), now)
+	if err != nil {
+		return nil, ciStorageError(err, "registration token not found or expired")
+	}
+	runnerToken, err := randomToken("gsrunner")
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to generate runner credential: %v", err))
+	}
+	runnerID := "ci_runner_" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	executor := strings.TrimSpace(req.GetExecutor())
+	if executor == "" {
+		executor = "shell"
+	}
+	labels := append([]string(nil), consumed.Labels...)
+	if len(req.GetLabels()) > 0 {
+		labels = append(labels, req.GetLabels()...)
+	}
+	if err := s.st.CreateCIRunner(ctx, &storage.CIRunner{
+		ID:         runnerID,
+		HomeID:     consumed.HomeID,
+		Name:       consumed.Name,
+		Pool:       consumed.Pool,
+		Labels:     uniqueStrings(labels),
+		Executor:   executor,
+		Status:     "idle",
+		TokenHash:  hashRunnerToken(runnerToken),
+		Version:    strings.TrimSpace(req.GetVersion()),
+		LastSeenAt: &now,
+		CreatedAt:  now,
+	}); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to register runner: %v", err))
+	}
+	return &civ1.RegisterRunnerResponse{RunnerId: runnerID, RunnerToken: runnerToken, Pool: consumed.Pool}, nil
 }
 
-func (s *server) Heartbeat(context.Context, *civ1.HeartbeatRequest) (*civ1.HeartbeatResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) Heartbeat(ctx context.Context, req *civ1.HeartbeatRequest) (*civ1.HeartbeatResponse, error) {
+	runner, err := s.requireRunner(ctx, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	if runner.Status == "disabled" || runner.Status == "revoked" {
+		return &civ1.HeartbeatResponse{Status: runner.Status, PollAfterSeconds: 30}, nil
+	}
+	statusValue := strings.TrimSpace(req.GetStatus())
+	if statusValue == "" {
+		statusValue = runner.Status
+	}
+	now := time.Now()
+	if err := s.st.UpdateCIRunnerStatus(ctx, runner.ID, statusValue, &now); err != nil {
+		return nil, ciStorageError(err, "runner not found")
+	}
+	return &civ1.HeartbeatResponse{Status: statusValue, PollAfterSeconds: 5}, nil
 }
 
-func (s *server) PollJobs(context.Context, *civ1.PollJobsRequest) (*civ1.PollJobsResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) PollJobs(ctx context.Context, req *civ1.PollJobsRequest) (*civ1.PollJobsResponse, error) {
+	runner, err := s.requireRunner(ctx, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	if runner.Status == "disabled" || runner.Status == "revoked" {
+		return &civ1.PollJobsResponse{}, nil
+	}
+	limit := int(req.GetMaxJobs())
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 10 {
+		limit = 10
+	}
+	now := time.Now()
+	_ = s.st.UpdateCIRunnerStatus(ctx, runner.ID, "idle", &now)
+	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{Pool: runner.Pool, Status: "queued", Limit: 1000})
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to poll queued jobs: %v", err))
+	}
+	resp := &civ1.PollJobsResponse{}
+	for _, job := range jobs {
+		run, err := s.st.GetCIRun(ctx, job.RunID)
+		if err != nil || run.HomeID != runner.HomeID {
+			continue
+		}
+		if !s.jobDependenciesPassed(ctx, job) {
+			continue
+		}
+		resp.Jobs = append(resp.Jobs, ciJobToProto(job))
+		if len(resp.Jobs) >= limit {
+			break
+		}
+	}
+	return resp, nil
 }
 
-func (s *server) ClaimJob(context.Context, *civ1.ClaimJobRequest) (*civ1.ClaimJobResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) ClaimJob(ctx context.Context, req *civ1.ClaimJobRequest) (*civ1.ClaimJobResponse, error) {
+	runner, err := s.requireRunner(ctx, req.GetRunnerId())
+	if err != nil {
+		return nil, err
+	}
+	job, err := s.st.GetCIJob(ctx, req.GetJobId())
+	if err != nil {
+		return nil, ciStorageError(err, "job not found")
+	}
+	run, err := s.st.GetCIRun(ctx, job.RunID)
+	if err != nil {
+		return nil, ciStorageError(err, "CI run not found")
+	}
+	if run.HomeID != runner.HomeID || job.RunnerPool != runner.Pool {
+		return nil, status.Error(codes.PermissionDenied, "runner is not allowed to claim this job")
+	}
+	if !s.jobDependenciesPassed(ctx, job) {
+		return nil, status.Error(codes.FailedPrecondition, "job dependencies have not passed")
+	}
+	leaseID, err := randomToken("lease")
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to generate lease: %v", err))
+	}
+	now := time.Now()
+	expiresAt := now.Add(10 * time.Minute)
+	if _, err := s.st.ClaimCIJob(ctx, job.ID, runner.ID, leaseID, expiresAt, now); err != nil {
+		return nil, ciStorageError(err, "job not found or already claimed")
+	}
+	return &civ1.ClaimJobResponse{JobId: job.ID, LeaseId: leaseID, LeaseExpiresAt: formatTime(expiresAt)}, nil
 }
 
-func (s *server) GetJobPayload(context.Context, *civ1.GetJobPayloadRequest) (*civ1.JobPayload, error) {
-	return nil, ciNotImplemented()
+func (s *server) GetJobPayload(ctx context.Context, req *civ1.GetJobPayloadRequest) (*civ1.JobPayload, error) {
+	runner, job, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId())
+	if err != nil {
+		return nil, err
+	}
+	_ = runner
+	run, err := s.st.GetCIRun(ctx, job.RunID)
+	if err != nil {
+		return nil, ciStorageError(err, "CI run not found")
+	}
+	steps, err := s.st.ListCISteps(ctx, job.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list job steps: %v", err))
+	}
+	commands := make([]string, 0, len(steps))
+	for _, step := range steps {
+		commands = append(commands, step.Command)
+	}
+	manifestDir := path.Dir(job.ManifestPath)
+	if manifests, err := s.st.ListCIRunManifests(ctx, run.ID); err == nil {
+		for _, manifest := range manifests {
+			if manifest.ID == job.ManifestRunID || manifest.ManifestPath == job.ManifestPath {
+				manifestDir = manifest.ManifestDir
+				break
+			}
+		}
+	}
+	files, changedFiles, err := s.workspaceFilesForRun(ctx, run)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to materialize candidate tree: %v", err))
+	}
+	shell := strings.TrimSpace(job.Shell)
+	if shell == "" {
+		shell = "bash"
+	}
+	return &civ1.JobPayload{
+		JobId:             job.ID,
+		RunId:             run.ID,
+		HomeId:            run.HomeID,
+		CandidateTreeHash: run.CandidateTreeHash,
+		ManifestPath:      job.ManifestPath,
+		ManifestDir:       manifestDir,
+		WorkingDirectory:  job.WorkingDirectory,
+		Image:             job.Image,
+		Shell:             shell,
+		Commands:          commands,
+		ChangedFiles:      changedFiles,
+		Files:             files,
+	}, nil
 }
 
-func (s *server) AppendLog(context.Context, *civ1.AppendLogRequest) (*civ1.AppendLogResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) AppendLog(ctx context.Context, req *civ1.AppendLogRequest) (*civ1.AppendLogResponse, error) {
+	if _, _, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId()); err != nil {
+		return nil, err
+	}
+	streamName := strings.TrimSpace(req.GetStream())
+	if streamName == "" {
+		streamName = "stdout"
+	}
+	job, _ := s.st.GetCIJob(ctx, req.GetJobId())
+	chunk := &storage.CILogChunk{
+		ID:         strings.TrimSpace(req.GetJobId()) + ":" + strconv.FormatInt(req.GetChunkIndex(), 10),
+		JobID:      strings.TrimSpace(req.GetJobId()),
+		ChunkIndex: req.GetChunkIndex(),
+		Stream:     streamName,
+		Payload:    append([]byte(nil), req.GetPayload()...),
+		ByteCount:  int64(len(req.GetPayload())),
+		CreatedAt:  time.Now(),
+	}
+	if job != nil {
+		chunk.RunID = job.RunID
+	}
+	if err := s.st.AppendCILogChunk(ctx, chunk); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to append log chunk: %v", err))
+	}
+	return &civ1.AppendLogResponse{AcknowledgedChunkIndex: req.GetChunkIndex()}, nil
 }
 
-func (s *server) CompleteStep(context.Context, *civ1.CompleteStepRequest) (*civ1.CompleteStepResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) CompleteStep(ctx context.Context, req *civ1.CompleteStepRequest) (*civ1.CompleteStepResponse, error) {
+	if _, _, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId()); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	stepIndex := int(req.GetStepIndex())
+	steps, _ := s.st.ListCISteps(ctx, req.GetJobId())
+	var startedAt *time.Time
+	for _, step := range steps {
+		if step.StepIndex == stepIndex {
+			startedAt = step.StartedAt
+			break
+		}
+	}
+	if startedAt == nil {
+		startedAt = &now
+	}
+	statusValue := strings.TrimSpace(req.GetStatus())
+	if statusValue == "" {
+		statusValue = "passed"
+	}
+	if err := s.st.UpdateCIStepStatus(ctx, req.GetJobId(), stepIndex, statusValue, int(req.GetExitCode()), startedAt, &now); err != nil {
+		return nil, ciStorageError(err, "step not found")
+	}
+	return &civ1.CompleteStepResponse{Status: statusValue}, nil
 }
 
-func (s *server) CompleteJob(context.Context, *civ1.CompleteJobRequest) (*civ1.CompleteJobResponse, error) {
-	return nil, ciNotImplemented()
+func (s *server) CompleteJob(ctx context.Context, req *civ1.CompleteJobRequest) (*civ1.CompleteJobResponse, error) {
+	_, _, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId())
+	if err != nil {
+		return nil, err
+	}
+	statusValue := strings.TrimSpace(req.GetStatus())
+	if statusValue == "" {
+		statusValue = "passed"
+	}
+	if statusValue != "passed" && statusValue != "failed" && statusValue != "cancelled" {
+		return nil, status.Error(codes.InvalidArgument, "job status must be passed, failed, or cancelled")
+	}
+	finishedAt := time.Now()
+	job, err := s.st.CompleteCIJob(ctx, req.GetJobId(), req.GetLeaseId(), statusValue, int(req.GetExitCode()), req.GetInfraFailure(), finishedAt)
+	if err != nil {
+		return nil, ciStorageError(err, "job not found")
+	}
+	if err := s.updateCheckAndRunAfterJob(ctx, job, finishedAt); err != nil {
+		return nil, err
+	}
+	return &civ1.CompleteJobResponse{Status: statusValue}, nil
 }
 
 func (s *server) UploadArtifact(context.Context, *civ1.UploadArtifactRequest) (*civ1.UploadArtifactResponse, error) {
 	return nil, ciNotImplemented()
+}
+
+func (s *server) loadAuthorizedRunner(ctx context.Context, username string, runnerID string) (*storage.CIRunner, error) {
+	if strings.TrimSpace(runnerID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "runner_id is required")
+	}
+	runner, err := s.st.GetCIRunner(ctx, strings.TrimSpace(runnerID))
+	if err != nil {
+		return nil, ciStorageError(err, "runner not found")
+	}
+	if runner.HomeID != strings.TrimSpace(username) {
+		return nil, status.Error(codes.PermissionDenied, "not allowed to manage this runner")
+	}
+	return runner, nil
+}
+
+func (s *server) requireRunner(ctx context.Context, runnerID string) (*storage.CIRunner, error) {
+	token := auth.TokenFromGRPCContext(ctx)
+	if strings.TrimSpace(token) == "" {
+		return nil, status.Error(codes.Unauthenticated, "runner token required")
+	}
+	runner, err := s.st.GetCIRunnerByTokenHash(ctx, hashRunnerToken(token))
+	if err != nil {
+		return nil, ciStorageError(err, "runner token is invalid")
+	}
+	if strings.TrimSpace(runnerID) != "" && runner.ID != strings.TrimSpace(runnerID) {
+		return nil, status.Error(codes.PermissionDenied, "runner token does not match runner_id")
+	}
+	if runner.Status == "revoked" || strings.TrimSpace(runner.TokenHash) == "" {
+		return nil, status.Error(codes.PermissionDenied, "runner credential is revoked")
+	}
+	return runner, nil
+}
+
+func (s *server) requireRunnerJobLease(ctx context.Context, jobID string, leaseID string) (*storage.CIRunner, *storage.CIJob, error) {
+	job, err := s.st.GetCIJob(ctx, strings.TrimSpace(jobID))
+	if err != nil {
+		return nil, nil, ciStorageError(err, "job not found")
+	}
+	runner, err := s.requireRunner(ctx, job.RunnerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if job.RunnerID != runner.ID {
+		return nil, nil, status.Error(codes.PermissionDenied, "runner does not own this job")
+	}
+	if strings.TrimSpace(leaseID) == "" || job.LeaseID != strings.TrimSpace(leaseID) {
+		return nil, nil, status.Error(codes.PermissionDenied, "job lease is invalid")
+	}
+	if job.Status != "running" {
+		return nil, nil, status.Error(codes.FailedPrecondition, "job is not running")
+	}
+	if job.LeaseExpiresAt != nil && job.LeaseExpiresAt.Before(time.Now()) {
+		return nil, nil, status.Error(codes.FailedPrecondition, "job lease expired")
+	}
+	return runner, job, nil
+}
+
+func (s *server) loadPlatformConfigForHome(ctx context.Context, homeID string) (*ciinternal.PlatformConfig, error) {
+	storedPath := logicalToStoragePath(homeID, ciinternal.PlatformConfigPath)
+	content, err := storage.ReadSliceFileContent(ctx, s.st, homeslice.IDForUsername(homeID), storedPath)
+	if err != nil {
+		if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrSliceNotFound) {
+			return defaultPlatformConfig(), nil
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read CI platform config: %v", err))
+	}
+	cfg, err := ciinternal.ParsePlatformConfig(content.Content)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("invalid CI platform config: %v", err))
+	}
+	return cfg, nil
+}
+
+func defaultPlatformConfig() *ciinternal.PlatformConfig {
+	return &ciinternal.PlatformConfig{
+		Version: 1,
+		Defaults: ciinternal.JobDefaults{
+			RunnerPool: "default",
+			Shell:      "bash",
+		},
+		RunnerPools: map[string]ciinternal.RunnerPool{
+			"default": {Executor: "shell", MaxParallelJobsPerRunner: 1},
+		},
+	}
+}
+
+func normalizedRunnerPools(platform *ciinternal.PlatformConfig) map[string]ciinternal.RunnerPool {
+	pools := make(map[string]ciinternal.RunnerPool)
+	if platform != nil {
+		for name, pool := range platform.RunnerPools {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if strings.TrimSpace(pool.Executor) == "" {
+				pool.Executor = "shell"
+			}
+			if pool.MaxParallelJobsPerRunner <= 0 {
+				pool.MaxParallelJobsPerRunner = 1
+			}
+			pools[name] = pool
+		}
+	}
+	if len(pools) == 0 {
+		pools["default"] = ciinternal.RunnerPool{Executor: "shell", MaxParallelJobsPerRunner: 1}
+	}
+	return pools
+}
+
+func (s *server) jobDependenciesPassed(ctx context.Context, job *storage.CIJob) bool {
+	for _, dependencyID := range job.DependsOnJobIDs {
+		dependency, err := s.st.GetCIJob(ctx, dependencyID)
+		if err != nil || dependency.Status != "passed" {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *server) updateCheckAndRunAfterJob(ctx context.Context, job *storage.CIJob, finishedAt time.Time) error {
+	run, err := s.st.GetCIRun(ctx, job.RunID)
+	if err != nil {
+		return ciStorageError(err, "CI run not found")
+	}
+	if job.Required {
+		if err := s.st.UpsertCICheck(ctx, &storage.CICheck{
+			ChangesetID:        run.ChangesetID,
+			ChangesetVersionID: run.ChangesetVersionID,
+			PlanHash:           run.PlanHash,
+			ManifestPath:       job.ManifestPath,
+			JobKey:             job.JobKey,
+			CheckName:          job.CheckName,
+			Required:           true,
+			Status:             job.Status,
+			RunID:              run.ID,
+			UpdatedAt:          finishedAt,
+		}); err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to update CI check: %v", err))
+		}
+	}
+	if job.Status != "passed" {
+		if err := s.skipJobsBlockedByFailure(ctx, run, finishedAt); err != nil {
+			return err
+		}
+	}
+	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{RunID: run.ID, Limit: 1000})
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to list CI jobs: %v", err))
+	}
+	allTerminal := true
+	anyFailed := false
+	for _, candidate := range jobs {
+		if !terminalCIJobStatus(candidate.Status) {
+			allTerminal = false
+			break
+		}
+		if candidate.Status != "passed" {
+			anyFailed = true
+		}
+	}
+	if allTerminal {
+		runStatus := "passed"
+		if anyFailed {
+			runStatus = "failed"
+		}
+		if err := s.st.UpdateCIRunStatus(ctx, run.ID, runStatus, &finishedAt); err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to update CI run: %v", err))
+		}
+	}
+	return nil
+}
+
+func (s *server) skipJobsBlockedByFailure(ctx context.Context, run *storage.CIRun, finishedAt time.Time) error {
+	for {
+		jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{RunID: run.ID, Limit: 1000})
+		if err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to list CI jobs: %v", err))
+		}
+		byID := make(map[string]*storage.CIJob, len(jobs))
+		for _, job := range jobs {
+			byID[job.ID] = job
+		}
+		changed := false
+		for _, job := range jobs {
+			if job.Status != "queued" {
+				continue
+			}
+			for _, dependencyID := range job.DependsOnJobIDs {
+				dependency := byID[dependencyID]
+				if dependency == nil || dependency.Status == "passed" || !terminalCIJobStatus(dependency.Status) {
+					continue
+				}
+				skipped, err := s.st.CompleteCIJob(ctx, job.ID, "", "skipped", 0, false, finishedAt)
+				if err != nil {
+					return status.Error(codes.Internal, fmt.Sprintf("failed to skip blocked CI job: %v", err))
+				}
+				if skipped.Required {
+					if err := s.st.UpsertCICheck(ctx, &storage.CICheck{
+						ChangesetID:        run.ChangesetID,
+						ChangesetVersionID: run.ChangesetVersionID,
+						PlanHash:           run.PlanHash,
+						ManifestPath:       skipped.ManifestPath,
+						JobKey:             skipped.JobKey,
+						CheckName:          skipped.CheckName,
+						Required:           true,
+						Status:             skipped.Status,
+						RunID:              run.ID,
+						UpdatedAt:          finishedAt,
+					}); err != nil {
+						return status.Error(codes.Internal, fmt.Sprintf("failed to update skipped CI check: %v", err))
+					}
+				}
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			return nil
+		}
+	}
+}
+
+func terminalCIJobStatus(statusValue string) bool {
+	switch statusValue {
+	case "passed", "failed", "cancelled", "skipped":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *server) workspaceFilesForRun(ctx context.Context, run *storage.CIRun) ([]*civ1.WorkspaceFile, []string, error) {
+	cs, err := s.st.GetChangeset(ctx, run.ChangesetID)
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot, err := resolveChangesetSnapshot(ctx, s.st, cs, run.ChangesetVersionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	byPath := make(map[string]*civ1.WorkspaceFile)
+	prefix := strings.Trim(strings.TrimSpace(run.HomeID), "/")
+	if prefix != "" {
+		prefix += "/"
+	}
+	if strings.TrimSpace(run.BaseCommitHash) != "" {
+		basePaths, err := s.st.ListFilesAtCommit(ctx, run.BaseCommitHash, prefix)
+		if err != nil && !errors.Is(err, storage.ErrCommitNotFound) {
+			return nil, nil, err
+		}
+		for _, storedPath := range basePaths {
+			content, err := s.st.GetFileAtCommit(ctx, run.BaseCommitHash, storedPath)
+			if err != nil {
+				return nil, nil, err
+			}
+			logical := storagePathToLogical(run.HomeID, storedPath)
+			byPath[logical] = &civ1.WorkspaceFile{Path: logical, Content: append([]byte(nil), content.Content...)}
+		}
+	}
+	for _, rawPath := range snapshot.ModifiedFiles {
+		storedPath := common.CleanRelativePath(rawPath)
+		logical := storagePathToLogical(run.HomeID, storedPath)
+		hash := snapshot.FileHashes[storedPath]
+		if hash == "" {
+			hash = snapshot.FileHashes[logical]
+		}
+		if strings.TrimSpace(hash) == "" {
+			delete(byPath, logical)
+			continue
+		}
+		content, err := storage.ReadVersionedFileContent(ctx, s.st, hash)
+		if err != nil {
+			return nil, nil, err
+		}
+		byPath[logical] = &civ1.WorkspaceFile{Path: logical, Content: append([]byte(nil), content.Content...)}
+	}
+	paths := make([]string, 0, len(byPath))
+	for filePath := range byPath {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	files := make([]*civ1.WorkspaceFile, 0, len(paths))
+	for _, filePath := range paths {
+		files = append(files, byPath[filePath])
+	}
+	return files, logicalChangedPaths(run.HomeID, snapshot.ModifiedFiles), nil
+}
+
+func ciRunnerToProto(runner *storage.CIRunner) *civ1.Runner {
+	if runner == nil {
+		return nil
+	}
+	return &civ1.Runner{
+		RunnerId:   runner.ID,
+		HomeId:     runner.HomeID,
+		Name:       runner.Name,
+		Pool:       runner.Pool,
+		Labels:     append([]string(nil), runner.Labels...),
+		Executor:   runner.Executor,
+		Version:    runner.Version,
+		Status:     runner.Status,
+		LastSeenAt: formatTimePtr(runner.LastSeenAt),
+	}
+}
+
+func randomToken(prefix string) (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return prefix + "_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func hashRunnerToken(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func defaultString(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func ciNotImplemented() error {
@@ -637,7 +1396,9 @@ func buildStorageCIPlan(runID string, attempt int, trigger string, username stri
 			Required:         job.Required,
 			RunnerPool:       job.RunnerPool,
 			Image:            job.Image,
+			Shell:            job.Shell,
 			WorkingDirectory: job.WorkingDirectory,
+			TimeoutSeconds:   job.TimeoutSeconds,
 			Status:           "queued",
 			DependsOnJobIDs:  dependsOn,
 		})
@@ -767,6 +1528,12 @@ func formatTimePtr(t *time.Time) string {
 func ciStorageError(err error, notFoundMessage string) error {
 	if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrChangesetNotFound) || errors.Is(err, storage.ErrSliceNotFound) {
 		return status.Error(codes.NotFound, notFoundMessage)
+	}
+	if errors.Is(err, storage.ErrPermissionDenied) {
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
+	if errors.Is(err, storage.ErrInvalidInput) {
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
 }

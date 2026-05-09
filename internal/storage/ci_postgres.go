@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,12 +59,12 @@ func (s *PostgresNativeStorage) CreateCIPlan(ctx context.Context, plan *CIPlan) 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ci_jobs (
 				id, run_id, manifest_run_id, manifest_path, job_key, check_name, required,
-				runner_pool, image, working_directory, status, runner_id, lease_id,
+				runner_pool, image, shell, working_directory, timeout_seconds, status, runner_id, lease_id,
 				lease_expires_at, exit_code, infra_failure, started_at, finished_at
-			) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, $11,
-				NULLIF($12, ''), $13, $14, $15, $16, $17, $18)
+			) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, $11, $12,
+				NULLIF($13, ''), $14, $15, $16, $17, $18, $19, $20)
 		`, job.ID, job.RunID, job.ManifestRunID, job.ManifestPath, job.JobKey, job.CheckName, job.Required,
-			job.RunnerPool, job.Image, job.WorkingDirectory, job.Status, job.RunnerID, job.LeaseID,
+			job.RunnerPool, job.Image, job.Shell, job.WorkingDirectory, job.TimeoutSeconds, job.Status, job.RunnerID, job.LeaseID,
 			job.LeaseExpiresAt, job.ExitCode, job.InfraFailure, job.StartedAt, job.FinishedAt); err != nil {
 			return err
 		}
@@ -216,7 +217,7 @@ func (s *PostgresNativeStorage) ListCIJobs(ctx context.Context, filter CIJobList
 	limit := normalizeCIListLimit(filter.Limit)
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
-		       required, runner_pool, image, working_directory, status, COALESCE(runner_id, ''),
+		       required, runner_pool, image, shell, working_directory, timeout_seconds, status, COALESCE(runner_id, ''),
 		       lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
 		FROM ci_jobs
 		WHERE ($1 = '' OR run_id = $1)
@@ -249,6 +250,29 @@ func (s *PostgresNativeStorage) ListCIJobs(ctx context.Context, filter CIJobList
 		job.DependsOnJobIDs = deps
 	}
 	return out, nil
+}
+
+func (s *PostgresNativeStorage) GetCIJob(ctx context.Context, jobID string) (*CIJob, error) {
+	ctx = ensureCtx(ctx)
+	job, err := scanCIJob(s.pool.QueryRow(ctx, `
+		SELECT id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
+		       required, runner_pool, image, shell, working_directory, timeout_seconds, status,
+		       COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+		FROM ci_jobs
+		WHERE id = $1
+	`, strings.TrimSpace(jobID)))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	deps, err := s.listCIJobDependencies(ctx, job.ID)
+	if err != nil {
+		return nil, err
+	}
+	job.DependsOnJobIDs = deps
+	return job, nil
 }
 
 func (s *PostgresNativeStorage) listCIJobDependencies(ctx context.Context, jobID string) ([]string, error) {
@@ -294,6 +318,145 @@ func (s *PostgresNativeStorage) ListCISteps(ctx context.Context, jobID string) (
 		out = append(out, &step)
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresNativeStorage) ClaimCIJob(ctx context.Context, jobID string, runnerID string, leaseID string, leaseExpiresAt time.Time, startedAt time.Time) (*CIJob, error) {
+	ctx = ensureCtx(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	job, err := scanCIJob(tx.QueryRow(ctx, `
+		UPDATE ci_jobs
+		SET status = 'running',
+		    runner_id = $2,
+		    lease_id = $3,
+		    lease_expires_at = $4,
+		    started_at = $5
+		WHERE id = $1 AND status = 'queued'
+		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
+		          required, runner_pool, image, shell, working_directory, timeout_seconds, status,
+		          COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+	`, strings.TrimSpace(jobID), strings.TrimSpace(runnerID), strings.TrimSpace(leaseID), leaseExpiresAt, startedAt))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE ci_runners SET status = 'busy', last_seen_at = $2 WHERE id = $1
+	`, strings.TrimSpace(runnerID), startedAt); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE ci_runs
+		SET status = 'running',
+		    started_at = COALESCE(started_at, $2)
+		WHERE id = $1 AND status IN ('queued', 'planning')
+	`, job.RunID, startedAt); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	deps, err := s.listCIJobDependencies(ctx, job.ID)
+	if err != nil {
+		return nil, err
+	}
+	job.DependsOnJobIDs = deps
+	return job, nil
+}
+
+func (s *PostgresNativeStorage) UpdateCIStepStatus(ctx context.Context, jobID string, stepIndex int, status string, exitCode int, startedAt *time.Time, finishedAt *time.Time) error {
+	ctx = ensureCtx(ctx)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE ci_steps
+		SET status = $3, exit_code = $4, started_at = $5, finished_at = $6
+		WHERE job_id = $1 AND step_index = $2
+	`, strings.TrimSpace(jobID), stepIndex, strings.TrimSpace(status), exitCode, startedAt, finishedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) AppendCILogChunk(ctx context.Context, chunk *CILogChunk) error {
+	ctx = ensureCtx(ctx)
+	if chunk == nil || strings.TrimSpace(chunk.JobID) == "" {
+		return ErrInvalidInput
+	}
+	if strings.TrimSpace(chunk.ID) == "" {
+		chunk.ID = strings.TrimSpace(chunk.JobID) + ":" + strconv.FormatInt(chunk.ChunkIndex, 10)
+	}
+	if chunk.CreatedAt.IsZero() {
+		chunk.CreatedAt = time.Now()
+	}
+	if chunk.ByteCount == 0 && len(chunk.Payload) > 0 {
+		chunk.ByteCount = int64(len(chunk.Payload))
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ci_log_chunks (id, job_id, chunk_index, stream, object_key, payload, byte_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (job_id, chunk_index)
+		DO UPDATE SET stream = EXCLUDED.stream,
+			object_key = EXCLUDED.object_key,
+			payload = EXCLUDED.payload,
+			byte_count = EXCLUDED.byte_count,
+			created_at = EXCLUDED.created_at
+	`, chunk.ID, strings.TrimSpace(chunk.JobID), chunk.ChunkIndex, chunk.Stream, chunk.ObjectKey, chunk.Payload, chunk.ByteCount, chunk.CreatedAt)
+	return err
+}
+
+func (s *PostgresNativeStorage) CompleteCIJob(ctx context.Context, jobID string, leaseID string, status string, exitCode int, infraFailure bool, finishedAt time.Time) (*CIJob, error) {
+	ctx = ensureCtx(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	job, err := scanCIJob(tx.QueryRow(ctx, `
+		UPDATE ci_jobs
+		SET status = $3,
+		    exit_code = $4,
+		    infra_failure = $5,
+		    finished_at = $6,
+		    lease_expires_at = NULL
+		WHERE id = $1 AND ($2 = '' OR lease_id = $2)
+		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
+		          required, runner_pool, image, shell, working_directory, timeout_seconds, status,
+		          COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+	`, strings.TrimSpace(jobID), strings.TrimSpace(leaseID), strings.TrimSpace(status), exitCode, infraFailure, finishedAt))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(job.RunnerID) != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE ci_runners
+			SET status = 'idle', last_seen_at = $2
+			WHERE id = $1 AND status NOT IN ('disabled', 'revoked')
+		`, job.RunnerID, finishedAt); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	deps, err := s.listCIJobDependencies(ctx, job.ID)
+	if err != nil {
+		return nil, err
+	}
+	job.DependsOnJobIDs = deps
+	return job, nil
 }
 
 func (s *PostgresNativeStorage) UpsertCICheck(ctx context.Context, check *CICheck) error {
@@ -377,6 +540,43 @@ func (s *PostgresNativeStorage) ListCILogChunks(ctx context.Context, filter CILo
 	return out, rows.Err()
 }
 
+func (s *PostgresNativeStorage) CreateCIRunnerRegistrationToken(ctx context.Context, token *CIRunnerRegistrationToken) error {
+	ctx = ensureCtx(ctx)
+	if token == nil || strings.TrimSpace(token.TokenHash) == "" {
+		return ErrInvalidInput
+	}
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now()
+	}
+	labelsJSON, _ := json.Marshal(token.Labels)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ci_runner_registration_tokens (
+			token_hash, home_id, name, pool, labels, expires_at, created_by_user_id, created_at, used_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, token.TokenHash, token.HomeID, token.Name, token.Pool, labelsJSON, token.ExpiresAt,
+		token.CreatedByUserID, token.CreatedAt, token.UsedAt)
+	return err
+}
+
+func (s *PostgresNativeStorage) ConsumeCIRunnerRegistrationToken(ctx context.Context, tokenHash string, usedAt time.Time) (*CIRunnerRegistrationToken, error) {
+	ctx = ensureCtx(ctx)
+	token, err := scanCIRunnerRegistrationToken(s.pool.QueryRow(ctx, `
+		UPDATE ci_runner_registration_tokens
+		SET used_at = $2
+		WHERE token_hash = $1
+		  AND used_at IS NULL
+		  AND expires_at > $2
+		RETURNING token_hash, home_id, name, pool, labels, expires_at, created_by_user_id, created_at, used_at
+	`, strings.TrimSpace(tokenHash), usedAt))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return token, nil
+}
+
 func (s *PostgresNativeStorage) CreateCIRunner(ctx context.Context, runner *CIRunner) error {
 	ctx = ensureCtx(ctx)
 	if runner == nil || strings.TrimSpace(runner.ID) == "" {
@@ -387,9 +587,9 @@ func (s *PostgresNativeStorage) CreateCIRunner(ctx context.Context, runner *CIRu
 	}
 	labelsJSON, _ := json.Marshal(runner.Labels)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO ci_runners (id, home_id, name, pool, labels, status, token_hash, version, last_seen_at, created_at, disabled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, runner.ID, runner.HomeID, runner.Name, runner.Pool, labelsJSON, runner.Status, runner.TokenHash,
+		INSERT INTO ci_runners (id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, runner.ID, runner.HomeID, runner.Name, runner.Pool, labelsJSON, runner.Executor, runner.Status, runner.TokenHash,
 		runner.Version, runner.LastSeenAt, runner.CreatedAt, runner.DisabledAt)
 	return err
 }
@@ -397,9 +597,24 @@ func (s *PostgresNativeStorage) CreateCIRunner(ctx context.Context, runner *CIRu
 func (s *PostgresNativeStorage) GetCIRunner(ctx context.Context, runnerID string) (*CIRunner, error) {
 	ctx = ensureCtx(ctx)
 	runner, err := scanCIRunner(s.pool.QueryRow(ctx, `
-		SELECT id, home_id, name, pool, labels, status, token_hash, version, last_seen_at, created_at, disabled_at
+		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at
 		FROM ci_runners WHERE id = $1
 	`, strings.TrimSpace(runnerID)))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	return runner, nil
+}
+
+func (s *PostgresNativeStorage) GetCIRunnerByTokenHash(ctx context.Context, tokenHash string) (*CIRunner, error) {
+	ctx = ensureCtx(ctx)
+	runner, err := scanCIRunner(s.pool.QueryRow(ctx, `
+		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at
+		FROM ci_runners WHERE token_hash = $1
+	`, strings.TrimSpace(tokenHash)))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -413,7 +628,7 @@ func (s *PostgresNativeStorage) ListCIRunners(ctx context.Context, filter CIRunn
 	ctx = ensureCtx(ctx)
 	limit := normalizeCIListLimit(filter.Limit)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, home_id, name, pool, labels, status, token_hash, version, last_seen_at, created_at, disabled_at
+		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at
 		FROM ci_runners
 		WHERE ($1 = '' OR home_id = $1)
 		  AND ($2 = '' OR pool = $2)
@@ -501,7 +716,9 @@ func scanCIJob(row pgx.Row) (*CIJob, error) {
 		&job.Required,
 		&job.RunnerPool,
 		&job.Image,
+		&job.Shell,
 		&job.WorkingDirectory,
+		&job.TimeoutSeconds,
 		&job.Status,
 		&job.RunnerID,
 		&job.LeaseID,
@@ -516,6 +733,26 @@ func scanCIJob(row pgx.Row) (*CIJob, error) {
 	return &job, nil
 }
 
+func scanCIRunnerRegistrationToken(row pgx.Row) (*CIRunnerRegistrationToken, error) {
+	var token CIRunnerRegistrationToken
+	var labelsJSON []byte
+	if err := row.Scan(
+		&token.TokenHash,
+		&token.HomeID,
+		&token.Name,
+		&token.Pool,
+		&labelsJSON,
+		&token.ExpiresAt,
+		&token.CreatedByUserID,
+		&token.CreatedAt,
+		&token.UsedAt,
+	); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(labelsJSON, &token.Labels)
+	return &token, nil
+}
+
 func scanCIRunner(row pgx.Row) (*CIRunner, error) {
 	var runner CIRunner
 	var labelsJSON []byte
@@ -525,6 +762,7 @@ func scanCIRunner(row pgx.Row) (*CIRunner, error) {
 		&runner.Name,
 		&runner.Pool,
 		&labelsJSON,
+		&runner.Executor,
 		&runner.Status,
 		&runner.TokenHash,
 		&runner.Version,
