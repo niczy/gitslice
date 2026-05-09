@@ -1,0 +1,516 @@
+syntax = "proto3";
+
+package ci.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/ci;civ1";
+
+import "google/api/annotations.proto";
+
+service CIService {
+  rpc StartRun(StartRunRequest) returns (StartRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runs"
+      body: "*"
+    };
+  }
+
+  rpc GetRun(GetRunRequest) returns (Run) {
+    option (google.api.http) = {
+      get: "/v1/ci/runs/{run_id}"
+    };
+  }
+
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse) {
+    option (google.api.http) = {
+      get: "/v1/ci/runs"
+    };
+  }
+
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runs/{run_id}:cancel"
+      body: "*"
+    };
+  }
+
+  rpc Rerun(RerunRequest) returns (StartRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runs/{run_id}:rerun"
+      body: "*"
+    };
+  }
+
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogEvent) {
+    option (google.api.http) = {
+      get: "/v1/ci/runs/{run_id}/logs"
+    };
+  }
+
+  rpc ListChecks(ListChecksRequest) returns (ListChecksResponse) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/ci"
+    };
+  }
+}
+
+service RunnerAdminService {
+  rpc ListRunnerPools(ListRunnerPoolsRequest) returns (ListRunnerPoolsResponse) {
+    option (google.api.http) = {
+      get: "/v1/ci/runner-pools"
+    };
+  }
+
+  rpc ListRunners(ListRunnersRequest) returns (ListRunnersResponse) {
+    option (google.api.http) = {
+      get: "/v1/ci/runners"
+    };
+  }
+
+  rpc GetRunner(GetRunnerRequest) returns (Runner) {
+    option (google.api.http) = {
+      get: "/v1/ci/runners/{runner_id}"
+    };
+  }
+
+  rpc CreateRunnerToken(CreateRunnerTokenRequest) returns (CreateRunnerTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-tokens"
+      body: "*"
+    };
+  }
+
+  rpc DisableRunner(DisableRunnerRequest) returns (DisableRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runners/{runner_id}:disable"
+      body: "*"
+    };
+  }
+
+  rpc EnableRunner(EnableRunnerRequest) returns (EnableRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runners/{runner_id}:enable"
+      body: "*"
+    };
+  }
+
+  rpc RevokeRunner(RevokeRunnerRequest) returns (RevokeRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runners/{runner_id}:revoke"
+      body: "*"
+    };
+  }
+
+  rpc ListRunnerJobs(ListRunnerJobsRequest) returns (ListRunnerJobsResponse) {
+    option (google.api.http) = {
+      get: "/v1/ci/runners/{runner_id}/jobs"
+    };
+  }
+
+  rpc ListQueuedJobs(ListQueuedJobsRequest) returns (ListQueuedJobsResponse) {
+    option (google.api.http) = {
+      get: "/v1/ci/queued-jobs"
+    };
+  }
+}
+
+service RunnerService {
+  rpc RegisterRunner(RegisterRunnerRequest) returns (RegisterRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runners:register"
+      body: "*"
+    };
+  }
+
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-heartbeats"
+      body: "*"
+    };
+  }
+
+  rpc PollJobs(PollJobsRequest) returns (PollJobsResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-jobs:poll"
+      body: "*"
+    };
+  }
+
+  rpc ClaimJob(ClaimJobRequest) returns (ClaimJobResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-jobs/{job_id}:claim"
+      body: "*"
+    };
+  }
+
+  rpc GetJobPayload(GetJobPayloadRequest) returns (JobPayload) {
+    option (google.api.http) = {
+      get: "/v1/ci/runner-jobs/{job_id}/payload"
+    };
+  }
+
+  rpc AppendLog(AppendLogRequest) returns (AppendLogResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-jobs/{job_id}/logs"
+      body: "*"
+    };
+  }
+
+  rpc CompleteStep(CompleteStepRequest) returns (CompleteStepResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-jobs/{job_id}/steps/{step_index}:complete"
+      body: "*"
+    };
+  }
+
+  rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-jobs/{job_id}:complete"
+      body: "*"
+    };
+  }
+
+  rpc UploadArtifact(UploadArtifactRequest) returns (UploadArtifactResponse) {
+    option (google.api.http) = {
+      post: "/v1/ci/runner-jobs/{job_id}/artifacts"
+      body: "*"
+    };
+  }
+}
+
+message StartRunRequest {
+  string changeset_id = 1;
+  string changeset_version_id = 2;
+  string manifest_path = 3;
+  string job_key = 4;
+  string trigger_event = 5;
+}
+
+message StartRunResponse {
+  string run_id = 1;
+  string status = 2;
+}
+
+message GetRunRequest {
+  string run_id = 1;
+}
+
+message ListRunsRequest {
+  string changeset_id = 1;
+  string status = 2;
+  int32 limit = 3;
+  string page_token = 4;
+}
+
+message ListRunsResponse {
+  repeated Run runs = 1;
+  string next_page_token = 2;
+}
+
+message CancelRunRequest {
+  string run_id = 1;
+  string reason = 2;
+}
+
+message CancelRunResponse {
+  string run_id = 1;
+  string status = 2;
+}
+
+message RerunRequest {
+  string run_id = 1;
+  bool failed_only = 2;
+}
+
+message StreamLogsRequest {
+  string run_id = 1;
+  string job_id = 2;
+  int64 since_chunk = 3;
+}
+
+message LogEvent {
+  string run_id = 1;
+  string job_id = 2;
+  int64 chunk_index = 3;
+  string stream = 4;
+  bytes payload = 5;
+  string created_at = 6;
+}
+
+message ListChecksRequest {
+  string changeset_id = 1;
+  string changeset_version_id = 2;
+}
+
+message ListChecksResponse {
+  repeated Check checks = 1;
+}
+
+message Run {
+  string run_id = 1;
+  string home_id = 2;
+  string slice_id = 3;
+  string changeset_id = 4;
+  string changeset_version_id = 5;
+  string plan_hash = 6;
+  string trigger_event = 7;
+  string status = 8;
+  int32 attempt = 9;
+  string created_at = 10;
+  string started_at = 11;
+  string finished_at = 12;
+  repeated Job jobs = 13;
+}
+
+message Job {
+  string job_id = 1;
+  string run_id = 2;
+  string manifest_path = 3;
+  string job_key = 4;
+  string check_name = 5;
+  bool required = 6;
+  string runner_pool = 7;
+  string image = 8;
+  string working_directory = 9;
+  string status = 10;
+  string runner_id = 11;
+  int32 exit_code = 12;
+  bool infra_failure = 13;
+  string started_at = 14;
+  string finished_at = 15;
+}
+
+message Check {
+  string changeset_id = 1;
+  string changeset_version_id = 2;
+  string plan_hash = 3;
+  string manifest_path = 4;
+  string job_key = 5;
+  string check_name = 6;
+  bool required = 7;
+  string status = 8;
+  string run_id = 9;
+  string updated_at = 10;
+}
+
+message ListRunnerPoolsRequest {}
+
+message ListRunnerPoolsResponse {
+  repeated RunnerPool pools = 1;
+}
+
+message RunnerPool {
+  string name = 1;
+  string executor = 2;
+  repeated string labels = 3;
+  repeated string allowed_images = 4;
+  int32 online_runners = 5;
+  int32 busy_runners = 6;
+  int32 queued_jobs = 7;
+  int32 max_parallel_jobs_per_runner = 8;
+}
+
+message ListRunnersRequest {
+  string pool = 1;
+  string status = 2;
+  int32 limit = 3;
+  string page_token = 4;
+}
+
+message ListRunnersResponse {
+  repeated Runner runners = 1;
+  string next_page_token = 2;
+}
+
+message GetRunnerRequest {
+  string runner_id = 1;
+}
+
+message Runner {
+  string runner_id = 1;
+  string home_id = 2;
+  string name = 3;
+  string pool = 4;
+  repeated string labels = 5;
+  string executor = 6;
+  string version = 7;
+  string status = 8;
+  string last_seen_at = 9;
+  string current_job_id = 10;
+}
+
+message CreateRunnerTokenRequest {
+  string name = 1;
+  string pool = 2;
+  repeated string labels = 3;
+  string ttl = 4;
+}
+
+message CreateRunnerTokenResponse {
+  string token = 1;
+  string expires_at = 2;
+}
+
+message DisableRunnerRequest {
+  string runner_id = 1;
+  string reason = 2;
+}
+
+message DisableRunnerResponse {
+  string runner_id = 1;
+  string status = 2;
+}
+
+message EnableRunnerRequest {
+  string runner_id = 1;
+}
+
+message EnableRunnerResponse {
+  string runner_id = 1;
+  string status = 2;
+}
+
+message RevokeRunnerRequest {
+  string runner_id = 1;
+  string reason = 2;
+  bool requeue_leased = 3;
+  bool cancel_leased = 4;
+}
+
+message RevokeRunnerResponse {
+  string runner_id = 1;
+  string status = 2;
+}
+
+message ListRunnerJobsRequest {
+  string runner_id = 1;
+  int32 limit = 2;
+}
+
+message ListRunnerJobsResponse {
+  repeated Job jobs = 1;
+}
+
+message ListQueuedJobsRequest {
+  string pool = 1;
+  int32 limit = 2;
+}
+
+message ListQueuedJobsResponse {
+  repeated Job jobs = 1;
+}
+
+message RegisterRunnerRequest {
+  string registration_token = 1;
+  string name = 2;
+  string version = 3;
+  repeated string labels = 4;
+  string executor = 5;
+}
+
+message RegisterRunnerResponse {
+  string runner_id = 1;
+  string runner_token = 2;
+  string pool = 3;
+}
+
+message HeartbeatRequest {
+  string runner_id = 1;
+  string status = 2;
+  repeated string labels = 3;
+  string version = 4;
+}
+
+message HeartbeatResponse {
+  string status = 1;
+  int32 poll_after_seconds = 2;
+}
+
+message PollJobsRequest {
+  string runner_id = 1;
+  string pool = 2;
+  repeated string labels = 3;
+  int32 max_jobs = 4;
+}
+
+message PollJobsResponse {
+  repeated Job jobs = 1;
+}
+
+message ClaimJobRequest {
+  string job_id = 1;
+  string runner_id = 2;
+}
+
+message ClaimJobResponse {
+  string job_id = 1;
+  string lease_id = 2;
+  string lease_expires_at = 3;
+}
+
+message GetJobPayloadRequest {
+  string job_id = 1;
+  string lease_id = 2;
+}
+
+message JobPayload {
+  string job_id = 1;
+  string run_id = 2;
+  string home_id = 3;
+  string candidate_tree_hash = 4;
+  string manifest_path = 5;
+  string manifest_dir = 6;
+  string working_directory = 7;
+  string image = 8;
+  string shell = 9;
+  repeated string commands = 10;
+  repeated string changed_files = 11;
+}
+
+message AppendLogRequest {
+  string job_id = 1;
+  string lease_id = 2;
+  int64 chunk_index = 3;
+  string stream = 4;
+  bytes payload = 5;
+}
+
+message AppendLogResponse {
+  int64 acknowledged_chunk_index = 1;
+}
+
+message CompleteStepRequest {
+  string job_id = 1;
+  string lease_id = 2;
+  int32 step_index = 3;
+  string status = 4;
+  int32 exit_code = 5;
+}
+
+message CompleteStepResponse {
+  string status = 1;
+}
+
+message CompleteJobRequest {
+  string job_id = 1;
+  string lease_id = 2;
+  string status = 3;
+  int32 exit_code = 4;
+  bool infra_failure = 5;
+  string failure_message = 6;
+}
+
+message CompleteJobResponse {
+  string status = 1;
+}
+
+message UploadArtifactRequest {
+  string job_id = 1;
+  string lease_id = 2;
+  string path = 3;
+  bytes payload = 4;
+}
+
+message UploadArtifactResponse {
+  string artifact_id = 1;
+  string object_key = 2;
+}

@@ -153,6 +153,18 @@ func TestRootCommandPrintsCommandSpecificHelp(t *testing.T) {
 			wantUsage:   "Usage: gs status [options]",
 			wantExample: "gs status --json",
 		},
+		{
+			name:        "ci",
+			args:        []string{"ci", "--help"},
+			wantUsage:   "Usage: gs ci <command> [options]",
+			wantExample: "gs ci status --json",
+		},
+		{
+			name:        "runner",
+			args:        []string{"runner", "--help"},
+			wantUsage:   "Usage: gs runner <command> [options]",
+			wantExample: "gs runner pool list --json",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output := captureStdout(t, func() {
@@ -177,7 +189,7 @@ func TestRootCommandRegistersLocalOnlyCommands(t *testing.T) {
 		"cache", "update", "jobs", "__watch-checkout", "__run-job",
 		"auth", "git", "config", "login", "logout",
 		"file", "doctor", "context", "slice",
-		"changeset", "conflict", "import", "repo", "fs",
+		"ci", "runner", "changeset", "conflict", "import", "repo", "fs",
 		"status", "init", "log", "root",
 	} {
 		child, _, err := cmd.Find([]string{name})
