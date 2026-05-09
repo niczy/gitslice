@@ -46,6 +46,7 @@ type sliceServiceServer struct {
 	promotionBatchWindow  time.Duration
 	promotionBatchMaxSize int
 	promotionWorkerCount  int
+	historyProjectionWG   sync.WaitGroup
 	durablePromotion      bool
 }
 
@@ -1493,6 +1494,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 	cs.MergedAt = &now
 
 	var promotionCommitHash string
+	var promotionParentHash string
 	var promotionCommitTime time.Time
 	var acceptedMergeEvent *models.MergeEvent
 	eventPathHeadSnapshot := pathHeadSnapshot
@@ -1531,7 +1533,10 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if existingCommit != nil && !existingCommit.Timestamp.IsZero() {
 				promotionCommitTime = existingCommit.Timestamp
 			}
-			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, modifiedFiles, promotionCommitTime, eventPathHeadSnapshot, pathHeadAuthority)
+			if existingCommit != nil {
+				promotionParentHash = existingCommit.ParentHash
+			}
+			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, promotionParentHash, modifiedFiles, promotionCommitTime, eventPathHeadSnapshot, pathHeadAuthority)
 			if err != nil {
 				return fmt.Errorf("failed to append merge event: %w", err)
 			}
@@ -1540,6 +1545,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 
 		parentHash := metadata.HeadCommitHash
+		promotionParentHash = parentHash
 		metadata.HeadCommitHash = newCommit
 		metadata.ModifiedFiles = modifiedFiles
 		metadata.ModifiedFilesCount = len(modifiedFiles)
@@ -1557,13 +1563,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			log.Printf("Warning: failed to add commit to slice %s: %v", cs.SliceID, err)
 		}
 
-		if err := s.createCommitSnapshotWithStorage(ctx, st, cs.SliceID, newCommit, parentHash, modifiedFiles, now); err != nil {
-			log.Printf("Warning: failed to create commit snapshot for %s: %v", newCommit, err)
-		}
-		if err := s.recordFileChangesWithStorage(ctx, st, cs, newCommit, parentHash, now); err != nil {
-			log.Printf("Warning: failed to record file changes for commit %s: %v", newCommit, err)
-		}
-		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority)
+		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, parentHash, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority)
 		if err != nil {
 			return fmt.Errorf("failed to append merge event: %w", err)
 		}
@@ -1588,6 +1588,10 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	profile.markFinalize(time.Since(finalizeStartedAt))
+
+	if acceptedMergeEvent != nil {
+		s.enqueueHistoryProjection(ctx, acceptedMergeEvent)
+	}
 
 	promotionStartedAt := time.Now()
 	if promotionCommitHash != "" {
@@ -1631,7 +1635,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 
 const mergeEventShardCount = 1024
 
-func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, modifiedFiles []string, mergedAt time.Time, snapshot *models.ChangesetSnapshot, requirePathHeadCAS bool) (*models.MergeEvent, error) {
+func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, parentHash string, modifiedFiles []string, mergedAt time.Time, snapshot *models.ChangesetSnapshot, requirePathHeadCAS bool) (*models.MergeEvent, error) {
 	eventStore, ok := st.(storage.MergeEventStore)
 	if !ok || cs == nil {
 		return nil, nil
@@ -1669,6 +1673,7 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 			ManifestHash:     hash,
 			SourceSliceID:    cs.SliceID,
 			SourceCommitHash: commitHash,
+			ParentCommitHash: strings.TrimSpace(parentHash),
 			Deleted:          !existingEntries[filePath],
 		})
 	}
@@ -5008,7 +5013,10 @@ func (s *sliceServiceServer) hydrateSliceEntryMetadataFromParent(ctx context.Con
 }
 
 func (s *sliceServiceServer) waitForQueuedPromotions(ctx context.Context) error {
-	return s.rootPromotionQueue().Wait(ctx)
+	if err := s.rootPromotionQueue().Wait(ctx); err != nil {
+		return err
+	}
+	return s.waitForQueuedHistoryProjections(ctx)
 }
 
 func (s *sliceServiceServer) WaitForQueuedPromotions(ctx context.Context) error {

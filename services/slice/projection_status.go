@@ -52,16 +52,21 @@ func (s *sliceServiceServer) mergeProjectionStatuses(ctx context.Context, event 
 	if event == nil {
 		return nil
 	}
-	projection, err := s.projectionStatus(ctx, durablePromotionProjectionName, event.ShardID, event.MergeSeq)
-	if err != nil {
-		return []*slicev1.ProjectionStatus{{
-			ProjectionName: durablePromotionProjectionName,
-			ShardId:        event.ShardID,
-			RequestedSeq:   event.MergeSeq,
-			State:          slicev1.ProjectionState_PROJECTION_STATE_PENDING,
-		}}
+	projectionNames := []string{durablePromotionProjectionName, historyProjectionName}
+	projections := make([]*slicev1.ProjectionStatus, 0, len(projectionNames))
+	for _, projectionName := range projectionNames {
+		projection, err := s.projectionStatus(ctx, projectionName, event.ShardID, event.MergeSeq)
+		if err != nil {
+			projection = &slicev1.ProjectionStatus{
+				ProjectionName: projectionName,
+				ShardId:        event.ShardID,
+				RequestedSeq:   event.MergeSeq,
+				State:          slicev1.ProjectionState_PROJECTION_STATE_PENDING,
+			}
+		}
+		projections = append(projections, projection)
 	}
-	return []*slicev1.ProjectionStatus{projection}
+	return projections
 }
 
 func (s *sliceServiceServer) projectionStatus(ctx context.Context, projectionName string, shardID int32, requestedSeq int64) (*slicev1.ProjectionStatus, error) {
