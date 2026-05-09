@@ -1437,6 +1437,10 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		}
 	}
 
+	if err := s.validateChangesetSnapshotContentRefs(ctx, s.storage, cs); err != nil {
+		return nil, err
+	}
+
 	revertStartedAt := time.Now()
 	appliedRevertChanges, err := s.applyRevertChangesetContent(ctx, cs)
 	profile.markRevertApply(time.Since(revertStartedAt))

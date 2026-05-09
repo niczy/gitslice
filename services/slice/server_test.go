@@ -2344,6 +2344,143 @@ func TestMergeChangesetConflictDoesNotAppendMergeEvent(t *testing.T) {
 	}
 }
 
+func TestMergeChangesetRejectsMissingChangesetContentRef(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	filePath := "tester/docs/missing.txt"
+	slice := &models.Slice{
+		ID:        "slice-missing-content-ref",
+		Name:      "slice-missing-content-ref",
+		Files:     []string{filePath},
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_missing-content-ref",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+	if err := st.CreateChangesetSnapshot(ctx, &models.ChangesetSnapshot{
+		ID:            common.GenerateChangesetSnapshotID(cs.ID, 1),
+		ChangesetID:   cs.ID,
+		Version:       1,
+		ModifiedFiles: []string{filePath},
+		FileHashes: map[string]string{
+			filePath: "missing-manifest-hash",
+		},
+		Author:    "tester",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to create changeset snapshot: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err == nil {
+		t.Fatalf("expected MergeChangeset to fail, got response %#v", resp)
+	}
+	if code := status.Code(err); code != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v: %v", code, err)
+	}
+
+	updated, err := st.GetChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("failed to reload changeset: %v", err)
+	}
+	if updated.Status == models.ChangesetStatusMerged {
+		t.Fatalf("changeset should not be marked merged after missing content ref")
+	}
+}
+
+func TestMergeChangesetAcceptsRepeatedSnapshotContentRefs(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("failed to initialize root slice: %v", err)
+	}
+
+	firstPath := "tester/docs/a.txt"
+	secondPath := "tester/docs/b.txt"
+	slice := &models.Slice{
+		ID:        "slice-repeated-content-ref",
+		Name:      "slice-repeated-content-ref",
+		Files:     []string{firstPath, secondPath},
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	content := []byte("shared content\n")
+	firstHash := mustWriteSliceManifest(t, ctx, st, slice.ID, firstPath, content)
+	secondHash := mustWriteSliceManifest(t, ctx, st, slice.ID, secondPath, content)
+	if firstHash != secondHash {
+		t.Fatalf("expected identical content to reuse manifest hash, got %q and %q", firstHash, secondHash)
+	}
+	for _, filePath := range []string{firstPath, secondPath} {
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(slice.ID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: slice.ID,
+			Hash:     firstHash,
+			Size:     int64(len(content)),
+		}); err != nil {
+			t.Fatalf("failed to add entry %s: %v", filePath, err)
+		}
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_repeated-content-ref",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{firstPath, secondPath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+	if err := st.CreateChangesetSnapshot(ctx, &models.ChangesetSnapshot{
+		ID:            common.GenerateChangesetSnapshotID(cs.ID, 1),
+		ChangesetID:   cs.ID,
+		Version:       1,
+		ModifiedFiles: []string{firstPath, secondPath},
+		FileHashes: map[string]string{
+			firstPath:  firstHash,
+			secondPath: firstHash,
+		},
+		Author:    "tester",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to create changeset snapshot: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+}
+
 func TestMergeChangesetPromotionMaterializesRootFileTree(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	base := storage.NewInMemoryStorage()
