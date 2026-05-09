@@ -1236,15 +1236,16 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("CreateChangesetSnapshot v1 failed: %v", err)
 	}
 	snap2 := &models.ChangesetSnapshot{
-		ID:             fmt.Sprintf("%s-snapshot-2", cs.ID),
-		ChangesetID:    cs.ID,
-		Version:        2,
-		Hash:           "h2",
-		BaseCommitHash: "base-2",
-		ModifiedFiles:  []string{file2ID},
-		Author:         "alice",
-		Message:        "v2",
-		CreatedAt:      time.Now(),
+		ID:               fmt.Sprintf("%s-snapshot-2", cs.ID),
+		ChangesetID:      cs.ID,
+		Version:          2,
+		Hash:             "h2",
+		BaseCommitHash:   "base-2",
+		ModifiedFiles:    []string{file2ID},
+		BasePathVersions: map[string]int64{file2ID: 7},
+		Author:           "alice",
+		Message:          "v2",
+		CreatedAt:        time.Now(),
 	}
 	if err := st.CreateChangesetSnapshot(ctx, snap2); err != nil {
 		t.Fatalf("CreateChangesetSnapshot v2 failed: %v", err)
@@ -1255,6 +1256,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if latestSnap.Version != 2 || latestSnap.Hash != "h2" {
 		t.Fatalf("unexpected latest snapshot: %#v", latestSnap)
+	}
+	if latestSnap.BasePathVersions[file2ID] != 7 {
+		t.Fatalf("expected latest snapshot base path version 7, got %#v", latestSnap.BasePathVersions)
 	}
 	version1Snap, err := st.GetChangesetSnapshot(ctx, cs.ID, 1)
 	if err != nil {
@@ -1269,6 +1273,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 	if len(limitedSnaps) != 1 || limitedSnaps[0].Version != 2 {
 		t.Fatalf("expected latest snapshot in limited list, got %#v", limitedSnaps)
+	}
+	if limitedSnaps[0].BasePathVersions[file2ID] != 7 {
+		t.Fatalf("expected listed snapshot base path version 7, got %#v", limitedSnaps[0].BasePathVersions)
 	}
 	allSnaps, err := st.ListChangesetSnapshots(ctx, cs.ID, 10)
 	if err != nil {

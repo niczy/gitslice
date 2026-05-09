@@ -1286,7 +1286,7 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		diff = summarizeReviewChanges(reviewChanges)
 	}
 
-	reviewStatus, issues, stateWarnings, err := s.evaluateChangesetReviewState(ctx, reviewCS)
+	reviewStatus, issues, stateWarnings, err := s.evaluateChangesetReviewState(ctx, reviewCS, snapshot)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset state: %v", err))
 	}
@@ -2896,20 +2896,67 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 		}
 		snapshotFileHashes[filePath] = strings.TrimSpace(fileHashes[filePath])
 	}
+	basePathVersions, err := s.changesetBasePathVersions(ctx, cs, modifiedFiles)
+	if err != nil {
+		return err
+	}
 
 	snapshot := &models.ChangesetSnapshot{
-		ID:             common.GenerateChangesetSnapshotID(cs.ID, int64(nextVersion)),
-		ChangesetID:    cs.ID,
-		Version:        nextVersion,
-		Hash:           cs.Hash,
-		BaseCommitHash: cs.BaseCommitHash,
-		ModifiedFiles:  modifiedFiles,
-		FileHashes:     normalizeSnapshotFileHashes(snapshotFileHashes),
-		Author:         cs.Author,
-		Message:        cs.Message,
-		CreatedAt:      time.Now(),
+		ID:               common.GenerateChangesetSnapshotID(cs.ID, int64(nextVersion)),
+		ChangesetID:      cs.ID,
+		Version:          nextVersion,
+		Hash:             cs.Hash,
+		BaseCommitHash:   cs.BaseCommitHash,
+		ModifiedFiles:    modifiedFiles,
+		FileHashes:       normalizeSnapshotFileHashes(snapshotFileHashes),
+		BasePathVersions: normalizeSnapshotBasePathVersions(basePathVersions),
+		Author:           cs.Author,
+		Message:          cs.Message,
+		CreatedAt:        time.Now(),
 	}
 	return s.storage.CreateChangesetSnapshot(ctx, snapshot)
+}
+
+func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *models.Changeset, modifiedFiles []string) (map[string]int64, error) {
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok || cs == nil {
+		return nil, nil
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, err
+	}
+	homeID := mergeEventHomeID(slice, cs, modifiedFiles)
+	if strings.TrimSpace(homeID) == "" {
+		return nil, nil
+	}
+	if existingHeads, err := headStore.ListHomePathHeads(ctx, homeID, 1); err != nil {
+		return nil, err
+	} else if len(existingHeads) == 0 {
+		return nil, nil
+	}
+
+	paths := normalizeModifiedFiles(modifiedFiles)
+	heads, err := headStore.GetHomePathHeads(ctx, homeID, paths)
+	if err != nil {
+		return nil, err
+	}
+	baseVersions := make(map[string]int64, len(paths))
+	for _, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		version := int64(0)
+		if head := heads[filePath]; head != nil && !head.Deleted {
+			version = head.PathVersion
+		}
+		baseVersions[filePath] = version
+	}
+	if len(baseVersions) == 0 {
+		return nil, nil
+	}
+	return baseVersions, nil
 }
 
 func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnapshot {
@@ -2921,16 +2968,17 @@ func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnap
 		createdAt = time.Now()
 	}
 	return &models.ChangesetSnapshot{
-		ID:             common.GenerateChangesetSnapshotID(cs.ID, 1),
-		ChangesetID:    cs.ID,
-		Version:        1,
-		Hash:           cs.Hash,
-		BaseCommitHash: cs.BaseCommitHash,
-		ModifiedFiles:  normalizeModifiedFiles(cs.ModifiedFiles),
-		FileHashes:     nil,
-		Author:         cs.Author,
-		Message:        cs.Message,
-		CreatedAt:      createdAt,
+		ID:               common.GenerateChangesetSnapshotID(cs.ID, 1),
+		ChangesetID:      cs.ID,
+		Version:          1,
+		Hash:             cs.Hash,
+		BaseCommitHash:   cs.BaseCommitHash,
+		ModifiedFiles:    normalizeModifiedFiles(cs.ModifiedFiles),
+		FileHashes:       nil,
+		BasePathVersions: nil,
+		Author:           cs.Author,
+		Message:          cs.Message,
+		CreatedAt:        createdAt,
 	}
 }
 
@@ -2943,6 +2991,21 @@ func normalizeSnapshotFileHashes(fileHashes map[string]string) map[string]string
 			continue
 		}
 		out[path] = hash
+	}
+	return out
+}
+
+func normalizeSnapshotBasePathVersions(baseVersions map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(baseVersions))
+	for rawPath, version := range baseVersions {
+		path := cleanDiffPath(rawPath)
+		if path == "" || version < 0 {
+			continue
+		}
+		out[path] = version
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -3146,7 +3209,14 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 	for _, cs := range changesets {
 		info := convertChangesetToProto(cs)
 		if cs.Status == models.ChangesetStatusPending || cs.Status == models.ChangesetStatusApproved {
-			reviewStatus, _, _, err := s.evaluateChangesetReviewState(ctx, cs)
+			snapshot, snapshotErr := s.storage.GetChangesetSnapshot(ctx, cs.ID, 0)
+			if snapshotErr != nil {
+				if !errors.Is(snapshotErr, storage.ErrChangesetNotFound) {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load changeset snapshot: %v", snapshotErr))
+				}
+				snapshot = nil
+			}
+			reviewStatus, _, _, err := s.evaluateChangesetReviewState(ctx, cs, snapshot)
 			if err != nil {
 				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset %s state: %v", cs.ID, err))
 			}
@@ -3158,7 +3228,7 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 	return response, nil
 }
 
-func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, cs *models.Changeset) (slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
+func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) (slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
 	if cs == nil {
 		return slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
 	}
@@ -3169,6 +3239,12 @@ func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, c
 	reviewStatus := slicev1.ReviewStatus_READY_FOR_MERGE
 	issues := make([]*slicev1.ReviewIssue, 0)
 	warnings := make([]string, 0)
+	if handled, pathStatus, pathIssues, pathWarnings, err := s.evaluateChangesetPathHeadReviewState(ctx, cs, snapshot); err != nil {
+		return reviewStatus, nil, nil, err
+	} else if handled {
+		return pathStatus, pathIssues, pathWarnings, nil
+	}
+
 	if stale, currentHead, err := s.changesetNeedsRebase(ctx, cs); err != nil {
 		return reviewStatus, nil, nil, fmt.Errorf("failed to evaluate changeset base commit: %w", err)
 	} else if stale {
@@ -3203,6 +3279,70 @@ func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, c
 	}
 	issues = append(issues, ownershipIssues...)
 	return reviewStatus, issues, warnings, nil
+}
+
+func (s *sliceServiceServer) evaluateChangesetPathHeadReviewState(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) (bool, slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
+	if cs == nil || snapshot == nil || len(snapshot.BasePathVersions) == 0 {
+		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	headStore, ok := s.storage.(storage.HomePathHeadStore)
+	if !ok {
+		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
+	}
+	paths := normalizeModifiedFiles(cs.ModifiedFiles)
+	homeID := mergeEventHomeID(slice, cs, paths)
+	if strings.TrimSpace(homeID) == "" {
+		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	heads, err := headStore.GetHomePathHeads(ctx, homeID, paths)
+	if err != nil {
+		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
+	}
+
+	issues := make([]*slicev1.ReviewIssue, 0)
+	warnings := make([]string, 0)
+	compared := 0
+	for _, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		baseVersion, ok := snapshot.BasePathVersions[filePath]
+		if !ok {
+			continue
+		}
+		compared++
+		currentVersion := int64(0)
+		if head := heads[filePath]; head != nil && !head.Deleted {
+			currentVersion = head.PathVersion
+		}
+		if currentVersion == baseVersion {
+			continue
+		}
+		message := fmt.Sprintf(
+			"path %s changed from version %d to %d. Sync the changeset before merging.",
+			filePath,
+			baseVersion,
+			currentVersion,
+		)
+		warnings = append(warnings, message)
+		issues = append(issues, &slicev1.ReviewIssue{
+			Type:    slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE,
+			FileId:  filePath,
+			Message: message,
+		})
+	}
+	if compared == 0 {
+		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+	}
+	if len(issues) > 0 {
+		return true, slicev1.ReviewStatus_NEEDS_SYNC, issues, warnings, nil
+	}
+	return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
 }
 
 func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {

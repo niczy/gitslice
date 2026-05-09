@@ -2611,12 +2611,17 @@ func (s *PostgresNativeStorage) CreateChangesetSnapshot(ctx context.Context, sna
 		rawFileHashesJSON, _ := json.Marshal(snapshot.FileHashes)
 		fileHashesJSON = rawFileHashesJSON
 	}
+	var basePathVersionsJSON any
+	if snapshot.BasePathVersions != nil {
+		rawBasePathVersionsJSON, _ := json.Marshal(snapshot.BasePathVersions)
+		basePathVersionsJSON = rawBasePathVersionsJSON
+	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO changeset_snapshots (id, changeset_id, version, hash, base_commit_hash, modified_files, file_hashes, author, message, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO changeset_snapshots (id, changeset_id, version, hash, base_commit_hash, modified_files, file_hashes, base_path_versions, author, message, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, snapshot.ID, snapshot.ChangesetID, snapshot.Version, snapshot.Hash, snapshot.BaseCommitHash,
-		modifiedJSON, fileHashesJSON, snapshot.Author, snapshot.Message, snapshot.CreatedAt)
+		modifiedJSON, fileHashesJSON, basePathVersionsJSON, snapshot.Author, snapshot.Message, snapshot.CreatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "changeset_snapshots_changeset_id_fkey") {
 			return ErrChangesetNotFound
@@ -2632,7 +2637,9 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 	var row pgx.Row
 	if version <= 0 {
 		row = s.pool.QueryRow(ctx, `
-			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files, COALESCE(file_hashes, 'null'::jsonb), author, message, created_at
+			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
+			       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
+			       author, message, created_at
 			FROM changeset_snapshots
 			WHERE changeset_id = $1
 			ORDER BY version DESC
@@ -2640,7 +2647,9 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 		`, changesetID)
 	} else {
 		row = s.pool.QueryRow(ctx, `
-			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files, COALESCE(file_hashes, 'null'::jsonb), author, message, created_at
+			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
+			       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
+			       author, message, created_at
 			FROM changeset_snapshots
 			WHERE changeset_id = $1 AND version = $2
 			LIMIT 1
@@ -2650,6 +2659,7 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 	var snapshot models.ChangesetSnapshot
 	var modifiedJSON []byte
 	var fileHashesJSON []byte
+	var basePathVersionsJSON []byte
 	err := row.Scan(
 		&snapshot.ID,
 		&snapshot.ChangesetID,
@@ -2658,6 +2668,7 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 		&snapshot.BaseCommitHash,
 		&modifiedJSON,
 		&fileHashesJSON,
+		&basePathVersionsJSON,
 		&snapshot.Author,
 		&snapshot.Message,
 		&snapshot.CreatedAt,
@@ -2674,6 +2685,9 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 	if err := json.Unmarshal(fileHashesJSON, &snapshot.FileHashes); err != nil {
 		snapshot.FileHashes = map[string]string{}
 	}
+	if err := json.Unmarshal(basePathVersionsJSON, &snapshot.BasePathVersions); err != nil {
+		snapshot.BasePathVersions = map[string]int64{}
+	}
 	return &snapshot, nil
 }
 
@@ -2685,7 +2699,9 @@ func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, chan
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, changeset_id, version, hash, base_commit_hash, modified_files, COALESCE(file_hashes, 'null'::jsonb), author, message, created_at
+		SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
+		       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
+		       author, message, created_at
 		FROM changeset_snapshots
 		WHERE changeset_id = $1
 		ORDER BY version DESC
@@ -2701,6 +2717,7 @@ func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, chan
 		var snapshot models.ChangesetSnapshot
 		var modifiedJSON []byte
 		var fileHashesJSON []byte
+		var basePathVersionsJSON []byte
 		if err := rows.Scan(
 			&snapshot.ID,
 			&snapshot.ChangesetID,
@@ -2709,6 +2726,7 @@ func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, chan
 			&snapshot.BaseCommitHash,
 			&modifiedJSON,
 			&fileHashesJSON,
+			&basePathVersionsJSON,
 			&snapshot.Author,
 			&snapshot.Message,
 			&snapshot.CreatedAt,
@@ -2720,6 +2738,9 @@ func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, chan
 		}
 		if err := json.Unmarshal(fileHashesJSON, &snapshot.FileHashes); err != nil {
 			snapshot.FileHashes = map[string]string{}
+		}
+		if err := json.Unmarshal(basePathVersionsJSON, &snapshot.BasePathVersions); err != nil {
+			snapshot.BasePathVersions = map[string]int64{}
 		}
 		snapshotCopy := snapshot
 		result = append(result, &snapshotCopy)
