@@ -57,6 +57,19 @@ type InMemoryStorage struct {
 	projectionOffsets         map[string]*models.ProjectionOffset  // projectionName:shardID -> offset
 	homePathHeads             map[string]*models.HomePathHead      // homeID:path -> head
 
+	// CI
+	ciRuns             map[string]*CIRun         // runID -> run
+	ciRunManifests     map[string]*CIRunManifest // manifestRunID -> manifest
+	ciRunManifestIDs   map[string][]string       // runID -> manifestRunID
+	ciJobs             map[string]*CIJob         // jobID -> job
+	ciJobIDsByRun      map[string][]string       // runID -> jobID
+	ciSteps            map[string]*CIStep        // stepID -> step
+	ciStepIDsByJob     map[string][]string       // jobID -> stepID
+	ciChecks           map[string]*CICheck       // changesetID:version:plan:manifest:job -> check
+	ciLogChunks        map[string]*CILogChunk    // chunkID -> log chunk
+	ciLogChunkIDsByJob map[string][]string       // jobID -> chunkID
+	ciRunners          map[string]*CIRunner      // runnerID -> runner
+
 	// Commit history
 	sliceCommits       map[string][]*models.Commit // sliceID -> commits (newest first)
 	commitsBySliceHash map[string]map[string]*models.Commit
@@ -137,6 +150,17 @@ func NewInMemoryStorage() *InMemoryStorage {
 		mergeEventsByID:                  make(map[string]*models.MergeEvent),
 		projectionOffsets:                make(map[string]*models.ProjectionOffset),
 		homePathHeads:                    make(map[string]*models.HomePathHead),
+		ciRuns:                           make(map[string]*CIRun),
+		ciRunManifests:                   make(map[string]*CIRunManifest),
+		ciRunManifestIDs:                 make(map[string][]string),
+		ciJobs:                           make(map[string]*CIJob),
+		ciJobIDsByRun:                    make(map[string][]string),
+		ciSteps:                          make(map[string]*CIStep),
+		ciStepIDsByJob:                   make(map[string][]string),
+		ciChecks:                         make(map[string]*CICheck),
+		ciLogChunks:                      make(map[string]*CILogChunk),
+		ciLogChunkIDsByJob:               make(map[string][]string),
+		ciRunners:                        make(map[string]*CIRunner),
 		sliceCommits:                     make(map[string][]*models.Commit),
 		commitsBySliceHash:               make(map[string]map[string]*models.Commit),
 		lockedSlices:                     make(map[string]bool),
@@ -222,6 +246,17 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.mergeEventsByID = fresh.mergeEventsByID
 	s.projectionOffsets = fresh.projectionOffsets
 	s.homePathHeads = fresh.homePathHeads
+	s.ciRuns = fresh.ciRuns
+	s.ciRunManifests = fresh.ciRunManifests
+	s.ciRunManifestIDs = fresh.ciRunManifestIDs
+	s.ciJobs = fresh.ciJobs
+	s.ciJobIDsByRun = fresh.ciJobIDsByRun
+	s.ciSteps = fresh.ciSteps
+	s.ciStepIDsByJob = fresh.ciStepIDsByJob
+	s.ciChecks = fresh.ciChecks
+	s.ciLogChunks = fresh.ciLogChunks
+	s.ciLogChunkIDsByJob = fresh.ciLogChunkIDsByJob
+	s.ciRunners = fresh.ciRunners
 	s.sliceCommits = fresh.sliceCommits
 	s.commitsBySliceHash = fresh.commitsBySliceHash
 	s.globalState = fresh.globalState

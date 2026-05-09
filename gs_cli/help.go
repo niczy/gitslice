@@ -57,17 +57,15 @@ func printHelp() {
 
 func printCIHelp() {
 	fmt.Println("Usage: gs ci <command> [options]")
-	fmt.Println("CI execution is planned but not implemented yet.")
+	fmt.Println("Plan and inspect Gitslice CI runs.")
 	fmt.Println("\nCommands:")
 	fmt.Println("  run      Start a CI run for the current or specified changeset")
 	fmt.Println("  status   Show CI status for a run or current changeset")
 	fmt.Println("  logs     Stream logs for a run or job")
-	fmt.Println("  cancel   Cancel a CI run")
-	fmt.Println("  rerun    Rerun a CI run")
 	fmt.Println("\nExamples:")
-	fmt.Println("  gs ci run --changeset cs_123 --json")
+	fmt.Println("  gs ci run --changeset chg_123 --json")
 	fmt.Println("  gs ci status --json")
-	fmt.Println("  gs ci logs --run ci_run_123 --job unit --follow")
+	fmt.Println("  gs ci logs --run ci_run_123 --job ci_job_123")
 }
 
 func printRunnerHelp() {
