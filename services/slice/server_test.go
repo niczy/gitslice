@@ -123,6 +123,16 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+func projectionStatusByName(values []*slicev1.ProjectionStatus) map[string]*slicev1.ProjectionStatus {
+	out := make(map[string]*slicev1.ProjectionStatus, len(values))
+	for _, value := range values {
+		if value != nil {
+			out[value.GetProjectionName()] = value
+		}
+	}
+	return out
+}
+
 func listEntriesContainPath(entries []*filev1.DirectoryEntry, target string) bool {
 	for _, entry := range entries {
 		if entry.GetPath() == target {
@@ -2250,11 +2260,13 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	if resp.GetMergeHomeId() != "alice" || resp.GetMergeSeq() <= 0 {
 		t.Fatalf("expected merge freshness token, got home=%q shard=%d seq=%d", resp.GetMergeHomeId(), resp.GetMergeShard(), resp.GetMergeSeq())
 	}
-	if len(resp.GetProjections()) != 1 || resp.GetProjections()[0].GetProjectionName() != durablePromotionProjectionName {
-		t.Fatalf("expected root promotion projection status, got %#v", resp.GetProjections())
+	projections := projectionStatusByName(resp.GetProjections())
+	rootProjection := projections[durablePromotionProjectionName]
+	if rootProjection == nil || projections[historyProjectionName] == nil {
+		t.Fatalf("expected root and history projection statuses, got %#v", resp.GetProjections())
 	}
-	if resp.GetProjections()[0].GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
-		t.Fatalf("expected projection to be pending before queued promotion drains, got %v", resp.GetProjections()[0].GetState())
+	if rootProjection.GetState() != slicev1.ProjectionState_PROJECTION_STATE_PENDING {
+		t.Fatalf("expected root projection to be pending before queued promotion drains, got %v", rootProjection.GetState())
 	}
 
 	event, err := st.GetMergeEventByChangeset(ctx, cs.ID)
@@ -2280,6 +2292,9 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	if update.Path != filePath || update.ManifestHash != manifestHash || update.SourceCommitHash != resp.GetNewCommitHash() || update.Deleted {
 		t.Fatalf("unexpected path update: %#v", update)
 	}
+	if update.ParentCommitHash == "" {
+		t.Fatalf("expected path update to carry parent commit hash")
+	}
 	if update.NewVersion != event.MergeSeq {
 		t.Fatalf("expected path update new version to match merge seq, got update=%d event=%d", update.NewVersion, event.MergeSeq)
 	}
@@ -2289,6 +2304,19 @@ func TestMergeChangesetAppendsAcceptedMergeEvent(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].ChangesetID != cs.ID {
 		t.Fatalf("expected event in shard list, got %#v", listed)
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.waitForQueuedHistoryProjections(waitCtx); err != nil {
+		t.Fatalf("timed out waiting for history projection: %v", err)
+	}
+	changes, err := st.GetCommitChanges(ctx, resp.GetNewCommitHash())
+	if err != nil {
+		t.Fatalf("GetCommitChanges failed: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Path != filePath || changes[0].NewHash != manifestHash {
+		t.Fatalf("expected projected file change for %q, got %#v", filePath, changes)
 	}
 }
 
@@ -4084,6 +4112,132 @@ func TestDurablePromotionWorkerPromotesMergeEventAndAdvancesOffset(t *testing.T)
 	}
 	if processed {
 		t.Fatalf("expected no second batch after offset advanced")
+	}
+}
+
+func TestDurableHistoryProjectionWorkerProcessesMergeEvents(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	base := storage.NewInMemoryStorage()
+
+	const filePath = "docs/history.txt"
+	source := &models.Slice{ID: "slice-history-worker", Name: "slice-history-worker", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := base.CreateSlice(ctx, source); err != nil {
+		t.Fatalf("failed to create source slice: %v", err)
+	}
+	contentV1 := []byte("history v1\n")
+	hashV1 := mustWriteSliceManifest(t, ctx, base, source.ID, filePath, contentV1)
+	if err := base.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(source.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: source.ID,
+		Hash:     hashV1,
+		Size:     int64(len(contentV1)),
+	}); err != nil {
+		t.Fatalf("failed to add source entry: %v", err)
+	}
+
+	event1 := &models.MergeEvent{
+		HomeID:           "tester",
+		ShardID:          0,
+		MergeSeq:         1,
+		EventID:          common.GenerateMergeEventID(),
+		ChangesetID:      "chg_history-worker-1",
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "commit-history-worker-1",
+		Author:           "tester",
+		Message:          "history add",
+		TouchedPaths:     []string{filePath},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             filePath,
+			NewVersion:       1,
+			ManifestHash:     hashV1,
+			SourceSliceID:    source.ID,
+			SourceCommitHash: "commit-history-worker-1",
+		}},
+		CreatedAt: time.Now().Add(-time.Second),
+	}
+	if err := base.AppendMergeEvent(ctx, event1); err != nil {
+		t.Fatalf("failed to append first merge event: %v", err)
+	}
+
+	contentV2 := []byte("history v2\n")
+	hashV2 := mustWriteSliceManifest(t, ctx, base, source.ID, filePath, contentV2)
+	if err := base.UpdateEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(source.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: source.ID,
+		Hash:     hashV2,
+		Size:     int64(len(contentV2)),
+	}); err != nil {
+		t.Fatalf("failed to update source entry: %v", err)
+	}
+
+	event2 := &models.MergeEvent{
+		HomeID:           "tester",
+		ShardID:          0,
+		MergeSeq:         2,
+		EventID:          common.GenerateMergeEventID(),
+		ChangesetID:      "chg_history-worker-2",
+		SourceSliceID:    source.ID,
+		SourceCommitHash: "commit-history-worker-2",
+		Author:           "tester",
+		Message:          "history modify",
+		TouchedPaths:     []string{filePath},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             filePath,
+			BaseVersion:      1,
+			NewVersion:       2,
+			ManifestHash:     hashV2,
+			SourceSliceID:    source.ID,
+			SourceCommitHash: "commit-history-worker-2",
+			ParentCommitHash: "commit-history-worker-1",
+		}},
+		CreatedAt: time.Now(),
+	}
+	if err := base.AppendMergeEvent(ctx, event2); err != nil {
+		t.Fatalf("failed to append second merge event: %v", err)
+	}
+
+	srv := newSliceServiceServer(base)
+	for i := 0; i < 2; i++ {
+		processed, err := srv.processDurableHistoryProjectionOnce(ctx, DurablePromotionConfig{ShardCount: 1, BatchSize: 1})
+		if err != nil {
+			t.Fatalf("processDurableHistoryProjectionOnce %d failed: %v", i, err)
+		}
+		if !processed {
+			t.Fatalf("expected history projection batch %d to process", i)
+		}
+	}
+
+	commits, err := base.ListSliceCommits(ctx, source.ID, 10, "")
+	if err != nil {
+		t.Fatalf("ListSliceCommits failed: %v", err)
+	}
+	if len(commits) != 2 || commits[0].CommitHash != "commit-history-worker-2" || commits[1].CommitHash != "commit-history-worker-1" {
+		t.Fatalf("expected projected commit history, got %#v", commits)
+	}
+	snapshot, err := base.GetCommitSnapshot(ctx, "commit-history-worker-2")
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot failed: %v", err)
+	}
+	if got := snapshot.Files[filePath]; got != hashV2 {
+		t.Fatalf("expected head snapshot hash %q, got %q", hashV2, got)
+	}
+	changes, err := base.GetCommitChanges(ctx, "commit-history-worker-2")
+	if err != nil {
+		t.Fatalf("GetCommitChanges failed: %v", err)
+	}
+	if len(changes) != 1 || changes[0].ChangeType != models.ChangeTypeModify || changes[0].OldHash != hashV1 || changes[0].NewHash != hashV2 {
+		t.Fatalf("expected projected modify change %q -> %q, got %#v", hashV1, hashV2, changes)
+	}
+	offset, err := base.GetProjectionOffset(ctx, historyProjectionName, event2.ShardID)
+	if err != nil {
+		t.Fatalf("GetProjectionOffset failed: %v", err)
+	}
+	if offset.MergeSeq != event2.MergeSeq {
+		t.Fatalf("expected history projection offset %d, got %d", event2.MergeSeq, offset.MergeSeq)
 	}
 }
 

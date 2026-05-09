@@ -3959,6 +3959,19 @@ func (s *PostgresNativeStorage) AddFileChange(ctx context.Context, change *model
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO file_changes (id, slice_id, commit_hash, path, old_path, change_type, old_hash, new_hash, lines_added, lines_deleted, author, message, committed_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (id) DO UPDATE SET
+			slice_id = EXCLUDED.slice_id,
+			commit_hash = EXCLUDED.commit_hash,
+			path = EXCLUDED.path,
+			old_path = EXCLUDED.old_path,
+			change_type = EXCLUDED.change_type,
+			old_hash = EXCLUDED.old_hash,
+			new_hash = EXCLUDED.new_hash,
+			lines_added = EXCLUDED.lines_added,
+			lines_deleted = EXCLUDED.lines_deleted,
+			author = EXCLUDED.author,
+			message = EXCLUDED.message,
+			committed_at = EXCLUDED.committed_at
 	`, change.ID, change.SliceID, change.CommitHash, change.Path, change.OldPath,
 		string(change.ChangeType), change.OldHash, change.NewHash,
 		change.LinesAdded, change.LinesDeleted, change.Author, change.Message, change.Timestamp)

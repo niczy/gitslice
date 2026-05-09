@@ -11,6 +11,7 @@ type MergePathUpdate struct {
 	ManifestHash     string `json:"manifest_hash,omitempty"`
 	SourceSliceID    string `json:"source_slice_id,omitempty"`
 	SourceCommitHash string `json:"source_commit_hash,omitempty"`
+	ParentCommitHash string `json:"parent_commit_hash,omitempty"`
 	Deleted          bool   `json:"deleted,omitempty"`
 }
 

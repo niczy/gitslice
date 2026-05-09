@@ -50,8 +50,9 @@ func (s *sliceServiceServer) StartDurablePromotionWorkers(ctx context.Context, c
 	for i := 0; i < cfg.WorkerCount; i++ {
 		workerID := i
 		go s.runDurablePromotionWorker(ctx, cfg, workerID)
+		go s.runDurableHistoryProjectionWorker(ctx, cfg, workerID)
 	}
-	log.Printf("durable promotion workers started workers=%d shards=%d batch_size=%d poll_interval=%s", cfg.WorkerCount, cfg.ShardCount, cfg.BatchSize, cfg.PollInterval)
+	log.Printf("durable promotion/history workers started workers=%d shards=%d batch_size=%d poll_interval=%s", cfg.WorkerCount, cfg.ShardCount, cfg.BatchSize, cfg.PollInterval)
 }
 
 func (s *sliceServiceServer) runDurablePromotionWorker(ctx context.Context, cfg DurablePromotionConfig, workerID int) {

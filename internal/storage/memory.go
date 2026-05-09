@@ -610,10 +610,20 @@ func (s *InMemoryStorage) AddSliceCommit(ctx context.Context, sliceID string, co
 	}
 
 	commitCopy := *commit
-	s.sliceCommits[sliceID] = append([]*models.Commit{&commitCopy}, s.sliceCommits[sliceID]...)
 	if s.commitsBySliceHash[sliceID] == nil {
 		s.commitsBySliceHash[sliceID] = make(map[string]*models.Commit)
 	}
+	if _, exists := s.commitsBySliceHash[sliceID][commit.CommitHash]; exists {
+		for i, existing := range s.sliceCommits[sliceID] {
+			if existing != nil && existing.CommitHash == commit.CommitHash {
+				s.sliceCommits[sliceID][i] = &commitCopy
+				break
+			}
+		}
+		s.commitsBySliceHash[sliceID][commit.CommitHash] = &commitCopy
+		return nil
+	}
+	s.sliceCommits[sliceID] = append([]*models.Commit{&commitCopy}, s.sliceCommits[sliceID]...)
 	s.commitsBySliceHash[sliceID][commit.CommitHash] = &commitCopy
 	return nil
 }
@@ -2291,9 +2301,13 @@ func (s *InMemoryStorage) AddFileChange(ctx context.Context, change *models.File
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Store the change record
+	_, existed := s.fileChanges[change.ID]
 	changeCopy := *change
 	s.fileChanges[change.ID] = &changeCopy
+	if existed {
+		s.rebuildFileChangeIndexesLocked()
+		return nil
+	}
 
 	// Index by path (prepend for newest-first ordering)
 	pathKey := change.SliceID + ":" + change.Path
