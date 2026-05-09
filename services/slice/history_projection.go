@@ -199,8 +199,20 @@ func (s *sliceServiceServer) createCommitSnapshotFromMergeEvent(ctx context.Cont
 		files[filePath] = hash
 	}
 
+	sourceCommitHash := strings.TrimSpace(event.SourceCommitHash)
+	if sourceCommitHash == "" {
+		return parentFiles, nil
+	}
+	if existing, err := st.GetCommitSnapshot(ctx, sourceCommitHash); err == nil && existing != nil {
+		// Commit snapshots are keyed by commit hash. Keep the source snapshot
+		// authoritative when projection reuses the same commit hash.
+		return parentFiles, nil
+	} else if err != nil && !errors.Is(err, storage.ErrCommitNotFound) {
+		return nil, fmt.Errorf("load existing project commit snapshot %s: %w", sourceCommitHash, err)
+	}
+
 	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
-		CommitHash: strings.TrimSpace(event.SourceCommitHash),
+		CommitHash: sourceCommitHash,
 		SliceID:    strings.TrimSpace(event.SourceSliceID),
 		Files:      files,
 		Timestamp:  timestamp,
