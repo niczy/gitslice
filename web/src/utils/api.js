@@ -2,7 +2,7 @@
 // API and authentication helpers
 // ---------------------------------------------------------------------------
 
-import { getSignedInAuthSource, getSignedInUsername } from '../auth.js';
+import { getActiveClerkSessionToken, getSignedInAuthSource, getSignedInUsername } from '../auth.js';
 import { normalizeChangesetListResponse, normalizeCommitListResponse } from './normalize.js';
 
 // Browser data requests stay same-origin so auth cookies continue to work
@@ -13,12 +13,17 @@ export function currentUsername() {
   return getSignedInUsername();
 }
 
-export function fetchWithAuth(url, options = {}) {
+export async function fetchWithAuth(url, options = {}) {
   const headers = new Headers(options.headers || {});
   const authSource = getSignedInAuthSource();
   const username = currentUsername();
   if (username && authSource !== 'clerk') {
     headers.set('Authorization', `User ${username}`);
+  } else if (!headers.has('Authorization')) {
+    const clerkToken = await getActiveClerkSessionToken();
+    if (clerkToken) {
+      headers.set('Authorization', `Bearer ${clerkToken}`);
+    }
   }
   return fetch(url, { ...options, credentials: 'include', headers });
 }

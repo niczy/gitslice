@@ -35,12 +35,14 @@ export async function proxyRequest(request, suffix = '', options = {}) {
       return Response.json({ error: 'Not signed in' }, { status: 401 });
     }
   }
-  if (!restrictedAdminPath && !headers.has('Authorization') && getAuthProvider() === 'clerk') {
+  const requestAuthorization = String(headers.get('Authorization') || '').trim();
+  const shouldResolveClerkAuthorization = !requestAuthorization || /^Bearer\s+/i.test(requestAuthorization);
+  if (!restrictedAdminPath && shouldResolveClerkAuthorization && getAuthProvider() === 'clerk') {
     const authResult = await getProxyAuthorizationResult(request, options);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
-    } else if (authResult.rejectUnauthenticated) {
+    } else if (!requestAuthorization && authResult.rejectUnauthenticated) {
       const response = Response.json({ error: 'Not signed in' }, { status: 401 });
       for (const cookie of responseCookies) {
         if (cookie) {
