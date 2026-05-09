@@ -40,6 +40,12 @@ func (s *InMemoryStorage) CreateCIPlan(ctx context.Context, plan *CIPlan) error 
 			return ErrInvalidInput
 		}
 		copyJob := cloneCIJob(job)
+		if copyJob.MaxAttempts <= 0 {
+			copyJob.MaxAttempts = DefaultCIJobMaxAttempts
+		}
+		if copyJob.AttemptCount < 0 {
+			copyJob.AttemptCount = 0
+		}
 		s.ciJobs[copyJob.ID] = copyJob
 		s.ciJobIDsByRun[run.ID] = append(s.ciJobIDsByRun[run.ID], copyJob.ID)
 	}
@@ -214,11 +220,49 @@ func (s *InMemoryStorage) ClaimCIJob(ctx context.Context, jobID string, runnerID
 	job.LeaseID = strings.TrimSpace(leaseID)
 	job.LeaseExpiresAt = cloneTimePtr(&leaseExpiresAt)
 	job.StartedAt = cloneTimePtr(&startedAt)
+	job.FinishedAt = nil
+	job.AttemptCount++
+	if job.MaxAttempts <= 0 {
+		job.MaxAttempts = DefaultCIJobMaxAttempts
+	}
 	runner.Status = "busy"
 	runner.LastSeenAt = cloneTimePtr(&startedAt)
 	if run := s.ciRuns[job.RunID]; run != nil && run.StartedAt == nil {
 		run.Status = "running"
 		run.StartedAt = cloneTimePtr(&startedAt)
+	}
+	return cloneCIJob(job), nil
+}
+
+func (s *InMemoryStorage) RequeueCIJob(ctx context.Context, jobID string, leaseID string, requeuedAt time.Time) (*CIJob, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job := s.ciJobs[strings.TrimSpace(jobID)]
+	if job == nil {
+		return nil, ErrEntryNotFound
+	}
+	if job.Status != "running" {
+		return nil, ErrInvalidInput
+	}
+	if strings.TrimSpace(leaseID) != "" && job.LeaseID != strings.TrimSpace(leaseID) {
+		return nil, ErrPermissionDenied
+	}
+	previousRunnerID := job.RunnerID
+	job.Status = "queued"
+	job.RunnerID = ""
+	job.LeaseID = ""
+	job.LeaseExpiresAt = nil
+	job.StartedAt = nil
+	job.FinishedAt = nil
+	job.ExitCode = 0
+	job.InfraFailure = false
+	if job.MaxAttempts <= 0 {
+		job.MaxAttempts = DefaultCIJobMaxAttempts
+	}
+	if runner := s.ciRunners[previousRunnerID]; runner != nil && runner.Status != "disabled" && runner.Status != "revoked" {
+		runner.Status = "idle"
+		runner.LastSeenAt = cloneTimePtr(&requeuedAt)
 	}
 	return cloneCIJob(job), nil
 }

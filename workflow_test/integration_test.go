@@ -35,6 +35,7 @@ import (
 	accountservice "github.com/niczy/gitslice/services/account"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
+	ciservice "github.com/niczy/gitslice/services/ci"
 	fileservice "github.com/niczy/gitslice/services/file"
 	filesystemservice "github.com/niczy/gitslice/services/filesystem"
 	sliceservice "github.com/niczy/gitslice/services/slice"
@@ -139,6 +140,7 @@ func startGRPCServer(st storage.Storage) (string, *grpc.Server, error) {
 	fileservice.RegisterGRPCServer(srv, st)
 	filesystemservice.RegisterGRPCServer(srv, st)
 	adminservice.RegisterGRPCServer(srv, st)
+	ciservice.RegisterGRPCServer(srv, st)
 	testAgentSvc = agentsession.NewService(st, "test-agent-ws-secret")
 	testAgentSvc.StartLifecycleLoop(context.Background())
 	agentservice.RegisterGRPCServer(srv, st, testAgentSvc)

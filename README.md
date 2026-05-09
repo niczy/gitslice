@@ -611,6 +611,38 @@ GitHub Actions workflow is configured to:
 
 See `.github/workflows/build.yml` for details.
 
+### Gitslice CI Runners
+
+Gitslice CI is path-scoped. Put platform policy in
+`/{home}/.gitslice/ci.yaml`, and put folder manifests named `.gs-ci.yaml` under
+the directories that own jobs. Prefer Docker runners for repeatable execution:
+
+```bash
+gs runner token create --name vm-1 --pool default --ttl 30m
+gs runner enroll --token <runner-registration-token> --executor docker
+gs runner start --executor docker
+```
+
+`shell` runners are useful for local demos on trusted machines, but they run job
+commands directly on the host. `docker` runners execute with `--network none` by
+default and use the job image selected by the platform config. Manage runners
+with:
+
+```bash
+gs runner pool list
+gs runner list --pool default
+gs runner show <runner-id>
+gs runner disable <runner-id> --reason "maintenance"
+gs runner revoke <runner-id> --requeue-leased
+gs runner jobs <runner-id>
+gs runner queue list --pool default
+```
+
+Runner log chunks are size-limited and sensitive environment values such as
+tokens, secrets, passwords, and API keys are redacted before storage. Expired job
+leases are retried within the configured default retry budget, then marked as
+infrastructure failures.
+
 ## Operations
 
 ### Hourly Auto-Update and Restart

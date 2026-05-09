@@ -56,6 +56,14 @@ func (s *PostgresNativeStorage) CreateCIPlan(ctx context.Context, plan *CIPlan) 
 		if job == nil || strings.TrimSpace(job.ID) == "" || strings.TrimSpace(job.RunID) != run.ID {
 			return ErrInvalidInput
 		}
+		attemptCount := job.AttemptCount
+		if attemptCount < 0 {
+			attemptCount = 0
+		}
+		maxAttempts := job.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = DefaultCIJobMaxAttempts
+		}
 		envJSON, _ := json.Marshal(job.Env)
 		cachePathsJSON, _ := json.Marshal(job.CachePaths)
 		artifactsJSON, _ := json.Marshal(job.Artifacts)
@@ -63,13 +71,14 @@ func (s *PostgresNativeStorage) CreateCIPlan(ctx context.Context, plan *CIPlan) 
 			INSERT INTO ci_jobs (
 				id, run_id, manifest_run_id, manifest_path, job_key, check_name, required,
 				runner_pool, image, shell, working_directory, timeout_seconds, env, cache_paths, artifacts,
-				status, runner_id, lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+				status, runner_id, lease_id, lease_expires_at, attempt_count, max_attempts,
+				exit_code, infra_failure, started_at, finished_at
 			) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				$13, $14, $15, $16, NULLIF($17, ''), $18, $19, $20, $21, $22, $23)
+				$13, $14, $15, $16, NULLIF($17, ''), $18, $19, $20, $21, $22, $23, $24, $25)
 		`, job.ID, job.RunID, job.ManifestRunID, job.ManifestPath, job.JobKey, job.CheckName, job.Required,
 			job.RunnerPool, job.Image, job.Shell, job.WorkingDirectory, job.TimeoutSeconds, envJSON, cachePathsJSON, artifactsJSON,
 			job.Status, job.RunnerID, job.LeaseID,
-			job.LeaseExpiresAt, job.ExitCode, job.InfraFailure, job.StartedAt, job.FinishedAt); err != nil {
+			job.LeaseExpiresAt, attemptCount, maxAttempts, job.ExitCode, job.InfraFailure, job.StartedAt, job.FinishedAt); err != nil {
 			return err
 		}
 	}
@@ -223,7 +232,8 @@ func (s *PostgresNativeStorage) ListCIJobs(ctx context.Context, filter CIJobList
 		SELECT id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
 		       required, runner_pool, image, shell, working_directory, timeout_seconds,
 		       env, cache_paths, artifacts, status, COALESCE(runner_id, ''),
-		       lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+		       lease_id, lease_expires_at, attempt_count, max_attempts,
+		       exit_code, infra_failure, started_at, finished_at
 		FROM ci_jobs
 		WHERE ($1 = '' OR run_id = $1)
 		  AND ($2 = '' OR COALESCE(runner_id, '') = $2)
@@ -263,7 +273,8 @@ func (s *PostgresNativeStorage) GetCIJob(ctx context.Context, jobID string) (*CI
 		SELECT id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
 		       required, runner_pool, image, shell, working_directory, timeout_seconds,
 		       env, cache_paths, artifacts, status,
-		       COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+		       COALESCE(runner_id, ''), lease_id, lease_expires_at, attempt_count, max_attempts,
+		       exit_code, infra_failure, started_at, finished_at
 		FROM ci_jobs
 		WHERE id = $1
 	`, strings.TrimSpace(jobID)))
@@ -340,13 +351,17 @@ func (s *PostgresNativeStorage) ClaimCIJob(ctx context.Context, jobID string, ru
 		    runner_id = $2,
 		    lease_id = $3,
 		    lease_expires_at = $4,
-		    started_at = $5
+		    started_at = $5,
+		    finished_at = NULL,
+		    attempt_count = attempt_count + 1,
+		    max_attempts = CASE WHEN max_attempts <= 0 THEN $6 ELSE max_attempts END
 		WHERE id = $1 AND status = 'queued'
 		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
 		          required, runner_pool, image, shell, working_directory, timeout_seconds,
 		          env, cache_paths, artifacts, status,
-		          COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
-	`, strings.TrimSpace(jobID), strings.TrimSpace(runnerID), strings.TrimSpace(leaseID), leaseExpiresAt, startedAt))
+		          COALESCE(runner_id, ''), lease_id, lease_expires_at, attempt_count, max_attempts,
+		          exit_code, infra_failure, started_at, finished_at
+	`, strings.TrimSpace(jobID), strings.TrimSpace(runnerID), strings.TrimSpace(leaseID), leaseExpiresAt, startedAt, DefaultCIJobMaxAttempts))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrEntryNotFound
@@ -365,6 +380,70 @@ func (s *PostgresNativeStorage) ClaimCIJob(ctx context.Context, jobID string, ru
 		WHERE id = $1 AND status IN ('queued', 'planning')
 	`, job.RunID, startedAt); err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	deps, err := s.listCIJobDependencies(ctx, job.ID)
+	if err != nil {
+		return nil, err
+	}
+	job.DependsOnJobIDs = deps
+	return job, nil
+}
+
+func (s *PostgresNativeStorage) RequeueCIJob(ctx context.Context, jobID string, leaseID string, requeuedAt time.Time) (*CIJob, error) {
+	ctx = ensureCtx(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var previousRunnerID string
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(runner_id, '')
+		FROM ci_jobs
+		WHERE id = $1 AND status = 'running' AND ($2 = '' OR lease_id = $2)
+	`, strings.TrimSpace(jobID), strings.TrimSpace(leaseID)).Scan(&previousRunnerID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+
+	job, err := scanCIJob(tx.QueryRow(ctx, `
+		UPDATE ci_jobs
+		SET status = 'queued',
+		    runner_id = NULL,
+		    lease_id = '',
+		    lease_expires_at = NULL,
+		    started_at = NULL,
+		    finished_at = NULL,
+		    exit_code = 0,
+		    infra_failure = FALSE,
+		    max_attempts = CASE WHEN max_attempts <= 0 THEN $3 ELSE max_attempts END
+		WHERE id = $1 AND status = 'running' AND ($2 = '' OR lease_id = $2)
+		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
+		          required, runner_pool, image, shell, working_directory, timeout_seconds,
+		          env, cache_paths, artifacts, status,
+		          COALESCE(runner_id, ''), lease_id, lease_expires_at, attempt_count, max_attempts,
+		          exit_code, infra_failure, started_at, finished_at
+	`, strings.TrimSpace(jobID), strings.TrimSpace(leaseID), DefaultCIJobMaxAttempts))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrEntryNotFound
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(previousRunnerID) != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE ci_runners
+			SET status = 'idle', last_seen_at = $2
+			WHERE id = $1 AND status NOT IN ('disabled', 'revoked')
+		`, previousRunnerID, requeuedAt); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -492,7 +571,8 @@ func (s *PostgresNativeStorage) CompleteCIJob(ctx context.Context, jobID string,
 		RETURNING id, run_id, COALESCE(manifest_run_id, ''), manifest_path, job_key, check_name,
 		          required, runner_pool, image, shell, working_directory, timeout_seconds,
 		          env, cache_paths, artifacts, status,
-		          COALESCE(runner_id, ''), lease_id, lease_expires_at, exit_code, infra_failure, started_at, finished_at
+		          COALESCE(runner_id, ''), lease_id, lease_expires_at, attempt_count, max_attempts,
+		          exit_code, infra_failure, started_at, finished_at
 	`, strings.TrimSpace(jobID), strings.TrimSpace(leaseID), strings.TrimSpace(status), exitCode, infraFailure, finishedAt))
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -869,6 +949,8 @@ func scanCIJob(row pgx.Row) (*CIJob, error) {
 		&job.RunnerID,
 		&job.LeaseID,
 		&job.LeaseExpiresAt,
+		&job.AttemptCount,
+		&job.MaxAttempts,
 		&job.ExitCode,
 		&job.InfraFailure,
 		&job.StartedAt,
@@ -879,6 +961,9 @@ func scanCIJob(row pgx.Row) (*CIJob, error) {
 	_ = json.Unmarshal(envJSON, &job.Env)
 	_ = json.Unmarshal(cachePathsJSON, &job.CachePaths)
 	_ = json.Unmarshal(artifactsJSON, &job.Artifacts)
+	if job.MaxAttempts <= 0 {
+		job.MaxAttempts = DefaultCIJobMaxAttempts
+	}
 	return &job, nil
 }
 

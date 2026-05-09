@@ -1,6 +1,7 @@
 package ci
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -97,7 +98,10 @@ type server struct {
 	st storage.Storage
 }
 
-const maxCIArtifactPayloadBytes = 32 << 20
+const (
+	maxCIArtifactPayloadBytes = 32 << 20
+	maxCILogChunkPayloadBytes = 256 << 10
+)
 
 func (s *server) StartRun(ctx context.Context, req *civ1.StartRunRequest) (*civ1.StartRunResponse, error) {
 	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
@@ -533,6 +537,9 @@ func (s *server) ListRunnerPools(ctx context.Context, req *civ1.ListRunnerPoolsR
 	if err != nil {
 		return nil, err
 	}
+	if err := s.reconcileExpiredLeases(ctx, time.Now()); err != nil {
+		return nil, err
+	}
 	runners, err := s.st.ListCIRunners(ctx, storage.CIRunnerListFilter{HomeID: identity.Username, Limit: 1000})
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list CI runners: %v", err))
@@ -695,11 +702,39 @@ func (s *server) RevokeRunner(ctx context.Context, req *civ1.RevokeRunnerRequest
 	if err != nil {
 		return nil, err
 	}
+	if req.GetRequeueLeased() && req.GetCancelLeased() {
+		return nil, status.Error(codes.InvalidArgument, "use either requeue_leased or cancel_leased, not both")
+	}
 	runner, err := s.loadAuthorizedRunner(ctx, identity.Username, req.GetRunnerId())
 	if err != nil {
 		return nil, err
 	}
-	if err := s.st.RevokeCIRunner(ctx, runner.ID, time.Now()); err != nil {
+	now := time.Now()
+	if req.GetRequeueLeased() || req.GetCancelLeased() {
+		jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{RunnerID: runner.ID, Status: "running", Limit: 1000})
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list leased jobs: %v", err))
+		}
+		for _, job := range jobs {
+			if req.GetRequeueLeased() {
+				if _, err := s.st.RequeueCIJob(ctx, job.ID, job.LeaseID, now); err != nil && !errors.Is(err, storage.ErrEntryNotFound) && !errors.Is(err, storage.ErrInvalidInput) {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to requeue leased job %s: %v", job.ID, err))
+				}
+				continue
+			}
+			cancelled, err := s.st.CompleteCIJob(ctx, job.ID, job.LeaseID, "cancelled", 0, true, now)
+			if err != nil {
+				if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrInvalidInput) {
+					continue
+				}
+				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to cancel leased job %s: %v", job.ID, err))
+			}
+			if err := s.updateCheckAndRunAfterJob(ctx, cancelled, now); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := s.st.RevokeCIRunner(ctx, runner.ID, now); err != nil {
 		return nil, ciStorageError(err, "runner not found")
 	}
 	return &civ1.RevokeRunnerResponse{RunnerId: runner.ID, Status: "revoked"}, nil
@@ -728,6 +763,9 @@ func (s *server) ListRunnerJobs(ctx context.Context, req *civ1.ListRunnerJobsReq
 func (s *server) ListQueuedJobs(ctx context.Context, req *civ1.ListQueuedJobsRequest) (*civ1.ListQueuedJobsResponse, error) {
 	identity, err := authresolver.RequireGRPCIdentity(ctx, s.st)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.reconcileExpiredLeases(ctx, time.Now()); err != nil {
 		return nil, err
 	}
 	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{Pool: strings.TrimSpace(req.GetPool()), Status: "queued", Limit: int(req.GetLimit())})
@@ -821,6 +859,9 @@ func (s *server) PollJobs(ctx context.Context, req *civ1.PollJobsRequest) (*civ1
 		limit = 10
 	}
 	now := time.Now()
+	if err := s.reconcileExpiredLeases(ctx, now); err != nil {
+		return nil, err
+	}
 	_ = s.st.UpdateCIRunnerStatus(ctx, runner.ID, "idle", &now)
 	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{Pool: runner.Pool, Status: "queued", Limit: 1000})
 	if err != nil {
@@ -850,6 +891,9 @@ func (s *server) ClaimJob(ctx context.Context, req *civ1.ClaimJobRequest) (*civ1
 	runner, err := s.requireRunner(ctx, req.GetRunnerId())
 	if err != nil {
 		return nil, err
+	}
+	if runner.Status == "disabled" {
+		return nil, status.Error(codes.FailedPrecondition, "runner is disabled")
 	}
 	job, err := s.st.GetCIJob(ctx, req.GetJobId())
 	if err != nil {
@@ -938,26 +982,28 @@ func (s *server) GetJobPayload(ctx context.Context, req *civ1.GetJobPayloadReque
 }
 
 func (s *server) AppendLog(ctx context.Context, req *civ1.AppendLogRequest) (*civ1.AppendLogResponse, error) {
-	if _, _, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId()); err != nil {
+	_, job, err := s.requireRunnerJobLease(ctx, req.GetJobId(), req.GetLeaseId())
+	if err != nil {
 		return nil, err
+	}
+	if len(req.GetPayload()) > maxCILogChunkPayloadBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "log chunk payload exceeds %d bytes", maxCILogChunkPayloadBytes)
 	}
 	streamName := strings.TrimSpace(req.GetStream())
 	if streamName == "" {
 		streamName = "stdout"
 	}
-	job, _ := s.st.GetCIJob(ctx, req.GetJobId())
+	payload := redactCILogPayload(req.GetPayload(), job)
 	chunk := &storage.CILogChunk{
 		ID:         strings.TrimSpace(req.GetJobId()) + ":" + strconv.FormatInt(req.GetChunkIndex(), 10),
 		JobID:      strings.TrimSpace(req.GetJobId()),
 		ChunkIndex: req.GetChunkIndex(),
 		Stream:     streamName,
-		Payload:    append([]byte(nil), req.GetPayload()...),
-		ByteCount:  int64(len(req.GetPayload())),
+		Payload:    payload,
+		ByteCount:  int64(len(payload)),
 		CreatedAt:  time.Now(),
 	}
-	if job != nil {
-		chunk.RunID = job.RunID
-	}
+	chunk.RunID = job.RunID
 	if err := s.st.AppendCILogChunk(ctx, chunk); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to append log chunk: %v", err))
 	}
@@ -1131,6 +1177,86 @@ func (s *server) requireRunnerJobLease(ctx context.Context, jobID string, leaseI
 		return nil, nil, status.Error(codes.FailedPrecondition, "job lease expired")
 	}
 	return runner, job, nil
+}
+
+func (s *server) reconcileExpiredLeases(ctx context.Context, now time.Time) error {
+	jobs, err := s.st.ListCIJobs(ctx, storage.CIJobListFilter{Status: "running", Limit: 1000})
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to list running CI jobs: %v", err))
+	}
+	for _, job := range jobs {
+		if job == nil || job.LeaseExpiresAt == nil || job.LeaseExpiresAt.After(now) {
+			continue
+		}
+		maxAttempts := job.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = storage.DefaultCIJobMaxAttempts
+		}
+		if job.AttemptCount < maxAttempts {
+			if _, err := s.st.RequeueCIJob(ctx, job.ID, job.LeaseID, now); err != nil {
+				if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrInvalidInput) || errors.Is(err, storage.ErrPermissionDenied) {
+					continue
+				}
+				return status.Error(codes.Internal, fmt.Sprintf("failed to requeue expired CI job %s: %v", job.ID, err))
+			}
+			continue
+		}
+		failed, err := s.st.CompleteCIJob(ctx, job.ID, job.LeaseID, "failed", 0, true, now)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrInvalidInput) || errors.Is(err, storage.ErrPermissionDenied) {
+				continue
+			}
+			return status.Error(codes.Internal, fmt.Sprintf("failed to expire CI job %s: %v", job.ID, err))
+		}
+		if err := s.updateCheckAndRunAfterJob(ctx, failed, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func redactCILogPayload(payload []byte, job *storage.CIJob) []byte {
+	out := append([]byte(nil), payload...)
+	for _, secret := range sensitiveCIValues(job) {
+		out = bytes.ReplaceAll(out, []byte(secret), []byte("[REDACTED]"))
+	}
+	return out
+}
+
+func sensitiveCIValues(job *storage.CIJob) []string {
+	if job == nil || len(job.Env) == 0 {
+		return nil
+	}
+	values := make([]string, 0)
+	seen := make(map[string]struct{})
+	for key, value := range job.Env {
+		value = strings.TrimSpace(value)
+		if len(value) < 3 || !sensitiveCIEnvKey(key) {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if len(values[i]) == len(values[j]) {
+			return values[i] < values[j]
+		}
+		return len(values[i]) > len(values[j])
+	})
+	return values
+}
+
+func sensitiveCIEnvKey(key string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(key))
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PASS", "API_KEY", "CREDENTIAL", "PRIVATE_KEY"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *server) loadPlatformConfigForHome(ctx context.Context, homeID string) (*ciinternal.PlatformConfig, error) {
@@ -1820,6 +1946,7 @@ func buildStorageCIPlan(runID string, attempt int, trigger string, username stri
 			CachePaths:       append([]string(nil), job.CachePaths...),
 			Artifacts:        append([]string(nil), job.Artifacts...),
 			Status:           "queued",
+			MaxAttempts:      storage.DefaultCIJobMaxAttempts,
 			DependsOnJobIDs:  dependsOn,
 		})
 		for idx, command := range job.Commands {

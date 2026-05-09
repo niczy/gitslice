@@ -17,6 +17,7 @@ type CIStore interface {
 	ListCIJobs(ctx context.Context, filter CIJobListFilter) ([]*CIJob, error)
 	ListCISteps(ctx context.Context, jobID string) ([]*CIStep, error)
 	ClaimCIJob(ctx context.Context, jobID string, runnerID string, leaseID string, leaseExpiresAt time.Time, startedAt time.Time) (*CIJob, error)
+	RequeueCIJob(ctx context.Context, jobID string, leaseID string, requeuedAt time.Time) (*CIJob, error)
 	UpdateCIStepStatus(ctx context.Context, jobID string, stepIndex int, status string, exitCode int, startedAt *time.Time, finishedAt *time.Time) error
 	AppendCILogChunk(ctx context.Context, chunk *CILogChunk) error
 	CreateCIArtifact(ctx context.Context, artifact *CIArtifact) error
@@ -38,6 +39,8 @@ type CIStore interface {
 	UpdateCIRunnerStatus(ctx context.Context, runnerID string, status string, lastSeenAt *time.Time) error
 	RevokeCIRunner(ctx context.Context, runnerID string, revokedAt time.Time) error
 }
+
+const DefaultCIJobMaxAttempts = 2
 
 type CIPlan struct {
 	Run       *CIRun
@@ -106,6 +109,8 @@ type CIJob struct {
 	RunnerID         string
 	LeaseID          string
 	LeaseExpiresAt   *time.Time
+	AttemptCount     int
+	MaxAttempts      int
 	ExitCode         int
 	InfraFailure     bool
 	StartedAt        *time.Time

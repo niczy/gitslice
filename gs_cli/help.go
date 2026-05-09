@@ -92,7 +92,8 @@ func printRunnerHelp() {
 	fmt.Println("  gs runner pool list --json")
 	fmt.Println("  gs runner token create --name vm-1 --pool default --ttl 30m --json")
 	fmt.Println("  gs runner enroll --token <runner-registration-token>")
-	fmt.Println("  gs runner start --executor shell")
+	fmt.Println("  gs runner start --executor docker")
+	fmt.Println("  gs runner revoke ci_runner_123 --requeue-leased")
 	fmt.Println("  gs runner queue list --pool default --json")
 }
 

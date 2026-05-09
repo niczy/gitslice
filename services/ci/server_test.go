@@ -1,6 +1,7 @@
 package ci
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -437,6 +438,199 @@ jobs:
 	}
 }
 
+func TestAppendLogRedactsSensitiveEnvAndRejectsOversizedChunks(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	now := time.Now()
+	if err := st.CreateCIRunner(context.Background(), &storage.CIRunner{
+		ID:        "ci_runner_logs",
+		HomeID:    "alice",
+		Name:      "logger",
+		Pool:      "default",
+		Executor:  "shell",
+		Status:    "busy",
+		TokenHash: hashRunnerToken("runner-log-token"),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateCIRunner failed: %v", err)
+	}
+	if err := st.CreateCIPlan(context.Background(), &storage.CIPlan{
+		Run: &storage.CIRun{ID: "ci_run_logs", HomeID: "alice", ChangesetID: "chg_logs", ChangesetVersionID: "snap-1", PlanHash: "plan", Status: "running", CreatedAt: now},
+		Jobs: []*storage.CIJob{{
+			ID:             "ci_job_logs",
+			RunID:          "ci_run_logs",
+			JobKey:         "unit",
+			CheckName:      "unit",
+			RunnerPool:     "default",
+			Status:         "running",
+			RunnerID:       "ci_runner_logs",
+			LeaseID:        "lease-logs",
+			LeaseExpiresAt: timePtr(now.Add(time.Minute)),
+			Env: map[string]string{
+				"NPM_TOKEN": "super-secret-token",
+				"REGULAR":   "visible-value",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("CreateCIPlan failed: %v", err)
+	}
+
+	svc := &server{st: st}
+	runnerCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer runner-log-token"))
+	_, err := svc.AppendLog(runnerCtx, &civ1.AppendLogRequest{
+		JobId:      "ci_job_logs",
+		LeaseId:    "lease-logs",
+		ChunkIndex: 0,
+		Stream:     "stdout",
+		Payload:    []byte("token=super-secret-token regular=visible-value\n"),
+	})
+	if err != nil {
+		t.Fatalf("AppendLog failed: %v", err)
+	}
+	chunks, err := st.ListCILogChunks(context.Background(), storage.CILogChunkListFilter{JobID: "ci_job_logs"})
+	if err != nil {
+		t.Fatalf("ListCILogChunks failed: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("chunk count = %d, want 1", len(chunks))
+	}
+	if bytes.Contains(chunks[0].Payload, []byte("super-secret-token")) {
+		t.Fatalf("log payload was not redacted: %q", chunks[0].Payload)
+	}
+	if !bytes.Contains(chunks[0].Payload, []byte("[REDACTED]")) || !bytes.Contains(chunks[0].Payload, []byte("visible-value")) {
+		t.Fatalf("unexpected redacted payload: %q", chunks[0].Payload)
+	}
+
+	_, err = svc.AppendLog(runnerCtx, &civ1.AppendLogRequest{
+		JobId:      "ci_job_logs",
+		LeaseId:    "lease-logs",
+		ChunkIndex: 1,
+		Stream:     "stdout",
+		Payload:    bytes.Repeat([]byte("x"), maxCILogChunkPayloadBytes+1),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("oversized AppendLog error = %v, want InvalidArgument", err)
+	}
+}
+
+func TestExpiredLeasesRequeueThenFailAfterMaxAttempts(t *testing.T) {
+	st := storage.NewInMemoryStorage()
+	now := time.Now()
+	if err := st.CreateCIRunner(context.Background(), &storage.CIRunner{
+		ID:        "ci_runner_expired",
+		HomeID:    "alice",
+		Name:      "expired",
+		Pool:      "default",
+		Executor:  "shell",
+		Status:    "busy",
+		TokenHash: hashRunnerToken("expired-token"),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateCIRunner failed: %v", err)
+	}
+	if err := st.CreateCIPlan(context.Background(), &storage.CIPlan{
+		Run: &storage.CIRun{ID: "ci_run_expired", HomeID: "alice", ChangesetID: "chg_expired", ChangesetVersionID: "snap-1", PlanHash: "plan", Status: "running", CreatedAt: now},
+		Jobs: []*storage.CIJob{
+			{
+				ID:             "ci_job_retry",
+				RunID:          "ci_run_expired",
+				JobKey:         "retry",
+				CheckName:      "retry",
+				RunnerPool:     "default",
+				Status:         "running",
+				RunnerID:       "ci_runner_expired",
+				LeaseID:        "lease-retry",
+				LeaseExpiresAt: timePtr(now.Add(-time.Minute)),
+				AttemptCount:   1,
+				MaxAttempts:    2,
+			},
+			{
+				ID:             "ci_job_fail",
+				RunID:          "ci_run_expired",
+				JobKey:         "fail",
+				CheckName:      "fail",
+				RunnerPool:     "default",
+				Status:         "running",
+				RunnerID:       "ci_runner_expired",
+				LeaseID:        "lease-fail",
+				LeaseExpiresAt: timePtr(now.Add(-time.Minute)),
+				AttemptCount:   2,
+				MaxAttempts:    2,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateCIPlan failed: %v", err)
+	}
+
+	svc := &server{st: st}
+	if err := svc.reconcileExpiredLeases(context.Background(), now); err != nil {
+		t.Fatalf("reconcileExpiredLeases failed: %v", err)
+	}
+	retryJob, err := st.GetCIJob(context.Background(), "ci_job_retry")
+	if err != nil {
+		t.Fatalf("GetCIJob retry failed: %v", err)
+	}
+	if retryJob.Status != "queued" || retryJob.RunnerID != "" || retryJob.LeaseID != "" {
+		t.Fatalf("retry job = %#v, want queued with cleared lease", retryJob)
+	}
+	failJob, err := st.GetCIJob(context.Background(), "ci_job_fail")
+	if err != nil {
+		t.Fatalf("GetCIJob fail failed: %v", err)
+	}
+	if failJob.Status != "failed" || !failJob.InfraFailure {
+		t.Fatalf("fail job = %#v, want failed infra failure", failJob)
+	}
+}
+
+func TestRevokeRunnerCanRequeueOrCancelLeasedJobs(t *testing.T) {
+	userCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	if _, err := st.EnsureUser(context.Background(), "alice"); err != nil {
+		t.Fatalf("EnsureUser failed: %v", err)
+	}
+	now := time.Now()
+	if err := createRunningRunnerJobForTest(st, "ci_runner_revoke_requeue", "ci_job_revoke_requeue", "lease-requeue", now); err != nil {
+		t.Fatalf("create requeue fixture failed: %v", err)
+	}
+	if err := createRunningRunnerJobForTest(st, "ci_runner_revoke_cancel", "ci_job_revoke_cancel", "lease-cancel", now); err != nil {
+		t.Fatalf("create cancel fixture failed: %v", err)
+	}
+	svc := &server{st: st}
+
+	if _, err := svc.RevokeRunner(userCtx, &civ1.RevokeRunnerRequest{RunnerId: "ci_runner_revoke_requeue", RequeueLeased: true}); err != nil {
+		t.Fatalf("RevokeRunner requeue failed: %v", err)
+	}
+	requeued, err := st.GetCIJob(context.Background(), "ci_job_revoke_requeue")
+	if err != nil {
+		t.Fatalf("GetCIJob requeued failed: %v", err)
+	}
+	if requeued.Status != "queued" || requeued.RunnerID != "" || requeued.LeaseID != "" {
+		t.Fatalf("requeued job = %#v, want queued", requeued)
+	}
+	requeueRunner, err := st.GetCIRunner(context.Background(), "ci_runner_revoke_requeue")
+	if err != nil {
+		t.Fatalf("GetCIRunner requeue failed: %v", err)
+	}
+	if requeueRunner.Status != "revoked" || requeueRunner.TokenHash != "" {
+		t.Fatalf("requeue runner = %#v, want revoked credential", requeueRunner)
+	}
+
+	if _, err := svc.RevokeRunner(userCtx, &civ1.RevokeRunnerRequest{RunnerId: "ci_runner_revoke_cancel", CancelLeased: true}); err != nil {
+		t.Fatalf("RevokeRunner cancel failed: %v", err)
+	}
+	cancelled, err := st.GetCIJob(context.Background(), "ci_job_revoke_cancel")
+	if err != nil {
+		t.Fatalf("GetCIJob cancelled failed: %v", err)
+	}
+	if cancelled.Status != "cancelled" || !cancelled.InfraFailure {
+		t.Fatalf("cancelled job = %#v, want cancelled infra failure", cancelled)
+	}
+
+	_, err = svc.RevokeRunner(userCtx, &civ1.RevokeRunnerRequest{RunnerId: "ci_runner_revoke_cancel", RequeueLeased: true, CancelLeased: true})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RevokeRunner conflicting flags error = %v, want InvalidArgument", err)
+	}
+}
+
 func payloadContainsPath(files []*civ1.WorkspaceFile, want string) bool {
 	for _, file := range files {
 		if file.GetPath() == want {
@@ -453,6 +647,42 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func createRunningRunnerJobForTest(st storage.Storage, runnerID, jobID, leaseID string, now time.Time) error {
+	if err := st.CreateCIRunner(context.Background(), &storage.CIRunner{
+		ID:        runnerID,
+		HomeID:    "alice",
+		Name:      runnerID,
+		Pool:      "default",
+		Executor:  "shell",
+		Status:    "busy",
+		TokenHash: hashRunnerToken(runnerID + "-token"),
+		CreatedAt: now,
+	}); err != nil {
+		return err
+	}
+	runID := "ci_run_" + runnerID
+	return st.CreateCIPlan(context.Background(), &storage.CIPlan{
+		Run: &storage.CIRun{ID: runID, HomeID: "alice", ChangesetID: "chg_" + runnerID, ChangesetVersionID: "snap-1", PlanHash: "plan", Status: "running", CreatedAt: now},
+		Jobs: []*storage.CIJob{{
+			ID:             jobID,
+			RunID:          runID,
+			JobKey:         "unit",
+			CheckName:      "unit",
+			RunnerPool:     "default",
+			Status:         "running",
+			RunnerID:       runnerID,
+			LeaseID:        leaseID,
+			LeaseExpiresAt: timePtr(now.Add(time.Minute)),
+			AttemptCount:   1,
+			MaxAttempts:    2,
+		}},
+	})
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }
 
 func writeCIFile(tb testing.TB, st storage.Storage, sliceID, filePath string, body []byte) *models.FileManifest {
