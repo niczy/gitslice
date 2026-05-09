@@ -147,6 +147,8 @@ func normalizeHomePathHeadListLimit(limit int) int {
 // Storage defines the interface for data storage operations.
 // This allows us to swap implementations (in-memory, PostgreSQL, etc.).
 type Storage interface {
+	CIStore
+
 	// Slice operations
 	CreateSlice(ctx context.Context, slice *models.Slice) error
 	DeleteSlice(ctx context.Context, sliceID string) error
