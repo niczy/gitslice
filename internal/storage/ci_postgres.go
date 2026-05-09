@@ -601,6 +601,85 @@ func (s *PostgresNativeStorage) ListCILogChunks(ctx context.Context, filter CILo
 	return out, rows.Err()
 }
 
+func (s *PostgresNativeStorage) ReplaceCIManifestIndex(ctx context.Context, homeID string, homeCommitHash string, entries []*CIManifestIndexEntry) error {
+	ctx = ensureCtx(ctx)
+	homeID = strings.TrimSpace(homeID)
+	homeCommitHash = strings.TrimSpace(homeCommitHash)
+	if homeID == "" || homeCommitHash == "" {
+		return ErrInvalidInput
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM ci_manifest_index
+		WHERE home_id = $1 AND home_commit_hash = $2
+	`, homeID, homeCommitHash); err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, entry := range entries {
+		if entry == nil || strings.TrimSpace(entry.ManifestPath) == "" {
+			return ErrInvalidInput
+		}
+		watchJSON, _ := json.Marshal(entry.WatchGlobs)
+		ignoreJSON, _ := json.Marshal(entry.IgnoreGlobs)
+		appliesJSON, _ := json.Marshal(entry.AppliesToGlobs)
+		updatedAt := entry.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ci_manifest_index (
+				home_id, home_commit_hash, manifest_path, manifest_dir, manifest_hash,
+				watch_globs, ignore_globs, applies_to_globs, parse_status, parse_error, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, homeID, homeCommitHash, strings.TrimSpace(entry.ManifestPath), strings.TrimSpace(entry.ManifestDir),
+			strings.TrimSpace(entry.ManifestHash), watchJSON, ignoreJSON, appliesJSON,
+			strings.TrimSpace(entry.ParseStatus), strings.TrimSpace(entry.ParseError), updatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresNativeStorage) ListCIManifestIndex(ctx context.Context, homeID string, homeCommitHash string) ([]*CIManifestIndexEntry, error) {
+	ctx = ensureCtx(ctx)
+	homeID = strings.TrimSpace(homeID)
+	homeCommitHash = strings.TrimSpace(homeCommitHash)
+	if homeID == "" || homeCommitHash == "" {
+		return nil, ErrInvalidInput
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT home_id, home_commit_hash, manifest_path, manifest_dir, manifest_hash,
+		       watch_globs, ignore_globs, applies_to_globs, parse_status, parse_error, updated_at
+		FROM ci_manifest_index
+		WHERE home_id = $1 AND home_commit_hash = $2
+		ORDER BY manifest_path
+	`, homeID, homeCommitHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*CIManifestIndexEntry, 0)
+	for rows.Next() {
+		var entry CIManifestIndexEntry
+		var watchJSON, ignoreJSON, appliesJSON []byte
+		if err := rows.Scan(&entry.HomeID, &entry.HomeCommitHash, &entry.ManifestPath, &entry.ManifestDir,
+			&entry.ManifestHash, &watchJSON, &ignoreJSON, &appliesJSON, &entry.ParseStatus,
+			&entry.ParseError, &entry.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(watchJSON, &entry.WatchGlobs)
+		_ = json.Unmarshal(ignoreJSON, &entry.IgnoreGlobs)
+		_ = json.Unmarshal(appliesJSON, &entry.AppliesToGlobs)
+		out = append(out, &entry)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresNativeStorage) CreateCIRunnerRegistrationToken(ctx context.Context, token *CIRunnerRegistrationToken) error {
 	ctx = ensureCtx(ctx)
 	if token == nil || strings.TrimSpace(token.TokenHash) == "" {

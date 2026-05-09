@@ -26,6 +26,8 @@ type CIStore interface {
 	UpsertCICheck(ctx context.Context, check *CICheck) error
 	ListCIChecks(ctx context.Context, changesetID string, changesetVersionID string, planHash string) ([]*CICheck, error)
 	ListCILogChunks(ctx context.Context, filter CILogChunkListFilter) ([]*CILogChunk, error)
+	ReplaceCIManifestIndex(ctx context.Context, homeID string, homeCommitHash string, entries []*CIManifestIndexEntry) error
+	ListCIManifestIndex(ctx context.Context, homeID string, homeCommitHash string) ([]*CIManifestIndexEntry, error)
 
 	CreateCIRunnerRegistrationToken(ctx context.Context, token *CIRunnerRegistrationToken) error
 	ConsumeCIRunnerRegistrationToken(ctx context.Context, tokenHash string, usedAt time.Time) (*CIRunnerRegistrationToken, error)
@@ -160,6 +162,20 @@ type CILogChunkListFilter struct {
 	JobID      string
 	SinceChunk int64
 	Limit      int
+}
+
+type CIManifestIndexEntry struct {
+	HomeID         string
+	HomeCommitHash string
+	ManifestPath   string
+	ManifestDir    string
+	ManifestHash   string
+	WatchGlobs     []string
+	IgnoreGlobs    []string
+	AppliesToGlobs []string
+	ParseStatus    string
+	ParseError     string
+	UpdatedAt      time.Time
 }
 
 type CIArtifact struct {

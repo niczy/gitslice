@@ -66,12 +66,13 @@ type InMemoryStorage struct {
 	ciSteps            map[string]*CIStep        // stepID -> step
 	ciStepIDsByJob     map[string][]string       // jobID -> stepID
 	ciChecks           map[string]*CICheck       // changesetID:version:plan:manifest:job -> check
-	ciLogChunks        map[string]*CILogChunk    // chunkID -> log chunk
-	ciLogChunkIDsByJob map[string][]string       // jobID -> chunkID
-	ciArtifacts        map[string]*CIArtifact    // artifactID -> artifact
-	ciArtifactIDsByJob map[string][]string       // jobID -> artifactID
-	ciRunners          map[string]*CIRunner      // runnerID -> runner
-	ciRunnerByToken    map[string]string         // tokenHash -> runnerID
+	ciManifestIndex    map[string]*CIManifestIndexEntry
+	ciLogChunks        map[string]*CILogChunk // chunkID -> log chunk
+	ciLogChunkIDsByJob map[string][]string    // jobID -> chunkID
+	ciArtifacts        map[string]*CIArtifact // artifactID -> artifact
+	ciArtifactIDsByJob map[string][]string    // jobID -> artifactID
+	ciRunners          map[string]*CIRunner   // runnerID -> runner
+	ciRunnerByToken    map[string]string      // tokenHash -> runnerID
 	ciRunnerRegTokens  map[string]*CIRunnerRegistrationToken
 
 	// Commit history
@@ -162,6 +163,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		ciSteps:                          make(map[string]*CIStep),
 		ciStepIDsByJob:                   make(map[string][]string),
 		ciChecks:                         make(map[string]*CICheck),
+		ciManifestIndex:                  make(map[string]*CIManifestIndexEntry),
 		ciLogChunks:                      make(map[string]*CILogChunk),
 		ciLogChunkIDsByJob:               make(map[string][]string),
 		ciArtifacts:                      make(map[string]*CIArtifact),
@@ -262,6 +264,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.ciSteps = fresh.ciSteps
 	s.ciStepIDsByJob = fresh.ciStepIDsByJob
 	s.ciChecks = fresh.ciChecks
+	s.ciManifestIndex = fresh.ciManifestIndex
 	s.ciLogChunks = fresh.ciLogChunks
 	s.ciLogChunkIDsByJob = fresh.ciLogChunkIDsByJob
 	s.ciArtifacts = fresh.ciArtifacts
