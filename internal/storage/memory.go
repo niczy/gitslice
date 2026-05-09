@@ -55,6 +55,7 @@ type InMemoryStorage struct {
 	mergeEventsByChangeset    map[string]*models.MergeEvent        // changesetID -> event
 	mergeEventsByID           map[string]*models.MergeEvent        // eventID -> event
 	projectionOffsets         map[string]*models.ProjectionOffset  // projectionName:shardID -> offset
+	homePathHeads             map[string]*models.HomePathHead      // homeID:path -> head
 
 	// Commit history
 	sliceCommits       map[string][]*models.Commit // sliceID -> commits (newest first)
@@ -135,6 +136,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		mergeEventsByChangeset:           make(map[string]*models.MergeEvent),
 		mergeEventsByID:                  make(map[string]*models.MergeEvent),
 		projectionOffsets:                make(map[string]*models.ProjectionOffset),
+		homePathHeads:                    make(map[string]*models.HomePathHead),
 		sliceCommits:                     make(map[string][]*models.Commit),
 		commitsBySliceHash:               make(map[string]map[string]*models.Commit),
 		lockedSlices:                     make(map[string]bool),
@@ -215,6 +217,11 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.sliceChangesets = fresh.sliceChangesets
 	s.changesetSnapshots = fresh.changesetSnapshots
 	s.changesetSnapshotVersions = fresh.changesetSnapshotVersions
+	s.mergeEventsByShard = fresh.mergeEventsByShard
+	s.mergeEventsByChangeset = fresh.mergeEventsByChangeset
+	s.mergeEventsByID = fresh.mergeEventsByID
+	s.projectionOffsets = fresh.projectionOffsets
+	s.homePathHeads = fresh.homePathHeads
 	s.sliceCommits = fresh.sliceCommits
 	s.commitsBySliceHash = fresh.commitsBySliceHash
 	s.globalState = fresh.globalState

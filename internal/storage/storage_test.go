@@ -92,6 +92,159 @@ func TestMergeEventStoreCompliance(t *testing.T) {
 	}
 }
 
+func TestHomePathHeadStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			store, ok := tc.factory(t).(HomePathHeadStore)
+			if !ok {
+				t.Fatalf("storage implementation does not implement HomePathHeadStore")
+			}
+			runHomePathHeadStoreContract(ctx, t, store)
+		})
+	}
+}
+
+func runHomePathHeadStoreContract(ctx context.Context, t *testing.T, store HomePathHeadStore) {
+	t.Helper()
+	st, ok := store.(Storage)
+	if !ok {
+		t.Fatalf("home path head store does not implement Storage")
+	}
+
+	homeSlice := &models.Slice{
+		ID:        "home_alice",
+		Name:      "alice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}
+	if err := st.CreateSlice(ctx, homeSlice); err != nil {
+		t.Fatalf("CreateSlice(home) failed: %v", err)
+	}
+	firstHash := writeHomePathHeadFile(t, ctx, st, homeSlice.ID, "alice/app/main.go", []byte("v1\n"))
+
+	backfill, err := store.BackfillHomePathHeads(ctx, "alice")
+	if err != nil {
+		t.Fatalf("BackfillHomePathHeads failed: %v", err)
+	}
+	if backfill.HomeID != "alice" || backfill.SourceSliceID != homeSlice.ID || backfill.Upserted != 1 {
+		t.Fatalf("unexpected backfill result: %#v", backfill)
+	}
+
+	heads, err := store.GetHomePathHeads(ctx, "alice", []string{"alice/app/main.go", "alice/missing.txt"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads failed: %v", err)
+	}
+	head := heads["alice/app/main.go"]
+	if head == nil {
+		t.Fatalf("expected head for alice/app/main.go")
+	}
+	if head.HomeID != "alice" || head.PathVersion != 1 || head.ManifestHash != firstHash || head.ContentHash != firstHash || head.SourceSliceID != homeSlice.ID {
+		t.Fatalf("unexpected path head: %#v", head)
+	}
+	if _, ok := heads["alice/missing.txt"]; ok {
+		t.Fatalf("did not expect missing path head")
+	}
+
+	validation, err := store.ValidateHomePathHeads(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ValidateHomePathHeads failed: %v", err)
+	}
+	if validation.Checked != 1 || len(validation.Drifts) != 0 {
+		t.Fatalf("expected no validation drift, got %#v", validation)
+	}
+
+	secondHash := writeHomePathHeadFile(t, ctx, st, homeSlice.ID, "alice/app/main.go", []byte("v2\n"))
+	validation, err = store.ValidateHomePathHeads(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ValidateHomePathHeads after materialized update failed: %v", err)
+	}
+	if len(validation.Drifts) != 1 || validation.Drifts[0].Reason != "manifest_mismatch" || validation.Drifts[0].MaterializedManifestHash != secondHash {
+		t.Fatalf("expected manifest mismatch drift, got %#v", validation.Drifts)
+	}
+
+	backfill, err = store.BackfillHomePathHeads(ctx, "alice")
+	if err != nil {
+		t.Fatalf("second BackfillHomePathHeads failed: %v", err)
+	}
+	if backfill.Upserted != 1 {
+		t.Fatalf("expected second backfill to upsert one head, got %#v", backfill)
+	}
+	heads, err = store.GetHomePathHeads(ctx, "alice", []string{"alice/app/main.go"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads after second backfill failed: %v", err)
+	}
+	if got := heads["alice/app/main.go"]; got == nil || got.ManifestHash != secondHash || got.PathVersion != 1 {
+		t.Fatalf("expected backfilled head to match materialized state without version bump, got %#v", got)
+	}
+
+	if err := store.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "alice",
+		Path:         "alice/stale.txt",
+		PathVersion:  7,
+		ManifestHash: "stale-hash",
+		ContentHash:  "stale-hash",
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads extra head failed: %v", err)
+	}
+	if err := store.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "alice",
+		Path:         "alice/stale.txt",
+		PathVersion:  3,
+		ManifestHash: "older-stale-hash",
+		ContentHash:  "older-stale-hash",
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads stale head failed: %v", err)
+	}
+	heads, err = store.GetHomePathHeads(ctx, "alice", []string{"alice/stale.txt"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads stale head failed: %v", err)
+	}
+	if got := heads["alice/stale.txt"]; got == nil || got.PathVersion != 7 || got.ManifestHash != "stale-hash" {
+		t.Fatalf("expected stale upsert to preserve newer head, got %#v", got)
+	}
+	listed, err := store.ListHomePathHeads(ctx, "alice", 10)
+	if err != nil {
+		t.Fatalf("ListHomePathHeads failed: %v", err)
+	}
+	if len(listed) != 2 || listed[0].Path != "alice/app/main.go" || listed[1].Path != "alice/stale.txt" {
+		t.Fatalf("expected sorted home path heads, got %#v", listed)
+	}
+	validation, err = store.ValidateHomePathHeads(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ValidateHomePathHeads extra head failed: %v", err)
+	}
+	if len(validation.Drifts) != 1 || validation.Drifts[0].Reason != "extra_head" || validation.Drifts[0].Path != "alice/stale.txt" {
+		t.Fatalf("expected extra head drift, got %#v", validation.Drifts)
+	}
+
+	prefixedUserHome := &models.Slice{
+		ID:        "home_home_alice",
+		Name:      "home_alice",
+		Owners:    []string{"home_alice"},
+		CreatedBy: "home_alice",
+	}
+	if err := st.CreateSlice(ctx, prefixedUserHome); err != nil {
+		t.Fatalf("CreateSlice(home_ prefixed user) failed: %v", err)
+	}
+	prefixedHash := writeHomePathHeadFile(t, ctx, st, prefixedUserHome.ID, "home_alice/app/main.go", []byte("prefixed\n"))
+	backfill, err = store.BackfillHomePathHeads(ctx, "home_alice")
+	if err != nil {
+		t.Fatalf("BackfillHomePathHeads home_ prefixed user failed: %v", err)
+	}
+	if backfill.HomeID != "home_alice" || backfill.SourceSliceID != prefixedUserHome.ID || backfill.Upserted != 1 {
+		t.Fatalf("unexpected home_ prefixed backfill result: %#v", backfill)
+	}
+	heads, err = store.GetHomePathHeads(ctx, "home_alice", []string{"home_alice/app/main.go"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads home_ prefixed user failed: %v", err)
+	}
+	if got := heads["home_alice/app/main.go"]; got == nil || got.ManifestHash != prefixedHash || got.HomeID != "home_alice" {
+		t.Fatalf("expected distinct home_ prefixed user head, got %#v", got)
+	}
+}
+
 func runMergeEventStoreContract(ctx context.Context, t *testing.T, store MergeEventStore) {
 	t.Helper()
 
@@ -234,6 +387,22 @@ func runMergeEventStoreContract(ctx context.Context, t *testing.T, store MergeEv
 	if offset.MergeSeq != 1 {
 		t.Fatalf("expected shard 2 projection offset seq 1, got %d", offset.MergeSeq)
 	}
+}
+
+func writeHomePathHeadFile(t *testing.T, ctx context.Context, st Storage, sliceID, filePath string, content []byte) string {
+	t.Helper()
+	manifest := mustWriteSliceManifest(t, ctx, st, sliceID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       generateEntryID(sliceID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: nativeParentID(sliceID, filePath),
+		Hash:     manifest.Hash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("AddEntry(%s) failed: %v", filePath, err)
+	}
+	return manifest.Hash
 }
 
 func sampleMergeEvent(homeID string, shardID int32, mergeSeq int64, eventID, changesetID string) *models.MergeEvent {
