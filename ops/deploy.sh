@@ -19,6 +19,9 @@ Usage: ops/deploy.sh --env <staging|production> --app <web|api|all>
 Deploys a specific application using the environment file for that deployment
 target.
 
+Environment:
+  DEPLOY_HEALTH_ATTEMPTS  Local API health polling attempts, default: 120
+
 Examples:
   ./ops/deploy.sh --env staging --app web
   ./ops/deploy.sh --env production --app web
@@ -163,8 +166,18 @@ run_pm2() {
 wait_for_local_health() {
   local bind_addr="$1"
   local port="$2"
-  local attempts=30
+  local attempts="${DEPLOY_HEALTH_ATTEMPTS:-120}"
   local attempt=1
+  case "$attempts" in
+    ''|*[!0-9]*)
+      echo "DEPLOY_HEALTH_ATTEMPTS must be a positive integer" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$attempts" -lt 1 ]; then
+    echo "DEPLOY_HEALTH_ATTEMPTS must be a positive integer" >&2
+    exit 1
+  fi
   while [ "$attempt" -le "$attempts" ]; do
     if curl -fsS "http://${bind_addr}:${port}/health" >/dev/null 2>&1; then
       return 0
