@@ -51,6 +51,18 @@ function parseLegacyHash(rawHash) {
   if (hash === 'settings') {
     return { page: 'settings', commitHash: '', changesetId: '' };
   }
+  if (hash === 'settings/ci' || hash === 'settings/ci/runners' || hash === 'settings/ci/runs') {
+    return { page: 'settings', commitHash: '', changesetId: '', settingsSection: hash.slice('settings/'.length) || 'account' };
+  }
+  if (hash.startsWith('settings/ci/runners/')) {
+    return {
+      page: 'settings',
+      commitHash: '',
+      changesetId: '',
+      settingsSection: 'ci/runners',
+      settingsRunnerId: decodeSegment(hash.slice('settings/ci/runners/'.length)),
+    };
+  }
   if (hash === 'admin') {
     return { page: 'admin', commitHash: '', changesetId: '' };
   }
@@ -97,6 +109,23 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
   }
   if (pathname === '/settings') {
     return { page: 'settings', commitHash: '', changesetId: '' };
+  }
+  if (pathname === '/settings/ci' || pathname === '/settings/ci/runners' || pathname === '/settings/ci/runs') {
+    return {
+      page: 'settings',
+      commitHash: '',
+      changesetId: '',
+      settingsSection: pathname.slice('/settings/'.length) || 'account',
+    };
+  }
+  if (pathname.startsWith('/settings/ci/runners/')) {
+    return {
+      page: 'settings',
+      commitHash: '',
+      changesetId: '',
+      settingsSection: 'ci/runners',
+      settingsRunnerId: decodeSegment(pathname.slice('/settings/ci/runners/'.length)),
+    };
   }
   if (pathname === '/admin') {
     return { page: 'admin', commitHash: '', changesetId: '' };
@@ -246,6 +275,12 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
     return '/projects';
   }
   if (page === 'settings') {
+    if (browserState?.settingsRunnerId) {
+      return `/settings/ci/runners/${encodeURIComponent(browserState.settingsRunnerId)}`;
+    }
+    if (browserState?.settingsSection) {
+      return `/settings/${browserState.settingsSection}`;
+    }
     return '/settings';
   }
   if (page === 'admin') {

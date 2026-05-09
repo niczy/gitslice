@@ -90,11 +90,13 @@ func printRunnerHelp() {
 	fmt.Println("  unenroll  Remove local runner credentials")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs runner pool list --json")
+	fmt.Println("  gs runner pool show default --json")
 	fmt.Println("  gs runner token create --name vm-1 --pool default --ttl 30m --json")
-	fmt.Println("  gs runner enroll --token <runner-registration-token>")
+	fmt.Println("  gs runner register --token <runner-registration-token>")
 	fmt.Println("  gs runner start --executor docker")
 	fmt.Println("  gs runner revoke ci_runner_123 --requeue-leased")
 	fmt.Println("  gs runner queue list --pool default --json")
+	fmt.Println("  gs runner queue explain --pool default --image golang:1.24")
 }
 
 func printUpdateHelp() {

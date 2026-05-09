@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,7 +118,32 @@ func writeRemoteFileFromString(t *testing.T, remotePath, content string) {
 	if err := os.WriteFile(tmp, []byte(strings.TrimPrefix(content, "\n")), 0o600); err != nil {
 		t.Fatalf("write temp input: %v", err)
 	}
-	runCLIOrFail(t, "", "fs", "write", remotePath, "-f", tmp)
+	output := runCLIOrFail(t, "", "fs", "write", remotePath, "-f", tmp)
+	commitHash := extractFilesystemCommitHash(output)
+	waitForRemoteHomeHead(t, remotePath, commitHash)
+}
+
+func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
+	t.Helper()
+	if commitHash == "" || testStorage == nil {
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(remotePath, "/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return
+	}
+	homeID := homeslice.IDForUsername(parts[0])
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := waitForCondition(3*time.Second, 25*time.Millisecond, func() (bool, error) {
+		metadata, err := testStorage.GetSliceMetadata(ctx, homeID)
+		if err != nil {
+			return false, err
+		}
+		return strings.TrimSpace(metadata.HeadCommitHash) == commitHash, nil
+	}); err != nil {
+		t.Fatalf("expected home %s head to reach %s after fs write %s: %v", homeID, commitHash, remotePath, err)
+	}
 }
 
 func drainRunnerQueue(t *testing.T, maxJobs int) {
