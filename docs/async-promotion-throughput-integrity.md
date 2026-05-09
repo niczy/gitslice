@@ -426,9 +426,9 @@ This reduces write amplification before changing consistency behavior.
   benchmark integrity checks.
 - Treat `GetSliceCommits` and `gs slice history` as projection-backed reads.
 - Add optional CLI/UI wait behavior where users expect immediate history or
-  home/root visibility. `gs changeset merge --wait` waits for
-  `history-projection`, while default merge returns after the accepted merge
-  event commits.
+  home/root visibility. `gs changeset merge --wait` waits for the projection
+  tokens returned by the merge response, while default merge returns after the
+  accepted merge event commits.
 - Surface promotion lag in admin/debug endpoints.
 - Surface proactive changeset state in list/detail APIs so users see whether to
   merge, sync, or resolve conflicts before attempting the merge.

@@ -558,14 +558,15 @@ CLI default can be stricter than web UI:
 
 ```text
 gs changeset merge          -> return accepted merge when event commits
-gs changeset merge --wait   -> wait for history-projection before returning
+gs changeset merge --wait   -> wait for returned merge projections before returning
 gs slice status             -> show projection lag
 ```
 
 `GetSliceCommits` and `gs slice history` read the projected commit-history view.
 They can lag an accepted merge unless the caller waits on the
-`history-projection` token returned by `MergeChangeset`. The CLI `--wait` path
-does that wait for workflows that need deterministic read-after-merge history.
+projection tokens returned by `MergeChangeset`. The CLI `--wait` path waits for
+those tokens so workflows that need deterministic read-after-merge history or
+home/root visibility can opt in.
 
 ## Benchmark Strategy
 

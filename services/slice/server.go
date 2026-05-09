@@ -1600,9 +1600,9 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		if s.durablePromotion && !changesetTouchesConfig(modifiedFiles) {
 			// Durable promotion workers consume the merge event appended above.
 		} else if changesetTouchesConfig(modifiedFiles) {
-			promotionErr = s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime)
+			promotionErr = s.enqueueRootPromotionAndWait(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime, acceptedMergeEvent)
 		} else {
-			promotionErr = s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime)
+			promotionErr = s.enqueueRootPromotion(ctx, cs.SliceID, promotionCommitHash, modifiedFiles, promotionCommitTime, acceptedMergeEvent)
 		}
 		if promotionErr != nil {
 			profile.markPromotion(time.Since(promotionStartedAt))
@@ -1682,7 +1682,7 @@ func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, 
 	promotionStartedAt := time.Now()
 	if s.durablePromotion {
 		// Durable promotion workers consume the accepted merge event.
-	} else if err := s.enqueueRootPromotion(ctx, result.Changeset.SliceID, newCommit, result.Event.TouchedPaths, now); err != nil {
+	} else if err := s.enqueueRootPromotion(ctx, result.Changeset.SliceID, newCommit, result.Event.TouchedPaths, now, result.Event); err != nil {
 		profile.markPromotion(time.Since(promotionStartedAt))
 		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
 	}
@@ -1757,7 +1757,7 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 	promotionStartedAt := time.Now()
 	if s.durablePromotion {
 		// Durable promotion workers consume the accepted merge event.
-	} else if err := s.enqueueRootPromotion(ctx, cs.SliceID, newCommit, modifiedFiles, now); err != nil {
+	} else if err := s.enqueueRootPromotion(ctx, cs.SliceID, newCommit, modifiedFiles, now, result.Event); err != nil {
 		profile.markPromotion(time.Since(promotionStartedAt))
 		return nil, true, status.Error(codes.Internal, fmt.Sprintf("failed to enqueue merged changeset promotion: %v", err))
 	}
@@ -4530,26 +4530,31 @@ func folderSelectionExists(parentSlice *models.Slice, entries []*models.Director
 	return false, exactFile
 }
 
-func (s *sliceServiceServer) enqueueRootPromotion(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.rootPromotionQueue().Enqueue(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime))
+func (s *sliceServiceServer) enqueueRootPromotion(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time, event *models.MergeEvent) error {
+	return s.rootPromotionQueue().Enqueue(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime, event))
 }
 
-func (s *sliceServiceServer) enqueueRootPromotionAndWait(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.rootPromotionQueue().EnqueueAndWait(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime))
+func (s *sliceServiceServer) enqueueRootPromotionAndWait(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time, event *models.MergeEvent) error {
+	return s.rootPromotionQueue().EnqueueAndWait(ctx, rootPromotionJob(sliceID, commitHash, files, commitTime, event))
 }
 
-func rootPromotionJob(sliceID, commitHash string, files []string, commitTime time.Time) rootpromote.Job {
-	return rootpromote.Job{
+func rootPromotionJob(sliceID, commitHash string, files []string, commitTime time.Time, event *models.MergeEvent) rootpromote.Job {
+	job := rootpromote.Job{
 		SliceID:    sliceID,
 		CommitHash: commitHash,
 		Files:      append([]string(nil), files...),
 		CommitTime: commitTime,
 		ShardKey:   rootPromotionShardKey(sliceID, files),
 	}
+	if event != nil {
+		job.ProjectionShardID = event.ShardID
+		job.ProjectionMergeSeq = event.MergeSeq
+	}
+	return job
 }
 
 func (s *sliceServiceServer) promoteSlice(ctx context.Context, sliceID, commitHash string, files []string, commitTime time.Time) error {
-	return s.promoteSliceBatch(ctx, []rootpromote.Job{rootPromotionJob(sliceID, commitHash, files, commitTime)})
+	return s.promoteSliceBatch(ctx, []rootpromote.Job{rootPromotionJob(sliceID, commitHash, files, commitTime, nil)})
 }
 
 func rootPromotionShardKey(sliceID string, files []string) string {
@@ -4594,12 +4599,17 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 	}
 	st := s.promotionStore()
 
-	if promoted, err := s.promoteSliceBatchToHomeViews(ctx, batch); err != nil || promoted {
+	if promoted, err := s.promoteSliceBatchToHomeViews(ctx, batch); err != nil {
 		return err
+	} else if promoted {
+		return s.updateRootPromotionProjectionOffsets(ctx, batch)
 	}
 
 	if _, ok := st.(rootPromotionFilePromoter); !ok || hasHomePromotionJob(batch) {
-		return s.promoteSliceBatchWithGlobalLock(ctx, batch)
+		if err := s.promoteSliceBatchWithGlobalLock(ctx, batch); err != nil {
+			return err
+		}
+		return s.updateRootPromotionProjectionOffsets(ctx, batch)
 	}
 
 	start := time.Now()
@@ -4623,6 +4633,33 @@ func (s *sliceServiceServer) promoteSliceBatch(ctx context.Context, batch []root
 	totalDuration := time.Since(start)
 	if totalDuration > 250*time.Millisecond || len(batch) > 1 {
 		log.Printf("root promotion batch jobs=%d files=%d file_sync=%s state_update=%s total=%s", len(batch), len(collectUniquePromotionFiles(batch)), fileDuration, stateDuration, totalDuration)
+	}
+	return s.updateRootPromotionProjectionOffsets(ctx, batch)
+}
+
+func (s *sliceServiceServer) updateRootPromotionProjectionOffsets(ctx context.Context, batch []rootpromote.Job) error {
+	eventStore, ok := s.promotionStore().(storage.MergeEventStore)
+	if !ok {
+		return nil
+	}
+	latestByShard := make(map[int32]int64)
+	for _, job := range batch {
+		if job.ProjectionMergeSeq <= 0 || job.ProjectionShardID < 0 {
+			continue
+		}
+		if job.ProjectionMergeSeq > latestByShard[job.ProjectionShardID] {
+			latestByShard[job.ProjectionShardID] = job.ProjectionMergeSeq
+		}
+	}
+	for shardID, seq := range latestByShard {
+		if err := eventStore.UpdateProjectionOffset(ctx, &models.ProjectionOffset{
+			ProjectionName: durablePromotionProjectionName,
+			ShardID:        shardID,
+			MergeSeq:       seq,
+			UpdatedAt:      time.Now(),
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

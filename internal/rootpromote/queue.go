@@ -9,11 +9,13 @@ import (
 )
 
 type Job struct {
-	SliceID    string
-	CommitHash string
-	Files      []string
-	CommitTime time.Time
-	ShardKey   string
+	SliceID            string
+	CommitHash         string
+	Files              []string
+	CommitTime         time.Time
+	ShardKey           string
+	ProjectionShardID  int32
+	ProjectionMergeSeq int64
 }
 
 type Processor func(context.Context, []Job) error
@@ -196,11 +198,13 @@ func completeQueuedJob(queued queuedJob, err error) {
 
 func cloneJob(job Job) Job {
 	return Job{
-		SliceID:    job.SliceID,
-		CommitHash: job.CommitHash,
-		Files:      append([]string(nil), job.Files...),
-		CommitTime: job.CommitTime,
-		ShardKey:   job.ShardKey,
+		SliceID:            job.SliceID,
+		CommitHash:         job.CommitHash,
+		Files:              append([]string(nil), job.Files...),
+		CommitTime:         job.CommitTime,
+		ShardKey:           job.ShardKey,
+		ProjectionShardID:  job.ProjectionShardID,
+		ProjectionMergeSeq: job.ProjectionMergeSeq,
 	}
 }
 

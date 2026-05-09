@@ -126,11 +126,13 @@ func mergeEventPromotionJob(event *models.MergeEvent) (rootpromote.Job, bool) {
 		shardKey = "home:" + homeID
 	}
 	return rootpromote.Job{
-		SliceID:    sourceSliceID,
-		CommitHash: commitHash,
-		Files:      files,
-		CommitTime: commitTime,
-		ShardKey:   shardKey,
+		SliceID:            sourceSliceID,
+		CommitHash:         commitHash,
+		Files:              files,
+		CommitTime:         commitTime,
+		ShardKey:           shardKey,
+		ProjectionShardID:  event.ShardID,
+		ProjectionMergeSeq: event.MergeSeq,
 	}, true
 }
 
