@@ -3339,7 +3339,7 @@ func TestReviewChangesetUsesSnapshotBasePathVersions(t *testing.T) {
 	}
 }
 
-func TestMergeChangesetPathHeadShadowDoesNotBlock(t *testing.T) {
+func TestMergeChangesetPathHeadAuthorityRejectsDrift(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
 	if err := st.InitializeRootSlice(ctx); err != nil {
@@ -3409,8 +3409,180 @@ func TestMergeChangesetPathHeadShadowDoesNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeChangeset failed: %v", err)
 	}
+	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("expected stale-base status from path-head drift, got %v", resp.GetStatus())
+	}
+	if _, err := st.GetMergeEventByChangeset(ctx, cs.ID); !errors.Is(err, storage.ErrMergeEventNotFound) {
+		t.Fatalf("expected no merge event for rejected path-head drift, got %v", err)
+	}
+}
+
+func TestMergeChangesetPathHeadCASUpdatesHeadAndEventVersions(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	filePath := "tester/app/cas.go"
+	slice := &models.Slice{
+		ID:        "slice-path-head-cas",
+		Name:      "slice-path-head-cas",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{filePath},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	content := []byte("package cas\n")
+	manifestHash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       common.GenerateEntryID(slice.ID, filePath),
+		Path:     filePath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Hash:     manifestHash,
+		Size:     int64(len(content)),
+	}); err != nil {
+		t.Fatalf("failed to add entry: %v", err)
+	}
+	if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "tester",
+		Path:             filePath,
+		PathVersion:      4,
+		ManifestHash:     "sha256:old-manifest",
+		ContentHash:      "sha256:old-manifest",
+		SourceSliceID:    slice.ID,
+		SourceCommitHash: "old-commit",
+		LastMergeSeq:     1,
+	}}); err != nil {
+		t.Fatalf("failed to seed path head: %v", err)
+	}
+
+	cs := &models.Changeset{
+		ID:            "chg_path-head-cas",
+		SliceID:       slice.ID,
+		ModifiedFiles: []string{filePath},
+		Status:        models.ChangesetStatusPending,
+		Author:        "tester",
+		Message:       "path head cas",
+		CreatedAt:     time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("failed to create changeset: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+		t.Fatalf("createChangesetSnapshot failed: %v", err)
+	}
+
+	resp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("MergeChangeset failed: %v", err)
+	}
 	if resp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
-		t.Fatalf("expected merge success despite shadow path-head drift, got %v", resp.GetStatus())
+		t.Fatalf("expected merge success, got %v", resp.GetStatus())
+	}
+
+	event, err := st.GetMergeEventByChangeset(ctx, cs.ID)
+	if err != nil {
+		t.Fatalf("expected accepted merge event: %v", err)
+	}
+	if len(event.PathUpdates) != 1 {
+		t.Fatalf("expected one path update, got %#v", event.PathUpdates)
+	}
+	update := event.PathUpdates[0]
+	if update.BaseVersion != 4 || update.NewVersion != 5 || update.ManifestHash != manifestHash {
+		t.Fatalf("unexpected path update: %#v", update)
+	}
+
+	heads, err := st.GetHomePathHeads(ctx, "tester", []string{filePath})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads failed: %v", err)
+	}
+	head := heads[filePath]
+	if head == nil || head.PathVersion != 5 || head.ManifestHash != manifestHash || head.LastMergeSeq != event.MergeSeq {
+		t.Fatalf("unexpected updated path head: %#v", head)
+	}
+}
+
+func TestMergeChangesetPathHeadAuthorityAllowsDisjointStaleSliceHead(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{
+		ID:        "slice-path-head-disjoint",
+		Name:      "slice-path-head-disjoint",
+		Owners:    []string{"tester"},
+		CreatedBy: "tester",
+		Files:     []string{"tester/app/a.go", "tester/app/b.go"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	for _, filePath := range slice.Files {
+		content := []byte(filePath + "\n")
+		hash := mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, content)
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       common.GenerateEntryID(slice.ID, filePath),
+			Path:     filePath,
+			Type:     "file",
+			ParentID: slice.ID,
+			Hash:     hash,
+			Size:     int64(len(content)),
+		}); err != nil {
+			t.Fatalf("failed to add entry %s: %v", filePath, err)
+		}
+		if err := st.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+			HomeID:       "tester",
+			Path:         filePath,
+			PathVersion:  1,
+			ManifestHash: hash,
+			ContentHash:  hash,
+		}}); err != nil {
+			t.Fatalf("failed to seed path head %s: %v", filePath, err)
+		}
+	}
+	metadata, err := st.GetSliceMetadata(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("failed to load slice metadata: %v", err)
+	}
+	baseHead := metadata.HeadCommitHash
+
+	srv := newSliceServiceServer(st)
+	createChangeset := func(id, filePath string) {
+		t.Helper()
+		cs := &models.Changeset{
+			ID:             id,
+			SliceID:        slice.ID,
+			BaseCommitHash: baseHead,
+			ModifiedFiles:  []string{filePath},
+			Status:         models.ChangesetStatusPending,
+			Author:         "tester",
+			CreatedAt:      time.Now(),
+		}
+		if err := st.CreateChangeset(ctx, cs); err != nil {
+			t.Fatalf("failed to create changeset %s: %v", id, err)
+		}
+		if err := srv.createChangesetSnapshot(ctx, cs); err != nil {
+			t.Fatalf("createChangesetSnapshot(%s) failed: %v", id, err)
+		}
+	}
+	createChangeset("chg_path-head-disjoint-a", "tester/app/a.go")
+	createChangeset("chg_path-head-disjoint-b", "tester/app/b.go")
+
+	first, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: "chg_path-head-disjoint-a"})
+	if err != nil {
+		t.Fatalf("first MergeChangeset failed: %v", err)
+	}
+	if first.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected first merge success, got %v", first.GetStatus())
+	}
+	second, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: "chg_path-head-disjoint-b"})
+	if err != nil {
+		t.Fatalf("second MergeChangeset failed: %v", err)
+	}
+	if second.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("expected path-head authority to allow disjoint stale slice-head merge, got %v", second.GetStatus())
 	}
 }
 

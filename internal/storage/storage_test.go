@@ -106,6 +106,29 @@ func TestHomePathHeadStoreCompliance(t *testing.T) {
 	}
 }
 
+func TestMergeEventPathHeadCASStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.factory(t)
+			store, ok := st.(MergeEventPathHeadCASStore)
+			if !ok {
+				t.Fatalf("storage implementation does not implement MergeEventPathHeadCASStore")
+			}
+			heads, ok := st.(HomePathHeadStore)
+			if !ok {
+				t.Fatalf("storage implementation does not implement HomePathHeadStore")
+			}
+			events, ok := st.(MergeEventStore)
+			if !ok {
+				t.Fatalf("storage implementation does not implement MergeEventStore")
+			}
+			runMergeEventPathHeadCASStoreContract(ctx, t, store, heads, events)
+		})
+	}
+}
+
 func runHomePathHeadStoreContract(ctx context.Context, t *testing.T, store HomePathHeadStore) {
 	t.Helper()
 	st, ok := store.(Storage)
@@ -242,6 +265,58 @@ func runHomePathHeadStoreContract(ctx context.Context, t *testing.T, store HomeP
 	}
 	if got := heads["home_alice/app/main.go"]; got == nil || got.ManifestHash != prefixedHash || got.HomeID != "home_alice" {
 		t.Fatalf("expected distinct home_ prefixed user head, got %#v", got)
+	}
+}
+
+func runMergeEventPathHeadCASStoreContract(ctx context.Context, t *testing.T, store MergeEventPathHeadCASStore, heads HomePathHeadStore, events MergeEventStore) {
+	t.Helper()
+	if err := heads.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:           "alice",
+		Path:             "alice/app/main.go",
+		PathVersion:      7,
+		ContentHash:      "sha256:old-content",
+		ManifestHash:     "sha256:old-manifest",
+		SourceSliceID:    "sl-old",
+		SourceCommitHash: "commit-old",
+		LastMergeSeq:     4,
+	}}); err != nil {
+		t.Fatalf("seed path head failed: %v", err)
+	}
+
+	event := sampleMergeEvent("alice", 11, 5, "evt-cas-ok", "chg-cas-ok")
+	event.PathUpdates[0].BaseVersion = 7
+	event.PathUpdates[0].NewVersion = 8
+	event.PathUpdates[0].SourceSliceID = event.SourceSliceID
+	event.PathUpdates[0].SourceCommitHash = event.SourceCommitHash
+	if err := store.AppendMergeEventWithPathHeadCAS(ctx, event); err != nil {
+		t.Fatalf("AppendMergeEventWithPathHeadCAS success failed: %v", err)
+	}
+
+	storedEvent, err := events.GetMergeEventByChangeset(ctx, event.ChangesetID)
+	if err != nil {
+		t.Fatalf("GetMergeEventByChangeset after CAS failed: %v", err)
+	}
+	if storedEvent.MergeSeq != event.MergeSeq || len(storedEvent.PathUpdates) != 1 || storedEvent.PathUpdates[0].NewVersion != 8 {
+		t.Fatalf("unexpected stored CAS event: %#v", storedEvent)
+	}
+
+	storedHeads, err := heads.GetHomePathHeads(ctx, "alice", []string{"alice/app/main.go"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads after CAS failed: %v", err)
+	}
+	head := storedHeads["alice/app/main.go"]
+	if head == nil || head.PathVersion != 8 || head.LastMergeSeq != 5 || head.ManifestHash != event.PathUpdates[0].ManifestHash {
+		t.Fatalf("unexpected CAS path head: %#v", head)
+	}
+
+	conflictEvent := sampleMergeEvent("alice", 11, 6, "evt-cas-conflict", "chg-cas-conflict")
+	conflictEvent.PathUpdates[0].BaseVersion = 7
+	conflictEvent.PathUpdates[0].NewVersion = 8
+	if err := store.AppendMergeEventWithPathHeadCAS(ctx, conflictEvent); !errors.Is(err, ErrHomePathHeadConflict) {
+		t.Fatalf("expected path-head conflict, got %v", err)
+	}
+	if _, err := events.GetMergeEventByChangeset(ctx, conflictEvent.ChangesetID); !errors.Is(err, ErrMergeEventNotFound) {
+		t.Fatalf("conflicting CAS event should not be appended, got %v", err)
 	}
 }
 

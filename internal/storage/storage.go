@@ -24,6 +24,7 @@ var (
 	ErrSearchArtifactNotReady = errors.New("search artifact not ready")
 	ErrMergeEventNotFound     = errors.New("merge event not found")
 	ErrMergeEventConflict     = errors.New("merge event conflict")
+	ErrHomePathHeadConflict   = errors.New("home path head conflict")
 )
 
 const (
@@ -58,6 +59,12 @@ type MergeEventStore interface {
 // batch while preventing concurrent workers from claiming the same offset range.
 type MergeEventProjectionBatchProcessor interface {
 	ProcessMergeEventProjectionBatch(ctx context.Context, projectionName string, shardCount int32, limit int, fn func(context.Context, []*models.MergeEvent) error) (bool, error)
+}
+
+// MergeEventPathHeadCASStore atomically applies path-head compare-and-set
+// updates and appends the accepted merge event.
+type MergeEventPathHeadCASStore interface {
+	AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error
 }
 
 // HomePathHeadStore persists home-scoped path heads for future merge conflict authority.

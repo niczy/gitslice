@@ -63,6 +63,24 @@ func (s *postgresNativeTxView) AppendMergeEvent(ctx context.Context, event *mode
 	return appendMergeEvent(ctx, s.tx, event)
 }
 
+func (s *PostgresNativeStorage) AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error {
+	ctx = ensureCtx(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := appendMergeEventWithPathHeadCAS(ctx, tx, event); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *postgresNativeTxView) AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error {
+	ctx = ensureCtx(ctx)
+	return appendMergeEventWithPathHeadCAS(ctx, s.tx, event)
+}
+
 func appendMergeEvent(ctx context.Context, exec execable, event *models.MergeEvent) error {
 	normalized, err := normalizeMergeEvent(event)
 	if err != nil {
@@ -104,6 +122,109 @@ func appendMergeEvent(ctx context.Context, exec execable, event *models.MergeEve
 		return err
 	}
 	return nil
+}
+
+func appendMergeEventWithPathHeadCAS(ctx context.Context, exec execable, event *models.MergeEvent) error {
+	normalized, err := normalizeMergeEvent(event)
+	if err != nil {
+		return err
+	}
+	heads, err := homePathHeadsFromMergeEvent(normalized)
+	if err != nil {
+		return err
+	}
+	if len(heads) != len(normalized.PathUpdates) {
+		return ErrInvalidInput
+	}
+	for _, update := range normalized.PathUpdates {
+		if update == nil {
+			return ErrInvalidInput
+		}
+		path := cleanRelativePath(update.Path)
+		if path == "" || update.BaseVersion < 0 || update.NewVersion <= update.BaseVersion {
+			return ErrInvalidInput
+		}
+		if update.BaseVersion == 0 {
+			head := headsByPath(heads)[path]
+			if head == nil {
+				return ErrInvalidInput
+			}
+			tag, err := exec.Exec(ctx, `
+				INSERT INTO home_path_heads (
+					home_id, path, path_version, content_hash, manifest_hash,
+					source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
+				)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+				ON CONFLICT (home_id, path) DO NOTHING
+			`,
+				head.HomeID,
+				head.Path,
+				head.PathVersion,
+				head.ContentHash,
+				head.ManifestHash,
+				head.SourceSliceID,
+				head.SourceCommitHash,
+				head.LastMergeSeq,
+				head.Deleted,
+				head.UpdatedAt,
+			)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return ErrHomePathHeadConflict
+			}
+			continue
+		}
+
+		head := headsByPath(heads)[path]
+		if head == nil {
+			return ErrInvalidInput
+		}
+		tag, err := exec.Exec(ctx, `
+			UPDATE home_path_heads
+			SET path_version = $1,
+			    content_hash = $2,
+			    manifest_hash = $3,
+			    source_slice_id = $4,
+			    source_commit_hash = $5,
+			    last_merge_seq = $6,
+			    deleted = $7,
+			    updated_at = $8
+			WHERE home_id = $9
+			  AND path = $10
+			  AND path_version = $11
+		`,
+			head.PathVersion,
+			head.ContentHash,
+			head.ManifestHash,
+			head.SourceSliceID,
+			head.SourceCommitHash,
+			head.LastMergeSeq,
+			head.Deleted,
+			head.UpdatedAt,
+			head.HomeID,
+			head.Path,
+			update.BaseVersion,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrHomePathHeadConflict
+		}
+	}
+	return appendMergeEvent(ctx, exec, normalized)
+}
+
+func headsByPath(heads []*models.HomePathHead) map[string]*models.HomePathHead {
+	out := make(map[string]*models.HomePathHead, len(heads))
+	for _, head := range heads {
+		if head != nil {
+			out[head.Path] = head
+		}
+	}
+	return out
 }
 
 func (s *PostgresNativeStorage) GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error) {

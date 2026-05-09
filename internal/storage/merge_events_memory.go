@@ -57,6 +57,63 @@ func (s *InMemoryStorage) AppendMergeEvent(ctx context.Context, event *models.Me
 	return nil
 }
 
+func (s *InMemoryStorage) AppendMergeEventWithPathHeadCAS(ctx context.Context, event *models.MergeEvent) error {
+	_ = ctx
+	normalized, err := normalizeMergeEvent(event)
+	if err != nil {
+		return err
+	}
+	heads, err := homePathHeadsFromMergeEvent(normalized)
+	if err != nil {
+		return err
+	}
+	if len(heads) != len(normalized.PathUpdates) {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.mergeEventsByID[normalized.EventID]; exists {
+		return ErrMergeEventConflict
+	}
+	if _, exists := s.mergeEventsByChangeset[normalized.ChangesetID]; exists {
+		return ErrMergeEventConflict
+	}
+	for _, existing := range s.mergeEventsByShard[normalized.ShardID] {
+		if existing.MergeSeq == normalized.MergeSeq {
+			return ErrMergeEventConflict
+		}
+	}
+
+	for _, update := range normalized.PathUpdates {
+		if update == nil {
+			return ErrInvalidInput
+		}
+		path := cleanRelativePath(update.Path)
+		if path == "" || update.BaseVersion < 0 || update.NewVersion <= update.BaseVersion {
+			return ErrInvalidInput
+		}
+		current := homePathHeadCurrentVersion(s.homePathHeads[homePathHeadKey(normalized.HomeID, path)])
+		if current != update.BaseVersion {
+			return ErrHomePathHeadConflict
+		}
+	}
+
+	for _, head := range heads {
+		s.homePathHeads[homePathHeadKey(head.HomeID, head.Path)] = cloneHomePathHead(head)
+	}
+	stored := cloneMergeEvent(normalized)
+	events := append(s.mergeEventsByShard[normalized.ShardID], stored)
+	for i := len(events) - 1; i > 0 && events[i-1].MergeSeq > events[i].MergeSeq; i-- {
+		events[i-1], events[i] = events[i], events[i-1]
+	}
+	s.mergeEventsByShard[normalized.ShardID] = events
+	s.mergeEventsByChangeset[normalized.ChangesetID] = stored
+	s.mergeEventsByID[normalized.EventID] = stored
+	return nil
+}
+
 func (s *InMemoryStorage) GetMergeEventByChangeset(ctx context.Context, changesetID string) (*models.MergeEvent, error) {
 	_ = ctx
 	if changesetID == "" {
