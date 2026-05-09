@@ -685,11 +685,38 @@ Gateway examples:
 - `POST /v1/ci/runs/{run_id}:cancel`
 - `POST /v1/ci/runs/{run_id}:rerun`
 
+### Runner Management API
+
+Service: `ci.v1.RunnerAdminService`
+
+These methods use normal user or org admin authentication:
+
+- `ListRunnerPools(ListRunnerPoolsRequest) returns (ListRunnerPoolsResponse)`
+- `ListRunners(ListRunnersRequest) returns (ListRunnersResponse)`
+- `GetRunner(GetRunnerRequest) returns (Runner)`
+- `CreateRunnerToken(CreateRunnerTokenRequest) returns (CreateRunnerTokenResponse)`
+- `DisableRunner(DisableRunnerRequest) returns (DisableRunnerResponse)`
+- `EnableRunner(EnableRunnerRequest) returns (EnableRunnerResponse)`
+- `RevokeRunner(RevokeRunnerRequest) returns (RevokeRunnerResponse)`
+- `ListRunnerJobs(ListRunnerJobsRequest) returns (ListRunnerJobsResponse)`
+- `ListQueuedJobs(ListQueuedJobsRequest) returns (ListQueuedJobsResponse)`
+
+Gateway examples:
+
+- `GET /v1/ci/runner-pools`
+- `GET /v1/ci/runners`
+- `GET /v1/ci/runners/{runner_id}`
+- `POST /v1/ci/runner-tokens`
+- `POST /v1/ci/runners/{runner_id}:disable`
+- `POST /v1/ci/runners/{runner_id}:enable`
+- `POST /v1/ci/runners/{runner_id}:revoke`
+- `GET /v1/ci/runners/{runner_id}/jobs`
+- `GET /v1/ci/queued-jobs`
+
 ### Runner API
 
 Service: `ci.v1.RunnerService`
 
-- `CreateRunnerToken(CreateRunnerTokenRequest) returns (CreateRunnerTokenResponse)`
 - `RegisterRunner(RegisterRunnerRequest) returns (RegisterRunnerResponse)`
 - `Heartbeat(HeartbeatRequest) returns (HeartbeatResponse)`
 - `PollJobs(PollJobsRequest) returns (PollJobsResponse)`
@@ -702,6 +729,123 @@ Service: `ci.v1.RunnerService`
 
 Runner requests authenticate with scoped runner credentials, not user session
 tokens.
+
+---
+
+## Web App Management
+
+The web app should expose CI executor management under settings, separate from
+changeset CI run details.
+
+Recommended routes:
+
+- `/settings/ci`
+- `/settings/ci/runners`
+- `/settings/ci/runners/{runner_id}`
+- `/settings/ci/runs`
+
+### Runner Pools View
+
+Show runner pools resolved from `/{home}/.gitslice/ci.yaml`:
+
+- pool name
+- executor type (`docker` or `shell`)
+- required labels
+- allowed images
+- online runner count
+- busy runner count
+- queued job count
+- max parallel jobs per runner
+
+The web app should not mutate runner pool policy directly in the database. Pool
+policy is versioned in `/{home}/.gitslice/ci.yaml`; the UI can link to that file
+or provide an "edit config" workflow that creates a normal changeset.
+
+### Runners View
+
+Show registered runners:
+
+- runner name
+- runner id
+- pool
+- labels and capabilities
+- executor mode
+- runner version
+- status (`offline|idle|busy|disabled`)
+- last heartbeat
+- current job, if any
+- recent jobs and outcomes
+
+Allowed actions:
+
+- create a short-lived registration token
+- copy the `gs runner register --token ...` command
+- disable runner
+- enable runner
+- revoke runner credential
+- view recent jobs and logs
+
+Revoking a runner should invalidate its long-lived runner credential and cancel
+or requeue leased jobs depending on job state. Disabling a runner should prevent
+new leases while allowing an already running job to finish unless the user also
+cancels the job.
+
+### Registration Token UX
+
+Creating a registration token should require:
+
+- runner name
+- runner pool
+- optional labels
+- expiration, default short-lived
+
+The token is shown once. After the dialog closes, the UI should only show token
+metadata, never the token value.
+
+Example command shown in the dialog:
+
+```bash
+gs runner register --token <runner-registration-token>
+gs runner start
+```
+
+### Queue and Executor Health
+
+The CI settings page should include a queue and health summary:
+
+- queued jobs by pool
+- oldest queued job age
+- online runners by pool
+- stuck leases
+- runners on old versions
+- recent infrastructure failures
+
+This page should make it obvious when CI is blocked because no compatible runner
+is online for the selected pool or image.
+
+### Changeset CI UI
+
+Changeset pages should show:
+
+- latest run for the exact changeset version and `plan_hash`
+- required versus optional checks
+- manifest path for each check
+- runner and pool selected for each job
+- live status and logs
+- rerun, rerun failed, cancel
+- stale result warning when a newer version or plan exists
+
+The UI should clearly distinguish a failed user command from an infrastructure
+failure such as no runner, runner crash, expired lease, image pull failure, or
+workspace materialization failure.
+
+### Security Rules
+
+- Web users never see a registered runner's long-lived credential.
+- Registration tokens are short-lived, one-time-use, and visible once.
+- Runner management actions are audited.
+- Runner revocation is scoped to one home/org.
+- Pool policy edits go through normal versioned file changes.
 
 ---
 
@@ -953,6 +1097,14 @@ Health endpoints:
 - Add integration test: checkout slice, export changeset, runner executes CI,
   merge gate blocks/fails/passes correctly.
 
+### PR 10: Web Runner Management
+
+- Add CI settings routes for runner pools, registered runners, and queue health.
+- Add registration-token creation flow with copyable CLI commands.
+- Add disable, enable, revoke, and runner job history actions.
+- Add changeset CI panels with exact version and `plan_hash` status.
+- Add stale CI and missing compatible runner warnings.
+
 ---
 
 ## Acceptance Criteria
@@ -963,6 +1115,8 @@ Health endpoints:
 - `/` in manifest paths refers to the home root, not host root.
 - CI runs are attached to exact changeset versions and plan hashes.
 - `gs runner start` on a user VM can execute queued jobs.
+- Web users can view runner pools, register runners, disable/revoke runners, and
+  diagnose queued jobs with no compatible executor.
 - Required checks gate `gs changeset merge`.
 - A file included in two custom slices resolves the same canonical home-path CI
   plan.
