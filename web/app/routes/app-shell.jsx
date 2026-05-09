@@ -16,23 +16,24 @@ function buildNotFoundRouteInfo(requestURL) {
   };
 }
 
-export async function loader({ request }) {
+export async function loader({ request, context }) {
   let session = null;
   let sessionError = '';
+  const authOptions = { routeContext: context };
   try {
-    session = await loadSession(request);
+    session = await loadSession(request, authOptions);
   } catch (error) {
     sessionError = error instanceof Error ? error.message : 'Failed to load browser session.';
   }
   const requestURL = new URL(request.url);
   const requestRouteInfo = parseLocation(requestURL);
   let routeInfo = resolveHomeRouteForSession(requestRouteInfo, session);
-  let browserRoute = await loadBrowserRouteData(request, session, routeInfo);
+  let browserRoute = await loadBrowserRouteData(request, session, routeInfo, authOptions);
   if (browserRoute.authExpired) {
     session = null;
     sessionError = '';
     const fallbackRouteInfo = resolveHomeRouteForSession(requestRouteInfo, session);
-    const fallbackBrowserRoute = await loadBrowserRouteData(request, session, fallbackRouteInfo);
+    const fallbackBrowserRoute = await loadBrowserRouteData(request, session, fallbackRouteInfo, authOptions);
     routeInfo = fallbackRouteInfo;
     browserRoute = {
       data: fallbackBrowserRoute.data,

@@ -5,15 +5,16 @@ function getGatewayTarget() {
   return getConfiguredAPIBaseURL(process.env, 'http://localhost:50051');
 }
 
-export async function action({ request }) {
+export async function action({ request, context }) {
+  const authOptions = { routeContext: context };
   const { authSecret, startupError } = createAuthContext();
   if (startupError || !authSecret) {
     return Response.json({ error: startupError || 'Auth is not configured' }, { status: 500 });
   }
 
-  let authorization = await getProxyAuthorizationHeader(request);
+  let authorization = await getProxyAuthorizationHeader(request, authOptions);
   if (!authorization) {
-    const session = await loadSession(request);
+    const session = await loadSession(request, authOptions);
     const username = String(session?.user?.username || '').trim();
     if (!username) {
       return Response.json({ error: 'Sign in required' }, { status: 401 });

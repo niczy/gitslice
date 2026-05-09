@@ -19,7 +19,7 @@ function isRestrictedAdminProxyPath(pathname) {
     || path === '/v1/admin/home-slices:backfill';
 }
 
-export async function proxyRequest(request, suffix = '') {
+export async function proxyRequest(request, suffix = '', options = {}) {
   const targetURL = buildProxyURL(request, suffix);
   const headers = new Headers(request.headers);
   headers.set('x-forwarded-host', new URL(request.url).host);
@@ -27,7 +27,7 @@ export async function proxyRequest(request, suffix = '') {
   const responseCookies = [];
   const restrictedAdminPath = isRestrictedAdminProxyPath(targetURL.pathname);
   if (restrictedAdminPath && getAuthProvider() === 'clerk') {
-    const authResult = await getClerkAdminClaimsResult(request);
+    const authResult = await getClerkAdminClaimsResult(request, options);
     if (authResult.signedClaims) {
       headers.set('X-Gitslice-Clerk-Admin-Claims', authResult.signedClaims);
       headers.delete('Authorization');
@@ -36,7 +36,7 @@ export async function proxyRequest(request, suffix = '') {
     }
   }
   if (!restrictedAdminPath && !headers.has('Authorization') && getAuthProvider() === 'clerk') {
-    const authResult = await getProxyAuthorizationResult(request);
+    const authResult = await getProxyAuthorizationResult(request, options);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);

@@ -37,7 +37,7 @@ function buildGatewayURL(pathname, request, params = new URLSearchParams()) {
   return target;
 }
 
-async function createGatewayHeaders(request, session) {
+async function createGatewayHeaders(request, session, options = {}) {
   const headers = new Headers({
     Accept: 'application/json',
   });
@@ -49,7 +49,7 @@ async function createGatewayHeaders(request, session) {
   }
 
   if (getAuthProvider() === 'clerk') {
-    const authResult = await getProxyAuthorizationResult(request);
+    const authResult = await getProxyAuthorizationResult(request, options);
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
     }
@@ -86,8 +86,8 @@ async function readErrorMessage(response, fallback) {
   return detail ? `${fallback}: ${detail}` : `${fallback} (${response.status})`;
 }
 
-async function fetchJSON(request, session, pathname, params) {
-  const { headers, setCookies, rejectUnauthenticated } = await createGatewayHeaders(request, session);
+async function fetchJSON(request, session, pathname, params, options = {}) {
+  const { headers, setCookies, rejectUnauthenticated } = await createGatewayHeaders(request, session, options);
   if (rejectUnauthenticated) {
     const error = new Error('Request failed: Not signed in');
     error.setCookies = setCookies;
@@ -189,18 +189,19 @@ function routeNeedsSlices(routeInfo, session) {
   return pageNeedsSlices(routeInfo?.page) || (routeInfo?.page === 'landing' && Boolean(session?.user?.username));
 }
 
-async function loadSlices(request, session, data, setCookies) {
+async function loadSlices(request, session, data, setCookies, options = {}) {
   const { payload, setCookies: cookies } = await fetchJSON(
     request,
     session,
     '/v1/slices',
     new URLSearchParams({ limit: String(SLICE_LIST_LIMIT) }),
+    options,
   );
   setCookies.push(...cookies);
   data.slices = (payload?.slices || []).map(normalizeSliceInfo);
 }
 
-async function loadBrowserData(request, session, routeInfo, data, setCookies) {
+async function loadBrowserData(request, session, routeInfo, data, setCookies, options = {}) {
   if (routeInfo?.page !== 'browser' || !data.selectedSliceId) {
     return;
   }
@@ -215,6 +216,7 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies) {
       session,
       `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/entries`,
       params,
+      options,
     );
     setCookies.push(...cookies);
     data.rootEntries = payload?.entries || [];
@@ -239,6 +241,7 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies) {
       session,
       `/v1/slices/${encodeURIComponent(data.selectedSliceId)}/files/${encodedFile}`,
       params,
+      options,
     );
     setCookies.push(...cookies);
     data.selectedFilePayload = payload?.file || null;
@@ -248,7 +251,7 @@ async function loadBrowserData(request, session, routeInfo, data, setCookies) {
   }
 }
 
-async function loadSliceCommits(request, session, data, setCookies) {
+async function loadSliceCommits(request, session, data, setCookies, options = {}) {
   if (!data.sliceCommitsSliceId) {
     return;
   }
@@ -259,6 +262,7 @@ async function loadSliceCommits(request, session, data, setCookies) {
       session,
       `/v1/slices/${encodeURIComponent(data.sliceCommitsSliceId)}/commits`,
       new URLSearchParams({ limit: String(COMMIT_PAGE_SIZE) }),
+      options,
     );
     setCookies.push(...cookies);
     data.sliceCommits = normalizeCommitListResponse(payload);
@@ -270,7 +274,7 @@ async function loadSliceCommits(request, session, data, setCookies) {
   }
 }
 
-async function loadSliceChangesets(request, session, data, setCookies) {
+async function loadSliceChangesets(request, session, data, setCookies, options = {}) {
   if (!data.sliceChangesetsSliceId) {
     return;
   }
@@ -289,6 +293,7 @@ async function loadSliceChangesets(request, session, data, setCookies) {
       session,
       `/v1/slices/${encodeURIComponent(data.sliceChangesetsSliceId)}/changesets`,
       params,
+      options,
     );
     setCookies.push(...cookies);
     data.sliceChangesets = normalizeChangesetListResponse(payload);
@@ -299,7 +304,7 @@ async function loadSliceChangesets(request, session, data, setCookies) {
   }
 }
 
-async function loadCommitDiff(request, session, data, setCookies) {
+async function loadCommitDiff(request, session, data, setCookies, options = {}) {
   if (!data.commitDiffHash) {
     return;
   }
@@ -309,6 +314,8 @@ async function loadCommitDiff(request, session, data, setCookies) {
       request,
       session,
       `/v1/commits/${encodeURIComponent(data.commitDiffHash)}/changes`,
+      undefined,
+      options,
     );
     setCookies.push(...cookies);
     data.commitDiff = normalizeDiffResponse(payload);
@@ -318,7 +325,7 @@ async function loadCommitDiff(request, session, data, setCookies) {
   }
 }
 
-async function loadChangesetDiff(request, session, data, setCookies) {
+async function loadChangesetDiff(request, session, data, setCookies, options = {}) {
   if (!data.changesetId) {
     return;
   }
@@ -329,6 +336,7 @@ async function loadChangesetDiff(request, session, data, setCookies) {
       session,
       `/v1/changesets/${encodeURIComponent(data.changesetId)}/snapshots`,
       new URLSearchParams({ limit: '100' }),
+      options,
     );
     setCookies.push(...cookies);
     data.changesetSnapshots = normalizeChangesetSnapshotListResponse(payload);
@@ -349,6 +357,7 @@ async function loadChangesetDiff(request, session, data, setCookies) {
       session,
       `/v1/changesets/${encodeURIComponent(data.changesetId)}/diff`,
       params,
+      options,
     );
     setCookies.push(...cookies);
     data.changesetDiff = normalizeChangesetDiffResponse(payload);
@@ -358,7 +367,7 @@ async function loadChangesetDiff(request, session, data, setCookies) {
   }
 }
 
-async function loadSettingsData(request, session, data, setCookies) {
+async function loadSettingsData(request, session, data, setCookies, options = {}) {
   const username = String(session?.user?.username || '').trim();
   if (!username) {
     return;
@@ -381,7 +390,7 @@ async function loadSettingsData(request, session, data, setCookies) {
 
   const loadSection = async (field, errorField, pathname, transform) => {
     try {
-      const { payload, setCookies: cookies } = await fetchJSON(request, session, pathname);
+      const { payload, setCookies: cookies } = await fetchJSON(request, session, pathname, undefined, options);
       setCookies.push(...cookies);
       settings[field] = transform(payload);
     } catch (error) {
@@ -399,14 +408,14 @@ async function loadSettingsData(request, session, data, setCookies) {
   ]);
 }
 
-export async function loadBrowserRouteData(request, session, routeInfo) {
+export async function loadBrowserRouteData(request, session, routeInfo, options = {}) {
   const data = createRouteData(routeInfo);
   const setCookies = [];
   let authExpired = false;
 
   if (routeNeedsSlices(routeInfo, session)) {
     try {
-      await loadSlices(request, session, data, setCookies);
+      await loadSlices(request, session, data, setCookies, options);
     } catch (error) {
       recordRouteError(data, setCookies, error);
       data.slicesError = error?.message || 'Unable to load slices.';
@@ -418,38 +427,38 @@ export async function loadBrowserRouteData(request, session, routeInfo) {
   };
 
   try {
-    await loadBrowserData(request, session, routeInfo, data, setCookies);
+    await loadBrowserData(request, session, routeInfo, data, setCookies, options);
   } catch (error) {
     markAuthExpired(error);
   }
 
   try {
-    await loadSliceCommits(request, session, data, setCookies);
+    await loadSliceCommits(request, session, data, setCookies, options);
   } catch (error) {
     markAuthExpired(error);
   }
 
   try {
-    await loadSliceChangesets(request, session, data, setCookies);
+    await loadSliceChangesets(request, session, data, setCookies, options);
   } catch (error) {
     markAuthExpired(error);
   }
 
   try {
-    await loadCommitDiff(request, session, data, setCookies);
+    await loadCommitDiff(request, session, data, setCookies, options);
   } catch (error) {
     markAuthExpired(error);
   }
 
   try {
-    await loadChangesetDiff(request, session, data, setCookies);
+    await loadChangesetDiff(request, session, data, setCookies, options);
   } catch (error) {
     markAuthExpired(error);
   }
 
   try {
     if (routeInfo?.page === 'settings') {
-      await loadSettingsData(request, session, data, setCookies);
+      await loadSettingsData(request, session, data, setCookies, options);
     }
   } catch (error) {
     markAuthExpired(error);
