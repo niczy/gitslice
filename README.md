@@ -119,6 +119,10 @@ protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go
 cd ../agent
 protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
   --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative agent_service.proto
+
+cd ../ci
+protoc -I . -I .. --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative ci_service.proto
 ```
 
 ### Build
@@ -566,7 +570,7 @@ excludes, or pass `--include-ignored` to upload every regular file.
 
 ### Adding New Proto Definitions
 
-1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/account/`, `proto/file/`, `proto/filesystem/`, or `proto/agent/`
+1. Add or modify `.proto` files in `proto/slice/`, `proto/admin/`, `proto/account/`, `proto/file/`, `proto/filesystem/`, `proto/agent/`, or `proto/ci/`
 2. Regenerate the Go code using protoc (`make proto` works)
 3. Do not commit generated `*.pb.go` / `*.pb.gw.go` files
 4. Update the service implementations as needed

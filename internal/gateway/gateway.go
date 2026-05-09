@@ -12,6 +12,7 @@ import (
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
+	civ1 "github.com/niczy/gitslice/proto/ci"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -42,6 +43,9 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 	adminClient := adminv1.NewAdminServiceClient(conn)
 	accountClient := accountv1.NewAccountServiceClient(conn)
 	agentClient := agentv1.NewAgentServiceClient(conn)
+	ciClient := civ1.NewCIServiceClient(conn)
+	runnerAdminClient := civ1.NewRunnerAdminServiceClient(conn)
+	runnerClient := civ1.NewRunnerServiceClient(conn)
 	sliceClient := slicev1.NewSliceServiceClient(conn)
 	filesystemClient := filesystemv1.NewFilesystemServiceClient(conn)
 
@@ -58,6 +62,18 @@ func NewMux(ctx context.Context, grpcAddr string) (*runtime.ServeMux, func(), er
 		return nil, func() {}, err
 	}
 	if err := agentv1.RegisterAgentServiceHandlerClient(ctx, mux, agentClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := civ1.RegisterCIServiceHandlerClient(ctx, mux, ciClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := civ1.RegisterRunnerAdminServiceHandlerClient(ctx, mux, runnerAdminClient); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	if err := civ1.RegisterRunnerServiceHandlerClient(ctx, mux, runnerClient); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}

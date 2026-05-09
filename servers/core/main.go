@@ -21,6 +21,7 @@ import (
 	accountservice "github.com/niczy/gitslice/services/account"
 	adminservice "github.com/niczy/gitslice/services/admin"
 	agentservice "github.com/niczy/gitslice/services/agent"
+	ciservice "github.com/niczy/gitslice/services/ci"
 	fileservice "github.com/niczy/gitslice/services/file"
 	filesystemservice "github.com/niczy/gitslice/services/filesystem"
 	sliceservice "github.com/niczy/gitslice/services/slice"
@@ -65,6 +66,7 @@ func main() {
 	filesystemservice.RegisterGRPCServerWithPromotionStorage(grpcServer, st, promotionSt)
 	adminservice.RegisterGRPCServer(grpcServer, st)
 	accountservice.RegisterGRPCServer(grpcServer, st)
+	ciservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
 	enabledRuntimeProviders := make([]string, 0, 2)
 	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
