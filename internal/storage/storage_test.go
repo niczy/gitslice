@@ -88,6 +88,95 @@ func TestCIManifestIndexStoreCompliance(t *testing.T) {
 	}
 }
 
+func TestCIJobRequeueStoreCompliance(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			runCIJobRequeueStoreContract(ctx, t, tc.factory(t))
+		})
+	}
+}
+
+func runCIJobRequeueStoreContract(ctx context.Context, t *testing.T, st Storage) {
+	t.Helper()
+	slice := &models.Slice{ID: "home_alice_ci_requeue", Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	changeset := &models.Changeset{
+		ID:             "chg_ci_requeue",
+		SliceID:        slice.ID,
+		BaseCommitHash: "base-ci-requeue",
+		Hash:           "hash-ci-requeue",
+		Status:         models.ChangesetStatusPending,
+		Author:         "alice",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, changeset); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := st.CreateCIRunner(ctx, &CIRunner{
+		ID:        "ci_runner_requeue",
+		HomeID:    "alice",
+		Name:      "runner",
+		Pool:      "default",
+		Executor:  "shell",
+		Status:    "idle",
+		TokenHash: "hash",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateCIRunner failed: %v", err)
+	}
+	if err := st.CreateCIPlan(ctx, &CIPlan{
+		Run: &CIRun{
+			ID:                 "ci_run_requeue",
+			HomeID:             "alice",
+			SliceID:            slice.ID,
+			ChangesetID:        changeset.ID,
+			ChangesetVersionID: "snap-1",
+			PlanHash:           "plan",
+			Status:             "queued",
+			CreatedAt:          now,
+		},
+		Jobs: []*CIJob{{
+			ID:         "ci_job_requeue",
+			RunID:      "ci_run_requeue",
+			JobKey:     "unit",
+			CheckName:  "unit",
+			RunnerPool: "default",
+			Status:     "queued",
+		}},
+	}); err != nil {
+		t.Fatalf("CreateCIPlan failed: %v", err)
+	}
+	claimed, err := st.ClaimCIJob(ctx, "ci_job_requeue", "ci_runner_requeue", "lease-1", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("ClaimCIJob failed: %v", err)
+	}
+	if claimed.AttemptCount != 1 || claimed.MaxAttempts != DefaultCIJobMaxAttempts {
+		t.Fatalf("claimed retry metadata = attempt %d max %d, want 1/%d", claimed.AttemptCount, claimed.MaxAttempts, DefaultCIJobMaxAttempts)
+	}
+	requeued, err := st.RequeueCIJob(ctx, "ci_job_requeue", "lease-1", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("RequeueCIJob failed: %v", err)
+	}
+	if requeued.Status != "queued" || requeued.RunnerID != "" || requeued.LeaseID != "" || requeued.LeaseExpiresAt != nil {
+		t.Fatalf("requeued job = %#v, want queued with cleared lease", requeued)
+	}
+	if requeued.AttemptCount != 1 || requeued.MaxAttempts != DefaultCIJobMaxAttempts {
+		t.Fatalf("requeued retry metadata = attempt %d max %d, want preserved", requeued.AttemptCount, requeued.MaxAttempts)
+	}
+	runner, err := st.GetCIRunner(ctx, "ci_runner_requeue")
+	if err != nil {
+		t.Fatalf("GetCIRunner failed: %v", err)
+	}
+	if runner.Status != "idle" {
+		t.Fatalf("runner status = %q, want idle", runner.Status)
+	}
+}
+
 func TestMergeEventStoreCompliance(t *testing.T) {
 	ctx := context.Background()
 

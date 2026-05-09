@@ -40,6 +40,8 @@ type runnerLocalConfig struct {
 	EnrolledAt  string `json:"enrolled_at"`
 }
 
+const runnerLogChunkSize = 64 << 10
+
 func handleRunnerCommand(args []string) {
 	if len(args) == 0 {
 		printRunnerHelp()
@@ -219,8 +221,14 @@ func handleRunnerShow(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleRunnerDisable(ctx context.Context, cli *CLI, args []string) {
-	runnerID := singleRunnerIDArg("runner disable", args)
-	resp, err := cli.runnerAdminClient.DisableRunner(ctx, &civ1.DisableRunnerRequest{RunnerId: runnerID})
+	fs := newCommandFlagSet("runner disable")
+	reason := fs.String("reason", "", "Reason for disabling the runner")
+	parseCommandFlags(fs, args)
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs runner disable <runner-id> [--reason <text>]")
+		return
+	}
+	resp, err := cli.runnerAdminClient.DisableRunner(ctx, &civ1.DisableRunnerRequest{RunnerId: strings.TrimSpace(fs.Arg(0)), Reason: strings.TrimSpace(*reason)})
 	if err != nil {
 		commandFatalf("RUNNER_DISABLE_FAILED", true, "", "Failed to disable runner: %v", err)
 	}
@@ -237,8 +245,24 @@ func handleRunnerEnable(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleRunnerRevoke(ctx context.Context, cli *CLI, args []string) {
-	runnerID := singleRunnerIDArg("runner revoke", args)
-	resp, err := cli.runnerAdminClient.RevokeRunner(ctx, &civ1.RevokeRunnerRequest{RunnerId: runnerID})
+	fs := newCommandFlagSet("runner revoke")
+	reason := fs.String("reason", "", "Reason for revoking the runner credential")
+	requeueLeased := fs.Bool("requeue-leased", false, "Requeue jobs currently leased by this runner")
+	cancelLeased := fs.Bool("cancel-leased", false, "Cancel jobs currently leased by this runner")
+	parseCommandFlags(fs, args)
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs runner revoke <runner-id> [--requeue-leased|--cancel-leased] [--reason <text>]")
+		return
+	}
+	if *requeueLeased && *cancelLeased {
+		commandFatal("INVALID_ARGUMENT", "Use either --requeue-leased or --cancel-leased, not both.", false, "")
+	}
+	resp, err := cli.runnerAdminClient.RevokeRunner(ctx, &civ1.RevokeRunnerRequest{
+		RunnerId:      strings.TrimSpace(fs.Arg(0)),
+		Reason:        strings.TrimSpace(*reason),
+		RequeueLeased: *requeueLeased,
+		CancelLeased:  *cancelLeased,
+	})
 	if err != nil {
 		commandFatalf("RUNNER_REVOKE_FAILED", true, "", "Failed to revoke runner: %v", err)
 	}
@@ -481,14 +505,21 @@ func appendRunnerLog(ctx context.Context, cli *CLI, jobID, leaseID string, chunk
 	if len(payload) == 0 {
 		return
 	}
-	_, _ = cli.runnerClient.AppendLog(ctx, &civ1.AppendLogRequest{
-		JobId:      jobID,
-		LeaseId:    leaseID,
-		ChunkIndex: *chunkIndex,
-		Stream:     stream,
-		Payload:    payload,
-	})
-	*chunkIndex = *chunkIndex + 1
+	for len(payload) > 0 {
+		n := len(payload)
+		if n > runnerLogChunkSize {
+			n = runnerLogChunkSize
+		}
+		_, _ = cli.runnerClient.AppendLog(ctx, &civ1.AppendLogRequest{
+			JobId:      jobID,
+			LeaseId:    leaseID,
+			ChunkIndex: *chunkIndex,
+			Stream:     stream,
+			Payload:    payload[:n],
+		})
+		*chunkIndex = *chunkIndex + 1
+		payload = payload[n:]
+	}
 }
 
 func runnerJobEnv(payload *civ1.JobPayload, workspace, cacheDir string, inheritHost bool) []string {
