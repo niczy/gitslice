@@ -723,6 +723,9 @@ Both API origins route the public gRPC service paths to the core server:
 - `/file.v1.FileService/`
 - `/filesystem.v1.FilesystemService/`
 - `/agent.v1.AgentService/`
+- `/ci.v1.CIService/`
+- `/ci.v1.RunnerAdminService/`
+- `/ci.v1.RunnerService/`
 
 Both API origins also proxy HTTP gateway traffic under `/v1/` and Git smart
 HTTP traffic under `/git/`. The `/git/` locations disable request buffering and

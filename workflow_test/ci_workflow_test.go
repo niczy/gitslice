@@ -121,6 +121,7 @@ func writeRemoteFileFromString(t *testing.T, remotePath, content string) {
 	output := runCLIOrFail(t, "", "fs", "write", remotePath, "-f", tmp)
 	commitHash := extractFilesystemCommitHash(output)
 	waitForRemoteHomeHead(t, remotePath, commitHash)
+	waitForRemoteHomePromotion(t, remotePath)
 }
 
 func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
@@ -143,6 +144,23 @@ func waitForRemoteHomeHead(t *testing.T, remotePath, commitHash string) {
 		return strings.TrimSpace(metadata.HeadCommitHash) == commitHash, nil
 	}); err != nil {
 		t.Fatalf("expected home %s head to reach %s after fs write %s: %v", homeID, commitHash, remotePath, err)
+	}
+}
+
+func waitForRemoteHomePromotion(t *testing.T, remotePath string) {
+	t.Helper()
+	if testStorage == nil {
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(remotePath, "/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return
+	}
+	homeID := homeslice.IDForUsername(parts[0])
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := waitForMergedChangesetMessage(ctx, testStorage, homeID, "write "+remotePath, 3*time.Second, 25*time.Millisecond); err != nil {
+		t.Fatalf("expected home promotion for %s: %v", remotePath, err)
 	}
 }
 
