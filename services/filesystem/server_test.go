@@ -135,6 +135,14 @@ func (c *sliceSearchArtifactLoadCounter) CallCount() int {
 	return c.calls
 }
 
+type emptyBatchManifestHashStorage struct {
+	storage.Storage
+}
+
+func (s *emptyBatchManifestHashStorage) GetFileManifestHashes(ctx context.Context, sliceID string, paths []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
 func searchArtifactPaths(artifact *searchindex.SliceArtifact) []string {
 	if artifact == nil {
 		return nil
@@ -1677,6 +1685,41 @@ func TestFinalizeUploadCommitsManifestMissingFromHeadSnapshot(t *testing.T) {
 	}
 	if got, want := snapshot.Files["docs/retry.txt"], protoManifest.GetHash(); got != want {
 		t.Fatalf("snapshot did not recover uploaded file: got %q want %q", got, want)
+	}
+}
+
+func TestWriteFileCommitSnapshotFallsBackWhenBatchHashMissing(t *testing.T) {
+	ctx := authContext("tester")
+	base := storage.NewInMemoryStorage()
+	st := &emptyBatchManifestHashStorage{Storage: base}
+	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
+		t.Fatalf("init root slice: %v", err)
+	}
+
+	svc := NewService(st)
+	if _, err := svc.CreateWorkspace(ctx, &filesystemv1.CreateWorkspaceRequest{
+		WorkspaceId: "ws-snapshot-fallback",
+		Name:        "Snapshot Fallback",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace failed: %v", err)
+	}
+
+	content := []byte("ready\n")
+	writeResp, err := svc.WriteFile(ctx, &filesystemv1.WriteFileRequest{
+		WorkspaceId: "ws-snapshot-fallback",
+		Path:        "docs/app.txt",
+		Content:     content,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	snapshot, err := base.GetCommitSnapshot(ctx, writeResp.GetCommitHash())
+	if err != nil {
+		t.Fatalf("GetCommitSnapshot failed: %v", err)
+	}
+	if got, want := snapshot.Files["docs/app.txt"], hashContent(content); got != want {
+		t.Fatalf("snapshot file hash = %q, want %q", got, want)
 	}
 }
 

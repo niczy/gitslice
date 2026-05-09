@@ -4765,6 +4765,14 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 				files[filePath] = hash
 				continue
 			}
+			hash, found, err := s.loadWorkspaceSnapshotFileHash(ctx, workspace.ID, filePath)
+			if err != nil {
+				return "", time.Time{}, status.Error(codes.Internal, fmt.Sprintf("failed to load file manifest: %v", err))
+			}
+			if found {
+				files[filePath] = hash
+				continue
+			}
 			delete(files, filePath)
 		}
 	} else {
@@ -4816,6 +4824,34 @@ func (s *filesystemServiceServer) commitWorkspaceMutation(ctx context.Context, w
 		log.Printf("filesystem: failed to index file changes for commit %s in %s: %v", commitHash, workspace.ID, err)
 	}
 	return commitHash, now, nil
+}
+
+func (s *filesystemServiceServer) loadWorkspaceSnapshotFileHash(ctx context.Context, workspaceID, filePath string) (string, bool, error) {
+	manifest, err := s.storage.GetFileManifest(ctx, workspaceID, filePath)
+	if err == nil && manifest != nil {
+		if hash := strings.TrimSpace(manifest.Hash); hash != "" {
+			return hash, true, nil
+		}
+	}
+	if err != nil && err != storage.ErrEntryNotFound {
+		return "", false, err
+	}
+
+	content, err := storage.ReadSliceFileContent(ctx, s.storage, workspaceID, filePath)
+	if err != nil {
+		if err == storage.ErrEntryNotFound {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	hash := strings.TrimSpace(content.Hash)
+	if hash == "" {
+		hash = hashContent(content.Content)
+	}
+	if strings.TrimSpace(hash) == "" {
+		return "", false, nil
+	}
+	return hash, true, nil
 }
 
 type filesystemRenameChange struct {
