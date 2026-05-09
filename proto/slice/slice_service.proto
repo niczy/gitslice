@@ -267,6 +267,8 @@ message CreateChangesetResponse {
   string changeset_id = 1;
   string changeset_hash = 2;
   ChangesetStatus status = 3;
+  string ci_run_id = 4;
+  string ci_status = 5;
 }
 
 message FileContentChange {
@@ -464,6 +466,20 @@ message ChangesetInfo {
   int64 merged_at = 9;
   string message = 10;
   ReviewStatus review_status = 11;
+  ChangesetCISummary ci = 12;
+}
+
+message ChangesetCISummary {
+  string status = 1;
+  string run_id = 2;
+  string plan_hash = 3;
+  string changeset_version_id = 4;
+  int32 required_total = 5;
+  int32 required_passed = 6;
+  int32 required_failed = 7;
+  int32 required_running = 8;
+  int32 required_queued = 9;
+  bool stale = 10;
 }
 
 enum ChangesetStatus {

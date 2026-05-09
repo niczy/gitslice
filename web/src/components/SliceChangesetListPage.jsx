@@ -47,6 +47,22 @@ function changesetBadge(changeset) {
   }
 }
 
+function ciBadge(ci) {
+  if (!ci) return null;
+  const status = ci.stale ? 'stale' : ci.status || 'missing';
+  const requiredTotal = Number(ci.required_total || 0);
+  const requiredPassed = Number(ci.required_passed || 0);
+  const label = requiredTotal > 0
+    ? `CI ${status} ${requiredPassed}/${requiredTotal}`
+    : `CI ${status}`;
+  let tone = status;
+  if (status === 'success') tone = 'ready';
+  if (status === 'failed' || status === 'error') tone = 'conflict';
+  if (status === 'queued' || status === 'running' || status === 'missing' || status === 'stale') tone = 'needs-sync';
+  if (status === 'cancelled' || status === 'superseded') tone = 'closed';
+  return { label, tone };
+}
+
 export default function SliceChangesetListPage({
   sliceId,
   slices,
@@ -205,6 +221,7 @@ export default function SliceChangesetListPage({
               {changesets.map((changeset) => {
                 const files = changeset.modified_files || [];
                 const badge = changesetBadge(changeset);
+                const ci = ciBadge(changeset.ci);
                 return (
                   <li key={changeset.changeset_id}>
                     <Button
@@ -233,6 +250,11 @@ export default function SliceChangesetListPage({
                             <FileCode2 size={14} aria-hidden="true" />
                             {files.length} {files.length === 1 ? 'file' : 'files'}
                           </span>
+                          {ci && (
+                            <span className={`slice-activity-ci slice-activity-ci--${ci.tone}`} data-testid="slice-changeset-ci">
+                              {ci.label}
+                            </span>
+                          )}
                           <span className="slice-activity-row-meta">
                             {changeset.created_at ? formatTimestamp(changeset.created_at) : 'Unknown time'}
                           </span>

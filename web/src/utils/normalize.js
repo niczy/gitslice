@@ -42,6 +42,7 @@ export function normalizeChangesetDiffResponse(data) {
     merged_at: changeset.merged_at ?? changeset.mergedAt,
     status: normalizeChangesetStatus(changeset.status),
     review_status: normalizeReviewStatus(changeset.review_status ?? changeset.reviewStatus),
+    ci: normalizeChangesetCI(changeset.ci ?? changeset.Ci),
   };
   const normalizedChanges = (data?.changes || [])
     .map(normalizeChange);
@@ -119,6 +120,7 @@ export function normalizeChangesetInfo(changeset) {
     created_at: changeset?.created_at ?? changeset?.createdAt ?? 0,
     merged_at: changeset?.merged_at ?? changeset?.mergedAt ?? 0,
     review_status: normalizeReviewStatus(changeset?.review_status ?? changeset?.reviewStatus),
+    ci: normalizeChangesetCI(changeset?.ci ?? changeset?.Ci),
   };
 }
 
@@ -140,6 +142,31 @@ export function normalizeReviewStatus(value) {
   }
   if (value === 2 || value === 'HAS_CONFLICTS' || value === 'has_conflicts') return 'has_conflicts';
   return 'ready_for_merge';
+}
+
+export function normalizeChangesetCI(ci) {
+  if (!ci) return null;
+  return {
+    ...ci,
+    status: normalizeCIStatus(ci.status ?? ci.Status),
+    run_id: ci.run_id ?? ci.runId ?? '',
+    plan_hash: ci.plan_hash ?? ci.planHash ?? '',
+    changeset_version_id: ci.changeset_version_id ?? ci.changesetVersionId ?? '',
+    required_total: Number(ci.required_total ?? ci.requiredTotal ?? 0),
+    required_passed: Number(ci.required_passed ?? ci.requiredPassed ?? 0),
+    required_failed: Number(ci.required_failed ?? ci.requiredFailed ?? 0),
+    required_running: Number(ci.required_running ?? ci.requiredRunning ?? 0),
+    required_queued: Number(ci.required_queued ?? ci.requiredQueued ?? 0),
+    stale: Boolean(ci.stale ?? false),
+  };
+}
+
+export function normalizeCIStatus(value) {
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase();
+    if (lowered) return lowered;
+  }
+  return 'missing';
 }
 
 export function normalizeSliceInfo(slice) {

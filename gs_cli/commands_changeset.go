@@ -159,6 +159,7 @@ func handleChangesetCreate(ctx context.Context, cli *CLI, args []string) {
 
 	fmt.Printf("Created changeset %s (hash: %s)\n", resp.ChangesetId, resp.ChangesetHash)
 	fmt.Printf("Status: %s\n", resp.Status.String())
+	printChangesetCIFromRun(resp.GetCiStatus(), resp.GetCiRunId())
 }
 
 func resolveWorkingTreeModifiedFiles(dir string, explicit []string) ([]string, bool, error) {
@@ -515,6 +516,7 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 				ChangesetID:  cs.GetChangesetId(),
 				Status:       cs.GetStatus().String(),
 				ReviewStatus: reviewStatusForChangesetInfo(cs),
+				CI:           buildChangesetCIOutput(cs.GetCi()),
 				Message:      cs.GetMessage(),
 				CreatedAt:    cs.GetCreatedAt(),
 			})
@@ -528,6 +530,9 @@ func handleChangesetList(ctx context.Context, cli *CLI, args []string) {
 		statusText := cs.GetStatus().String()
 		if reviewStatus := reviewStatusForChangesetInfo(cs); reviewStatus != "" {
 			statusText = fmt.Sprintf("%s/%s", statusText, reviewStatus)
+		}
+		if ciText := changesetCIText(cs.GetCi()); ciText != "" {
+			statusText = fmt.Sprintf("%s ci:%s", statusText, ciText)
 		}
 		fmt.Printf("- %s [%s] %s\n", cs.ChangesetId, statusText, cs.Message)
 	}
@@ -610,6 +615,48 @@ func printMergeResult(resp *slicev1.MergeChangesetResponse) {
 	}
 }
 
+func printChangesetCIFromRun(status string, runID string) {
+	status = strings.TrimSpace(status)
+	runID = strings.TrimSpace(runID)
+	if status == "" && runID == "" {
+		return
+	}
+	if runID != "" {
+		fmt.Printf("CI: %s (%s)\n", status, runID)
+		return
+	}
+	fmt.Printf("CI: %s\n", status)
+}
+
+func changesetCIText(ci *slicev1.ChangesetCISummary) string {
+	if ci == nil {
+		return ""
+	}
+	status := strings.TrimSpace(ci.GetStatus())
+	if ci.GetStale() {
+		status = "stale"
+	}
+	if status == "" {
+		return ""
+	}
+	if ci.GetRequiredTotal() > 0 {
+		return fmt.Sprintf("%s %d/%d", status, ci.GetRequiredPassed(), ci.GetRequiredTotal())
+	}
+	return status
+}
+
+func printChangesetCISummary(ci *slicev1.ChangesetCISummary) {
+	text := changesetCIText(ci)
+	if text == "" {
+		return
+	}
+	if runID := strings.TrimSpace(ci.GetRunId()); runID != "" {
+		fmt.Printf("CI: %s (%s)\n", text, runID)
+		return
+	}
+	fmt.Printf("CI: %s\n", text)
+}
+
 func printChangesetReview(resp *slicev1.ReviewChangesetResponse, includePatches bool) {
 	if resp == nil {
 		fmt.Println("No changeset review response")
@@ -628,6 +675,7 @@ func printChangesetReview(resp *slicev1.ReviewChangesetResponse, includePatches 
 		if changeset.GetMessage() != "" {
 			fmt.Printf("Message: %s\n", changeset.GetMessage())
 		}
+		printChangesetCISummary(changeset.GetCi())
 	}
 	if snapshot := resp.GetSnapshot(); snapshot != nil {
 		fmt.Printf("Snapshot: v%d %s\n", snapshot.GetVersion(), snapshot.GetHash())
