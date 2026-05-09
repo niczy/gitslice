@@ -13,15 +13,23 @@ type CIStore interface {
 	ListCIRuns(ctx context.Context, filter CIRunListFilter) ([]*CIRun, error)
 	UpdateCIRunStatus(ctx context.Context, runID string, status string, finishedAt *time.Time) error
 	ListCIRunManifests(ctx context.Context, runID string) ([]*CIRunManifest, error)
+	GetCIJob(ctx context.Context, jobID string) (*CIJob, error)
 	ListCIJobs(ctx context.Context, filter CIJobListFilter) ([]*CIJob, error)
 	ListCISteps(ctx context.Context, jobID string) ([]*CIStep, error)
+	ClaimCIJob(ctx context.Context, jobID string, runnerID string, leaseID string, leaseExpiresAt time.Time, startedAt time.Time) (*CIJob, error)
+	UpdateCIStepStatus(ctx context.Context, jobID string, stepIndex int, status string, exitCode int, startedAt *time.Time, finishedAt *time.Time) error
+	AppendCILogChunk(ctx context.Context, chunk *CILogChunk) error
+	CompleteCIJob(ctx context.Context, jobID string, leaseID string, status string, exitCode int, infraFailure bool, finishedAt time.Time) (*CIJob, error)
 
 	UpsertCICheck(ctx context.Context, check *CICheck) error
 	ListCIChecks(ctx context.Context, changesetID string, changesetVersionID string, planHash string) ([]*CICheck, error)
 	ListCILogChunks(ctx context.Context, filter CILogChunkListFilter) ([]*CILogChunk, error)
 
+	CreateCIRunnerRegistrationToken(ctx context.Context, token *CIRunnerRegistrationToken) error
+	ConsumeCIRunnerRegistrationToken(ctx context.Context, tokenHash string, usedAt time.Time) (*CIRunnerRegistrationToken, error)
 	CreateCIRunner(ctx context.Context, runner *CIRunner) error
 	GetCIRunner(ctx context.Context, runnerID string) (*CIRunner, error)
+	GetCIRunnerByTokenHash(ctx context.Context, tokenHash string) (*CIRunner, error)
 	ListCIRunners(ctx context.Context, filter CIRunnerListFilter) ([]*CIRunner, error)
 	UpdateCIRunnerStatus(ctx context.Context, runnerID string, status string, lastSeenAt *time.Time) error
 	RevokeCIRunner(ctx context.Context, runnerID string, revokedAt time.Time) error
@@ -84,7 +92,9 @@ type CIJob struct {
 	Required         bool
 	RunnerPool       string
 	Image            string
+	Shell            string
 	WorkingDirectory string
+	TimeoutSeconds   int
 	Status           string
 	RunnerID         string
 	LeaseID          string
@@ -153,12 +163,25 @@ type CIRunner struct {
 	Name       string
 	Pool       string
 	Labels     []string
+	Executor   string
 	Status     string
 	TokenHash  string
 	Version    string
 	LastSeenAt *time.Time
 	CreatedAt  time.Time
 	DisabledAt *time.Time
+}
+
+type CIRunnerRegistrationToken struct {
+	TokenHash       string
+	HomeID          string
+	Name            string
+	Pool            string
+	Labels          []string
+	ExpiresAt       time.Time
+	CreatedByUserID string
+	CreatedAt       time.Time
+	UsedAt          *time.Time
 }
 
 type CIRunnerListFilter struct {

@@ -69,6 +69,8 @@ type InMemoryStorage struct {
 	ciLogChunks        map[string]*CILogChunk    // chunkID -> log chunk
 	ciLogChunkIDsByJob map[string][]string       // jobID -> chunkID
 	ciRunners          map[string]*CIRunner      // runnerID -> runner
+	ciRunnerByToken    map[string]string         // tokenHash -> runnerID
+	ciRunnerRegTokens  map[string]*CIRunnerRegistrationToken
 
 	// Commit history
 	sliceCommits       map[string][]*models.Commit // sliceID -> commits (newest first)
@@ -161,6 +163,8 @@ func NewInMemoryStorage() *InMemoryStorage {
 		ciLogChunks:                      make(map[string]*CILogChunk),
 		ciLogChunkIDsByJob:               make(map[string][]string),
 		ciRunners:                        make(map[string]*CIRunner),
+		ciRunnerByToken:                  make(map[string]string),
+		ciRunnerRegTokens:                make(map[string]*CIRunnerRegistrationToken),
 		sliceCommits:                     make(map[string][]*models.Commit),
 		commitsBySliceHash:               make(map[string]map[string]*models.Commit),
 		lockedSlices:                     make(map[string]bool),
@@ -257,6 +261,8 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.ciLogChunks = fresh.ciLogChunks
 	s.ciLogChunkIDsByJob = fresh.ciLogChunkIDsByJob
 	s.ciRunners = fresh.ciRunners
+	s.ciRunnerByToken = fresh.ciRunnerByToken
+	s.ciRunnerRegTokens = fresh.ciRunnerRegTokens
 	s.sliceCommits = fresh.sliceCommits
 	s.commitsBySliceHash = fresh.commitsBySliceHash
 	s.globalState = fresh.globalState

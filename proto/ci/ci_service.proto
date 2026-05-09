@@ -464,6 +464,14 @@ message JobPayload {
   string shell = 9;
   repeated string commands = 10;
   repeated string changed_files = 11;
+  repeated WorkspaceFile files = 12;
+}
+
+message WorkspaceFile {
+  string path = 1;
+  bytes content = 2;
+  bool executable = 3;
+  string symlink_target = 4;
 }
 
 message AppendLogRequest {

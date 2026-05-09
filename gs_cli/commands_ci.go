@@ -57,14 +57,6 @@ func handleCICommand(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleRunnerCommand(args []string) {
-	if len(args) == 0 {
-		printRunnerHelp()
-		return
-	}
-	commandFatal("NOT_IMPLEMENTED", fmt.Sprintf("gs runner %s is not implemented yet", args[0]), false, "See spec/ongoing_SLICE_CI_DESIGN.md")
-}
-
 func handleCIRun(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("ci run")

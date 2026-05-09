@@ -70,7 +70,7 @@ func printCIHelp() {
 
 func printRunnerHelp() {
 	fmt.Println("Usage: gs runner <command> [options]")
-	fmt.Println("CI runner management is planned but not implemented yet.")
+	fmt.Println("Manage and run user-hosted CI executors.")
 	fmt.Println("\nManagement commands:")
 	fmt.Println("  pool      List or inspect runner pools")
 	fmt.Println("  list      List registered runners")
@@ -92,8 +92,8 @@ func printRunnerHelp() {
 	fmt.Println("  gs runner pool list --json")
 	fmt.Println("  gs runner token create --name vm-1 --pool default --ttl 30m --json")
 	fmt.Println("  gs runner enroll --token <runner-registration-token>")
-	fmt.Println("  gs runner start --executor docker")
-	fmt.Println("  gs runner queue explain --pool default --json")
+	fmt.Println("  gs runner start --executor shell")
+	fmt.Println("  gs runner queue list --pool default --json")
 }
 
 func printUpdateHelp() {
