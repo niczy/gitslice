@@ -267,6 +267,8 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	fs := newCommandFlagSet("changeset merge")
 	waitForProjections := fs.Bool("wait", false, "Wait for merge projections before returning")
 	waitTimeout := fs.Duration("wait-timeout", 30*time.Second, "Maximum time to wait for merge projections")
+	force := fs.Bool("force", false, "Bypass CI merge gates when policy allows it")
+	forceReason := fs.String("reason", "", "Required reason when using --force")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
@@ -275,18 +277,25 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	if fs.NArg() == 1 {
 		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
 	} else if fs.NArg() > 1 {
-		commandUsage("Usage: gs changeset merge [<changeset-id>] [--wait] [--wait-timeout <duration>] [--json]")
+		commandUsage("Usage: gs changeset merge [<changeset-id>] [--force --reason <text>] [--wait] [--wait-timeout <duration>] [--json]")
 		return
 	}
 	if *waitTimeout < 0 {
 		commandFatal("INVALID_ARGUMENT", "--wait-timeout must be non-negative", false, "")
+	}
+	if *force && strings.TrimSpace(*forceReason) == "" {
+		commandFatal("INVALID_ARGUMENT", "--reason is required with --force", false, "gs changeset merge --force --reason \"why this is safe\"")
 	}
 	if err != nil {
 		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
 		return
 	}
 
-	req := &slicev1.MergeChangesetRequest{ChangesetId: changesetID}
+	req := &slicev1.MergeChangesetRequest{
+		ChangesetId: changesetID,
+		Force:       *force,
+		ForceReason: strings.TrimSpace(*forceReason),
+	}
 	resp, err := cli.sliceClient.MergeChangeset(ctx, req)
 	if err != nil {
 		commandFatalf("CHANGESET_MERGE_FAILED", true, "gs slice sync", "Failed to merge changeset: %v", err)

@@ -332,6 +332,7 @@ func printChangesetHelp() {
 	fmt.Println("  gs changeset review cs_123 --json")
 	fmt.Println("  gs changeset rebase cs_123 --json")
 	fmt.Println("  gs changeset merge --wait --json")
+	fmt.Println("  gs changeset merge --force --reason \"emergency fix\"")
 	fmt.Println("  gs changeset close --json")
 }
 

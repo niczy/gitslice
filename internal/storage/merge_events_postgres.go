@@ -101,9 +101,9 @@ func appendMergeEvent(ctx context.Context, exec execable, event *models.MergeEve
 		INSERT INTO merge_events (
 			home_id, shard_id, merge_seq, event_id, changeset_id,
 			source_slice_id, source_commit_hash, author, message,
-			touched_paths, path_updates, created_at
+			touched_paths, path_updates, forced, force_reason, forced_by, created_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13, $14, $15)
 	`,
 		normalized.HomeID,
 		normalized.ShardID,
@@ -116,6 +116,9 @@ func appendMergeEvent(ctx context.Context, exec execable, event *models.MergeEve
 		normalized.Message,
 		touchedPaths,
 		pathUpdates,
+		normalized.Forced,
+		normalized.ForceReason,
+		normalized.ForcedBy,
 		normalized.CreatedAt,
 	)
 	if err != nil {
@@ -248,7 +251,7 @@ func getMergeEventByChangeset(ctx context.Context, q queryable, changesetID stri
 	event, err := scanMergeEvent(q.QueryRow(ctx, `
 		SELECT home_id, shard_id, merge_seq, event_id, changeset_id,
 		       source_slice_id, source_commit_hash, author, message,
-		       touched_paths, path_updates, created_at
+		       touched_paths, path_updates, forced, force_reason, forced_by, created_at
 		FROM merge_events
 		WHERE changeset_id = $1
 	`, changesetID))
@@ -279,7 +282,7 @@ func listMergeEvents(ctx context.Context, q queryable, shardID int32, afterSeq i
 	rows, err := q.Query(ctx, `
 		SELECT home_id, shard_id, merge_seq, event_id, changeset_id,
 		       source_slice_id, source_commit_hash, author, message,
-		       touched_paths, path_updates, created_at
+		       touched_paths, path_updates, forced, force_reason, forced_by, created_at
 		FROM merge_events
 		WHERE shard_id = $1 AND merge_seq > $2
 		ORDER BY merge_seq ASC
@@ -464,6 +467,9 @@ func scanMergeEvent(row mergeEventScanner) (*models.MergeEvent, error) {
 		&event.Message,
 		&touchedPathsJSON,
 		&pathUpdatesJSON,
+		&event.Forced,
+		&event.ForceReason,
+		&event.ForcedBy,
 		&event.CreatedAt,
 	); err != nil {
 		return nil, err
@@ -500,6 +506,8 @@ func normalizeMergeEvent(event *models.MergeEvent) (*models.MergeEvent, error) {
 	normalized.SourceSliceID = strings.TrimSpace(event.SourceSliceID)
 	normalized.SourceCommitHash = strings.TrimSpace(event.SourceCommitHash)
 	normalized.Author = strings.TrimSpace(event.Author)
+	normalized.ForceReason = strings.TrimSpace(event.ForceReason)
+	normalized.ForcedBy = strings.TrimSpace(event.ForcedBy)
 	normalized.TouchedPaths = append([]string(nil), event.TouchedPaths...)
 	normalized.PathUpdates = cloneMergePathUpdates(event.PathUpdates)
 	if normalized.TouchedPaths == nil {

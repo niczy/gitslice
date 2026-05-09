@@ -4081,6 +4081,172 @@ jobs:
 	}
 }
 
+func TestMergeChangesetRequiresCurrentCIPass(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	srv, changesetID, runID := setupCIMergeGateChangeset(t, ctx, st, `
+version: 1
+triggers:
+  changeset_export: true
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+merge_policy:
+  require_success: true
+  allow_force_merge: true
+`)
+
+	if _, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: changesetID}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("MergeChangeset queued CI error = %v, want FailedPrecondition", err)
+	}
+
+	passRequiredCIChecks(t, ctx, st, runID)
+	mergeResp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: changesetID})
+	if err != nil {
+		t.Fatalf("MergeChangeset after CI pass failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("merge status = %v, want success", mergeResp.GetStatus())
+	}
+}
+
+func TestMergeChangesetForceBypassesCIAuditedWhenPolicyAllows(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	srv, changesetID, _ := setupCIMergeGateChangeset(t, ctx, st, `
+version: 1
+triggers:
+  changeset_export: true
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+merge_policy:
+  require_success: true
+  allow_force_merge: true
+`)
+
+	mergeResp, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{
+		ChangesetId: changesetID,
+		Force:       true,
+		ForceReason: "incident mitigation",
+	})
+	if err != nil {
+		t.Fatalf("force MergeChangeset failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("force merge status = %v, want success", mergeResp.GetStatus())
+	}
+	event, err := st.GetMergeEventByChangeset(ctx, changesetID)
+	if err != nil {
+		t.Fatalf("GetMergeEventByChangeset failed: %v", err)
+	}
+	if !event.Forced || event.ForceReason != "incident mitigation" || event.ForcedBy != "alice" {
+		t.Fatalf("force audit = forced=%t reason=%q by=%q", event.Forced, event.ForceReason, event.ForcedBy)
+	}
+}
+
+func TestMergeChangesetEnqueuesMergeRequestedRunWhenChecksMissing(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	srv, changesetID, runID := setupCIMergeGateChangeset(t, ctx, st, `
+version: 1
+triggers:
+  merge_requested: true
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+merge_policy:
+  require_success: true
+  allow_force_merge: true
+`)
+	if runID != "" {
+		t.Fatalf("changeset_export disabled, got unexpected run %q", runID)
+	}
+
+	if _, err := srv.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: changesetID}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("MergeChangeset missing CI error = %v, want FailedPrecondition", err)
+	}
+	runs, err := st.ListCIRuns(ctx, storage.CIRunListFilter{ChangesetID: changesetID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListCIRuns failed: %v", err)
+	}
+	if len(runs) != 1 || runs[0].TriggerEvent != "merge_requested" || runs[0].Status != "queued" {
+		t.Fatalf("merge_requested runs = %#v, want one queued run", runs)
+	}
+}
+
+func setupCIMergeGateChangeset(t *testing.T, ctx context.Context, st storage.Storage, platformYAML string) (slicev1.SliceServiceServer, string, string) {
+	t.Helper()
+	homeSliceID := homeslice.IDForUsername("alice")
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/.gitslice/ci.yaml", []byte(platformYAML))
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/api/.gs-ci.yaml", []byte(`
+version: 1
+name: api
+watch:
+  - "**/*.go"
+jobs:
+  unit:
+    required: true
+    commands:
+      - go test ./...
+`))
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/api/main.go", []byte("package main\nfunc main() {}\n"))
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: "base-ci-gate",
+		ModifiedFiles:  []string{"alice/api/main.go"},
+		Message:        "ci gate",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	return srv, createResp.GetChangesetId(), createResp.GetCiRunId()
+}
+
+func passRequiredCIChecks(t *testing.T, ctx context.Context, st storage.Storage, runID string) {
+	t.Helper()
+	run, err := st.GetCIRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetCIRun(%s) failed: %v", runID, err)
+	}
+	checks, err := st.ListCIChecks(ctx, run.ChangesetID, run.ChangesetVersionID, run.PlanHash)
+	if err != nil {
+		t.Fatalf("ListCIChecks failed: %v", err)
+	}
+	if len(checks) == 0 {
+		t.Fatal("expected CI checks")
+	}
+	now := time.Now()
+	for _, check := range checks {
+		if !check.Required {
+			continue
+		}
+		check.Status = "passed"
+		check.UpdatedAt = now
+		if err := st.UpsertCICheck(ctx, check); err != nil {
+			t.Fatalf("UpsertCICheck failed: %v", err)
+		}
+	}
+	if err := st.UpdateCIRunStatus(ctx, runID, "success", &now); err != nil {
+		t.Fatalf("UpdateCIRunStatus failed: %v", err)
+	}
+}
+
 func TestListChangesetSnapshotsReturnsSyntheticWhenNoStoredSnapshots(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
