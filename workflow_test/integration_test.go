@@ -1148,10 +1148,16 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 	defer cancel()
 	username := fmt.Sprintf("fs-cli-user-%d", time.Now().UnixNano())
 	ctx = withUsername(ctx, username)
+	sliceClient := newSliceClient(t)
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("mkdir CLI home: %v", err)
+	}
+	env := map[string]string{"HOME": homeDir}
 
 	runCLIForUser := func(workdir string, args ...string) string {
 		t.Helper()
-		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", nil, true, username, args...)
+		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
 		if err != nil {
 			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
 		}
@@ -1238,6 +1244,15 @@ func TestFilesystemCLIWorkflowEndToEnd(t *testing.T) {
 
 	if err := waitForMergedChangesetMessage(ctx, testStorage, homeslice.IDForUsername(username), "write "+remoteFile, 2*time.Second, 50*time.Millisecond); err != nil {
 		t.Fatalf("expected fs publish to create a merged changeset: %v", err)
+	}
+	if err := waitForCondition(2*time.Second, 50*time.Millisecond, func() (bool, error) {
+		state, err := sliceClient.GetSliceState(ctx, &slicev1.StateRequest{SliceId: homeslice.IDForUsername(username)})
+		if err != nil {
+			return false, err
+		}
+		return state.GetLatestCommitHash() == secondWriteCommit, nil
+	}); err != nil {
+		t.Fatalf("expected home slice head to reach %s before diff: %v", secondWriteCommit, err)
 	}
 
 	checkoutDir := filepath.Join(t.TempDir(), "checkout")
@@ -2695,6 +2710,11 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("failed to resolve conflict to slice A: %v", err)
 	}
 
+	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "stale after slice A merge"})
+	if err != nil {
+		t.Fatalf("failed to create stale changeset: %v", err)
+	}
+
 	changeset, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
 		SliceId:        sliceA,
 		BaseCommitHash: "",
@@ -2743,32 +2763,12 @@ func TestSlicePushLocksAndAutoPromotion(t *testing.T) {
 		t.Fatalf("expected promoted commit %s and slice %s in global history, got head=%s: %v", mergeResp.NewCommitHash, sliceA, gotHead, err)
 	}
 
-	// Materialize a divergent local file state in slice B after ownership has
-	// been resolved to slice A. This keeps the test exercising real
-	// content-aware conflict detection instead of the legacy ownership-only
-	// fallback path.
-	bManifestHash := mustWriteSliceManifest(t, ctx, testStorage, sliceB, sharedFile, []byte("slice-b divergent content"))
-	if err := testStorage.AddEntry(ctx, &models.DirectoryEntry{
-		ID:       fmt.Sprintf("%s:%s", sliceB, sharedFile),
-		Path:     sharedFile,
-		Type:     "file",
-		ParentID: sliceB,
-		Hash:     bManifestHash,
-		Size:     int64(len("slice-b divergent content")),
-	}); err != nil && !errors.Is(err, storage.ErrEntryExists) {
-		t.Fatalf("failed to add divergent entry for slice B: %v", err)
-	}
-
-	otherChange, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{SliceId: sliceB, ModifiedFiles: []string{sharedFile}, Message: "should conflict"})
-	if err != nil {
-		t.Fatalf("failed to create conflicting changeset: %v", err)
-	}
 	conflictResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: otherChange.ChangesetId})
 	if err != nil {
-		t.Fatalf("expected merge response despite lock, got error: %v", err)
+		t.Fatalf("expected merge response for stale path-head changeset, got error: %v", err)
 	}
-	if conflictResp.Status != slicev1.MergeStatus_MERGE_STATUS_CONFLICT {
-		t.Fatalf("expected conflict status for locked file merge, got %v", conflictResp.Status)
+	if conflictResp.Status != slicev1.MergeStatus_MERGE_STATUS_STALE_BASE {
+		t.Fatalf("expected stale-base status for older path-head changeset, got %v", conflictResp.Status)
 	}
 }
 

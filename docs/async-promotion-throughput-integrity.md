@@ -40,8 +40,8 @@ Home/root promotion = derived materialization
 
 The merge path should synchronously decide:
 
-1. Is the changeset based on the current slice head?
-2. Does it conflict with any other active slice for the touched paths?
+1. Does the changeset carry complete base path versions for every touched path?
+2. Do those versions still match the current `home_path_heads` rows?
 3. Can the changeset be marked merged?
 4. What source slice commit/event was accepted?
 
@@ -66,20 +66,20 @@ slice B includes alice/app/foo.go
 ```
 
 If slice A and slice B both edit `alice/app/foo.go`, correctness depends on
-checking the active slices for that path and comparing their current file
-manifest hashes.
+checking the home path head for that path and comparing it with each
+changeset's recorded base path version.
 
 Expected workflow:
 
 1. Slice A changes `alice/app/foo.go`.
 2. Slice A merges successfully.
 3. Slice B tries to merge a different version based on an older file state.
-4. Merge checks `file_slice_index` plus source-slice manifest hashes.
-5. Slice B receives a conflict before it can append an accepted merge event.
+4. Merge checks `home_path_heads[alice/app/foo.go]` against slice B's snapshot
+   base path version.
+5. Slice B receives `NEEDS_SYNC` before it can append an accepted merge event.
 
 This logic does not require the home slice to already reflect slice A. The home
-slice is just a view. The active source slices and their manifest refs are the
-conflict authority.
+slice is just a view. `home_path_heads` is the conflict authority.
 
 ---
 
@@ -91,7 +91,7 @@ Legacy fully synchronous behavior:
 
 ```
 MergeChangeset
-  -> validate conflicts
+  -> validate path-head versions
   -> mark source changeset merged
   -> append source slice commit
   -> copy refs into home/root views
@@ -118,7 +118,7 @@ Current request-time behavior:
 
 ```
 MergeChangeset
-  -> validate conflicts
+  -> validate path-head versions
   -> mark source changeset merged
   -> append source slice commit
   -> enqueue promotion work
@@ -281,12 +281,12 @@ Conflict resolution must continue to work even when home promotion lags.
 Required merge-time behavior:
 
 1. Normalize the modified paths.
-2. Read active source slices for those paths from `file_slice_index`.
-3. For each active slice, read the current path manifest hash from
-   `file_manifests`.
-4. Compare the preferred slice hash to other active slice hashes.
-5. Return a conflict if hashes differ.
-6. Only append a merge event after conflict checks pass.
+2. Load the changeset snapshot's `base_path_versions`.
+3. Read `home_path_heads` for the touched `(home_id, path)` rows.
+4. Return `NEEDS_SYNC` if any current path version differs from the snapshot
+   base version.
+5. Atomically compare-and-set the path heads to their new versions and append
+   the accepted merge event in the same transaction.
 
 This means home materialization lag does not hide conflicts. A stale home view
 can affect reads from the home slice, but it cannot make an invalid source-slice
@@ -296,12 +296,16 @@ Conflict resolution flow:
 
 ```
 MergeChangeset(slice B)
-  -> active slices for alice/app/foo.go = [slice A, slice B]
-  -> hash(slice A, foo.go) != hash(slice B, foo.go)
-  -> return MERGE_STATUS_CONFLICT
+  -> snapshot base_path_versions[alice/app/foo.go] = 12
+  -> home_path_heads[alice/app/foo.go].path_version = 13
+  -> return MERGE_STATUS_STALE_BASE
   -> no merge event appended
   -> no promotion event exists
 ```
+
+`file_slice_index` and materialized home/root trees are read models for
+compatibility and discovery. For snapshot-backed changesets, they must not be
+used as merge conflict authority.
 
 ---
 
@@ -316,9 +320,8 @@ Recommended states:
 
 | State | Meaning | User action |
 | --- | --- | --- |
-| `READY_FOR_MERGE` | Base commit matches the slice head and touched files do not currently diverge from other active slices. | Merge. |
-| `NEEDS_SYNC` | The source slice head moved after the changeset base commit. | Sync/rebase the changeset against the latest slice head. |
-| `HAS_CONFLICTS` | One or more touched paths diverge from another active slice. | Resolve conflicts before merge. |
+| `READY_FOR_MERGE` | Touched path heads still match the changeset snapshot's base path versions. | Merge. |
+| `NEEDS_SYNC` | One or more touched path heads changed after the changeset was exported. | Sync/rebase the changeset against the latest path heads. |
 | `MERGED` | The changeset was accepted and has a merged timestamp/commit. | No merge action. |
 
 This state is exposed as `ChangesetInfo.review_status` for open changesets in
@@ -326,21 +329,22 @@ list/detail responses. `MERGED` remains the lifecycle `ChangesetStatus`, not a
 review status. The status can be computed on demand for open changesets:
 
 1. Load the changeset and source slice metadata.
-2. Compare `changeset.base_commit_hash` with the source slice head.
-3. If the base is stale, return `NEEDS_SYNC`.
-4. Read active source slices for the changeset's modified files.
-5. Compare current manifest hashes across those active slices.
-6. If any touched path diverges, return `HAS_CONFLICTS`.
-7. Otherwise return `READY_FOR_MERGE`.
+2. Load the latest changeset snapshot.
+3. If the snapshot has base versions for every touched path, compare those
+   versions with `home_path_heads`.
+4. If any path diverged, return `NEEDS_SYNC`; otherwise return
+   `READY_FOR_MERGE`.
+5. If no complete path-head snapshot exists, return `NEEDS_SYNC`; the changeset
+   must be re-exported before it can merge.
 
 The proactive state is advisory and may be cached, but it must not replace the
 merge transaction's synchronous validation. Another slice can merge after the UI
-renders `READY_FOR_MERGE`, so `MergeChangeset` must still repeat the stale-base
-and conflict checks before appending a merge event.
+renders `READY_FOR_MERGE`, so `MergeChangeset` must still repeat the path-head
+CAS before appending a merge event.
 
 Async promotion does not change this logic. The proactive status should inspect
-source-slice heads, active slice membership, and manifest refs. It should not
-depend on whether home/root materialized views are current.
+path heads and snapshot manifest refs. It should not depend on whether
+home/root materialized views are current.
 
 ---
 
@@ -449,7 +453,7 @@ This reduces write amplification before changing consistency behavior.
 
 The design is correct only if these invariants hold:
 
-1. A changeset cannot be marked merged unless conflict checks pass.
+1. A changeset cannot be marked merged unless path-head CAS passes.
 2. A merge event is appended in the same transaction as the accepted source
    slice commit.
 3. Promotion workers never overwrite a path with an older `merge_seq`.
@@ -458,9 +462,9 @@ The design is correct only if these invariants hold:
 6. APIs that require history or home/root freshness explicitly wait for the
    relevant projection.
 7. File/folder overlap within the same home is treated the same as overlap
-   across different homes: active source slices decide conflicts.
+   across different homes: home path heads decide conflicts.
 8. Proactive changeset state is advisory; the merge transaction repeats all
-   stale-base and conflict checks before accepting a merge.
+   path-head CAS checks before accepting a merge.
 
 ---
 

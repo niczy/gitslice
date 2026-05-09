@@ -32,7 +32,8 @@ func TestConflictList(t *testing.T) {
 func TestConflictListChangeset(t *testing.T) {
 	workdir, sliceID, fileID := createConflictSetup(t)
 
-	// Create a changeset that will hit the shared file to ensure conflict detection is visible
+	// Legacy conflict listing remains visible, but merge authority is now the
+	// home path head recorded in the changeset snapshot.
 	output := runCLIOrFail(t, workdir, "changeset", "create", "--message", "conflict", "--files", fileID)
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
@@ -40,15 +41,8 @@ func TestConflictListChangeset(t *testing.T) {
 	}
 
 	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
-	if !strings.Contains(output, "MERGE_STATUS_CONFLICT") {
-		t.Fatalf("expected merge conflict status, got: %s", output)
-	}
-	if !strings.Contains(output, "gs slice sync && gs slice diff && gs slice export && gs changeset merge") {
-		t.Fatalf("expected merge conflict guidance, got: %s", output)
-	}
-
-	if !strings.Contains(output, fileID) {
-		t.Fatalf("expected merge output to mention conflicting file, got: %s", output)
+	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
+		t.Fatalf("expected path-head-authoritative merge success, got: %s", output)
 	}
 
 	// Ensure the list command still returns the conflict for the slice

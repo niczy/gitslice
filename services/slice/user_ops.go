@@ -146,14 +146,6 @@ func (s *sliceServiceServer) BatchMerge(ctx context.Context, req *slicev1.BatchM
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root slice: %v", err))
 	}
 
-	conflicts, err := s.scopedDivergentConflicts(ctx, username, "")
-	if err != nil {
-		return nil, err
-	}
-	if len(conflicts) > 0 {
-		return nil, status.Error(codes.FailedPrecondition, "conflicts present; resolve before merging")
-	}
-
 	allSlices, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))

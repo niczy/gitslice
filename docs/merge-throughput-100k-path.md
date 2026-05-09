@@ -1196,31 +1196,30 @@ Scope:
 
 Validation:
 
-- Open changesets show `READY`, `NEEDS_SYNC`, or `HAS_CONFLICTS` from the new
-  base-version data.
-- Existing source-slice-head checks remain as a fallback during migration.
+- Open changesets show `READY` or `NEEDS_SYNC` from base-version data.
+- Changesets without complete base path versions are treated as needing sync and
+  must be re-exported.
 
 Behavior change:
 
 - More precise proactive conflict/sync status.
 
-### PR 12: Shadow path-head conflict checks
+### PR 12: Remove legacy conflict authority
 
 Scope:
 
-- During merge, run the new path-head conflict check in shadow mode.
-- Log or metric any disagreement between existing conflict logic and path-head
-  logic.
-- Do not reject or accept based on path heads yet.
+- Delete source-slice-head and active-slice conflict checks from merge/review.
+- Require complete changeset snapshot `base_path_versions` before merge.
+- Return `NEEDS_SYNC`/`STALE_BASE` when path-head authority is unavailable.
 
 Validation:
 
-- Staging shadow metrics show no unexpected disagreements for normal workflows.
-- Deliberate conflict tests prove the new logic detects conflicts.
+- Deliberate stale path-head tests prove overlapping writes are rejected.
+- Snapshot-backed changesets are not blocked by stale active-slice indexes.
 
 Behavior change:
 
-- None, except observability.
+- Path-head CAS is the only merge conflict authority.
 
 ### PR 13: Switch merge authority to path-head CAS
 
@@ -1231,11 +1230,14 @@ Scope:
 - Existing source slice commit/history updates become projections or secondary
   writes after the accepted event.
 - Remove root/home materialization from merge authority.
+- Treat `file_slice_index` as a read/discovery index, not merge authority.
 
 Validation:
 
 - Conflicting changes to the same path cannot both merge.
 - Disjoint-path changes under the same home can merge concurrently.
+- Changesets are not blocked by stale active-slice indexes when their path-head
+  base versions are current.
 - Accepted merge event and path-head updates commit atomically.
 - Benchmarks measure accepted merge QPS separately from projections.
 
@@ -1306,8 +1308,7 @@ Behavior change:
 - Keep every projection worker idempotent before enabling retries.
 - Keep every user-visible eventual-consistency change paired with freshness
   status or wait support.
-- Do not remove the old conflict path until path-head checks have run in shadow
-  mode on staging.
+- Do not reintroduce source-slice-head or active-slice conflict authority.
 - Every PR that changes merge semantics should include an e2e workflow test:
   checkout slice, make change, create changeset, export, merge, wait if needed,
   and verify file tree and history behavior.

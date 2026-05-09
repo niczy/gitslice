@@ -1429,62 +1429,12 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 				Message:     pathHeadDriftMergeMessage(drifts),
 			}, nil
 		}
-		if !isRevertChangesetHash(cs.Hash) {
-			conflictStartedAt := time.Now()
-			conflicts, _, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, modifiedFiles)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
-			}
-			profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
-			if len(conflicts) > 0 {
-				return &slicev1.MergeChangesetResponse{
-					Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
-					NewCommitHash: "",
-					ChangesetId:   cs.ID,
-					Conflicts:     conflicts,
-				}, nil
-			}
-		}
 	} else {
-		if !useCurrentHead {
-			stale, currentHead, err := s.changesetNeedsRebase(ctx, cs)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset base commit: %v", err))
-			}
-			if stale {
-				s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "stale_base")
-				return &slicev1.MergeChangesetResponse{
-					Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
-					ChangesetId: cs.ID,
-					Message: fmt.Sprintf(
-						"changeset base commit %s is stale; current slice head is %s. Rebase the changeset before merging.",
-						shortHash(cs.BaseCommitHash),
-						shortHash(currentHead),
-					),
-				}, nil
-			}
-		}
-
-		if !isRevertChangesetHash(cs.Hash) {
-			conflictStartedAt := time.Now()
-			conflicts, _, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, modifiedFiles)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to check conflicts: %v", err))
-			}
-			profile.markConflictCheck(len(conflicts), time.Since(conflictStartedAt))
-
-			if len(conflicts) > 0 {
-				s.logPathHeadShadowMergeDisagreement(ctx, cs, true, "file_conflict")
-				return &slicev1.MergeChangesetResponse{
-					Status:        slicev1.MergeStatus_MERGE_STATUS_CONFLICT,
-					NewCommitHash: "",
-					ChangesetId:   cs.ID,
-					Conflicts:     conflicts,
-				}, nil
-			}
-		}
-
-		s.logPathHeadShadowMergeDisagreement(ctx, cs, false, "accepted")
+		return &slicev1.MergeChangesetResponse{
+			Status:      slicev1.MergeStatus_MERGE_STATUS_STALE_BASE,
+			ChangesetId: cs.ID,
+			Message:     missingPathHeadAuthorityMessage(),
+		}, nil
 	}
 
 	if err := s.validateChangesetSnapshotContentRefs(ctx, s.storage, cs); err != nil {
@@ -2014,156 +1964,6 @@ func mergeEventShardID(homeID string) int32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(homeID))
 	return int32(h.Sum32() % mergeEventShardCount)
-}
-
-func (s *sliceServiceServer) logPathHeadShadowMergeDisagreement(ctx context.Context, cs *models.Changeset, legacyBlocked bool, legacyReason string) {
-	if cs == nil {
-		return
-	}
-	snapshot, err := s.storage.GetChangesetSnapshot(ctx, cs.ID, 0)
-	if err != nil {
-		if !errors.Is(err, storage.ErrChangesetNotFound) {
-			log.Printf("path-head shadow merge check failed to load snapshot changeset=%s slice=%s: %v", cs.ID, cs.SliceID, err)
-		}
-		return
-	}
-	drifts, compared, err := s.changesetPathHeadDrifts(ctx, cs, snapshot)
-	if err != nil {
-		log.Printf("path-head shadow merge check failed changeset=%s slice=%s: %v", cs.ID, cs.SliceID, err)
-		return
-	}
-	if !compared {
-		return
-	}
-	pathHeadBlocked := len(drifts) > 0
-	if pathHeadBlocked == legacyBlocked {
-		return
-	}
-	log.Printf(
-		"path-head shadow merge disagreement changeset=%s slice=%s legacy_blocked=%t legacy_reason=%s path_head_blocked=%t path_head_drifts=%s",
-		cs.ID,
-		cs.SliceID,
-		legacyBlocked,
-		legacyReason,
-		pathHeadBlocked,
-		formatPathHeadDriftsForLog(drifts),
-	)
-}
-
-func formatPathHeadDriftsForLog(drifts []changesetPathHeadDrift) string {
-	if len(drifts) == 0 {
-		return "[]"
-	}
-	parts := make([]string, 0, len(drifts))
-	for i, drift := range drifts {
-		if i >= 5 {
-			parts = append(parts, fmt.Sprintf("...(+%d more)", len(drifts)-i))
-			break
-		}
-		parts = append(parts, fmt.Sprintf("%s:%d->%d", drift.Path, drift.BaseVersion, drift.CurrentVersion))
-	}
-	return "[" + strings.Join(parts, ",") + "]"
-}
-
-func (s *sliceServiceServer) changesetNeedsRebase(ctx context.Context, cs *models.Changeset) (bool, string, error) {
-	if cs == nil {
-		return false, "", nil
-	}
-	base := strings.TrimSpace(cs.BaseCommitHash)
-	if base == "" {
-		return false, "", nil
-	}
-
-	metadata, err := s.storage.GetSliceMetadata(ctx, strings.TrimSpace(cs.SliceID))
-	if err != nil {
-		return false, "", err
-	}
-	if metadata == nil {
-		return false, "", nil
-	}
-	currentHead := strings.TrimSpace(metadata.HeadCommitHash)
-	if currentHead == "" {
-		return false, "", nil
-	}
-	if currentHead == base {
-		return false, currentHead, nil
-	}
-	return true, currentHead, nil
-}
-
-func collectMergeConflictsAndOwnership(ctx context.Context, st storage.Storage, preferredSliceID string, modifiedFiles []string) ([]*slicev1.Conflict, []*slicev1.ReviewIssue, error) {
-	activeSlicesByFile, err := getActiveSlicesForFiles(ctx, st, modifiedFiles)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	conflicts := make([]*slicev1.Conflict, 0)
-	ownershipIssues := make([]*slicev1.ReviewIssue, 0)
-	for _, fileID := range normalizeModifiedFiles(modifiedFiles) {
-		activeSlices := normalizeActiveSlicesForConflict(activeSlicesByFile[fileID], preferredSliceID)
-		if len(activeSlices) == 0 {
-			continue
-		}
-
-		conflictingSlices, err := storage.DivergentSlicesForPreferred(ctx, st, fileID, preferredSliceID, activeSlices)
-		if err != nil {
-			return nil, nil, fmt.Errorf("compare conflicting slice state for %s: %w", fileID, err)
-		}
-		if len(conflictingSlices) > 0 {
-			conflicts = append(conflicts, &slicev1.Conflict{
-				FileId:              fileID,
-				ConflictingSliceIds: conflictingSlices,
-				Type:                slicev1.ConflictType_CONFLICT_TYPE_CONTENT,
-				Message:             fmt.Sprintf("content diverges across slices: %s", strings.Join(conflictingSlices, ", ")),
-			})
-			continue
-		}
-
-		ownershipIssues = append(ownershipIssues, &slicev1.ReviewIssue{
-			Type:                slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_OWNERSHIP_CONFLICT,
-			FileId:              fileID,
-			ConflictingSliceIds: activeSlices,
-			Message:             fmt.Sprintf("path is also tracked by slices %s, but content is currently normalized", strings.Join(activeSlices, ", ")),
-		})
-	}
-
-	return conflicts, ownershipIssues, nil
-}
-
-func normalizeActiveSlicesForConflict(sliceIDs []string, preferredSliceID string) []string {
-	preferredSliceID = strings.TrimSpace(preferredSliceID)
-	if len(sliceIDs) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(sliceIDs))
-	out := make([]string, 0, len(sliceIDs))
-	for _, raw := range sliceIDs {
-		sliceID := strings.TrimSpace(raw)
-		if sliceID == "" || sliceID == preferredSliceID {
-			continue
-		}
-		if _, ok := seen[sliceID]; ok {
-			continue
-		}
-		seen[sliceID] = struct{}{}
-		out = append(out, sliceID)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func reviewIssueTypeForConflict(conflict *slicev1.Conflict) slicev1.ReviewIssueType {
-	if conflict == nil {
-		return slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_UNSPECIFIED
-	}
-	switch conflict.GetType() {
-	case slicev1.ConflictType_CONFLICT_TYPE_OWNERSHIP:
-		return slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_OWNERSHIP_CONFLICT
-	case slicev1.ConflictType_CONFLICT_TYPE_CONTENT:
-		return slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_CONTENT_CONFLICT
-	default:
-		return slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_UNSPECIFIED
-	}
 }
 
 func (s *sliceServiceServer) CloseChangeset(ctx context.Context, req *slicev1.CloseChangesetRequest) (*slicev1.CloseChangesetResponse, error) {
@@ -3620,49 +3420,24 @@ func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, c
 		return slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
 	}
 
-	reviewStatus := slicev1.ReviewStatus_READY_FOR_MERGE
-	issues := make([]*slicev1.ReviewIssue, 0)
-	warnings := make([]string, 0)
 	if handled, pathStatus, pathIssues, pathWarnings, err := s.evaluateChangesetPathHeadReviewState(ctx, cs, snapshot); err != nil {
-		return reviewStatus, nil, nil, err
+		return slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, err
 	} else if handled {
 		return pathStatus, pathIssues, pathWarnings, nil
 	}
 
-	if stale, currentHead, err := s.changesetNeedsRebase(ctx, cs); err != nil {
-		return reviewStatus, nil, nil, fmt.Errorf("failed to evaluate changeset base commit: %w", err)
-	} else if stale {
-		reviewStatus = slicev1.ReviewStatus_NEEDS_SYNC
-		message := fmt.Sprintf(
-			"changeset base %s is stale; current slice head is %s. Sync the changeset before merging.",
-			shortHash(cs.BaseCommitHash),
-			shortHash(currentHead),
-		)
-		warnings = append(warnings, message)
-		issues = append(issues, &slicev1.ReviewIssue{
+	message := missingPathHeadAuthorityMessage()
+	return slicev1.ReviewStatus_NEEDS_SYNC,
+		[]*slicev1.ReviewIssue{{
 			Type:    slicev1.ReviewIssueType_REVIEW_ISSUE_TYPE_STALE_BASE,
 			Message: message,
-		})
-		return reviewStatus, issues, warnings, nil
-	}
+		}},
+		[]string{message},
+		nil
+}
 
-	conflicts, ownershipIssues, err := collectMergeConflictsAndOwnership(ctx, s.storage, cs.SliceID, cs.ModifiedFiles)
-	if err != nil {
-		return reviewStatus, nil, nil, fmt.Errorf("failed to review changeset conflicts: %w", err)
-	}
-	if len(conflicts) > 0 {
-		reviewStatus = slicev1.ReviewStatus_HAS_CONFLICTS
-		for _, conflict := range conflicts {
-			issues = append(issues, &slicev1.ReviewIssue{
-				Type:                reviewIssueTypeForConflict(conflict),
-				FileId:              conflict.GetFileId(),
-				ConflictingSliceIds: append([]string(nil), conflict.GetConflictingSliceIds()...),
-				Message:             conflict.GetMessage(),
-			})
-		}
-	}
-	issues = append(issues, ownershipIssues...)
-	return reviewStatus, issues, warnings, nil
+func missingPathHeadAuthorityMessage() string {
+	return "changeset does not include complete path-head base versions. Re-export the changeset before merging."
 }
 
 func (s *sliceServiceServer) evaluateChangesetPathHeadReviewState(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) (bool, slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
@@ -3674,7 +3449,7 @@ func (s *sliceServiceServer) evaluateChangesetPathHeadReviewState(ctx context.Co
 		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
 	}
 	if len(drifts) == 0 {
-		return false, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
+		return true, slicev1.ReviewStatus_READY_FOR_MERGE, nil, nil, nil
 	}
 
 	issues := make([]*slicev1.ReviewIssue, 0, len(drifts))
@@ -3715,6 +3490,9 @@ func (s *sliceServiceServer) changesetPathHeadDrifts(ctx context.Context, cs *mo
 		return nil, true, err
 	}
 	paths := normalizeModifiedFiles(cs.ModifiedFiles)
+	if !snapshotHasBaseVersionsForPaths(snapshot, paths) {
+		return nil, false, nil
+	}
 	homeID := mergeEventHomeID(slice, cs, paths)
 	if strings.TrimSpace(homeID) == "" {
 		return nil, false, nil
@@ -4769,10 +4547,10 @@ func (s *sliceServiceServer) promoteHomeGroup(ctx context.Context, username stri
 			}
 		}
 	}
-	if err := s.updateHomePromotionState(ctx, homeSlice.ID, jobs); err != nil {
-		return err
+	if len(copyJobs) == 0 {
+		return nil
 	}
-	return nil
+	return s.updateHomePromotionState(ctx, homeSlice.ID, copyJobs)
 }
 
 func (s *sliceServiceServer) promotionHomeUsername(ctx context.Context, job rootpromote.Job) (string, bool, error) {
