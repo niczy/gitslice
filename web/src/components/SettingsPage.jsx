@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
 import { Card, CardContent } from './ui/card.jsx';
+import CISettingsPanel from './CISettingsPanel.jsx';
 import {
   createAgentKey,
   deleteAuthMethod,
@@ -35,10 +36,13 @@ function formatAuthMethodType(value) {
 export default function SettingsPage({
   username,
   authSessionSource,
+  settingsSection = '',
+  settingsRunnerId = '',
   onOpenProfile,
   onLogout,
   initialSettingsData = null,
 }) {
+  const activeSection = String(settingsSection || '').startsWith('ci') ? 'ci' : 'account';
   const hasInitialSettings = initialSettingsData?.username === username;
   const [loadedSettingsUsername, setLoadedSettingsUsername] = useState(() => (hasInitialSettings ? username : ''));
   const [bindings, setBindings] = useState(() => (hasInitialSettings ? initialSettingsData.bindings || [] : []));
@@ -358,6 +362,23 @@ export default function SettingsPage({
       {!username && <div className="panel-error">You need to log in before account settings are available.</div>}
       {username && (
         <>
+          <div className="flex flex-wrap gap-2" data-testid="settings-tabs">
+            <Button asChild variant={activeSection === 'account' ? 'secondary' : 'ghost'} size="sm">
+              <a href="/settings">Account</a>
+            </Button>
+            <Button asChild variant={activeSection === 'ci' ? 'secondary' : 'ghost'} size="sm">
+              <a href="/settings/ci">CI executors</a>
+            </Button>
+          </div>
+          {activeSection === 'ci' && (
+            <CISettingsPanel
+              username={username}
+              settingsRunnerId={settingsRunnerId}
+              initialSettingsData={initialSettingsData}
+            />
+          )}
+          {activeSection === 'account' && (
+            <>
           <div className="grid gap-4 md:grid-cols-2">
             <Card className="border-border/70">
               <CardContent className="space-y-4 pt-6">
@@ -680,6 +701,8 @@ export default function SettingsPage({
               </CardContent>
             </Card>
           </div>
+            </>
+          )}
         </>
       )}
     </section>

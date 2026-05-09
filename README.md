@@ -619,7 +619,7 @@ the directories that own jobs. Prefer Docker runners for repeatable execution:
 
 ```bash
 gs runner token create --name vm-1 --pool default --ttl 30m
-gs runner enroll --token <runner-registration-token> --executor docker
+gs runner register --token <runner-registration-token> --executor docker
 gs runner start --executor docker
 ```
 
@@ -630,13 +630,19 @@ with:
 
 ```bash
 gs runner pool list
+gs runner pool show default
 gs runner list --pool default
 gs runner show <runner-id>
 gs runner disable <runner-id> --reason "maintenance"
 gs runner revoke <runner-id> --requeue-leased
 gs runner jobs <runner-id>
 gs runner queue list --pool default
+gs runner queue explain --pool default --image golang:1.24
 ```
+
+The web app exposes the same runner pools, registration-token creation, runner
+disable/enable/revoke actions, runner job history, and queue diagnostics under
+`/settings/ci`.
 
 Runner log chunks are size-limited and sensitive environment values such as
 tokens, secrets, passwords, and API keys are redacted before storage. Expired job

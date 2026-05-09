@@ -179,6 +179,8 @@ function createRouteData(routeInfo) {
     changesetSnapshotVersion: 0,
     changesetDiff: null,
     changesetDiffError: '',
+    settingsSection: routeInfo?.settingsSection || '',
+    settingsRunnerId: routeInfo?.settingsRunnerId || '',
     settings: null,
   };
 }
@@ -387,12 +389,24 @@ async function loadSettingsData(request, session, data, setCookies, options = {}
     sessionsError: '',
     agentKeys: [],
     agentKeysError: '',
+    runnerPools: [],
+    runnerPoolsError: '',
+    runners: [],
+    runnersError: '',
+    queuedJobs: [],
+    queuedJobsError: '',
+    ciRuns: [],
+    ciRunsError: '',
+    selectedRunner: null,
+    selectedRunnerError: '',
+    runnerJobs: [],
+    runnerJobsError: '',
   };
   data.settings = settings;
 
-  const loadSection = async (field, errorField, pathname, transform) => {
+  const loadSection = async (field, errorField, pathname, transform, params) => {
     try {
-      const { payload, setCookies: cookies } = await fetchJSON(request, session, pathname, undefined, options);
+      const { payload, setCookies: cookies } = await fetchJSON(request, session, pathname, params, options);
       setCookies.push(...cookies);
       settings[field] = transform(payload);
     } catch (error) {
@@ -407,6 +421,27 @@ async function loadSettingsData(request, session, data, setCookies, options = {}
     loadSection('authContext', 'authContextError', '/v1/auth/context', (payload) => payload),
     loadSection('sessions', 'sessionsError', '/v1/auth/sessions', (payload) => payload?.sessions || []),
     loadSection('agentKeys', 'agentKeysError', '/v1/auth/agent/keys', (payload) => payload?.keys || []),
+  ]);
+
+  if (!String(data.settingsSection || '').startsWith('ci')) {
+    return;
+  }
+
+  await Promise.all([
+    loadSection('runnerPools', 'runnerPoolsError', '/v1/ci/runner-pools', (payload) => payload?.pools || []),
+    loadSection('runners', 'runnersError', '/v1/ci/runners', (payload) => payload?.runners || [], new URLSearchParams({ limit: '100' })),
+    loadSection('queuedJobs', 'queuedJobsError', '/v1/ci/queued-jobs', (payload) => payload?.jobs || [], new URLSearchParams({ limit: '50' })),
+    loadSection('ciRuns', 'ciRunsError', '/v1/ci/runs', (payload) => payload?.runs || [], new URLSearchParams({ limit: '50' })),
+  ]);
+
+  const runnerId = String(data.settingsRunnerId || '').trim();
+  if (!runnerId) {
+    return;
+  }
+
+  await Promise.all([
+    loadSection('selectedRunner', 'selectedRunnerError', `/v1/ci/runners/${encodeURIComponent(runnerId)}`, (payload) => payload),
+    loadSection('runnerJobs', 'runnerJobsError', `/v1/ci/runners/${encodeURIComponent(runnerId)}/jobs`, (payload) => payload?.jobs || [], new URLSearchParams({ limit: '30' })),
   ]);
 }
 

@@ -58,6 +58,10 @@ func handleRunnerCommand(args []string) {
 			runAuthenticatedRunnerCommand(args[2:], handleRunnerPoolList)
 			return
 		}
+		if len(args) >= 2 && args[1] == "show" {
+			runAuthenticatedRunnerCommand(args[2:], handleRunnerPoolShow)
+			return
+		}
 	case "list":
 		runAuthenticatedRunnerCommand(args[1:], handleRunnerList)
 		return
@@ -79,6 +83,10 @@ func handleRunnerCommand(args []string) {
 	case "queue":
 		if len(args) >= 2 && args[1] == "list" {
 			runAuthenticatedRunnerCommand(args[2:], handleRunnerQueueList)
+			return
+		}
+		if len(args) >= 2 && args[1] == "explain" {
+			runAuthenticatedRunnerCommand(args[2:], handleRunnerQueueExplain)
 			return
 		}
 	case "enroll", "register":
@@ -173,6 +181,41 @@ func handleRunnerPoolList(ctx context.Context, cli *CLI, args []string) {
 	for _, pool := range resp.GetPools() {
 		fmt.Printf("%s  executor=%s  online=%d  busy=%d  queued=%d\n", pool.GetName(), pool.GetExecutor(), pool.GetOnlineRunners(), pool.GetBusyRunners(), pool.GetQueuedJobs())
 	}
+}
+
+func handleRunnerPoolShow(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("runner pool show")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	if fs.NArg() != 1 {
+		commandUsage("Usage: gs runner pool show <pool> [--json]")
+		return
+	}
+	poolName := strings.TrimSpace(fs.Arg(0))
+	resp, err := cli.runnerAdminClient.ListRunnerPools(ctx, &civ1.ListRunnerPoolsRequest{})
+	if err != nil {
+		commandFatalf("RUNNER_POOL_SHOW_FAILED", true, "", "Failed to list runner pools: %v", err)
+	}
+	for _, pool := range resp.GetPools() {
+		if pool.GetName() != poolName {
+			continue
+		}
+		if jsonRequested || *jsonOutput {
+			writeJSONOutput(pool)
+			return
+		}
+		fmt.Printf("Pool: %s\n", pool.GetName())
+		fmt.Printf("Executor: %s\n", pool.GetExecutor())
+		fmt.Printf("Labels: %s\n", strings.Join(pool.GetLabels(), ","))
+		fmt.Printf("Allowed images: %s\n", strings.Join(pool.GetAllowedImages(), ","))
+		fmt.Printf("Online runners: %d\n", pool.GetOnlineRunners())
+		fmt.Printf("Busy runners: %d\n", pool.GetBusyRunners())
+		fmt.Printf("Queued jobs: %d\n", pool.GetQueuedJobs())
+		fmt.Printf("Max parallel jobs per runner: %d\n", pool.GetMaxParallelJobsPerRunner())
+		return
+	}
+	commandFatalf("RUNNER_POOL_NOT_FOUND", false, "gs runner pool list", "Runner pool %q not found", poolName)
 }
 
 func handleRunnerList(ctx context.Context, cli *CLI, args []string) {
@@ -314,6 +357,149 @@ func handleRunnerQueueList(ctx context.Context, cli *CLI, args []string) {
 	for _, job := range resp.GetJobs() {
 		fmt.Printf("%s  pool=%s  %s\n", job.GetJobId(), job.GetRunnerPool(), job.GetCheckName())
 	}
+}
+
+func handleRunnerQueueExplain(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("runner queue explain")
+	poolFlag := fs.String("pool", "", "Runner pool to diagnose")
+	imageFlag := fs.String("image", "", "Container image to check against pool policy")
+	limit := fs.Int("limit", 50, "Maximum queued jobs to inspect")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	if fs.NArg() > 0 {
+		commandUsage("Usage: gs runner queue explain [--pool default] [--image golang:1.24] [--limit 50] [--json]")
+		return
+	}
+	poolName := strings.TrimSpace(*poolFlag)
+	image := strings.TrimSpace(*imageFlag)
+	poolsResp, err := cli.runnerAdminClient.ListRunnerPools(ctx, &civ1.ListRunnerPoolsRequest{})
+	if err != nil {
+		commandFatalf("RUNNER_QUEUE_EXPLAIN_FAILED", true, "", "Failed to list runner pools: %v", err)
+	}
+	runnersResp, err := cli.runnerAdminClient.ListRunners(ctx, &civ1.ListRunnersRequest{Pool: poolName, Limit: 500})
+	if err != nil {
+		commandFatalf("RUNNER_QUEUE_EXPLAIN_FAILED", true, "", "Failed to list runners: %v", err)
+	}
+	queuedResp, err := cli.runnerAdminClient.ListQueuedJobs(ctx, &civ1.ListQueuedJobsRequest{Pool: poolName, Limit: int32(*limit)})
+	if err != nil {
+		commandFatalf("RUNNER_QUEUE_EXPLAIN_FAILED", true, "", "Failed to list queued jobs: %v", err)
+	}
+
+	poolsByName := map[string]*civ1.RunnerPool{}
+	for _, pool := range poolsResp.GetPools() {
+		poolsByName[pool.GetName()] = pool
+	}
+	warnings := runnerQueueWarnings(poolName, image, poolsResp.GetPools(), runnersResp.GetRunners(), queuedResp.GetJobs())
+	output := map[string]any{
+		"pool":        poolName,
+		"image":       image,
+		"queued_jobs": len(queuedResp.GetJobs()),
+		"runners":     len(runnersResp.GetRunners()),
+		"warnings":    warnings,
+	}
+	if poolName != "" {
+		if pool := poolsByName[poolName]; pool != nil {
+			output["online_runners"] = pool.GetOnlineRunners()
+			output["busy_runners"] = pool.GetBusyRunners()
+		}
+	}
+	if jsonRequested || *jsonOutput {
+		writeJSONOutput(output)
+		return
+	}
+	if len(warnings) == 0 {
+		fmt.Println("No queue compatibility problems found.")
+		return
+	}
+	for _, warning := range warnings {
+		fmt.Printf("%s: %s\n", warning["code"], warning["message"])
+	}
+}
+
+func runnerQueueWarnings(poolName, image string, pools []*civ1.RunnerPool, runners []*civ1.Runner, jobs []*civ1.Job) []map[string]string {
+	poolsByName := map[string]*civ1.RunnerPool{}
+	for _, pool := range pools {
+		poolsByName[pool.GetName()] = pool
+	}
+	runnersByPool := map[string][]*civ1.Runner{}
+	for _, runner := range runners {
+		runnersByPool[runner.GetPool()] = append(runnersByPool[runner.GetPool()], runner)
+	}
+	candidatePools := []string{}
+	if poolName != "" {
+		candidatePools = append(candidatePools, poolName)
+	} else {
+		seen := map[string]struct{}{}
+		for _, job := range jobs {
+			name := strings.TrimSpace(job.GetRunnerPool())
+			if name == "" {
+				name = "default"
+			}
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				candidatePools = append(candidatePools, name)
+			}
+		}
+		if len(candidatePools) == 0 {
+			for _, pool := range pools {
+				candidatePools = append(candidatePools, pool.GetName())
+			}
+		}
+		sort.Strings(candidatePools)
+	}
+
+	var warnings []map[string]string
+	for _, name := range candidatePools {
+		pool := poolsByName[name]
+		if pool == nil {
+			warnings = append(warnings, map[string]string{
+				"code":    "missing_pool",
+				"pool":    name,
+				"message": fmt.Sprintf("runner pool %q is not defined in /{home}/.gitslice/ci.yaml", name),
+			})
+			continue
+		}
+		if pool.GetOnlineRunners() == 0 {
+			warnings = append(warnings, map[string]string{
+				"code":    "no_online_runner",
+				"pool":    name,
+				"message": fmt.Sprintf("runner pool %q has no online runners", name),
+			})
+		}
+		if len(runnersByPool[name]) == 0 {
+			warnings = append(warnings, map[string]string{
+				"code":    "no_registered_runner",
+				"pool":    name,
+				"message": fmt.Sprintf("runner pool %q has no registered runners", name),
+			})
+		}
+		if image != "" && len(pool.GetAllowedImages()) > 0 && !containsString(pool.GetAllowedImages(), image) {
+			warnings = append(warnings, map[string]string{
+				"code":    "image_not_allowed",
+				"pool":    name,
+				"image":   image,
+				"message": fmt.Sprintf("image %q is not allowed in runner pool %q", image, name),
+			})
+		}
+	}
+	if len(jobs) == 0 && poolName != "" {
+		warnings = append(warnings, map[string]string{
+			"code":    "no_queued_jobs",
+			"pool":    poolName,
+			"message": fmt.Sprintf("no queued jobs found for runner pool %q", poolName),
+		})
+	}
+	return warnings
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func handleRunnerEnroll(args []string) {

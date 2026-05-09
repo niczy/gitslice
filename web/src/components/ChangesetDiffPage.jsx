@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { closeChangeset, getChangesetDiff, listChangesetSnapshots, mergeChangeset } from '../utils/api.js';
+import {
+  cancelCIRun,
+  closeChangeset,
+  getChangesetDiff,
+  listChangesetChecks,
+  listChangesetSnapshots,
+  mergeChangeset,
+  rerunCI,
+} from '../utils/api.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import {
   normalizeChangeType,
@@ -44,6 +52,10 @@ function ciSummaryText(ci) {
   return `CI ${status}`;
 }
 
+function checkField(check, snakeName, camelName, fallback = '') {
+  return check?.[snakeName] ?? check?.[camelName] ?? fallback;
+}
+
 export default function ChangesetDiffPage({
   changesetId,
   onBack,
@@ -76,6 +88,10 @@ export default function ChangesetDiffPage({
   const [snapshotsError, setSnapshotsError] = useState(() => (hasInitialSnapshots ? initialSnapshotsError : ''));
   const [selectedSnapshotVersion, setSelectedSnapshotVersion] = useState(() => initialSelectedSnapshotVersion);
   const [selectedFileId, setSelectedFileId] = useState(null);
+  const [ciChecks, setCIChecks] = useState([]);
+  const [ciChecksLoading, setCIChecksLoading] = useState(false);
+  const [ciChecksError, setCIChecksError] = useState('');
+  const [ciActionLoading, setCIActionLoading] = useState('');
   const clientRefreshSnapshotsRef = useRef('');
   const clientRefreshDiffRef = useRef('');
   const fileRefs = useRef({});
@@ -207,11 +223,85 @@ export default function ChangesetDiffPage({
 
   const changeset = payload?.changeset || null;
   const changesetCI = changeset?.ci || null;
-  const changesetCILabel = ciSummaryText(changesetCI);
   const selectedSnapshot = payload?.snapshot || null;
+  const changesetCILabel = ciSummaryText(changesetCI);
+  const selectedChangesetVersionID = selectedSnapshot?.snapshot_id || changesetCI?.changeset_version_id || '';
+  const currentCIVersionID = changesetCI?.changeset_version_id || '';
+  const selectedCIIsStale = Boolean(changesetCI?.stale || (selectedChangesetVersionID && currentCIVersionID && selectedChangesetVersionID !== currentCIVersionID));
   const diff = payload?.diff || null;
   const activeMessage = selectedSnapshot?.message || changeset?.message || '';
   const changes = useMemo(() => payload?.changes || [], [payload]);
+
+  const refreshCIChecks = useCallback(async () => {
+    if (!changesetId || !selectedChangesetVersionID) {
+      setCIChecks([]);
+      setCIChecksError('');
+      return;
+    }
+    setCIChecksLoading(true);
+    setCIChecksError('');
+    try {
+      const checks = await listChangesetChecks(changesetId, selectedChangesetVersionID);
+      setCIChecks(checks);
+    } catch (err) {
+      setCIChecks([]);
+      setCIChecksError(err?.message || 'Unable to load CI checks.');
+    } finally {
+      setCIChecksLoading(false);
+    }
+  }, [changesetId, selectedChangesetVersionID]);
+
+  useEffect(() => {
+    let active = true;
+    const loadChecks = async () => {
+      if (!changesetId || !selectedChangesetVersionID) {
+        if (active) {
+          setCIChecks([]);
+          setCIChecksError('');
+          setCIChecksLoading(false);
+        }
+        return;
+      }
+      setCIChecksLoading(true);
+      setCIChecksError('');
+      try {
+        const checks = await listChangesetChecks(changesetId, selectedChangesetVersionID);
+        if (active) {
+          setCIChecks(checks);
+        }
+      } catch (err) {
+        if (active) {
+          setCIChecks([]);
+          setCIChecksError(err?.message || 'Unable to load CI checks.');
+        }
+      } finally {
+        if (active) {
+          setCIChecksLoading(false);
+        }
+      }
+    };
+    loadChecks();
+    return () => { active = false; };
+  }, [changesetId, selectedChangesetVersionID]);
+
+  const handleCIAction = async (action) => {
+    const runID = changesetCI?.run_id;
+    if (!runID || ciActionLoading) return;
+    setCIActionLoading(action);
+    setCIChecksError('');
+    try {
+      if (action === 'cancel') {
+        await cancelCIRun(runID, 'Cancelled from changeset page');
+      } else {
+        await rerunCI(runID, { failedOnly: action === 'rerun-failed' });
+      }
+      await refreshCIChecks();
+    } catch (err) {
+      setCIChecksError(err?.message || 'Unable to update CI run.');
+    } finally {
+      setCIActionLoading('');
+    }
+  };
 
   const handleFileSelect = useCallback((fileKey) => {
     setSelectedFileId(fileKey);
@@ -419,6 +509,78 @@ export default function ChangesetDiffPage({
           {snapshotsError && <div className="panel-error diff-action-error">{snapshotsError}</div>}
           {isLoading && <div className="diff-loading">Loading changeset diff...</div>}
           {!isLoading && error && <div className="panel-error">{error}</div>}
+
+          {!isLoading && !error && (changesetCI || ciChecks.length > 0 || ciChecksLoading || ciChecksError) && (
+            <section className="rounded-lg border border-border/70 bg-card p-4 shadow-soft" data-testid="changeset-ci-panel">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-foreground">CI checks</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Version <code>{selectedChangesetVersionID || 'none'}</code>
+                    {changesetCI?.plan_hash && <> · plan <code>{changesetCI.plan_hash}</code></>}
+                    {changesetCI?.run_id && <> · run <code>{changesetCI.run_id}</code></>}
+                  </div>
+                </div>
+                {changesetCI?.run_id && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="outline" disabled={ciActionLoading !== ''} onClick={() => handleCIAction('rerun')}>
+                      {ciActionLoading === 'rerun' ? 'Rerunning...' : 'Rerun'}
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" disabled={ciActionLoading !== ''} onClick={() => handleCIAction('rerun-failed')}>
+                      {ciActionLoading === 'rerun-failed' ? 'Rerunning...' : 'Rerun failed'}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" disabled={ciActionLoading !== ''} onClick={() => handleCIAction('cancel')}>
+                      {ciActionLoading === 'cancel' ? 'Cancelling...' : 'Cancel'}
+                    </Button>
+                  </div>
+                )}
+              </div>
+              {selectedCIIsStale && (
+                <div className="mt-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  CI is stale for this selected version. Export a new version or rerun checks before merging.
+                </div>
+              )}
+              {ciChecksError && <div className="panel-error mt-3">{ciChecksError}</div>}
+              {ciChecksLoading && <div className="panel-empty mt-3">Loading CI checks...</div>}
+              {!ciChecksLoading && !ciChecksError && ciChecks.length === 0 && (
+                <div className="panel-empty mt-3">No CI checks are recorded for this changeset version.</div>
+              )}
+              {!ciChecksLoading && ciChecks.length > 0 && (
+                <div className="mt-3 overflow-auto">
+                  <table className="w-full min-w-[760px] text-left text-sm">
+                    <thead className="border-b border-border/70 text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="py-2 pr-3">Check</th>
+                        <th className="py-2 pr-3">Required</th>
+                        <th className="py-2 pr-3">Status</th>
+                        <th className="py-2 pr-3">Manifest</th>
+                        <th className="py-2 pr-3">Plan</th>
+                        <th className="py-2 pr-3">Run</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {ciChecks.map((check) => {
+                        const status = checkField(check, 'status', 'status') || 'missing';
+                        const key = `${checkField(check, 'run_id', 'runId')}-${checkField(check, 'manifest_path', 'manifestPath')}-${checkField(check, 'job_key', 'jobKey')}`;
+                        return (
+                          <tr key={key}>
+                            <td className="py-2 pr-3 font-medium">{checkField(check, 'check_name', 'checkName') || checkField(check, 'job_key', 'jobKey')}</td>
+                            <td className="py-2 pr-3">{check.required ? 'yes' : 'no'}</td>
+                            <td className="py-2 pr-3">
+                              <span className={`changeset-ci-badge changeset-ci-badge--${ciTone(status)}`}>{status}</span>
+                            </td>
+                            <td className="py-2 pr-3 font-mono text-xs">{checkField(check, 'manifest_path', 'manifestPath') || 'unknown'}</td>
+                            <td className="py-2 pr-3 font-mono text-xs">{checkField(check, 'plan_hash', 'planHash') || 'none'}</td>
+                            <td className="py-2 pr-3 font-mono text-xs">{checkField(check, 'run_id', 'runId') || 'none'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
 
           {!isLoading && !error && activeMessage && (
             <div className="changeset-message" data-testid="changeset-message">

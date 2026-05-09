@@ -109,6 +109,8 @@ function App({
   const slicesLoading = slicesQuery.isLoading;
   const slicesError = initialRouteData?.slicesError || (slicesQuery.error ? 'Unable to load slices.' : '');
   const currentSlice = slices.find((slice) => slice.slice_id === currentSliceId) || null;
+  const settingsSection = resolvedInitialRoute.settingsSection || '';
+  const settingsRunnerId = resolvedInitialRoute.settingsRunnerId || '';
 
   const isBrowserDetail = activePage === 'browser' && Boolean(browserRouteSliceId);
   const isSliceScopedDetail = isSliceScopedPage(activePage) && Boolean(browserRouteSliceId);
@@ -628,6 +630,8 @@ function App({
           <SettingsPage
             username={username}
             authSessionSource={authSessionSource}
+            settingsSection={settingsSection}
+            settingsRunnerId={settingsRunnerId}
             onOpenProfile={() => navigate('profile')}
             onLogout={doLogout}
             initialSettingsData={initialRouteData.settings}

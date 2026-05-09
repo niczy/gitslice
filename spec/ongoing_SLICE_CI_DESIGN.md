@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-- Current status: `ongoing`
+- Current status: `implemented`
 - Last updated: `2026-05-09`
 
 ---
