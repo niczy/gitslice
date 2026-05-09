@@ -13,11 +13,7 @@ import (
 const homePathHeadSlicePrefix = "home_"
 
 func normalizeHomePathHeadHomeID(homeID string) string {
-	homeID = strings.TrimSpace(homeID)
-	if strings.HasPrefix(homeID, homePathHeadSlicePrefix) {
-		return strings.TrimSpace(strings.TrimPrefix(homeID, homePathHeadSlicePrefix))
-	}
-	return homeID
+	return strings.TrimSpace(homeID)
 }
 
 func homePathHeadSourceSliceID(homeID string) string {
@@ -38,6 +34,19 @@ func cloneHomePathHead(head *models.HomePathHead) *models.HomePathHead {
 	}
 	clone := *head
 	return &clone
+}
+
+func homePathHeadIncomingIsCurrentOrNewer(incoming, existing *models.HomePathHead) bool {
+	if incoming == nil {
+		return false
+	}
+	if existing == nil {
+		return true
+	}
+	if incoming.LastMergeSeq != existing.LastMergeSeq {
+		return incoming.LastMergeSeq > existing.LastMergeSeq
+	}
+	return incoming.PathVersion >= existing.PathVersion
 }
 
 func normalizeHomePathHead(head *models.HomePathHead) (*models.HomePathHead, error) {

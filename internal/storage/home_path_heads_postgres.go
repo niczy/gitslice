@@ -74,14 +74,19 @@ func upsertHomePathHeads(ctx context.Context, exec execable, heads []*models.Hom
 			source_slice_id, source_commit_hash, last_merge_seq, deleted, updated_at
 		)
 		ON CONFLICT (home_id, path) DO UPDATE
-		SET path_version = GREATEST(home_path_heads.path_version, EXCLUDED.path_version),
+		SET path_version = EXCLUDED.path_version,
 		    content_hash = EXCLUDED.content_hash,
 		    manifest_hash = EXCLUDED.manifest_hash,
 		    source_slice_id = EXCLUDED.source_slice_id,
 		    source_commit_hash = EXCLUDED.source_commit_hash,
-		    last_merge_seq = GREATEST(home_path_heads.last_merge_seq, EXCLUDED.last_merge_seq),
+		    last_merge_seq = EXCLUDED.last_merge_seq,
 		    deleted = EXCLUDED.deleted,
 		    updated_at = EXCLUDED.updated_at
+		WHERE EXCLUDED.last_merge_seq > home_path_heads.last_merge_seq
+		   OR (
+		       EXCLUDED.last_merge_seq = home_path_heads.last_merge_seq
+		       AND EXCLUDED.path_version >= home_path_heads.path_version
+		   )
 	`, homeIDs, paths, pathVersions, contentHashes, manifestHashes, sourceSliceIDs, sourceCommitHashes, lastMergeSeqs, deleted, updatedAts)
 	return err
 }

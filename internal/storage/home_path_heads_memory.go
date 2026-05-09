@@ -29,16 +29,12 @@ func (s *InMemoryStorage) UpsertHomePathHeads(ctx context.Context, heads []*mode
 
 	for _, head := range normalized {
 		key := homePathHeadKey(head.HomeID, head.Path)
-		stored := cloneHomePathHead(head)
 		if existing := s.homePathHeads[key]; existing != nil {
-			if stored.PathVersion < existing.PathVersion {
-				stored.PathVersion = existing.PathVersion
-			}
-			if stored.LastMergeSeq < existing.LastMergeSeq {
-				stored.LastMergeSeq = existing.LastMergeSeq
+			if !homePathHeadIncomingIsCurrentOrNewer(head, existing) {
+				continue
 			}
 		}
-		s.homePathHeads[key] = stored
+		s.homePathHeads[key] = cloneHomePathHead(head)
 	}
 	return nil
 }

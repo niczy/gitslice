@@ -132,7 +132,7 @@ func runHomePathHeadStoreContract(ctx context.Context, t *testing.T, store HomeP
 		t.Fatalf("unexpected backfill result: %#v", backfill)
 	}
 
-	heads, err := store.GetHomePathHeads(ctx, "home_alice", []string{"alice/app/main.go", "alice/missing.txt"})
+	heads, err := store.GetHomePathHeads(ctx, "alice", []string{"alice/app/main.go", "alice/missing.txt"})
 	if err != nil {
 		t.Fatalf("GetHomePathHeads failed: %v", err)
 	}
@@ -188,6 +188,22 @@ func runHomePathHeadStoreContract(ctx context.Context, t *testing.T, store HomeP
 	}}); err != nil {
 		t.Fatalf("UpsertHomePathHeads extra head failed: %v", err)
 	}
+	if err := store.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+		HomeID:       "alice",
+		Path:         "alice/stale.txt",
+		PathVersion:  3,
+		ManifestHash: "older-stale-hash",
+		ContentHash:  "older-stale-hash",
+	}}); err != nil {
+		t.Fatalf("UpsertHomePathHeads stale head failed: %v", err)
+	}
+	heads, err = store.GetHomePathHeads(ctx, "alice", []string{"alice/stale.txt"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads stale head failed: %v", err)
+	}
+	if got := heads["alice/stale.txt"]; got == nil || got.PathVersion != 7 || got.ManifestHash != "stale-hash" {
+		t.Fatalf("expected stale upsert to preserve newer head, got %#v", got)
+	}
 	listed, err := store.ListHomePathHeads(ctx, "alice", 10)
 	if err != nil {
 		t.Fatalf("ListHomePathHeads failed: %v", err)
@@ -201,6 +217,31 @@ func runHomePathHeadStoreContract(ctx context.Context, t *testing.T, store HomeP
 	}
 	if len(validation.Drifts) != 1 || validation.Drifts[0].Reason != "extra_head" || validation.Drifts[0].Path != "alice/stale.txt" {
 		t.Fatalf("expected extra head drift, got %#v", validation.Drifts)
+	}
+
+	prefixedUserHome := &models.Slice{
+		ID:        "home_home_alice",
+		Name:      "home_alice",
+		Owners:    []string{"home_alice"},
+		CreatedBy: "home_alice",
+	}
+	if err := st.CreateSlice(ctx, prefixedUserHome); err != nil {
+		t.Fatalf("CreateSlice(home_ prefixed user) failed: %v", err)
+	}
+	prefixedHash := writeHomePathHeadFile(t, ctx, st, prefixedUserHome.ID, "home_alice/app/main.go", []byte("prefixed\n"))
+	backfill, err = store.BackfillHomePathHeads(ctx, "home_alice")
+	if err != nil {
+		t.Fatalf("BackfillHomePathHeads home_ prefixed user failed: %v", err)
+	}
+	if backfill.HomeID != "home_alice" || backfill.SourceSliceID != prefixedUserHome.ID || backfill.Upserted != 1 {
+		t.Fatalf("unexpected home_ prefixed backfill result: %#v", backfill)
+	}
+	heads, err = store.GetHomePathHeads(ctx, "home_alice", []string{"home_alice/app/main.go"})
+	if err != nil {
+		t.Fatalf("GetHomePathHeads home_ prefixed user failed: %v", err)
+	}
+	if got := heads["home_alice/app/main.go"]; got == nil || got.ManifestHash != prefixedHash || got.HomeID != "home_alice" {
+		t.Fatalf("expected distinct home_ prefixed user head, got %#v", got)
 	}
 }
 
