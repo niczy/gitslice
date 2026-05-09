@@ -65,6 +65,30 @@ func EnqueueChangesetExportRun(ctx context.Context, st storage.Storage, changese
 	return resp, true, nil
 }
 
+type MergeGateRequest struct {
+	ChangesetID       string
+	TriggeredByUserID string
+	Force             bool
+	ForceReason       string
+}
+
+type MergeGateResult struct {
+	ChangesetID        string
+	ChangesetVersionID string
+	PlanHash           string
+	RunID              string
+	RunStatus          string
+	Forced             bool
+	ForceReason        string
+	ForcedBy           string
+	Message            string
+}
+
+func EnforceChangesetMergeGate(ctx context.Context, st storage.Storage, req MergeGateRequest) (*MergeGateResult, error) {
+	service := &server{st: st}
+	return service.enforceChangesetMergeGate(ctx, req)
+}
+
 type server struct {
 	civ1.UnimplementedCIServiceServer
 	civ1.UnimplementedRunnerAdminServiceServer
@@ -112,23 +136,7 @@ func (s *server) startRun(ctx context.Context, req startRunRequest) (*civ1.Start
 	if strings.TrimSpace(req.AuthorizeUsername) != "" && !authz.HasSliceViewAccess(sourceSlice, req.AuthorizeUsername) {
 		return nil, status.Error(codes.PermissionDenied, "not allowed to start CI for this changeset")
 	}
-	homeID := resolveCIHomeID(sourceSlice, cs, snapshot.ModifiedFiles)
-	changedPaths := logicalChangedPaths(homeID, snapshot.ModifiedFiles)
-	tree := &changesetTreeReader{
-		st:       s.st,
-		cs:       cs,
-		snapshot: snapshot,
-		homeID:   homeID,
-	}
-	plan, err := (&ciinternal.Planner{Tree: tree}).Plan(ctx, ciinternal.PlanInput{
-		HomeID:             homeID,
-		SliceID:            cs.SliceID,
-		ChangesetID:        cs.ID,
-		ChangesetVersionID: snapshot.ID,
-		BaseCommitHash:     snapshot.BaseCommitHash,
-		CandidateTreeHash:  snapshot.Hash,
-		ChangedPaths:       changedPaths,
-	})
+	plan, _, err := s.planChangesetVersion(ctx, cs, sourceSlice, snapshot)
 	if err != nil {
 		if errors.Is(err, ciinternal.ErrFileNotFound) {
 			return nil, status.Error(codes.FailedPrecondition, "CI platform config /.gitslice/ci.yaml was not found")
@@ -166,6 +174,236 @@ func (s *server) startRun(ctx context.Context, req startRunRequest) (*civ1.Start
 		}
 	}
 	return &civ1.StartRunResponse{RunId: runID, Status: runStatus}, nil
+}
+
+func (s *server) enforceChangesetMergeGate(ctx context.Context, req MergeGateRequest) (*MergeGateResult, error) {
+	cs, sourceSlice, snapshot, err := s.loadChangesetVersion(ctx, req.ChangesetID, "")
+	if err != nil {
+		return nil, err
+	}
+	homeID := resolveCIHomeID(sourceSlice, cs, snapshot.ModifiedFiles)
+	platform, err := s.loadPlatformConfigForHome(ctx, homeID)
+	if err != nil {
+		return nil, err
+	}
+	policy := normalizedMergePolicy(platform)
+	result := &MergeGateResult{
+		ChangesetID:        cs.ID,
+		ChangesetVersionID: snapshot.ID,
+		Forced:             req.Force,
+		ForceReason:        strings.TrimSpace(req.ForceReason),
+		ForcedBy:           strings.TrimSpace(req.TriggeredByUserID),
+	}
+	if req.Force {
+		if !policy.AllowForceMerge {
+			return nil, status.Error(codes.FailedPrecondition, "force merge is disabled by CI merge policy")
+		}
+		if result.ForceReason == "" {
+			return nil, status.Error(codes.InvalidArgument, "--reason is required with --force")
+		}
+	}
+	if !policy.RequireSuccess {
+		return result, nil
+	}
+
+	plan, _, err := s.planChangesetVersion(ctx, cs, sourceSlice, snapshot)
+	if err != nil {
+		if req.Force {
+			result.Message = fmt.Sprintf("force merge bypassed CI planning failure: %v", err)
+			return result, nil
+		}
+		if errors.Is(err, ciinternal.ErrFileNotFound) {
+			return nil, status.Error(codes.FailedPrecondition, "CI platform config /.gitslice/ci.yaml was not found")
+		}
+		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("failed to plan CI for merge: %v", err))
+	}
+	result.PlanHash = plan.PlanHash
+	if plan.MissingManifest {
+		if policy.MissingManifest == "block" {
+			message := "CI merge policy requires a matching manifest, but none matched this changeset"
+			if req.Force {
+				result.Message = "force merge bypassed CI: " + message
+				return result, nil
+			}
+			return nil, status.Error(codes.FailedPrecondition, message)
+		}
+		return result, nil
+	}
+
+	gate := s.evaluateRequiredChecks(ctx, plan)
+	if gate.err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate CI checks: %v", gate.err))
+	}
+	if gate.requiredTotal == 0 || gate.blockMessage == "" {
+		return result, nil
+	}
+	if req.Force {
+		result.Message = "force merge bypassed CI: " + gate.blockMessage
+		return result, nil
+	}
+	if platform != nil && platform.Triggers.MergeRequested && gate.missing > 0 && gate.running == 0 && gate.queued == 0 {
+		runID, runStatus, enqueueErr := s.enqueueMergeRequestedRun(ctx, cs.ID, snapshot.ID, plan.PlanHash, req.TriggeredByUserID)
+		if enqueueErr != nil {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("%s; also failed to enqueue CI: %v", gate.blockMessage, enqueueErr))
+		}
+		if runID != "" {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("%s; started CI run %s", gate.blockMessage, runID))
+		}
+		if runStatus != "" {
+			return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("%s; CI run is %s", gate.blockMessage, runStatus))
+		}
+	}
+	return nil, status.Error(codes.FailedPrecondition, gate.blockMessage)
+}
+
+type mergePolicy struct {
+	RequireSuccess  bool
+	MissingManifest string
+	StaleCI         string
+	AllowForceMerge bool
+}
+
+func normalizedMergePolicy(platform *ciinternal.PlatformConfig) mergePolicy {
+	policy := mergePolicy{MissingManifest: "allow", StaleCI: "block"}
+	if platform == nil {
+		return policy
+	}
+	policy.RequireSuccess = platform.Merge.RequireSuccess
+	policy.AllowForceMerge = platform.Merge.AllowForceMerge
+	if value := strings.ToLower(strings.TrimSpace(platform.Merge.MissingManifest)); value != "" {
+		policy.MissingManifest = value
+	}
+	if value := strings.ToLower(strings.TrimSpace(platform.Merge.StaleCI)); value != "" {
+		policy.StaleCI = value
+	}
+	return policy
+}
+
+type requiredCheckGate struct {
+	requiredTotal int
+	missing       int
+	failed        int
+	running       int
+	queued        int
+	blockMessage  string
+	err           error
+}
+
+func (s *server) evaluateRequiredChecks(ctx context.Context, plan *ciinternal.Plan) requiredCheckGate {
+	gate := requiredCheckGate{}
+	if plan == nil {
+		gate.blockMessage = "CI plan is missing"
+		return gate
+	}
+	requiredJobs := make(map[string]ciinternal.PlanJob)
+	for _, job := range plan.Jobs {
+		if !job.Required {
+			continue
+		}
+		key := ciCheckKey(job.ManifestPath, job.JobKey)
+		requiredJobs[key] = job
+	}
+	gate.requiredTotal = len(requiredJobs)
+	if len(requiredJobs) == 0 {
+		return gate
+	}
+	checks, err := s.st.ListCIChecks(ctx, plan.ChangesetID, plan.ChangesetVersionID, plan.PlanHash)
+	if err != nil {
+		gate.err = err
+		return gate
+	}
+	seen := make(map[string]bool, len(checks))
+	for _, check := range checks {
+		if check == nil || !check.Required {
+			continue
+		}
+		key := ciCheckKey(check.ManifestPath, check.JobKey)
+		if _, ok := requiredJobs[key]; !ok {
+			continue
+		}
+		seen[key] = true
+		switch check.Status {
+		case "passed":
+		case "queued":
+			gate.queued++
+		case "running":
+			gate.running++
+		default:
+			gate.failed++
+		}
+	}
+	for key := range requiredJobs {
+		if !seen[key] {
+			gate.missing++
+		}
+	}
+	switch {
+	case gate.failed > 0:
+		gate.blockMessage = fmt.Sprintf("CI required checks failed for current changeset version (%d failed)", gate.failed)
+	case gate.running > 0 || gate.queued > 0:
+		gate.blockMessage = fmt.Sprintf("CI required checks are still running for current changeset version (%d running, %d queued)", gate.running, gate.queued)
+	case gate.missing > 0:
+		gate.blockMessage = fmt.Sprintf("CI required checks are missing or stale for current changeset version (%d missing)", gate.missing)
+	}
+	return gate
+}
+
+func ciCheckKey(manifestPath string, jobKey string) string {
+	return strings.TrimSpace(manifestPath) + "\x00" + strings.TrimSpace(jobKey)
+}
+
+func (s *server) enqueueMergeRequestedRun(ctx context.Context, changesetID string, versionID string, planHash string, username string) (string, string, error) {
+	runs, err := s.st.ListCIRuns(ctx, storage.CIRunListFilter{
+		ChangesetID:        strings.TrimSpace(changesetID),
+		ChangesetVersionID: strings.TrimSpace(versionID),
+		PlanHash:           strings.TrimSpace(planHash),
+		Limit:              1000,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		if run.Status == "queued" || run.Status == "running" {
+			return run.ID, run.Status, nil
+		}
+	}
+	resp, err := s.startRun(ctx, startRunRequest{
+		ChangesetID:        changesetID,
+		ChangesetVersionID: versionID,
+		TriggerEvent:       "merge_requested",
+		TriggeredByUserID:  strings.TrimSpace(username),
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return resp.GetRunId(), resp.GetStatus(), nil
+}
+
+func (s *server) planChangesetVersion(ctx context.Context, cs *models.Changeset, sourceSlice *models.Slice, snapshot *models.ChangesetSnapshot) (*ciinternal.Plan, string, error) {
+	if cs == nil || snapshot == nil {
+		return nil, "", status.Error(codes.InvalidArgument, "changeset and snapshot are required")
+	}
+	homeID := resolveCIHomeID(sourceSlice, cs, snapshot.ModifiedFiles)
+	changedPaths := logicalChangedPaths(homeID, snapshot.ModifiedFiles)
+	tree := &changesetTreeReader{
+		st:       s.st,
+		cs:       cs,
+		snapshot: snapshot,
+		homeID:   homeID,
+	}
+	plan, err := (&ciinternal.Planner{Tree: tree}).Plan(ctx, ciinternal.PlanInput{
+		HomeID:             homeID,
+		SliceID:            cs.SliceID,
+		ChangesetID:        cs.ID,
+		ChangesetVersionID: snapshot.ID,
+		BaseCommitHash:     snapshot.BaseCommitHash,
+		CandidateTreeHash:  snapshot.Hash,
+		ChangedPaths:       changedPaths,
+	})
+	return plan, homeID, err
 }
 
 func (s *server) GetRun(ctx context.Context, req *civ1.GetRunRequest) (*civ1.Run, error) {

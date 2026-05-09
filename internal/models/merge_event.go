@@ -28,6 +28,9 @@ type MergeEvent struct {
 	Message          string
 	TouchedPaths     []string
 	PathUpdates      []*MergePathUpdate
+	Forced           bool
+	ForceReason      string
+	ForcedBy         string
 	CreatedAt        time.Time
 }
 

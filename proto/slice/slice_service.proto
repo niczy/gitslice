@@ -353,6 +353,8 @@ message DiffSummary {
 
 message MergeChangesetRequest {
   string changeset_id = 1;
+  bool force = 2;
+  string force_reason = 3;
 }
 
 message MergeChangesetResponse {

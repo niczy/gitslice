@@ -1366,7 +1366,10 @@ func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.Me
 		return nil, err
 	}
 
-	return s.mergeChangeset(ctx, req.GetChangesetId(), username, false)
+	return s.mergeChangeset(ctx, req.GetChangesetId(), username, false, mergeChangesetOptions{
+		force:       req.GetForce(),
+		forceReason: req.GetForceReason(),
+	})
 }
 
 // MergeChangesetUsingCurrentHead marks a changeset as merged and publishes the
@@ -1376,14 +1379,16 @@ func (s *sliceServiceServer) MergeChangesetUsingCurrentHead(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	return s.mergeChangeset(ctx, changesetID, username, true)
+	return s.mergeChangeset(ctx, changesetID, username, true, mergeChangesetOptions{})
 }
 
-func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool) (_ *slicev1.MergeChangesetResponse, retErr error) {
-	if resp, handled, err := s.tryMergeChangesetByIDFastPath(ctx, changesetID, username, useCurrentHead); handled {
-		return resp, err
-	}
+type mergeChangesetOptions struct {
+	force       bool
+	forceReason string
+	gate        *ciservice.MergeGateResult
+}
 
+func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, username string, useCurrentHead bool, opts mergeChangesetOptions) (_ *slicev1.MergeChangesetResponse, retErr error) {
 	cs, err := s.storage.GetChangeset(ctx, changesetID)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
@@ -1404,8 +1409,29 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		profile.logResult(retErr)
 	}()
 
-	if resp, handled, err := s.tryMergeChangesetFastPath(ctx, cs, slice, modifiedFiles, useCurrentHead, profile); handled {
-		return resp, err
+	if !useCurrentHead {
+		gate, err := ciservice.EnforceChangesetMergeGate(ctx, s.storage, ciservice.MergeGateRequest{
+			ChangesetID:       cs.ID,
+			TriggeredByUserID: username,
+			Force:             opts.force,
+			ForceReason:       opts.forceReason,
+		})
+		if err != nil {
+			return nil, err
+		}
+		opts.gate = gate
+	}
+
+	if !opts.force {
+		if resp, handled, err := s.tryMergeChangesetFastPath(ctx, cs, slice, modifiedFiles, useCurrentHead, profile); handled {
+			return resp, err
+		}
+	}
+
+	if !opts.force && opts.gate == nil {
+		if resp, handled, err := s.tryMergeChangesetByIDFastPath(ctx, changesetID, username, useCurrentHead); handled {
+			return resp, err
+		}
 	}
 
 	if err := s.storage.LockSliceAndFiles(ctx, cs.SliceID, modifiedFiles); err != nil {
@@ -1504,7 +1530,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			if existingCommit != nil {
 				promotionParentHash = existingCommit.ParentHash
 			}
-			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, promotionParentHash, modifiedFiles, promotionCommitTime, eventPathHeadSnapshot, pathHeadAuthority)
+			event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, promotionCommitHash, promotionParentHash, modifiedFiles, promotionCommitTime, eventPathHeadSnapshot, pathHeadAuthority, opts.gate)
 			if err != nil {
 				return fmt.Errorf("failed to append merge event: %w", err)
 			}
@@ -1522,7 +1548,7 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 			log.Printf("Warning: failed to update slice metadata for %s: %v", cs.SliceID, err)
 		}
 
-		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, parentHash, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority)
+		event, err := s.appendAcceptedMergeEvent(ctx, st, cs, slice, newCommit, parentHash, modifiedFiles, now, eventPathHeadSnapshot, pathHeadAuthority, opts.gate)
 		if err != nil {
 			return fmt.Errorf("failed to append merge event: %w", err)
 		}
@@ -1585,11 +1611,19 @@ func (s *sliceServiceServer) mergeChangeset(ctx context.Context, changesetID, us
 		NewCommitHash: newCommit,
 		ChangesetId:   cs.ID,
 		Conflicts:     []*slicev1.Conflict{},
+		Message:       mergeGateMessage(opts.gate),
 		MergeHomeId:   mergeEventHomeIDFromEvent(acceptedMergeEvent),
 		MergeShard:    mergeEventShardFromEvent(acceptedMergeEvent),
 		MergeSeq:      mergeEventSeqFromEvent(acceptedMergeEvent),
 		Projections:   s.mergeProjectionStatuses(ctx, acceptedMergeEvent),
 	}, nil
+}
+
+func mergeGateMessage(gate *ciservice.MergeGateResult) string {
+	if gate == nil {
+		return ""
+	}
+	return strings.TrimSpace(gate.Message)
 }
 
 func (s *sliceServiceServer) tryMergeChangesetByIDFastPath(ctx context.Context, changesetID, username string, useCurrentHead bool) (_ *slicev1.MergeChangesetResponse, _ bool, retErr error) {
@@ -1735,7 +1769,7 @@ func (s *sliceServiceServer) tryMergeChangesetFastPath(ctx context.Context, cs *
 
 const mergeEventShardCount = 1024
 
-func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, parentHash string, modifiedFiles []string, mergedAt time.Time, snapshot *models.ChangesetSnapshot, requirePathHeadCAS bool) (*models.MergeEvent, error) {
+func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st storage.Storage, cs *models.Changeset, sourceSlice *models.Slice, commitHash string, parentHash string, modifiedFiles []string, mergedAt time.Time, snapshot *models.ChangesetSnapshot, requirePathHeadCAS bool, gate *ciservice.MergeGateResult) (*models.MergeEvent, error) {
 	eventStore, ok := st.(storage.MergeEventStore)
 	if !ok || cs == nil {
 		return nil, nil
@@ -1798,6 +1832,11 @@ func (s *sliceServiceServer) appendAcceptedMergeEvent(ctx context.Context, st st
 		TouchedPaths:     paths,
 		PathUpdates:      pathUpdates,
 		CreatedAt:        mergedAt,
+	}
+	if gate != nil && gate.Forced {
+		event.Forced = true
+		event.ForceReason = gate.ForceReason
+		event.ForcedBy = gate.ForcedBy
 	}
 
 	if requirePathHeadCAS {
