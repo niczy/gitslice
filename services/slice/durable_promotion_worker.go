@@ -55,6 +55,10 @@ func (s *sliceServiceServer) StartDurablePromotionWorkers(ctx context.Context, c
 	log.Printf("durable promotion/history workers started workers=%d shards=%d batch_size=%d poll_interval=%s", cfg.WorkerCount, cfg.ShardCount, cfg.BatchSize, cfg.PollInterval)
 }
 
+func (s *sliceServiceServer) EnableDurableProjectionModeForTesting() {
+	s.durablePromotion = true
+}
+
 func (s *sliceServiceServer) runDurablePromotionWorker(ctx context.Context, cfg DurablePromotionConfig, workerID int) {
 	for {
 		processed, err := s.processDurablePromotionOnce(ctx, cfg)
@@ -122,11 +126,13 @@ func mergeEventPromotionJob(event *models.MergeEvent) (rootpromote.Job, bool) {
 		shardKey = "home:" + homeID
 	}
 	return rootpromote.Job{
-		SliceID:    sourceSliceID,
-		CommitHash: commitHash,
-		Files:      files,
-		CommitTime: commitTime,
-		ShardKey:   shardKey,
+		SliceID:            sourceSliceID,
+		CommitHash:         commitHash,
+		Files:              files,
+		CommitTime:         commitTime,
+		ShardKey:           shardKey,
+		ProjectionShardID:  event.ShardID,
+		ProjectionMergeSeq: event.MergeSeq,
 	}, true
 }
 

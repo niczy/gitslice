@@ -3927,7 +3927,7 @@ func TestRootPromotionQueueBatchesSameSlice(t *testing.T) {
 		{commitHash: "commit-3", files: []string{"b.txt", "c.txt"}},
 	}
 	for i, job := range jobs {
-		if err := srv.enqueueRootPromotion(ctx, "slice-batch", job.commitHash, job.files, now.Add(time.Duration(i)*time.Second)); err != nil {
+		if err := srv.enqueueRootPromotion(ctx, "slice-batch", job.commitHash, job.files, now.Add(time.Duration(i)*time.Second), nil); err != nil {
 			t.Fatalf("enqueueRootPromotion(%s) failed: %v", job.commitHash, err)
 		}
 	}

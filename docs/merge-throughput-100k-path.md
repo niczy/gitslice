@@ -43,6 +43,103 @@ MergeChangeset        P50: 771.14 ms
 End-to-end            P50: 2270.66 ms
 ```
 
+Follow-up local Postgres run after moving commit history fully behind
+`history-projection`:
+
+```text
+BENCHMARK_USERS=5000
+BENCHMARK_WORKERS=128
+BENCHMARK_POSTGRES_MAX_CONNS=64
+
+Throughput: 35.2 full workflows/sec
+MergeChangeset P50: 1971.09 ms
+Foreground pool empty acquires: 225,577
+Foreground pool cumulative acquire wait: 3h8m22s
+Promotion drain: 0.09 s
+```
+
+With a separate small promotion pool:
+
+```text
+BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+
+Throughput: 38.7 full workflows/sec
+MergeChangeset P50: 1906.81 ms
+Foreground pool empty acquires: 179,459
+Foreground pool cumulative acquire wait: 2h15m55s
+Promotion drain: 0.12 s
+```
+
+Merge-acceptance-only local Postgres benchmark after pre-creating ready
+changesets:
+
+```text
+BENCHMARK_USERS=5000
+BENCHMARK_WORKERS=128
+BENCHMARK_POSTGRES_MAX_CONNS=64
+BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+
+Merge throughput: 150.8 accepted merges/sec
+MergeChangeset P50/P95/P99: 836.36 ms / 978.82 ms / 1303.74 ms
+Foreground pool acquisitions: 60,000
+Foreground pool empty acquires: 1,158
+Foreground pool cumulative acquire wait: 47.22 s
+Promotion drain: 0.44 s
+```
+
+With more workers and more foreground connections, staying below this local
+Postgres instance's `max_connections=100` cap:
+
+```text
+BENCHMARK_USERS=5000
+BENCHMARK_WORKERS=192
+BENCHMARK_POSTGRES_MAX_CONNS=88
+BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+
+Merge throughput: 153.5 accepted merges/sec
+MergeChangeset P50/P95/P99: 1176.08 ms / 1744.71 ms / 2215.93 ms
+Foreground pool acquisitions: 60,000
+Foreground pool empty acquires: 1,670
+Foreground pool cumulative acquire wait: 2m4s
+Promotion drain: 0.39 s
+```
+
+After switching merge acceptance to the Postgres fast path, removing merge-time
+history/root promotion, collapsing acceptance to one statement, and trimming
+non-hot-path indexes:
+
+```text
+BENCHMARK_USERS=5000
+BENCHMARK_WORKERS=128
+BENCHMARK_HOME_SHARDS=64
+BENCHMARK_POSTGRES_MAX_CONNS=64
+BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4
+
+Merge throughput: 733.7 accepted merges/sec
+MergeChangeset P50/P95/P99: 140.75 ms / 394.89 ms / 1008.00 ms
+Foreground pool acquisitions: 5,000
+Foreground pool empty acquires: 1,782
+Foreground pool cumulative acquire wait: 1m54s
+Promotion drain: 0.00 s
+```
+
+Raising the foreground pool to 92 connections on the same local Postgres
+instance reduced throughput to 543.9 accepted merges/sec and worsened tail
+latency. This points to database write/CPU/WAL pressure and statement work, not
+just a connection shortage.
+
+A larger attempted pool (`BENCHMARK_POSTGRES_MAX_CONNS=128`,
+`BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=8`) failed during benchmark setup
+because local Postgres rejected new sessions with `FATAL: sorry, too many
+clients already`; the instance reported `max_connections=100`.
+
+The extra foreground improvement from removing the synchronous
+`slice_commits` insert is modest because the benchmark is dominated by
+connection acquisition and other foreground reads/writes in create-slice,
+create-changeset, validation, and merge finalization. The change still removes
+one synchronous commit-history write from accepted merge, but it is not enough
+to move full-workflow throughput by itself.
+
 This benchmark is a full workflow, not just merge acceptance:
 
 ```text
@@ -55,10 +152,18 @@ The throughput also lines up with the concurrency limit:
 128 workers / 2.27s P50 end-to-end latency ~= 56 workflows/sec
 ```
 
-That means the latest run probably has not found the maximum DB saturation
-point. We still need worker and connection matrix benchmarks. However, the path
-to 100k/sec cannot depend on increasing goroutines and Postgres connections.
-The synchronous write set is too large.
+The merge-acceptance-only benchmark shows that the current accepted-merge path
+is also well below 1k/sec on this setup. Raising the foreground connection pool
+from 64 to 88 did not materially improve throughput and worsened latency. That
+does not mean connection count is irrelevant, but it does mean `max_connections`
+alone is not the right optimization lever. The synchronous merge path is still
+doing too many independent storage operations per accepted merge.
+
+The current merge-only run performed about 60,000 foreground pool acquisitions
+for 5,000 accepted merges, or about 12 foreground DB acquisitions per merge,
+before counting the separate promotion drain pool. The path to 100k/sec cannot
+depend on increasing goroutines and Postgres connections. The synchronous write
+set and round-trip count must shrink.
 
 ## Definitions
 
@@ -111,6 +216,26 @@ Materialization lag:
 7. **Clients receive freshness metadata.**
    Merge responses include a sequence token. Reads that require freshness can
    wait for a projection to catch up.
+
+## Why Root Is Materialized Today
+
+Root is materialized today because older read APIs treat root as an ordinary
+slice tree backed by `directory_entries`, file manifests, slice metadata, and a
+head commit. That made simple read-after-merge behavior easy: after merge, the
+root tree already contained the copied file refs.
+
+That materialized root is a compatibility/read model, not the merge truth. In
+the high-throughput design, the truth is the accepted merge event plus
+home-scoped path heads. Root should be one of these:
+
+- an async projection over merge events/path heads
+- a query-time view over projected home/path heads
+- a cached read model with explicit freshness status
+
+Keeping root materialization synchronous would reintroduce a global write target
+and make every merge pay for derived view maintenance. It is useful for legacy
+reads, but it should not participate in merge authority or the foreground merge
+latency budget.
 
 ## Why the Current Shape Cannot Reach 100k/sec
 
@@ -433,9 +558,15 @@ CLI default can be stricter than web UI:
 
 ```text
 gs changeset merge          -> return accepted merge when event commits
-gs changeset merge --wait   -> wait for selected projections
+gs changeset merge --wait   -> wait for returned merge projections before returning
 gs slice status             -> show projection lag
 ```
+
+`GetSliceCommits` and `gs slice history` read the projected commit-history view.
+They can lag an accepted merge unless the caller waits on the
+projection tokens returned by `MergeChangeset`. The CLI `--wait` path waits for
+those tokens so workflows that need deterministic read-after-merge history or
+home/root visibility can opt in.
 
 ## Benchmark Strategy
 
@@ -444,7 +575,7 @@ benchmarks for each layer.
 
 ### Current-system tuning benchmarks
 
-Run a matrix:
+Run a matrix for the full workflow and merge acceptance-only paths:
 
 ```text
 BENCHMARK_WORKERS:            128, 256, 512
@@ -467,17 +598,39 @@ Log pgx pool stats:
 This tells us whether benchmark workers, DB pool size, lock contention, or query
 cost is the immediate limiter.
 
+Current result:
+
+- `64 -> 88` foreground connections did not raise merge-only throughput past
+  roughly `150/sec`.
+- Higher attempted pools failed against local Postgres `max_connections=100`.
+- The next useful benchmark is not simply a larger connection count; it is an
+  optimized merge path with fewer DB acquisitions per accepted merge.
+
 ### Future hot-path benchmarks
 
-Add a benchmark that skips projection and measures only accepted merge events:
+`TestMergeAcceptanceThroughput` now skips checkout/export timing and measures
+only accepted merge calls against the current implementation:
 
 ```text
-Prepare changeset snapshots with CAS manifests.
+Prepare ready changesets.
 Run N workers.
 Each worker merges one changeset touching one path.
 Measure accepted merge events/sec.
 Measure conflicts/sec under deliberate overlap.
 Measure p50/p95/p99 merge acceptance latency.
+```
+
+A future low-level hot-path benchmark should skip the legacy changeset and
+slice metadata machinery entirely and measure the target append-oriented event
+path:
+
+```text
+Prepare changeset snapshots with CAS manifests.
+Run N workers.
+Each worker appends one accepted merge event with path-head CAS.
+Do not update slice metadata, file ownership indexes, or projection queues.
+Measure accepted merge events/sec.
+Measure p50/p95/p99 event-append latency.
 ```
 
 Then add projection benchmarks separately:

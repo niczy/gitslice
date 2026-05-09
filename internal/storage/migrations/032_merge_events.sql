@@ -15,12 +15,8 @@ CREATE TABLE IF NOT EXISTS merge_events (
     path_updates JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (shard_id, merge_seq),
-    UNIQUE (event_id),
     UNIQUE (changeset_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_merge_events_home_seq ON merge_events(home_id, shard_id, merge_seq);
-CREATE INDEX IF NOT EXISTS idx_merge_events_created_at ON merge_events(created_at);
 
 CREATE TABLE IF NOT EXISTS projection_offsets (
     projection_name TEXT NOT NULL,

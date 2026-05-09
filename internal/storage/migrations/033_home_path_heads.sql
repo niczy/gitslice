@@ -15,9 +15,3 @@ CREATE TABLE IF NOT EXISTS home_path_heads (
     CHECK (path_version >= 0),
     CHECK (last_merge_seq >= 0)
 );
-
-CREATE INDEX IF NOT EXISTS idx_home_path_heads_home_version
-    ON home_path_heads(home_id, path_version DESC);
-
-CREATE INDEX IF NOT EXISTS idx_home_path_heads_home_merge_seq
-    ON home_path_heads(home_id, last_merge_seq DESC);

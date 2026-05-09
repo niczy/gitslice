@@ -671,7 +671,7 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("Expected review output to include changeset ID, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("Expected merge success, got: %s", output)
 	}
@@ -697,13 +697,20 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	}
 
 	srcFolder := fmt.Sprintf("src_%d", time.Now().UnixNano())
+	srcFile := filepath.Join(workdir, filepath.FromSlash(srcFolder+"/main.go"))
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatalf("failed to create src folder: %v", err)
+	}
+	if err := os.WriteFile(srcFile, nil, 0o644); err != nil {
+		t.Fatalf("failed to write src file: %v", err)
+	}
 	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Create src folder", "--files", srcFolder+"/main.go")
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("Failed to extract changeset ID from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("Expected merge success, got: %s", output)
 	}
@@ -726,6 +733,13 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 	}
 
 	subFolder := fmt.Sprintf("components_%d", time.Now().UnixNano())
+	subFile := filepath.Join(newSliceWorkdir, filepath.FromSlash(subFolder+"/index.ts"))
+	if err := os.MkdirAll(filepath.Dir(subFile), 0o755); err != nil {
+		t.Fatalf("failed to create components folder: %v", err)
+	}
+	if err := os.WriteFile(subFile, nil, 0o644); err != nil {
+		t.Fatalf("failed to write components file: %v", err)
+	}
 	output = runCLIOrFail(t, newSliceWorkdir, "changeset", "create", "--message", "Create components subfolder", "--files", subFolder+"/index.ts")
 	changesetID = extractChangesetID(output)
 	if changesetID == "" {
@@ -1010,13 +1024,22 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 	servicesFolder := "services-" + rootSuffix
 	docsFolder := "docs-" + rootSuffix
 	rootFiles := []string{appsFolder + "/README.md", servicesFolder + "/README.md", docsFolder + "/README.md"}
+	for _, filePath := range rootFiles {
+		localPath := filepath.Join(workdir, filepath.FromSlash(filePath))
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+			t.Fatalf("failed to create root folder for %s: %v", filePath, err)
+		}
+		if err := os.WriteFile(localPath, nil, 0o644); err != nil {
+			t.Fatalf("failed to write root file %s: %v", filePath, err)
+		}
+	}
 	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "Add root folders", "--files", strings.Join(rootFiles, ","))
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("expected merge success, got: %s", output)
 	}
@@ -1057,13 +1080,20 @@ func TestRootSliceEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("expected focused file under %q in checkout output, got: %+v", appsFolder, checkoutResp)
 	}
 
+	appsReadmePath := filepath.Join(sliceWorkdir, filepath.FromSlash(appsFolder+"/readme.md"))
+	if err := os.MkdirAll(filepath.Dir(appsReadmePath), 0o755); err != nil {
+		t.Fatalf("failed to create apps readme folder: %v", err)
+	}
+	if err := os.WriteFile(appsReadmePath, []byte("apps readme\n"), 0o644); err != nil {
+		t.Fatalf("failed to write apps readme: %v", err)
+	}
 	output = runCLIOrFail(t, sliceWorkdir, "changeset", "create", "--message", "Add apps readme", "--files", appsFolder+"/readme.md")
 	changesetID = extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, sliceWorkdir, "changeset", "merge", changesetID)
+	output = runCLIOrFail(t, sliceWorkdir, "changeset", "merge", changesetID, "--wait")
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("expected merge success, got: %s", output)
 	}
@@ -2444,7 +2474,7 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID)
+	output = runCLIOrFail(t, workdir, "changeset", "merge", changesetID, "--wait")
 	if !strings.Contains(output, "MERGE_STATUS_SUCCESS") {
 		t.Fatalf("expected merge success, got: %s", output)
 	}
@@ -2920,23 +2950,36 @@ func TestChangesetMergeRequiresCurrentBaseCommit(t *testing.T) {
 		t.Fatalf("failed to update slice metadata: %v", err)
 	}
 
+	stalePath := workflowUsername(t) + "/README.md"
 	createResp, err := sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
 		SliceId:        sliceID,
 		BaseCommitHash: "head-old",
-		ModifiedFiles:  []string{"README.md"},
+		ModifiedFiles:  []string{stalePath},
 		Author:         "tester",
 		Message:        "stale base",
 	})
 	if err != nil {
 		t.Fatalf("failed to create changeset: %v", err)
 	}
+	if headStore, ok := testStorage.(storage.HomePathHeadStore); ok {
+		if err := headStore.UpsertHomePathHeads(ctx, []*models.HomePathHead{{
+			HomeID:       workflowUsername(t),
+			Path:         stalePath,
+			PathVersion:  1,
+			ContentHash:  "head-current-readme",
+			ManifestHash: "head-current-readme",
+			UpdatedAt:    time.Now(),
+		}}); err != nil {
+			t.Fatalf("failed to seed path-head drift: %v", err)
+		}
+	}
 
 	reviewResp, err := sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
 	if err != nil {
 		t.Fatalf("failed to review changeset: %v", err)
 	}
-	if reviewResp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_REBASE {
-		t.Fatalf("expected NEEDS_REBASE, got %v", reviewResp.GetReviewStatus())
+	if reviewResp.GetReviewStatus() != slicev1.ReviewStatus_NEEDS_SYNC {
+		t.Fatalf("expected NEEDS_SYNC, got %v", reviewResp.GetReviewStatus())
 	}
 
 	mergeResp, err := sliceClient.MergeChangeset(ctx, &slicev1.MergeChangesetRequest{ChangesetId: createResp.GetChangesetId()})

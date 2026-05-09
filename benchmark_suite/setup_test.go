@@ -297,6 +297,22 @@ func shouldSeedBenchmarkUserFolders() bool {
 	return re.MatchString("TestSimulate100kUsers")
 }
 
+func shouldUseAcceptanceOnlyProjectionMode() bool {
+	runFlag := flag.Lookup("test.run")
+	if runFlag == nil {
+		return false
+	}
+	pattern := strings.TrimSpace(runFlag.Value.String())
+	if pattern == "" {
+		return false
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	return re.MatchString("TestMergeAcceptanceThroughput")
+}
+
 func startBenchGRPCServer(st storage.Storage, promotionSt storage.Storage) (string, *grpc.Server, error) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -305,6 +321,9 @@ func startBenchGRPCServer(st storage.Storage, promotionSt storage.Storage) (stri
 
 	srv := grpc.NewServer()
 	sliceServer := sliceservice.NewInternalServiceWithPromotionStorage(st, promotionSt)
+	if shouldUseAcceptanceOnlyProjectionMode() {
+		sliceServer.EnableDurableProjectionModeForTesting()
+	}
 	benchPromotionWaiter = sliceServer
 	slicev1.RegisterSliceServiceServer(srv, sliceServer)
 	fileservice.RegisterGRPCServer(srv, st)

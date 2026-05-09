@@ -121,7 +121,7 @@ func publishRootFolderFromWorktree(t *testing.T, folderPath, message string, pop
 	if createResp.ChangesetID == "" {
 		t.Fatalf("expected root changeset ID for %s, got: %+v", folderPath, createResp)
 	}
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID, "--wait")
 	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
 		t.Fatalf("expected root merge success for %s, got: %+v", folderPath, mergeResp)
 	}
@@ -249,7 +249,7 @@ func TestSliceWorkflowCommands(t *testing.T) {
 	if createResp.ChangesetID == "" {
 		t.Fatalf("failed to create changeset")
 	}
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID)
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, rootWorkdir, "changeset", "merge", createResp.ChangesetID, "--wait")
 	if mergeResp.Status != "MERGE_STATUS_SUCCESS" {
 		t.Fatalf("expected merge success, got: %+v", mergeResp)
 	}
@@ -589,7 +589,7 @@ func TestSliceExportThenTrackedChangesetMergeAppendsCommitAndUpdatesTree(t *test
 		t.Fatalf("expected export to leave history unchanged, before=%+v after=%+v", beforeHistory, afterExportHistory)
 	}
 
-	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutDir, "changeset", "merge")
+	mergeResp := runCLIJSONOrFail[mergeJSON](t, checkoutDir, "changeset", "merge", "--wait")
 	if mergeResp.Status != "MERGE_STATUS_SUCCESS" ||
 		mergeResp.ChangesetID != createResp.ChangesetID ||
 		mergeResp.NewCommitHash == "" ||
@@ -708,9 +708,10 @@ func TestSlicePublishWorksWithoutGitCheckout(t *testing.T) {
 
 func TestComprehensiveNoGitSlicePublishAndSyncWorkflow(t *testing.T) {
 	sliceID := fmt.Sprintf("comprehensive-local-%d", time.Now().UnixNano())
-	readmeRel := "README.md"
-	staleRel := filepath.ToSlash(filepath.Join("docs", "stale.txt"))
-	newRel := filepath.ToSlash(filepath.Join("docs", "NEW.txt"))
+	pathPrefix := fmt.Sprintf("comprehensive-%d", time.Now().UnixNano())
+	readmeRel := filepath.ToSlash(filepath.Join(pathPrefix, "README.md"))
+	staleRel := filepath.ToSlash(filepath.Join(pathPrefix, "docs", "stale.txt"))
+	newRel := filepath.ToSlash(filepath.Join(pathPrefix, "docs", "NEW.txt"))
 
 	createSeededWorkflowSlice(t, sliceID, map[string]seededWorkflowFile{
 		readmeRel: {content: []byte("comprehensive v1\n")},

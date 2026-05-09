@@ -3,8 +3,8 @@
 Comprehensive load-testing and integrity-verification suite for the gitslice
 **file service** and **slice service**.
 
-The suite runs entirely in-process using in-memory storage — no external
-infrastructure required.
+The suite runs in-process by default with in-memory storage and can also target
+Postgres for storage-level throughput experiments.
 
 ---
 
@@ -13,6 +13,7 @@ infrastructure required.
 | Test | Description |
 |---|---|
 | `TestSimulate100kUsers` | Simulates N concurrent users each performing the full `CreateSliceFromFolder → CreateChangeset → MergeChangeset` workflow; reports P50/P95/P99 latencies and throughput; verifies integrity on a 1% random sample |
+| `TestMergeAcceptanceThroughput` | Pre-creates ready changesets, then times only concurrent `MergeChangeset` calls; reports accepted merges/sec, merge latency, pgx pool stats, projection drain time, and integrity on a 1% sample |
 | `TestIntegrity` | Creates 50 slices with known data, merges all changesets, then verifies slice state, commit history, changeset status, and file history are self-consistent |
 | `TestConflictDetection` | Verifies that when two slices claim the same file, exactly one merge succeeds and the other receives `MERGE_STATUS_CONFLICT` |
 | `TestConflictResolution` | Verifies that after an admin resolves a conflict, the preferred slice can merge and the other remains blocked |
@@ -65,6 +66,46 @@ Promotion drain elapsed: 0.00 s
 
 Integrity OK: all 1000 sampled users passed
 ```
+
+### Merge acceptance-only benchmark
+
+`TestMergeAcceptanceThroughput` prepares ready changesets before starting the
+timer. The reported throughput isolates concurrent `MergeChangeset` acceptance
+from checkout, slice creation, and changeset export costs.
+
+```bash
+BENCHMARK_USERS=5000 \
+BENCHMARK_WORKERS=128 \
+go test -v -timeout 600s ./benchmark_suite/ -run TestMergeAcceptanceThroughput
+```
+
+Postgres example:
+
+```bash
+BENCHMARK_STORAGE=postgres \
+BENCHMARK_POSTGRES_DSN=postgres://... \
+BENCHMARK_USERS=5000 \
+BENCHMARK_WORKERS=128 \
+BENCHMARK_POSTGRES_MAX_CONNS=64 \
+BENCHMARK_POSTGRES_PROMOTION_MAX_CONNS=4 \
+go test -v -timeout 600s ./benchmark_suite/ -run TestMergeAcceptanceThroughput
+```
+
+Recent local Postgres results:
+
+| Users | Workers | Foreground conns | Promotion conns | Merge throughput | P50 | P95 | P99 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5000 | 128 | 64 | 4 | `150.8 merges/sec` | `836.36ms` | `978.82ms` | `1303.74ms` |
+| 5000 | 192 | 88 | 4 | `153.5 merges/sec` | `1176.08ms` | `1744.71ms` | `2215.93ms` |
+| 5000 | 128 | 64 | 4 | `733.7 merges/sec` | `140.75ms` | `394.89ms` | `1008.00ms` |
+| 5000 | 128 | 92 | 4 | `543.9 merges/sec` | `170.25ms` | `590.27ms` | `1354.31ms` |
+
+The higher-throughput row uses the Postgres fast merge path: merge acceptance is
+a single statement that updates `home_path_heads`, appends the merge event, and
+marks the changeset merged, with non-hot-path indexes removed. Increasing the
+foreground pool within the local Postgres `max_connections=100` cap still made
+throughput and tail latency worse, which means connection count is not the
+primary limiter.
 
 ### All tests
 

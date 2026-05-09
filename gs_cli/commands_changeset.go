@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
@@ -263,16 +264,21 @@ func handleChangesetReview(ctx context.Context, cli *CLI, args []string) {
 func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("changeset merge")
+	waitForProjections := fs.Bool("wait", false, "Wait for merge projections before returning")
+	waitTimeout := fs.Duration("wait-timeout", 30*time.Second, "Maximum time to wait for merge projections")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	parseCommandFlags(fs, args)
+	parseFlagSetInterspersed(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
 
 	changesetID, err := resolveChangesetIDForRead("")
 	if fs.NArg() == 1 {
 		changesetID, err = resolveChangesetIDForRead(fs.Arg(0))
 	} else if fs.NArg() > 1 {
-		commandUsage("Usage: gs changeset merge [<changeset-id>] [--json]")
+		commandUsage("Usage: gs changeset merge [<changeset-id>] [--wait] [--wait-timeout <duration>] [--json]")
 		return
+	}
+	if *waitTimeout < 0 {
+		commandFatal("INVALID_ARGUMENT", "--wait-timeout must be non-negative", false, "")
 	}
 	if err != nil {
 		commandFatalf("CHANGESET_RESOLUTION_FAILED", false, "", "Failed to resolve changeset ID: %v", err)
@@ -288,6 +294,12 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		if err := clearTrackedChangesetIDIfMatches(req.ChangesetId); err != nil {
 			log.Printf("Warning: failed to clear tracked changeset ID: %v", err)
 		}
+		if *waitForProjections {
+			resp, err = waitForMergeProjections(ctx, cli, resp, *waitTimeout)
+			if err != nil {
+				commandFatalf("PROJECTION_WAIT_FAILED", true, "gs changeset merge --wait --wait-timeout 60s", "Failed waiting for merge projections: %v", err)
+			}
+		}
 	}
 
 	if jsonEnabled {
@@ -295,6 +307,81 @@ func handleChangesetMerge(ctx context.Context, cli *CLI, args []string) {
 		return
 	}
 	printMergeResult(resp)
+}
+
+func waitForMergeProjections(ctx context.Context, cli *CLI, resp *slicev1.MergeChangesetResponse, timeout time.Duration) (*slicev1.MergeChangesetResponse, error) {
+	if resp == nil {
+		return resp, nil
+	}
+	deadline := time.Now().Add(timeout)
+	for i, projection := range resp.GetProjections() {
+		if projection == nil || projection.GetRequestedSeq() <= 0 || projection.GetProjectionName() == "" {
+			continue
+		}
+		projectionTimeout := timeout
+		if timeout > 0 {
+			projectionTimeout = time.Until(deadline)
+			if projectionTimeout < 0 {
+				projectionTimeout = 0
+			}
+		}
+		updated, err := waitForMergeProjection(ctx, cli, projection, projectionTimeout)
+		if err != nil {
+			return resp, err
+		}
+		if i >= 0 && i < len(resp.Projections) {
+			resp.Projections[i] = updated
+		}
+	}
+	return resp, nil
+}
+
+func waitForMergeProjection(ctx context.Context, cli *CLI, projection *slicev1.ProjectionStatus, timeout time.Duration) (*slicev1.ProjectionStatus, error) {
+	if projection == nil || projection.GetRequestedSeq() <= 0 {
+		return projection, nil
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		wait := timeout
+		if timeout > 0 {
+			wait = time.Until(deadline)
+			if wait < 0 {
+				wait = 0
+			}
+			if wait > 30*time.Second {
+				wait = 30 * time.Second
+			}
+		}
+		updated, err := cli.sliceClient.GetProjectionStatus(ctx, &slicev1.GetProjectionStatusRequest{
+			ProjectionName: projection.GetProjectionName(),
+			ShardId:        projection.GetShardId(),
+			MergeSeq:       projection.GetRequestedSeq(),
+			WaitMs:         durationMilliseconds(wait),
+		})
+		if err != nil {
+			return projection, err
+		}
+		if updated.GetState() == slicev1.ProjectionState_PROJECTION_STATE_CAUGHT_UP {
+			return updated, nil
+		}
+		if timeout <= 0 || !time.Now().Before(deadline) {
+			return updated, fmt.Errorf("%s is pending: applied=%d requested=%d", updated.GetProjectionName(), updated.GetAppliedSeq(), updated.GetRequestedSeq())
+		}
+	}
+}
+
+func durationMilliseconds(duration time.Duration) int32 {
+	if duration <= 0 {
+		return 0
+	}
+	ms := duration.Milliseconds()
+	if ms > 30000 {
+		ms = 30000
+	}
+	if ms < 1 {
+		ms = 1
+	}
+	return int32(ms)
 }
 
 func handleChangesetClose(ctx context.Context, cli *CLI, args []string) {
