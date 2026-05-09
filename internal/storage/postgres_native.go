@@ -31,9 +31,10 @@ type PostgresNativeStorage struct {
 }
 
 type PostgresNativeStorageOptions struct {
-	MaxConns        int32
-	MinConns        int32
-	MaxConnLifetime time.Duration
+	MaxConns                int32
+	MinConns                int32
+	MaxConnLifetime         time.Duration
+	RebuildIndexesOnStartup bool
 }
 
 // PostgresPoolStats is a stable snapshot of pgx pool counters used by
@@ -616,9 +617,11 @@ func NewPostgresNativeStorageWithOptions(ctx context.Context, dsn string, object
 		objectStore: objectStore,
 		namespace:   namespace,
 	}
-	if err := storage.RebuildIndexes(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("rebuild indexes: %w", err)
+	if options.RebuildIndexesOnStartup {
+		if err := storage.RebuildIndexes(ctx); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("rebuild indexes: %w", err)
+		}
 	}
 
 	return storage, nil
