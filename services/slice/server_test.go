@@ -3998,6 +3998,89 @@ func TestCreateChangesetAppendCreatesSnapshotVersions(t *testing.T) {
 	}
 }
 
+func TestCreateChangesetExportEnqueuesCIAndSupersedesOlderRuns(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/.gitslice/ci.yaml", []byte(`
+version: 1
+triggers:
+  changeset_export: true
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+`))
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/api/.gs-ci.yaml", []byte(`
+version: 1
+name: api
+watch:
+  - "**/*.go"
+jobs:
+  unit:
+    required: true
+    commands:
+      - go test ./...
+`))
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/api/main.go", []byte("package main\n"))
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        homeSliceID,
+		BaseCommitHash: "base-v1",
+		ModifiedFiles:  []string{"alice/api/main.go"},
+		Message:        "snapshot v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset v1 failed: %v", err)
+	}
+	if createResp.GetCiRunId() == "" || createResp.GetCiStatus() != "queued" {
+		t.Fatalf("CI response = run %q status %q, want queued run", createResp.GetCiRunId(), createResp.GetCiStatus())
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if reviewResp.GetChangeset().GetCi().GetStatus() != "queued" || reviewResp.GetChangeset().GetCi().GetRequiredTotal() != 1 {
+		t.Fatalf("CI summary = %#v, want one queued required check", reviewResp.GetChangeset().GetCi())
+	}
+
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/api/main.go", []byte("package main\nfunc main() {}\n"))
+	appendResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		ChangesetId:    createResp.GetChangesetId(),
+		BaseCommitHash: "base-v2",
+		ModifiedFiles:  []string{"alice/api/main.go"},
+		Message:        "snapshot v2",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset append failed: %v", err)
+	}
+	if appendResp.GetCiRunId() == "" || appendResp.GetCiRunId() == createResp.GetCiRunId() {
+		t.Fatalf("append CI run = %q, want new run different from %q", appendResp.GetCiRunId(), createResp.GetCiRunId())
+	}
+	runs, err := st.ListCIRuns(ctx, storage.CIRunListFilter{ChangesetID: createResp.GetChangesetId(), Limit: 10})
+	if err != nil {
+		t.Fatalf("ListCIRuns failed: %v", err)
+	}
+	statuses := map[string]string{}
+	for _, run := range runs {
+		statuses[run.ID] = run.Status
+	}
+	if statuses[createResp.GetCiRunId()] != "cancelled" {
+		t.Fatalf("first run status = %q, want cancelled; all statuses %#v", statuses[createResp.GetCiRunId()], statuses)
+	}
+	if statuses[appendResp.GetCiRunId()] != "queued" {
+		t.Fatalf("second run status = %q, want queued; all statuses %#v", statuses[appendResp.GetCiRunId()], statuses)
+	}
+}
+
 func TestListChangesetSnapshotsReturnsSyntheticWhenNoStoredSnapshots(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

@@ -96,13 +96,29 @@ type jsonAuthClaimTokenOutput struct {
 }
 
 type jsonChangesetCreateOutput struct {
-	ChangesetID   string   `json:"changeset_id"`
-	ChangesetHash string   `json:"changeset_hash"`
-	Status        string   `json:"status"`
-	ReviewStatus  string   `json:"review_status,omitempty"`
-	Updated       bool     `json:"updated"`
-	SliceID       string   `json:"slice_id,omitempty"`
-	ModifiedFiles []string `json:"modified_files,omitempty"`
+	ChangesetID   string                 `json:"changeset_id"`
+	ChangesetHash string                 `json:"changeset_hash"`
+	Status        string                 `json:"status"`
+	ReviewStatus  string                 `json:"review_status,omitempty"`
+	CIRunID       string                 `json:"ci_run_id,omitempty"`
+	CIStatus      string                 `json:"ci_status,omitempty"`
+	CI            *jsonChangesetCIOutput `json:"ci,omitempty"`
+	Updated       bool                   `json:"updated"`
+	SliceID       string                 `json:"slice_id,omitempty"`
+	ModifiedFiles []string               `json:"modified_files,omitempty"`
+}
+
+type jsonChangesetCIOutput struct {
+	Status             string `json:"status"`
+	RunID              string `json:"run_id,omitempty"`
+	PlanHash           string `json:"plan_hash,omitempty"`
+	ChangesetVersionID string `json:"changeset_version_id,omitempty"`
+	RequiredTotal      int32  `json:"required_total,omitempty"`
+	RequiredPassed     int32  `json:"required_passed,omitempty"`
+	RequiredFailed     int32  `json:"required_failed,omitempty"`
+	RequiredRunning    int32  `json:"required_running,omitempty"`
+	RequiredQueued     int32  `json:"required_queued,omitempty"`
+	Stale              bool   `json:"stale,omitempty"`
 }
 
 type jsonChangesetDiffSummary struct {
@@ -139,6 +155,7 @@ type jsonChangesetReviewOutput struct {
 	SliceID      string                   `json:"slice_id,omitempty"`
 	Message      string                   `json:"message,omitempty"`
 	ReviewStatus string                   `json:"review_status"`
+	CI           *jsonChangesetCIOutput   `json:"ci,omitempty"`
 	Snapshot     *jsonChangesetSnapshot   `json:"snapshot,omitempty"`
 	Diff         jsonChangesetDiffSummary `json:"diff"`
 	Warnings     []string                 `json:"warnings,omitempty"`
@@ -598,11 +615,12 @@ type jsonConflictShowOutput struct {
 }
 
 type jsonChangesetListItem struct {
-	ChangesetID  string `json:"changeset_id"`
-	Status       string `json:"status"`
-	ReviewStatus string `json:"review_status,omitempty"`
-	Message      string `json:"message,omitempty"`
-	CreatedAt    int64  `json:"created_at,omitempty"`
+	ChangesetID  string                 `json:"changeset_id"`
+	Status       string                 `json:"status"`
+	ReviewStatus string                 `json:"review_status,omitempty"`
+	CI           *jsonChangesetCIOutput `json:"ci,omitempty"`
+	Message      string                 `json:"message,omitempty"`
+	CreatedAt    int64                  `json:"created_at,omitempty"`
 }
 
 type jsonChangesetListOutput struct {
@@ -659,6 +677,9 @@ func buildChangesetCreateOutput(resp *slicev1.CreateChangesetResponse, updated b
 		ChangesetID:   resp.GetChangesetId(),
 		ChangesetHash: resp.GetChangesetHash(),
 		Status:        resp.GetStatus().String(),
+		CIRunID:       strings.TrimSpace(resp.GetCiRunId()),
+		CIStatus:      strings.TrimSpace(resp.GetCiStatus()),
+		CI:            buildChangesetCIOutputFromRun(resp.GetCiRunId(), resp.GetCiStatus()),
 		Updated:       updated,
 		SliceID:       sliceID,
 		ModifiedFiles: append([]string(nil), modifiedFiles...),
@@ -793,9 +814,40 @@ func buildChangesetOutputFromInfo(info *slicev1.ChangesetInfo) jsonChangesetCrea
 		ChangesetHash: info.GetChangesetHash(),
 		Status:        info.GetStatus().String(),
 		ReviewStatus:  reviewStatusForChangesetInfo(info),
+		CI:            buildChangesetCIOutput(info.GetCi()),
 		Updated:       true,
 		SliceID:       info.GetSliceId(),
 		ModifiedFiles: append([]string(nil), info.GetModifiedFiles()...),
+	}
+}
+
+func buildChangesetCIOutputFromRun(runID string, status string) *jsonChangesetCIOutput {
+	runID = strings.TrimSpace(runID)
+	status = strings.TrimSpace(status)
+	if runID == "" && status == "" {
+		return nil
+	}
+	return &jsonChangesetCIOutput{
+		Status: status,
+		RunID:  runID,
+	}
+}
+
+func buildChangesetCIOutput(ci *slicev1.ChangesetCISummary) *jsonChangesetCIOutput {
+	if ci == nil {
+		return nil
+	}
+	return &jsonChangesetCIOutput{
+		Status:             strings.TrimSpace(ci.GetStatus()),
+		RunID:              strings.TrimSpace(ci.GetRunId()),
+		PlanHash:           strings.TrimSpace(ci.GetPlanHash()),
+		ChangesetVersionID: strings.TrimSpace(ci.GetChangesetVersionId()),
+		RequiredTotal:      ci.GetRequiredTotal(),
+		RequiredPassed:     ci.GetRequiredPassed(),
+		RequiredFailed:     ci.GetRequiredFailed(),
+		RequiredRunning:    ci.GetRequiredRunning(),
+		RequiredQueued:     ci.GetRequiredQueued(),
+		Stale:              ci.GetStale(),
 	}
 }
 
@@ -821,6 +873,7 @@ func buildChangesetReviewOutput(resp *slicev1.ReviewChangesetResponse, includePa
 		output.ChangesetID = changeset.GetChangesetId()
 		output.SliceID = changeset.GetSliceId()
 		output.Message = changeset.GetMessage()
+		output.CI = buildChangesetCIOutput(changeset.GetCi())
 	}
 	if snapshot := resp.GetSnapshot(); snapshot != nil {
 		output.Snapshot = &jsonChangesetSnapshot{

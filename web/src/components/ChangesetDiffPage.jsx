@@ -27,6 +27,23 @@ function changesetStatusText(changeset) {
   return `${lifecycle} · ${reviewStatusLabel(changeset?.review_status)}`;
 }
 
+function ciTone(status) {
+  if (status === 'success') return 'ready';
+  if (status === 'failed' || status === 'error') return 'conflict';
+  if (status === 'cancelled' || status === 'superseded') return 'closed';
+  return 'needs-sync';
+}
+
+function ciSummaryText(ci) {
+  if (!ci) return '';
+  const status = ci.stale ? 'stale' : ci.status || 'missing';
+  const requiredTotal = Number(ci.required_total || 0);
+  if (requiredTotal > 0) {
+    return `CI ${status} · ${Number(ci.required_passed || 0)}/${requiredTotal} required passed`;
+  }
+  return `CI ${status}`;
+}
+
 export default function ChangesetDiffPage({
   changesetId,
   onBack,
@@ -189,6 +206,8 @@ export default function ChangesetDiffPage({
   ]);
 
   const changeset = payload?.changeset || null;
+  const changesetCI = changeset?.ci || null;
+  const changesetCILabel = ciSummaryText(changesetCI);
   const selectedSnapshot = payload?.snapshot || null;
   const diff = payload?.diff || null;
   const activeMessage = selectedSnapshot?.message || changeset?.message || '';
@@ -274,6 +293,14 @@ export default function ChangesetDiffPage({
           {selectedSnapshot?.version > 0 && (
             <p className="changeset-title-meta" data-testid="changeset-snapshot-meta">
               snapshot v{selectedSnapshot.version} by {selectedSnapshot.author || changeset?.author || 'unknown'} · {formatTimestamp(selectedSnapshot.created_at || selectedSnapshot.createdAt)}
+            </p>
+          )}
+          {changesetCILabel && (
+            <p className="changeset-title-meta changeset-title-ci">
+              <span className={`changeset-ci-badge changeset-ci-badge--${ciTone(changesetCI.stale ? 'stale' : changesetCI.status)}`} data-testid="changeset-ci-status">
+                {changesetCILabel}
+              </span>
+              {changesetCI.run_id && <span className="commit-hash">{changesetCI.run_id.slice(0, 18)}</span>}
             </p>
           )}
         </div>

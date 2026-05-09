@@ -39,6 +39,32 @@ func RegisterGRPCServer(srv *grpc.Server, st storage.Storage) {
 	civ1.RegisterRunnerServiceServer(srv, service)
 }
 
+func EnqueueChangesetExportRun(ctx context.Context, st storage.Storage, changesetID string, triggeredByUserID string) (*civ1.StartRunResponse, bool, error) {
+	service := &server{st: st}
+	cs, sourceSlice, snapshot, err := service.loadChangesetVersion(ctx, changesetID, "")
+	if err != nil {
+		return nil, false, err
+	}
+	homeID := resolveCIHomeID(sourceSlice, cs, snapshot.ModifiedFiles)
+	platform, err := service.loadPlatformConfigForHome(ctx, homeID)
+	if err != nil {
+		return nil, false, err
+	}
+	if platform == nil || !platform.Triggers.ChangesetExport {
+		return nil, false, nil
+	}
+	resp, err := service.startRun(ctx, startRunRequest{
+		ChangesetID:        cs.ID,
+		ChangesetVersionID: snapshot.ID,
+		TriggerEvent:       "changeset_export",
+		TriggeredByUserID:  strings.TrimSpace(triggeredByUserID),
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	return resp, true, nil
+}
+
 type server struct {
 	civ1.UnimplementedCIServiceServer
 	civ1.UnimplementedRunnerAdminServiceServer
@@ -54,14 +80,36 @@ func (s *server) StartRun(ctx context.Context, req *civ1.StartRunRequest) (*civ1
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(req.GetChangesetId()) == "" {
+	return s.startRun(ctx, startRunRequest{
+		ChangesetID:        req.GetChangesetId(),
+		ChangesetVersionID: req.GetChangesetVersionId(),
+		ManifestPath:       req.GetManifestPath(),
+		JobKey:             req.GetJobKey(),
+		TriggerEvent:       req.GetTriggerEvent(),
+		TriggeredByUserID:  identity.Username,
+		AuthorizeUsername:  identity.Username,
+	})
+}
+
+type startRunRequest struct {
+	ChangesetID        string
+	ChangesetVersionID string
+	ManifestPath       string
+	JobKey             string
+	TriggerEvent       string
+	TriggeredByUserID  string
+	AuthorizeUsername  string
+}
+
+func (s *server) startRun(ctx context.Context, req startRunRequest) (*civ1.StartRunResponse, error) {
+	if strings.TrimSpace(req.ChangesetID) == "" {
 		return nil, status.Error(codes.InvalidArgument, "changeset_id is required")
 	}
-	cs, sourceSlice, snapshot, err := s.loadChangesetVersion(ctx, req.GetChangesetId(), req.GetChangesetVersionId())
+	cs, sourceSlice, snapshot, err := s.loadChangesetVersion(ctx, req.ChangesetID, req.ChangesetVersionID)
 	if err != nil {
 		return nil, err
 	}
-	if !authz.HasSliceViewAccess(sourceSlice, identity.Username) {
+	if strings.TrimSpace(req.AuthorizeUsername) != "" && !authz.HasSliceViewAccess(sourceSlice, req.AuthorizeUsername) {
 		return nil, status.Error(codes.PermissionDenied, "not allowed to start CI for this changeset")
 	}
 	homeID := resolveCIHomeID(sourceSlice, cs, snapshot.ModifiedFiles)
@@ -87,11 +135,11 @@ func (s *server) StartRun(ctx context.Context, req *civ1.StartRunRequest) (*civ1
 		}
 		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("failed to plan CI: %v", err))
 	}
-	filteredJobs := filterPlanJobs(plan.Jobs, req.GetManifestPath(), req.GetJobKey())
+	filteredJobs := filterPlanJobs(plan.Jobs, req.ManifestPath, req.JobKey)
 	if len(plan.Jobs) > 0 && len(filteredJobs) == 0 {
 		return nil, status.Error(codes.NotFound, "no CI jobs matched the requested manifest/job filter")
 	}
-	trigger := strings.TrimSpace(req.GetTriggerEvent())
+	trigger := strings.TrimSpace(req.TriggerEvent)
 	if trigger == "" {
 		trigger = "manual"
 	}
@@ -108,9 +156,14 @@ func (s *server) StartRun(ctx context.Context, req *civ1.StartRunRequest) (*civ1
 		runStatus = "success"
 		finishedAt = &now
 	}
-	ciPlan := buildStorageCIPlan(runID, attempt, trigger, identity.Username, now, finishedAt, plan, filteredJobs)
+	ciPlan := buildStorageCIPlan(runID, attempt, trigger, req.TriggeredByUserID, now, finishedAt, plan, filteredJobs)
 	if err := s.st.CreateCIPlan(ctx, ciPlan); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create CI run: %v", err))
+	}
+	if trigger == "changeset_export" {
+		if err := s.supersedeOlderRuns(ctx, cs.ID, snapshot.ID, runID, now); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to supersede older CI runs: %v", err))
+		}
 	}
 	return &civ1.StartRunResponse{RunId: runID, Status: runStatus}, nil
 }
@@ -943,6 +996,9 @@ func (s *server) updateCheckAndRunAfterJob(ctx context.Context, job *storage.CIJ
 			return status.Error(codes.Internal, fmt.Sprintf("failed to update CI check: %v", err))
 		}
 	}
+	if run.Status == "cancelled" || run.Status == "superseded" {
+		return nil
+	}
 	if job.Status != "passed" {
 		if err := s.skipJobsBlockedByFailure(ctx, run, finishedAt); err != nil {
 			return err
@@ -970,6 +1026,28 @@ func (s *server) updateCheckAndRunAfterJob(ctx context.Context, job *storage.CIJ
 		}
 		if err := s.st.UpdateCIRunStatus(ctx, run.ID, runStatus, &finishedAt); err != nil {
 			return status.Error(codes.Internal, fmt.Sprintf("failed to update CI run: %v", err))
+		}
+	}
+	return nil
+}
+
+func (s *server) supersedeOlderRuns(ctx context.Context, changesetID string, currentVersionID string, currentRunID string, now time.Time) error {
+	for _, statusValue := range []string{"queued", "running"} {
+		runs, err := s.st.ListCIRuns(ctx, storage.CIRunListFilter{ChangesetID: changesetID, Status: statusValue, Limit: 1000})
+		if err != nil {
+			return err
+		}
+		for _, run := range runs {
+			if run == nil || run.ID == currentRunID || run.ChangesetVersionID == currentVersionID {
+				continue
+			}
+			nextStatus := "cancelled"
+			if run.Status == "running" {
+				nextStatus = "superseded"
+			}
+			if err := s.st.UpdateCIRunStatus(ctx, run.ID, nextStatus, &now); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

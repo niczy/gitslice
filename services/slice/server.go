@@ -29,6 +29,7 @@ import (
 	commonv1 "github.com/niczy/gitslice/proto/common"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	ciservice "github.com/niczy/gitslice/services/ci"
 	"github.com/pmezard/go-difflib/difflib"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -1196,11 +1197,14 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if err := s.createChangesetSnapshot(ctx, existing); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 		}
+		ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, existing.ID, username)
 
 		return &slicev1.CreateChangesetResponse{
 			ChangesetId:   existing.ID,
 			ChangesetHash: existing.Hash,
 			Status:        convertChangesetStatusToProto(existing.Status),
+			CiRunId:       ciRunID,
+			CiStatus:      ciStatus,
 		}, nil
 	}
 
@@ -1241,11 +1245,14 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	if err := s.createChangesetSnapshot(ctx, cs); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save changeset snapshot: %v", err))
 	}
+	ciRunID, ciStatus := s.enqueueChangesetExportCI(ctx, cs.ID, username)
 
 	return &slicev1.CreateChangesetResponse{
 		ChangesetId:   cs.ID,
 		ChangesetHash: cs.Hash,
 		Status:        convertChangesetStatusToProto(cs.Status),
+		CiRunId:       ciRunID,
+		CiStatus:      ciStatus,
 	}, nil
 }
 
@@ -1295,6 +1302,7 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 
 	changesetInfo := convertChangesetToProto(reviewCS)
 	changesetInfo.ReviewStatus = reviewStatus
+	changesetInfo.Ci = s.buildChangesetCISummary(ctx, reviewCS.ID, snapshot.ID)
 
 	return &slicev1.ReviewChangesetResponse{
 		Changeset:    changesetInfo,
@@ -3107,6 +3115,18 @@ func (s *sliceServiceServer) createChangesetSnapshot(ctx context.Context, cs *mo
 	return s.storage.CreateChangesetSnapshot(ctx, snapshot)
 }
 
+func (s *sliceServiceServer) enqueueChangesetExportCI(ctx context.Context, changesetID string, username string) (string, string) {
+	resp, enabled, err := ciservice.EnqueueChangesetExportRun(ctx, s.storage, changesetID, username)
+	if err != nil {
+		log.Printf("failed to enqueue changeset export CI for %s: %v", changesetID, err)
+		return "", "error"
+	}
+	if !enabled || resp == nil {
+		return "", ""
+	}
+	return resp.GetRunId(), resp.GetStatus()
+}
+
 func (s *sliceServiceServer) changesetBasePathVersions(ctx context.Context, cs *models.Changeset, modifiedFiles []string) (map[string]int64, error) {
 	headStore, ok := s.storage.(storage.HomePathHeadStore)
 	if !ok || cs == nil {
@@ -3405,6 +3425,9 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset %s state: %v", cs.ID, err))
 			}
 			info.ReviewStatus = reviewStatus
+			if snapshot != nil {
+				info.Ci = s.buildChangesetCISummary(ctx, cs.ID, snapshot.ID)
+			}
 		}
 		response.Changesets = append(response.Changesets, info)
 	}
@@ -3550,6 +3573,54 @@ func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
 		CreatedAt:      cs.CreatedAt.Unix(),
 		MergedAt:       mergedAt,
 	}
+}
+
+func (s *sliceServiceServer) buildChangesetCISummary(ctx context.Context, changesetID string, changesetVersionID string) *slicev1.ChangesetCISummary {
+	changesetID = strings.TrimSpace(changesetID)
+	changesetVersionID = strings.TrimSpace(changesetVersionID)
+	if changesetID == "" || changesetVersionID == "" {
+		return nil
+	}
+	runs, err := s.storage.ListCIRuns(ctx, storage.CIRunListFilter{
+		ChangesetID:        changesetID,
+		ChangesetVersionID: changesetVersionID,
+		Limit:              1,
+	})
+	if err != nil || len(runs) == 0 || runs[0] == nil {
+		return &slicev1.ChangesetCISummary{
+			Status:             "missing",
+			ChangesetVersionId: changesetVersionID,
+		}
+	}
+	run := runs[0]
+	summary := &slicev1.ChangesetCISummary{
+		Status:             run.Status,
+		RunId:              run.ID,
+		PlanHash:           run.PlanHash,
+		ChangesetVersionId: run.ChangesetVersionID,
+		Stale:              run.ChangesetVersionID != changesetVersionID,
+	}
+	checks, err := s.storage.ListCIChecks(ctx, changesetID, run.ChangesetVersionID, run.PlanHash)
+	if err != nil {
+		return summary
+	}
+	for _, check := range checks {
+		if check == nil || !check.Required {
+			continue
+		}
+		summary.RequiredTotal++
+		switch check.Status {
+		case "passed":
+			summary.RequiredPassed++
+		case "queued":
+			summary.RequiredQueued++
+		case "running":
+			summary.RequiredRunning++
+		default:
+			summary.RequiredFailed++
+		}
+	}
+	return summary
 }
 
 func convertChangesetStatusToProto(status models.ChangesetStatus) slicev1.ChangesetStatus {
