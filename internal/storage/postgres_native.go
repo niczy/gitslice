@@ -244,6 +244,15 @@ func appendGlobalCommitsTx(ctx context.Context, exec execable, commits []*models
 	return err
 }
 
+func replaceGlobalCommitsTx(ctx context.Context, exec execable, commits []*models.GlobalCommit) error {
+	// UpdateGlobalState has replacement semantics; root promotion uses the
+	// append-only path directly when preserving the durable timeline matters.
+	if _, err := exec.Exec(ctx, `DELETE FROM global_commits`); err != nil {
+		return err
+	}
+	return appendGlobalCommitsTx(ctx, exec, commits)
+}
+
 func loadGlobalCommitHistory(ctx context.Context, q queryable) ([]*models.GlobalCommit, error) {
 	rows, err := q.Query(ctx, `
 		SELECT commit_hash, committed_at, merged_slice_ids
@@ -1601,7 +1610,7 @@ func (s *postgresNativeTxView) UpdateGlobalState(ctx context.Context, state *mod
 	if state == nil {
 		return ErrInvalidInput
 	}
-	if err := appendGlobalCommitsTx(ctx, s.tx, state.History); err != nil {
+	if err := replaceGlobalCommitsTx(ctx, s.tx, state.History); err != nil {
 		return err
 	}
 	stateJSON := globalStateJSONWithoutHistory()
@@ -3774,17 +3783,26 @@ func (s *PostgresNativeStorage) UpdateGlobalState(ctx context.Context, state *mo
 	if state == nil {
 		return ErrInvalidInput
 	}
-	if err := appendGlobalCommitsTx(ctx, s.pool, state.History); err != nil {
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := replaceGlobalCommitsTx(ctx, tx, state.History); err != nil {
 		return err
 	}
 	stateJSON := globalStateJSONWithoutHistory()
 
-	_, err := s.pool.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO global_state (id, global_commit_hash, updated_at, state_json)
 		VALUES (true, $1, $2, $3)
 		ON CONFLICT (id) DO UPDATE SET global_commit_hash = $1, updated_at = $2, state_json = $3
-	`, state.GlobalCommitHash, state.Timestamp, stateJSON)
-	return err
+	`, state.GlobalCommitHash, state.Timestamp, stateJSON); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresNativeStorage) UpdateRootPromotionState(ctx context.Context, rootSliceID string, latestCommitHash string, latestTime time.Time, latestFiles []string, commits []*models.GlobalCommit) error {
