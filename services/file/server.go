@@ -759,20 +759,20 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 			}
 			for _, m := range slice.FolderMounts {
-				alias := cleanPath(m.Alias)
-				if alias == "" {
+				sourcePath := common.CleanRelativePath(m.SourcePath)
+				if sourcePath == "" {
 					continue
 				}
 				if !s.folderMountHasBacking(ctx, backingSliceID, m) {
 					continue
 				}
-				if _, ok := seen[alias]; ok {
+				if _, ok := seen[sourcePath]; ok {
 					continue
 				}
-				seen[alias] = struct{}{}
+				seen[sourcePath] = struct{}{}
 				entries = append(entries, &filev1.DirectoryEntry{
-					Name:        alias,
-					Path:        alias,
+					Name:        sourcePath,
+					Path:        sourcePath,
 					Type:        filev1.EntryType_ENTRY_TYPE_DIRECTORY,
 					HasChildren: true,
 				})
@@ -793,14 +793,16 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 			}, nil
 		}
 
-		// Enforce that requests stay under a mount alias to avoid leaking parent paths.
+		// Enforce that requests stay under a mount alias or source path to avoid leaking parent paths.
 		underAlias := false
 		for _, m := range slice.FolderMounts {
 			alias := cleanPath(m.Alias)
-			if alias == "" {
-				continue
+			sourcePath := common.CleanRelativePath(m.SourcePath)
+			if alias != "" && (normalizedPath == alias || strings.HasPrefix(normalizedPath, alias+"/")) {
+				underAlias = true
+				break
 			}
-			if normalizedPath == alias || strings.HasPrefix(normalizedPath, alias+"/") {
+			if sourcePath != "" && (normalizedPath == sourcePath || strings.HasPrefix(normalizedPath, sourcePath+"/")) {
 				underAlias = true
 				break
 			}
