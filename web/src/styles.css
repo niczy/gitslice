@@ -8666,7 +8666,7 @@ button[data-testid="topbar-get-started"]:hover {
   flex: 0 1 auto;
   min-height: 30px;
   min-width: 0;
-  max-width: min(22rem, 42vw);
+  max-width: min(18rem, 36vw);
   overflow: hidden;
   padding: 0 3px;
   border-radius: 3px;
@@ -8676,12 +8676,12 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .app-shell--browser .breadcrumb:first-child {
-  max-width: min(13rem, 32vw);
+  max-width: min(10rem, 24vw);
 }
 
 .app-shell--browser .breadcrumb:last-child {
   flex: 1 1 auto;
-  max-width: none;
+  max-width: min(22rem, 45vw);
 }
 
 .app-shell--browser .breadcrumb:hover {
@@ -9510,6 +9510,10 @@ button[data-testid="topbar-get-started"]:hover {
 
   .app-shell--browser .breadcrumb:first-child {
     max-width: min(8rem, 28vw);
+  }
+
+  .app-shell--browser .breadcrumb:last-child {
+    max-width: min(14rem, 46vw);
   }
 
   .app-shell--browser .file-preview,
