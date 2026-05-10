@@ -964,6 +964,9 @@ func (s *postgresNativeTxView) UpdateSliceFolderMounts(ctx context.Context, slic
 	if tag.RowsAffected() == 0 {
 		return ErrSliceNotFound
 	}
+	if _, err := s.tx.Exec(ctx, `DELETE FROM directory_entries WHERE slice_id = $1`, sliceID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2005,6 +2008,9 @@ func (s *PostgresNativeStorage) UpdateSliceFolderMounts(ctx context.Context, sli
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrSliceNotFound
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM directory_entries WHERE slice_id = $1`, sliceID); err != nil {
+		return err
 	}
 	return nil
 }
