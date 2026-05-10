@@ -557,6 +557,7 @@ function App({
         navigate={navigate}
         onOpenRepos={openBrowserHome}
         onLogin={openLogin}
+        onLogout={doLogout}
         isAdminUser={isAdminUser}
         isNavActive={isNavActive}
         browserSearch={{

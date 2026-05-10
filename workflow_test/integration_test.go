@@ -2354,10 +2354,10 @@ func TestGatewayHTTPListEntriesIntegration(t *testing.T) {
 		}
 	}
 
-	rootEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries")
+	rootEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries", "User "+workflowUsername(t))
 	assertGatewayEntryNames(t, rootEntries.Entries, "gateway")
 
-	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway")
+	gatewayEntries := fetchGatewayEntries(t, gatewayServiceURL+"/v1/files/entries/gateway", "User "+workflowUsername(t))
 	assertGatewayEntryNames(t, gatewayEntries.Entries, "readme.md", "docs")
 }
 
@@ -2371,11 +2371,18 @@ type gatewayEntry struct {
 	Type any    `json:"type"`
 }
 
-func fetchGatewayEntries(t *testing.T, url string) gatewayEntriesResponse {
+func fetchGatewayEntries(t *testing.T, url string, auth ...string) gatewayEntriesResponse {
 	t.Helper()
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("gateway request creation failed: %v", err)
+	}
+	if len(auth) > 0 && auth[0] != "" {
+		req.Header.Set("Authorization", auth[0])
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("gateway request failed: %v", err)
 	}
