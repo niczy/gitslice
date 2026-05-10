@@ -178,6 +178,22 @@ service SliceService {
     };
   }
 
+  // Add a tracked folder to a custom slice.
+  rpc AddSliceFolder(AddSliceFolderRequest) returns (AddSliceFolderResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices/{slice_id}/folders:add"
+      body: "*"
+    };
+  }
+
+  // Remove a tracked folder from a custom slice.
+  rpc RemoveSliceFolder(RemoveSliceFolderRequest) returns (RemoveSliceFolderResponse) {
+    option (google.api.http) = {
+      post: "/v1/slices/{slice_id}/folders:remove"
+      body: "*"
+    };
+  }
+
   // Stream checkout for large slices (server streaming)
   rpc StreamCheckoutSlice(CheckoutRequest) returns (stream CheckoutChunk);
 
@@ -571,6 +587,7 @@ message SliceInfo {
   bool is_root = 8;
   string environment = 9;
   string slug = 10;
+  repeated FolderMount folder_mounts = 11;
 }
 
 message GlobalStateRequest {
@@ -751,4 +768,36 @@ message SetSliceVisibilityResponse {
   string slice_id = 1;
   common.v1.Visibility visibility = 2;
   common.v1.PathVisibilityPropagationMode path_propagation_mode = 3;
+}
+
+// Request to add a tracked folder to a custom slice.
+message AddSliceFolderRequest {
+  string slice_id = 1;
+  string folder_path = 2;
+}
+
+// Response after adding a tracked folder.
+message AddSliceFolderResponse {
+  string slice_id = 1;
+  repeated FolderMount folder_mounts = 2;
+  repeated string files = 3;
+}
+
+// Request to remove a tracked folder from a custom slice.
+message RemoveSliceFolderRequest {
+  string slice_id = 1;
+  string folder_path = 2;
+}
+
+// Response after removing a tracked folder.
+message RemoveSliceFolderResponse {
+  string slice_id = 1;
+  repeated FolderMount folder_mounts = 2;
+  repeated string files = 3;
+}
+
+// FolderMount maps a source folder path in the parent slice to a folder alias.
+message FolderMount {
+  string source_path = 1;
+  string alias = 2;
 }

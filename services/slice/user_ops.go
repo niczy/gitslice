@@ -33,17 +33,22 @@ func sliceInfoToProto(slice *models.Slice) *slicev1.SliceInfo {
 	if homeSlug, ok := homeslice.ExternalSlugForSlice(slice); ok {
 		slug = homeSlug
 	}
+	mounts := make([]*slicev1.FolderMount, len(slice.FolderMounts))
+	for i, m := range slice.FolderMounts {
+		mounts[i] = &slicev1.FolderMount{SourcePath: m.SourcePath, Alias: m.Alias}
+	}
 	return &slicev1.SliceInfo{
-		SliceId:     slice.ID,
-		Name:        slice.Name,
-		Slug:        slug,
-		Description: slice.Description,
-		Owners:      slice.Owners,
-		CreatedAt:   slice.CreatedAt.Unix(),
-		UpdatedAt:   slice.UpdatedAt.Unix(),
-		FileCount:   int32(len(slice.Files)),
-		IsRoot:      slice.IsRoot,
-		Environment: slice.Environment,
+		SliceId:      slice.ID,
+		Name:         slice.Name,
+		Slug:         slug,
+		Description:  slice.Description,
+		Owners:       slice.Owners,
+		CreatedAt:    slice.CreatedAt.Unix(),
+		UpdatedAt:    slice.UpdatedAt.Unix(),
+		FileCount:    int32(len(slice.Files)),
+		IsRoot:       slice.IsRoot,
+		Environment:  slice.Environment,
+		FolderMounts: mounts,
 	}
 }
 

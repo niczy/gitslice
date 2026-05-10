@@ -899,6 +899,27 @@ func (s *InMemoryStorage) UpdateSliceEnvironment(ctx context.Context, sliceID, e
 	return nil
 }
 
+func (s *InMemoryStorage) UpdateSliceFolderMounts(ctx context.Context, sliceID string, mounts []models.SliceFolderMount, files []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slice, exists := s.slices[sliceID]
+	if !exists {
+		return ErrSliceNotFound
+	}
+
+	copiedMounts := make([]models.SliceFolderMount, len(mounts))
+	copy(copiedMounts, mounts)
+	slice.FolderMounts = copiedMounts
+
+	copiedFiles := make([]string, len(files))
+	copy(copiedFiles, files)
+	slice.Files = copiedFiles
+
+	slice.UpdatedAt = time.Now()
+	return nil
+}
+
 func normalizeVisibilityPath(p string) string {
 	cleaned := strings.TrimSpace(p)
 	if cleaned == "" {

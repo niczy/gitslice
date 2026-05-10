@@ -3966,6 +3966,190 @@ func (s *sliceServiceServer) RenameSlice(ctx context.Context, req *slicev1.Renam
 	}, nil
 }
 
+func (s *sliceServiceServer) AddSliceFolder(ctx context.Context, req *slicev1.AddSliceFolderRequest) (*slicev1.AddSliceFolderResponse, error) {
+	log.Printf("AddSliceFolder called: slice_id=%s folder_path=%s", req.SliceId, req.FolderPath)
+
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
+
+	folderPath := common.CleanRelativePath(req.FolderPath)
+	if folderPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "folder path cannot be empty")
+	}
+
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	if slice.IsRoot {
+		return nil, status.Error(codes.FailedPrecondition, "cannot add folders to root slice")
+	}
+	if _, isHome := homeslice.ExternalSlugForSlice(slice); isHome {
+		return nil, status.Error(codes.FailedPrecondition, "cannot add folders to home slice")
+	}
+	if !canManageSliceVisibility(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "only slice owners can modify tracked folders")
+	}
+
+	parentSliceID := strings.TrimSpace(slice.ParentSlice)
+	if parentSliceID == "" {
+		return nil, status.Error(codes.FailedPrecondition, "slice has no parent")
+	}
+	parentSlice, err := s.storage.GetSlice(ctx, parentSliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("parent slice not found: %s", parentSliceID))
+	}
+
+	for _, mount := range slice.FolderMounts {
+		if common.CleanRelativePath(mount.SourcePath) == folderPath {
+			return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("folder %q is already tracked", folderPath))
+		}
+	}
+
+	parentEntries, err := s.collectSliceEntries(ctx, parentSlice.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to enumerate parent slice entries: %v", err))
+	}
+
+	folderExists, isFile := folderSelectionExistsInEntries(parentEntries, folderPath)
+	if isFile {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("folder path %q is a file", folderPath))
+	}
+	if !folderExists {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("folder %q does not exist in parent slice", folderPath))
+	}
+
+	alias := path.Base(folderPath)
+	if alias == "." || alias == "/" || alias == "" {
+		alias = strings.ReplaceAll(folderPath, "/", "_")
+	}
+	alias = uniqueFolderMountAlias(slice.FolderMounts, alias)
+	newMount := models.SliceFolderMount{SourcePath: folderPath, Alias: alias}
+
+	newMounts := make([]models.SliceFolderMount, len(slice.FolderMounts)+1)
+	copy(newMounts, slice.FolderMounts)
+	newMounts[len(slice.FolderMounts)] = newMount
+
+	prefix := folderPath + "/"
+	newFiles := make([]string, 0)
+	for _, entry := range parentEntries {
+		if entry.Path == folderPath || strings.HasPrefix(entry.Path, prefix) {
+			if entry.Type == "file" {
+				newFiles = append(newFiles, entry.Path)
+			}
+		}
+	}
+
+	allFiles := deduplicateSortedStrings(append(slice.Files, newFiles...))
+
+	if err := s.storage.UpdateSliceFolderMounts(ctx, req.SliceId, newMounts, allFiles); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update slice folder mounts: %v", err))
+	}
+
+	protoMounts := make([]*slicev1.FolderMount, len(newMounts))
+	for i, m := range newMounts {
+		protoMounts[i] = &slicev1.FolderMount{SourcePath: m.SourcePath, Alias: m.Alias}
+	}
+
+	return &slicev1.AddSliceFolderResponse{
+		SliceId:      req.SliceId,
+		FolderMounts: protoMounts,
+		Files:        allFiles,
+	}, nil
+}
+
+func (s *sliceServiceServer) RemoveSliceFolder(ctx context.Context, req *slicev1.RemoveSliceFolderRequest) (*slicev1.RemoveSliceFolderResponse, error) {
+	log.Printf("RemoveSliceFolder called: slice_id=%s folder_path=%s", req.SliceId, req.FolderPath)
+
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := common.ValidateSliceID(req.SliceId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid slice ID: %v", err))
+	}
+
+	folderPath := common.CleanRelativePath(req.FolderPath)
+	if folderPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "folder path cannot be empty")
+	}
+
+	slice, err := s.storage.GetSlice(ctx, req.SliceId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", req.SliceId))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	if slice.IsRoot {
+		return nil, status.Error(codes.FailedPrecondition, "cannot remove folders from root slice")
+	}
+	if _, isHome := homeslice.ExternalSlugForSlice(slice); isHome {
+		return nil, status.Error(codes.FailedPrecondition, "cannot remove folders from home slice")
+	}
+	if !canManageSliceVisibility(slice, username) {
+		return nil, status.Error(codes.PermissionDenied, "only slice owners can modify tracked folders")
+	}
+
+	mountIndex := -1
+	for i, mount := range slice.FolderMounts {
+		mountPath := common.CleanRelativePath(mount.SourcePath)
+		if mountPath == folderPath || common.CleanRelativePath(mount.Alias) == folderPath {
+			mountIndex = i
+			break
+		}
+	}
+	if mountIndex < 0 {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("folder %q is not tracked by this slice", folderPath))
+	}
+
+	removedMount := slice.FolderMounts[mountIndex]
+	newMounts := make([]models.SliceFolderMount, 0, len(slice.FolderMounts)-1)
+	for i, mount := range slice.FolderMounts {
+		if i != mountIndex {
+			newMounts = append(newMounts, mount)
+		}
+	}
+
+	sourcePrefix := common.CleanRelativePath(removedMount.SourcePath) + "/"
+	allFiles := make([]string, 0, len(slice.Files))
+	for _, f := range slice.Files {
+		p := common.CleanRelativePath(f)
+		if p == common.CleanRelativePath(removedMount.SourcePath) {
+			continue
+		}
+		if strings.HasPrefix(p, sourcePrefix) {
+			continue
+		}
+		allFiles = append(allFiles, f)
+	}
+
+	if err := s.storage.UpdateSliceFolderMounts(ctx, req.SliceId, newMounts, allFiles); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update slice folder mounts: %v", err))
+	}
+
+	protoMounts := make([]*slicev1.FolderMount, len(newMounts))
+	for i, m := range newMounts {
+		protoMounts[i] = &slicev1.FolderMount{SourcePath: m.SourcePath, Alias: m.Alias}
+	}
+
+	return &slicev1.RemoveSliceFolderResponse{
+		SliceId:      req.SliceId,
+		FolderMounts: protoMounts,
+		Files:        allFiles,
+	}, nil
+}
+
 func (s *sliceServiceServer) DeleteSlice(ctx context.Context, req *slicev1.DeleteSliceRequest) (*slicev1.DeleteSliceResponse, error) {
 	log.Printf("DeleteSlice called: slice_id=%s force=%t", req.GetSliceId(), req.GetForce())
 
@@ -5451,4 +5635,53 @@ func countTextLines(content []byte) int {
 		lines++
 	}
 	return lines
+}
+
+func folderSelectionExistsInEntries(entries []*models.DirectoryEntry, storedPath string) (exists bool, isFile bool) {
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		cleaned := common.CleanRelativePath(entry.Path)
+		if cleaned == storedPath {
+			return true, entry.Type == "file"
+		}
+		if strings.HasPrefix(cleaned, storedPath+"/") {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func uniqueFolderMountAlias(existing []models.SliceFolderMount, baseAlias string) string {
+	used := make(map[string]struct{}, len(existing))
+	for _, m := range existing {
+		used[common.CleanRelativePath(m.Alias)] = struct{}{}
+	}
+	if _, exists := used[baseAlias]; !exists {
+		return baseAlias
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s_%d", baseAlias, n)
+		if _, exists := used[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
+func deduplicateSortedStrings(s []string) []string {
+	if len(s) <= 1 {
+		return s
+	}
+	seen := make(map[string]struct{}, len(s))
+	result := make([]string, 0, len(s))
+	for _, v := range s {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		result = append(result, v)
+	}
+	sort.Strings(result)
+	return result
 }

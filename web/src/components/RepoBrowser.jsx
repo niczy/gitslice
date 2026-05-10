@@ -1903,6 +1903,12 @@ export default function RepoBrowser({
               <SliceSettings
                 sliceId={sliceId}
                 sliceName={currentSliceLabel}
+                folderMounts={currentSlice?.folder_mounts}
+                onFolderMountsChange={(updatedMounts) => {
+                  if (currentSlice) {
+                    currentSlice.folder_mounts = updatedMounts;
+                  }
+                }}
               />
             </div>
           </div>

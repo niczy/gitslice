@@ -163,6 +163,7 @@ type Storage interface {
 	UpdateSliceName(ctx context.Context, sliceID, newName string) error
 	UpdateSliceVisibility(ctx context.Context, sliceID string, visibility models.Visibility) error
 	UpdateSliceEnvironment(ctx context.Context, sliceID, environment string) error
+	UpdateSliceFolderMounts(ctx context.Context, sliceID string, mounts []models.SliceFolderMount, files []string) error
 	GetSliceByName(ctx context.Context, name string) (*models.Slice, error)
 	GetSliceBySlug(ctx context.Context, slug string) (*models.Slice, error)
 	GetSliceByOwnerAndSlug(ctx context.Context, owner, slug string) (*models.Slice, error)

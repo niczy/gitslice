@@ -306,6 +306,30 @@ export async function updateSliceVisibility(sliceId, { visibility, pathPropagati
   return response.json();
 }
 
+export async function addSliceFolder(sliceId, folderPath) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/folders:add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folderPath }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to add tracked folder'));
+  }
+  return response.json();
+}
+
+export async function removeSliceFolder(sliceId, folderPath) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/folders:remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folderPath }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to remove tracked folder'));
+  }
+  return response.json();
+}
+
 export async function getPathVisibility({ workspaceId, path }) {
   const params = new URLSearchParams({
     workspace_id: workspaceId,

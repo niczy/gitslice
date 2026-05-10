@@ -92,6 +92,8 @@ func handleSliceCommand(ctx context.Context, cli *CLI, args []string) {
 		handleSliceDelete(ctx, cli, args[1:])
 	case "rename":
 		handleRenameSlice(ctx, cli, args[1:])
+	case "folder":
+		handleSliceFolderCommand(ctx, cli, args[1:])
 	default:
 		commandFatal("INVALID_ARGUMENT", fmt.Sprintf("Unknown slice command: %s", args[0]), false, "gs slice --help")
 	}

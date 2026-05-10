@@ -199,6 +199,7 @@ func printSliceHelp() {
 	fmt.Println("  checkouts List globally tracked local slice checkouts")
 	fmt.Println("  delete    Delete a custom slice")
 	fmt.Println("  rename    Rename a slice (update display name)")
+	fmt.Println("  folder    Add or remove tracked folders for a custom slice")
 	fmt.Println("\nExamples:")
 	fmt.Println("  gs slice list --json")
 	fmt.Println("  gs slice bind root --json")
