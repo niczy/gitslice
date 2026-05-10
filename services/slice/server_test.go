@@ -341,7 +341,7 @@ func collectCheckoutStreamResponse(tb testing.TB, recorder *checkoutStreamRecord
 	return resp
 }
 
-func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
+func TestCheckoutRootSliceRequiresAuth(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	if err := st.InitializeRootSlice(ctx); err != nil {
@@ -354,12 +354,12 @@ func TestCheckoutRootSliceAllowsAnonymousAccess(t *testing.T) {
 	}
 
 	srv := newSliceServiceServer(st)
-	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "root"})
-	if err != nil {
-		t.Fatalf("CheckoutSlice returned error: %v", err)
+	_, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: "root"})
+	if err == nil {
+		t.Fatal("expected Unauthenticated for anonymous root slice checkout, got nil")
 	}
-	if len(resp.GetManifest().GetFileMetadata()) != 1 || resp.GetManifest().GetFileMetadata()[0].GetFileId() != path {
-		t.Fatalf("unexpected manifest: %#v", resp.GetManifest().GetFileMetadata())
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
 	}
 }
 

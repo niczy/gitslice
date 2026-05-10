@@ -7,7 +7,7 @@ func HasSliceViewAccess(slice *models.Slice, username string) bool {
 		return false
 	}
 	if slice.IsRoot {
-		return true
+		return username != ""
 	}
 	if username == "" {
 		return false

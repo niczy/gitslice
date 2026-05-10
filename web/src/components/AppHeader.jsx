@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { UserButton } from '@clerk/react';
-import { BookOpen, Github, LibraryBig, LogIn, Search, ShieldCheck, User } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BookOpen, Github, LibraryBig, LogIn, LogOut, Search, ShieldCheck, User } from 'lucide-react';
 
 import { Button } from './ui/button.jsx';
 
@@ -57,6 +56,7 @@ export default function AppHeader({
   navigate,
   onOpenRepos,
   onLogin,
+  onLogout,
   isAdminUser = false,
   isNavActive,
   browserSearch,
@@ -65,6 +65,8 @@ export default function AppHeader({
   const [searchDropdownOpen, setSearchDropdownOpen] = useState(false);
   const [searchResultLimit, setSearchResultLimit] = useState(SEARCH_RESULTS_PAGE_SIZE);
   const searchFormRef = useRef(null);
+  const [logoutDropdownOpen, setLogoutDropdownOpen] = useState(false);
+  const logoutRef = useRef(null);
   const searchFiles = useMemo(() => {
     const filesByPath = new Map();
     for (const match of browserSearch?.matches || []) {
@@ -148,6 +150,35 @@ export default function AppHeader({
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [searchDropdownOpen, showBrowserSearch]);
+
+  useEffect(() => {
+    if (!logoutDropdownOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (!logoutRef.current?.contains(event.target)) {
+        setLogoutDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setLogoutDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [logoutDropdownOpen]);
+
+  const handleLogout = useCallback(() => {
+    setLogoutDropdownOpen(false);
+    onLogout();
+  }, [onLogout]);
 
   const handleQueryChange = (value) => {
     setSearchDropdownOpen(true);
@@ -336,12 +367,32 @@ export default function AppHeader({
                 </a>
               </Button>
             )}
-            {authSessionSource === 'clerk' && (
-              <UserButton
-                afterSignOutUrl="/"
-                showName={false}
-              />
-            )}
+            <div className="relative" ref={logoutRef}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setLogoutDropdownOpen((open) => !open)}
+                data-testid="topbar-user-menu"
+              >
+                <User size={16} aria-hidden="true" />
+              </Button>
+              {logoutDropdownOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 min-w-[8rem] overflow-hidden rounded border border-border bg-card py-1 shadow-lg">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start rounded-none px-3 py-1.5 text-sm"
+                    onClick={handleLogout}
+                    data-testid="topbar-sign-out"
+                  >
+                    <LogOut size={14} aria-hidden="true" />
+                    Sign Out
+                  </Button>
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <>

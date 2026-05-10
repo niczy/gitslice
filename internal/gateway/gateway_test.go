@@ -112,7 +112,7 @@ func TestGatewayListEntries(t *testing.T) {
 	grpcAddr := startGRPCServer(t, st)
 	gatewayURL := startGatewayServer(t, grpcAddr)
 
-	resp := fetchEntries(t, fmt.Sprintf("%s/v1/files/entries", gatewayURL))
+	resp := fetchEntries(t, fmt.Sprintf("%s/v1/files/entries", gatewayURL), "User system")
 	names := map[string]bool{}
 	for _, entry := range resp.Entries {
 		names[entry.Name] = true
@@ -121,7 +121,7 @@ func TestGatewayListEntries(t *testing.T) {
 		t.Fatalf("unexpected entries: %#v", resp.Entries)
 	}
 
-	resp = fetchEntries(t, fmt.Sprintf("%s/v1/files/entries/docs", gatewayURL))
+	resp = fetchEntries(t, fmt.Sprintf("%s/v1/files/entries/docs", gatewayURL), "User system")
 	if len(resp.Entries) != 1 || resp.Entries[0].Name != "readme.md" {
 		t.Fatalf("unexpected nested entries: %#v", resp.Entries)
 	}
@@ -2068,13 +2068,22 @@ type entryResponse struct {
 	Type any    `json:"type"`
 }
 
-func fetchEntries(t *testing.T, url string) entriesResponse {
+func fetchEntries(t *testing.T, url string, auth ...string) entriesResponse {
 	t.Helper()
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	var lastErr error
 	for i := 0; i < 20; i++ {
-		resp, err := client.Get(url)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if len(auth) > 0 && auth[0] != "" {
+			req.Header.Set("Authorization", auth[0])
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			time.Sleep(50 * time.Millisecond)

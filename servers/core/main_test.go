@@ -20,6 +20,7 @@ import (
 	sliceservice "github.com/niczy/gitslice/services/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
@@ -99,7 +100,8 @@ func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
 	}
 	defer conn.Close()
 
-	rootResp, err := slicev1.NewSliceServiceClient(conn).GetRootSlice(ctx, &slicev1.GetRootSliceRequest{})
+	authCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "User test"))
+	rootResp, err := slicev1.NewSliceServiceClient(conn).GetRootSlice(authCtx, &slicev1.GetRootSliceRequest{})
 	if err != nil {
 		t.Fatalf("GetRootSlice failed: %v", err)
 	}

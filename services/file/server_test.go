@@ -103,7 +103,7 @@ func mustWriteVersionedManifest(tb testing.TB, ctx context.Context, st storage.S
 	}
 }
 
-func TestGetFileAllowsAnonymousRootSliceAccess(t *testing.T) {
+func TestGetFileRequiresAuthForRootSlice(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 
@@ -138,15 +138,15 @@ func TestGetFileAllowsAnonymousRootSliceAccess(t *testing.T) {
 	}
 
 	svc := newFileServiceServer(st)
-	resp, err := svc.GetFile(ctx, &filev1.GetFileRequest{
+	_, err = svc.GetFile(ctx, &filev1.GetFileRequest{
 		Path:    path,
 		Version: &filev1.GetFileRequest_SliceVersion{SliceVersion: &filev1.SliceVersion{SliceId: "root"}},
 	})
-	if err != nil {
-		t.Fatalf("GetFile failed: %v", err)
+	if err == nil {
+		t.Fatal("expected Unauthenticated for anonymous root slice access, got nil")
 	}
-	if got := string(resp.GetFile().GetContent()); got != "hello" {
-		t.Fatalf("unexpected content: %q", got)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
 	}
 }
 
