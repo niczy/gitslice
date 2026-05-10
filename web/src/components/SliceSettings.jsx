@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react';
 import {
   getSliceVisibility,
   updateSliceVisibility,
+  addSliceFolder,
+  removeSliceFolder,
 } from '../utils/api.js';
 import { Badge } from './ui/badge.jsx';
 import { Button } from './ui/button.jsx';
 import { Card, CardContent } from './ui/card.jsx';
+import { Plus, Trash2, Folder } from 'lucide-react';
 
 function normalizeVisibility(value) {
   if (value === 2 || value === 'VISIBILITY_PUBLIC' || value === 'PUBLIC' || value === 'public') {
@@ -56,13 +59,72 @@ function visibilityLabel(value) {
   return value === 'public' ? 'Public' : 'Private';
 }
 
-export default function SliceSettings({ sliceId, sliceName }) {
+export default function SliceSettings({ sliceId, sliceName, folderMounts, onFolderMountsChange }) {
   const [sliceVisibility, setSliceVisibility] = useState('private');
   const [slicePropagationMode, setSlicePropagationMode] = useState('unchanged');
   const [sliceVisibilityLoading, setSliceVisibilityLoading] = useState(true);
   const [sliceVisibilitySaving, setSliceVisibilitySaving] = useState(false);
   const [sliceVisibilityError, setSliceVisibilityError] = useState('');
   const [sliceVisibilitySuccess, setSliceVisibilitySuccess] = useState('');
+
+  const [localMounts, setLocalMounts] = useState(folderMounts || []);
+  const [newFolderPath, setNewFolderPath] = useState('');
+  const [folderAdding, setFolderAdding] = useState(false);
+  const [folderRemoving, setFolderRemoving] = useState('');
+  const [folderError, setFolderError] = useState('');
+
+  useEffect(() => {
+    setLocalMounts(folderMounts || []);
+  }, [folderMounts]);
+
+  const addFolder = async () => {
+    const path = (newFolderPath || '').trim();
+    if (!path || !sliceId || folderAdding) {
+      return;
+    }
+    setFolderAdding(true);
+    setFolderError('');
+    try {
+      const response = await addSliceFolder(sliceId, path);
+      const updatedMounts = response?.folder_mounts || response?.folderMounts || [];
+      setLocalMounts(updatedMounts);
+      if (onFolderMountsChange) {
+        onFolderMountsChange(updatedMounts);
+      }
+      setNewFolderPath('');
+    } catch (err) {
+      setFolderError(err?.message || 'Unable to add tracked folder.');
+    } finally {
+      setFolderAdding(false);
+    }
+  };
+
+  const removeFolder = async (folderPath) => {
+    if (!sliceId || folderRemoving) {
+      return;
+    }
+    setFolderRemoving(folderPath);
+    setFolderError('');
+    try {
+      const response = await removeSliceFolder(sliceId, folderPath);
+      const updatedMounts = response?.folder_mounts || response?.folderMounts || [];
+      setLocalMounts(updatedMounts);
+      if (onFolderMountsChange) {
+        onFolderMountsChange(updatedMounts);
+      }
+    } catch (err) {
+      setFolderError(err?.message || 'Unable to remove tracked folder.');
+    } finally {
+      setFolderRemoving('');
+    }
+  };
+
+  const handleFolderKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addFolder();
+    }
+  };
 
   useEffect(() => {
     if (!sliceId) {
@@ -196,6 +258,78 @@ export default function SliceSettings({ sliceId, sliceName }) {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/70">
+          <CardContent className="pt-6">
+            <div className="slice-settings-card-header">
+              <div>
+                <h4>Tracked folders</h4>
+                <p>Folders from the parent slice that this custom slice tracks.</p>
+              </div>
+            </div>
+
+            {folderError && <div className="panel-error">{folderError}</div>}
+
+            {localMounts.length === 0 && (
+              <div className="panel-empty">No tracked folders configured.</div>
+            )}
+
+            {localMounts.length > 0 && (
+              <div className="tracked-folders-list">
+                {localMounts.map((mount) => {
+                  const mountSource = mount?.source_path || mount?.sourcePath || '';
+                  const mountAlias = mount?.alias || '';
+                  return (
+                    <div key={mountSource} className="tracked-folder-row" data-testid="tracked-folder-row">
+                      <div className="tracked-folder-info">
+                        <Folder size={14} className="tracked-folder-icon" />
+                        <span className="tracked-folder-source">{mountSource}</span>
+                        {mountAlias && mountAlias !== mountSource.split('/').pop() && (
+                          <span className="tracked-folder-alias">→ {mountAlias}</span>
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        disabled={folderRemoving === mountSource}
+                        onClick={() => removeFolder(mountSource)}
+                        data-testid="remove-tracked-folder"
+                        title={`Remove ${mountSource}`}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="tracked-folder-add">
+              <div className="tracked-folder-input-group">
+                <input
+                  type="text"
+                  className="tracked-folder-input"
+                  placeholder="src/components"
+                  value={newFolderPath}
+                  onChange={(e) => setNewFolderPath(e.target.value)}
+                  onKeyDown={handleFolderKeyDown}
+                  data-testid="tracked-folder-input"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={folderAdding || !newFolderPath.trim()}
+                  onClick={addFolder}
+                  data-testid="add-tracked-folder"
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  {folderAdding ? 'Adding…' : 'Add folder'}
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>

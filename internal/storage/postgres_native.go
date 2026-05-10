@@ -941,6 +941,32 @@ func (s *postgresNativeTxView) UpdateSliceVisibility(ctx context.Context, sliceI
 	return nil
 }
 
+func (s *postgresNativeTxView) UpdateSliceFolderMounts(ctx context.Context, sliceID string, mounts []models.SliceFolderMount, files []string) error {
+	ctx = ensureCtx(ctx)
+	mountsJSON, err := json.Marshal(mounts)
+	if err != nil {
+		return err
+	}
+	if mounts == nil {
+		mountsJSON = []byte("[]")
+	}
+	filesJSON, err := json.Marshal(files)
+	if err != nil {
+		return err
+	}
+	if files == nil {
+		filesJSON = []byte("[]")
+	}
+	tag, err := s.tx.Exec(ctx, `UPDATE slices SET folder_mounts = $1, files = $2, updated_at = NOW() WHERE id = $3`, mountsJSON, filesJSON, sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
 func (s *postgresNativeTxView) GetPathVisibilityRule(ctx context.Context, p string) (*models.PathVisibilityRule, error) {
 	return s.PostgresNativeStorage.getPathVisibilityRule(ctx, s.tx, p)
 }
@@ -1947,6 +1973,33 @@ func (s *PostgresNativeStorage) UpdateSliceEnvironment(ctx context.Context, slic
 	ctx = ensureCtx(ctx)
 
 	tag, err := s.pool.Exec(ctx, `UPDATE slices SET environment = $1, updated_at = NOW() WHERE id = $2`, environment, sliceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSliceNotFound
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) UpdateSliceFolderMounts(ctx context.Context, sliceID string, mounts []models.SliceFolderMount, files []string) error {
+	ctx = ensureCtx(ctx)
+
+	mountsJSON, err := json.Marshal(mounts)
+	if err != nil {
+		return err
+	}
+	if mounts == nil {
+		mountsJSON = []byte("[]")
+	}
+	filesJSON, err := json.Marshal(files)
+	if err != nil {
+		return err
+	}
+	if files == nil {
+		filesJSON = []byte("[]")
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE slices SET folder_mounts = $1, files = $2, updated_at = NOW() WHERE id = $3`, mountsJSON, filesJSON, sliceID)
 	if err != nil {
 		return err
 	}
