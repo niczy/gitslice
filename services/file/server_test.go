@@ -708,7 +708,7 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 	if got := len(listResp.GetEntries()); got != 2 {
 		t.Fatalf("expected 2 root folders, got %d", got)
 	}
-	if listResp.GetEntries()[0].GetName() != "repo-a" || listResp.GetEntries()[1].GetName() != "repo-b" {
+	if listResp.GetEntries()[0].GetName() != "o/genesis/projects/repo-a" || listResp.GetEntries()[1].GetName() != "o/genesis/projects/repo-b" {
 		t.Fatalf("unexpected root entries: %#v", listResp.GetEntries())
 	}
 	for _, entry := range listResp.GetEntries() {
