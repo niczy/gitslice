@@ -2973,6 +2973,11 @@ func convertProtoStatusToModel(status slicev1.ChangesetStatus) models.ChangesetS
 func (s *sliceServiceServer) GetRootSlice(ctx context.Context, req *slicev1.GetRootSliceRequest) (*slicev1.GetRootSliceResponse, error) {
 	log.Printf("GetRootSlice called")
 
+	_, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	rootSlice, err := s.storage.GetRootSlice(ctx)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "root slice not found")

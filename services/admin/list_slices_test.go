@@ -9,6 +9,8 @@ import (
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
@@ -64,7 +66,7 @@ func TestListSlicesForAuthenticatedUserExcludesRootSlice(t *testing.T) {
 	}
 }
 
-func TestListSlicesWithoutUserReturnsRootSlice(t *testing.T) {
+func TestListSlicesWithoutUserReturnsUnauthenticated(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	svc := newAdminServiceServer(st)
@@ -72,18 +74,11 @@ func TestListSlicesWithoutUserReturnsRootSlice(t *testing.T) {
 		t.Fatalf("EnsureRootSliceInitialized failed: %v", err)
 	}
 
-	resp, err := svc.ListSlices(ctx, &adminv1.ListSlicesRequest{Limit: 50})
-	if err != nil {
-		t.Fatalf("ListSlices failed: %v", err)
+	_, err := svc.ListSlices(ctx, &adminv1.ListSlicesRequest{Limit: 50})
+	if err == nil {
+		t.Fatal("expected Unauthenticated error for anonymous user, got nil")
 	}
-
-	if len(resp.GetSlices()) != 1 {
-		t.Fatalf("expected only root slice for anonymous user, got %d", len(resp.GetSlices()))
-	}
-	if !resp.GetSlices()[0].GetIsRoot() || resp.GetSlices()[0].GetSliceId() != "root_slice" {
-		t.Fatalf("expected root slice for anonymous user, got %#v", resp.GetSlices()[0])
-	}
-	if resp.GetSlices()[0].GetSlug() != "root" {
-		t.Fatalf("expected root slug, got %#v", resp.GetSlices()[0])
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
 	}
 }

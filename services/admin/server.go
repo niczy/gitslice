@@ -872,15 +872,13 @@ func (s *adminServiceServer) ListSlices(ctx context.Context, req *adminv1.ListSl
 	if err != nil {
 		return nil, err
 	}
-	rootSlice, err := s.storage.GetRootSlice(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load root slice: %v", err))
+
+	if username == "" {
+		return nil, status.Error(codes.Unauthenticated, "login required")
 	}
 
 	var slices []*models.Slice
-	if username == "" {
-		slices = []*models.Slice{rootSlice}
-	} else {
+	{
 		owned, err := s.storage.ListSlicesByOwner(ctx, username, int(^uint(0)>>1), 0)
 		if err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list slices: %v", err))
