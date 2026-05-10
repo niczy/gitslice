@@ -627,12 +627,12 @@ export default function RepoBrowser({
   }, [activeBrowserPath, currentSliceLabel]);
 
   const visibleBreadcrumbs = useMemo(() => {
-    const maxBreadcrumbs = isCompactHeader ? 3 : 5;
+    const maxBreadcrumbs = isCompactHeader ? 4 : 8;
     if (breadcrumbs.length <= maxBreadcrumbs) {
       return breadcrumbs;
     }
 
-    const trailingCount = Math.max(maxBreadcrumbs - 2, 1);
+    const trailingCount = Math.max(maxBreadcrumbs - 2, 2);
     const ellipsisTarget = breadcrumbs[breadcrumbs.length - trailingCount - 1];
     return [
       breadcrumbs[0],
