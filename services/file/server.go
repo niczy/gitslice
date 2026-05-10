@@ -240,7 +240,7 @@ func (s *fileServiceServer) publicEntryVisible(ctx context.Context, slice *model
 }
 
 func sliceBackingSliceID(sliceID string, slice *models.Slice) string {
-	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" {
+	if slice != nil && strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) > 0 {
 		return strings.TrimSpace(slice.ParentSlice)
 	}
 	return strings.TrimSpace(sliceID)
