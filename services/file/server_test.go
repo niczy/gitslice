@@ -705,10 +705,10 @@ func TestSliceMountAliasesAtSliceRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEntries failed: %v", err)
 	}
-	if got := len(listResp.GetEntries()); got != 2 {
-		t.Fatalf("expected 2 root folders, got %d", got)
+	if got := len(listResp.GetEntries()); got != 1 {
+		t.Fatalf("expected 1 root folder (top-level component), got %d", got)
 	}
-	if listResp.GetEntries()[0].GetName() != "o/genesis/projects/repo-a" || listResp.GetEntries()[1].GetName() != "o/genesis/projects/repo-b" {
+	if listResp.GetEntries()[0].GetName() != "o" {
 		t.Fatalf("unexpected root entries: %#v", listResp.GetEntries())
 	}
 	for _, entry := range listResp.GetEntries() {
@@ -1134,11 +1134,11 @@ func TestSliceMountRootEntriesUseFullAliasName(t *testing.T) {
 		t.Fatalf("expected 1 root entry, got %d", got)
 	}
 	entry := resp.GetEntries()[0]
-	if entry.GetPath() != "o/genesis/projects/repo-a" {
+	if entry.GetPath() != "o" {
 		t.Fatalf("unexpected path %q", entry.GetPath())
 	}
-	if entry.GetName() != "o/genesis/projects/repo-a" {
-		t.Fatalf("expected full alias name, got %q", entry.GetName())
+	if entry.GetName() != "o" {
+		t.Fatalf("expected top-level component name, got %q", entry.GetName())
 	}
 }
 

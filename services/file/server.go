@@ -766,13 +766,17 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 				if !s.folderMountHasBacking(ctx, backingSliceID, m) {
 					continue
 				}
-				if _, ok := seen[sourcePath]; ok {
+				topLevel, _, _ := strings.Cut(sourcePath, "/")
+				if topLevel == "" {
 					continue
 				}
-				seen[sourcePath] = struct{}{}
+				if _, ok := seen[topLevel]; ok {
+					continue
+				}
+				seen[topLevel] = struct{}{}
 				entries = append(entries, &filev1.DirectoryEntry{
-					Name:        sourcePath,
-					Path:        sourcePath,
+					Name:        topLevel,
+					Path:        topLevel,
 					Type:        filev1.EntryType_ENTRY_TYPE_DIRECTORY,
 					HasChildren: true,
 				})
@@ -802,7 +806,7 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 				underAlias = true
 				break
 			}
-			if sourcePath != "" && (normalizedPath == sourcePath || strings.HasPrefix(normalizedPath, sourcePath+"/")) {
+			if sourcePath != "" && (normalizedPath == sourcePath || strings.HasPrefix(normalizedPath, sourcePath+"/") || strings.HasPrefix(sourcePath, normalizedPath+"/")) {
 				underAlias = true
 				break
 			}
@@ -815,6 +819,46 @@ func (s *fileServiceServer) listEntriesResolved(ctx context.Context, sliceID, re
 		if err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 		}
+
+		// If the request is for an ancestor of mount source paths (e.g. "nicholas"
+		// when mounts include "nicholas/test-project"), synthesize intermediate entries.
+		ancestorChildren := make([]*filev1.DirectoryEntry, 0)
+		ancestorSeen := make(map[string]struct{})
+		for _, m := range slice.FolderMounts {
+			sourcePath := common.CleanRelativePath(m.SourcePath)
+			if sourcePath == "" {
+				continue
+			}
+			if !strings.HasPrefix(sourcePath, normalizedPath+"/") {
+				continue
+			}
+			rest := strings.TrimPrefix(sourcePath, normalizedPath+"/")
+			next, _, _ := strings.Cut(rest, "/")
+			if next == "" {
+				continue
+			}
+			if _, ok := ancestorSeen[next]; ok {
+				continue
+			}
+			ancestorSeen[next] = struct{}{}
+			entryPath := normalizedPath + "/" + next
+			ancestorChildren = append(ancestorChildren, &filev1.DirectoryEntry{
+				Name:        next,
+				Path:        entryPath,
+				Type:        filev1.EntryType_ENTRY_TYPE_DIRECTORY,
+				HasChildren: true,
+			})
+		}
+		if len(ancestorChildren) > 0 {
+			sort.Slice(ancestorChildren, func(i, j int) bool { return ancestorChildren[i].Name < ancestorChildren[j].Name })
+			return &filev1.ListEntriesResponse{
+				SliceId:   sliceID,
+				Path:      normalizedPath,
+				Entries:   ancestorChildren,
+				Truncated: false,
+			}, nil
+		}
+
 		storedParentPath := common.SliceStoredPath(slice, normalizedPath)
 		if storedParentPath == "" {
 			return nil, status.Error(codes.NotFound, "path not found")
@@ -1255,10 +1299,12 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		underAlias := false
 		for _, m := range slice.FolderMounts {
 			alias := cleanPath(m.Alias)
-			if alias == "" {
-				continue
+			sourcePath := common.CleanRelativePath(m.SourcePath)
+			if alias != "" && (requestPath == alias || strings.HasPrefix(requestPath, alias+"/")) {
+				underAlias = true
+				break
 			}
-			if requestPath == alias || strings.HasPrefix(requestPath, alias+"/") {
+			if sourcePath != "" && (requestPath == sourcePath || strings.HasPrefix(requestPath, sourcePath+"/") || strings.HasPrefix(sourcePath, requestPath+"/")) {
 				underAlias = true
 				break
 			}
@@ -1276,9 +1322,9 @@ func (s *fileServiceServer) getFileResolved(ctx context.Context, sliceID, resolv
 		if err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resolve backing slice: %v", err))
 		}
-		responsePath := common.SliceDisplayPath(slice, storedPath)
-		if responsePath == "" {
-			responsePath = requestPath
+		responsePath := storedPath
+		if len(slice.FolderMounts) == 0 {
+			responsePath = common.SliceDisplayPath(slice, storedPath)
 		}
 
 		hash, size, metaErr := s.resolveFileMetadata(ctx, slice, backingSliceID, storedPath, resolvedCommit)
@@ -1429,7 +1475,10 @@ func buildListResponse(sliceID, listPath string, children []*models.DirectoryEnt
 		if child == nil {
 			continue
 		}
-		displayChildPath := common.SliceDisplayPath(slice, child.Path)
+		displayChildPath := child.Path
+		if slice == nil || len(slice.FolderMounts) == 0 {
+			displayChildPath = common.SliceDisplayPath(slice, child.Path)
+		}
 		if displayChildPath == "" {
 			continue
 		}
