@@ -19,7 +19,7 @@ import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
 import { formatBytes } from '../utils/format.js';
 import { formatChangeType, formatTimestamp } from '../utils/format.js';
 import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
-import { decodeBase64, highlightCode } from '../utils/highlight.js';
+import { decodeBase64, highlightCodeLines } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { buildBrowserPath, parseLocation } from '../utils/routing.js';
@@ -252,7 +252,7 @@ export default function RepoBrowser({
   const sidebarResizeRef = useRef(null);
   const hasLoadedSidebarWidthRef = useRef(false);
   const handledOpenFileRequestTokenRef = useRef(null);
-  const highlightedContent = useMemo(() => highlightCode(previewFileContent), [previewFileContent]);
+  const highlightedContent = useMemo(() => highlightCodeLines(previewFileContent).html, [previewFileContent]);
   const markdownContent = useMemo(() => renderMarkdownHtml(previewFileContent), [previewFileContent]);
   const previewPath = previewFilePath || selectedFile || '';
   const previewMeta = useMemo(() => getPreviewMeta(previewPath, previewEncodedFileContent), [previewEncodedFileContent, previewPath]);
@@ -1820,9 +1820,35 @@ export default function RepoBrowser({
                       dangerouslySetInnerHTML={{ __html: markdownContent || '<p>File is empty.</p>' }}
                     />
                   ) : (
-                    <pre className="file-preview">
-                      <code dangerouslySetInnerHTML={{ __html: highlightedContent || 'File is empty.' }} />
-                    </pre>
+                    <div
+                      className="file-preview"
+                      onClick={(e) => {
+                        const btn = e.target.closest('.fold-toggle');
+                        if (!btn) return;
+                        const lineNum = parseInt(btn.dataset.foldLine, 10);
+                        if (!lineNum) return;
+                        const table = e.currentTarget.querySelector('.code-table');
+                        if (!table) return;
+                        const isFolded = btn.classList.toggle('folded');
+                        const rows = table.querySelectorAll('tr.code-line');
+                        for (const row of rows) {
+                          const range = (row.dataset.foldRange || '');
+                          if (!range) continue;
+                          const ranges = range.split(' ');
+                          for (const r of ranges) {
+                            const [start, end] = r.split('-').map(Number);
+                            if (start === lineNum) {
+                              const rowLine = parseInt(row.dataset.line, 10);
+                              if (rowLine > start && rowLine <= end) {
+                                row.classList.toggle('folded', isFolded);
+                              }
+                            }
+                          }
+                        }
+                      }}
+                    >
+                      <table className="code-table" dangerouslySetInnerHTML={{ __html: highlightedContent || '<tr><td class="line-number"></td><td class="line-content">File is empty.</td></tr>' }} />
+                    </div>
                   )
                 )
               )}
