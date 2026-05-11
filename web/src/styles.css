@@ -3285,6 +3285,89 @@ body {
   color: #cf222e;
 }
 
+/* Line numbers and code table */
+.code-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  counter-reset: line;
+}
+
+.code-line {
+  height: 1.6em;
+}
+
+.code-line.fold-start {
+  border-top: 0;
+}
+
+.line-number {
+  width: 1px;
+  min-width: 3.5em;
+  padding: 0 12px 0 8px;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: top;
+  border-right: 1px solid var(--border);
+  position: relative;
+  background: inherit;
+}
+
+.line-content {
+  padding: 0 12px;
+  white-space: pre;
+  word-wrap: normal;
+  vertical-align: top;
+  width: 100%;
+}
+
+/* Fold toggle */
+.fold-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1;
+  transition: transform 0.15s ease, color 0.15s ease;
+  vertical-align: middle;
+}
+
+.fold-toggle:hover {
+  color: var(--text-primary);
+  background: var(--np-container);
+}
+
+.fold-toggle.folded {
+  transform: rotate(-90deg);
+}
+
+.code-line.folded {
+  display: none;
+}
+
+.fold-start .line-number {
+  font-weight: 600;
+}
+
+.fold-end .line-number {
+  font-weight: 600;
+}
+
 
 .header-actions-menu {
   position: relative;
@@ -8892,6 +8975,26 @@ button[data-testid="topbar-get-started"]:hover {
   color: var(--np-text);
   font-size: 13px;
   line-height: 20px;
+}
+
+.app-shell--browser .file-preview .code-table {
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.app-shell--browser .file-preview .line-number {
+  color: var(--np-muted);
+  border-right-color: var(--np-border-soft);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .file-preview .fold-toggle {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .file-preview .fold-toggle:hover {
+  background: var(--np-container);
+  color: var(--np-primary);
 }
 
 .app-shell--browser .folder-preview {
