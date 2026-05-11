@@ -5674,8 +5674,7 @@ body {
 }
 
 .app-shell--browser {
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
 }
 
 .app-shell--browser .footer {
@@ -7980,14 +7979,12 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .repo-layout {
   grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr);
-  height: calc(100dvh - var(--app-header-height) - 32px);
   min-height: calc(100dvh - var(--app-header-height) - 32px);
   gap: 0;
   background: var(--np-bg);
 }
 
 .app-shell--browser .repo-browser--with-tabs .repo-layout {
-  height: calc(100dvh - var(--app-header-height) - 80px);
   min-height: calc(100dvh - var(--app-header-height) - 80px);
 }
 
@@ -8219,6 +8216,13 @@ button[data-testid="topbar-get-started"]:hover {
 
 .app-shell--browser .repo-code {
   background: var(--np-surface);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.app-shell--browser .code-content {
+  flex: 0 0 auto;
+  overflow-y: visible;
 }
 
 .app-shell--browser .repo-insight {
@@ -8655,6 +8659,7 @@ button[data-testid="topbar-get-started"]:hover {
   border-bottom: 1px solid var(--np-border-soft);
   background: var(--np-surface);
   box-shadow: none;
+  position: static;
 }
 
 .app-shell--browser .breadcrumbs {
@@ -9152,14 +9157,12 @@ button[data-testid="topbar-get-started"]:hover {
 @media (max-width: 900px) {
   .app-shell--browser .repo-layout,
   .app-shell--browser .repo-layout.sidebar-collapsed {
-    height: calc(100dvh - var(--app-header-height) - 32px);
     min-height: calc(100dvh - var(--app-header-height) - 32px);
     grid-template-columns: 1fr;
   }
 
   .app-shell--browser .repo-browser--with-tabs .repo-layout,
   .app-shell--browser .repo-browser--with-tabs .repo-layout.sidebar-collapsed {
-    height: calc(100dvh - var(--app-header-height) - 80px);
     min-height: calc(100dvh - var(--app-header-height) - 80px);
   }
 
@@ -9338,13 +9341,11 @@ button[data-testid="topbar-get-started"]:hover {
 @media (max-width: 720px) {
   .app-shell--browser .repo-layout,
   .app-shell--browser .repo-layout.sidebar-collapsed {
-    height: calc(100dvh - var(--app-header-height) - 32px);
     min-height: calc(100dvh - var(--app-header-height) - 32px);
   }
 
   .app-shell--browser .repo-browser--with-tabs .repo-layout,
   .app-shell--browser .repo-browser--with-tabs .repo-layout.sidebar-collapsed {
-    height: calc(100dvh - var(--app-header-height) - 156px);
     min-height: calc(100dvh - var(--app-header-height) - 156px);
   }
 
