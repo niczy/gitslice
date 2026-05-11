@@ -1,0 +1,5 @@
+ALTER TABLE agent_sessions
+    ADD COLUMN IF NOT EXISTS ci_runner_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE ci_runners
+    ADD COLUMN IF NOT EXISTS agent_session_id TEXT NOT NULL DEFAULT '';

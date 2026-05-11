@@ -234,12 +234,30 @@ func (a *AgentSessionsAPI) handleIncomingFrame(ctx context.Context, sessionID st
 		})
 	case "pty/resize":
 		return a.svc.RecordActivity(ctx, sessionID)
+	case "agent/ready":
+		var payload struct {
+			Version string `json:"version"`
+		}
+		_ = json.Unmarshal(frame.Payload, &payload)
+		return a.svc.MarkAgentReady(ctx, sessionID, payload.Version)
+	case "agent/output":
+		var payload struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(frame.Payload, &payload)
+		return a.svc.AppendMessage(ctx, sessionID, "agent", payload.Text)
+	case "agent/output_final":
+		var payload struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(frame.Payload, &payload)
+		return a.svc.AppendMessage(ctx, sessionID, "agent", payload.Text)
 	case "agent/input":
 		var payload struct {
 			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(frame.Payload, &payload)
-		if err := a.svc.HandleAgentInput(ctx, sessionID, payload.Text); err != nil {
+		if err := a.svc.HandleSessionInput(ctx, sessionID, payload.Text); err != nil {
 			errorPayload, _ := json.Marshal(map[string]string{
 				"code":    "AGENT_INPUT_REJECTED",
 				"message": err.Error(),

@@ -44,7 +44,27 @@ service AgentService {
       get: "/v1/agent-sessions/capabilities"
     };
   }
+
+  rpc ListSessionsForSlice(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-sessions/slice/{slice_id}"
+    };
+  }
+
+  rpc SendInput(SendInputRequest) returns (SendInputResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions/{session_id}/input"
+      body: "*"
+    };
+  }
 }
+
+message SendInputRequest {
+  string session_id = 1;
+  string text = 2;
+}
+
+message SendInputResponse {}
 
 message CreateSessionRequest {
   string slice_id = 1;
@@ -154,4 +174,20 @@ message ListCapabilitiesRequest {}
 message ListCapabilitiesResponse {
   repeated string supported_agent_types = 1;
   string default_agent_type = 2;
+}
+
+message ListSessionsRequest {
+  string slice_id = 1;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string state = 2;
+  string agent_type = 3;
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
 }

@@ -807,17 +807,17 @@ func (s *PostgresNativeStorage) CreateCIRunner(ctx context.Context, runner *CIRu
 	}
 	labelsJSON, _ := json.Marshal(runner.Labels)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO ci_runners (id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		INSERT INTO ci_runners (id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at, agent_session_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, ''))
 	`, runner.ID, runner.HomeID, runner.Name, runner.Pool, labelsJSON, runner.Executor, runner.Status, runner.TokenHash,
-		runner.Version, runner.LastSeenAt, runner.CreatedAt, runner.DisabledAt)
+		runner.Version, runner.LastSeenAt, runner.CreatedAt, runner.DisabledAt, runner.AgentSessionID)
 	return err
 }
 
 func (s *PostgresNativeStorage) GetCIRunner(ctx context.Context, runnerID string) (*CIRunner, error) {
 	ctx = ensureCtx(ctx)
 	runner, err := scanCIRunner(s.pool.QueryRow(ctx, `
-		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at
+		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at, COALESCE(agent_session_id, '')
 		FROM ci_runners WHERE id = $1
 	`, strings.TrimSpace(runnerID)))
 	if err != nil {
@@ -832,7 +832,7 @@ func (s *PostgresNativeStorage) GetCIRunner(ctx context.Context, runnerID string
 func (s *PostgresNativeStorage) GetCIRunnerByTokenHash(ctx context.Context, tokenHash string) (*CIRunner, error) {
 	ctx = ensureCtx(ctx)
 	runner, err := scanCIRunner(s.pool.QueryRow(ctx, `
-		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at
+		SELECT id, home_id, name, pool, labels, executor, status, token_hash, version, last_seen_at, created_at, disabled_at, COALESCE(agent_session_id, '')
 		FROM ci_runners WHERE token_hash = $1
 	`, strings.TrimSpace(tokenHash)))
 	if err != nil {
@@ -1003,6 +1003,7 @@ func scanCIRunner(row pgx.Row) (*CIRunner, error) {
 		&runner.LastSeenAt,
 		&runner.CreatedAt,
 		&runner.DisabledAt,
+		&runner.AgentSessionID,
 	); err != nil {
 		return nil, err
 	}

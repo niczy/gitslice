@@ -2789,6 +2789,23 @@ func (s *InMemoryStorage) ListAgentSessionsByState(ctx context.Context, states [
 	return out, nil
 }
 
+func (s *InMemoryStorage) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
+	_ = ctx
+	if limit <= 0 {
+		limit = 50
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*models.AgentSession
+	for _, session := range s.agentSessions {
+		if session.SliceID == sliceID && len(out) < limit {
+			out = append(out, session)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out, nil
+}
+
 func (s *InMemoryStorage) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
 	_ = ctx
 	if session == nil || session.SessionID == "" {
@@ -2888,6 +2905,79 @@ func (s *InMemoryStorage) AddAgentSessionAudit(ctx context.Context, audit *model
 		copyAudit.CreatedAt = time.Now()
 	}
 	s.agentSessionAudit[audit.SessionID] = append(s.agentSessionAudit[audit.SessionID], copyAudit)
+	return nil
+}
+
+func (s *InMemoryStorage) ListAgentSessionMessages(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error) {
+	_ = ctx
+	if limit <= 0 {
+		limit = 200
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	events := s.agentSessionEvents[sessionID]
+	var result []*models.AgentSessionEvent
+	for _, e := range events {
+		if e.Seq > sinceSeq && e.MessageRole != "" && len(result) < limit {
+			result = append(result, cloneAgentSessionEvent(e))
+		}
+	}
+	return result, nil
+}
+
+func (s *InMemoryStorage) ListAgentSessionMessagesByChangeset(ctx context.Context, changesetID string) ([]*models.AgentSessionEvent, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*models.AgentSessionEvent
+	for _, events := range s.agentSessionEvents {
+		for _, e := range events {
+			if e.ChangesetID == changesetID && e.MessageRole != "" {
+				result = append(result, cloneAgentSessionEvent(e))
+			}
+		}
+	}
+	return result, nil
+}
+
+func (s *InMemoryStorage) ListAgentSessionMessagesByCommit(ctx context.Context, commitHash string) ([]*models.AgentSessionEvent, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*models.AgentSessionEvent
+	for _, events := range s.agentSessionEvents {
+		for _, e := range events {
+			if e.CommitHash == commitHash && e.MessageRole != "" {
+				result = append(result, cloneAgentSessionEvent(e))
+			}
+		}
+	}
+	return result, nil
+}
+
+func (s *InMemoryStorage) AssociateAgentSessionMessagesWithChangeset(ctx context.Context, sessionID, changesetID string, fromSeq, toSeq uint64) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := s.agentSessionEvents[sessionID]
+	for _, e := range events {
+		if e.Seq >= fromSeq && e.Seq <= toSeq && e.MessageRole != "" {
+			e.ChangesetID = changesetID
+		}
+	}
+	return nil
+}
+
+func (s *InMemoryStorage) AssociateAgentSessionMessagesWithCommit(ctx context.Context, sessionID, commitHash string, fromSeq, toSeq uint64) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := s.agentSessionEvents[sessionID]
+	for _, e := range events {
+		if e.Seq >= fromSeq && e.Seq <= toSeq && e.MessageRole != "" {
+			e.CommitHash = commitHash
+		}
+	}
 	return nil
 }
 

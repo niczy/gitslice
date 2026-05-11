@@ -57,15 +57,19 @@ type AgentSession struct {
 	StoppedAt        *time.Time        `json:"stopped_at,omitempty"`
 	FailureCode      string            `json:"failure_code,omitempty"`
 	FailureMessage   string            `json:"failure_message,omitempty"`
+	CIRunnerID       string            `json:"ci_runner_id,omitempty"`
 }
 
 type AgentSessionEvent struct {
-	SessionID string          `json:"session_id"`
-	Seq       uint64          `json:"seq"`
-	TS        time.Time       `json:"ts"`
-	Stream    string          `json:"stream"`
-	Type      string          `json:"type"`
-	Payload   json.RawMessage `json:"payload"`
+	SessionID   string          `json:"session_id"`
+	Seq         uint64          `json:"seq"`
+	TS          time.Time       `json:"ts"`
+	Stream      string          `json:"stream"`
+	Type        string          `json:"type"`
+	Payload     json.RawMessage `json:"payload"`
+	MessageRole string          `json:"message_role,omitempty"`
+	ChangesetID string          `json:"changeset_id,omitempty"`
+	CommitHash  string          `json:"commit_hash,omitempty"`
 }
 
 type AgentSessionAudit struct {

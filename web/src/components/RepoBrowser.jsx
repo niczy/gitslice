@@ -25,6 +25,7 @@ import { getSliceDisplayName } from '../utils/slices.js';
 import { buildBrowserPath, parseLocation } from '../utils/routing.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import SliceSettings from './SliceSettings.jsx';
+import AgentChat from './AgentChat.jsx';
 import { Button } from './ui/button.jsx';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
@@ -240,6 +241,7 @@ export default function RepoBrowser({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isCompactHeader, setIsCompactHeader] = useState(false);
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
@@ -1586,10 +1588,17 @@ export default function RepoBrowser({
         sliceLabel={currentSliceDisplayName || currentSliceLabel}
         slice={currentSlice}
         publicApiBaseUrl={publicApiBaseUrl}
+        agentOpen={agentOpen}
         onOpenCode={() => {}}
         onOpenCommits={onOpenCommits}
         onOpenChangesets={onOpenChangesets}
+        onToggleAgent={() => setAgentOpen((v) => !v)}
       />
+      {agentOpen ? (
+        <div className="repo-main" data-testid="repo-main">
+          <AgentChat sliceId={sliceId} sliceName={currentSliceDisplayName || currentSliceLabel || sliceId} />
+        </div>
+      ) : (
       <div className="repo-main">
         <div
           className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${isResizingSidebar ? ' is-resizing-sidebar' : ''}`}
@@ -1940,6 +1949,7 @@ export default function RepoBrowser({
           </div>
         )}
       </div>
+      )}
     </section>
   );
 }

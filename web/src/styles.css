@@ -9647,3 +9647,208 @@ button[data-testid="topbar-get-started"]:hover {
     transition: none;
   }
 }
+/* ── Agent sidebar + chat layout ── */
+.agent-layout {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+.agent-sidebar {
+  width: 260px;
+  min-width: 200px;
+  border-right: 1px solid var(--border);
+  background: var(--muted);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.agent-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.agent-sidebar-actions {
+  display: flex;
+  gap: 4px;
+}
+.agent-sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.agent-sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  gap: 8px;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+.agent-sidebar-status-offline {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.agent-sidebar-section {
+  margin-bottom: 12px;
+}
+.agent-sidebar-section-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  padding: 4px 8px;
+  margin-bottom: 4px;
+}
+.agent-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+.agent-sidebar-item:hover {
+  background: var(--accent);
+}
+.agent-sidebar-item.active {
+  background: var(--accent);
+  font-weight: 600;
+}
+.agent-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agent-status-running { background: #22c55e; }
+.agent-status-starting { background: #f59e0b; }
+.agent-status-idle { background: #6b7280; }
+.agent-status-stopped { background: #9ca3af; }
+.agent-sidebar-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.agent-sidebar-item-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-sidebar-item-state {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.agent-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agent-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px;
+  text-align: center;
+}
+.agent-welcome h3 {
+  font-size: 18px;
+  font-weight: 600;
+}
+.agent-welcome p {
+  color: var(--muted-foreground);
+  max-width: 400px;
+}
+.agent-chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agent-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-chat-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+.agent-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+}
+.agent-message {
+  display: flex;
+}
+.agent-message-user {
+  justify-content: flex-end;
+}
+.agent-message-bubble {
+  max-width: 75%;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.agent-message-user .agent-message-bubble {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.agent-message-agent .agent-message-bubble {
+  background: var(--muted);
+}
+.agent-chat-input {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.agent-chat-input input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--background);
+  outline: none;
+}
+.agent-chat-input input:focus {
+  border-color: var(--primary);
+}
