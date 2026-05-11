@@ -201,18 +201,19 @@ type CIArtifactListFilter struct {
 }
 
 type CIRunner struct {
-	ID         string
-	HomeID     string
-	Name       string
-	Pool       string
-	Labels     []string
-	Executor   string
-	Status     string
-	TokenHash  string
-	Version    string
-	LastSeenAt *time.Time
-	CreatedAt  time.Time
-	DisabledAt *time.Time
+	ID             string
+	HomeID         string
+	Name           string
+	Pool           string
+	Labels         []string
+	Executor       string
+	Status         string
+	TokenHash      string
+	Version        string
+	LastSeenAt     *time.Time
+	CreatedAt      time.Time
+	DisabledAt     *time.Time
+	AgentSessionID string
 }
 
 type CIRunnerRegistrationToken struct {

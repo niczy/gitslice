@@ -3,6 +3,7 @@ package agentsession
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -185,7 +186,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.E2BTemplateID = strings.TrimSpace(req.E2BTemplateID)
-	if req.E2BTemplateID == "" {
+	if req.Provider != RuntimeProviderLocal && req.E2BTemplateID == "" {
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.E2BRegion = strings.TrimSpace(req.E2BRegion)
@@ -394,6 +395,17 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	}
 	s.rememberSeq(eventCopy.SessionID, eventCopy.Seq)
 	return nil
+}
+
+func (s *Service) AppendMessage(ctx context.Context, sessionID, role, text string) error {
+	payload, _ := json.Marshal(map[string]string{"role": role, "text": text})
+	return s.AppendEvent(ctx, &models.AgentSessionEvent{
+		SessionID:   sessionID,
+		Stream:      "session",
+		Type:        "message",
+		Payload:     payload,
+		MessageRole: role,
+	})
 }
 
 func (s *Service) AddAudit(ctx context.Context, sessionID, actorUserID, action string, metadata map[string]any) error {
@@ -611,6 +623,10 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		})
 		_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateStarting)
 	} else if session.State != models.AgentSessionStateStarting {
+		return
+	}
+
+	if session.Provider == RuntimeProviderLocal || session.RuntimeProvider == RuntimeProviderLocal {
 		return
 	}
 
@@ -1116,6 +1132,100 @@ func (s *Service) RecordActivity(ctx context.Context, sessionID string) error {
 		_ = s.AppendStateEvent(ctx, sessionID, session.State)
 	}
 	return nil
+}
+
+func (s *Service) MarkAgentReady(ctx context.Context, sessionID, version string) error {
+	session, err := s.st.GetAgentSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if session.State != models.AgentSessionStateStarting && session.State != models.AgentSessionStateRunning {
+		return storage.ErrAgentSessionConflict
+	}
+	if session.CIRunnerID == "" {
+		s.registerCIRunnerForSession(ctx, session)
+	}
+	now := time.Now().UTC()
+	session.State = models.AgentSessionStateRunning
+	session.RuntimeStatus = "ready"
+	session.LastActivityAt = &now
+	session.UpdatedAt = now
+	session.StartedAt = &now
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return err
+	}
+	_ = s.AppendStateEvent(ctx, sessionID, models.AgentSessionStateRunning)
+	_ = s.AddAudit(ctx, sessionID, session.UserID, "session_running", map[string]any{
+		"agent_version": version,
+	})
+	return nil
+}
+
+func (s *Service) registerCIRunnerForSession(ctx context.Context, session *models.AgentSession) {
+	runnerToken := makeNonceID("gsrunner")
+	runnerID := makeNonceID("ci_runner")
+	tokenHash := sha256Hex(runnerToken)
+
+	homeID := session.SliceID
+	if !strings.HasPrefix(homeID, "home_") {
+		homeID = "home_" + homeID
+	}
+
+	runner := &storage.CIRunner{
+		ID:             runnerID,
+		HomeID:         homeID,
+		Name:           fmt.Sprintf("agent-%s-%s", session.AgentType, session.UserID),
+		Pool:           "agents",
+		Labels:         []string{"agent-type:" + session.AgentType, "slice:" + session.SliceID, "user:" + session.UserID},
+		Executor:       "local-agent",
+		Status:         "online",
+		TokenHash:      tokenHash,
+		Version:        "1.0",
+		LastSeenAt:     ptrTime(time.Now()),
+		AgentSessionID: session.SessionID,
+	}
+	if err := s.st.CreateCIRunner(ctx, runner); err != nil {
+		log.Printf("component=agent_session phase=register_ci_runner session_id=%s error=%v", session.SessionID, err)
+		return
+	}
+	session.CIRunnerID = runnerID
+	log.Printf("component=agent_session phase=ci_runner_registered session_id=%s runner_id=%s pool=%s", session.SessionID, runnerID, runner.Pool)
+}
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
+func (s *Service) HandleSessionInput(ctx context.Context, sessionID, text string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	text = strings.TrimSpace(text)
+	if sessionID == "" || text == "" {
+		return storage.ErrInvalidInput
+	}
+	session, err := s.st.GetAgentSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
+		return storage.ErrAgentSessionConflict
+	}
+
+	runtimeProvider, _, providerErr := s.runtimeProviderForSession(session)
+	if providerErr != nil {
+		return providerErr
+	}
+
+	if _, isLocal := runtimeProvider.(*localRuntimeProvider); isLocal {
+		_ = s.AppendMessage(ctx, sessionID, "user", text)
+		_ = s.RecordActivity(ctx, sessionID)
+		return nil
+	}
+
+	_ = s.AppendMessage(ctx, sessionID, "user", text)
+	return s.HandleAgentInput(ctx, sessionID, text)
 }
 
 func (s *Service) ReplayBounds(sessionID string) (tail uint64, head uint64, ok bool) {

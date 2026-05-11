@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/authresolver"
@@ -292,4 +293,61 @@ func hasInternalCaller(ctx context.Context) bool {
 		return len(vals) > 0 && vals[0] == "1"
 	}
 	return false
+}
+
+func (s *agentServiceServer) ListSessionsForSlice(ctx context.Context, req *agentv1.ListSessionsRequest) (*agentv1.ListSessionsResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sliceID := strings.TrimSpace(req.GetSliceId())
+	if sliceID == "" {
+		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
+	}
+	slicez, err := s.st.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "slice not found")
+	}
+	if !authz.HasSliceViewAccess(slicez, userID) {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	sessions, err := s.st.ListAgentSessionsBySlice(ctx, sliceID, 50)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list sessions: %v", err))
+	}
+	resp := &agentv1.ListSessionsResponse{
+		Sessions: make([]*agentv1.SessionInfo, 0, len(sessions)),
+	}
+	for _, sess := range sessions {
+		resp.Sessions = append(resp.Sessions, &agentv1.SessionInfo{
+			SessionId: sess.SessionID,
+			State:     string(sess.State),
+			AgentType: sess.AgentType,
+			CreatedAt: sess.CreatedAt.Format(time.RFC3339),
+			UpdatedAt: sess.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+	return resp, nil
+}
+
+func (s *agentServiceServer) SendInput(ctx context.Context, req *agentv1.SendInputRequest) (*agentv1.SendInputResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	session, err := s.svc.GetSessionForUser(ctx, userID, sessionID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
+		return nil, status.Error(codes.FailedPrecondition, "session is not active")
+	}
+	if err := s.svc.HandleSessionInput(ctx, sessionID, req.GetText()); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to send input: %v", err))
+	}
+	return &agentv1.SendInputResponse{}, nil
 }

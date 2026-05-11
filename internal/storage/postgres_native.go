@@ -929,6 +929,26 @@ func (s *postgresNativeTxView) AddAgentSessionAudit(ctx context.Context, audit *
 	return s.PostgresNativeStorage.AddAgentSessionAudit(ctx, audit)
 }
 
+func (s *postgresNativeTxView) ListAgentSessionMessages(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error) {
+	return s.PostgresNativeStorage.ListAgentSessionMessages(ctx, sessionID, sinceSeq, limit)
+}
+
+func (s *postgresNativeTxView) ListAgentSessionMessagesByChangeset(ctx context.Context, changesetID string) ([]*models.AgentSessionEvent, error) {
+	return s.PostgresNativeStorage.ListAgentSessionMessagesByChangeset(ctx, changesetID)
+}
+
+func (s *postgresNativeTxView) ListAgentSessionMessagesByCommit(ctx context.Context, commitHash string) ([]*models.AgentSessionEvent, error) {
+	return s.PostgresNativeStorage.ListAgentSessionMessagesByCommit(ctx, commitHash)
+}
+
+func (s *postgresNativeTxView) AssociateAgentSessionMessagesWithChangeset(ctx context.Context, sessionID, changesetID string, fromSeq, toSeq uint64) error {
+	return s.PostgresNativeStorage.AssociateAgentSessionMessagesWithChangeset(ctx, sessionID, changesetID, fromSeq, toSeq)
+}
+
+func (s *postgresNativeTxView) AssociateAgentSessionMessagesWithCommit(ctx context.Context, sessionID, commitHash string, fromSeq, toSeq uint64) error {
+	return s.PostgresNativeStorage.AssociateAgentSessionMessagesWithCommit(ctx, sessionID, commitHash, fromSeq, toSeq)
+}
+
 func (s *postgresNativeTxView) UpdateSliceVisibility(ctx context.Context, sliceID string, visibility models.Visibility) error {
 	ctx = ensureCtx(ctx)
 	tag, err := s.tx.Exec(ctx, `UPDATE slices SET visibility = $1, updated_at = NOW() WHERE id = $2`, string(models.NormalizeVisibility(visibility)), sliceID)
@@ -6150,8 +6170,10 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 		session.SliceID == "" ||
 		session.UserID == "" ||
 		session.Provider == "" ||
-		session.E2BTemplateID == "" ||
 		session.State == "" {
+		return ErrInvalidInput
+	}
+	if session.Provider != "local" && session.E2BTemplateID == "" {
 		return ErrInvalidInput
 	}
 
@@ -6167,11 +6189,13 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 		INSERT INTO agent_sessions (
 			session_id, slice_id, environment_name, agent_type, user_id, state, provider, e2b_template_id, e2b_sandbox_id, e2b_region,
 			idle_timeout_sec, ttl_sec, runtime_provider, runtime_session_id, runtime_status, runtime_error_code,
-			runtime_endpoint, created_at, updated_at, started_at, last_activity_at, stopped_at, failure_code, failure_message
+			runtime_endpoint, created_at, updated_at, started_at, last_activity_at, stopped_at, failure_code, failure_message,
+			ci_runner_id
 		) VALUES (
 			$1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''),
-			$11, $12, NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
-			NULLIF($17, ''), $18, $19, $20, $21, $22, NULLIF($23, ''), NULLIF($24, '')
+			$11, $12, $13, $14, $15, $16,
+			NULLIF($17, ''), $18, $19, $20, $21, $22, NULLIF($23, ''), NULLIF($24, ''),
+			$25
 		)
 	`,
 		session.SessionID, session.SliceID, session.EnvironmentName, session.AgentType, session.UserID, string(session.State), session.Provider,
@@ -6179,6 +6203,7 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 		session.IdleTimeoutSec, session.TTLSec, session.RuntimeProvider, session.RuntimeSessionID, session.RuntimeStatus, session.RuntimeErrorCode,
 		session.RuntimeEndpoint, session.CreatedAt, session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
 		session.FailureCode, session.FailureMessage,
+		session.CIRunnerID,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_agent_sessions_active_per_slice") ||
@@ -6202,7 +6227,8 @@ func (s *PostgresNativeStorage) GetAgentSession(ctx context.Context, sessionID s
 		       COALESCE(runtime_provider, ''), COALESCE(runtime_session_id, ''), COALESCE(runtime_status, ''), COALESCE(runtime_error_code, ''),
 		       COALESCE(runtime_endpoint, ''),
 		       created_at, updated_at, started_at, last_activity_at, stopped_at,
-		       COALESCE(failure_code, ''), COALESCE(failure_message, '')
+		       COALESCE(failure_code, ''), COALESCE(failure_message, ''),
+		       COALESCE(ci_runner_id, '')
 		FROM agent_sessions
 		WHERE session_id = $1
 	`, sessionID).Scan(
@@ -6210,7 +6236,7 @@ func (s *PostgresNativeStorage) GetAgentSession(ctx context.Context, sessionID s
 		&session.E2BTemplateID, &session.E2BSandboxID, &session.E2BRegion, &session.IdleTimeoutSec, &session.TTLSec,
 		&session.RuntimeProvider, &session.RuntimeSessionID, &session.RuntimeStatus, &session.RuntimeErrorCode,
 		&session.RuntimeEndpoint, &session.CreatedAt, &session.UpdatedAt, &startedAt, &lastActivityAt,
-		&stoppedAt, &session.FailureCode, &session.FailureMessage,
+		&stoppedAt, &session.FailureCode, &session.FailureMessage, &session.CIRunnerID,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -6290,6 +6316,43 @@ func (s *PostgresNativeStorage) ListAgentSessionsByState(ctx context.Context, st
 	return out, rows.Err()
 }
 
+func (s *PostgresNativeStorage) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
+	ctx = ensureCtx(ctx)
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id
+		FROM agent_sessions
+		WHERE slice_id = $1
+		ORDER BY updated_at DESC
+		LIMIT $2
+	`, sliceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*models.AgentSession, 0, limit)
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return nil, err
+		}
+		session, err := s.GetAgentSession(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, session)
+	}
+	return out, rows.Err()
+}
+
+func (s *postgresNativeTxView) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
+	return s.PostgresNativeStorage.ListAgentSessionsBySlice(ctx, sliceID, limit)
+}
+
 func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session *models.AgentSession) error {
 	ctx = ensureCtx(ctx)
 	if session == nil || session.SessionID == "" || session.SliceID == "" || session.UserID == "" {
@@ -6312,24 +6375,25 @@ func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session 
 		    e2b_region = NULLIF($9, ''),
 		    idle_timeout_sec = $10,
 		    ttl_sec = $11,
-		    runtime_provider = NULLIF($12, ''),
-		    runtime_session_id = NULLIF($13, ''),
-		    runtime_status = NULLIF($14, ''),
-		    runtime_error_code = NULLIF($15, ''),
+		    runtime_provider = COALESCE(NULLIF($12, ''), ''),
+		    runtime_session_id = COALESCE(NULLIF($13, ''), ''),
+		    runtime_status = COALESCE(NULLIF($14, ''), ''),
+		    runtime_error_code = COALESCE(NULLIF($15, ''), ''),
 		    runtime_endpoint = NULLIF($16, ''),
 		    updated_at = $17,
 		    started_at = $18,
 		    last_activity_at = $19,
 		    stopped_at = $20,
 		    failure_code = NULLIF($21, ''),
-		    failure_message = NULLIF($22, '')
-		WHERE session_id = $23
+		    failure_message = NULLIF($22, ''),
+		    ci_runner_id = $23
+		WHERE session_id = $24
 	`,
 		session.SliceID, session.EnvironmentName, session.AgentType, session.UserID, string(session.State), session.Provider, session.E2BTemplateID,
 		session.E2BSandboxID, session.E2BRegion, session.IdleTimeoutSec, session.TTLSec,
 		session.RuntimeProvider, session.RuntimeSessionID, session.RuntimeStatus, session.RuntimeErrorCode, session.RuntimeEndpoint,
 		session.UpdatedAt, session.StartedAt, session.LastActivityAt, session.StoppedAt,
-		session.FailureCode, session.FailureMessage, session.SessionID,
+		session.FailureCode, session.FailureMessage, session.CIRunnerID, session.SessionID,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_agent_sessions_active_per_slice") ||
@@ -6362,9 +6426,9 @@ func (s *PostgresNativeStorage) AppendAgentSessionEvent(ctx context.Context, eve
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO agent_session_events (session_id, seq, ts, stream, type, payload_json)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, payload)
+		INSERT INTO agent_session_events (session_id, seq, ts, stream, type, payload_json, message_role, changeset_id, commit_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, COALESCE(NULLIF($7, ''), ''), COALESCE(NULLIF($8, ''), ''), COALESCE(NULLIF($9, ''), ''))
+	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, payload, event.MessageRole, event.ChangesetID, event.CommitHash)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrAgentSessionConflict
@@ -6380,7 +6444,8 @@ func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sess
 		limit = 200
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, seq, ts, stream, type, payload_json
+		SELECT session_id, seq, ts, stream, type, payload_json,
+		       COALESCE(message_role, ''), COALESCE(changeset_id, ''), COALESCE(commit_hash, '')
 		FROM agent_session_events
 		WHERE session_id = $1 AND seq > $2
 		ORDER BY seq ASC
@@ -6396,7 +6461,7 @@ func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sess
 		var event models.AgentSessionEvent
 		var seq int64
 		var payload []byte
-		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &payload); err != nil {
+		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &payload, &event.MessageRole, &event.ChangesetID, &event.CommitHash); err != nil {
 			return nil, err
 		}
 		if seq < 0 {
@@ -6433,6 +6498,100 @@ func (s *PostgresNativeStorage) AddAgentSessionAudit(ctx context.Context, audit 
 		return err
 	}
 	return nil
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionMessages(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error) {
+	ctx = ensureCtx(ctx)
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, seq, ts, stream, type, payload_json,
+		       COALESCE(message_role, ''), COALESCE(changeset_id, ''), COALESCE(commit_hash, '')
+		FROM agent_session_events
+		WHERE session_id = $1 AND seq > $2 AND message_role != ''
+		ORDER BY seq ASC
+		LIMIT $3
+	`, sessionID, int64(sinceSeq), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentSessionEvents(rows, limit)
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionMessagesByChangeset(ctx context.Context, changesetID string) ([]*models.AgentSessionEvent, error) {
+	ctx = ensureCtx(ctx)
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, seq, ts, stream, type, payload_json,
+		       COALESCE(message_role, ''), COALESCE(changeset_id, ''), COALESCE(commit_hash, '')
+		FROM agent_session_events
+		WHERE changeset_id = $1 AND message_role != ''
+		ORDER BY seq ASC
+	`, changesetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentSessionEvents(rows, 1000)
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionMessagesByCommit(ctx context.Context, commitHash string) ([]*models.AgentSessionEvent, error) {
+	ctx = ensureCtx(ctx)
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, seq, ts, stream, type, payload_json,
+		       COALESCE(message_role, ''), COALESCE(changeset_id, ''), COALESCE(commit_hash, '')
+		FROM agent_session_events
+		WHERE commit_hash = $1 AND message_role != ''
+		ORDER BY seq ASC
+	`, commitHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentSessionEvents(rows, 1000)
+}
+
+func (s *PostgresNativeStorage) AssociateAgentSessionMessagesWithChangeset(ctx context.Context, sessionID, changesetID string, fromSeq, toSeq uint64) error {
+	ctx = ensureCtx(ctx)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agent_session_events
+		SET changeset_id = $1
+		WHERE session_id = $2 AND seq >= $3 AND seq <= $4 AND message_role != ''
+	`, changesetID, sessionID, int64(fromSeq), int64(toSeq))
+	return err
+}
+
+func (s *PostgresNativeStorage) AssociateAgentSessionMessagesWithCommit(ctx context.Context, sessionID, commitHash string, fromSeq, toSeq uint64) error {
+	ctx = ensureCtx(ctx)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agent_session_events
+		SET commit_hash = $1
+		WHERE session_id = $2 AND seq >= $3 AND seq <= $4 AND message_role != ''
+	`, commitHash, sessionID, int64(fromSeq), int64(toSeq))
+	return err
+}
+
+func scanAgentSessionEvents(rows pgx.Rows, limit int) ([]*models.AgentSessionEvent, error) {
+	events := make([]*models.AgentSessionEvent, 0, limit)
+	for rows.Next() {
+		var event models.AgentSessionEvent
+		var seq int64
+		var payload []byte
+		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &payload, &event.MessageRole, &event.ChangesetID, &event.CommitHash); err != nil {
+			return nil, err
+		}
+		if seq < 0 {
+			return nil, ErrInvalidInput
+		}
+		event.Seq = uint64(seq)
+		if payload == nil {
+			payload = []byte("{}")
+		}
+		event.Payload = payload
+		events = append(events, &event)
+	}
+	return events, rows.Err()
 }
 
 // ============ Internal Helpers ============

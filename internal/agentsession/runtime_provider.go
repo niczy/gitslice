@@ -29,11 +29,13 @@ type RuntimeBridgeEvent struct {
 const (
 	RuntimeProviderE2B                  = "e2b"
 	RuntimeProviderCloudflareContainers = "cloudflare_containers"
+	RuntimeProviderLocal                = "local"
 )
 
 var supportedRuntimeProviders = map[string]struct{}{
 	RuntimeProviderE2B:                  {},
 	RuntimeProviderCloudflareContainers: {},
+	RuntimeProviderLocal:                {},
 }
 
 type RuntimeProvider interface {

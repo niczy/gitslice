@@ -335,8 +335,14 @@ type Storage interface {
 	GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error)
 	GetActiveAgentSessionBySlice(ctx context.Context, sliceID string) (*models.AgentSession, error)
 	ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error)
+	ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error)
 	UpdateAgentSession(ctx context.Context, session *models.AgentSession) error
 	AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error
 	ListAgentSessionEvents(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error)
 	AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error
+	ListAgentSessionMessages(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error)
+	ListAgentSessionMessagesByChangeset(ctx context.Context, changesetID string) ([]*models.AgentSessionEvent, error)
+	ListAgentSessionMessagesByCommit(ctx context.Context, commitHash string) ([]*models.AgentSessionEvent, error)
+	AssociateAgentSessionMessagesWithChangeset(ctx context.Context, sessionID, changesetID string, fromSeq, toSeq uint64) error
+	AssociateAgentSessionMessagesWithCommit(ctx context.Context, sessionID, commitHash string, fromSeq, toSeq uint64) error
 }

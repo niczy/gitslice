@@ -26,6 +26,7 @@ func NewRootCommand(args []string) *cobra.Command {
 	})
 	if shouldRegisterLocalCobraCommands(args) {
 		cmd.AddCommand(
+			newAgentCommand(),
 			newCacheCommand(),
 			newUpdateCommand(),
 			newJobsCommand(),

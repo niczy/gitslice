@@ -68,7 +68,9 @@ func main() {
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	ciservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
-	enabledRuntimeProviders := make([]string, 0, 2)
+	enabledRuntimeProviders := make([]string, 0, 3)
+	agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderLocal, agentsession.NewLocalRuntimeProvider())
+	enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderLocal)
 	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
 		agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderE2B, agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
 			APIURL:              cfg.E2BAPIURL,
@@ -105,7 +107,7 @@ func main() {
 		}
 	}
 	if len(enabledRuntimeProviders) == 0 {
-		log.Printf("Agent runtime providers enabled: e2b(simulated)")
+		log.Printf("Agent runtime providers enabled: local(simulated)")
 	} else {
 		log.Printf("Agent runtime providers enabled: %s (default=%s)", strings.Join(enabledRuntimeProviders, ","), agentSessionService.DefaultRuntimeProviderName())
 	}
