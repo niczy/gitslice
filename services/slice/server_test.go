@@ -3238,7 +3238,8 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	}
 
 	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
-		ChangesetId: createResp.GetChangesetId(),
+		ChangesetId:    createResp.GetChangesetId(),
+		IncludePatches: true,
 	})
 	if err != nil {
 		t.Fatalf("ReviewChangeset failed: %v", err)
@@ -4131,7 +4132,7 @@ jobs:
 		t.Fatalf("CI response = run %q status %q, want queued run", createResp.GetCiRunId(), createResp.GetCiStatus())
 	}
 
-	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId(), IncludePatches: true})
 	if err != nil {
 		t.Fatalf("ReviewChangeset failed: %v", err)
 	}
@@ -5088,7 +5089,7 @@ func TestReviewChangesetIncludesRevertPatch(t *testing.T) {
 		t.Fatalf("RevertCommitChange failed: %v", err)
 	}
 
-	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId(), IncludePatches: true})
 	if err != nil {
 		t.Fatalf("ReviewChangeset failed: %v", err)
 	}
@@ -5170,7 +5171,7 @@ func TestReviewChangesetIncludesAllCommitDiffChangesForRevert(t *testing.T) {
 		t.Fatalf("RevertCommitChange failed: %v", err)
 	}
 
-	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId()})
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{ChangesetId: createResp.GetChangesetId(), IncludePatches: true})
 	if err != nil {
 		t.Fatalf("ReviewChangeset failed: %v", err)
 	}

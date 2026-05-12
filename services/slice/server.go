@@ -1294,6 +1294,12 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		diff = summarizeReviewChanges(reviewChanges)
 	}
 
+	if !req.GetIncludePatches() {
+		for i := range reviewChanges {
+			reviewChanges[i].Patch = ""
+		}
+	}
+
 	reviewStatus, issues, stateWarnings, err := s.evaluateChangesetReviewState(ctx, reviewCS, snapshot)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset state: %v", err))
