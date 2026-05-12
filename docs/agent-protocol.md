@@ -84,10 +84,13 @@ in environment configuration and does not start a remote sandbox. Starting a
 local session marks the runtime endpoint as `local://<session_id>` and waits for
 a user-hosted runner.
 
-`gs agent run` is the first runner implementation. It can create or attach to a
-local-provider session, poll `ListEvents`, run a local coding agent for
-`agent/input` events, and append `agent/output_delta`, `agent/output_final`, and
-tool lifecycle events through `AppendEvent`.
+`gs agent start` and `gs agent run` are the local runner implementations.
+`start` launches the runner in the background; `run` keeps it in the foreground.
+Both commands watch the user's local-provider sessions, check out each web-created
+session's slice into a subdirectory of the configured working directory, poll
+`ListEvents`, run a local coding agent for `agent/input` events, and append
+`agent/output_delta`, `agent/output_final`, and tool lifecycle events through
+`AppendEvent`.
 
 Default commands:
 
@@ -115,7 +118,7 @@ server-side inspection do not depend on client-only runner memory.
 Use `--codex-mode exec` to force the previous one-process-per-input behavior:
 
 ```bash
-gs agent run --session ags_123 --agent codex --codex-mode exec
+gs agent run --dir ~/gitslice-agents --agent codex --codex-mode exec
 ```
 
 In `--claude-mode auto`, the runner starts Claude Code in headless stream-json
@@ -145,7 +148,7 @@ gs agent run --session ags_123 --agent claude --claude-mode print
 Users can override the command after `--`, for example:
 
 ```bash
-gs agent run --session ags_123 -- ./my-agent-script
+gs agent run --dir ~/gitslice-agents -- ./my-agent-script
 ```
 
 When a custom command is used, the prompt is sent on stdin.

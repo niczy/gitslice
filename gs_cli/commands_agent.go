@@ -18,8 +18,8 @@ import (
 )
 
 func newAgentCommand() *cobra.Command {
-	cmd := newAuthenticatedCobraCommand("agent <command> [options]", "Start and run local coding agents", 24*time.Hour, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
-		handleAgentCommand(ctx, cli, args)
+	cmd := newAuthenticatedCobraCommand("agent <command> [options]", "Start and run local coding agents", 0, func(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
+		handleAgentCommand(ctx, cli, authConfig, args)
 	})
 	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		printAgentHelp()
@@ -27,14 +27,14 @@ func newAgentCommand() *cobra.Command {
 	return cmd
 }
 
-func handleAgentCommand(ctx context.Context, cli *CLI, args []string) {
+func handleAgentCommand(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	if len(args) == 0 {
 		printAgentHelp()
 		return
 	}
 	switch args[0] {
 	case "start":
-		handleAgentStart(ctx, cli, args[1:])
+		handleAgentStart(ctx, cli, authConfig, args[1:])
 	case "run":
 		handleAgentRun(ctx, cli, args[1:])
 	case "input":
@@ -48,49 +48,56 @@ func handleAgentCommand(ctx context.Context, cli *CLI, args []string) {
 	}
 }
 
-func handleAgentStart(ctx context.Context, cli *CLI, args []string) {
+func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("agent start")
-	sliceFlag := fs.String("slice", "", "Slice ID")
 	agentType := fs.String("agent", "codex", "Agent type")
-	idleTimeout := fs.Int("idle-timeout", 1800, "Idle timeout in seconds")
-	ttl := fs.Int("ttl", 14400, "Session TTL in seconds")
+	cwd := fs.String("cwd", ".", "Working directory for tracked agent sessions")
+	dir := fs.String("dir", "", "Alias for --cwd")
+	codexMode := fs.String("codex-mode", "auto", "Codex runner mode: auto, app-server, or exec")
+	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
+	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
+	logFile := fs.String("log-file", "", "Background runner log file")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
 	jsonEnabled := jsonRequested || *jsonOutput
-	if fs.NArg() != 0 {
-		commandUsage("Usage: gs agent start [--slice <slice-id>] [--agent codex|claude] [--idle-timeout <sec>] [--ttl <sec>] [--json]")
+	pollInterval, err := time.ParseDuration(strings.TrimSpace(*pollIntervalRaw))
+	if err != nil || pollInterval <= 0 {
+		commandFatal("INVALID_ARGUMENT", "--poll-interval must be a positive duration", false, "")
 		return
 	}
-	sliceID := resolveAgentSliceID(*sliceFlag)
-	resp, err := cli.agentClient.CreateSession(ctx, &agentv1.CreateSessionRequest{
-		SliceId:        sliceID,
-		Provider:       "local",
-		AgentType:      strings.TrimSpace(*agentType),
-		IdleTimeoutSec: int32(*idleTimeout),
-		TtlSec:         int32(*ttl),
+	rootDir := *cwd
+	if strings.TrimSpace(*dir) != "" {
+		rootDir = *dir
+	}
+	result, err := startAgentSupervisorBackground(ctx, cli, authConfig, localAgentSupervisorConfig{
+		RootDir:      strings.TrimSpace(rootDir),
+		AgentType:    strings.TrimSpace(*agentType),
+		CodexMode:    strings.TrimSpace(*codexMode),
+		ClaudeMode:   strings.TrimSpace(*claudeMode),
+		Command:      append([]string(nil), fs.Args()...),
+		PollInterval: pollInterval,
+		LogFile:      strings.TrimSpace(*logFile),
 	})
 	if err != nil {
-		commandFatalf("AGENT_START_FAILED", true, "", "Failed to start local agent session: %v", err)
+		commandFatalf("AGENT_START_FAILED", true, "", "Failed to start local agent runner: %v", err)
 	}
 	if jsonEnabled {
-		writeJSONOutput(resp)
+		writeJSONOutput(result)
 		return
 	}
-	fmt.Printf("Agent session: %s\n", resp.GetSessionId())
-	fmt.Printf("Slice: %s\n", resp.GetSliceId())
-	fmt.Printf("Agent: %s\n", resp.GetAgentType())
+	fmt.Printf("Agent runner started: pid %d\n", result.PID)
+	fmt.Printf("Workspace: %s\n", result.CWD)
+	fmt.Printf("Log: %s\n", result.LogFile)
 }
 
 func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	args, once := consumeBoolFlag(args, "once")
 	fs := newCommandFlagSet("agent run")
-	sessionID := fs.String("session", "", "Existing agent session ID")
-	sliceFlag := fs.String("slice", "", "Slice ID when creating a session")
 	agentType := fs.String("agent", "codex", "Agent type")
-	prompt := fs.String("prompt", "", "Initial prompt to send after the session is ready")
-	cwd := fs.String("cwd", ".", "Working directory for the local agent command")
+	cwd := fs.String("cwd", ".", "Working directory for tracked agent sessions")
+	dir := fs.String("dir", "", "Alias for --cwd")
 	codexMode := fs.String("codex-mode", "auto", "Codex runner mode: auto, app-server, or exec")
 	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
@@ -103,45 +110,20 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 		commandFatal("INVALID_ARGUMENT", "--poll-interval must be a positive duration", false, "")
 		return
 	}
-
-	created := false
-	createdSliceID := ""
-	if strings.TrimSpace(*sessionID) == "" {
-		sliceID := resolveAgentSliceID(*sliceFlag)
-		resp, err := cli.agentClient.CreateSession(ctx, &agentv1.CreateSessionRequest{
-			SliceId:   sliceID,
-			Provider:  "local",
-			AgentType: strings.TrimSpace(*agentType),
-		})
-		if err != nil {
-			commandFatalf("AGENT_START_FAILED", true, "", "Failed to start local agent session: %v", err)
-		}
-		*sessionID = resp.GetSessionId()
-		created = true
-		createdSliceID = resp.GetSliceId()
-		if !jsonEnabled {
-			fmt.Printf("Agent session: %s\n", resp.GetSessionId())
-		}
+	rootDir := *cwd
+	if strings.TrimSpace(*dir) != "" {
+		rootDir = *dir
 	}
-	if err := waitForAgentSessionRunning(ctx, cli, *sessionID); err != nil {
-		commandFatalf("AGENT_SESSION_NOT_READY", true, "", "Agent session is not ready: %v", err)
-	}
-	if strings.TrimSpace(*prompt) != "" {
-		if _, err := cli.agentClient.SendInput(ctx, &agentv1.SendInputRequest{SessionId: strings.TrimSpace(*sessionID), Text: strings.TrimSpace(*prompt)}); err != nil {
-			commandFatalf("AGENT_INPUT_FAILED", true, "", "Failed to send initial prompt: %v", err)
-		}
+	rootDir, err = resolveAgentWorkspaceRoot(rootDir)
+	if err != nil {
+		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid working directory: %v", err)
 	}
 	if !jsonEnabled {
-		if created {
-			fmt.Println("Waiting for web or CLI input. Press Ctrl-C to stop the local runner.")
-		} else {
-			fmt.Printf("Attached to agent session %s\n", strings.TrimSpace(*sessionID))
-		}
+		fmt.Printf("Tracking local agent sessions in %s. Press Ctrl-C to stop the local runner.\n", rootDir)
 	}
-	completed, err := runAgentBridge(ctx, cli, localAgentRunConfig{
-		SessionID:    strings.TrimSpace(*sessionID),
+	completed, err := runAgentSupervisor(ctx, cli, localAgentSupervisorConfig{
+		RootDir:      rootDir,
 		AgentType:    strings.TrimSpace(*agentType),
-		CWD:          strings.TrimSpace(*cwd),
 		CodexMode:    strings.TrimSpace(*codexMode),
 		ClaudeMode:   strings.TrimSpace(*claudeMode),
 		Command:      commandArgs,
@@ -153,10 +135,8 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 	}
 	if jsonEnabled {
 		writeJSONOutput(map[string]any{
-			"session_id":       strings.TrimSpace(*sessionID),
-			"slice_id":         createdSliceID,
+			"cwd":              rootDir,
 			"agent_type":       strings.TrimSpace(*agentType),
-			"created":          created,
 			"completed_inputs": completed,
 		})
 	}
@@ -212,6 +192,7 @@ func handleAgentStop(ctx context.Context, cli *CLI, args []string) {
 type localAgentRunConfig struct {
 	SessionID    string
 	AgentType    string
+	RootDir      string
 	CWD          string
 	CodexMode    string
 	ClaudeMode   string
@@ -263,9 +244,11 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	if claudeMode == "" {
 		return 0, fmt.Errorf("--claude-mode must be auto, stream-json, or print")
 	}
-	nextSeq := uint64(0)
+	nextSeq, queuedInputs, err := initialAgentBridgeState(ctx, cli, cfg.SessionID)
+	if err != nil {
+		return 0, err
+	}
 	completed := 0
-	var queuedInputs []string
 	var codexRunner localAgentTurnRunner
 	var claudeRunner *claudeStreamJSONRunner
 	var codexUnavailable bool
@@ -354,6 +337,10 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 		return nil
 	}
 
+	if err := startNext(); err != nil {
+		return completed, err
+	}
+
 	finishActive := func(err error) (bool, error) {
 		if active != nil {
 			active.cancel()
@@ -411,6 +398,15 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 						active.cancel()
 					}
 				}
+			case "control/local_runner_restart_requested":
+				request := parseLocalRunnerRestartRequest(event.GetPayload())
+				err := requestLocalAgentSupervisorRestart(ctx, cli, cfg.SessionID, cfg.RootDir, event.GetSeq(), request)
+				if errors.Is(err, errAgentSupervisorRestarting) {
+					return completed, err
+				}
+				if err != nil {
+					_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_AGENT_RESTART_FAILED", err.Error())
+				}
 			}
 		}
 		select {
@@ -424,6 +420,48 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 		case <-ticker.C:
 		}
 	}
+}
+
+func initialAgentBridgeState(ctx context.Context, cli *CLI, sessionID string) (uint64, []string, error) {
+	const pageSize = 500
+	var events []*agentv1.EventEnvelope
+	nextSeq := uint64(0)
+	for {
+		resp, err := cli.agentClient.ListEvents(ctx, &agentv1.ListEventsRequest{SessionId: sessionID, SinceSeq: nextSeq, Limit: pageSize})
+		if err != nil {
+			return 0, nil, err
+		}
+		pageEvents := resp.GetEvents()
+		events = append(events, pageEvents...)
+		if len(pageEvents) == 0 {
+			break
+		}
+		nextSeq = pageEvents[len(pageEvents)-1].GetSeq()
+		if len(pageEvents) < pageSize {
+			break
+		}
+	}
+	return nextSeq, pendingAgentInputs(events), nil
+}
+
+func pendingAgentInputs(events []*agentv1.EventEnvelope) []string {
+	var pending []string
+	for _, event := range events {
+		switch event.GetStream() + "/" + event.GetType() {
+		case "agent/input":
+			text := agentInputText(event.GetPayload())
+			if strings.TrimSpace(text) != "" {
+				pending = append(pending, text)
+			}
+		case "agent/output_final", "control/error":
+			pending = nil
+		case "status/state":
+			if !agentSessionStateActive(agentState(event.GetPayload())) {
+				pending = nil
+			}
+		}
+	}
+	return pending
 }
 
 func activeDone(active *activeAgentTurn) <-chan error {
@@ -496,8 +534,9 @@ func runLocalAgentCommand(ctx context.Context, cli *CLI, cfg localAgentRunConfig
 
 	var wg sync.WaitGroup
 	var outputMu sync.Mutex
-	var output bytes.Buffer
-	stream := func(channel string, reader io.Reader) {
+	var stdoutOutput bytes.Buffer
+	var stderrOutput bytes.Buffer
+	stream := func(channel string, reader io.Reader, output *bytes.Buffer) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -514,8 +553,8 @@ func runLocalAgentCommand(ctx context.Context, cli *CLI, cfg localAgentRunConfig
 		}
 	}
 	wg.Add(2)
-	go stream("stdout", stdout)
-	go stream("stderr", stderr)
+	go stream("stdout", stdout, &stdoutOutput)
+	go stream("stderr", stderr, &stderrOutput)
 	wg.Wait()
 	waitErr := cmd.Wait()
 	exitCode := int32(0)
@@ -527,9 +566,14 @@ func runLocalAgentCommand(ctx context.Context, cli *CLI, cfg localAgentRunConfig
 		}
 	}
 	outputMu.Lock()
-	finalText := strings.TrimSpace(output.String())
+	finalText := strings.TrimSpace(stdoutOutput.String())
+	finalChannel := "stdout"
+	if finalText == "" {
+		finalText = strings.TrimSpace(stderrOutput.String())
+		finalChannel = "stderr"
+	}
 	outputMu.Unlock()
-	return appendAgentOutput(ctx, cli, cfg.SessionID, finalText, "stdout", "output_final", exitCode)
+	return appendAgentOutput(ctx, cli, cfg.SessionID, finalText, finalChannel, "output_final", exitCode)
 }
 
 func localAgentCommand(agentType string, command []string, prompt string) (string, []string, bool) {
@@ -540,7 +584,7 @@ func localAgentCommand(agentType string, command []string, prompt string) (strin
 	case "claude":
 		return "claude", []string{"-p", prompt}, false
 	default:
-		return "codex", []string{"exec", prompt}, false
+		return "codex", []string{"exec", "--skip-git-repo-check", prompt}, false
 	}
 }
 
@@ -574,41 +618,10 @@ func agentInputText(payload []byte) string {
 	return strings.TrimSpace(string(payload))
 }
 
-func waitForAgentSessionRunning(ctx context.Context, cli *CLI, sessionID string) error {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		resp, err := cli.agentClient.GetSession(ctx, &agentv1.GetSessionRequest{SessionId: strings.TrimSpace(sessionID)})
-		if err != nil {
-			return err
-		}
-		switch resp.GetState() {
-		case "running", "idle":
-			return nil
-		case "failed", "stopped":
-			return fmt.Errorf("session state is %s", resp.GetState())
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for running state")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
+func agentState(payload []byte) string {
+	var msg agentv1.AgentStatePayload
+	if err := protojson.Unmarshal(payload, &msg); err == nil {
+		return strings.TrimSpace(msg.GetState())
 	}
-}
-
-func resolveAgentSliceID(raw string) string {
-	if sliceID := strings.TrimSpace(raw); sliceID != "" {
-		normalized, err := normalizeSliceID(sliceID)
-		if err != nil {
-			commandFatalf("INVALID_SLICE_REFERENCE", false, "", "Invalid slice ID: %v", err)
-		}
-		return normalized
-	}
-	sliceID, err := sliceIDFromConfig()
-	if err != nil {
-		commandFatalf("SLICE_NOT_BOUND", false, "gs slice checkout <slice-id>", "Failed to read current slice binding: %v", err)
-	}
-	return sliceID
+	return strings.TrimSpace(string(payload))
 }

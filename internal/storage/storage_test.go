@@ -2618,8 +2618,8 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if storedLocalSession.Provider != "local" || storedLocalSession.E2BTemplateID != "" {
 		t.Fatalf("local provider session mismatch: %#v", storedLocalSession)
 	}
-	localSession.State = models.AgentSessionStateStopped
 	localStopped := time.Now()
+	localSession.State = models.AgentSessionStateStopped
 	localSession.StoppedAt = &localStopped
 	localSession.UpdatedAt = localStopped
 	if err := st.UpdateAgentSession(ctx, localSession); err != nil {

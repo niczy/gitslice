@@ -320,7 +320,7 @@ export async function createAgentSession(sliceId, { environment = '', agentType 
 
 export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 200 } = {}) {
   const query = new URLSearchParams();
-  query.set('since_seq', String(sinceSeq || 0));
+  query.set('sinceSeq', String(sinceSeq || 0));
   if (typeof limit === 'number' && limit > 0) {
     query.set('limit', String(limit));
   }
@@ -329,6 +329,38 @@ export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 
     throw new Error(await readErrorMessage(response, 'Unable to load agent conversation'));
   }
   return response.json();
+}
+
+function encodeJSONPayload(payload = {}) {
+  const raw = JSON.stringify(payload || {});
+  return encodeBase64(new TextEncoder().encode(raw));
+}
+
+export async function appendAgentSessionEvent(sessionId, { stream, type, payload = {} }) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      stream,
+      type,
+      payload: encodeJSONPayload(payload),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to append agent event'));
+  }
+  return response.json();
+}
+
+export async function requestAgentRunnerRestart(sessionId, { upgrade = true, reason = 'web_ui' } = {}) {
+  return appendAgentSessionEvent(sessionId, {
+    stream: 'control',
+    type: 'local_runner_restart_requested',
+    payload: {
+      upgrade: Boolean(upgrade),
+      reason,
+    },
+  });
 }
 
 export async function sendAgentSessionInput(sessionId, text) {
