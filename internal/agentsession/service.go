@@ -389,6 +389,9 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	eventCopy := *event
 	eventCopy.Seq = s.nextSeq(event.SessionID)
 	eventCopy.TS = time.Now().UTC()
+	if err := s.applyRuntimeSessionEvent(ctx, &eventCopy); err != nil {
+		return err
+	}
 	if err := s.st.AppendAgentSessionEvent(ctx, &eventCopy); err != nil {
 		return err
 	}
@@ -396,6 +399,68 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	event.TS = eventCopy.TS
 	s.rememberSeq(eventCopy.SessionID, eventCopy.Seq)
 	return nil
+}
+
+type runtimeSessionEventPayload struct {
+	RuntimeProvider       string `json:"runtimeProvider"`
+	RuntimeProviderSnake  string `json:"runtime_provider"`
+	RuntimeSessionID      string `json:"runtimeSessionId"`
+	RuntimeSessionIDSnake string `json:"runtime_session_id"`
+	RuntimeEndpoint       string `json:"runtimeEndpoint"`
+	RuntimeEndpointSnake  string `json:"runtime_endpoint"`
+	RuntimeStatus         string `json:"runtimeStatus"`
+	RuntimeStatusSnake    string `json:"runtime_status"`
+	RuntimeErrorCode      string `json:"runtimeErrorCode"`
+	RuntimeErrorCodeSnake string `json:"runtime_error_code"`
+	Provider              string `json:"provider"`
+	SessionID             string `json:"sessionId"`
+	ThreadID              string `json:"threadId"`
+	CodexThreadID         string `json:"codexThreadId"`
+	Endpoint              string `json:"endpoint"`
+	Status                string `json:"status"`
+	ErrorCode             string `json:"errorCode"`
+}
+
+func (s *Service) applyRuntimeSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error {
+	if event == nil || event.Stream != EventStreamControl || event.Type != EventTypeRuntime {
+		return nil
+	}
+	var payload runtimeSessionEventPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return storage.ErrInvalidInput
+	}
+	runtimeSessionID := firstNonEmpty(
+		payload.RuntimeSessionID,
+		payload.RuntimeSessionIDSnake,
+		payload.CodexThreadID,
+		payload.ThreadID,
+		payload.SessionID,
+	)
+	if runtimeSessionID == "" {
+		return storage.ErrInvalidInput
+	}
+
+	session, err := s.st.GetAgentSession(ctx, event.SessionID)
+	if err != nil {
+		return err
+	}
+	if !session.State.IsActive() {
+		return storage.ErrAgentSessionConflict
+	}
+
+	if provider := firstNonEmpty(payload.RuntimeProvider, payload.RuntimeProviderSnake, payload.Provider); provider != "" {
+		session.RuntimeProvider = provider
+	}
+	session.RuntimeSessionID = runtimeSessionID
+	if endpoint := firstNonEmpty(payload.RuntimeEndpoint, payload.RuntimeEndpointSnake, payload.Endpoint); endpoint != "" {
+		session.RuntimeEndpoint = endpoint
+	}
+	if status := firstNonEmpty(payload.RuntimeStatus, payload.RuntimeStatusSnake, payload.Status); status != "" {
+		session.RuntimeStatus = status
+	}
+	session.RuntimeErrorCode = firstNonEmpty(payload.RuntimeErrorCode, payload.RuntimeErrorCodeSnake, payload.ErrorCode)
+	session.UpdatedAt = time.Now().UTC()
+	return s.st.UpdateAgentSession(ctx, session)
 }
 
 func (s *Service) AddAudit(ctx context.Context, sessionID, actorUserID, action string, metadata map[string]any) error {

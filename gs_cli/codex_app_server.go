@@ -161,6 +161,10 @@ func newCodexAppServerRunner(ctx context.Context, cli *CLI, cfg localAgentRunCon
 	r.mu.Lock()
 	r.threadID = threadResp.Thread.ID
 	r.mu.Unlock()
+	if err := appendCodexRuntimeSession(ctx, cli, cfg.SessionID, threadResp.Thread.ID); err != nil {
+		_ = r.Close()
+		return nil, fmt.Errorf("store codex runtime session metadata: %w", err)
+	}
 	return r, nil
 }
 
@@ -523,6 +527,21 @@ func appendAgentJSONEvent(ctx context.Context, cli *CLI, sessionID, stream, even
 		Payload:   payloadBytes,
 	})
 	return err
+}
+
+func appendCodexRuntimeSession(ctx context.Context, cli *CLI, sessionID, threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return nil
+	}
+	return appendAgentJSONEvent(ctx, cli, sessionID, "control", "runtime_session", map[string]any{
+		"runtimeProvider":  "local",
+		"runtimeSessionId": threadID,
+		"runtimeEndpoint":  "codex-app-server://" + threadID,
+		"runtimeStatus":    "codex_app_server_ready",
+		"agentProvider":    "codex_app_server",
+		"codexThreadId":    threadID,
+	})
 }
 
 func agentInterruptReason(payload []byte) string {

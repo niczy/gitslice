@@ -60,6 +60,7 @@ understand every payload.
 | `agent` | `output_delta` | runtime to clients | `AgentOutputPayload` |
 | `agent` | `output_final` | runtime to clients | `AgentOutputPayload` |
 | `control` | `error` | any component to clients | `AgentErrorPayload` |
+| `control` | `runtime_session` | runtime to service/clients | JSON runtime metadata |
 | `pty` | `stdin` | user to runtime | `AgentPtyInputPayload` |
 | `pty` | `resize` | user to runtime | `AgentPtyResizePayload` |
 
@@ -104,6 +105,11 @@ command/tool notifications are forwarded as `tool/start`, `tool/output`, and
 active Codex turn without waiting for the process to exit. If app-server startup
 fails in auto mode, the runner appends a control error and falls back to
 `codex exec`.
+
+When the Codex thread is created, the local runner appends
+`control/runtime_session` with the Codex thread ID. The service stores that
+runtime metadata on the server-side `agent_sessions` row, so reconnects and
+server-side inspection do not depend on client-only runner memory.
 
 Use `--codex-mode exec` to force the previous one-process-per-input behavior:
 

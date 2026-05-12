@@ -154,6 +154,57 @@ func TestServiceLocalRuntimeQueuesInput(t *testing.T) {
 	}
 }
 
+func TestServiceStoresRuntimeSessionEventMetadata(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-local-runtime-metadata",
+		Name:      "Slice Local Runtime Metadata",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProviderFor(RuntimeProviderLocal, NewLocalRuntimeProvider(svc))
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:   "slice-local-runtime-metadata",
+		Provider:  RuntimeProviderLocal,
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession local failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if err := svc.AppendEvent(ctx, &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Stream:    EventStreamControl,
+		Type:      EventTypeRuntime,
+		Payload:   []byte(`{"runtimeProvider":"local","runtimeSessionId":"codex-thread-123","runtimeEndpoint":"codex-app-server://codex-thread-123","runtimeStatus":"codex_app_server_ready"}`),
+	}); err != nil {
+		t.Fatalf("AppendEvent runtime metadata failed: %v", err)
+	}
+
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.RuntimeProvider != RuntimeProviderLocal {
+		t.Fatalf("expected runtime provider %q, got %q", RuntimeProviderLocal, got.RuntimeProvider)
+	}
+	if got.RuntimeSessionID != "codex-thread-123" {
+		t.Fatalf("expected server-stored runtime session id, got %q", got.RuntimeSessionID)
+	}
+	if got.RuntimeEndpoint != "codex-app-server://codex-thread-123" {
+		t.Fatalf("expected server-stored runtime endpoint, got %q", got.RuntimeEndpoint)
+	}
+	if got.RuntimeStatus != "codex_app_server_ready" {
+		t.Fatalf("expected server-stored runtime status, got %q", got.RuntimeStatus)
+	}
+}
+
 func TestValidateAndConsumeWSToken(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
