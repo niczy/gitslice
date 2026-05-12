@@ -84,6 +84,19 @@ func (s *FilesystemObjectStore) GetObject(ctx context.Context, key string) ([]by
 	return data, nil
 }
 
+func (s *FilesystemObjectStore) HasObject(ctx context.Context, key string) (bool, error) {
+	_ = ctx
+
+	target := s.objectPath(key)
+	if _, err := os.Stat(target); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *FilesystemObjectStore) DeleteObject(ctx context.Context, key string) error {
 	_ = ctx
 

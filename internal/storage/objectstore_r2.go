@@ -116,16 +116,27 @@ func (s *R2ObjectStore) GetObject(ctx context.Context, key string) ([]byte, erro
 	return body, nil
 }
 
-func (s *R2ObjectStore) DeleteObject(ctx context.Context, key string) error {
+func (s *R2ObjectStore) HasObject(ctx context.Context, key string) (bool, error) {
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.objectKey(key)),
 	})
+	if err == nil {
+		return true, nil
+	}
+	if isS3ObjectNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (s *R2ObjectStore) DeleteObject(ctx context.Context, key string) error {
+	exists, err := s.HasObject(ctx, key)
 	if err != nil {
-		if isS3ObjectNotFound(err) {
-			return ErrEntryNotFound
-		}
 		return err
+	}
+	if !exists {
+		return ErrEntryNotFound
 	}
 
 	_, err = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{

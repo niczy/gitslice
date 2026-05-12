@@ -2985,24 +2985,57 @@ func (s *PostgresNativeStorage) HasBlock(ctx context.Context, hash string) (bool
 	if hash == "" {
 		return false, ErrInvalidInput
 	}
-	_, err := s.objectStore.GetObject(ctx, s.objKey("blocks", hash))
-	if err == nil {
-		return true, nil
-	}
-	if err == ErrEntryNotFound {
-		return false, nil
-	}
-	return false, err
+	return s.objectStore.HasObject(ctx, s.objKey("blocks", hash))
 }
 
 func (s *PostgresNativeStorage) PutBlocks(ctx context.Context, blocks map[string][]byte) error {
 	ctx = ensureCtx(ctx)
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	type blockWrite struct {
+		hash string
+		data []byte
+	}
+
+	jobs := make(chan blockWrite)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	workerCount := checkoutBlockFetchWorkerCount(len(blocks))
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				if err := s.PutBlock(ctx, job.hash, job.data); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}
+		}()
+	}
+
 	for hash, data := range blocks {
-		if err := s.PutBlock(ctx, hash, data); err != nil {
+		select {
+		case jobs <- blockWrite{hash: hash, data: data}:
+		case err := <-errCh:
+			close(jobs)
+			wg.Wait()
 			return err
 		}
 	}
-	return nil
+	close(jobs)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
 }
 
 func checkoutBlockFetchWorkerCount(jobs int) int {

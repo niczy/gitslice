@@ -1430,7 +1430,11 @@ func (s *InMemoryStorage) GetBlock(ctx context.Context, hash string) ([]byte, er
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	data, ok := s.blocks[strings.TrimSpace(hash)]
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, ErrInvalidInput
+	}
+	data, ok := s.blocks[hash]
 	if !ok {
 		return nil, ErrEntryNotFound
 	}
@@ -1463,7 +1467,11 @@ func (s *InMemoryStorage) HasBlock(ctx context.Context, hash string) (bool, erro
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	_, ok := s.blocks[strings.TrimSpace(hash)]
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return false, ErrInvalidInput
+	}
+	_, ok := s.blocks[hash]
 	return ok, nil
 }
 
@@ -1490,7 +1498,9 @@ func (s *InMemoryStorage) PutFileManifest(ctx context.Context, sliceID, path str
 	if sliceID == "" || path == "" || manifest == nil {
 		return ErrInvalidInput
 	}
-	s.manifests[sliceID+":"+path] = cloneManifest(manifest)
+	canonical := cloneManifest(manifest)
+	canonical.Path = path
+	s.manifests[sliceID+":"+path] = canonical
 	return nil
 }
 

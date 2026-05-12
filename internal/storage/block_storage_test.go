@@ -49,6 +49,60 @@ func TestChunkFileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadManifestContentUsesBatchGetBlocks(t *testing.T) {
+	ctx := context.Background()
+	st := NewInMemoryStorage()
+
+	content := bytes.Repeat([]byte("abc"), 4)
+	blocks, payloads := ChunkFile(content, 3)
+	if err := st.PutBlocks(ctx, payloads); err != nil {
+		t.Fatalf("PutBlocks failed: %v", err)
+	}
+
+	counting := &countingBlockReadStorage{Storage: st}
+	manifest := &models.FileManifest{
+		Path:      "duplicate-blocks.txt",
+		TotalSize: int64(len(content)),
+		Hash:      hashBlock(content),
+		Blocks:    blocks,
+	}
+	file, err := ReadManifestContent(ctx, counting, manifest)
+	if err != nil {
+		t.Fatalf("ReadManifestContent failed: %v", err)
+	}
+	if !bytes.Equal(file.Content, content) {
+		t.Fatalf("content mismatch: got=%q want=%q", string(file.Content), string(content))
+	}
+	if counting.getBlocksCalls != 1 {
+		t.Fatalf("GetBlocks calls = %d, want 1", counting.getBlocksCalls)
+	}
+	if counting.getBlockCalls != 0 {
+		t.Fatalf("GetBlock calls = %d, want 0", counting.getBlockCalls)
+	}
+	if counting.lastBatchLen != 1 {
+		t.Fatalf("GetBlocks batch len = %d, want one unique block", counting.lastBatchLen)
+	}
+}
+
+type countingBlockReadStorage struct {
+	Storage
+
+	getBlockCalls  int
+	getBlocksCalls int
+	lastBatchLen   int
+}
+
+func (s *countingBlockReadStorage) GetBlock(ctx context.Context, hash string) ([]byte, error) {
+	s.getBlockCalls++
+	return s.Storage.GetBlock(ctx, hash)
+}
+
+func (s *countingBlockReadStorage) GetBlocks(ctx context.Context, hashes []string) (map[string][]byte, error) {
+	s.getBlocksCalls++
+	s.lastBatchLen = len(hashes)
+	return s.Storage.GetBlocks(ctx, hashes)
+}
+
 func TestFindBlocksForRange(t *testing.T) {
 	t.Parallel()
 
@@ -87,6 +141,95 @@ func TestFindBlocksForRange(t *testing.T) {
 				if got[idx] != tc.want[idx] {
 					t.Fatalf("FindBlocksForRange mismatch: got=%v want=%v", got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+func TestStorageBlockInterfaceSemantics(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range storageTestCases(ctx) {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.factory(t)
+
+			if _, err := st.GetBlock(ctx, ""); err != ErrInvalidInput {
+				t.Fatalf("GetBlock(empty) = %v, want %v", err, ErrInvalidInput)
+			}
+			if _, err := st.HasBlock(ctx, ""); err != ErrInvalidInput {
+				t.Fatalf("HasBlock(empty) = %v, want %v", err, ErrInvalidInput)
+			}
+			if err := st.PutBlock(ctx, "", []byte("bad")); err != ErrInvalidInput {
+				t.Fatalf("PutBlock(empty) = %v, want %v", err, ErrInvalidInput)
+			}
+			if _, err := st.GetBlocks(ctx, []string{"missing"}); err != ErrEntryNotFound {
+				t.Fatalf("GetBlocks(missing) = %v, want %v", err, ErrEntryNotFound)
+			}
+			if _, err := st.GetBlocks(ctx, []string{""}); err != ErrInvalidInput {
+				t.Fatalf("GetBlocks(empty hash) = %v, want %v", err, ErrInvalidInput)
+			}
+
+			blockBody := []byte("immutable block")
+			if err := st.PutBlock(ctx, "hash-a", blockBody); err != nil {
+				t.Fatalf("PutBlock failed: %v", err)
+			}
+			blockBody[0] = 'X'
+			got, err := st.GetBlock(ctx, "hash-a")
+			if err != nil {
+				t.Fatalf("GetBlock failed: %v", err)
+			}
+			if !bytes.Equal(got, []byte("immutable block")) {
+				t.Fatalf("block payload aliases caller buffer: %q", string(got))
+			}
+			got[0] = 'Y'
+			gotAgain, err := st.GetBlock(ctx, "hash-a")
+			if err != nil {
+				t.Fatalf("GetBlock second read failed: %v", err)
+			}
+			if !bytes.Equal(gotAgain, []byte("immutable block")) {
+				t.Fatalf("block payload aliases read buffer: %q", string(gotAgain))
+			}
+
+			exists, err := st.HasBlock(ctx, "hash-a")
+			if err != nil {
+				t.Fatalf("HasBlock failed: %v", err)
+			}
+			if !exists {
+				t.Fatalf("HasBlock(hash-a) = false, want true")
+			}
+			exists, err = st.HasBlock(ctx, "hash-missing")
+			if err != nil {
+				t.Fatalf("HasBlock missing failed: %v", err)
+			}
+			if exists {
+				t.Fatalf("HasBlock(missing) = true, want false")
+			}
+
+			blocks := map[string][]byte{
+				"hash-b": []byte("block b"),
+				"hash-c": []byte("block c"),
+			}
+			if err := st.PutBlocks(ctx, blocks); err != nil {
+				t.Fatalf("PutBlocks failed: %v", err)
+			}
+			blocks["hash-b"][0] = 'X'
+			batched, err := st.GetBlocks(ctx, []string{"hash-a", "hash-b", "hash-a"})
+			if err != nil {
+				t.Fatalf("GetBlocks failed: %v", err)
+			}
+			if len(batched) != 2 {
+				t.Fatalf("GetBlocks returned %d unique blocks, want 2", len(batched))
+			}
+			if !bytes.Equal(batched["hash-b"], []byte("block b")) {
+				t.Fatalf("PutBlocks payload aliases caller buffer: %q", string(batched["hash-b"]))
+			}
+			batched["hash-b"][0] = 'Y'
+			gotB, err := st.GetBlock(ctx, "hash-b")
+			if err != nil {
+				t.Fatalf("GetBlock(hash-b) failed: %v", err)
+			}
+			if !bytes.Equal(gotB, []byte("block b")) {
+				t.Fatalf("GetBlocks payload aliases stored buffer: %q", string(gotB))
 			}
 		})
 	}
