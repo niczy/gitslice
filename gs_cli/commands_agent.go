@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -90,6 +91,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 	agentType := fs.String("agent", "codex", "Agent type")
 	prompt := fs.String("prompt", "", "Initial prompt to send after the session is ready")
 	cwd := fs.String("cwd", ".", "Working directory for the local agent command")
+	codexMode := fs.String("codex-mode", "auto", "Codex runner mode: auto, app-server, or exec")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
@@ -139,6 +141,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 		SessionID:    strings.TrimSpace(*sessionID),
 		AgentType:    strings.TrimSpace(*agentType),
 		CWD:          strings.TrimSpace(*cwd),
+		CodexMode:    strings.TrimSpace(*codexMode),
 		Command:      commandArgs,
 		PollInterval: pollInterval,
 		Once:         once,
@@ -208,20 +211,134 @@ type localAgentRunConfig struct {
 	SessionID    string
 	AgentType    string
 	CWD          string
+	CodexMode    string
 	Command      []string
 	PollInterval time.Duration
 	Once         bool
+}
+
+type localAgentTurnRunner interface {
+	RunTurn(ctx context.Context, prompt string) error
+	Interrupt(ctx context.Context, reason string) error
+	Close() error
+}
+
+type commandAgentTurnRunner struct {
+	cli *CLI
+	cfg localAgentRunConfig
+}
+
+func (r commandAgentTurnRunner) RunTurn(ctx context.Context, prompt string) error {
+	return runLocalAgentCommand(ctx, r.cli, r.cfg, prompt)
+}
+
+func (r commandAgentTurnRunner) Interrupt(context.Context, string) error {
+	return nil
+}
+
+func (r commandAgentTurnRunner) Close() error {
+	return nil
+}
+
+type activeAgentTurn struct {
+	done              chan error
+	cancel            context.CancelFunc
+	interrupt         func(context.Context, string) error
+	cancelOnInterrupt bool
 }
 
 func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int, error) {
 	if cfg.SessionID == "" {
 		return 0, fmt.Errorf("session id is required")
 	}
+	codexMode := normalizedCodexMode(cfg.CodexMode)
+	if codexMode == "" {
+		return 0, fmt.Errorf("--codex-mode must be auto, app-server, or exec")
+	}
 	nextSeq := uint64(0)
 	completed := 0
+	var queuedInputs []string
+	var codexRunner localAgentTurnRunner
+	var codexUnavailable bool
+	var active *activeAgentTurn
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
+	defer func() {
+		if active != nil {
+			active.cancel()
+		}
+		if codexRunner != nil {
+			_ = codexRunner.Close()
+		}
+	}()
+
+	startNext := func() error {
+		if active != nil || len(queuedInputs) == 0 {
+			return nil
+		}
+		prompt := queuedInputs[0]
+		queuedInputs = queuedInputs[1:]
+
+		runner := localAgentTurnRunner(commandAgentTurnRunner{cli: cli, cfg: cfg})
+		cancelOnInterrupt := true
+		if shouldUseCodexAppServer(cfg, codexMode) && !codexUnavailable {
+			if codexRunner == nil {
+				var err error
+				codexRunner, err = newCodexAppServerRunner(ctx, cli, cfg)
+				if err != nil {
+					_ = appendAgentError(ctx, cli, cfg.SessionID, "CODEX_APP_SERVER_UNAVAILABLE", err.Error())
+					if codexMode == "app-server" {
+						return err
+					}
+					codexUnavailable = true
+				}
+			}
+			if codexRunner != nil {
+				runner = codexRunner
+				cancelOnInterrupt = false
+			}
+		}
+
+		turnCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		active = &activeAgentTurn{
+			done:              done,
+			cancel:            cancel,
+			interrupt:         runner.Interrupt,
+			cancelOnInterrupt: cancelOnInterrupt,
+		}
+		go func() {
+			done <- runner.RunTurn(turnCtx, prompt)
+		}()
+		return nil
+	}
+
+	finishActive := func(err error) (bool, error) {
+		if active != nil {
+			active.cancel()
+			active = nil
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_AGENT_COMMAND_FAILED", err.Error())
+		}
+		completed++
+		if cfg.Once {
+			return true, nil
+		}
+		return false, startNext()
+	}
+
 	for {
+		if active != nil {
+			select {
+			case err := <-active.done:
+				done, finishErr := finishActive(err)
+				if done || finishErr != nil {
+					return completed, finishErr
+				}
+			default:
+			}
+		}
 		resp, err := cli.agentClient.ListEvents(ctx, &agentv1.ListEventsRequest{SessionId: cfg.SessionID, SinceSeq: nextSeq, Limit: 200})
 		if err != nil {
 			return completed, err
@@ -236,23 +353,60 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 				if strings.TrimSpace(text) == "" {
 					continue
 				}
-				if err := runLocalAgentCommand(ctx, cli, cfg, text); err != nil {
-					_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_AGENT_COMMAND_FAILED", err.Error())
-				}
-				completed++
-				if cfg.Once {
-					return completed, nil
+				queuedInputs = append(queuedInputs, text)
+				if err := startNext(); err != nil {
+					return completed, err
 				}
 			case "agent/interrupt":
-				return completed, nil
+				reason := agentInterruptReason(event.GetPayload())
+				if active != nil {
+					if err := active.interrupt(ctx, reason); err != nil {
+						_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_AGENT_INTERRUPT_FAILED", err.Error())
+					}
+					if active.cancelOnInterrupt {
+						active.cancel()
+					}
+				}
 			}
 		}
 		select {
+		case err := <-activeDone(active):
+			done, finishErr := finishActive(err)
+			if done || finishErr != nil {
+				return completed, finishErr
+			}
 		case <-ctx.Done():
 			return completed, ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+func activeDone(active *activeAgentTurn) <-chan error {
+	if active == nil {
+		return nil
+	}
+	return active.done
+}
+
+func normalizedCodexMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto":
+		return "auto"
+	case "app-server", "remote-control":
+		return "app-server"
+	case "exec":
+		return "exec"
+	default:
+		return ""
+	}
+}
+
+func shouldUseCodexAppServer(cfg localAgentRunConfig, codexMode string) bool {
+	if len(cfg.Command) > 0 || !strings.EqualFold(strings.TrimSpace(cfg.AgentType), "codex") {
+		return false
+	}
+	return codexMode == "app-server" || codexMode == "auto"
 }
 
 func runLocalAgentCommand(ctx context.Context, cli *CLI, cfg localAgentRunConfig, prompt string) error {

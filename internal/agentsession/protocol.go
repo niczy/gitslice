@@ -20,6 +20,7 @@ const (
 	EventTypeOutputDelta = "output_delta"
 	EventTypeOutputFinal = "output_final"
 	EventTypeError       = "error"
+	EventTypeRuntime     = "runtime_session"
 	EventTypeState       = "state"
 )
 
