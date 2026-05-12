@@ -1289,9 +1289,14 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		LinesAdded:    int64(len(reviewCS.ModifiedFiles)),
 		LinesRemoved:  0,
 	}
-	reviewChanges, warnings := s.buildReviewChanges(ctx, reviewCS, snapshot)
-	if len(reviewChanges) > 0 {
-		diff = summarizeReviewChanges(reviewChanges)
+	var reviewChanges []*filev1.FileChangeRecord
+	var warnings []string
+
+	if req.GetIncludePatches() {
+		reviewChanges, warnings = s.buildReviewChanges(ctx, reviewCS, snapshot)
+		if len(reviewChanges) > 0 {
+			diff = summarizeReviewChanges(reviewChanges)
+		}
 	}
 
 	reviewStatus, issues, stateWarnings, err := s.evaluateChangesetReviewState(ctx, reviewCS, snapshot)

@@ -17,6 +17,20 @@ import {
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 import { Button } from './ui/button.jsx';
 
+const LAZY_PATCH_FILE_COUNT_THRESHOLD = 80;
+const LAZY_PATCH_LINE_THRESHOLD = 1200;
+const LAZY_PATCH_SCROLL_TRIGGER = 24;
+
+function shouldDeferPatchLoad(changes = []) {
+  if (changes.length === 0) {
+    return false;
+  }
+  if (changes.length > LAZY_PATCH_FILE_COUNT_THRESHOLD) {
+    return true;
+  }
+  return changes.some((change) => ((change.lines_added || 0) + (change.lines_deleted || 0)) > LAZY_PATCH_LINE_THRESHOLD);
+}
+
 // ---------------------------------------------------------------------------
 // Changeset Diff Page Component
 // ---------------------------------------------------------------------------
@@ -92,6 +106,10 @@ export default function ChangesetDiffPage({
   const [ciChecksLoading, setCIChecksLoading] = useState(false);
   const [ciChecksError, setCIChecksError] = useState('');
   const [ciActionLoading, setCIActionLoading] = useState('');
+  const [patchByFile, setPatchByFile] = useState({});
+  const [hasLoadedPatches, setHasLoadedPatches] = useState(false);
+  const [isPatchLoading, setIsPatchLoading] = useState(false);
+  const [patchLoadError, setPatchLoadError] = useState('');
   const clientRefreshSnapshotsRef = useRef('');
   const clientRefreshDiffRef = useRef('');
   const fileRefs = useRef({});
@@ -193,10 +211,14 @@ export default function ChangesetDiffPage({
         setError('');
       }
       try {
-        const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined);
+        const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined, false);
         if (active) {
-          setPayload(normalizeChangesetDiffResponse(response));
+          const data = normalizeChangesetDiffResponse(response);
+          setPayload(data);
           setLoadedDiffKey(nextDiffKey);
+          setPatchByFile({});
+          setHasLoadedPatches(false);
+          setPatchLoadError('');
         }
       } catch (err) {
         if (active) {
@@ -221,6 +243,30 @@ export default function ChangesetDiffPage({
     snapshotsLoaded,
   ]);
 
+  const loadPatches = useCallback(async () => {
+    if (!changesetId || isPatchLoading || hasLoadedPatches) {
+      return;
+    }
+    setIsPatchLoading(true);
+    setPatchLoadError('');
+    try {
+      const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined, true);
+      const data = normalizeChangesetDiffResponse(response);
+      const patchMap = {};
+      for (const change of data.changes || []) {
+        if (change.patch) {
+          patchMap[change.file_id || change.path || change.FileId || change.FilePath || ''] = change.patch;
+        }
+      }
+      setPatchByFile(patchMap);
+      setHasLoadedPatches(true);
+    } catch (err) {
+      setPatchLoadError(err?.message || 'Unable to load patches.');
+    } finally {
+      setIsPatchLoading(false);
+    }
+  }, [changesetId, selectedSnapshotVersion, isPatchLoading, hasLoadedPatches]);
+
   const changeset = payload?.changeset || null;
   const changesetCI = changeset?.ci || null;
   const selectedSnapshot = payload?.snapshot || null;
@@ -231,6 +277,40 @@ export default function ChangesetDiffPage({
   const diff = payload?.diff || null;
   const activeMessage = selectedSnapshot?.message || changeset?.message || '';
   const changes = useMemo(() => payload?.changes || [], [payload]);
+  const shouldDefer = useMemo(() => shouldDeferPatchLoad(changes), [changes]);
+
+  useEffect(() => {
+    if (!shouldDeferPatchLoad(changes) && payload && !hasLoadedPatches && !isPatchLoading && changesetId) {
+      loadPatches();
+    }
+  }, [changes, payload, hasLoadedPatches, isPatchLoading, changesetId, loadPatches]);
+
+  useEffect(() => {
+    if (!shouldDefer || !diffContentRef.current || hasLoadedPatches || isPatchLoading) {
+      return undefined;
+    }
+    let accumulated = 0;
+    const onScroll = () => {
+      accumulated += 1;
+      if (accumulated >= LAZY_PATCH_SCROLL_TRIGGER) {
+        loadPatches();
+      }
+    };
+    const onKeyScroll = (e) => {
+      if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'End', 'Home', ' '].includes(e.key)) {
+        onScroll();
+      }
+    };
+    const node = diffContentRef.current;
+    node.addEventListener('wheel', onScroll, { passive: true });
+    node.addEventListener('touchmove', onScroll, { passive: true });
+    window.addEventListener('keydown', onKeyScroll);
+    return () => {
+      node.removeEventListener('wheel', onScroll);
+      node.removeEventListener('touchmove', onScroll);
+      window.removeEventListener('keydown', onKeyScroll);
+    };
+  }, [shouldDefer, hasLoadedPatches, isPatchLoading, loadPatches]);
 
   const refreshCIChecks = useCallback(async () => {
     if (!changesetId || !selectedChangesetVersionID) {
@@ -619,15 +699,26 @@ export default function ChangesetDiffPage({
                         </span>
                       )}
                     </div>
-                    {!change.patch && (
-                      <div className="changeset-no-patch">No inline patch is available for this changeset entry.</div>
-                    )}
-                    {change.patch && viewMode === 'unified' && (
-                      <pre className="diff-patch">{renderDiffPatch(change.patch)}</pre>
-                    )}
-                    {change.patch && viewMode === 'split' && (
-                      <div className="diff-split-container">{renderSplitDiffPatch(change.patch)}</div>
-                    )}
+                    {(() => {
+                      const loadedPatch = patchByFile[change.file_id || change.FileId || change.path || change.FilePath || ''];
+                      const effectivePatch = loadedPatch || change.patch || '';
+
+                      if (shouldDefer && !hasLoadedPatches && !effectivePatch) {
+                        return (
+                          <div className="changeset-no-patch">
+                            {isPatchLoading && <span>Loading patches...</span>}
+                            {!isPatchLoading && !patchLoadError && <span>Scroll or click to load patches</span>}
+                            {patchLoadError && <span className="panel-error">{patchLoadError}</span>}
+                          </div>
+                        );
+                      }
+                      if (!effectivePatch) {
+                        return <div className="changeset-no-patch">No inline patch is available for this changeset entry.</div>;
+                      }
+                      return viewMode === 'unified'
+                        ? <pre className="diff-patch">{renderDiffPatch(effectivePatch)}</pre>
+                        : <div className="diff-split-container">{renderSplitDiffPatch(effectivePatch)}</div>;
+                    })()}
                   </li>
                 );
               })}
