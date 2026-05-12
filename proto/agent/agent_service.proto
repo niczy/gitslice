@@ -7,6 +7,12 @@ option go_package = "github.com/niczy/gitslice/proto/agent;agentv1";
 import "google/api/annotations.proto";
 
 service AgentService {
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-sessions"
+    };
+  }
+
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {
     option (google.api.http) = {
       post: "/v1/agent-sessions"
@@ -61,6 +67,27 @@ message CreateSessionRequest {
   string environment = 8;
   // Optional agent type. Defaults to "codex" when omitted.
   string agent_type = 9;
+}
+
+message AgentSessionSummary {
+  string session_id = 1;
+  string slice_id = 2;
+  // Deprecated: retained for compatibility during migration.
+  string provider = 3;
+  string state = 4;
+  string created_at = 5;
+  string last_activity_at = 6;
+  string environment = 7;
+  string agent_type = 8;
+}
+
+message ListSessionsRequest {
+  string slice_id = 1;
+  int32 limit = 2;
+}
+
+message ListSessionsResponse {
+  repeated AgentSessionSummary sessions = 1;
 }
 
 message WSConnectInfo {

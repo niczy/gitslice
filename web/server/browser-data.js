@@ -186,7 +186,7 @@ function createRouteData(routeInfo) {
 }
 
 function pageNeedsSlices(page) {
-  return ['browser', 'projects', 'slice-commits', 'slice-changesets'].includes(page);
+  return ['browser', 'projects', 'slice-commits', 'slice-changesets', 'slice-agents'].includes(page);
 }
 
 function routeNeedsSlices(routeInfo, session) {

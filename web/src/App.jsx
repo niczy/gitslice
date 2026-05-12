@@ -19,6 +19,7 @@ import RepoBrowser from './components/RepoBrowser.jsx';
 import SliceHomePage from './components/SliceHomePage.jsx';
 import SliceCommitListPage from './components/SliceCommitListPage.jsx';
 import SliceChangesetListPage from './components/SliceChangesetListPage.jsx';
+import SliceAgentsPage from './components/SliceAgentsPage.jsx';
 import ProjectsPage from './components/ProjectsPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import NotFoundPage from './components/NotFoundPage.jsx';
@@ -54,7 +55,7 @@ function getInitialSliceId(username) {
 }
 
 function isSliceScopedPage(page) {
-  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets';
+  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents';
 }
 
 function App({
@@ -137,7 +138,7 @@ function App({
     } else if (page === 'changeset') {
       setDiffCommitHash('');
       setDiffChangesetId(changesetId);
-    } else if (page === 'slice-commits' || page === 'slice-changesets') {
+    } else if (page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents') {
       const nextSliceId = options.browserState?.slice || '';
       setDiffCommitHash('');
       setDiffChangesetId('');
@@ -302,6 +303,21 @@ function App({
     setCurrentSliceId(normalizedSliceId);
     setBrowserRouteSliceId(normalizedSliceId);
     navigate('slice-changesets', '', '', { browserState: { slice: normalizedSliceId } });
+  }, [currentSliceId, navigate, routerNavigate]);
+
+  const openSliceAgents = useCallback((sliceId = currentSliceId) => {
+    const normalizedSliceId = String(sliceId || '').trim();
+    if (!normalizedSliceId) {
+      return;
+    }
+    hasExplicitSliceSelectionRef.current = true;
+    if (routerNavigate) {
+      navigate('slice-agents', '', '', { browserState: { slice: normalizedSliceId } });
+      return;
+    }
+    setCurrentSliceId(normalizedSliceId);
+    setBrowserRouteSliceId(normalizedSliceId);
+    navigate('slice-agents', '', '', { browserState: { slice: normalizedSliceId } });
   }, [currentSliceId, navigate, routerNavigate]);
 
   const openBrowserHome = useCallback(() => {
@@ -521,7 +537,7 @@ function App({
 
   const isNavActive = (item) => {
     if (item === 'repos') {
-      return activePage === 'browser' || activePage === 'slice-commits' || activePage === 'slice-changesets' || activePage === 'diff' || activePage === 'changeset';
+      return activePage === 'browser' || activePage === 'slice-commits' || activePage === 'slice-changesets' || activePage === 'slice-agents' || activePage === 'diff' || activePage === 'changeset';
     }
     if (item === 'projects') {
       return activePage === 'projects';
@@ -664,6 +680,7 @@ function App({
               onNavigateToDiff={navigateToDiff}
               onOpenCommits={() => openSliceCommits(currentSliceId)}
               onOpenChangesets={() => openSliceChangesets(currentSliceId)}
+              onOpenAgents={() => openSliceAgents(currentSliceId)}
               refreshHistoryToken={historyRefreshToken}
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
@@ -680,6 +697,7 @@ function App({
             publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
+            onOpenAgents={() => openSliceAgents(browserRouteSliceId || currentSliceId)}
             onOpenCommitDiff={navigateToDiff}
             initialCommits={initialRouteData.sliceCommits}
             initialCommitsError={initialRouteData.sliceCommitsError || ''}
@@ -695,11 +713,23 @@ function App({
             publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
+            onOpenAgents={() => openSliceAgents(browserRouteSliceId || currentSliceId)}
             onOpenChangesetDiff={navigateToChangesetDiff}
             initialChangesets={initialRouteData.sliceChangesets}
             initialChangesetsError={initialRouteData.sliceChangesetsError || ''}
             initialChangesetsSliceId={initialRouteData.sliceChangesetsSliceId || ''}
             initialStatusFilter={initialRouteData.sliceChangesetsStatusFilter || 'all'}
+          />
+        )}
+
+        {activePage === 'slice-agents' && routeAccessState === 'allowed' && (
+          <SliceAgentsPage
+            sliceId={browserRouteSliceId || currentSliceId}
+            slices={slices}
+            publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
+            onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
+            onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
+            onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
           />
         )}
 

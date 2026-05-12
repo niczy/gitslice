@@ -6315,6 +6315,311 @@ button[data-testid="topbar-get-started"]:hover {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
+.slice-agents-page {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--surface-elevated);
+}
+
+.slice-agents-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.slice-agents-sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow: auto;
+}
+
+.slice-agents-sidebar-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.slice-agents-sidebar-header h2 {
+  margin: 0 0 3px;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.2;
+}
+
+.slice-agents-sidebar-header span {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-sidebar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.slice-agents-icon-button {
+  width: 30px !important;
+  height: 30px !important;
+  color: var(--text-secondary) !important;
+}
+
+.slice-agents-icon-button:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-primary) !important;
+  transform: none;
+}
+
+.slice-agents-new-button {
+  min-height: 30px !important;
+  padding: 0 10px !important;
+  border-radius: 6px !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+}
+
+.slice-agents-connection-note {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(133, 77, 14, 0.24);
+  border-radius: 7px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.slice-agents-session-list,
+.slice-agents-event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slice-agents-session-list {
+  display: grid;
+  gap: 6px;
+}
+
+.slice-agents-session-row {
+  display: grid !important;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center !important;
+  width: 100%;
+  min-height: 58px !important;
+  padding: 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  color: var(--text-primary) !important;
+  text-align: left;
+}
+
+.slice-agents-session-row:hover,
+.slice-agents-session-row.active {
+  border-color: var(--border) !important;
+  background: var(--surface-elevated) !important;
+  transform: none;
+}
+
+.slice-agents-session-row.active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.slice-agents-session-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--accent);
+}
+
+.slice-agents-session-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.slice-agents-session-title,
+.slice-agents-session-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-session-title {
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.25;
+  text-transform: capitalize;
+}
+
+.slice-agents-session-meta {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.25;
+}
+
+.slice-agents-conversation {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 28px;
+  overflow: auto;
+}
+
+.slice-agents-conversation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.slice-agents-conversation-header h1 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 1.12rem;
+  line-height: 1.25;
+  text-transform: capitalize;
+}
+
+.slice-agents-conversation-header span {
+  display: block;
+  color: var(--text-muted);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.slice-agents-state {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary) !important;
+  font-family: inherit !important;
+  font-size: 0.74rem !important;
+  font-weight: 800;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.slice-agents-state--running,
+.slice-agents-state--idle,
+.slice-agents-state--starting,
+.slice-agents-state--creating {
+  border-color: rgba(26, 127, 55, 0.24);
+  background: #dafbe1;
+  color: #1a7f37 !important;
+}
+
+.slice-agents-state--failed {
+  border-color: rgba(185, 28, 28, 0.24);
+  background: #fef2f2;
+  color: #b91c1c !important;
+}
+
+.slice-agents-event-list {
+  display: grid;
+  gap: 10px;
+}
+
+.slice-agents-event {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.slice-agents-event--agent {
+  border-left: 3px solid var(--accent);
+}
+
+.slice-agents-event--tool {
+  border-left: 3px solid #64748b;
+}
+
+.slice-agents-event--status {
+  border-left: 3px solid #1a7f37;
+}
+
+.slice-agents-event--error {
+  border-left: 3px solid #b91c1c;
+}
+
+.slice-agents-event-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 0.77rem;
+  font-weight: 800;
+}
+
+.slice-agents-event-header time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.slice-agents-event pre {
+  margin: 0;
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--text-primary);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.slice-agents-empty-detail {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  text-align: center;
+}
+
 .slice-activity-page {
   display: flex;
   flex: 1;
@@ -9264,6 +9569,25 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 @media (max-width: 900px) {
+  .slice-agents-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .slice-agents-sidebar {
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .slice-agents-conversation {
+    padding: 16px;
+  }
+
+  .slice-agents-conversation-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .app-shell--browser .repo-layout,
   .app-shell--browser .repo-layout.sidebar-collapsed {
     min-height: calc(100dvh - var(--app-header-height) - 32px);

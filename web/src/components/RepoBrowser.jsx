@@ -161,6 +161,7 @@ export default function RepoBrowser({
   onNavigateToDiff,
   onOpenCommits,
   onOpenChangesets,
+  onOpenAgents,
   refreshHistoryToken,
   isActive,
   slicesLoading,
@@ -1589,6 +1590,7 @@ export default function RepoBrowser({
         onOpenCode={() => {}}
         onOpenCommits={onOpenCommits}
         onOpenChangesets={onOpenChangesets}
+        onOpenAgents={onOpenAgents}
       />
       <div className="repo-main">
         <div

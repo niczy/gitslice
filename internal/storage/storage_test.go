@@ -2490,6 +2490,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if active.AgentType != session.AgentType {
 		t.Fatalf("active session agentType mismatch: got %s want %s", active.AgentType, session.AgentType)
 	}
+	sliceSessions, err := st.ListAgentSessionsBySlice(ctx, slice.ID, 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionsBySlice failed: %v", err)
+	}
+	if len(sliceSessions) != 1 || sliceSessions[0].SessionID != session.SessionID {
+		t.Fatalf("ListAgentSessionsBySlice mismatch: %#v", sliceSessions)
+	}
 
 	session.State = models.AgentSessionStateRunning
 	session.RuntimeProvider = "e2b"
