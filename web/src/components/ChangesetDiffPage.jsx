@@ -699,22 +699,26 @@ export default function ChangesetDiffPage({
                         </span>
                       )}
                     </div>
-                    {!hasLoadedPatches && shouldDefer && !change.patch && (
-                      <div className="changeset-no-patch">
-                        {isPatchLoading && <span>Loading patches...</span>}
-                        {!isPatchLoading && !patchLoadError && <span>Scroll or click to load patches</span>}
-                        {patchLoadError && <span className="panel-error">{patchLoadError}</span>}
-                      </div>
-                    )}
-                    {!change.patch && !(shouldDefer && !hasLoadedPatches) && (
-                      <div className="changeset-no-patch">No inline patch is available for this changeset entry.</div>
-                    )}
-                    {change.patch && viewMode === 'unified' && (
-                      <pre className="diff-patch">{renderDiffPatch(change.patch)}</pre>
-                    )}
-                    {change.patch && viewMode === 'split' && (
-                      <div className="diff-split-container">{renderSplitDiffPatch(change.patch)}</div>
-                    )}
+                    {(() => {
+                      const loadedPatch = patchByFile[change.file_id || change.FileId || change.path || change.FilePath || ''];
+                      const effectivePatch = loadedPatch || change.patch || '';
+
+                      if (shouldDefer && !hasLoadedPatches && !effectivePatch) {
+                        return (
+                          <div className="changeset-no-patch">
+                            {isPatchLoading && <span>Loading patches...</span>}
+                            {!isPatchLoading && !patchLoadError && <span>Scroll or click to load patches</span>}
+                            {patchLoadError && <span className="panel-error">{patchLoadError}</span>}
+                          </div>
+                        );
+                      }
+                      if (!effectivePatch) {
+                        return <div className="changeset-no-patch">No inline patch is available for this changeset entry.</div>;
+                      }
+                      return viewMode === 'unified'
+                        ? <pre className="diff-patch">{renderDiffPatch(effectivePatch)}</pre>
+                        : <div className="diff-split-container">{renderSplitDiffPatch(effectivePatch)}</div>;
+                    })()}
                   </li>
                 );
               })}

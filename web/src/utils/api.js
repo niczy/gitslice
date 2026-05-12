@@ -421,14 +421,12 @@ export async function listSliceChangesets(sliceId, { limit = 100, statusFilter =
   return normalizeChangesetListResponse(await response.json());
 }
 
-export async function getChangesetDiff(changesetId, snapshotVersion, includePatches = true) {
+export async function getChangesetDiff(changesetId, snapshotVersion, includePatches = false) {
   const query = new URLSearchParams();
   if (typeof snapshotVersion === 'number' && snapshotVersion > 0) {
     query.set('snapshot_version', String(snapshotVersion));
   }
-  if (!includePatches) {
-    query.set('include_patches', 'false');
-  }
+  query.set('include_patches', includePatches ? 'true' : 'false');
   const suffix = query.toString() ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/diff${suffix}`);
   if (!response.ok) {
