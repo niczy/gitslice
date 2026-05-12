@@ -37,6 +37,62 @@ func (s *agentServiceServer) requireUser(ctx context.Context) (string, error) {
 	return identity.Username, nil
 }
 
+func agentSessionSummary(session *models.AgentSession) *agentv1.AgentSessionSummary {
+	if session == nil {
+		return nil
+	}
+	summary := &agentv1.AgentSessionSummary{
+		SessionId:   session.SessionID,
+		SliceId:     session.SliceID,
+		Provider:    session.Provider,
+		State:       string(session.State),
+		CreatedAt:   session.CreatedAt.Format(timeRFC3339Micro),
+		Environment: session.EnvironmentName,
+		AgentType:   session.AgentType,
+	}
+	if session.LastActivityAt != nil {
+		summary.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
+	}
+	return summary
+}
+
+func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.ListSessionsRequest) (*agentv1.ListSessionsResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sliceID := strings.TrimSpace(req.GetSliceId())
+	if sliceID == "" {
+		return nil, status.Error(codes.InvalidArgument, "slice_id is required")
+	}
+	slice, err := s.st.GetSlice(ctx, sliceID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "slice not found")
+	}
+	if !authz.HasSliceViewAccess(slice, userID) {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	sessions, err := s.st.ListAgentSessionsBySlice(ctx, sliceID, limit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list sessions")
+	}
+	out := make([]*agentv1.AgentSessionSummary, 0, len(sessions))
+	for _, session := range sessions {
+		if session.UserID != userID {
+			continue
+		}
+		out = append(out, agentSessionSummary(session))
+	}
+	return &agentv1.ListSessionsResponse{Sessions: out}, nil
+}
+
 func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.CreateSessionRequest) (*agentv1.CreateSessionResponse, error) {
 	userID, err := s.requireUser(ctx)
 	if err != nil {

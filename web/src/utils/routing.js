@@ -25,7 +25,7 @@ function parseBrowserState(search = '') {
 }
 
 function isSliceScopedRoute(page) {
-  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets';
+  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents';
 }
 
 function parseLegacyHash(rawHash) {
@@ -165,6 +165,17 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
         },
       };
     }
+    if (slice && extraSegments.length === 0 && viewSegment === 'agents') {
+      return {
+        page: 'slice-agents',
+        commitHash: '',
+        changesetId: '',
+        browserState: {
+          ...parseBrowserState(locationLike?.search || ''),
+          slice,
+        },
+      };
+    }
     return {
       page: 'browser',
       commitHash: '',
@@ -261,6 +272,9 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
   }
   if (page === 'slice-changesets' && browserState?.slice) {
     return `/slices/${encodeURIComponent(browserState.slice)}/changesets`;
+  }
+  if (page === 'slice-agents' && browserState?.slice) {
+    return `/slices/${encodeURIComponent(browserState.slice)}/agents`;
   }
   if (page === 'login') {
     return '/login';

@@ -2796,6 +2796,35 @@ func (s *InMemoryStorage) GetActiveAgentSessionBySlice(ctx context.Context, slic
 	return cloneAgentSession(session), nil
 }
 
+func (s *InMemoryStorage) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
+	_ = ctx
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return []*models.AgentSession{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]*models.AgentSession, 0)
+	for _, session := range s.agentSessions {
+		if session.SliceID != sliceID {
+			continue
+		}
+		out = append(out, cloneAgentSession(session))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *InMemoryStorage) ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error) {
 	_ = ctx
 	if len(states) == 0 {

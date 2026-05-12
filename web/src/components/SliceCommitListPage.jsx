@@ -24,6 +24,7 @@ export default function SliceCommitListPage({
   publicApiBaseUrl = '',
   onOpenCode,
   onOpenChangesets,
+  onOpenAgents,
   onOpenCommitDiff,
   initialCommits,
   initialCommitsError = '',
@@ -135,6 +136,7 @@ export default function SliceCommitListPage({
         onOpenCode={onOpenCode}
         onOpenCommits={() => {}}
         onOpenChangesets={onOpenChangesets}
+        onOpenAgents={onOpenAgents}
       />
 
       <div className="slice-activity-content">

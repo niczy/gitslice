@@ -353,6 +353,7 @@ type Storage interface {
 	CreateAgentSession(ctx context.Context, session *models.AgentSession) error
 	GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error)
 	GetActiveAgentSessionBySlice(ctx context.Context, sliceID string) (*models.AgentSession, error)
+	ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error)
 	ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error)
 	UpdateAgentSession(ctx context.Context, session *models.AgentSession) error
 	AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error

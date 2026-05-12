@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Code2, Copy, GitCommitHorizontal, GitPullRequest, Layers3 } from 'lucide-react';
+import { Bot, Check, Code2, Copy, GitCommitHorizontal, GitPullRequest, Layers3 } from 'lucide-react';
 
 import { copyToClipboard } from '../utils/clipboard.js';
 import { buildGitCloneCommand, buildGitEndpoint, buildSliceCheckoutCommand } from '../utils/git.js';
@@ -9,6 +9,7 @@ const TABS = [
   { id: 'code', label: 'Code', icon: Code2 },
   { id: 'commits', label: 'Commits', icon: GitCommitHorizontal },
   { id: 'changesets', label: 'Changesets', icon: GitPullRequest },
+  { id: 'agents', label: 'Agents', icon: Bot },
 ];
 
 export default function SliceDetailNav({
@@ -20,6 +21,7 @@ export default function SliceDetailNav({
   onOpenCode,
   onOpenCommits,
   onOpenChangesets,
+  onOpenAgents,
 }) {
   const [isGetCodeOpen, setIsGetCodeOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
@@ -41,6 +43,8 @@ export default function SliceDetailNav({
       onOpenCommits?.();
     } else if (tabId === 'changesets') {
       onOpenChangesets?.();
+    } else if (tabId === 'agents') {
+      onOpenAgents?.();
     }
   };
 

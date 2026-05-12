@@ -283,6 +283,62 @@ export async function revokeAgentKey(keyId) {
   }
 }
 
+export async function listAgentSessions(sliceId, { limit = 50 } = {}) {
+  const query = new URLSearchParams();
+  query.set('slice_id', String(sliceId || '').trim());
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load agent sessions'));
+  }
+  const payload = await response.json();
+  return payload?.sessions || [];
+}
+
+export async function createAgentSession(sliceId, { environment = '', agentType = '' } = {}) {
+  const body = {
+    sliceId,
+  };
+  if (environment) {
+    body.environment = environment;
+  }
+  if (agentType) {
+    body.agentType = agentType;
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to create agent session'));
+  }
+  return response.json();
+}
+
+export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 200 } = {}) {
+  const query = new URLSearchParams();
+  query.set('since_seq', String(sinceSeq || 0));
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/events?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load agent conversation'));
+  }
+  return response.json();
+}
+
+export async function getAgentCapabilities() {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/capabilities`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load agent capabilities'));
+  }
+  return response.json();
+}
+
 export async function getSliceVisibility(sliceId) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/visibility`);
   if (!response.ok) {

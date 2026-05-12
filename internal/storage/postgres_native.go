@@ -909,6 +909,10 @@ func (s *postgresNativeTxView) GetActiveAgentSessionBySlice(ctx context.Context,
 	return s.PostgresNativeStorage.GetActiveAgentSessionBySlice(ctx, sliceID)
 }
 
+func (s *postgresNativeTxView) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
+	return s.PostgresNativeStorage.ListAgentSessionsBySlice(ctx, sliceID, limit)
+}
+
 func (s *postgresNativeTxView) ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error) {
 	return s.PostgresNativeStorage.ListAgentSessionsByState(ctx, states, limit)
 }
@@ -6322,6 +6326,43 @@ func (s *PostgresNativeStorage) GetActiveAgentSessionBySlice(ctx context.Context
 		return nil, err
 	}
 	return s.GetAgentSession(ctx, sessionID)
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
+	ctx = ensureCtx(ctx)
+	sliceID = strings.TrimSpace(sliceID)
+	if sliceID == "" {
+		return []*models.AgentSession{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id
+		FROM agent_sessions
+		WHERE slice_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, sliceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*models.AgentSession, 0, limit)
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return nil, err
+		}
+		session, err := s.GetAgentSession(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, session)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresNativeStorage) ListAgentSessionsByState(ctx context.Context, states []models.AgentSessionState, limit int) ([]*models.AgentSession, error) {
