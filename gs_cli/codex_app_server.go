@@ -438,10 +438,7 @@ func (r *codexAppServerRunner) readLoop(reader io.Reader) {
 			}
 			continue
 		}
-		select {
-		case r.notifications <- msg:
-		default:
-		}
+		r.notifications <- msg
 	}
 }
 
