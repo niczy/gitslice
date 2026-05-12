@@ -1,5 +1,0 @@
-ALTER TABLE directory_entries
-  ADD COLUMN IF NOT EXISTS is_executable BOOLEAN NOT NULL DEFAULT FALSE;
-
-ALTER TABLE directory_entries
-  ADD COLUMN IF NOT EXISTS symlink_target TEXT NOT NULL DEFAULT '';
