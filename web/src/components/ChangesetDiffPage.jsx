@@ -21,6 +21,9 @@ import { Button } from './ui/button.jsx';
 // Changeset Diff Page Component
 // ---------------------------------------------------------------------------
 
+const INITIAL_VISIBLE_CHANGE_COUNT = 120;
+const VISIBLE_CHANGE_INCREMENT = 120;
+
 function reviewStatusLabel(reviewStatus) {
   if (reviewStatus === 'needs_sync') return 'sync';
   if (reviewStatus === 'has_conflicts') return 'conflict';
@@ -92,6 +95,7 @@ export default function ChangesetDiffPage({
   const [ciChecksLoading, setCIChecksLoading] = useState(false);
   const [ciChecksError, setCIChecksError] = useState('');
   const [ciActionLoading, setCIActionLoading] = useState('');
+  const [visibleChangeCount, setVisibleChangeCount] = useState(INITIAL_VISIBLE_CHANGE_COUNT);
   const clientRefreshSnapshotsRef = useRef('');
   const clientRefreshDiffRef = useRef('');
   const fileRefs = useRef({});
@@ -231,6 +235,13 @@ export default function ChangesetDiffPage({
   const diff = payload?.diff || null;
   const activeMessage = selectedSnapshot?.message || changeset?.message || '';
   const changes = useMemo(() => payload?.changes || [], [payload]);
+  const visibleChanges = useMemo(() => changes.slice(0, visibleChangeCount), [changes, visibleChangeCount]);
+  const hiddenChangeCount = Math.max(changes.length - visibleChanges.length, 0);
+
+  useEffect(() => {
+    setVisibleChangeCount(INITIAL_VISIBLE_CHANGE_COUNT);
+    setSelectedFileId(null);
+  }, [loadedDiffKey]);
 
   const refreshCIChecks = useCallback(async () => {
     if (!changesetId || !selectedChangesetVersionID) {
@@ -465,9 +476,11 @@ export default function ChangesetDiffPage({
       <div className="diff-layout">
         {!isLoading && !error && changes.length > 0 && (
           <nav className="diff-file-panel" data-testid="changeset-file-panel">
-            <div className="diff-file-panel-header">Files ({changes.length})</div>
+            <div className="diff-file-panel-header">
+              Files ({visibleChanges.length}{hiddenChangeCount > 0 ? `/${changes.length}` : ''})
+            </div>
             <ul className="diff-file-panel-list">
-              {changes.map((change) => {
+              {visibleChanges.map((change) => {
                 const fileKey = change.id || `${change.path}-${change.old_path || ''}`;
                 const fileName = String(change.path || '').split('/').pop();
                 const dirPath = String(change.path || '').split('/').slice(0, -1).join('/');
@@ -590,7 +603,7 @@ export default function ChangesetDiffPage({
 
           {!isLoading && !error && (
             <ul className="diff-file-list" data-testid="changeset-file-list">
-              {changes.map((change) => {
+              {visibleChanges.map((change) => {
                 const fileKey = change.id || `${change.path}-${change.old_path || ''}`;
                 const normalizedType = normalizeChangeType(change.change_type || change.changeType);
                 return (
@@ -632,6 +645,19 @@ export default function ChangesetDiffPage({
                 );
               })}
             </ul>
+          )}
+
+          {!isLoading && !error && hiddenChangeCount > 0 && (
+            <div className="diff-load-more">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setVisibleChangeCount((count) => count + VISIBLE_CHANGE_INCREMENT)}
+                data-testid="changeset-show-more-files"
+              >
+                Show {Math.min(hiddenChangeCount, VISIBLE_CHANGE_INCREMENT)} more files
+              </Button>
+            </div>
           )}
 
           {!isLoading && !error && changes.length === 0 && (

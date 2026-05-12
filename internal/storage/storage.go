@@ -105,6 +105,25 @@ type ChangesetMergeByIDAccepter interface {
 	AcceptChangesetMergeByID(ctx context.Context, changesetID string, username string, commitHash string, mergedAt time.Time) (*AcceptChangesetMergeResult, error)
 }
 
+type ListChangesetsOptions struct {
+	Status               *models.ChangesetStatus
+	Limit                int
+	IncludeModifiedFiles bool
+}
+
+type ChangesetOptionLister interface {
+	ListChangesetsWithOptions(ctx context.Context, sliceID string, opts ListChangesetsOptions) ([]*models.Changeset, error)
+}
+
+type ListChangesetSnapshotsOptions struct {
+	Limit                int
+	IncludeModifiedFiles bool
+}
+
+type ChangesetSnapshotOptionLister interface {
+	ListChangesetSnapshotsWithOptions(ctx context.Context, changesetID string, opts ListChangesetSnapshotsOptions) ([]*models.ChangesetSnapshot, error)
+}
+
 // HomePathHeadStore persists home-scoped path heads for future merge conflict authority.
 type HomePathHeadStore interface {
 	UpsertHomePathHeads(ctx context.Context, heads []*models.HomePathHead) error

@@ -414,6 +414,7 @@ export async function listSliceChangesets(sliceId, { limit = 100, statusFilter =
   } else {
     query.set('include_all_statuses', 'true');
   }
+  query.set('omit_modified_files', 'true');
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/changesets?${query.toString()}`);
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to load slice changesets'));
@@ -434,10 +435,15 @@ export async function getChangesetDiff(changesetId, snapshotVersion) {
   return response.json();
 }
 
-export async function listChangesetSnapshots(changesetId, limit = 100) {
+export async function listChangesetSnapshots(changesetId, options = {}) {
+  const normalizedOptions = typeof options === 'number' ? { limit: options } : options;
+  const { limit = 100, omitModifiedFiles = true } = normalizedOptions || {};
   const query = new URLSearchParams();
   if (typeof limit === 'number' && limit > 0) {
     query.set('limit', String(limit));
+  }
+  if (omitModifiedFiles) {
+    query.set('omit_modified_files', 'true');
   }
   const suffix = query.toString() ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/snapshots${suffix}`);

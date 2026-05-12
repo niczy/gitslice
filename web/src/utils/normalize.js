@@ -38,6 +38,7 @@ export function normalizeChangesetDiffResponse(data) {
     slice_id: changeset.slice_id ?? changeset.sliceId,
     base_commit_hash: changeset.base_commit_hash ?? changeset.baseCommitHash,
     modified_files: changeset.modified_files ?? changeset.modifiedFiles ?? [],
+    modified_file_count: Number(changeset.modified_file_count ?? changeset.modifiedFileCount ?? (changeset.modified_files ?? changeset.modifiedFiles ?? []).length ?? 0),
     created_at: changeset.created_at ?? changeset.createdAt,
     merged_at: changeset.merged_at ?? changeset.mergedAt,
     status: normalizeChangesetStatus(changeset.status),
@@ -81,6 +82,7 @@ export function normalizeChangesetSnapshot(snapshot) {
     hash: snapshot?.hash ?? '',
     base_commit_hash: snapshot?.base_commit_hash ?? snapshot?.baseCommitHash ?? '',
     modified_files: snapshot?.modified_files ?? snapshot?.modifiedFiles ?? [],
+    modified_file_count: Number(snapshot?.modified_file_count ?? snapshot?.modifiedFileCount ?? (snapshot?.modified_files ?? snapshot?.modifiedFiles ?? []).length ?? 0),
     author: snapshot?.author ?? '',
     message: snapshot?.message ?? '',
     created_at: snapshot?.created_at ?? snapshot?.createdAt ?? 0,
@@ -114,6 +116,7 @@ export function normalizeChangesetInfo(changeset) {
     slice_id: changeset?.slice_id ?? changeset?.sliceId ?? '',
     base_commit_hash: changeset?.base_commit_hash ?? changeset?.baseCommitHash ?? '',
     modified_files: changeset?.modified_files ?? changeset?.modifiedFiles ?? [],
+    modified_file_count: Number(changeset?.modified_file_count ?? changeset?.modifiedFileCount ?? (changeset?.modified_files ?? changeset?.modifiedFiles ?? []).length ?? 0),
     status: normalizeChangesetStatus(changeset?.status),
     author: changeset?.author ?? '',
     message: changeset?.message ?? '',
@@ -137,6 +140,7 @@ export function normalizeChangesetStatus(value) {
 }
 
 export function normalizeReviewStatus(value) {
+  if (value === 3 || value === 'REVIEW_STATUS_UNKNOWN' || value === 'unknown') return 'unknown';
   if (value === 1 || value === 'NEEDS_SYNC' || value === 'NEEDS_REBASE' || value === 'needs_sync' || value === 'needs_rebase') {
     return 'needs_sync';
   }

@@ -1213,11 +1213,21 @@ func (s *InMemoryStorage) GetChangeset(ctx context.Context, changesetID string) 
 	}
 
 	copy := *cs
+	copy.ModifiedFiles = append([]string(nil), cs.ModifiedFiles...)
+	copy.ModifiedFileCount = len(copy.ModifiedFiles)
 	return &copy, nil
 }
 
 // ListChangesets returns changesets for a slice filtered by status and limited by count
 func (s *InMemoryStorage) ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error) {
+	return s.ListChangesetsWithOptions(ctx, sliceID, ListChangesetsOptions{
+		Status:               status,
+		Limit:                limit,
+		IncludeModifiedFiles: true,
+	})
+}
+
+func (s *InMemoryStorage) ListChangesetsWithOptions(ctx context.Context, sliceID string, opts ListChangesetsOptions) ([]*models.Changeset, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1232,14 +1242,20 @@ func (s *InMemoryStorage) ListChangesets(ctx context.Context, sliceID string, st
 		if !ok {
 			continue
 		}
-		if status != nil && cs.Status != *status {
+		if opts.Status != nil && cs.Status != *opts.Status {
 			continue
 		}
 
 		copy := *cs
+		copy.ModifiedFileCount = len(cs.ModifiedFiles)
+		if opts.IncludeModifiedFiles {
+			copy.ModifiedFiles = append([]string(nil), cs.ModifiedFiles...)
+		} else {
+			copy.ModifiedFiles = nil
+		}
 		result = append(result, &copy)
 
-		if limit > 0 && len(result) >= limit {
+		if opts.Limit > 0 && len(result) >= opts.Limit {
 			break
 		}
 	}
@@ -1307,6 +1323,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		}
 		copySnapshot := *latest
 		copySnapshot.ModifiedFiles = append([]string(nil), latest.ModifiedFiles...)
+		copySnapshot.ModifiedFileCount = len(copySnapshot.ModifiedFiles)
 		copySnapshot.FileHashes = cloneStringMap(latest.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(latest.BasePathVersions)
 		return &copySnapshot, nil
@@ -1322,6 +1339,7 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 		}
 		copySnapshot := *snapshot
 		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+		copySnapshot.ModifiedFileCount = len(copySnapshot.ModifiedFiles)
 		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
 		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
 		return &copySnapshot, nil
@@ -1331,6 +1349,13 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 }
 
 func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error) {
+	return s.ListChangesetSnapshotsWithOptions(ctx, changesetID, ListChangesetSnapshotsOptions{
+		Limit:                limit,
+		IncludeModifiedFiles: true,
+	})
+}
+
+func (s *InMemoryStorage) ListChangesetSnapshotsWithOptions(ctx context.Context, changesetID string, opts ListChangesetSnapshotsOptions) ([]*models.ChangesetSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1339,6 +1364,7 @@ func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetI
 		return []*models.ChangesetSnapshot{}, nil
 	}
 
+	limit := opts.Limit
 	if limit <= 0 || limit > len(ids) {
 		limit = len(ids)
 	}
@@ -1350,9 +1376,16 @@ func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetI
 			continue
 		}
 		copySnapshot := *snapshot
-		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
-		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
-		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+		copySnapshot.ModifiedFileCount = len(snapshot.ModifiedFiles)
+		if opts.IncludeModifiedFiles {
+			copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+			copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
+			copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+		} else {
+			copySnapshot.ModifiedFiles = nil
+			copySnapshot.FileHashes = nil
+			copySnapshot.BasePathVersions = nil
+		}
 		result = append(result, &copySnapshot)
 	}
 	return result, nil
