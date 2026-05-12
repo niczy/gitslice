@@ -6234,8 +6234,10 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 		session.SliceID == "" ||
 		session.UserID == "" ||
 		session.Provider == "" ||
-		session.E2BTemplateID == "" ||
 		session.State == "" {
+		return ErrInvalidInput
+	}
+	if session.Provider != "local" && session.E2BTemplateID == "" {
 		return ErrInvalidInput
 	}
 
@@ -6253,8 +6255,8 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 			idle_timeout_sec, ttl_sec, runtime_provider, runtime_session_id, runtime_status, runtime_error_code,
 			runtime_endpoint, created_at, updated_at, started_at, last_activity_at, stopped_at, failure_code, failure_message
 		) VALUES (
-			$1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''),
-			$11, $12, NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
+			$1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''),
+			$11, $12, $13, $14, $15, $16,
 			NULLIF($17, ''), $18, $19, $20, $21, $22, NULLIF($23, ''), NULLIF($24, '')
 		)
 	`,
@@ -6424,7 +6426,7 @@ func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session 
 		UPDATE agent_sessions
 		SET slice_id = $1,
 		    environment_name = $2,
-		    agent_type = NULLIF($3, ''),
+		    agent_type = $3,
 		    user_id = $4,
 		    state = $5,
 		    provider = $6,
@@ -6433,10 +6435,10 @@ func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session 
 		    e2b_region = NULLIF($9, ''),
 		    idle_timeout_sec = $10,
 		    ttl_sec = $11,
-		    runtime_provider = NULLIF($12, ''),
-		    runtime_session_id = NULLIF($13, ''),
-		    runtime_status = NULLIF($14, ''),
-		    runtime_error_code = NULLIF($15, ''),
+		    runtime_provider = $12,
+		    runtime_session_id = $13,
+		    runtime_status = $14,
+		    runtime_error_code = $15,
 		    runtime_endpoint = NULLIF($16, ''),
 		    updated_at = $17,
 		    started_at = $18,

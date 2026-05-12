@@ -180,6 +180,7 @@ export function normalizeSliceInfo(slice) {
     slug: slice.slug ?? slice.Slug ?? '',
     file_count: slice.file_count ?? slice.fileCount,
     is_root: slice.is_root ?? slice.isRoot ?? false,
+    environment: slice.environment ?? '',
   };
 }
 

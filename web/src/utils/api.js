@@ -331,6 +331,18 @@ export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 
   return response.json();
 }
 
+export async function sendAgentSessionInput(sessionId, text) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to send agent input'));
+  }
+  return response.json();
+}
+
 export async function getAgentCapabilities() {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/capabilities`);
   if (!response.ok) {

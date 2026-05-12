@@ -6628,6 +6628,41 @@ button[data-testid="topbar-get-started"]:hover {
   white-space: pre-wrap;
 }
 
+.slice-agents-input-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.slice-agents-input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  line-height: 1.2;
+  padding: 0 11px;
+}
+
+.slice-agents-input:focus {
+  border-color: rgba(9, 76, 178, 0.55);
+  box-shadow: 0 0 0 3px rgba(9, 76, 178, 0.09);
+  outline: none;
+}
+
+.slice-agents-send-button {
+  width: 38px !important;
+  height: 38px !important;
+  border-radius: 7px !important;
+}
+
 .slice-agents-empty-detail {
   display: grid;
   min-height: 220px;
