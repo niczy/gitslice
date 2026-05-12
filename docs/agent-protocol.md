@@ -84,14 +84,32 @@ local session marks the runtime endpoint as `local://<session_id>` and waits for
 a user-hosted runner.
 
 `gs agent run` is the first runner implementation. It can create or attach to a
-local-provider session, poll `ListEvents`, execute a local coding agent command
-for each `agent/input` event, and append `agent/output_delta` and
-`agent/output_final` events through `AppendEvent`.
+local-provider session, poll `ListEvents`, run a local coding agent for
+`agent/input` events, and append `agent/output_delta`, `agent/output_final`, and
+tool lifecycle events through `AppendEvent`.
 
 Default commands:
 
-- `codex`: `codex exec <prompt>`
+- `codex`: a persistent Codex app-server session over the Codex
+  remote-control protocol when available, with `codex exec` fallback
 - `claude`: `claude -p <prompt>`
+
+In `--codex-mode auto`, the runner starts `codex app-server --listen stdio://`,
+initializes one Codex thread, and sends each Gitslice `agent/input` event as a
+Codex `turn/start` request. Codex `item/agentMessage/delta` notifications become
+`agent/output_delta`, final assistant messages become `agent/output_final`, and
+command/tool notifications are forwarded as `tool/start`, `tool/output`, and
+`tool/end` events. Gitslice `agent/interrupt` events are translated to Codex
+`turn/interrupt` while the turn is still running, so the web UI can stop an
+active Codex turn without waiting for the process to exit. If app-server startup
+fails in auto mode, the runner appends a control error and falls back to
+`codex exec`.
+
+Use `--codex-mode exec` to force the previous one-process-per-input behavior:
+
+```bash
+gs agent run --session ags_123 --agent codex --codex-mode exec
+```
 
 Users can override the command after `--`, for example:
 
