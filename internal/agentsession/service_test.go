@@ -105,6 +105,55 @@ func TestServiceOneActiveSessionPerSlice(t *testing.T) {
 	}
 }
 
+func TestServiceLocalRuntimeQueuesInput(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-local",
+		Name:      "Slice Local",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	svc.SetRuntimeProviderFor(RuntimeProviderLocal, NewLocalRuntimeProvider(svc))
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:   "slice-local",
+		Provider:  RuntimeProviderLocal,
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession local failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	if err := svc.HandleAgentInput(ctx, session.SessionID, "write tests"); err != nil {
+		t.Fatalf("HandleAgentInput failed: %v", err)
+	}
+	events, _, err := svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 100)
+	if err != nil {
+		t.Fatalf("ListEventsForUser failed: %v", err)
+	}
+	foundInput := false
+	foundSimulatedOutput := false
+	for _, event := range events {
+		if event.Stream == EventStreamAgent && event.Type == EventTypeInput && strings.Contains(string(event.Payload), "write tests") {
+			foundInput = true
+		}
+		if event.Stream == EventStreamAgent && event.Type == EventTypeOutputFinal {
+			foundSimulatedOutput = true
+		}
+	}
+	if !foundInput {
+		t.Fatalf("expected local input event, got %#v", events)
+	}
+	if foundSimulatedOutput {
+		t.Fatalf("local provider should not emit simulated agent output")
+	}
+}
+
 func TestValidateAndConsumeWSToken(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

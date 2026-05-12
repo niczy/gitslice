@@ -250,14 +250,90 @@ func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEv
 	return &agentv1.ListEventsResponse{Events: out, NextSeq: nextSeq}, nil
 }
 
+func (s *agentServiceServer) AppendEvent(ctx context.Context, req *agentv1.AppendEventRequest) (*agentv1.AppendEventResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	session, err := s.svc.GetSessionForUser(ctx, userID, req.GetSessionId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+	if !session.State.IsActive() {
+		return nil, status.Error(codes.FailedPrecondition, "session is not active")
+	}
+	stream := strings.TrimSpace(req.GetStream())
+	eventType := strings.TrimSpace(req.GetType())
+	if stream == "" || eventType == "" {
+		return nil, status.Error(codes.InvalidArgument, "stream and type are required")
+	}
+	payload := req.GetPayload()
+	if len(payload) == 0 {
+		payload = []byte(`{}`)
+	}
+	event := &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Stream:    stream,
+		Type:      eventType,
+		Payload:   payload,
+	}
+	if err := s.svc.AppendEvent(ctx, event); err != nil {
+		return nil, status.Error(codes.Internal, "failed to append event")
+	}
+	_ = s.svc.RecordActivity(ctx, session.SessionID)
+	return &agentv1.AppendEventResponse{Event: eventEnvelopeFromModel(event)}, nil
+}
+
+func (s *agentServiceServer) SendInput(ctx context.Context, req *agentv1.SendInputRequest) (*agentv1.SendInputResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.svc.GetSessionForUser(ctx, userID, req.GetSessionId()); err != nil {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+	if err := s.svc.HandleAgentInput(ctx, req.GetSessionId(), req.GetText()); err != nil {
+		if err == storage.ErrInvalidInput {
+			return nil, status.Error(codes.InvalidArgument, "invalid input")
+		}
+		if err == storage.ErrAgentSessionConflict {
+			return nil, status.Error(codes.FailedPrecondition, "session is not accepting input")
+		}
+		return nil, status.Error(codes.Internal, "failed to send input")
+	}
+	return &agentv1.SendInputResponse{Accepted: true}, nil
+}
+
+func (s *agentServiceServer) SendInterrupt(ctx context.Context, req *agentv1.SendInterruptRequest) (*agentv1.SendInterruptResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.svc.GetSessionForUser(ctx, userID, req.GetSessionId()); err != nil {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+	if err := s.svc.HandleAgentInterrupt(ctx, req.GetSessionId(), req.GetReason()); err != nil {
+		if err == storage.ErrInvalidInput {
+			return nil, status.Error(codes.InvalidArgument, "invalid interrupt")
+		}
+		if err == storage.ErrAgentSessionConflict {
+			return nil, status.Error(codes.FailedPrecondition, "session is not accepting interrupts")
+		}
+		return nil, status.Error(codes.Internal, "failed to send interrupt")
+	}
+	return &agentv1.SendInterruptResponse{Accepted: true}, nil
+}
+
 func (s *agentServiceServer) ListCapabilities(ctx context.Context, req *agentv1.ListCapabilitiesRequest) (*agentv1.ListCapabilitiesResponse, error) {
 	if _, err := s.requireUser(ctx); err != nil {
 		return nil, err
 	}
 	_ = req
 	return &agentv1.ListCapabilitiesResponse{
-		SupportedAgentTypes: agentsession.SupportedAgentTypes(),
-		DefaultAgentType:    agentsession.DefaultAgentType(),
+		SupportedAgentTypes:       agentsession.SupportedAgentTypes(),
+		DefaultAgentType:          agentsession.DefaultAgentType(),
+		SupportedRuntimeProviders: agentsession.SupportedRuntimeProviders(),
+		DefaultRuntimeProvider:    s.svc.DefaultRuntimeProviderName(),
 	}, nil
 }
 
@@ -292,4 +368,17 @@ func hasInternalCaller(ctx context.Context) bool {
 		return len(vals) > 0 && vals[0] == "1"
 	}
 	return false
+}
+
+func eventEnvelopeFromModel(event *models.AgentSessionEvent) *agentv1.EventEnvelope {
+	if event == nil {
+		return nil
+	}
+	return &agentv1.EventEnvelope{
+		Seq:     event.Seq,
+		Ts:      event.TS.Format(timeRFC3339Micro),
+		Stream:  event.Stream,
+		Type:    event.Type,
+		Payload: event.Payload,
+	}
 }

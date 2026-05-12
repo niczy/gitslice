@@ -53,7 +53,7 @@ proto: setup-googleapis
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/account && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative account_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/file && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative file_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/filesystem && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative filesystem_service.proto'
-	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/agent && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative agent_service.proto'
+	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/agent && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative agent_protocol.proto agent_service.proto'
 	PATH=$(GOBIN):$(PATH) sh -c 'cd proto/ci && protoc -I . -I .. -I ../../$(GOOGLEAPIS_DIR) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --grpc-gateway_out=. --grpc-gateway_opt=paths=source_relative ci_service.proto'
 
 build: proto build-core build-cli

@@ -31,6 +31,7 @@ func printHelp() {
 	fmt.Println("  context     Print agent-friendly current auth/checkout/changeset context")
 	fmt.Println("  ci          Run and inspect Gitslice CI checks")
 	fmt.Println("  runner      Manage and run CI executors")
+	fmt.Println("  agent       Start and run local coding agents")
 	fmt.Println("\nLegacy aliases:")
 	fmt.Println("  login      Alias for interactive auth login/status")
 	fmt.Println("  logout     Alias for auth logout")
@@ -50,9 +51,26 @@ func printHelp() {
 	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --detach --json")
 	fmt.Println("  gs ci status --json")
 	fmt.Println("  gs runner list --json")
+	fmt.Println("  gs agent run --slice home_nic --agent codex --prompt \"fix tests\" --once")
 	fmt.Println("  gs update")
 	fmt.Println("  gs jobs wait job_123 --json")
 	fmt.Println("\nUse 'gs <command> --help' for more information about a command.")
+}
+
+func printAgentHelp() {
+	fmt.Println("Usage: gs agent <command> [options]")
+	fmt.Println("Start and run local coding agents for web-controlled sessions.")
+	fmt.Println("\nCommands:")
+	fmt.Println("  start      Create a local-provider agent session")
+	fmt.Println("  run        Run a local agent process and bridge session events")
+	fmt.Println("  input      Send input to an agent session")
+	fmt.Println("  interrupt  Interrupt an agent session")
+	fmt.Println("  stop       Stop an agent session")
+	fmt.Println("\nExamples:")
+	fmt.Println("  gs agent start --slice home_nic --agent codex --json")
+	fmt.Println("  gs agent run --slice home_nic --agent codex --prompt \"fix tests\" --once")
+	fmt.Println("  gs agent run --session ags_123 -- ./my-agent-script")
+	fmt.Println("  gs agent input ags_123 \"summarize the current diff\"")
 }
 
 func printCIHelp() {

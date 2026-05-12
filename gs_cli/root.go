@@ -41,6 +41,7 @@ func NewRootCommand(args []string) *cobra.Command {
 			newContextCommand(),
 			newCICommand(),
 			newRunnerCommand(),
+			newAgentCommand(),
 			newSliceCommand(),
 			newChangesetCommand(),
 			newConflictCommand(),

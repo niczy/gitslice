@@ -185,7 +185,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.E2BTemplateID = strings.TrimSpace(req.E2BTemplateID)
-	if req.E2BTemplateID == "" {
+	if req.E2BTemplateID == "" && req.Provider != RuntimeProviderLocal {
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.E2BRegion = strings.TrimSpace(req.E2BRegion)
@@ -392,6 +392,8 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	if err := s.st.AppendAgentSessionEvent(ctx, &eventCopy); err != nil {
 		return err
 	}
+	event.Seq = eventCopy.Seq
+	event.TS = eventCopy.TS
 	s.rememberSeq(eventCopy.SessionID, eventCopy.Seq)
 	return nil
 }
