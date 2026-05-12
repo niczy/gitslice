@@ -6,6 +6,7 @@ import {
   PanelLeftOpen,
   Plus,
   RefreshCw,
+  Send,
   TerminalSquare,
 } from 'lucide-react';
 
@@ -14,6 +15,7 @@ import {
   getAgentCapabilities,
   listAgentSessionEvents,
   listAgentSessions,
+  sendAgentSessionInput,
 } from '../utils/api.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
@@ -142,9 +144,12 @@ export default function SliceAgentsPage({
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
+  const [inputText, setInputText] = useState('');
+  const [sendingInput, setSendingInput] = useState(false);
   const [sessionsError, setSessionsError] = useState('');
   const [eventsError, setEventsError] = useState('');
   const [createError, setCreateError] = useState('');
+  const [inputError, setInputError] = useState('');
   const [capabilities, setCapabilities] = useState(null);
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
   const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
@@ -251,29 +256,32 @@ export default function SliceAgentsPage({
     loadSessions();
   }, [loadSessions]);
 
-  useEffect(() => {
+  const loadSelectedEvents = useCallback(async () => {
     if (!selectedSessionId) {
       setEvents([]);
       setEventsError('');
       setEventsLoading(false);
-      return undefined;
+      return;
     }
 
+    setEventsLoading(true);
+    setEventsError('');
+    try {
+      const payload = await listAgentSessionEvents(selectedSessionId, { sinceSeq: 0, limit: 200 });
+      setEvents((payload?.events || []).map(normalizeEvent));
+    } catch (err) {
+      setEvents([]);
+      setEventsError(err?.message || 'Unable to load agent conversation.');
+    } finally {
+      setEventsLoading(false);
+    }
+  }, [selectedSessionId]);
+
+  useEffect(() => {
     let active = true;
     const loadEvents = async () => {
-      setEventsLoading(true);
-      setEventsError('');
-      try {
-        const payload = await listAgentSessionEvents(selectedSessionId, { sinceSeq: 0, limit: 200 });
-        if (!active) return;
-        setEvents((payload?.events || []).map(normalizeEvent));
-      } catch (err) {
-        if (!active) return;
-        setEvents([]);
-        setEventsError(err?.message || 'Unable to load agent conversation.');
-      } finally {
-        if (active) setEventsLoading(false);
-      }
+      if (!active) return;
+      await loadSelectedEvents();
     };
 
     loadEvents();
@@ -282,7 +290,7 @@ export default function SliceAgentsPage({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [selectedSessionId]);
+  }, [loadSelectedEvents]);
 
   const handleCreateSession = async () => {
     if (!canCreateSession || creatingSession) {
@@ -301,6 +309,25 @@ export default function SliceAgentsPage({
       setCreateError(err?.message || 'Unable to create agent session.');
     } finally {
       setCreatingSession(false);
+    }
+  };
+
+  const handleSendInput = async (event) => {
+    event.preventDefault();
+    const text = inputText.trim();
+    if (!selectedSessionId || !text || sendingInput) {
+      return;
+    }
+    setSendingInput(true);
+    setInputError('');
+    try {
+      await sendAgentSessionInput(selectedSessionId, text);
+      setInputText('');
+      await loadSelectedEvents();
+    } catch (err) {
+      setInputError(err?.message || 'Unable to send agent input.');
+    } finally {
+      setSendingInput(false);
     }
   };
 
@@ -473,6 +500,29 @@ export default function SliceAgentsPage({
                   ))}
                 </ol>
               )}
+              {inputError && <div className="panel-error">{inputError}</div>}
+              <form className="slice-agents-input-form" onSubmit={handleSendInput}>
+                <input
+                  className="slice-agents-input"
+                  data-testid="slice-agents-input"
+                  value={inputText}
+                  onChange={(event) => setInputText(event.target.value)}
+                  placeholder="Message agent"
+                  disabled={sendingInput}
+                />
+                <Button
+                  type="submit"
+                  variant="default"
+                  size="icon"
+                  className="slice-agents-send-button"
+                  disabled={!inputText.trim() || sendingInput}
+                  aria-label="Send message"
+                  title="Send"
+                  data-testid="slice-agents-send"
+                >
+                  <Send size={16} aria-hidden="true" />
+                </Button>
+              </form>
             </>
           )}
         </main>

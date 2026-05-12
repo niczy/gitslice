@@ -2595,6 +2595,37 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("expected ErrAgentSessionNotFound for inactive slice session, got %v", err)
 	}
 
+	localSession := &models.AgentSession{
+		SessionID:       fmt.Sprintf("sess-local-%s", suffix),
+		SliceID:         slice.ID,
+		EnvironmentName: "local-agents",
+		AgentType:       "codex",
+		UserID:          "alice",
+		State:           models.AgentSessionStateCreating,
+		Provider:        "local",
+		IdleTimeoutSec:  1800,
+		TTLSec:          14400,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+	if err := st.CreateAgentSession(ctx, localSession); err != nil {
+		t.Fatalf("CreateAgentSession local provider failed: %v", err)
+	}
+	storedLocalSession, err := st.GetAgentSession(ctx, localSession.SessionID)
+	if err != nil {
+		t.Fatalf("GetAgentSession local provider failed: %v", err)
+	}
+	if storedLocalSession.Provider != "local" || storedLocalSession.E2BTemplateID != "" {
+		t.Fatalf("local provider session mismatch: %#v", storedLocalSession)
+	}
+	localSession.State = models.AgentSessionStateStopped
+	localStopped := time.Now()
+	localSession.StoppedAt = &localStopped
+	localSession.UpdatedAt = localStopped
+	if err := st.UpdateAgentSession(ctx, localSession); err != nil {
+		t.Fatalf("UpdateAgentSession local stopped failed: %v", err)
+	}
+
 	deleteSliceID := fmt.Sprintf("slice-delete-%s", suffix)
 	deleteCommitHash := fmt.Sprintf("delete-commit-%s", suffix)
 	deleteChangesetID := fmt.Sprintf("chg_delete_%s", suffix)
