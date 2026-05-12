@@ -88,25 +88,38 @@ Add state hash fields to `agent_sessions`.
 
 ```sql
 ALTER TABLE agent_sessions
-  ADD COLUMN base_slice_id text DEFAULT '' NOT NULL,
-  ADD COLUMN base_commit_hash text DEFAULT '' NOT NULL,
-  ADD COLUMN current_slice_id text DEFAULT '' NOT NULL,
-  ADD COLUMN current_commit_hash text DEFAULT '' NOT NULL;
+  ADD COLUMN base_slice_id text,
+  ADD COLUMN base_commit_hash text,
+  ADD COLUMN current_slice_id text,
+  ADD COLUMN current_commit_hash text,
+  ADD COLUMN current_transition_seq bigint DEFAULT 0 NOT NULL,
+  ADD CONSTRAINT agent_sessions_base_commit_pair_check
+    CHECK ((base_slice_id IS NULL) = (base_commit_hash IS NULL)),
+  ADD CONSTRAINT agent_sessions_current_commit_pair_check
+    CHECK ((current_slice_id IS NULL) = (current_commit_hash IS NULL)),
+  ADD CONSTRAINT agent_sessions_base_commit_fkey
+    FOREIGN KEY (base_slice_id, base_commit_hash)
+    REFERENCES slice_commits(slice_id, commit_hash),
+  ADD CONSTRAINT agent_sessions_current_commit_fkey
+    FOREIGN KEY (current_slice_id, current_commit_hash)
+    REFERENCES slice_commits(slice_id, commit_hash);
 
 CREATE INDEX idx_agent_sessions_base_commit
   ON agent_sessions (base_slice_id, base_commit_hash)
-  WHERE base_commit_hash <> '';
+  WHERE base_commit_hash IS NOT NULL;
 
 CREATE INDEX idx_agent_sessions_current_commit
   ON agent_sessions (current_slice_id, current_commit_hash)
-  WHERE current_commit_hash <> '';
+  WHERE current_commit_hash IS NOT NULL;
 ```
 
 Semantics:
 
 - `base_*` is set once when the session starts or attaches to a workspace.
 - `current_*` is updated when the session records a successful state transition.
-- Empty values mean the session predates this feature or was created before the
+- `current_transition_seq` is the monotonic guard used to prevent stale
+  transition writers from moving `current_*` backwards.
+- Null values mean the session predates this feature or was created before the
   slice head could be resolved.
 
 The base state should usually be the current `slice_metadata.head_commit_hash`
@@ -129,7 +142,8 @@ CREATE TABLE agent_session_state_transitions (
     to_commit_hash text NOT NULL,
 
     changeset_id text,
-    changeset_version_id text DEFAULT '' NOT NULL,
+    changeset_snapshot_id text,
+    changeset_version integer,
     changeset_snapshot_hash text DEFAULT '' NOT NULL,
 
     trigger_event_seq bigint,
@@ -139,15 +153,16 @@ CREATE TABLE agent_session_state_transitions (
     metadata_json jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamptz DEFAULT now() NOT NULL,
 
+    CHECK ((changeset_snapshot_id IS NULL) = (changeset_version IS NULL)),
     UNIQUE (session_id, seq),
+    UNIQUE (session_id, transition_id),
     FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
     FOREIGN KEY (from_slice_id) REFERENCES slices(id) ON UPDATE CASCADE ON DELETE CASCADE,
     FOREIGN KEY (to_slice_id) REFERENCES slices(id) ON UPDATE CASCADE ON DELETE CASCADE,
     FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON UPDATE CASCADE ON DELETE SET NULL,
-    FOREIGN KEY (session_id, trigger_event_seq)
-      REFERENCES agent_session_events(session_id, seq) ON DELETE SET NULL,
-    FOREIGN KEY (session_id, completion_event_seq)
-      REFERENCES agent_session_events(session_id, seq) ON DELETE SET NULL
+    FOREIGN KEY (changeset_snapshot_id) REFERENCES changeset_snapshots(id) ON DELETE SET NULL,
+    FOREIGN KEY (from_slice_id, from_commit_hash) REFERENCES slice_commits(slice_id, commit_hash),
+    FOREIGN KEY (to_slice_id, to_commit_hash) REFERENCES slice_commits(slice_id, commit_hash)
 );
 
 CREATE INDEX idx_agent_session_transitions_session_seq
@@ -172,6 +187,31 @@ Relationships:
 The transition table is intentionally not a full event log. It only records
 durable state changes that should appear as milestones in the UI.
 
+`trigger_event_seq` and `completion_event_seq` intentionally do not have foreign
+keys to `agent_session_events`. Verbose events may have a different retention
+policy from compact provenance. The values are stable pointers for UI anchoring
+when the event still exists, not lifecycle dependencies that should block event
+deletion.
+
+`from_*` and `to_*` are slice commit identities in v1. If a future runtime needs
+to represent non-commit states, add explicit `from_state_type` / `to_state_type`
+columns rather than weakening these commit references.
+
+When `changeset_snapshot_id` is present, the service must populate
+`changeset_id`, `changeset_version`, and `changeset_snapshot_hash` from the
+referenced `changeset_snapshots` row instead of trusting caller-supplied values.
+This keeps the row denormalized for UI reads while making the snapshot ID the
+canonical reference.
+
+`seq` is allocated per session, not supplied by the caller. The Postgres
+implementation should lock the `agent_sessions` row, compute
+`next_seq = current_transition_seq + 1`, insert the transition, then update
+`current_transition_seq`, `current_slice_id`, and `current_commit_hash` in the
+same transaction. If idempotent retry needs a caller-provided `transition_id`,
+the implementation should return the existing row without allocating a new seq.
+This prevents concurrent turn workers from moving the session current state
+backwards.
+
 ### Session To Changeset Links
 
 Add a many-to-many provenance table.
@@ -189,9 +229,8 @@ CREATE TABLE agent_session_changesets (
     PRIMARY KEY (session_id, changeset_id, relationship),
     FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
     FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON UPDATE CASCADE ON DELETE CASCADE,
-    FOREIGN KEY (transition_id) REFERENCES agent_session_state_transitions(transition_id) ON DELETE SET NULL,
-    FOREIGN KEY (session_id, source_event_seq)
-      REFERENCES agent_session_events(session_id, seq) ON DELETE SET NULL
+    FOREIGN KEY (session_id, transition_id)
+      REFERENCES agent_session_state_transitions(session_id, transition_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_agent_session_changesets_changeset
@@ -208,6 +247,10 @@ Relationship values:
 - `reviewed`: session analyzed or commented on the changeset.
 - `merged`: session initiated or completed the merge.
 - `mentioned`: session referenced the changeset but did not mutate it.
+
+As with transitions, `source_event_seq` is a soft pointer into
+`agent_session_events`. It must not have a foreign key because event retention
+should not be coupled to artifact provenance retention.
 
 ### Session To Slice Commit Links
 
@@ -231,9 +274,8 @@ CREATE TABLE agent_session_slice_commits (
     FOREIGN KEY (slice_id) REFERENCES slices(id) ON UPDATE CASCADE ON DELETE CASCADE,
     FOREIGN KEY (slice_id, commit_hash) REFERENCES slice_commits(slice_id, commit_hash) ON DELETE CASCADE,
     FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON UPDATE CASCADE ON DELETE SET NULL,
-    FOREIGN KEY (transition_id) REFERENCES agent_session_state_transitions(transition_id) ON DELETE SET NULL,
-    FOREIGN KEY (session_id, source_event_seq)
-      REFERENCES agent_session_events(session_id, seq) ON DELETE SET NULL
+    FOREIGN KEY (session_id, transition_id)
+      REFERENCES agent_session_state_transitions(session_id, transition_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_agent_session_slice_commits_commit
@@ -255,6 +297,8 @@ Relationship values:
 - `referenced`: session mentioned or inspected this commit.
 - `merge_source`: commit became the source commit for a merged changeset.
 
+`source_event_seq` is also a soft pointer here for the same retention reason.
+
 ## Go Models
 
 Add models under `internal/models`.
@@ -270,7 +314,8 @@ type AgentSessionStateTransition struct {
     ToSliceID             string
     ToCommitHash          string
     ChangesetID           string
-    ChangesetVersionID    string
+    ChangesetSnapshotID   string
+    ChangesetVersion      int32
     ChangesetSnapshotHash string
     TriggerEventSeq       uint64
     CompletionEventSeq    uint64
@@ -358,7 +403,7 @@ type AgentSessionLinkListOptions struct {
 }
 
 type AgentSessionProvenanceStore interface {
-    AppendAgentSessionStateTransition(ctx context.Context, t *models.AgentSessionStateTransition) error
+    AppendAgentSessionStateTransition(ctx context.Context, t *models.AgentSessionStateTransition) (*models.AgentSessionStateTransition, error)
     ListAgentSessionStateTransitions(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionStateTransition, error)
     GetAgentSessionStateAt(ctx context.Context, sessionID string, seq uint64) (*models.AgentSessionStateTransition, error)
 
@@ -412,17 +457,32 @@ rpc ListSliceCommitAgentSessions(ListSliceCommitAgentSessionsRequest)
 }
 ```
 
-Writes should initially remain internal to services and runners. If local
-runners need to explicitly report artifacts, add a restricted RPC later:
+Most writes should remain internal to services. Local runners still need a
+trusted v1 reporting path because they may be the first component to observe the
+runtime's produced commit or changeset snapshot. Expose a restricted report RPC
+for local/remote runtimes, not for browser clients:
 
 ```proto
 rpc ReportAgentSessionArtifact(ReportAgentSessionArtifactRequest)
-    returns (ReportAgentSessionArtifactResponse);
+    returns (ReportAgentSessionArtifactResponse) {
+  option (google.api.http) = {
+    post: "/v1/agent-sessions/{session_id}/artifacts:report"
+    body: "*"
+  };
+}
 ```
 
 That RPC must require ownership of the active local runtime/session and should
 validate that referenced changesets/commits belong to the session slice or a
-known derived slice.
+known derived slice. It should not accept arbitrary hashes as durable facts:
+
+- commit reports must resolve `(slice_id, commit_hash)` in `slice_commits`
+- changeset reports must resolve `changeset_id` in `changesets`
+- snapshot reports must resolve `changeset_snapshot_id` in `changeset_snapshots`
+- transition reports must use the server-allocated transition seq rule
+
+If validation fails, the service may append a `control/error` event but should
+not write provenance rows.
 
 ## Event Protocol
 
@@ -499,7 +559,7 @@ Agent produced commit cmt_B
 ### Commit Becomes A Changeset Snapshot
 
 1. Agent exports or updates changeset `chg_123`.
-2. Latest snapshot has hash `snap_hash_B`.
+2. Latest snapshot has ID `snap_1`, version `1`, and hash `snap_hash_B`.
 3. Storage appends:
 
 ```text
@@ -507,6 +567,8 @@ agent_session_state_transitions:
   from = home_nic@cmt_A
   to = home_nic@cmt_B
   changeset_id = chg_123
+  changeset_snapshot_id = snap_1
+  changeset_version = 1
   changeset_snapshot_hash = snap_hash_B
   relationship = changeset_snapshot
 
@@ -663,13 +725,16 @@ facts produced by trusted server-side workflows.
    the changeset already has session links.
 4. Retry behavior must be idempotent. Use deterministic or caller-provided
    `transition_id` values and `ON CONFLICT DO UPDATE/NOTHING` for link tables.
+5. Transition append must lock the session row, allocate the next per-session
+   transition seq, insert the transition, and update session current state before
+   committing.
 
 ## Backfill Strategy
 
 Historical data can be partially backfilled:
 
-1. For each `agent_sessions` row with empty base/current fields, set both to the
-   earliest known slice head if available, otherwise leave empty.
+1. For each `agent_sessions` row with null base/current fields, set both to the
+   earliest known slice head if available, otherwise leave null.
 2. For each `changesets.author` that matches an agent/session user convention,
    optionally create `mentioned` links only when confidence is high.
 3. For each `merge_events` row, do not infer agent links unless the changeset is
@@ -722,7 +787,7 @@ UI tests:
 1. Should `turn_id` be generated by the server for every user input, or derived
    from local runtime IDs when available?
 2. Should changeset snapshots get their own explicit link table, or is
-   `changeset_id + changeset_version_id + changeset_snapshot_hash` on
+   `changeset_snapshot_id + changeset_version + changeset_snapshot_hash` on
    transitions sufficient for v1?
 3. Should session base/current state use slice commits only, or should global
    commits also be supported for agents that operate on merged home state?
