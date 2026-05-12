@@ -5,6 +5,7 @@ package agent.v1;
 option go_package = "github.com/niczy/gitslice/proto/agent;agentv1";
 
 import "google/api/annotations.proto";
+import "agent_protocol.proto";
 
 service AgentService {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {
@@ -36,6 +37,27 @@ service AgentService {
   rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
     option (google.api.http) = {
       get: "/v1/agent-sessions/{session_id}/events"
+    };
+  }
+
+  rpc AppendEvent(AppendEventRequest) returns (AppendEventResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions/{session_id}/events"
+      body: "*"
+    };
+  }
+
+  rpc SendInput(SendInputRequest) returns (SendInputResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions/{session_id}/input"
+      body: "*"
+    };
+  }
+
+  rpc SendInterrupt(SendInterruptRequest) returns (SendInterruptResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-sessions/{session_id}/interrupt"
+      body: "*"
     };
   }
 
@@ -130,14 +152,6 @@ message MintTokenResponse {
   string expires_at = 3;
 }
 
-message EventEnvelope {
-  uint64 seq = 1;
-  string ts = 2;
-  string stream = 3;
-  string type = 4;
-  bytes payload = 5;
-}
-
 message ListEventsRequest {
   string session_id = 1;
   uint64 since_seq = 2;
@@ -149,9 +163,40 @@ message ListEventsResponse {
   uint64 next_seq = 2;
 }
 
+message AppendEventRequest {
+  string session_id = 1;
+  string stream = 2;
+  string type = 3;
+  bytes payload = 4;
+}
+
+message AppendEventResponse {
+  EventEnvelope event = 1;
+}
+
+message SendInputRequest {
+  string session_id = 1;
+  string text = 2;
+}
+
+message SendInputResponse {
+  bool accepted = 1;
+}
+
+message SendInterruptRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+message SendInterruptResponse {
+  bool accepted = 1;
+}
+
 message ListCapabilitiesRequest {}
 
 message ListCapabilitiesResponse {
   repeated string supported_agent_types = 1;
   string default_agent_type = 2;
+  repeated string supported_runtime_providers = 3;
+  string default_runtime_provider = 4;
 }

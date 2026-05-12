@@ -27,6 +27,7 @@ var validEnvironmentAgentTypes = map[string]struct{}{
 var validEnvironmentProviders = map[string]struct{}{
 	"e2b":                   {},
 	"cloudflare_containers": {},
+	"local":                 {},
 }
 
 func ValidateEnvironmentProviderConfig(provider string, values map[string]string) error {
@@ -132,7 +133,7 @@ func normalizeEnvironmentForCreate(env *models.Environment) (*models.Environment
 		return nil, ErrInvalidInput
 	}
 	providerID := strings.TrimSpace(env.ProviderID)
-	if providerID == "" {
+	if providerID == "" && provider != "local" {
 		return nil, ErrInvalidInput
 	}
 	providerConfig, err := normalizeEnvironmentProviderConfig(env.ProviderConfig)
@@ -191,7 +192,7 @@ func normalizeEnvironmentForUpdate(env *models.Environment) (*models.Environment
 		return nil, ErrInvalidInput
 	}
 	providerID := strings.TrimSpace(env.ProviderID)
-	if providerID == "" {
+	if providerID == "" && provider != "local" {
 		return nil, ErrInvalidInput
 	}
 	providerConfig, err := normalizeEnvironmentProviderConfig(env.ProviderConfig)

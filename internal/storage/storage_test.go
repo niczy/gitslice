@@ -1832,6 +1832,24 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}); err != ErrInvalidInput {
 		t.Fatalf("expected ErrInvalidInput for unsupported provider, got %v", err)
 	}
+	localEnvName := "local-agents-" + suffix
+	if err := st.CreateEnvironment(ctx, &models.Environment{
+		Name:              localEnvName,
+		DisplayName:       "Local Agents",
+		Provider:          "local",
+		DefaultAgentType:  "codex",
+		AllowedAgentTypes: []string{"codex", "claude"},
+		CreatedBy:         "alice",
+	}); err != nil {
+		t.Fatalf("CreateEnvironment local failed: %v", err)
+	}
+	localEnv, err := st.GetEnvironment(ctx, localEnvName)
+	if err != nil {
+		t.Fatalf("GetEnvironment local failed: %v", err)
+	}
+	if localEnv.Provider != "local" || localEnv.ProviderID != "" {
+		t.Fatalf("unexpected local environment: %#v", localEnv)
+	}
 
 	// Account auth + session lifecycle
 	accountUsername := "acct" + suffix[len(suffix)-6:]

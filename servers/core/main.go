@@ -69,6 +69,8 @@ func main() {
 	ciservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
 	enabledRuntimeProviders := make([]string, 0, 2)
+	agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderLocal, agentsession.NewLocalRuntimeProvider(agentSessionService))
+	enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderLocal)
 	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
 		agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderE2B, agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
 			APIURL:              cfg.E2BAPIURL,

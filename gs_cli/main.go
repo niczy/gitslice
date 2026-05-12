@@ -11,6 +11,7 @@ import (
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	adminv1 "github.com/niczy/gitslice/proto/admin"
+	agentv1 "github.com/niczy/gitslice/proto/agent"
 	civ1 "github.com/niczy/gitslice/proto/ci"
 	filev1 "github.com/niczy/gitslice/proto/file"
 	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
@@ -53,6 +54,7 @@ type CLI struct {
 	ciClient          civ1.CIServiceClient
 	runnerAdminClient civ1.RunnerAdminServiceClient
 	runnerClient      civ1.RunnerServiceClient
+	agentClient       agentv1.AgentServiceClient
 	fileClient        filev1.FileServiceClient
 	filesystemClient  filesystemv1.FilesystemServiceClient
 }
@@ -306,6 +308,7 @@ func NewCLI(accountAddr, sliceAddr, adminAddr, fileAddr, filesystemAddr string, 
 		ciClient:          civ1.NewCIServiceClient(sliceConn),
 		runnerAdminClient: civ1.NewRunnerAdminServiceClient(sliceConn),
 		runnerClient:      civ1.NewRunnerServiceClient(sliceConn),
+		agentClient:       agentv1.NewAgentServiceClient(sliceConn),
 		fileClient:        filev1.NewFileServiceClient(fileConn),
 		filesystemClient:  filesystemv1.NewFilesystemServiceClient(filesystemConn),
 	}, nil

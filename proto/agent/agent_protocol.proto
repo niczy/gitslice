@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package agent.v1;
+
+option go_package = "github.com/niczy/gitslice/proto/agent;agentv1";
+
+// EventEnvelope is the durable session event shape shared by the web UI,
+// remote runtimes, and local agent runners.
+message EventEnvelope {
+  uint64 seq = 1;
+  string ts = 2;
+  string stream = 3;
+  string type = 4;
+  bytes payload = 5;
+}
+
+message AgentInputPayload {
+  string text = 1;
+}
+
+message AgentInterruptPayload {
+  string reason = 1;
+}
+
+message AgentOutputPayload {
+  string text = 1;
+  string channel = 2;
+  int32 exit_code = 3;
+}
+
+message AgentErrorPayload {
+  string code = 1;
+  string message = 2;
+}
+
+message AgentStatePayload {
+  string state = 1;
+}
+
+message AgentPtyInputPayload {
+  string data = 1;
+}
+
+message AgentPtyResizePayload {
+  int32 rows = 1;
+  int32 cols = 2;
+}

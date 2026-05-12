@@ -29,11 +29,13 @@ type RuntimeBridgeEvent struct {
 const (
 	RuntimeProviderE2B                  = "e2b"
 	RuntimeProviderCloudflareContainers = "cloudflare_containers"
+	RuntimeProviderLocal                = "local"
 )
 
 var supportedRuntimeProviders = map[string]struct{}{
 	RuntimeProviderE2B:                  {},
 	RuntimeProviderCloudflareContainers: {},
+	RuntimeProviderLocal:                {},
 }
 
 type RuntimeProvider interface {
@@ -125,6 +127,10 @@ func isSupportedRuntimeProvider(value string) bool {
 	value = normalizeRuntimeProvider(value)
 	_, ok := supportedRuntimeProviders[value]
 	return ok
+}
+
+func SupportedRuntimeProviders() []string {
+	return []string{RuntimeProviderE2B, RuntimeProviderCloudflareContainers, RuntimeProviderLocal}
 }
 
 type simulatedRuntimeProvider struct {
