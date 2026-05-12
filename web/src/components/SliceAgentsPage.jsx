@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bot, CircleAlert, Plus, RefreshCw, TerminalSquare } from 'lucide-react';
+import {
+  Bot,
+  CircleAlert,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RefreshCw,
+  TerminalSquare,
+} from 'lucide-react';
 
 import {
   createAgentSession,
@@ -138,6 +146,8 @@ export default function SliceAgentsPage({
   const [eventsError, setEventsError] = useState('');
   const [createError, setCreateError] = useState('');
   const [capabilities, setCapabilities] = useState(null);
+  const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
+  const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
 
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
@@ -147,6 +157,55 @@ export default function SliceAgentsPage({
   const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
   const canCreateSession = Boolean(sliceId && sliceEnvironment);
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) || null;
+  const sessionsSidebarVisible = sessionsSidebarOpen || sessionsSidebarDismissing;
+
+  const openSessionsSidebar = useCallback(() => {
+    setSessionsSidebarDismissing(false);
+    setSessionsSidebarOpen(true);
+  }, []);
+
+  const closeSessionsSidebar = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setSessionsSidebarDismissing(true);
+    } else {
+      setSessionsSidebarDismissing(false);
+    }
+    setSessionsSidebarOpen(false);
+  }, []);
+
+  const handleSessionSelect = useCallback((sessionId) => {
+    setSelectedSessionId(sessionId);
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      closeSessionsSidebar();
+    }
+  }, [closeSessionsSidebar]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    const syncSidebarForViewport = () => {
+      if (window.innerWidth > 900) {
+        setSessionsSidebarDismissing(false);
+        setSessionsSidebarOpen(true);
+      } else {
+        setSessionsSidebarOpen(false);
+      }
+    };
+    syncSidebarForViewport();
+    window.addEventListener('resize', syncSidebarForViewport);
+    return () => window.removeEventListener('resize', syncSidebarForViewport);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionsSidebarDismissing || typeof window === 'undefined') {
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setSessionsSidebarDismissing(false);
+    }, 280);
+    return () => window.clearTimeout(timeoutId);
+  }, [sessionsSidebarDismissing]);
 
   const loadSessions = useCallback(async ({ keepSelection = false } = {}) => {
     if (!sliceId) {
@@ -260,13 +319,31 @@ export default function SliceAgentsPage({
       />
 
       <div className="slice-agents-layout">
-        <aside className="slice-agents-sidebar" aria-label="Agent sessions">
+        <div
+          className={`slice-agents-sidebar-overlay${sessionsSidebarVisible ? ' visible' : ''}${sessionsSidebarDismissing ? ' dismissing' : ''}`}
+          onClick={closeSessionsSidebar}
+        />
+        <aside
+          className={`slice-agents-sidebar ${sessionsSidebarOpen ? 'open' : 'closed'}${sessionsSidebarDismissing ? ' dismissing' : ''}`}
+          aria-label="Agent sessions"
+        >
           <div className="slice-agents-sidebar-header">
             <div>
               <h2>Sessions</h2>
               <span>{sliceEnvironment || 'No remote agent connected'}</span>
             </div>
             <div className="slice-agents-sidebar-actions">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="slice-agents-icon-button slice-agents-sidebar-close"
+                onClick={closeSessionsSidebar}
+                aria-label="Close sessions"
+                title="Close sessions"
+              >
+                <PanelLeftClose size={15} aria-hidden="true" />
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -316,7 +393,7 @@ export default function SliceAgentsPage({
                       type="button"
                       variant="ghost"
                       className={`slice-agents-session-row${isSelected ? ' active' : ''}`}
-                      onClick={() => setSelectedSessionId(session.sessionId)}
+                      onClick={() => handleSessionSelect(session.sessionId)}
                       aria-pressed={isSelected}
                       data-testid="slice-agents-session"
                     >
@@ -340,6 +417,21 @@ export default function SliceAgentsPage({
         </aside>
 
         <main className="slice-agents-conversation" data-testid="slice-agents-conversation">
+          <div className="slice-agents-mobile-toolbar">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="slice-agents-icon-button"
+              onClick={openSessionsSidebar}
+              aria-label="Open sessions"
+              title="Open sessions"
+              data-testid="slice-agents-open-sessions"
+            >
+              <PanelLeftOpen size={16} aria-hidden="true" />
+            </Button>
+            <span>Sessions</span>
+          </div>
           {!selectedSession && (
             <div className="slice-agents-empty-detail">
               <Bot size={22} aria-hidden="true" />
