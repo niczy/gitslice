@@ -290,6 +290,7 @@ async function loadSliceChangesets(request, session, data, setCookies, options =
   } else {
     params.set('include_all_statuses', 'true');
   }
+  params.set('omit_modified_files', 'true');
 
   try {
     const { payload, setCookies: cookies } = await fetchJSON(
@@ -339,7 +340,7 @@ async function loadChangesetDiff(request, session, data, setCookies, options = {
       request,
       session,
       `/v1/changesets/${encodeURIComponent(data.changesetId)}/snapshots`,
-      new URLSearchParams({ limit: '100' }),
+      new URLSearchParams({ limit: '100', omit_modified_files: 'true' }),
       options,
     );
     setCookies.push(...cookies);

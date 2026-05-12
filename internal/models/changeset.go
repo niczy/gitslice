@@ -19,9 +19,12 @@ type Changeset struct {
 	SliceID        string
 	BaseCommitHash string
 	ModifiedFiles  []string
-	Status         ChangesetStatus
-	Author         string
-	Message        string
-	CreatedAt      time.Time
-	MergedAt       *time.Time
+	// ModifiedFileCount is populated by summary reads that intentionally omit
+	// ModifiedFiles to keep list payloads small.
+	ModifiedFileCount int
+	Status            ChangesetStatus
+	Author            string
+	Message           string
+	CreatedAt         time.Time
+	MergedAt          *time.Time
 }

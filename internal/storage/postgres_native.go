@@ -2594,28 +2594,56 @@ func (s *PostgresNativeStorage) GetChangeset(ctx context.Context, changesetID st
 	if err := json.Unmarshal(modifiedJSON, &cs.ModifiedFiles); err != nil {
 		cs.ModifiedFiles = []string{}
 	}
+	cs.ModifiedFileCount = len(cs.ModifiedFiles)
 
 	return &cs, nil
 }
 
 func (s *PostgresNativeStorage) ListChangesets(ctx context.Context, sliceID string, status *models.ChangesetStatus, limit int) ([]*models.Changeset, error) {
+	return s.ListChangesetsWithOptions(ctx, sliceID, ListChangesetsOptions{
+		Status:               status,
+		Limit:                limit,
+		IncludeModifiedFiles: true,
+	})
+}
+
+func (s *PostgresNativeStorage) ListChangesetsWithOptions(ctx context.Context, sliceID string, opts ListChangesetsOptions) ([]*models.Changeset, error) {
 	ctx = ensureCtx(ctx)
 
 	var rows pgx.Rows
 	var err error
 
-	if status != nil {
-		rows, err = s.pool.Query(ctx, `
-			SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
-			FROM changesets WHERE slice_id = $1 AND status = $2
-			ORDER BY created_at DESC LIMIT $3
-		`, sliceID, int(*status), limit)
+	limit := opts.Limit
+	includeModifiedFiles := opts.IncludeModifiedFiles
+
+	if includeModifiedFiles {
+		if opts.Status != nil {
+			rows, err = s.pool.Query(ctx, `
+				SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
+				FROM changesets WHERE slice_id = $1 AND status = $2
+				ORDER BY created_at DESC LIMIT $3
+			`, sliceID, int(*opts.Status), limit)
+		} else {
+			rows, err = s.pool.Query(ctx, `
+				SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
+				FROM changesets WHERE slice_id = $1
+				ORDER BY created_at DESC LIMIT $2
+			`, sliceID, limit)
+		}
 	} else {
-		rows, err = s.pool.Query(ctx, `
-			SELECT id, hash, slice_id, base_commit_hash, modified_files, status, author, message, created_at, merged_at
-			FROM changesets WHERE slice_id = $1
-			ORDER BY created_at DESC LIMIT $2
-		`, sliceID, limit)
+		if opts.Status != nil {
+			rows, err = s.pool.Query(ctx, `
+				SELECT id, hash, slice_id, base_commit_hash, jsonb_array_length(COALESCE(modified_files, '[]'::jsonb)), status, author, message, created_at, merged_at
+				FROM changesets WHERE slice_id = $1 AND status = $2
+				ORDER BY created_at DESC LIMIT $3
+			`, sliceID, int(*opts.Status), limit)
+		} else {
+			rows, err = s.pool.Query(ctx, `
+				SELECT id, hash, slice_id, base_commit_hash, jsonb_array_length(COALESCE(modified_files, '[]'::jsonb)), status, author, message, created_at, merged_at
+				FROM changesets WHERE slice_id = $1
+				ORDER BY created_at DESC LIMIT $2
+			`, sliceID, limit)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -2625,16 +2653,25 @@ func (s *PostgresNativeStorage) ListChangesets(ctx context.Context, sliceID stri
 	var result []*models.Changeset
 	for rows.Next() {
 		var cs models.Changeset
-		var modifiedJSON []byte
 		var statusInt int
-		if err := rows.Scan(&cs.ID, &cs.Hash, &cs.SliceID, &cs.BaseCommitHash,
-			&modifiedJSON, &statusInt, &cs.Author, &cs.Message, &cs.CreatedAt, &cs.MergedAt); err != nil {
-			return nil, err
+		if includeModifiedFiles {
+			var modifiedJSON []byte
+			if err := rows.Scan(&cs.ID, &cs.Hash, &cs.SliceID, &cs.BaseCommitHash,
+				&modifiedJSON, &statusInt, &cs.Author, &cs.Message, &cs.CreatedAt, &cs.MergedAt); err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(modifiedJSON, &cs.ModifiedFiles); err != nil {
+				cs.ModifiedFiles = []string{}
+			}
+			cs.ModifiedFileCount = len(cs.ModifiedFiles)
+		} else {
+			if err := rows.Scan(&cs.ID, &cs.Hash, &cs.SliceID, &cs.BaseCommitHash,
+				&cs.ModifiedFileCount, &statusInt, &cs.Author, &cs.Message, &cs.CreatedAt, &cs.MergedAt); err != nil {
+				return nil, err
+			}
+			cs.ModifiedFiles = nil
 		}
 		cs.Status = models.ChangesetStatus(statusInt)
-		if err := json.Unmarshal(modifiedJSON, &cs.ModifiedFiles); err != nil {
-			cs.ModifiedFiles = []string{}
-		}
 		result = append(result, &cs)
 	}
 	if result == nil {
@@ -2753,6 +2790,7 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 	if err := json.Unmarshal(modifiedJSON, &snapshot.ModifiedFiles); err != nil {
 		snapshot.ModifiedFiles = []string{}
 	}
+	snapshot.ModifiedFileCount = len(snapshot.ModifiedFiles)
 	if err := json.Unmarshal(fileHashesJSON, &snapshot.FileHashes); err != nil {
 		snapshot.FileHashes = map[string]string{}
 	}
@@ -2763,21 +2801,43 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 }
 
 func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error) {
+	return s.ListChangesetSnapshotsWithOptions(ctx, changesetID, ListChangesetSnapshotsOptions{
+		Limit:                limit,
+		IncludeModifiedFiles: true,
+	})
+}
+
+func (s *PostgresNativeStorage) ListChangesetSnapshotsWithOptions(ctx context.Context, changesetID string, opts ListChangesetSnapshotsOptions) ([]*models.ChangesetSnapshot, error) {
 	ctx = ensureCtx(ctx)
 
+	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
-		       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
-		       author, message, created_at
-		FROM changeset_snapshots
-		WHERE changeset_id = $1
-		ORDER BY version DESC
-		LIMIT $2
-	`, changesetID, limit)
+	includeModifiedFiles := opts.IncludeModifiedFiles
+	var rows pgx.Rows
+	var err error
+	if includeModifiedFiles {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
+			       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
+			       author, message, created_at
+			FROM changeset_snapshots
+			WHERE changeset_id = $1
+			ORDER BY version DESC
+			LIMIT $2
+		`, changesetID, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, changeset_id, version, hash, base_commit_hash, jsonb_array_length(COALESCE(modified_files, '[]'::jsonb)),
+			       author, message, created_at
+			FROM changeset_snapshots
+			WHERE changeset_id = $1
+			ORDER BY version DESC
+			LIMIT $2
+		`, changesetID, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2786,32 +2846,52 @@ func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, chan
 	result := make([]*models.ChangesetSnapshot, 0)
 	for rows.Next() {
 		var snapshot models.ChangesetSnapshot
-		var modifiedJSON []byte
-		var fileHashesJSON []byte
-		var basePathVersionsJSON []byte
-		if err := rows.Scan(
-			&snapshot.ID,
-			&snapshot.ChangesetID,
-			&snapshot.Version,
-			&snapshot.Hash,
-			&snapshot.BaseCommitHash,
-			&modifiedJSON,
-			&fileHashesJSON,
-			&basePathVersionsJSON,
-			&snapshot.Author,
-			&snapshot.Message,
-			&snapshot.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(modifiedJSON, &snapshot.ModifiedFiles); err != nil {
-			snapshot.ModifiedFiles = []string{}
-		}
-		if err := json.Unmarshal(fileHashesJSON, &snapshot.FileHashes); err != nil {
-			snapshot.FileHashes = map[string]string{}
-		}
-		if err := json.Unmarshal(basePathVersionsJSON, &snapshot.BasePathVersions); err != nil {
-			snapshot.BasePathVersions = map[string]int64{}
+		if includeModifiedFiles {
+			var modifiedJSON []byte
+			var fileHashesJSON []byte
+			var basePathVersionsJSON []byte
+			if err := rows.Scan(
+				&snapshot.ID,
+				&snapshot.ChangesetID,
+				&snapshot.Version,
+				&snapshot.Hash,
+				&snapshot.BaseCommitHash,
+				&modifiedJSON,
+				&fileHashesJSON,
+				&basePathVersionsJSON,
+				&snapshot.Author,
+				&snapshot.Message,
+				&snapshot.CreatedAt,
+			); err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(modifiedJSON, &snapshot.ModifiedFiles); err != nil {
+				snapshot.ModifiedFiles = []string{}
+			}
+			snapshot.ModifiedFileCount = len(snapshot.ModifiedFiles)
+			if err := json.Unmarshal(fileHashesJSON, &snapshot.FileHashes); err != nil {
+				snapshot.FileHashes = map[string]string{}
+			}
+			if err := json.Unmarshal(basePathVersionsJSON, &snapshot.BasePathVersions); err != nil {
+				snapshot.BasePathVersions = map[string]int64{}
+			}
+		} else {
+			if err := rows.Scan(
+				&snapshot.ID,
+				&snapshot.ChangesetID,
+				&snapshot.Version,
+				&snapshot.Hash,
+				&snapshot.BaseCommitHash,
+				&snapshot.ModifiedFileCount,
+				&snapshot.Author,
+				&snapshot.Message,
+				&snapshot.CreatedAt,
+			); err != nil {
+				return nil, err
+			}
+			snapshot.ModifiedFiles = nil
+			snapshot.FileHashes = nil
+			snapshot.BasePathVersions = nil
 		}
 		snapshotCopy := snapshot
 		result = append(result, &snapshotCopy)

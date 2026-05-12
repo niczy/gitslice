@@ -32,6 +32,9 @@ function statusLabel(status) {
 
 function changesetBadge(changeset) {
   const lifecycle = statusLabel(changeset?.status);
+  if (changeset?.review_status === 'unknown') {
+    return { label: lifecycle, tone: lifecycle };
+  }
   if (lifecycle !== 'pending' && lifecycle !== 'approved') {
     return { label: lifecycle, tone: lifecycle };
   }
@@ -220,6 +223,7 @@ export default function SliceChangesetListPage({
             <ul className="slice-activity-list" data-testid="slice-changesets-list">
               {changesets.map((changeset) => {
                 const files = changeset.modified_files || [];
+                const fileCount = Number(changeset.modified_file_count ?? files.length);
                 const badge = changesetBadge(changeset);
                 const ci = ciBadge(changeset.ci);
                 return (
@@ -248,7 +252,7 @@ export default function SliceChangesetListPage({
                           )}
                           <span className="slice-activity-row-files">
                             <FileCode2 size={14} aria-hidden="true" />
-                            {files.length} {files.length === 1 ? 'file' : 'files'}
+                            {fileCount} {fileCount === 1 ? 'file' : 'files'}
                           </span>
                           {ci && (
                             <span className={`slice-activity-ci slice-activity-ci--${ci.tone}`} data-testid="slice-changeset-ci">

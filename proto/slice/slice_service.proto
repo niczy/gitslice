@@ -341,6 +341,7 @@ message ReviewChangesetResponse {
 message ListChangesetSnapshotsRequest {
   string changeset_id = 1;
   int32 limit = 2;
+  bool omit_modified_files = 3;
 }
 
 message ListChangesetSnapshotsResponse {
@@ -357,6 +358,7 @@ message ChangesetSnapshotInfo {
   string author = 7;
   string message = 8;
   int64 created_at = 9;
+  int32 modified_file_count = 10;
 }
 
 message DiffSummary {
@@ -466,6 +468,7 @@ message ListChangesetsRequest {
   ChangesetStatus status_filter = 2;
   int32 limit = 3;
   bool include_all_statuses = 4;
+  bool omit_modified_files = 5;
 }
 
 message ListChangesetsResponse {
@@ -485,6 +488,7 @@ message ChangesetInfo {
   string message = 10;
   ReviewStatus review_status = 11;
   ChangesetCISummary ci = 12;
+  int32 modified_file_count = 13;
 }
 
 message ChangesetCISummary {
@@ -513,6 +517,7 @@ enum ReviewStatus {
   NEEDS_SYNC = 1;
   NEEDS_REBASE = 1;
   HAS_CONFLICTS = 2;
+  REVIEW_STATUS_UNKNOWN = 3;
 }
 
 enum ReviewIssueType {

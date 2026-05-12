@@ -480,6 +480,61 @@ test.describe('Commit Diff Page (real server)', () => {
     await expect(page.getByTestId('changeset-snapshot-meta')).toContainText('snapshot v1');
   });
 
+  test('changeset page renders large file lists incrementally', async ({ page }) => {
+    const changesetId = 'chg_large-render';
+    const changes = Array.from({ length: 130 }, (_, index) => ({
+      id: `large-change-${index}`,
+      slice_id: 'root',
+      path: `src/generated/file-${String(index).padStart(3, '0')}.txt`,
+      change_type: 'CHANGE_TYPE_MODIFY',
+      lines_added: 0,
+      lines_deleted: 0,
+      patch: '',
+    }));
+
+    await page.route(`**/v1/changesets/${changesetId}/snapshots*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ snapshots: [] }),
+      });
+    });
+
+    await page.route(`**/v1/changesets/${changesetId}/diff*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          changeset: {
+            changeset_id: changesetId,
+            slice_id: 'root',
+            status: 'PENDING',
+            author: 'tester',
+            created_at: `${Math.floor(Date.now() / 1000)}`,
+            message: 'large changeset render',
+            modified_file_count: changes.length,
+          },
+          diff: {
+            files_added: 0,
+            files_modified: changes.length,
+            files_deleted: 0,
+          },
+          changes,
+        }),
+      });
+    });
+
+    await page.goto(`/changesets/${changesetId}`);
+    await expect(page.getByTestId('changeset-diff-page')).toBeVisible();
+    await expect(page.getByTestId('changeset-file-item')).toHaveCount(120);
+    await expect(page.getByTestId('changeset-file-panel-item')).toHaveCount(120);
+    await expect(page.getByTestId('changeset-show-more-files')).toBeVisible();
+
+    await page.getByTestId('changeset-show-more-files').click();
+    await expect(page.getByTestId('changeset-file-item')).toHaveCount(130);
+    await expect(page.getByTestId('changeset-show-more-files')).toHaveCount(0);
+  });
+
   test('revert flow creates a changeset, merges it, and refreshes browser content', async ({ page }) => {
     const commitHash = 'commit-revert-e2e';
     const changesetId = 'chg_revert_e2e';

@@ -3262,6 +3262,164 @@ func TestReviewChangesetIncludesInlinePatchForStandardChangeset(t *testing.T) {
 	}
 }
 
+func TestReviewChangesetSkipsInlinePatchesForLargeStandardChangeset(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-large-standard-review", Name: "slice-large-standard-review", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	const baseCommit = "commit-large-standard-base"
+	baseFiles := make(map[string]string)
+	modifiedFiles := make([]string, 0, maxReviewPatchableChanges+1)
+	for i := 0; i < maxReviewPatchableChanges+1; i++ {
+		filePath := fmt.Sprintf("src/file-%03d.txt", i)
+		baseContent := []byte(fmt.Sprintf("line %d\n", i))
+		headContent := []byte(fmt.Sprintf("line %d\nupdated\n", i))
+		baseHash := hashBytes(baseContent)
+		mustWriteVersionedManifest(t, ctx, st, filePath, baseHash, baseContent)
+		baseFiles[filePath] = baseHash
+		if err := st.AddEntry(ctx, &models.DirectoryEntry{
+			ID:       slice.ID + ":" + filePath,
+			Path:     filePath,
+			Type:     "file",
+			ParentID: slice.ID,
+			Size:     int64(len(headContent)),
+		}); err != nil {
+			t.Fatalf("failed to add current file entry: %v", err)
+		}
+		mustWriteSliceManifest(t, ctx, st, slice.ID, filePath, headContent)
+		if err := st.AddFileToSlice(ctx, filePath, slice.ID); err != nil {
+			t.Fatalf("failed to index current file in slice: %v", err)
+		}
+		modifiedFiles = append(modifiedFiles, filePath)
+	}
+	if err := st.SaveCommitSnapshot(ctx, &models.CommitSnapshot{
+		CommitHash: baseCommit,
+		SliceID:    slice.ID,
+		Files:      baseFiles,
+		Timestamp:  time.Now().Add(-time.Minute).UTC(),
+	}); err != nil {
+		t.Fatalf("failed to save base commit snapshot: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:        slice.ID,
+		BaseCommitHash: baseCommit,
+		ModifiedFiles:  modifiedFiles,
+		Message:        "large standard patch coverage",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	reviewResp, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+		ChangesetId: createResp.GetChangesetId(),
+	})
+	if err != nil {
+		t.Fatalf("ReviewChangeset failed: %v", err)
+	}
+	if got, want := len(reviewResp.GetChanges()), len(modifiedFiles); got != want {
+		t.Fatalf("expected %d review changes, got %d", want, got)
+	}
+	for _, change := range reviewResp.GetChanges() {
+		if strings.TrimSpace(change.GetPatch()) != "" {
+			t.Fatalf("expected empty patch for large changeset, got %q", change.GetPatch())
+		}
+	}
+	if reviewResp.GetDiff().GetFilesModified() != int32(len(modifiedFiles)) {
+		t.Fatalf("expected files_modified=%d, got %d", len(modifiedFiles), reviewResp.GetDiff().GetFilesModified())
+	}
+	if len(reviewResp.GetWarnings()) == 0 || !strings.Contains(reviewResp.GetWarnings()[0], "inline patches skipped") {
+		t.Fatalf("expected inline patch warning, got %#v", reviewResp.GetWarnings())
+	}
+}
+
+func TestListChangesetsCanOmitModifiedFiles(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-list-changeset-summary", Name: "slice-list-changeset-summary", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"a.txt", "b.txt"},
+		Message:       "summary list",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	resp, err := srv.ListChangesets(ctx, &slicev1.ListChangesetsRequest{
+		SliceId:            slice.ID,
+		IncludeAllStatuses: true,
+		OmitModifiedFiles:  true,
+	})
+	if err != nil {
+		t.Fatalf("ListChangesets failed: %v", err)
+	}
+	if len(resp.GetChangesets()) != 1 {
+		t.Fatalf("expected one changeset, got %d", len(resp.GetChangesets()))
+	}
+	got := resp.GetChangesets()[0]
+	if got.GetChangesetId() != createResp.GetChangesetId() {
+		t.Fatalf("expected changeset %q, got %q", createResp.GetChangesetId(), got.GetChangesetId())
+	}
+	if len(got.GetModifiedFiles()) != 0 {
+		t.Fatalf("expected modified files omitted, got %#v", got.GetModifiedFiles())
+	}
+	if got.GetModifiedFileCount() != 2 {
+		t.Fatalf("expected modified_file_count=2, got %d", got.GetModifiedFileCount())
+	}
+}
+
+func TestListChangesetsDefersLargeReviewStateWhenOmittingFiles(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-large-list-summary", Name: "slice-large-list-summary", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	modifiedFiles := make([]string, 0, maxChangesetListReviewPaths+1)
+	for i := 0; i < maxChangesetListReviewPaths+1; i++ {
+		modifiedFiles = append(modifiedFiles, fmt.Sprintf("large/file-%03d.txt", i))
+	}
+
+	srv := NewService(st)
+	if _, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: modifiedFiles,
+		Message:       "large summary list",
+	}); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	resp, err := srv.ListChangesets(ctx, &slicev1.ListChangesetsRequest{
+		SliceId:            slice.ID,
+		IncludeAllStatuses: true,
+		OmitModifiedFiles:  true,
+	})
+	if err != nil {
+		t.Fatalf("ListChangesets failed: %v", err)
+	}
+	got := resp.GetChangesets()[0]
+	if got.GetModifiedFileCount() != int32(len(modifiedFiles)) {
+		t.Fatalf("expected modified_file_count=%d, got %d", len(modifiedFiles), got.GetModifiedFileCount())
+	}
+	if got.GetReviewStatus() != slicev1.ReviewStatus_REVIEW_STATUS_UNKNOWN {
+		t.Fatalf("expected unknown review status for large summary row, got %v", got.GetReviewStatus())
+	}
+}
+
 func TestReviewChangesetMissingPathHeadSnapshotNeedsSync(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
@@ -4048,6 +4206,19 @@ func TestCreateChangesetAppendCreatesSnapshotVersions(t *testing.T) {
 	}
 	if snapshotsResp.GetSnapshots()[0].GetVersion() != 2 || snapshotsResp.GetSnapshots()[1].GetVersion() != 1 {
 		t.Fatalf("unexpected snapshot versions: got [%d, %d]", snapshotsResp.GetSnapshots()[0].GetVersion(), snapshotsResp.GetSnapshots()[1].GetVersion())
+	}
+	summarySnapshotsResp, err := srv.ListChangesetSnapshots(ctx, &slicev1.ListChangesetSnapshotsRequest{
+		ChangesetId:       createResp.GetChangesetId(),
+		OmitModifiedFiles: true,
+	})
+	if err != nil {
+		t.Fatalf("ListChangesetSnapshots summary failed: %v", err)
+	}
+	if len(summarySnapshotsResp.GetSnapshots()) != 2 {
+		t.Fatalf("expected 2 summary snapshots, got %d", len(summarySnapshotsResp.GetSnapshots()))
+	}
+	if len(summarySnapshotsResp.GetSnapshots()[0].GetModifiedFiles()) != 0 || summarySnapshotsResp.GetSnapshots()[0].GetModifiedFileCount() != 1 {
+		t.Fatalf("expected latest summary snapshot count=1 with files omitted, got %#v", summarySnapshotsResp.GetSnapshots()[0])
 	}
 
 	reviewLatest, err := srv.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{

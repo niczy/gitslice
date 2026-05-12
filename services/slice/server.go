@@ -77,6 +77,8 @@ const (
 	revertChangesetHashPrefix    = common.ChangesetVersionIDPrefix + "revert~"
 	revertAllChangesToken        = "*"
 	checkoutManifestChunkSize    = 256
+	maxReviewPatchableChanges    = 100
+	maxChangesetListReviewPaths  = 500
 )
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
@@ -1341,7 +1343,7 @@ func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *sl
 		limit = 100
 	}
 
-	snapshots, err := s.storage.ListChangesetSnapshots(ctx, cs.ID, limit)
+	snapshots, err := s.listChangesetSnapshots(ctx, cs.ID, limit, !req.GetOmitModifiedFiles())
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list changeset snapshots: %v", err))
 	}
@@ -1351,7 +1353,14 @@ func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *sl
 
 	resp := &slicev1.ListChangesetSnapshotsResponse{}
 	for _, snapshot := range snapshots {
-		resp.Snapshots = append(resp.Snapshots, changesetSnapshotToProto(snapshot))
+		info := changesetSnapshotToProto(snapshot)
+		if info == nil {
+			continue
+		}
+		if req.GetOmitModifiedFiles() {
+			info.ModifiedFiles = nil
+		}
+		resp.Snapshots = append(resp.Snapshots, info)
 	}
 	return resp, nil
 }
@@ -2459,6 +2468,9 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 	if len(paths) == 0 {
 		return nil, nil
 	}
+	if len(paths) > maxReviewPatchableChanges {
+		return s.buildStandardReviewChangesFromHashes(ctx, cs, snapshot, paths)
+	}
 
 	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(paths))
 	warnings := make([]string, 0, 1)
@@ -2523,6 +2535,120 @@ func (s *sliceServiceServer) buildStandardReviewChanges(ctx context.Context, cs 
 		warnings = append(warnings, fmt.Sprintf("inline patch unavailable for %d changeset entries", missingPatchCount))
 	}
 	return reviewChanges, warnings
+}
+
+func (s *sliceServiceServer) buildStandardReviewChangesFromHashes(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot, paths []string) ([]*filev1.FileChangeRecord, []string) {
+	if cs == nil {
+		return nil, nil
+	}
+
+	warnings := []string{fmt.Sprintf("inline patches skipped for %d changeset entries", len(paths))}
+
+	baseHashes := map[string]string{}
+	if baseCommitHash := strings.TrimSpace(cs.BaseCommitHash); baseCommitHash != "" {
+		baseSnapshot, err := s.storage.GetCommitSnapshot(ctx, baseCommitHash)
+		if err != nil {
+			if !errors.Is(err, storage.ErrCommitNotFound) {
+				warnings = append(warnings, fmt.Sprintf("base snapshot lookup failed: %v", err))
+			}
+		} else if baseSnapshot != nil && baseSnapshot.Files != nil {
+			baseHashes = baseSnapshot.Files
+		}
+	}
+
+	afterHashes, afterExists, afterWarnings := s.loadChangesetHeadHashes(ctx, cs, snapshot, paths)
+	warnings = append(warnings, afterWarnings...)
+
+	reviewChanges := make([]*filev1.FileChangeRecord, 0, len(paths))
+	for _, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+
+		beforeHash := strings.TrimSpace(baseHashes[filePath])
+		beforeExists := beforeHash != ""
+		afterHash := strings.TrimSpace(afterHashes[filePath])
+		existsAfter := afterExists[filePath] && afterHash != ""
+		if !beforeExists && !existsAfter {
+			continue
+		}
+
+		changeType := models.ChangeTypeModify
+		switch {
+		case !beforeExists && existsAfter:
+			changeType = models.ChangeTypeAdd
+		case beforeExists && !existsAfter:
+			changeType = models.ChangeTypeDelete
+		}
+		if changeType == models.ChangeTypeModify && beforeHash == afterHash {
+			continue
+		}
+
+		reviewChanges = append(reviewChanges, modelToProtoReviewChange(&models.FileChangeRecord{
+			ID:         common.GenerateFileChangeID(cs.ID, filePath),
+			SliceID:    cs.SliceID,
+			CommitHash: cs.Hash,
+			Path:       filePath,
+			OldPath:    "",
+			ChangeType: changeType,
+			OldHash:    beforeHash,
+			NewHash:    afterHash,
+			Author:     cs.Author,
+			Message:    cs.Message,
+			Timestamp:  cs.CreatedAt,
+		}, ""))
+	}
+
+	return reviewChanges, warnings
+}
+
+func (s *sliceServiceServer) loadChangesetHeadHashes(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot, paths []string) (map[string]string, map[string]bool, []string) {
+	hashes := make(map[string]string, len(paths))
+	exists := make(map[string]bool, len(paths))
+	if snapshot != nil && snapshot.FileHashes != nil {
+		for _, rawPath := range paths {
+			filePath := cleanDiffPath(rawPath)
+			if filePath == "" {
+				continue
+			}
+			hash := strings.TrimSpace(snapshot.FileHashes[filePath])
+			if hash == "" {
+				continue
+			}
+			hashes[filePath] = hash
+			exists[filePath] = true
+		}
+		return hashes, exists, nil
+	}
+	if cs == nil {
+		return hashes, exists, nil
+	}
+
+	warnings := make([]string, 0, 2)
+	manifestHashes, err := getFileManifestHashes(ctx, s.storage, cs.SliceID, paths)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("changeset head hash lookup failed: %v", err))
+		return hashes, exists, warnings
+	}
+	existingEntries, err := getExistingEntriesByPaths(ctx, s.storage, cs.SliceID, paths)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("changeset head entry lookup failed: %v", err))
+		return hashes, exists, warnings
+	}
+	for _, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" || !existingEntries[filePath] {
+			continue
+		}
+		hash := strings.TrimSpace(manifestHashes[filePath])
+		if hash == "" {
+			continue
+		}
+		hashes[filePath] = hash
+		exists[filePath] = true
+	}
+	return hashes, exists, warnings
 }
 
 func (s *sliceServiceServer) loadReviewFileAtBase(ctx context.Context, cs *models.Changeset, filePath string) (reviewFileState, string) {
@@ -3369,15 +3495,16 @@ func changesetSnapshotToProto(snapshot *models.ChangesetSnapshot) *slicev1.Chang
 		return nil
 	}
 	return &slicev1.ChangesetSnapshotInfo{
-		SnapshotId:     snapshot.ID,
-		ChangesetId:    snapshot.ChangesetID,
-		Version:        snapshot.Version,
-		Hash:           snapshot.Hash,
-		BaseCommitHash: snapshot.BaseCommitHash,
-		ModifiedFiles:  normalizeModifiedFiles(snapshot.ModifiedFiles),
-		Author:         snapshot.Author,
-		Message:        snapshot.Message,
-		CreatedAt:      snapshot.CreatedAt.Unix(),
+		SnapshotId:        snapshot.ID,
+		ChangesetId:       snapshot.ChangesetID,
+		Version:           snapshot.Version,
+		Hash:              snapshot.Hash,
+		BaseCommitHash:    snapshot.BaseCommitHash,
+		ModifiedFiles:     normalizeModifiedFiles(snapshot.ModifiedFiles),
+		Author:            snapshot.Author,
+		Message:           snapshot.Message,
+		CreatedAt:         snapshot.CreatedAt.Unix(),
+		ModifiedFileCount: int32(changesetSnapshotModifiedFileCount(snapshot)),
 	}
 }
 
@@ -3522,7 +3649,8 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 		statusFilter = &converted
 	}
 
-	changesets, err := s.storage.ListChangesets(ctx, req.SliceId, statusFilter, int(req.Limit))
+	omitModifiedFiles := req.GetOmitModifiedFiles()
+	changesets, err := s.listChangesets(ctx, req.SliceId, statusFilter, int(req.Limit), !omitModifiedFiles)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list changesets: %v", err))
 	}
@@ -3530,27 +3658,88 @@ func (s *sliceServiceServer) ListChangesets(ctx context.Context, req *slicev1.Li
 	response := &slicev1.ListChangesetsResponse{}
 	for _, cs := range changesets {
 		info := convertChangesetToProto(cs)
+		if omitModifiedFiles {
+			info.ModifiedFiles = nil
+		}
 		if cs.Status == models.ChangesetStatusPending || cs.Status == models.ChangesetStatusApproved {
-			snapshot, snapshotErr := s.storage.GetChangesetSnapshot(ctx, cs.ID, 0)
-			if snapshotErr != nil {
-				if !errors.Is(snapshotErr, storage.ErrChangesetNotFound) {
+			fileCount := changesetModifiedFileCount(cs)
+			if omitModifiedFiles && fileCount > maxChangesetListReviewPaths {
+				info.ReviewStatus = slicev1.ReviewStatus_REVIEW_STATUS_UNKNOWN
+				if snapshot, snapshotErr := s.latestChangesetSnapshot(ctx, cs.ID, false); snapshotErr == nil && snapshot != nil {
+					info.Ci = s.buildChangesetCISummary(ctx, cs.ID, snapshot.ID)
+				} else if snapshotErr != nil && !errors.Is(snapshotErr, storage.ErrChangesetNotFound) {
 					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load changeset snapshot: %v", snapshotErr))
 				}
-				snapshot = nil
-			}
-			reviewStatus, _, _, err := s.evaluateChangesetReviewState(ctx, cs, snapshot)
-			if err != nil {
-				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset %s state: %v", cs.ID, err))
-			}
-			info.ReviewStatus = reviewStatus
-			if snapshot != nil {
-				info.Ci = s.buildChangesetCISummary(ctx, cs.ID, snapshot.ID)
+			} else {
+				snapshot, snapshotErr := s.latestChangesetSnapshot(ctx, cs.ID, true)
+				if snapshotErr != nil {
+					if !errors.Is(snapshotErr, storage.ErrChangesetNotFound) {
+						return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load changeset snapshot: %v", snapshotErr))
+					}
+					snapshot = nil
+				}
+				reviewCS := cs
+				if snapshot != nil {
+					reviewCS = applySnapshotToChangeset(cs, snapshot)
+				} else if omitModifiedFiles {
+					fullCS, fullErr := s.storage.GetChangeset(ctx, cs.ID)
+					if fullErr != nil {
+						if !errors.Is(fullErr, storage.ErrChangesetNotFound) {
+							return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load changeset: %v", fullErr))
+						}
+					} else {
+						reviewCS = fullCS
+					}
+				}
+				reviewStatus, _, _, err := s.evaluateChangesetReviewState(ctx, reviewCS, snapshot)
+				if err != nil {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("failed to evaluate changeset %s state: %v", cs.ID, err))
+				}
+				info.ReviewStatus = reviewStatus
+				if snapshot != nil {
+					info.Ci = s.buildChangesetCISummary(ctx, cs.ID, snapshot.ID)
+				}
 			}
 		}
 		response.Changesets = append(response.Changesets, info)
 	}
 
 	return response, nil
+}
+
+func (s *sliceServiceServer) listChangesets(ctx context.Context, sliceID string, statusFilter *models.ChangesetStatus, limit int, includeModifiedFiles bool) ([]*models.Changeset, error) {
+	if lister, ok := s.storage.(storage.ChangesetOptionLister); ok {
+		return lister.ListChangesetsWithOptions(ctx, sliceID, storage.ListChangesetsOptions{
+			Status:               statusFilter,
+			Limit:                limit,
+			IncludeModifiedFiles: includeModifiedFiles,
+		})
+	}
+	return s.storage.ListChangesets(ctx, sliceID, statusFilter, limit)
+}
+
+func (s *sliceServiceServer) listChangesetSnapshots(ctx context.Context, changesetID string, limit int, includeModifiedFiles bool) ([]*models.ChangesetSnapshot, error) {
+	if lister, ok := s.storage.(storage.ChangesetSnapshotOptionLister); ok {
+		return lister.ListChangesetSnapshotsWithOptions(ctx, changesetID, storage.ListChangesetSnapshotsOptions{
+			Limit:                limit,
+			IncludeModifiedFiles: includeModifiedFiles,
+		})
+	}
+	return s.storage.ListChangesetSnapshots(ctx, changesetID, limit)
+}
+
+func (s *sliceServiceServer) latestChangesetSnapshot(ctx context.Context, changesetID string, includeModifiedFiles bool) (*models.ChangesetSnapshot, error) {
+	if includeModifiedFiles {
+		return s.storage.GetChangesetSnapshot(ctx, changesetID, 0)
+	}
+	snapshots, err := s.listChangesetSnapshots(ctx, changesetID, 1, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(snapshots) == 0 || snapshots[0] == nil {
+		return nil, storage.ErrChangesetNotFound
+	}
+	return snapshots[0], nil
 }
 
 func (s *sliceServiceServer) evaluateChangesetReviewState(ctx context.Context, cs *models.Changeset, snapshot *models.ChangesetSnapshot) (slicev1.ReviewStatus, []*slicev1.ReviewIssue, []string, error) {
@@ -3680,17 +3869,38 @@ func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
 	}
 
 	return &slicev1.ChangesetInfo{
-		ChangesetId:    cs.ID,
-		ChangesetHash:  cs.Hash,
-		SliceId:        cs.SliceID,
-		BaseCommitHash: cs.BaseCommitHash,
-		ModifiedFiles:  cs.ModifiedFiles,
-		Status:         status,
-		Author:         cs.Author,
-		Message:        cs.Message,
-		CreatedAt:      cs.CreatedAt.Unix(),
-		MergedAt:       mergedAt,
+		ChangesetId:       cs.ID,
+		ChangesetHash:     cs.Hash,
+		SliceId:           cs.SliceID,
+		BaseCommitHash:    cs.BaseCommitHash,
+		ModifiedFiles:     cs.ModifiedFiles,
+		Status:            status,
+		Author:            cs.Author,
+		Message:           cs.Message,
+		CreatedAt:         cs.CreatedAt.Unix(),
+		MergedAt:          mergedAt,
+		ModifiedFileCount: int32(changesetModifiedFileCount(cs)),
 	}
+}
+
+func changesetModifiedFileCount(cs *models.Changeset) int {
+	if cs == nil {
+		return 0
+	}
+	if cs.ModifiedFileCount > 0 {
+		return cs.ModifiedFileCount
+	}
+	return len(cs.ModifiedFiles)
+}
+
+func changesetSnapshotModifiedFileCount(snapshot *models.ChangesetSnapshot) int {
+	if snapshot == nil {
+		return 0
+	}
+	if snapshot.ModifiedFileCount > 0 {
+		return snapshot.ModifiedFileCount
+	}
+	return len(snapshot.ModifiedFiles)
 }
 
 func (s *sliceServiceServer) buildChangesetCISummary(ctx context.Context, changesetID string, changesetVersionID string) *slicev1.ChangesetCISummary {
