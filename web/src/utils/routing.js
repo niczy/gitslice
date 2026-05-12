@@ -21,6 +21,7 @@ function parseBrowserState(search = '') {
     file: params.get('file') || '',
     slice: params.get('slice') || '',
     sliceHash: params.get('sliceHash') || '',
+    agentSession: params.get('session') || params.get('agentSession') || '',
   };
 }
 
@@ -260,6 +261,15 @@ export function buildBrowserPath(state = {}) {
   return query ? `${path}?${query}` : path;
 }
 
+function buildSliceAgentsPath(state = {}) {
+  const params = new URLSearchParams();
+  const sessionId = String(state.agentSession || state.session || '').trim();
+  if (sessionId) params.set('session', sessionId);
+  const query = params.toString();
+  const path = `/slices/${encodeURIComponent(state.slice)}/agents`;
+  return query ? `${path}?${query}` : path;
+}
+
 export function buildPath(page, commitHash, changesetId = '', browserState) {
   if (page === 'diff' && commitHash) {
     return `/diff/${encodeURIComponent(commitHash)}`;
@@ -274,7 +284,7 @@ export function buildPath(page, commitHash, changesetId = '', browserState) {
     return `/slices/${encodeURIComponent(browserState.slice)}/changesets`;
   }
   if (page === 'slice-agents' && browserState?.slice) {
-    return `/slices/${encodeURIComponent(browserState.slice)}/agents`;
+    return buildSliceAgentsPath(browserState);
   }
   if (page === 'login') {
     return '/login';

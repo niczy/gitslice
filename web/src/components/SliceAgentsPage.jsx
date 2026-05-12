@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bot,
   CircleAlert,
+  Info,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -15,8 +16,10 @@ import {
   getAgentCapabilities,
   listAgentSessionEvents,
   listAgentSessions,
+  requestAgentRunnerRestart,
   sendAgentSessionInput,
 } from '../utils/api.js';
+import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import { Button } from './ui/button.jsx';
@@ -99,16 +102,46 @@ function eventTitle(event) {
   if (event.stream === 'status' && event.type === 'state') {
     return `State ${event.payload?.state || 'changed'}`;
   }
+  if (event.stream === 'status' && event.type === 'local_runner_attached') {
+    return 'Runner attached';
+  }
   if (event.stream === 'tool') {
     return event.payload?.tool || event.payload?.id || 'Tool';
   }
   if (event.stream === 'control') {
-    return event.payload?.code || 'Control';
+    switch (event.type) {
+      case 'local_runner_restart_requested':
+        return 'Runner restart requested';
+      case 'local_runner_restart_started':
+        return 'Runner restart started';
+      case 'local_runner_upgrade_completed':
+        return 'Runner upgrade completed';
+      case 'local_runner_restart_spawned':
+        return 'Runner replacement started';
+      case 'local_runner_restart_failed':
+        return 'Runner restart failed';
+      default:
+        return event.payload?.code || 'Control';
+    }
   }
   return event.stream || 'Agent';
 }
 
 function eventBody(event) {
+  if (event.stream === 'status' && event.type === 'local_runner_attached') {
+    const host = event.payload?.host_name || event.payload?.hostName || '';
+    const dir = event.payload?.running_dir || event.payload?.runningDir || event.payload?.checkout_dir || event.payload?.checkoutDir || '';
+    return [host, dir].filter(Boolean).join(' · ') || JSON.stringify(event.payload || {});
+  }
+  if (event.stream === 'control' && event.type?.startsWith('local_runner_')) {
+    const replacementPID = event.payload?.replacement_pid || event.payload?.replacementPid || '';
+    return [
+      event.payload?.status,
+      event.payload?.action,
+      event.payload?.message,
+      replacementPID ? `replacement pid ${replacementPID}` : '',
+    ].filter(Boolean).join(' · ') || JSON.stringify(event.payload || {});
+  }
   return event.payload?.text
     || event.payload?.message
     || event.payload?.status
@@ -130,13 +163,213 @@ function eventTone(event) {
   return 'agent';
 }
 
+const ACTIVE_SESSION_STATES = new Set(['creating', 'starting', 'running', 'idle', 'stopping']);
+const AGENT_EVENTS_PAGE_SIZE = 500;
+const AGENT_EVENTS_MAX = 5000;
+
+function payloadText(payload) {
+  return payload?.text
+    || payload?.message
+    || payload?.status
+    || payload?.state
+    || payload?.tool
+    || '';
+}
+
+function payloadExitCode(payload) {
+  const raw = payload?.exitCode ?? payload?.exit_code;
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function renderConversationMarkdown(text) {
+  return renderMarkdownHtml(text) || '<p></p>';
+}
+
+function conversationMessageFromEvent(event) {
+  if (event.stream === 'agent' && event.type === 'input') {
+    return {
+      key: `${event.seq}-user`,
+      role: 'user',
+      label: 'You',
+      ts: event.ts,
+      text: payloadText(event.payload),
+      failed: false,
+    };
+  }
+  if (event.stream === 'agent' && event.type === 'output_final') {
+    const exitCode = payloadExitCode(event.payload);
+    return {
+      key: `${event.seq}-assistant`,
+      role: exitCode === 0 ? 'assistant' : 'error',
+      label: exitCode === 0 ? 'Codex' : 'Codex error',
+      ts: event.ts,
+      text: payloadText(event.payload),
+      failed: exitCode !== 0,
+    };
+  }
+  return null;
+}
+
+function isAssistantResponseStreaming(events, session) {
+  if (!session || !ACTIVE_SESSION_STATES.has(session.state)) {
+    return false;
+  }
+
+  let pendingInput = false;
+  for (const event of events) {
+    if (event.stream === 'agent' && event.type === 'input' && payloadText(event.payload).trim()) {
+      pendingInput = true;
+    } else if (event.stream === 'agent' && event.type === 'output_final') {
+      pendingInput = false;
+    } else if (event.stream === 'control' && event.type === 'error') {
+      pendingInput = false;
+    } else if (event.stream === 'status' && event.type === 'state' && !ACTIVE_SESSION_STATES.has(event.payload?.state)) {
+      pendingInput = false;
+    }
+  }
+
+  return pendingInput;
+}
+
+function buildConversationItems(events, assistantStreaming = false) {
+  const items = [];
+  let folded = [];
+
+  const flushFolded = () => {
+    if (folded.length === 0) {
+      return;
+    }
+    items.push({
+      kind: 'events',
+      key: `events-${folded[0].seq}-${folded[folded.length - 1].seq}`,
+      events: folded,
+    });
+    folded = [];
+  };
+
+  for (const event of events) {
+    const message = conversationMessageFromEvent(event);
+    if (message?.text) {
+      flushFolded();
+      items.push({
+        kind: 'message',
+        key: message.key,
+        message,
+      });
+    } else {
+      folded.push(event);
+    }
+  }
+  flushFolded();
+
+  if (assistantStreaming) {
+    items.push({
+      kind: 'streaming',
+      key: 'assistant-streaming',
+    });
+  }
+
+  return items;
+}
+
+function latestRunnerState(events) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.stream === 'status' && event.type === 'local_runner_attached') {
+      return event.payload || {};
+    }
+  }
+  return {};
+}
+
+function runnerStateValue(runnerState, snakeKey, camelKey) {
+  return infoValue(runnerState?.[snakeKey] || runnerState?.[camelKey]);
+}
+
+function infoValue(value) {
+  if (Array.isArray(value)) {
+    return value.join(' ');
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+}
+
+function buildAgentInfoRows(session, runnerState) {
+  if (!session) {
+    return [];
+  }
+  const rows = [
+    ['State', session.state],
+    ['Session', session.sessionId],
+    ['Provider', session.provider],
+    ['Environment', session.environment],
+    ['Agent', session.agentType],
+    ['Host', runnerState.host_name || runnerState.hostName],
+    ['PID', runnerState.pid],
+    ['Workspace', runnerState.workspace_root || runnerState.workspaceRoot],
+    ['Running directory', runnerState.running_dir || runnerState.runningDir || runnerState.checkout_dir || runnerState.checkoutDir],
+    ['Command', runnerState.command],
+    ['Codex mode', runnerState.codex_mode || runnerState.codexMode],
+    ['Attached', runnerState.attached_at || runnerState.attachedAt],
+    ['Last activity', session.lastActivityAt],
+    ['Created', session.createdAt],
+  ];
+  return rows
+    .map(([label, value]) => [label, infoValue(value)])
+    .filter(([, value]) => value);
+}
+
+function currentURLAgentSession() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  try {
+    return new URL(window.location.href).searchParams.get('session') || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeAgentSessionURL(sessionId, { replace = false } = {}) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const nextSessionId = String(sessionId || '').trim();
+  try {
+    const url = new URL(window.location.href);
+    if (!url.pathname.endsWith('/agents')) {
+      return;
+    }
+    if (nextSessionId) {
+      url.searchParams.set('session', nextSessionId);
+    } else {
+      url.searchParams.delete('session');
+    }
+    const nextPath = `${url.pathname}${url.search}${url.hash}`;
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextPath === currentPath) {
+      return;
+    }
+    const method = replace ? 'replaceState' : 'pushState';
+    window.history[method](window.history.state, '', nextPath);
+    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
+  } catch {
+    // URL state is best-effort; selection still works without it.
+  }
+}
+
 export default function SliceAgentsPage({
   sliceId,
+  routeSessionId = '',
   slices,
   publicApiBaseUrl = '',
   onOpenCode,
   onOpenCommits,
   onOpenChangesets,
+  onSelectSession,
 }) {
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
@@ -146,10 +379,13 @@ export default function SliceAgentsPage({
   const [creatingSession, setCreatingSession] = useState(false);
   const [inputText, setInputText] = useState('');
   const [sendingInput, setSendingInput] = useState(false);
+  const [agentInfoOpen, setAgentInfoOpen] = useState(false);
+  const [runnerActionLoading, setRunnerActionLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState('');
   const [eventsError, setEventsError] = useState('');
   const [createError, setCreateError] = useState('');
   const [inputError, setInputError] = useState('');
+  const [runnerActionError, setRunnerActionError] = useState('');
   const [capabilities, setCapabilities] = useState(null);
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
   const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
@@ -159,9 +395,35 @@ export default function SliceAgentsPage({
   ), [sliceId, slices]);
   const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
   const sliceEnvironment = String(currentSlice?.environment || '').trim();
+  const normalizedRouteSessionId = String(routeSessionId || '').trim();
   const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
   const canCreateSession = Boolean(sliceId && sliceEnvironment);
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) || null;
+  const runnerState = useMemo(() => latestRunnerState(events), [events]);
+  const agentInfoRows = useMemo(() => buildAgentInfoRows(selectedSession, runnerState), [selectedSession, runnerState]);
+  const runnerHost = runnerStateValue(runnerState, 'host_name', 'hostName');
+  const runnerPID = infoValue(runnerState?.pid);
+  const runnerRunningDir = runnerStateValue(runnerState, 'running_dir', 'runningDir')
+    || runnerStateValue(runnerState, 'checkout_dir', 'checkoutDir');
+  const runnerAttached = Boolean(runnerHost || runnerPID || runnerRunningDir);
+  const runnerSummary = runnerAttached
+    ? [runnerHost, runnerPID ? `pid ${runnerPID}` : ''].filter(Boolean).join(' · ')
+    : 'Waiting for local runner';
+  const canRestartRunner = Boolean(
+    selectedSession
+    && selectedSession.provider === 'local'
+    && ACTIVE_SESSION_STATES.has(selectedSession.state),
+  );
+  const assistantStreaming = useMemo(
+    () => isAssistantResponseStreaming(events, selectedSession),
+    [events, selectedSession],
+  );
+  const conversationItems = useMemo(
+    () => buildConversationItems(events, assistantStreaming),
+    [events, assistantStreaming],
+  );
+  const hasActiveSession = sessions.some((session) => ACTIVE_SESSION_STATES.has(session.state));
+  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasActiveSession;
   const sessionsSidebarVisible = sessionsSidebarOpen || sessionsSidebarDismissing;
 
   const openSessionsSidebar = useCallback(() => {
@@ -180,10 +442,12 @@ export default function SliceAgentsPage({
 
   const handleSessionSelect = useCallback((sessionId) => {
     setSelectedSessionId(sessionId);
+    writeAgentSessionURL(sessionId);
+    onSelectSession?.(sessionId);
     if (typeof window !== 'undefined' && window.innerWidth <= 900) {
       closeSessionsSidebar();
     }
-  }, [closeSessionsSidebar]);
+  }, [closeSessionsSidebar, onSelectSession]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -212,6 +476,22 @@ export default function SliceAgentsPage({
     return () => window.clearTimeout(timeoutId);
   }, [sessionsSidebarDismissing]);
 
+  useEffect(() => {
+    if (!normalizedRouteSessionId) {
+      return;
+    }
+    if (sessions.some((session) => session.sessionId === normalizedRouteSessionId)) {
+      setSelectedSessionId(normalizedRouteSessionId);
+    }
+  }, [normalizedRouteSessionId, sessions]);
+
+  useEffect(() => {
+    if (!selectedSessionId || currentURLAgentSession() === selectedSessionId) {
+      return;
+    }
+    writeAgentSessionURL(selectedSessionId, { replace: true });
+  }, [selectedSessionId]);
+
   const loadSessions = useCallback(async ({ keepSelection = false } = {}) => {
     if (!sliceId) {
       setSessions([]);
@@ -224,6 +504,9 @@ export default function SliceAgentsPage({
       const nextSessions = (await listAgentSessions(sliceId, { limit: 50 })).map(normalizeSession);
       setSessions(nextSessions);
       setSelectedSessionId((current) => {
+        if (normalizedRouteSessionId && nextSessions.some((session) => session.sessionId === normalizedRouteSessionId)) {
+          return normalizedRouteSessionId;
+        }
         if (keepSelection && current && nextSessions.some((session) => session.sessionId === current)) {
           return current;
         }
@@ -236,7 +519,7 @@ export default function SliceAgentsPage({
     } finally {
       setSessionsLoading(false);
     }
-  }, [sliceId]);
+  }, [normalizedRouteSessionId, sliceId]);
 
   useEffect(() => {
     let active = true;
@@ -267,8 +550,22 @@ export default function SliceAgentsPage({
     setEventsLoading(true);
     setEventsError('');
     try {
-      const payload = await listAgentSessionEvents(selectedSessionId, { sinceSeq: 0, limit: 200 });
-      setEvents((payload?.events || []).map(normalizeEvent));
+      let sinceSeq = 0;
+      const nextEvents = [];
+      while (nextEvents.length < AGENT_EVENTS_MAX) {
+        const payload = await listAgentSessionEvents(selectedSessionId, {
+          sinceSeq,
+          limit: Math.min(AGENT_EVENTS_PAGE_SIZE, AGENT_EVENTS_MAX - nextEvents.length),
+        });
+        const pageEvents = payload?.events || [];
+        nextEvents.push(...pageEvents);
+        const nextSeq = Number(payload?.nextSeq ?? payload?.next_seq ?? 0);
+        if (pageEvents.length < AGENT_EVENTS_PAGE_SIZE || !Number.isFinite(nextSeq) || nextSeq <= sinceSeq) {
+          break;
+        }
+        sinceSeq = nextSeq - 1;
+      }
+      setEvents(nextEvents.map(normalizeEvent));
     } catch (err) {
       setEvents([]);
       setEventsError(err?.message || 'Unable to load agent conversation.');
@@ -278,6 +575,11 @@ export default function SliceAgentsPage({
   }, [selectedSessionId]);
 
   useEffect(() => {
+    if (!selectedSessionId) {
+      loadSelectedEvents();
+      return undefined;
+    }
+
     let active = true;
     const loadEvents = async () => {
       if (!active) return;
@@ -290,7 +592,14 @@ export default function SliceAgentsPage({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [loadSelectedEvents]);
+  }, [loadSelectedEvents, selectedSessionId]);
+
+  useEffect(() => {
+    setAgentInfoOpen(false);
+    setRunnerActionError('');
+    setEvents([]);
+    setEventsError('');
+  }, [selectedSessionId]);
 
   const handleCreateSession = async () => {
     if (!canCreateSession || creatingSession) {
@@ -305,6 +614,8 @@ export default function SliceAgentsPage({
       }));
       await loadSessions({ keepSelection: true });
       setSelectedSessionId(created.sessionId);
+      writeAgentSessionURL(created.sessionId);
+      onSelectSession?.(created.sessionId);
     } catch (err) {
       setCreateError(err?.message || 'Unable to create agent session.');
     } finally {
@@ -328,6 +639,25 @@ export default function SliceAgentsPage({
       setInputError(err?.message || 'Unable to send agent input.');
     } finally {
       setSendingInput(false);
+    }
+  };
+
+  const handleUpgradeRestartRunner = async () => {
+    if (!selectedSessionId || runnerActionLoading || !canRestartRunner) {
+      return;
+    }
+    setRunnerActionLoading(true);
+    setRunnerActionError('');
+    try {
+      await requestAgentRunnerRestart(selectedSessionId, {
+        upgrade: true,
+        reason: 'web_ui',
+      });
+      await loadSelectedEvents();
+    } catch (err) {
+      setRunnerActionError(err?.message || 'Unable to request agent restart.');
+    } finally {
+      setRunnerActionLoading(false);
     }
   };
 
@@ -404,6 +734,14 @@ export default function SliceAgentsPage({
               <span>Start a remote agent to create sessions.</span>
             </div>
           )}
+          {showAgentSessionDocsLink && (
+            <div className="slice-agents-docs-note" data-testid="slice-agents-docs-note">
+              <CircleAlert size={15} aria-hidden="true" />
+              <span>
+                No active agent session. <a href="/docs#local-agent-sessions">Start a local runner with gs.</a>
+              </span>
+            </div>
+          )}
           {createError && <div className="panel-error">{createError}</div>}
           {sessionsError && <div className="panel-error">{sessionsError}</div>}
           {sessionsLoading && sessions.length === 0 && <div className="panel-empty">Loading sessions...</div>}
@@ -441,6 +779,60 @@ export default function SliceAgentsPage({
               })}
             </ul>
           )}
+          {selectedSession && (
+            <section className="slice-agents-runner-card" data-testid="slice-agents-runner-card">
+              <div className="slice-agents-runner-card-header">
+                <div>
+                  <h3>Local runner</h3>
+                  <span>{runnerSummary}</span>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="slice-agents-icon-button"
+                  onClick={() => setAgentInfoOpen((open) => !open)}
+                  aria-label="Inspect agent state"
+                  aria-expanded={agentInfoOpen}
+                  title="Inspect agent state"
+                  data-testid="slice-agents-info"
+                >
+                  <Info size={15} aria-hidden="true" />
+                </Button>
+              </div>
+              {runnerRunningDir && (
+                <div className="slice-agents-runner-dir" title={runnerRunningDir}>
+                  {runnerRunningDir}
+                </div>
+              )}
+              {agentInfoOpen && (
+                <div className="slice-agents-info-panel" data-testid="slice-agents-info-panel">
+                  <dl>
+                    {agentInfoRows.map(([label, value]) => (
+                      <div key={label} className="slice-agents-info-row">
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              )}
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                className="slice-agents-runner-action"
+                onClick={handleUpgradeRestartRunner}
+                disabled={!canRestartRunner || runnerActionLoading}
+                title={canRestartRunner ? 'Upgrade and restart local runner' : 'Select an active local session'}
+                data-testid="slice-agents-upgrade-restart"
+              >
+                <RefreshCw size={15} aria-hidden="true" />
+                {runnerActionLoading ? 'Requesting' : 'Upgrade & restart'}
+              </Button>
+              {runnerActionError && <div className="panel-error">{runnerActionError}</div>}
+            </section>
+          )}
         </aside>
 
         <main className="slice-agents-conversation" data-testid="slice-agents-conversation">
@@ -472,31 +864,72 @@ export default function SliceAgentsPage({
                   <h1>{selectedSession.agentType || 'Agent'} session</h1>
                   <span>{selectedSession.sessionId}</span>
                 </div>
-                <span className={`slice-agents-state slice-agents-state--${selectedSession.state || 'unknown'}`}>
-                  {selectedSession.state || 'unknown'}
-                </span>
+                <div className="slice-agents-header-actions">
+                  <span className={`slice-agents-state slice-agents-state--${selectedSession.state || 'unknown'}`}>
+                    {selectedSession.state || 'unknown'}
+                  </span>
+                </div>
               </div>
               {eventsError && <div className="panel-error">{eventsError}</div>}
               {eventsLoading && events.length === 0 && <div className="panel-empty">Loading conversation...</div>}
-              {!eventsLoading && !eventsError && events.length === 0 && (
+              {!eventsLoading && !eventsError && conversationItems.length === 0 && (
                 <div className="slice-agents-empty-detail">
                   <TerminalSquare size={22} aria-hidden="true" />
-                  <span>No conversation events yet.</span>
+                  <span>No messages yet.</span>
                 </div>
               )}
-              {events.length > 0 && (
-                <ol className="slice-agents-event-list">
-                  {events.map((event) => (
-                    <li
-                      key={`${event.seq}-${event.stream}-${event.type}`}
-                      className={`slice-agents-event slice-agents-event--${eventTone(event)}`}
-                    >
-                      <div className="slice-agents-event-header">
-                        <span>{eventTitle(event)}</span>
-                        <time>{formatAgentTimestamp(event.ts)}</time>
-                      </div>
-                      <pre>{eventBody(event)}</pre>
-                    </li>
+              {conversationItems.length > 0 && (
+                <ol className="slice-agents-message-list" data-testid="slice-agents-message-list">
+                  {conversationItems.map((item) => (
+                    item.kind === 'message' ? (
+                      <li key={item.key} className={`slice-agents-message slice-agents-message--${item.message.role}`}>
+                        <div className="slice-agents-message-header">
+                          <span>{item.message.label}</span>
+                          <time>{formatAgentTimestamp(item.message.ts)}</time>
+                        </div>
+                        <div
+                          className="slice-agents-message-body slice-agents-message-markdown"
+                          dangerouslySetInnerHTML={{ __html: renderConversationMarkdown(item.message.text) }}
+                        />
+                      </li>
+                    ) : item.kind === 'streaming' ? (
+                      <li
+                        key={item.key}
+                        className="slice-agents-message slice-agents-message--assistant slice-agents-message--streaming"
+                        aria-live="polite"
+                        data-testid="slice-agents-streaming"
+                      >
+                        <div className="slice-agents-message-header">
+                          <span>Codex</span>
+                          <span className="slice-agents-streaming-label">Responding</span>
+                        </div>
+                        <div className="slice-agents-streaming-dots" aria-label="Codex is responding">
+                          <span />
+                          <span />
+                          <span />
+                        </div>
+                      </li>
+                    ) : (
+                      <li key={item.key} className="slice-agents-timeline-events">
+                        <details className="slice-agents-debug-events">
+                          <summary>System and tool events ({item.events.length})</summary>
+                          <ol className="slice-agents-event-list">
+                            {item.events.map((event) => (
+                              <li
+                                key={`${event.seq}-${event.stream}-${event.type}`}
+                                className={`slice-agents-event slice-agents-event--${eventTone(event)}`}
+                              >
+                                <div className="slice-agents-event-header">
+                                  <span>{eventTitle(event)}</span>
+                                  <time>{formatAgentTimestamp(event.ts)}</time>
+                                </div>
+                                <pre>{eventBody(event)}</pre>
+                              </li>
+                            ))}
+                          </ol>
+                        </details>
+                      </li>
+                    )
                   ))}
                 </ol>
               )}

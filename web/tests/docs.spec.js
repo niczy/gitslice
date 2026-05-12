@@ -42,12 +42,18 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.locator('code').filter({ hasText: /gs changeset show/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs fs search live --glob '\/\$USER\/app\/\*\*' --json/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs auth login --key ~\/\.config\/gitslice\/agent_ed25519/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs agent start --dir \/path\/to\/agent-workspaces/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs agent run --dir \/path\/to\/agent-workspaces/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs agent input <session-id> "summarize the current diff"/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache stats --checkouts/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs cache prune/i }).first()).toBeVisible();
   await expect(page.getByText(/uploads and checkouts exchange manifests first and then transfer only missing blocks/i)).toBeVisible();
+  await expect(page.getByText(/checks out each session's slice into its own subdirectory/i)).toBeVisible();
+  await expect(page.getByText(/Both commands use the current directory by default/i)).toBeVisible();
   await expect(page.getByText(/hosted browser auth through Clerk/i)).toBeVisible();
   await expect(page.getByText(/Slice detail URLs track the selected directory or file/i)).toBeVisible();
   await expect(page.locator('#quick-start .markdown-heading-link')).toHaveAttribute('href', '#quick-start');
+  await expect(page.locator('#local-agent-sessions .markdown-heading-link')).toHaveAttribute('href', '#local-agent-sessions');
   await expect(page.locator('#auth .markdown-heading-link')).toHaveAttribute('href', '#auth');
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));

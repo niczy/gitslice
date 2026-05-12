@@ -71,6 +71,7 @@ function App({
   const initialUsername = initialSession?.user?.username || currentUsername();
   const resolvedInitialRoute = resolveHomeRouteForUsername(initialRoute, initialUsername);
   const initialBrowserRouteSlice = isSliceScopedPage(resolvedInitialRoute.page) ? resolvedInitialRoute.browserState?.slice || '' : '';
+  const initialAgentRouteSessionId = resolvedInitialRoute.page === 'slice-agents' ? resolvedInitialRoute.browserState?.agentSession || '' : '';
   const initialPage = resolvedInitialRoute.page;
   const [activePage, setActivePage] = useState(() => initialPage);
   const [diffCommitHash, setDiffCommitHash] = useState(() => resolvedInitialRoute.commitHash);
@@ -84,6 +85,7 @@ function App({
   const [requiresUsername, setRequiresUsername] = useState(() => Boolean(initialSession?.requiresUsername && !initialUsername));
   const [pendingClerkUser, setPendingClerkUser] = useState(() => initialSession?.user || null);
   const [browserRouteSliceId, setBrowserRouteSliceId] = useState(() => initialBrowserRouteSlice);
+  const [agentRouteSessionId, setAgentRouteSessionId] = useState(() => initialAgentRouteSessionId);
   const [browserMounted, setBrowserMounted] = useState(() => initialPage === 'browser' && Boolean(initialBrowserRouteSlice));
   const [currentSliceId, setCurrentSliceId] = useState(() => initialBrowserRouteSlice || getInitialSliceId(initialUsername));
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
@@ -143,12 +145,14 @@ function App({
       setDiffCommitHash('');
       setDiffChangesetId('');
       setBrowserRouteSliceId(nextSliceId);
+      setAgentRouteSessionId(page === 'slice-agents' ? options.browserState?.agentSession || '' : '');
       if (nextSliceId) {
         setCurrentSliceId(nextSliceId);
       }
     } else {
       setDiffCommitHash('');
       setDiffChangesetId('');
+      setAgentRouteSessionId('');
     }
     setUnknownRoute('');
   }, [routerNavigate]);
@@ -172,6 +176,7 @@ function App({
     if (isSliceScopedPage(nextRoute.page)) {
       const nextRouteSliceId = nextRoute.browserState?.slice || '';
       setBrowserRouteSliceId(nextRouteSliceId);
+      setAgentRouteSessionId(nextRoute.page === 'slice-agents' ? nextRoute.browserState?.agentSession || '' : '');
       if (nextRouteSliceId) {
         hasExplicitSliceSelectionRef.current = true;
         setCurrentSliceId(nextRouteSliceId);
@@ -183,6 +188,7 @@ function App({
       }
     } else {
       setBrowserRouteSliceId('');
+      setAgentRouteSessionId('');
     }
   }, [initialRoute, username]);
 
@@ -305,19 +311,25 @@ function App({
     navigate('slice-changesets', '', '', { browserState: { slice: normalizedSliceId } });
   }, [currentSliceId, navigate, routerNavigate]);
 
-  const openSliceAgents = useCallback((sliceId = currentSliceId) => {
+  const openSliceAgents = useCallback((sliceId = currentSliceId, agentSession = '') => {
     const normalizedSliceId = String(sliceId || '').trim();
     if (!normalizedSliceId) {
       return;
     }
+    const normalizedAgentSession = String(agentSession || '').trim();
+    const browserState = {
+      slice: normalizedSliceId,
+      ...(normalizedAgentSession ? { agentSession: normalizedAgentSession } : {}),
+    };
     hasExplicitSliceSelectionRef.current = true;
     if (routerNavigate) {
-      navigate('slice-agents', '', '', { browserState: { slice: normalizedSliceId } });
+      navigate('slice-agents', '', '', { browserState });
       return;
     }
     setCurrentSliceId(normalizedSliceId);
     setBrowserRouteSliceId(normalizedSliceId);
-    navigate('slice-agents', '', '', { browserState: { slice: normalizedSliceId } });
+    setAgentRouteSessionId(normalizedAgentSession);
+    navigate('slice-agents', '', '', { browserState });
   }, [currentSliceId, navigate, routerNavigate]);
 
   const openBrowserHome = useCallback(() => {
@@ -725,11 +737,13 @@ function App({
         {activePage === 'slice-agents' && routeAccessState === 'allowed' && (
           <SliceAgentsPage
             sliceId={browserRouteSliceId || currentSliceId}
+            routeSessionId={agentRouteSessionId}
             slices={slices}
             publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
+            onSelectSession={(sessionId) => openSliceAgents(browserRouteSliceId || currentSliceId, sessionId)}
           />
         )}
 

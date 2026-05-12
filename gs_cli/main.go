@@ -86,7 +86,13 @@ func runAuthenticatedCLICommand(args []string, timeout time.Duration, handler au
 	}
 	defer cli.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
 	defer cancel()
 	authConfig, err := resolveAuthConfig(*apiKeyFlag, *userFlag)
 	if err != nil {
