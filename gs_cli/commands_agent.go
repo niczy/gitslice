@@ -92,6 +92,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 	prompt := fs.String("prompt", "", "Initial prompt to send after the session is ready")
 	cwd := fs.String("cwd", ".", "Working directory for the local agent command")
 	codexMode := fs.String("codex-mode", "auto", "Codex runner mode: auto, app-server, or exec")
+	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
@@ -142,6 +143,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 		AgentType:    strings.TrimSpace(*agentType),
 		CWD:          strings.TrimSpace(*cwd),
 		CodexMode:    strings.TrimSpace(*codexMode),
+		ClaudeMode:   strings.TrimSpace(*claudeMode),
 		Command:      commandArgs,
 		PollInterval: pollInterval,
 		Once:         once,
@@ -212,6 +214,7 @@ type localAgentRunConfig struct {
 	AgentType    string
 	CWD          string
 	CodexMode    string
+	ClaudeMode   string
 	Command      []string
 	PollInterval time.Duration
 	Once         bool
@@ -245,6 +248,7 @@ type activeAgentTurn struct {
 	cancel            context.CancelFunc
 	interrupt         func(context.Context, string) error
 	cancelOnInterrupt bool
+	afterFinish       func(error)
 }
 
 func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int, error) {
@@ -255,11 +259,17 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	if codexMode == "" {
 		return 0, fmt.Errorf("--codex-mode must be auto, app-server, or exec")
 	}
+	claudeMode := normalizedClaudeMode(cfg.ClaudeMode)
+	if claudeMode == "" {
+		return 0, fmt.Errorf("--claude-mode must be auto, stream-json, or print")
+	}
 	nextSeq := uint64(0)
 	completed := 0
 	var queuedInputs []string
 	var codexRunner localAgentTurnRunner
+	var claudeRunner *claudeStreamJSONRunner
 	var codexUnavailable bool
+	var claudeUnavailable bool
 	var active *activeAgentTurn
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
@@ -269,6 +279,9 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 		}
 		if codexRunner != nil {
 			_ = codexRunner.Close()
+		}
+		if claudeRunner != nil {
+			_ = claudeRunner.Close()
 		}
 	}()
 
@@ -281,6 +294,7 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 
 		runner := localAgentTurnRunner(commandAgentTurnRunner{cli: cli, cfg: cfg})
 		cancelOnInterrupt := true
+		var afterFinish func(error)
 		if shouldUseCodexAppServer(cfg, codexMode) && !codexUnavailable {
 			if codexRunner == nil {
 				var err error
@@ -298,6 +312,32 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 				cancelOnInterrupt = false
 			}
 		}
+		if shouldUseClaudeStreamJSON(cfg, claudeMode) && !claudeUnavailable {
+			if claudeRunner == nil {
+				var err error
+				claudeRunner, err = newClaudeStreamJSONRunner(ctx, cli, cfg)
+				if err != nil {
+					_ = appendAgentError(ctx, cli, cfg.SessionID, "CLAUDE_STREAM_JSON_UNAVAILABLE", err.Error())
+					if claudeMode == "stream-json" {
+						return err
+					}
+					claudeUnavailable = true
+				}
+			}
+			if claudeRunner != nil {
+				runner = claudeRunner
+				cancelOnInterrupt = false
+				afterFinish = func(err error) {
+					if claudeRunner != nil && claudeRunner.isDone() {
+						_ = claudeRunner.Close()
+						claudeRunner = nil
+						if err != nil && claudeMode == "auto" {
+							claudeUnavailable = true
+						}
+					}
+				}
+			}
+		}
 
 		turnCtx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
@@ -306,6 +346,7 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 			cancel:            cancel,
 			interrupt:         runner.Interrupt,
 			cancelOnInterrupt: cancelOnInterrupt,
+			afterFinish:       afterFinish,
 		}
 		go func() {
 			done <- runner.RunTurn(turnCtx, prompt)
@@ -316,6 +357,9 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	finishActive := func(err error) (bool, error) {
 		if active != nil {
 			active.cancel()
+			if active.afterFinish != nil {
+				active.afterFinish(err)
+			}
 			active = nil
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -402,11 +446,31 @@ func normalizedCodexMode(raw string) string {
 	}
 }
 
+func normalizedClaudeMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto":
+		return "auto"
+	case "stream-json", "stream", "json":
+		return "stream-json"
+	case "print", "exec":
+		return "print"
+	default:
+		return ""
+	}
+}
+
 func shouldUseCodexAppServer(cfg localAgentRunConfig, codexMode string) bool {
 	if len(cfg.Command) > 0 || !strings.EqualFold(strings.TrimSpace(cfg.AgentType), "codex") {
 		return false
 	}
 	return codexMode == "app-server" || codexMode == "auto"
+}
+
+func shouldUseClaudeStreamJSON(cfg localAgentRunConfig, claudeMode string) bool {
+	if len(cfg.Command) > 0 || !strings.EqualFold(strings.TrimSpace(cfg.AgentType), "claude") {
+		return false
+	}
+	return claudeMode == "stream-json" || claudeMode == "auto"
 }
 
 func runLocalAgentCommand(ctx context.Context, cli *CLI, cfg localAgentRunConfig, prompt string) error {

@@ -93,7 +93,8 @@ Default commands:
 
 - `codex`: a persistent Codex app-server session over the Codex
   remote-control protocol when available, with `codex exec` fallback
-- `claude`: `claude -p <prompt>`
+- `claude`: a persistent Claude Code stream-json session when available, with
+  `claude -p <prompt>` fallback
 
 In `--codex-mode auto`, the runner starts `codex app-server --listen stdio://`,
 initializes one Codex thread, and sends each Gitslice `agent/input` event as a
@@ -115,6 +116,30 @@ Use `--codex-mode exec` to force the previous one-process-per-input behavior:
 
 ```bash
 gs agent run --session ags_123 --agent codex --codex-mode exec
+```
+
+In `--claude-mode auto`, the runner starts Claude Code in headless stream-json
+mode:
+
+```bash
+claude -p --input-format stream-json --output-format stream-json \
+  --include-partial-messages --verbose
+```
+
+Each Gitslice `agent/input` event is written as a Claude JSONL user message.
+Claude assistant text becomes `agent/output_delta` and `agent/output_final`;
+Claude `tool_use` and `tool_result` blocks are forwarded as `tool/start`,
+`tool/output`, and `tool/end` events. Claude does not currently expose a
+Codex-style websocket or JSON-RPC interrupt method, so Gitslice interrupts stop
+the local Claude subprocess and the runner starts a fresh stream for later
+inputs. When Claude reports its session ID, the local runner appends
+`control/runtime_session`; the service stores that ID server-side with a
+`claude-stream-json://<session_id>` endpoint.
+
+Use `--claude-mode print` to force the previous one-process-per-input behavior:
+
+```bash
+gs agent run --session ags_123 --agent claude --claude-mode print
 ```
 
 Users can override the command after `--`, for example:

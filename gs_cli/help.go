@@ -70,6 +70,7 @@ func printAgentHelp() {
 	fmt.Println("  gs agent start --slice home_nic --agent codex --json")
 	fmt.Println("  gs agent run --slice home_nic --agent codex --prompt \"fix tests\" --once")
 	fmt.Println("  gs agent run --session ags_123 --agent codex --codex-mode exec")
+	fmt.Println("  gs agent run --session ags_123 --agent claude --claude-mode print")
 	fmt.Println("  gs agent run --session ags_123 -- ./my-agent-script")
 	fmt.Println("  gs agent input ags_123 \"summarize the current diff\"")
 }
