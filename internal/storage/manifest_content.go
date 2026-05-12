@@ -39,8 +39,29 @@ func ReadManifestContent(ctx context.Context, st Storage, manifest *models.FileM
 	if manifest == nil {
 		return nil, ErrInvalidInput
 	}
+	hashes := make([]string, 0, len(manifest.Blocks))
+	seen := make(map[string]struct{}, len(manifest.Blocks))
+	for _, block := range manifest.Blocks {
+		hash := strings.TrimSpace(block.Hash)
+		if hash == "" {
+			return nil, ErrInvalidInput
+		}
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		seen[hash] = struct{}{}
+		hashes = append(hashes, hash)
+	}
+	payloads, err := st.GetBlocks(ctx, hashes)
+	if err != nil {
+		return nil, err
+	}
 	data, err := AssembleFile(manifest, func(hash string) ([]byte, error) {
-		return st.GetBlock(ctx, hash)
+		payload, ok := payloads[strings.TrimSpace(hash)]
+		if !ok {
+			return nil, ErrEntryNotFound
+		}
+		return payload, nil
 	})
 	if err != nil {
 		return nil, err

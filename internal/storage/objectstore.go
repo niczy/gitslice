@@ -15,6 +15,7 @@ import (
 type ObjectStore interface {
 	PutObject(ctx context.Context, key string, body []byte) error
 	GetObject(ctx context.Context, key string) ([]byte, error)
+	HasObject(ctx context.Context, key string) (bool, error)
 	DeleteObject(ctx context.Context, key string) error
 }
 
@@ -58,12 +59,25 @@ func (s *InMemoryObjectStore) GetObject(ctx context.Context, key string) ([]byte
 	return copyData, nil
 }
 
+// HasObject reports whether the key exists without returning the payload.
+func (s *InMemoryObjectStore) HasObject(ctx context.Context, key string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_ = ctx
+	_, ok := s.store[key]
+	return ok, nil
+}
+
 // DeleteObject removes the stored payload.
 func (s *InMemoryObjectStore) DeleteObject(ctx context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_ = ctx
+	if _, ok := s.store[key]; !ok {
+		return ErrEntryNotFound
+	}
 	delete(s.store, key)
 	return nil
 }
@@ -106,6 +120,19 @@ func (s *GCSObjectStore) GetObject(ctx context.Context, key string) ([]byte, err
 	}
 
 	return data, nil
+}
+
+// HasObject reports whether an object exists in GCS.
+func (s *GCSObjectStore) HasObject(ctx context.Context, key string) (bool, error) {
+	r, err := s.client.Bucket(s.bucket).Object(key).NewReader(ctx)
+	if err == nil {
+		_ = r.Close()
+		return true, nil
+	}
+	if errors.Is(err, gcsstorage.ErrObjectNotExist) {
+		return false, nil
+	}
+	return false, err
 }
 
 // DeleteObject removes an object from GCS.
