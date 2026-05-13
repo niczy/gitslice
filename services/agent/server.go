@@ -214,10 +214,26 @@ func agentSessionSummary(session *models.AgentSession, availability string) *age
 		RunnerId:     session.RunnerID,
 		Availability: availability,
 	}
+	if state := agentSessionStateForRunnerDiscovery(session); state != "" {
+		summary.State = state
+	}
 	if session.LastActivityAt != nil {
 		summary.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
 	}
 	return summary
+}
+
+func agentSessionStateForRunnerDiscovery(session *models.AgentSession) string {
+	if session == nil || !agentSessionIsLocal(session) {
+		return ""
+	}
+	if session.State.IsActive() {
+		return string(session.State)
+	}
+	if session.State == models.AgentSessionStateFailed {
+		return string(session.State)
+	}
+	return ""
 }
 
 func agentSessionIsLocal(session *models.AgentSession) bool {
@@ -241,14 +257,18 @@ func (s *agentServiceServer) agentSessionAvailability(ctx context.Context, sessi
 	if runner == nil || !agentRunnerOnline(runner, now) {
 		return agentsession.SessionAvailabilityRunnerOffline
 	}
+	attached := s.agentSessionHasLocalRunnerAttached(ctx, session.SessionID)
 	localIDs, reported := runnerLocalSessionIDs(runner.Capabilities)
 	if !reported {
-		return agentsession.SessionAvailabilityUnknown
+		if attached {
+			return agentsession.SessionAvailabilityLocal
+		}
+		return agentsession.SessionAvailabilityPendingLocal
 	}
 	if _, ok := localIDs[session.SessionID]; ok {
 		return agentsession.SessionAvailabilityLocal
 	}
-	if s.agentSessionHasLocalRunnerAttached(ctx, session.SessionID) {
+	if attached {
 		return agentsession.SessionAvailabilityCloudOnly
 	}
 	return agentsession.SessionAvailabilityPendingLocal
