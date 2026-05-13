@@ -6565,15 +6565,16 @@ func (s *PostgresNativeStorage) AppendAgentSessionEvent(ctx context.Context, eve
 	if event.TS.IsZero() {
 		event.TS = time.Now()
 	}
+	event.Kind = models.NormalizeAgentSessionEventKind(event.Stream, event.Type, event.Kind)
 	payload := []byte("{}")
 	if len(event.Payload) > 0 {
 		payload = event.Payload
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO agent_session_events (session_id, seq, ts, stream, type, payload_json)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, payload)
+		INSERT INTO agent_session_events (session_id, seq, ts, stream, type, kind, payload_json)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, event.Kind, payload)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrAgentSessionConflict
@@ -6589,7 +6590,7 @@ func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sess
 		limit = 200
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, seq, ts, stream, type, payload_json
+		SELECT session_id, seq, ts, stream, type, COALESCE(kind, 'event'), payload_json
 		FROM agent_session_events
 		WHERE session_id = $1 AND seq > $2
 		ORDER BY seq ASC
@@ -6605,7 +6606,7 @@ func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sess
 		var event models.AgentSessionEvent
 		var seq int64
 		var payload []byte
-		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &payload); err != nil {
+		if err := rows.Scan(&event.SessionID, &seq, &event.TS, &event.Stream, &event.Type, &event.Kind, &payload); err != nil {
 			return nil, err
 		}
 		if seq < 0 {
@@ -6616,6 +6617,7 @@ func (s *PostgresNativeStorage) ListAgentSessionEvents(ctx context.Context, sess
 			payload = []byte("{}")
 		}
 		event.Payload = payload
+		event.Kind = models.NormalizeAgentSessionEventKind(event.Stream, event.Type, event.Kind)
 		events = append(events, &event)
 	}
 	return events, rows.Err()

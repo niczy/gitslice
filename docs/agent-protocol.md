@@ -26,12 +26,24 @@ message EventEnvelope {
   string stream = 3;
   string type = 4;
   bytes payload = 5;
+  string kind = 6;
 }
 ```
 
 The `payload` bytes contain JSON encoded from the protobuf payload messages. The
-current typed payloads cover agent input, interrupts, output, errors, status, and
-PTY resize/input events.
+current typed payloads cover agent input, thinking, interrupts, output, errors,
+status, and PTY resize/input events.
+
+`kind` is the server-normalized semantic class for the event. Store and render
+events by `kind` when the UI needs stable behavior across providers:
+
+- `user_input`: user text sent to the agent
+- `thinking`: provider reasoning/thinking stream, usually rendered as transient
+  light secondary text while the turn is active
+- `tool_call`: tool or command start/request metadata
+- `tool_result`: tool or command output/result metadata
+- `model_response`: assistant-visible model output
+- `status`, `control`, `error`, and `event`: lifecycle and fallback classes
 
 ## Session Lifecycle
 
@@ -64,8 +76,12 @@ understand every payload.
 | `status` | `state` | service to clients | `AgentStatePayload` |
 | `agent` | `input` | user to runner | `AgentInputPayload` |
 | `agent` | `interrupt` | user/service to runner | `AgentInterruptPayload` |
+| `agent` | `thinking_delta` | runner to clients | `AgentThinkingPayload` |
 | `agent` | `output_delta` | runner to clients | `AgentOutputPayload` |
 | `agent` | `output_final` | runner to clients | `AgentOutputPayload` |
+| `tool` | `start` | runner to clients | Provider-specific tool metadata |
+| `tool` | `output` | runner to clients | Provider-specific tool output |
+| `tool` | `end` | runner to clients | Provider-specific tool completion |
 | `control` | `error` | any component to clients | `AgentErrorPayload` |
 | `control` | `runtime_session` | runtime to service/clients | JSON runtime metadata |
 | `pty` | `stdin` | user to runtime | `AgentPtyInputPayload` |
@@ -117,12 +133,13 @@ In `--codex-mode auto`, the runner starts `codex app-server --listen stdio://`,
 initializes one Codex thread, and sends each Gitslice `agent/input` event as a
 Codex `turn/start` request. Codex `item/agentMessage/delta` notifications become
 `agent/output_delta`, final assistant messages become `agent/output_final`, and
-command/tool notifications are forwarded as `tool/start`, `tool/output`, and
-`tool/end` events. Gitslice `agent/interrupt` events are translated to Codex
-`turn/interrupt` while the turn is still running, so the web UI can stop an
-active Codex turn without waiting for the process to exit. If app-server startup
-fails in auto mode, the runner appends a control error and falls back to
-`codex exec`.
+Codex `item/reasoning/textDelta` and `item/reasoning/summaryTextDelta`
+notifications become `agent/thinking_delta`. Command/tool notifications are
+forwarded as `tool/start`, `tool/output`, and `tool/end` events. Gitslice
+`agent/interrupt` events are translated to Codex `turn/interrupt` while the turn
+is still running, so the web UI can stop an active Codex turn without waiting for
+the process to exit. If app-server startup fails in auto mode, the runner
+appends a control error and falls back to `codex exec`.
 
 When the Codex thread is created, the local runner appends
 `control/runtime_session` with the Codex thread ID. The service stores that
@@ -144,14 +161,15 @@ claude -p --input-format stream-json --output-format stream-json \
 ```
 
 Each Gitslice `agent/input` event is written as a Claude JSONL user message.
-Claude assistant text becomes `agent/output_delta` and `agent/output_final`;
-Claude `tool_use` and `tool_result` blocks are forwarded as `tool/start`,
-`tool/output`, and `tool/end` events. Claude does not currently expose a
-Codex-style websocket or JSON-RPC interrupt method, so Gitslice interrupts stop
-the local Claude subprocess and the runner starts a fresh stream for later
-inputs. When Claude reports its session ID, the local runner appends
-`control/runtime_session`; the service stores that ID server-side with a
-`claude-stream-json://<session_id>` endpoint.
+Claude thinking blocks become `agent/thinking_delta`, assistant text becomes
+`agent/output_delta` and `agent/output_final`, and Claude `tool_use` and
+`tool_result` blocks are forwarded as `tool/start`, `tool/output`, and
+`tool/end` events. Claude does not currently expose a Codex-style websocket or
+JSON-RPC interrupt method, so Gitslice interrupts stop the local Claude
+subprocess and the runner starts a fresh stream for later inputs. When Claude
+reports its session ID, the local runner appends `control/runtime_session`; the
+service stores that ID server-side with a `claude-stream-json://<session_id>`
+endpoint.
 
 Use `--claude-mode print` to force the previous one-process-per-input behavior:
 

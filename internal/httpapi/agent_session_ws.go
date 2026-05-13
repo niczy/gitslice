@@ -39,6 +39,7 @@ type wsOutgoingFrame struct {
 	TS      string          `json:"ts,omitempty"`
 	Stream  string          `json:"stream"`
 	Type    string          `json:"type"`
+	Kind    string          `json:"kind,omitempty"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -286,6 +287,7 @@ func outgoingFromEvent(event *models.AgentSessionEvent) wsOutgoingFrame {
 		TS:      event.TS.Format(timeRFC3339Micro),
 		Stream:  event.Stream,
 		Type:    event.Type,
+		Kind:    event.Kind,
 		Payload: event.Payload,
 	}
 }

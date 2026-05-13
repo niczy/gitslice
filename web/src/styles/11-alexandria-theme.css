@@ -1197,6 +1197,24 @@ button[data-testid="topbar-get-started"]:hover {
   overflow-wrap: anywhere;
 }
 
+.slice-agents-message--live {
+  border-color: rgba(100, 116, 139, 0.22);
+  background: #f8fafc;
+}
+
+.slice-agents-message--thinking .slice-agents-message-header,
+.slice-agents-message--thinking .slice-agents-message-body {
+  color: #94a3b8;
+}
+
+.slice-agents-message--thinking .slice-agents-message-body {
+  font-style: italic;
+}
+
+.slice-agents-message--response-draft .slice-agents-message-body {
+  color: #64748b;
+}
+
 .slice-agents-message-markdown {
   display: grid;
   gap: 8px;

@@ -2605,6 +2605,26 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if len(events) != 1 || events[0].Seq != 2 {
 		t.Fatalf("ListAgentSessionEvents mismatch: %#v", events)
 	}
+	if events[0].Kind != models.AgentSessionEventKindEvent {
+		t.Fatalf("expected pty event kind %q, got %q", models.AgentSessionEventKindEvent, events[0].Kind)
+	}
+	if err := st.AppendAgentSessionEvent(ctx, &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Seq:       3,
+		TS:        time.Now(),
+		Stream:    "agent",
+		Type:      "thinking_delta",
+		Payload:   []byte(`{"text":"checking"}`),
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent thinking failed: %v", err)
+	}
+	events, err = st.ListAgentSessionEvents(ctx, session.SessionID, 2, 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionEvents after thinking failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != models.AgentSessionEventKindThinking {
+		t.Fatalf("expected thinking event kind, got %#v", events)
+	}
 	if err := st.AddAgentSessionAudit(ctx, &models.AgentSessionAudit{
 		SessionID:   session.SessionID,
 		ActorUserID: session.UserID,

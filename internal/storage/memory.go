@@ -2909,6 +2909,7 @@ func (s *InMemoryStorage) AppendAgentSessionEvent(ctx context.Context, event *mo
 	if event == nil || event.SessionID == "" || event.Stream == "" || event.Type == "" {
 		return ErrInvalidInput
 	}
+	event.Kind = models.NormalizeAgentSessionEventKind(event.Stream, event.Type, event.Kind)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

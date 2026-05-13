@@ -634,6 +634,7 @@ func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEv
 			Stream:  event.Stream,
 			Type:    event.Type,
 			Payload: event.Payload,
+			Kind:    event.Kind,
 		})
 	}
 	return &agentv1.ListEventsResponse{Events: out, NextSeq: nextSeq}, nil
@@ -664,6 +665,7 @@ func (s *agentServiceServer) AppendEvent(ctx context.Context, req *agentv1.Appen
 		SessionID: session.SessionID,
 		Stream:    stream,
 		Type:      eventType,
+		Kind:      strings.TrimSpace(req.GetKind()),
 		Payload:   payload,
 	}
 	if err := s.svc.AppendEvent(ctx, event); err != nil {
@@ -769,5 +771,6 @@ func eventEnvelopeFromModel(event *models.AgentSessionEvent) *agentv1.EventEnvel
 		Stream:  event.Stream,
 		Type:    event.Type,
 		Payload: event.Payload,
+		Kind:    event.Kind,
 	}
 }

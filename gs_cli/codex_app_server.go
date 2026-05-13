@@ -274,6 +274,10 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 			_ = appendAgentOutput(ctx, r.cli, r.cfg.SessionID, params.Delta, "assistant", "output_delta", 0)
 			finalText += params.Delta
 		}
+	case "item/reasoning/textDelta":
+		r.appendReasoningDelta(ctx, turnID, "reasoning", msg.Params)
+	case "item/reasoning/summaryTextDelta":
+		r.appendReasoningDelta(ctx, turnID, "reasoning_summary", msg.Params)
 	case "item/commandExecution/outputDelta":
 		var params struct {
 			ThreadID string `json:"threadId"`
@@ -337,6 +341,26 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 		}
 	}
 	return false, finalText, 0, nil
+}
+
+func (r *codexAppServerRunner) appendReasoningDelta(ctx context.Context, turnID, channel string, payload json.RawMessage) {
+	delta, parsedTurnID, itemID := codexReasoningDelta(payload, turnID)
+	if delta == "" {
+		return
+	}
+	_ = appendAgentThinking(ctx, r.cli, r.cfg.SessionID, delta, channel, parsedTurnID, itemID)
+}
+
+func codexReasoningDelta(payload json.RawMessage, expectedTurnID string) (string, string, string) {
+	var params struct {
+		TurnID string `json:"turnId"`
+		ItemID string `json:"itemId"`
+		Delta  string `json:"delta"`
+	}
+	if json.Unmarshal(payload, &params) != nil || params.TurnID != expectedTurnID || params.Delta == "" {
+		return "", "", ""
+	}
+	return params.Delta, params.TurnID, params.ItemID
 }
 
 func (r *codexAppServerRunner) appendToolLifecycleEvent(ctx context.Context, turnID, eventType string, payload json.RawMessage) {

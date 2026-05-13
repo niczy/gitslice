@@ -101,6 +101,7 @@ type eventEnvelopeResponse struct {
 	TS      string          `json:"ts"`
 	Stream  string          `json:"stream"`
 	Type    string          `json:"type"`
+	Kind    string          `json:"kind"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -522,6 +523,7 @@ func (a *AgentSessionsAPI) listEvents(w http.ResponseWriter, r *http.Request, se
 			TS:      event.TS.Format(timeRFC3339Micro),
 			Stream:  event.Stream,
 			Type:    event.Type,
+			Kind:    event.Kind,
 			Payload: event.Payload,
 		})
 	}
