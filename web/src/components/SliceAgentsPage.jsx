@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import {
   Bot,
   CircleAlert,
@@ -182,6 +182,8 @@ function eventTone(event) {
 const ACTIVE_SESSION_STATES = new Set(['creating', 'starting', 'running', 'idle', 'stopping']);
 const AGENT_EVENTS_PAGE_SIZE = 500;
 const AGENT_EVENTS_MAX = 5000;
+const SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH = 900;
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function payloadText(payload) {
   return payload?.text
@@ -338,17 +340,6 @@ function buildAgentInfoRows(session, runnerState) {
     .filter(([, value]) => value);
 }
 
-function currentURLAgentSession() {
-  if (typeof window === 'undefined') {
-    return '';
-  }
-  try {
-    return new URL(window.location.href).searchParams.get('session') || '';
-  } catch {
-    return '';
-  }
-}
-
 function writeAgentSessionURL(sessionId, { replace = false } = {}) {
   if (typeof window === 'undefined') {
     return;
@@ -371,7 +362,6 @@ function writeAgentSessionURL(sessionId, { replace = false } = {}) {
     }
     const method = replace ? 'replaceState' : 'pushState';
     window.history[method](window.history.state, '', nextPath);
-    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
   } catch {
     // URL state is best-effort; selection still works without it.
   }
@@ -409,6 +399,7 @@ export default function SliceAgentsPage({
   const [capabilities, setCapabilities] = useState(null);
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
   const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
+  const [sessionsSidebarViewportSynced, setSessionsSidebarViewportSynced] = useState(false);
 
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
@@ -463,19 +454,22 @@ export default function SliceAgentsPage({
 
   const handleSessionSelect = useCallback((sessionId) => {
     setSelectedSessionId(sessionId);
-    writeAgentSessionURL(sessionId);
-    onSelectSession?.(sessionId);
-    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+    if (onSelectSession) {
+      onSelectSession(sessionId);
+    } else {
+      writeAgentSessionURL(sessionId);
+    }
+    if (typeof window !== 'undefined' && window.innerWidth <= SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH) {
       closeSessionsSidebar();
     }
   }, [closeSessionsSidebar, onSelectSession]);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (typeof window === 'undefined') {
       return undefined;
     }
     const syncSidebarForViewport = () => {
-      if (window.innerWidth > 900) {
+      if (window.innerWidth > SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH) {
         setSessionsSidebarDismissing(false);
         setSessionsSidebarOpen(true);
       } else {
@@ -483,6 +477,7 @@ export default function SliceAgentsPage({
       }
     };
     syncSidebarForViewport();
+    setSessionsSidebarViewportSynced(true);
     window.addEventListener('resize', syncSidebarForViewport);
     return () => window.removeEventListener('resize', syncSidebarForViewport);
   }, []);
@@ -505,13 +500,6 @@ export default function SliceAgentsPage({
       setSelectedSessionId(normalizedRouteSessionId);
     }
   }, [normalizedRouteSessionId, sessions]);
-
-  useEffect(() => {
-    if (!selectedSessionId || currentURLAgentSession() === selectedSessionId) {
-      return;
-    }
-    writeAgentSessionURL(selectedSessionId, { replace: true });
-  }, [selectedSessionId]);
 
   const loadRunners = useCallback(async ({ keepSelection = true } = {}) => {
     setRunnersLoading(true);
@@ -670,8 +658,11 @@ export default function SliceAgentsPage({
       }));
       await loadSessions({ keepSelection: true });
       setSelectedSessionId(created.sessionId);
-      writeAgentSessionURL(created.sessionId);
-      onSelectSession?.(created.sessionId);
+      if (onSelectSession) {
+        onSelectSession(created.sessionId);
+      } else {
+        writeAgentSessionURL(created.sessionId);
+      }
     } catch (err) {
       setCreateError(err?.message || 'Unable to create agent session.');
     } finally {
@@ -718,7 +709,10 @@ export default function SliceAgentsPage({
   };
 
   return (
-    <section className="slice-agents-page" data-testid="slice-agents-page">
+    <section
+      className={`slice-agents-page ${sessionsSidebarViewportSynced ? 'viewport-synced' : 'viewport-pending'}`}
+      data-testid="slice-agents-page"
+    >
       <SliceDetailNav
         activeTab="agents"
         sliceId={sliceId}

@@ -10013,6 +10013,20 @@ button[data-testid="topbar-get-started"]:hover {
     will-change: transform;
   }
 
+  .slice-agents-page.viewport-pending .slice-agents-sidebar-overlay {
+    opacity: 0;
+    pointer-events: none;
+    transition: none;
+  }
+
+  .slice-agents-page.viewport-pending .slice-agents-sidebar {
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    box-shadow: none;
+    transition: none;
+  }
+
   .slice-agents-sidebar.open {
     opacity: 1;
     transform: translate3d(0, 0, 0);
