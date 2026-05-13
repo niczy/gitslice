@@ -346,6 +346,7 @@ function buildLiveStreamState(events, session) {
 function buildConversationItems(events, liveStreamState = { active: false }, session = null) {
   const items = [];
   let folded = [];
+  let thinkingItem = null;
   const pendingInputSeq = liveStreamState?.pendingInputSeq || 0;
   const agentLabel = agentDisplayName(session?.agentType);
 
@@ -361,18 +362,47 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
     folded = [];
   };
 
+  const appendThinking = (event) => {
+    const text = payloadText(event.payload);
+    if (!text) {
+      return;
+    }
+    flushFolded();
+    if (!thinkingItem) {
+      thinkingItem = {
+        kind: 'thinking',
+        key: `thinking-${event.seq}`,
+        text: '',
+        ts: event.ts,
+        live: false,
+      };
+      items.push(thinkingItem);
+    }
+    thinkingItem.text += text;
+  };
+
   for (const event of events) {
     if (pendingInputSeq > 0 && event.seq > pendingInputSeq && (isThinkingEvent(event) || isModelResponseDelta(event))) {
+      continue;
+    }
+    if (isThinkingEvent(event)) {
+      appendThinking(event);
       continue;
     }
     const message = conversationMessageFromEvent(event, agentLabel);
     if (message?.text) {
       flushFolded();
+      if (message.role === 'user') {
+        thinkingItem = null;
+      }
       items.push({
         kind: 'message',
         key: message.key,
         message,
       });
+      if (message.role !== 'user') {
+        thinkingItem = null;
+      }
     } else {
       folded.push(event);
     }
@@ -384,6 +414,7 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
       kind: 'thinking',
       key: 'assistant-thinking',
       text: liveStreamState.thinkingText,
+      live: true,
     });
   }
 
@@ -393,6 +424,7 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
       key: 'assistant-response-draft',
       label: agentLabel,
       text: liveStreamState.responseText,
+      live: true,
     });
   }
 
@@ -1380,13 +1412,22 @@ export default function SliceAgentsPage({
                     ) : item.kind === 'thinking' || item.kind === 'response-draft' ? (
                       <li
                         key={item.key}
-                        className={`slice-agents-message slice-agents-message--assistant slice-agents-message--live slice-agents-message--${item.kind}`}
-                        aria-live="polite"
+                        className={[
+                          'slice-agents-message',
+                          'slice-agents-message--assistant',
+                          item.live ? 'slice-agents-message--live' : '',
+                          `slice-agents-message--${item.kind}`,
+                        ].filter(Boolean).join(' ')}
+                        aria-live={item.live ? 'polite' : undefined}
                         data-testid={`slice-agents-${item.kind}`}
                       >
                         <div className="slice-agents-message-header">
                           <span>{item.kind === 'thinking' ? 'Thinking' : item.label}</span>
-                          <span className="slice-agents-streaming-label">{item.kind === 'thinking' ? 'Working' : 'Streaming'}</span>
+                          {item.live ? (
+                            <span className="slice-agents-streaming-label">{item.kind === 'thinking' ? 'Working' : 'Streaming'}</span>
+                          ) : item.ts ? (
+                            <time>{formatAgentTimestamp(item.ts)}</time>
+                          ) : null}
                         </div>
                         <div
                           className="slice-agents-message-body slice-agents-message-markdown"
@@ -1413,7 +1454,7 @@ export default function SliceAgentsPage({
                     ) : (
                       <li key={item.key} className="slice-agents-timeline-events">
                         <details className="slice-agents-debug-events">
-                          <summary>System and tool events ({item.events.length})</summary>
+                          <summary>Agent activity ({item.events.length})</summary>
                           <ol className="slice-agents-event-list">
                             {item.events.map((event) => (
                               <li
