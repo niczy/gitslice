@@ -330,7 +330,7 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 			Summary string `json:"summary"`
 		}
 		if json.Unmarshal(msg.Params, &params) == nil && strings.TrimSpace(params.Summary) != "" {
-			_ = appendAgentError(ctx, r.cli, r.cfg.SessionID, "CODEX_CONFIG_WARNING", params.Summary)
+			_ = appendAgentWarning(ctx, r.cli, r.cfg.SessionID, "CODEX_CONFIG_WARNING", params.Summary)
 		}
 	case "error":
 		var params struct {

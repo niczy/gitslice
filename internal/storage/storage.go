@@ -213,6 +213,9 @@ type Storage interface {
 	GetChangesetSnapshot(ctx context.Context, changesetID string, version int32) (*models.ChangesetSnapshot, error)
 	GetChangesetSnapshotByHash(ctx context.Context, changesetID string, hash string) (*models.ChangesetSnapshot, error)
 	ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error)
+	RecordAgentSessionChangeset(ctx context.Context, link *models.AgentSessionChangeset) error
+	ListAgentSessionChangesets(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionChangeset, error)
+	ListChangesetAgentSessions(ctx context.Context, changesetID string, limit int) ([]*models.AgentSessionChangeset, error)
 
 	// Block-backed file content storage
 	PutBlock(ctx context.Context, hash string, data []byte) error

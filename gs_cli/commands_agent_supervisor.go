@@ -1191,6 +1191,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 		if err := ensureAgentInstructionFiles(targetRoot); err != nil {
 			return "", err
 		}
+		if err := writeAgentSessionIDConfigAt(targetRoot, session.GetSessionId()); err != nil {
+			return "", err
+		}
 		if err := writeLocalAgentSessionMarker(rootDir, discovered, targetRoot); err != nil {
 			log.Printf("Warning: failed to mark local agent session %s: %v", session.GetSessionId(), err)
 		}
@@ -1214,6 +1217,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 		return "", err
 	}
 	if err := writeSliceIDConfigAt(targetRoot, session.GetSliceId()); err != nil {
+		return "", err
+	}
+	if err := writeAgentSessionIDConfigAt(targetRoot, session.GetSessionId()); err != nil {
 		return "", err
 	}
 	nextCheckoutIndex, err := buildCheckoutIndex(targetRoot, session.GetSliceId(), checkoutResult.Manifest)

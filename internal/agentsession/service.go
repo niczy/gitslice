@@ -405,6 +405,9 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	if err := s.st.AppendAgentSessionEvent(ctx, &eventCopy); err != nil {
 		return err
 	}
+	if err := s.applyChangesetExportEvent(ctx, &eventCopy); err != nil {
+		return err
+	}
 	event.Seq = eventCopy.Seq
 	event.TS = eventCopy.TS
 	event.Kind = eventCopy.Kind
@@ -472,6 +475,59 @@ func (s *Service) applyRuntimeSessionEvent(ctx context.Context, event *models.Ag
 	session.RuntimeErrorCode = firstNonEmpty(payload.RuntimeErrorCode, payload.RuntimeErrorCodeSnake, payload.ErrorCode)
 	session.UpdatedAt = time.Now().UTC()
 	return s.st.UpdateAgentSession(ctx, session)
+}
+
+type changesetExportCompletedPayload struct {
+	ChangesetID          string `json:"changesetId"`
+	ChangesetIDSnake     string `json:"changeset_id"`
+	ChangesetHash        string `json:"changesetHash"`
+	ChangesetHashSnake   string `json:"changeset_hash"`
+	SnapshotID           string `json:"snapshotId"`
+	SnapshotIDSnake      string `json:"snapshot_id"`
+	SnapshotVersion      int32  `json:"snapshotVersion"`
+	SnapshotVersionSnake int32  `json:"snapshot_version"`
+	SnapshotHash         string `json:"snapshotHash"`
+	SnapshotHashSnake    string `json:"snapshot_hash"`
+	BaseCommitHash       string `json:"baseCommitHash"`
+	BaseCommitHashSnake  string `json:"base_commit_hash"`
+	RunnerID             string `json:"runnerId"`
+	RunnerIDSnake        string `json:"runner_id"`
+	Source               string `json:"source"`
+}
+
+func (s *Service) applyChangesetExportEvent(ctx context.Context, event *models.AgentSessionEvent) error {
+	if event == nil || event.Stream != EventStreamControl || event.Type != EventTypeChangesetExportCompleted {
+		return nil
+	}
+	var payload changesetExportCompletedPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return storage.ErrInvalidInput
+	}
+	changesetID := firstNonEmpty(payload.ChangesetID, payload.ChangesetIDSnake)
+	snapshotID := firstNonEmpty(payload.SnapshotID, payload.SnapshotIDSnake)
+	if changesetID == "" || snapshotID == "" {
+		return storage.ErrInvalidInput
+	}
+	session, err := s.st.GetAgentSession(ctx, event.SessionID)
+	if err != nil {
+		return err
+	}
+	snapshotVersion := payload.SnapshotVersion
+	if snapshotVersion == 0 {
+		snapshotVersion = payload.SnapshotVersionSnake
+	}
+	return s.st.RecordAgentSessionChangeset(ctx, &models.AgentSessionChangeset{
+		SessionID:       event.SessionID,
+		ChangesetID:     changesetID,
+		SnapshotID:      snapshotID,
+		SnapshotVersion: snapshotVersion,
+		SnapshotHash:    firstNonEmpty(payload.SnapshotHash, payload.SnapshotHashSnake, payload.ChangesetHash, payload.ChangesetHashSnake),
+		BaseCommitHash:  firstNonEmpty(payload.BaseCommitHash, payload.BaseCommitHashSnake),
+		ExportedFromSeq: event.Seq,
+		RunnerID:        firstNonEmpty(payload.RunnerID, payload.RunnerIDSnake, session.RunnerID),
+		Source:          firstNonEmpty(payload.Source, "local_export"),
+		ExportedAt:      event.TS,
+	})
 }
 
 func (s *Service) AddAudit(ctx context.Context, sessionID, actorUserID, action string, metadata map[string]any) error {

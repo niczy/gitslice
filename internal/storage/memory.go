@@ -51,11 +51,12 @@ type InMemoryStorage struct {
 	sliceChangesets           map[string][]string                  // sliceID -> []changesetID
 	changesetSnapshots        map[string]*models.ChangesetSnapshot // snapshotID -> snapshot
 	changesetSnapshotVersions map[string][]string                  // changesetID -> []snapshotID (newest first)
-	mergeEventsByShard        map[int32][]*models.MergeEvent       // shardID -> events ordered by merge_seq asc
-	mergeEventsByChangeset    map[string]*models.MergeEvent        // changesetID -> event
-	mergeEventsByID           map[string]*models.MergeEvent        // eventID -> event
-	projectionOffsets         map[string]*models.ProjectionOffset  // projectionName:shardID -> offset
-	homePathHeads             map[string]*models.HomePathHead      // homeID:path -> head
+	agentSessionChangesets    map[string]*models.AgentSessionChangeset
+	mergeEventsByShard        map[int32][]*models.MergeEvent      // shardID -> events ordered by merge_seq asc
+	mergeEventsByChangeset    map[string]*models.MergeEvent       // changesetID -> event
+	mergeEventsByID           map[string]*models.MergeEvent       // eventID -> event
+	projectionOffsets         map[string]*models.ProjectionOffset // projectionName:shardID -> offset
+	homePathHeads             map[string]*models.HomePathHead     // homeID:path -> head
 
 	// CI
 	ciRuns             map[string]*CIRun         // runID -> run
@@ -152,6 +153,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		sliceChangesets:                  make(map[string][]string),
 		changesetSnapshots:               make(map[string]*models.ChangesetSnapshot),
 		changesetSnapshotVersions:        make(map[string][]string),
+		agentSessionChangesets:           make(map[string]*models.AgentSessionChangeset),
 		mergeEventsByShard:               make(map[int32][]*models.MergeEvent),
 		mergeEventsByChangeset:           make(map[string]*models.MergeEvent),
 		mergeEventsByID:                  make(map[string]*models.MergeEvent),
@@ -253,6 +255,7 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.sliceChangesets = fresh.sliceChangesets
 	s.changesetSnapshots = fresh.changesetSnapshots
 	s.changesetSnapshotVersions = fresh.changesetSnapshotVersions
+	s.agentSessionChangesets = fresh.agentSessionChangesets
 	s.mergeEventsByShard = fresh.mergeEventsByShard
 	s.mergeEventsByChangeset = fresh.mergeEventsByChangeset
 	s.mergeEventsByID = fresh.mergeEventsByID
@@ -470,6 +473,11 @@ func (s *InMemoryStorage) DeleteSlice(ctx context.Context, sliceID string) error
 					delete(s.changesetSnapshots, versionID)
 				}
 				delete(s.changesetSnapshotVersions, changeID)
+			}
+			for key, link := range s.agentSessionChangesets {
+				if link != nil && link.ChangesetID == changeID {
+					delete(s.agentSessionChangesets, key)
+				}
 			}
 		}
 		delete(s.sliceChangesets, sliceID)
@@ -1419,6 +1427,101 @@ func (s *InMemoryStorage) ListChangesetSnapshotsWithOptions(ctx context.Context,
 		result = append(result, &copySnapshot)
 	}
 	return result, nil
+}
+
+func (s *InMemoryStorage) RecordAgentSessionChangeset(ctx context.Context, link *models.AgentSessionChangeset) error {
+	_ = ctx
+	if link == nil || strings.TrimSpace(link.SessionID) == "" || strings.TrimSpace(link.ChangesetID) == "" || strings.TrimSpace(link.SnapshotID) == "" {
+		return ErrInvalidInput
+	}
+	if link.ExportedFromSeq > uint64(^uint64(0)>>1) {
+		return ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.agentSessions[link.SessionID]; !ok {
+		return ErrAgentSessionNotFound
+	}
+	if _, ok := s.changesets[link.ChangesetID]; !ok {
+		return ErrChangesetNotFound
+	}
+	snapshot, ok := s.changesetSnapshots[link.SnapshotID]
+	if !ok || snapshot.ChangesetID != link.ChangesetID {
+		return ErrChangesetNotFound
+	}
+	copyLink := cloneAgentSessionChangeset(link)
+	if copyLink.Source == "" {
+		copyLink.Source = "local_export"
+	}
+	if copyLink.ExportedAt.IsZero() {
+		copyLink.ExportedAt = time.Now()
+	}
+	s.agentSessionChangesets[agentSessionChangesetKey(copyLink.SessionID, copyLink.ChangesetID, copyLink.SnapshotID)] = copyLink
+	return nil
+}
+
+func (s *InMemoryStorage) ListAgentSessionChangesets(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionChangeset, error) {
+	_ = ctx
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return []*models.AgentSessionChangeset{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.agentSessions[sessionID]; !ok {
+		return nil, ErrAgentSessionNotFound
+	}
+	out := make([]*models.AgentSessionChangeset, 0)
+	for _, link := range s.agentSessionChangesets {
+		if link != nil && link.SessionID == sessionID {
+			out = append(out, cloneAgentSessionChangeset(link))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ExportedAt.After(out[j].ExportedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *InMemoryStorage) ListChangesetAgentSessions(ctx context.Context, changesetID string, limit int) ([]*models.AgentSessionChangeset, error) {
+	_ = ctx
+	changesetID = strings.TrimSpace(changesetID)
+	if changesetID == "" {
+		return []*models.AgentSessionChangeset{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.changesets[changesetID]; !ok {
+		return nil, ErrChangesetNotFound
+	}
+	out := make([]*models.AgentSessionChangeset, 0)
+	for _, link := range s.agentSessionChangesets {
+		if link != nil && link.ChangesetID == changesetID {
+			out = append(out, cloneAgentSessionChangeset(link))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ExportedAt.After(out[j].ExportedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // Ping checks if storage is accessible
@@ -3015,6 +3118,18 @@ func cloneAgentSessionAudit(in *models.AgentSessionAudit) *models.AgentSessionAu
 		out.Metadata = append([]byte(nil), in.Metadata...)
 	}
 	return &out
+}
+
+func cloneAgentSessionChangeset(in *models.AgentSessionChangeset) *models.AgentSessionChangeset {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func agentSessionChangesetKey(sessionID, changesetID, snapshotID string) string {
+	return strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(changesetID) + "\x00" + strings.TrimSpace(snapshotID)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

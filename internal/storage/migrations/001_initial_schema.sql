@@ -60,6 +60,19 @@ CREATE TABLE agent_session_events (
     payload_json jsonb NOT NULL
 );
 
+CREATE TABLE agent_session_changesets (
+    session_id text NOT NULL,
+    changeset_id text NOT NULL,
+    snapshot_id text NOT NULL,
+    snapshot_version integer DEFAULT 0 NOT NULL,
+    snapshot_hash text DEFAULT ''::text NOT NULL,
+    base_commit_hash text DEFAULT ''::text NOT NULL,
+    exported_from_seq bigint DEFAULT 0 NOT NULL,
+    runner_id text DEFAULT ''::text NOT NULL,
+    source text DEFAULT 'local_export'::text NOT NULL,
+    exported_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
 CREATE TABLE agent_sessions (
     session_id text NOT NULL,
     slice_id text NOT NULL,
@@ -609,6 +622,9 @@ ALTER TABLE ONLY agent_keys
 ALTER TABLE ONLY agent_session_audit
     ADD CONSTRAINT agent_session_audit_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY agent_session_changesets
+    ADD CONSTRAINT agent_session_changesets_pkey PRIMARY KEY (session_id, changeset_id, snapshot_id);
+
 ALTER TABLE ONLY agent_session_events
     ADD CONSTRAINT agent_session_events_pkey PRIMARY KEY (session_id, seq);
 
@@ -780,6 +796,12 @@ CREATE INDEX idx_agent_keys_username_active ON agent_keys USING btree (username)
 
 CREATE INDEX idx_agent_session_audit_session_created ON agent_session_audit USING btree (session_id, created_at DESC);
 
+CREATE INDEX idx_agent_session_changesets_changeset_exported ON agent_session_changesets USING btree (changeset_id, exported_at DESC);
+
+CREATE INDEX idx_agent_session_changesets_session_exported ON agent_session_changesets USING btree (session_id, exported_at DESC);
+
+CREATE INDEX idx_agent_session_changesets_snapshot ON agent_session_changesets USING btree (snapshot_id);
+
 CREATE INDEX idx_agent_session_events_ts ON agent_session_events USING btree (session_id, ts DESC);
 CREATE INDEX idx_agent_session_events_kind ON agent_session_events USING btree (session_id, kind, seq);
 
@@ -923,6 +945,15 @@ ALTER TABLE ONLY auth_sessions
 
 ALTER TABLE ONLY auth_sessions
     ADD CONSTRAINT auth_sessions_username_fkey FOREIGN KEY (username) REFERENCES users(username);
+
+ALTER TABLE ONLY agent_session_changesets
+    ADD CONSTRAINT agent_session_changesets_changeset_id_fkey FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY agent_session_changesets
+    ADD CONSTRAINT agent_session_changesets_session_id_fkey FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY agent_session_changesets
+    ADD CONSTRAINT agent_session_changesets_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES changeset_snapshots(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY changeset_snapshots
     ADD CONSTRAINT changeset_snapshots_changeset_id_fkey FOREIGN KEY (changeset_id) REFERENCES changesets(id) ON UPDATE CASCADE ON DELETE CASCADE;

@@ -10,6 +10,7 @@ import (
 
 const (
 	sliceConfigPath            = ".gs/config"
+	agentSessionConfigPath     = ".gs/agent_session_id"
 	checkoutIndexPath          = ".gs/index"
 	trackedChangesetConfigPath = ".gs/changeset_id"
 	searchArtifactDirPath      = ".gs/search"
@@ -46,6 +47,29 @@ func writeSliceIDConfig(sliceID string) error {
 
 func writeSliceIDConfigAt(dir, sliceID string) error {
 	return os.WriteFile(filepath.Join(dir, sliceConfigPath), []byte(sliceID), 0600)
+}
+
+func readAgentSessionIDFromConfig() (string, error) {
+	data, err := os.ReadFile(agentSessionConfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read %s: %w", agentSessionConfigPath, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func writeAgentSessionIDConfigAt(dir, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	path := filepath.Join(dir, agentSessionConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(sessionID), 0o600)
 }
 
 // readTrackedChangesetIDFromConfig reads the locally tracked changeset ID.

@@ -225,6 +225,90 @@ func TestServiceStoresRuntimeSessionEventMetadata(t *testing.T) {
 	}
 }
 
+func TestServiceAppendChangesetExportEventRecordsLink(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-export-link",
+		Name:      "Slice Export Link",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	changeset := &models.Changeset{
+		ID:             "chg_export_link",
+		SliceID:        "slice-export-link",
+		Hash:           "changeset-hash",
+		BaseCommitHash: "base-hash",
+		Status:         models.ChangesetStatusPending,
+		Author:         "alice",
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := st.CreateChangeset(ctx, changeset); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	snapshot := &models.ChangesetSnapshot{
+		ID:             "snap_export_link",
+		ChangesetID:    changeset.ID,
+		Version:        2,
+		Hash:           "snapshot-hash",
+		BaseCommitHash: "base-hash",
+		ModifiedFiles:  []string{"README.md"},
+		Author:         "alice",
+		Message:        "export",
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := st.CreateChangesetSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("CreateChangesetSnapshot failed: %v", err)
+	}
+	now := time.Now().UTC()
+	session := &models.AgentSession{
+		SessionID:      "sess-export-link",
+		SliceID:        "slice-export-link",
+		RunnerID:       "runner-export-link",
+		UserID:         "alice",
+		State:          models.AgentSessionStateRunning,
+		Provider:       RuntimeProviderLocal,
+		IdleTimeoutSec: 60,
+		TTLSec:         600,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := st.CreateAgentSession(ctx, session); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	event := &models.AgentSessionEvent{
+		SessionID: session.SessionID,
+		Stream:    EventStreamControl,
+		Type:      EventTypeChangesetExportCompleted,
+		Payload:   []byte(`{"changeset_id":"chg_export_link","snapshot_id":"snap_export_link","snapshot_version":2,"snapshot_hash":"snapshot-hash","base_commit_hash":"base-hash","source":"gs_slice_export"}`),
+	}
+	if err := svc.AppendEvent(ctx, event); err != nil {
+		t.Fatalf("AppendEvent changeset export failed: %v", err)
+	}
+	if event.Seq == 0 {
+		t.Fatalf("expected appended event seq to be populated")
+	}
+
+	links, err := st.ListAgentSessionChangesets(ctx, session.SessionID, 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionChangesets failed: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("expected one exported changeset link, got %#v", links)
+	}
+	link := links[0]
+	if link.ChangesetID != changeset.ID || link.SnapshotID != snapshot.ID || link.ExportedFromSeq != event.Seq {
+		t.Fatalf("unexpected exported changeset link: %#v", link)
+	}
+	if link.RunnerID != session.RunnerID || link.Source != "gs_slice_export" {
+		t.Fatalf("unexpected exported changeset metadata: %#v", link)
+	}
+}
+
 func TestValidateAndConsumeWSToken(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()

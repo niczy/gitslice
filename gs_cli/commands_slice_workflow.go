@@ -168,6 +168,11 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 		}
 		changesetOutput = buildChangesetCreateOutput(createResp, isUpdate, sliceID, modifiedFiles)
 	}
+	if !reusedExisting {
+		if err := appendAgentChangesetExportEventIfPresent(ctx, cli, targetChangesetID, changesetOutput.ChangesetHash, reviewResp); err != nil {
+			log.Printf("Warning: failed to record agent changeset export: %v", err)
+		}
+	}
 
 	if !shouldMerge {
 		if jsonEnabled {
@@ -225,6 +230,27 @@ func handleSlicePublish(ctx context.Context, cli *CLI, commandName string, args 
 	fmt.Printf("Status: %s\n", changesetOutput.Status)
 	printChangesetReview(reviewResp, false)
 	printMergeResult(mergeResp)
+}
+
+func appendAgentChangesetExportEventIfPresent(ctx context.Context, cli *CLI, changesetID, changesetHash string, reviewResp *slicev1.ReviewChangesetResponse) error {
+	sessionID, err := readAgentSessionIDFromConfig()
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		return err
+	}
+	snapshot := reviewResp.GetSnapshot()
+	if snapshot == nil || strings.TrimSpace(snapshot.GetSnapshotId()) == "" {
+		return fmt.Errorf("changeset export response did not include a snapshot")
+	}
+	payload := map[string]any{
+		"changeset_id":     strings.TrimSpace(changesetID),
+		"changeset_hash":   strings.TrimSpace(changesetHash),
+		"snapshot_id":      strings.TrimSpace(snapshot.GetSnapshotId()),
+		"snapshot_version": snapshot.GetVersion(),
+		"snapshot_hash":    strings.TrimSpace(snapshot.GetHash()),
+		"base_commit_hash": strings.TrimSpace(snapshot.GetBaseCommitHash()),
+		"source":           "gs_slice_export",
+	}
+	return appendAgentJSONEvent(ctx, cli, sessionID, "control", "changeset_export_completed", payload)
 }
 
 func handleSliceTree(ctx context.Context, cli *CLI, args []string) {
