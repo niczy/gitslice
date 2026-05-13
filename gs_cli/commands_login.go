@@ -52,6 +52,11 @@ func newLogoutCommand() *cobra.Command {
 	return cmd
 }
 
+var (
+	ensureLoginAuthReady = ensureCLIAuthReady
+	startLoginDevice     = startDeviceLogin
+)
+
 func runLoginCommand(args []string) {
 	args = configureCLIBehavior(args)
 	configureCLIOutputMode(args)
@@ -98,17 +103,20 @@ func handleLogin(ctx context.Context, cli *CLI, currentAuth cliAuth, args []stri
 	}
 	if len(args) == 0 {
 		if strings.TrimSpace(currentAuth.Authorization) != "" || currentAuth.CredentialStore {
-			authConfig, err := ensureCLIAuthReady(ctx, cli, currentAuth)
-			if err != nil {
+			authConfig, err := ensureLoginAuthReady(ctx, cli, currentAuth)
+			if err == nil {
+				showCurrentAuth(authConfig)
+				return
+			}
+			if cliStructuredJSON || cliNonInteractive {
 				commandFatalf("AUTH_REFRESH_FAILED", true, "", "Failed to resolve current login: %v", err)
 			}
-			showCurrentAuth(authConfig)
-			return
+			fmt.Fprintf(os.Stderr, "Warning: stored login could not be refreshed; starting a fresh login: %v\n", err)
 		}
 		if cliStructuredJSON || cliNonInteractive {
 			commandFatal("INTERACTIVE_REQUIRED", "Device login uses an interactive browser sign-in. Run gs auth login --key <private-key-path> for agent-friendly auth.", false, "gs auth login --key <private-key-path>")
 		}
-		startDeviceLogin(ctx, cli)
+		startLoginDevice(ctx, cli)
 		return
 	}
 	if len(args) != 1 {
