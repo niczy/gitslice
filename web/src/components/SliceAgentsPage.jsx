@@ -172,13 +172,16 @@ function eventBody(event) {
 
 function eventTone(event) {
   const kind = eventKind(event);
-  if (kind === 'error' || event.stream === 'control' || event.type === 'error') {
+  if (kind === 'error' || isTerminalControlError(event)) {
     return 'error';
   }
   if (kind === 'tool_call' || kind === 'tool_result' || event.stream === 'tool') {
     return 'tool';
   }
   if (event.stream === 'status') {
+    return 'status';
+  }
+  if (event.stream === 'control') {
     return 'status';
   }
   return 'agent';
@@ -195,6 +198,7 @@ const AGENTS_SIDEBAR_MIN_WIDTH = 280;
 const AGENTS_SIDEBAR_MAX_WIDTH = 560;
 const AGENTS_SIDEBAR_DEFAULT_WIDTH = 340;
 const AGENTS_SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.agentsSidebarWidth';
+const NON_TERMINAL_CONTROL_ERROR_CODES = new Set(['CODEX_CONFIG_WARNING']);
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function clampAgentsSidebarWidth(value, maxWidth = AGENTS_SIDEBAR_MAX_WIDTH) {
@@ -243,6 +247,19 @@ function payloadExitCode(payload) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function controlErrorCode(event) {
+  return String(event?.payload?.code || event?.payload?.errorCode || event?.payload?.error_code || '')
+    .trim()
+    .toUpperCase();
+}
+
+function isTerminalControlError(event) {
+  if (event?.stream !== 'control' || event?.type !== 'error') {
+    return false;
+  }
+  return !NON_TERMINAL_CONTROL_ERROR_CODES.has(controlErrorCode(event));
+}
+
 function renderConversationMarkdown(text) {
   return renderMarkdownHtml(text) || '<p></p>';
 }
@@ -273,6 +290,9 @@ function conversationMessageFromEvent(event, agentLabel = 'Agent') {
 }
 
 function eventKind(event) {
+  if (event?.stream === 'control' && event?.type === 'error' && !isTerminalControlError(event)) {
+    return 'control';
+  }
   const explicit = String(event?.kind || '').trim().toLowerCase();
   if (explicit) {
     return explicit;
@@ -285,7 +305,7 @@ function eventKind(event) {
   if (stream === 'tool' && ['start', 'call', 'request'].includes(type)) return 'tool_call';
   if (stream === 'tool' && ['output', 'result', 'end'].includes(type)) return 'tool_result';
   if (stream === 'status') return 'status';
-  if (stream === 'control' && type === 'error') return 'error';
+  if (stream === 'control' && type === 'error') return isTerminalControlError(event) ? 'error' : 'control';
   if (stream === 'control') return 'control';
   return 'event';
 }
@@ -320,7 +340,7 @@ function buildLiveStreamState(events, session) {
       pendingInputSeq = 0;
       thinkingText = '';
       responseText = '';
-    } else if (event.stream === 'control' && event.type === 'error') {
+    } else if (isTerminalControlError(event)) {
       pendingInputSeq = 0;
       thinkingText = '';
       responseText = '';
@@ -347,6 +367,7 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
   const items = [];
   let folded = [];
   let thinkingItem = null;
+  let responseDraftItem = null;
   const pendingInputSeq = liveStreamState?.pendingInputSeq || 0;
   const agentLabel = agentDisplayName(session?.agentType);
 
@@ -381,6 +402,37 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
     thinkingItem.text += text;
   };
 
+  const appendResponseDelta = (event) => {
+    const text = payloadText(event.payload);
+    if (!text) {
+      return;
+    }
+    flushFolded();
+    if (!responseDraftItem) {
+      responseDraftItem = {
+        kind: 'response-draft',
+        key: `response-${event.seq}`,
+        label: agentLabel,
+        text: '',
+        ts: event.ts,
+        live: false,
+      };
+      items.push(responseDraftItem);
+    }
+    responseDraftItem.text += text;
+  };
+
+  const removeResponseDraft = () => {
+    if (!responseDraftItem) {
+      return;
+    }
+    const index = items.indexOf(responseDraftItem);
+    if (index >= 0) {
+      items.splice(index, 1);
+    }
+    responseDraftItem = null;
+  };
+
   for (const event of events) {
     if (pendingInputSeq > 0 && event.seq > pendingInputSeq && (isThinkingEvent(event) || isModelResponseDelta(event))) {
       continue;
@@ -389,12 +441,19 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
       appendThinking(event);
       continue;
     }
+    if (isModelResponseDelta(event)) {
+      appendResponseDelta(event);
+      continue;
+    }
     const message = conversationMessageFromEvent(event, agentLabel);
     if (message?.text) {
-      flushFolded();
       if (message.role === 'user') {
         thinkingItem = null;
+        responseDraftItem = null;
+      } else {
+        removeResponseDraft();
       }
+      flushFolded();
       items.push({
         kind: 'message',
         key: message.key,
@@ -402,7 +461,11 @@ function buildConversationItems(events, liveStreamState = { active: false }, ses
       });
       if (message.role !== 'user') {
         thinkingItem = null;
+        responseDraftItem = null;
       }
+    } else if (event.stream === 'agent' && event.type === 'output_final' && responseDraftItem?.text) {
+      thinkingItem = null;
+      responseDraftItem = null;
     } else {
       folded.push(event);
     }

@@ -462,8 +462,12 @@ func pendingAgentInputs(events []*agentv1.EventEnvelope) []string {
 			if strings.TrimSpace(text) != "" {
 				pending = append(pending, text)
 			}
-		case "agent/output_final", "control/error":
+		case "agent/output_final":
 			pending = nil
+		case "control/error":
+			if agentControlErrorIsTerminal(event.GetPayload()) {
+				pending = nil
+			}
 		case "status/state":
 			if !agentSessionStateActive(agentState(event.GetPayload())) {
 				pending = nil
@@ -633,6 +637,34 @@ func appendAgentError(ctx context.Context, cli *CLI, sessionID, code, message st
 		Payload:   payload,
 	})
 	return err
+}
+
+func appendAgentWarning(ctx context.Context, cli *CLI, sessionID, code, message string) error {
+	payload, _ := protojson.Marshal(&agentv1.AgentErrorPayload{Code: code, Message: message})
+	_, err := cli.agentClient.AppendEvent(ctx, &agentv1.AppendEventRequest{
+		SessionId: sessionID,
+		Stream:    "control",
+		Type:      "warning",
+		Payload:   payload,
+	})
+	return err
+}
+
+func agentControlErrorIsTerminal(payload []byte) bool {
+	var msg agentv1.AgentErrorPayload
+	if err := protojson.Unmarshal(payload, &msg); err == nil && strings.TrimSpace(msg.GetCode()) != "" {
+		return !isNonTerminalAgentControlErrorCode(msg.GetCode())
+	}
+	return true
+}
+
+func isNonTerminalAgentControlErrorCode(code string) bool {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "CODEX_CONFIG_WARNING":
+		return true
+	default:
+		return false
+	}
 }
 
 func agentInputText(payload []byte) string {

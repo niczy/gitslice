@@ -66,6 +66,19 @@ func TestPendingAgentInputsClearsOnErrorAndInactiveState(t *testing.T) {
 	}
 }
 
+func TestPendingAgentInputsKeepsPendingAfterConfigWarning(t *testing.T) {
+	events := []*agentv1.EventEnvelope{
+		testAgentInputEvent(t, 1, "request"),
+		testAgentControlErrorEvent(t, 2, "CODEX_CONFIG_WARNING", "bubblewrap missing"),
+	}
+
+	got := pendingAgentInputs(events)
+	want := []string{"request"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pendingAgentInputs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseLocalRunnerRestartRequest(t *testing.T) {
 	got := parseLocalRunnerRestartRequest([]byte(`{"upgrade":true,"reason":"web_ui"}`))
 	if !got.Upgrade || got.Reason != "web_ui" {
@@ -450,6 +463,15 @@ func testAgentOutputFinalEvent(t *testing.T, seq uint64) *agentv1.EventEnvelope 
 		t.Fatalf("marshal output payload: %v", err)
 	}
 	return &agentv1.EventEnvelope{Seq: seq, Stream: "agent", Type: "output_final", Payload: payload}
+}
+
+func testAgentControlErrorEvent(t *testing.T, seq uint64, code, message string) *agentv1.EventEnvelope {
+	t.Helper()
+	payload, err := protojson.Marshal(&agentv1.AgentErrorPayload{Code: code, Message: message})
+	if err != nil {
+		t.Fatalf("marshal error payload: %v", err)
+	}
+	return &agentv1.EventEnvelope{Seq: seq, Stream: "control", Type: "error", Payload: payload}
 }
 
 func testAgentStateEvent(t *testing.T, seq uint64, state string) *agentv1.EventEnvelope {
