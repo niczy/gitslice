@@ -27,15 +27,11 @@ type RuntimeBridgeEvent struct {
 }
 
 const (
-	RuntimeProviderE2B                  = "e2b"
-	RuntimeProviderCloudflareContainers = "cloudflare_containers"
-	RuntimeProviderLocal                = "local"
+	RuntimeProviderLocal = "local"
 )
 
 var supportedRuntimeProviders = map[string]struct{}{
-	RuntimeProviderE2B:                  {},
-	RuntimeProviderCloudflareContainers: {},
-	RuntimeProviderLocal:                {},
+	RuntimeProviderLocal: {},
 }
 
 type RuntimeProvider interface {
@@ -119,6 +115,15 @@ func RuntimeErrorMessage(err error, fallback string) string {
 	return runtimeErrorMessage(err, fallback)
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func normalizeRuntimeProvider(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
@@ -130,7 +135,7 @@ func isSupportedRuntimeProvider(value string) bool {
 }
 
 func SupportedRuntimeProviders() []string {
-	return []string{RuntimeProviderE2B, RuntimeProviderCloudflareContainers, RuntimeProviderLocal}
+	return []string{RuntimeProviderLocal}
 }
 
 type simulatedRuntimeProvider struct {
@@ -160,9 +165,9 @@ func (p *simulatedRuntimeProvider) Start(ctx context.Context, session *models.Ag
 
 	provider := strings.TrimSpace(session.Provider)
 	if provider == "" {
-		provider = RuntimeProviderE2B
+		provider = RuntimeProviderLocal
 	}
-	runtimeSessionID := strings.TrimSpace(session.E2BSandboxID)
+	runtimeSessionID := strings.TrimSpace(session.RuntimeSessionID)
 	if runtimeSessionID == "" {
 		runtimeSessionID = fmt.Sprintf("runtime-%s", session.SessionID)
 	}

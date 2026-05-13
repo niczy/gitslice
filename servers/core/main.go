@@ -68,49 +68,13 @@ func main() {
 	accountservice.RegisterGRPCServer(grpcServer, st)
 	ciservice.RegisterGRPCServer(grpcServer, st)
 	agentSessionService := agentsession.NewService(st, cfg.AgentWSTokenSecret)
-	enabledRuntimeProviders := make([]string, 0, 2)
 	agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderLocal, agentsession.NewLocalRuntimeProvider(agentSessionService))
-	enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderLocal)
-	if strings.TrimSpace(cfg.E2BAPIKey) != "" || strings.TrimSpace(cfg.E2BAccessToken) != "" {
-		agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderE2B, agentsession.NewE2BRuntimeProvider(agentsession.E2BRuntimeProviderConfig{
-			APIURL:              cfg.E2BAPIURL,
-			Domain:              cfg.E2BDomain,
-			APIKey:              cfg.E2BAPIKey,
-			AccessToken:         cfg.E2BAccessToken,
-			CodexAPIKey:         cfg.CodexAPIKey,
-			ClaudeAPIKey:        cfg.ClaudeAPIKey,
-			EgressAllowlist:     parseCommaSeparated(cfg.AgentEgressAllowlist),
-			EgressDenyByDefault: cfg.AgentEgressDenyByDefault,
-			RuntimeWSPort:       cfg.E2BRuntimeWSPort,
-			RuntimeWSPath:       cfg.E2BRuntimeWSPath,
-			RequestTimeout:      time.Duration(cfg.E2BRequestTimeoutSec) * time.Second,
-		}))
-		enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderE2B)
-	} else {
-		log.Printf("Agent runtime provider e2b using simulated backend (set E2B_API_KEY or E2B_ACCESS_TOKEN to enable real e2b)")
-	}
-	if strings.TrimSpace(cfg.CFCControlBaseURL) != "" || strings.TrimSpace(cfg.CFCServiceTokenID) != "" || strings.TrimSpace(cfg.CFCServiceTokenSecret) != "" {
-		agentSessionService.SetRuntimeProviderFor(agentsession.RuntimeProviderCloudflareContainers, agentsession.NewCloudflareRuntimeProvider(agentsession.CloudflareRuntimeProviderConfig{
-			ControlBaseURL:     cfg.CFCControlBaseURL,
-			ControlAudience:    cfg.CFCControlAudience,
-			ServiceTokenID:     cfg.CFCServiceTokenID,
-			ServiceTokenSecret: cfg.CFCServiceTokenSecret,
-			CodexAPIKey:        cfg.CodexAPIKey,
-			ClaudeAPIKey:       cfg.ClaudeAPIKey,
-			RequestTimeout:     time.Duration(cfg.CFCRequestTimeoutSec) * time.Second,
-		}))
-		enabledRuntimeProviders = append(enabledRuntimeProviders, agentsession.RuntimeProviderCloudflareContainers)
-	}
 	if defaultProvider := strings.TrimSpace(cfg.AgentRuntimeProviderDefault); defaultProvider != "" {
 		if err := agentSessionService.SetDefaultRuntimeProvider(defaultProvider); err != nil {
 			log.Printf("Ignoring AGENT_RUNTIME_PROVIDER_DEFAULT=%q: %v", defaultProvider, err)
 		}
 	}
-	if len(enabledRuntimeProviders) == 0 {
-		log.Printf("Agent runtime providers enabled: e2b(simulated)")
-	} else {
-		log.Printf("Agent runtime providers enabled: %s (default=%s)", strings.Join(enabledRuntimeProviders, ","), agentSessionService.DefaultRuntimeProviderName())
-	}
+	log.Printf("Agent runtime providers enabled: %s (default=%s)", agentsession.RuntimeProviderLocal, agentSessionService.DefaultRuntimeProviderName())
 	agentSessionService.StartLifecycleLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
@@ -286,17 +250,4 @@ func logPostgresRuntimeConfig(cfg *config.Config) {
 		maxConnLifetime,
 		strings.TrimSpace(cfg.DeployEnv),
 	)
-}
-
-func parseCommaSeparated(value string) []string {
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		out = append(out, trimmed)
-	}
-	return out
 }

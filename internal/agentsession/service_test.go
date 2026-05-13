@@ -27,10 +27,9 @@ func TestServiceLifecycle(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	session, token, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-1",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
-		E2BRegion:     "us-west-2",
+		SliceID:  "slice-1",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -90,16 +89,16 @@ func TestServiceOneActiveSessionPerSlice(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	if _, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-2",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-2",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	}); err != nil {
 		t.Fatalf("CreateSession first failed: %v", err)
 	}
 	if _, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-2",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-2",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	}); err != storage.ErrAgentSessionConflict {
 		t.Fatalf("expected ErrAgentSessionConflict, got %v", err)
 	}
@@ -121,6 +120,7 @@ func TestServiceLocalRuntimeQueuesInput(t *testing.T) {
 	svc.SetRuntimeProviderFor(RuntimeProviderLocal, NewLocalRuntimeProvider(svc))
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
 		SliceID:   "slice-local",
+		RunnerID:  "runner-test",
 		Provider:  RuntimeProviderLocal,
 		AgentType: "codex",
 	})
@@ -170,6 +170,7 @@ func TestServiceStoresRuntimeSessionEventMetadata(t *testing.T) {
 	svc.SetRuntimeProviderFor(RuntimeProviderLocal, NewLocalRuntimeProvider(svc))
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
 		SliceID:   "slice-local-runtime-metadata",
+		RunnerID:  "runner-test",
 		Provider:  RuntimeProviderLocal,
 		AgentType: "codex",
 	})
@@ -219,9 +220,9 @@ func TestValidateAndConsumeWSToken(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	created, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-token",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-token",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -268,8 +269,8 @@ func TestServiceLifecycleIdleAndTTL(t *testing.T) {
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
 		SliceID:        "slice-lifecycle",
-		Provider:       "e2b",
-		E2BTemplateID:  "tmpl-v1",
+		RunnerID:       "runner-test",
+		Provider:       RuntimeProviderLocal,
 		IdleTimeoutSec: 1,
 		TTLSec:         2,
 	})
@@ -311,9 +312,9 @@ func TestServiceRuntimeStartFailure(t *testing.T) {
 	})
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-start-fail",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-start-fail",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -350,12 +351,12 @@ func TestServiceRuntimeStartRetriesTransientFailures(t *testing.T) {
 			attempts++
 			if attempts == 1 {
 				return nil, &RuntimeError{
-					Code:    "E2B_START_UNAVAILABLE",
+					Code:    "LOCAL_START_UNAVAILABLE",
 					Message: "temporary backend outage",
 				}
 			}
 			return &RuntimeStartResult{
-				Provider:  "e2b",
+				Provider:  RuntimeProviderLocal,
 				SessionID: "runtime-retry-1",
 				Endpoint:  "runtime://retry",
 				Status:    "ready",
@@ -365,9 +366,9 @@ func TestServiceRuntimeStartRetriesTransientFailures(t *testing.T) {
 	})
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-start-retry",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-start-retry",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -406,9 +407,9 @@ func TestServiceRuntimeStartDoesNotRetryNonTransientFailures(t *testing.T) {
 	})
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-start-no-retry",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-start-no-retry",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -436,10 +437,10 @@ func TestServiceCodexBinaryValidationFailure(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-codex-missing-bin",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
-		AgentType:     "codex",
+		SliceID:   "slice-codex-missing-bin",
+		RunnerID:  "runner-test",
+		Provider:  RuntimeProviderLocal,
+		AgentType: "codex",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -455,7 +456,7 @@ func TestServiceCodexBinaryValidationFailure(t *testing.T) {
 	}
 }
 
-func TestServiceHandleAgentInputProducesCodexEvents(t *testing.T) {
+func TestServiceHandleAgentInputQueuesCodexInput(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	if err := st.CreateSlice(ctx, &models.Slice{
@@ -472,10 +473,10 @@ func TestServiceHandleAgentInputProducesCodexEvents(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-agent-input",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
-		AgentType:     "codex",
+		SliceID:   "slice-agent-input",
+		RunnerID:  "runner-test",
+		Provider:  RuntimeProviderLocal,
+		AgentType: "codex",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -490,21 +491,21 @@ func TestServiceHandleAgentInputProducesCodexEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEventsForUser failed: %v", err)
 	}
+	foundInput := false
 	foundFinal := false
-	foundToolStart := false
 	for _, event := range events {
+		if event.Stream == "agent" && event.Type == "input" && strings.Contains(string(event.Payload), "Refactor this function") {
+			foundInput = true
+		}
 		if event.Stream == "agent" && event.Type == "output_final" {
 			foundFinal = true
 		}
-		if event.Stream == "tool" && event.Type == "start" {
-			foundToolStart = true
-		}
 	}
-	if !foundFinal {
-		t.Fatalf("expected agent/output_final event")
+	if !foundInput {
+		t.Fatalf("expected agent/input event")
 	}
-	if !foundToolStart {
-		t.Fatalf("expected tool/start event")
+	if foundFinal {
+		t.Fatalf("local provider should not emit agent/output_final without runner output")
 	}
 }
 
@@ -525,10 +526,10 @@ func TestServiceClaudeBinaryValidationFailure(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-claude-missing-bin",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
-		AgentType:     "claude",
+		SliceID:   "slice-claude-missing-bin",
+		RunnerID:  "runner-test",
+		Provider:  RuntimeProviderLocal,
+		AgentType: "claude",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -544,7 +545,7 @@ func TestServiceClaudeBinaryValidationFailure(t *testing.T) {
 	}
 }
 
-func TestServiceHandleAgentInputProducesClaudeEvents(t *testing.T) {
+func TestServiceHandleAgentInputQueuesClaudeInput(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	if err := st.CreateSlice(ctx, &models.Slice{
@@ -558,10 +559,10 @@ func TestServiceHandleAgentInputProducesClaudeEvents(t *testing.T) {
 
 	svc := NewService(st, "test-secret")
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-agent-input-claude",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
-		AgentType:     "claude",
+		SliceID:   "slice-agent-input-claude",
+		RunnerID:  "runner-test",
+		Provider:  RuntimeProviderLocal,
+		AgentType: "claude",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -576,14 +577,14 @@ func TestServiceHandleAgentInputProducesClaudeEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEventsForUser failed: %v", err)
 	}
-	foundFinal := false
+	foundInput := false
 	for _, event := range events {
-		if event.Stream == "agent" && event.Type == "output_final" && strings.Contains(string(event.Payload), "Claude completed request") {
-			foundFinal = true
+		if event.Stream == "agent" && event.Type == "input" && strings.Contains(string(event.Payload), "Explain this diff") {
+			foundInput = true
 		}
 	}
-	if !foundFinal {
-		t.Fatalf("expected Claude agent/output_final event")
+	if !foundInput {
+		t.Fatalf("expected Claude agent/input event")
 	}
 }
 
@@ -601,10 +602,10 @@ func TestServiceHandleAgentInputUsesRuntimeBridgeProvider(t *testing.T) {
 
 	inputCalls := 0
 	svc := NewService(st, "test-secret")
-	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+	svc.SetRuntimeProviderFor(RuntimeProviderLocal, &stubRuntimeProvider{
 		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
 			return &RuntimeStartResult{
-				Provider:  RuntimeProviderCloudflareContainers,
+				Provider:  RuntimeProviderLocal,
 				SessionID: "runtime-bridge-1",
 				Endpoint:  "https://edge.internal/runtime-bridge-1",
 				Status:    "ready",
@@ -641,9 +642,9 @@ func TestServiceHandleAgentInputUsesRuntimeBridgeProvider(t *testing.T) {
 	})
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-runtime-bridge-input",
-		Provider:      RuntimeProviderCloudflareContainers,
-		E2BTemplateID: "cfc-profile",
+		SliceID:  "slice-runtime-bridge-input",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -686,10 +687,10 @@ func TestServiceHandleAgentInterruptUsesRuntimeBridgeProvider(t *testing.T) {
 
 	interruptCalls := 0
 	svc := NewService(st, "test-secret")
-	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+	svc.SetRuntimeProviderFor(RuntimeProviderLocal, &stubRuntimeProvider{
 		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
 			return &RuntimeStartResult{
-				Provider:  RuntimeProviderCloudflareContainers,
+				Provider:  RuntimeProviderLocal,
 				SessionID: "runtime-bridge-2",
 				Endpoint:  "https://edge.internal/runtime-bridge-2",
 				Status:    "ready",
@@ -720,9 +721,9 @@ func TestServiceHandleAgentInterruptUsesRuntimeBridgeProvider(t *testing.T) {
 	})
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-runtime-bridge-interrupt",
-		Provider:      RuntimeProviderCloudflareContainers,
-		E2BTemplateID: "cfc-profile",
+		SliceID:  "slice-runtime-bridge-interrupt",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -758,10 +759,10 @@ func TestServiceSyncRuntimeEventsSkipsConcurrentSync(t *testing.T) {
 	session := &models.AgentSession{
 		SessionID:      "session-runtime-sync-race",
 		SliceID:        "slice-runtime-sync-race",
+		RunnerID:       "runner-test",
 		UserID:         "alice",
 		State:          models.AgentSessionStateRunning,
-		Provider:       RuntimeProviderCloudflareContainers,
-		E2BTemplateID:  "cfc-profile",
+		Provider:       RuntimeProviderLocal,
 		IdleTimeoutSec: 60,
 		TTLSec:         600,
 		CreatedAt:      now,
@@ -838,7 +839,7 @@ func TestServiceRuntimeStopFailure(t *testing.T) {
 	svc.SetRuntimeProvider(&stubRuntimeProvider{
 		startFn: func(_ context.Context, _ *models.AgentSession) (*RuntimeStartResult, error) {
 			return &RuntimeStartResult{
-				Provider:  "e2b",
+				Provider:  RuntimeProviderLocal,
 				SessionID: "runtime-stop-fail",
 				Endpoint:  "runtime://stop-fail",
 				Status:    "ready",
@@ -854,9 +855,9 @@ func TestServiceRuntimeStopFailure(t *testing.T) {
 	})
 
 	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-stop-fail",
-		Provider:      "e2b",
-		E2BTemplateID: "tmpl-v1",
+		SliceID:  "slice-stop-fail",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -877,12 +878,12 @@ func TestServiceRuntimeStopFailure(t *testing.T) {
 	}
 }
 
-func TestServiceSupportsCloudflareProviderRouting(t *testing.T) {
+func TestServiceRejectsUnsupportedRuntimeProvider(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	if err := st.CreateSlice(ctx, &models.Slice{
-		ID:        "slice-cfc-provider",
-		Name:      "Slice CFC Provider",
+		ID:        "slice-unsupported-provider",
+		Name:      "Slice Unsupported Provider",
 		Owners:    []string{"alice"},
 		CreatedBy: "alice",
 	}); err != nil {
@@ -890,99 +891,38 @@ func TestServiceSupportsCloudflareProviderRouting(t *testing.T) {
 	}
 
 	svc := NewService(st, "test-secret")
-	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
-		startFn: func(_ context.Context, session *models.AgentSession) (*RuntimeStartResult, error) {
-			if got := strings.TrimSpace(session.Provider); got != RuntimeProviderCloudflareContainers {
-				t.Fatalf("expected provider %q, got %q", RuntimeProviderCloudflareContainers, got)
-			}
-			if got := strings.TrimSpace(session.E2BTemplateID); got != "cfc-profile" {
-				t.Fatalf("expected profile id cfc-profile, got %q", got)
-			}
-			return &RuntimeStartResult{
-				Provider:  RuntimeProviderCloudflareContainers,
-				SessionID: "cfc-runtime-1",
-				Endpoint:  "wss://edge.internal/cfc-runtime-1",
-				Status:    "ready",
-			}, nil
-		},
-		stopFn: func(_ context.Context, _ *models.AgentSession, _ string) error { return nil },
-	})
-
-	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-cfc-provider",
-		Provider:      RuntimeProviderCloudflareContainers,
-		E2BTemplateID: "cfc-profile",
-	})
-	if err != nil {
-		t.Fatalf("CreateSession failed: %v", err)
-	}
-	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
-
-	got, err := svc.GetSession(ctx, session.SessionID)
-	if err != nil {
-		t.Fatalf("GetSession failed: %v", err)
-	}
-	if got.RuntimeProvider != RuntimeProviderCloudflareContainers {
-		t.Fatalf("expected runtime provider %q, got %q", RuntimeProviderCloudflareContainers, got.RuntimeProvider)
-	}
-	if got.RuntimeSessionID != "cfc-runtime-1" {
-		t.Fatalf("expected runtime session id cfc-runtime-1, got %q", got.RuntimeSessionID)
+	if _, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:  "slice-unsupported-provider",
+		RunnerID: "runner-test",
+		Provider: "remote",
+	}); err != storage.ErrInvalidInput {
+		t.Fatalf("expected ErrInvalidInput for unsupported runtime provider, got %v", err)
 	}
 }
 
-func TestServiceFailsWhenRuntimeProviderMissing(t *testing.T) {
-	ctx := context.Background()
-	st := storage.NewInMemoryStorage()
-	if err := st.CreateSlice(ctx, &models.Slice{
-		ID:        "slice-missing-provider",
-		Name:      "Slice Missing Provider",
-		Owners:    []string{"alice"},
-		CreatedBy: "alice",
-	}); err != nil {
-		t.Fatalf("CreateSlice failed: %v", err)
-	}
-
-	svc := NewService(st, "test-secret")
-	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
-		SliceID:       "slice-missing-provider",
-		Provider:      RuntimeProviderCloudflareContainers,
-		E2BTemplateID: "cfc-profile",
-	})
-	if err != nil {
-		t.Fatalf("CreateSession failed: %v", err)
-	}
-	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
-
-	got, err := svc.GetSession(ctx, session.SessionID)
-	if err != nil {
-		t.Fatalf("GetSession failed: %v", err)
-	}
-	if got.FailureCode != "RUNTIME_PROVIDER_UNAVAILABLE" {
-		t.Fatalf("expected RUNTIME_PROVIDER_UNAVAILABLE, got %q", got.FailureCode)
-	}
-}
-
-func TestServiceRuntimeHealthChecksByProvider(t *testing.T) {
+func TestServiceRuntimeHealthChecksLocalOnly(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	svc := NewService(st, "test-secret")
-	svc.SetRuntimeProviderFor(RuntimeProviderCloudflareContainers, &stubRuntimeProvider{
+	svc.SetRuntimeProviderFor(RuntimeProviderLocal, &stubRuntimeProvider{
 		healthFn: func(context.Context) error {
 			return &RuntimeError{
-				Code:    "CFC_RUNTIME_UNAVAILABLE",
-				Message: "control plane unavailable",
+				Code:    "LOCAL_RUNTIME_UNAVAILABLE",
+				Message: "local runner bridge unavailable",
 			}
 		},
 	})
 
 	checks := svc.RuntimeHealthChecks(ctx)
-	if checks[RuntimeProviderE2B] != nil {
-		t.Fatalf("expected healthy e2b runtime, got %v", checks[RuntimeProviderE2B])
+	for providerName := range checks {
+		if providerName != RuntimeProviderLocal {
+			t.Fatalf("did not expect runtime health entry for %q", providerName)
+		}
 	}
-	if checks[RuntimeProviderCloudflareContainers] == nil {
-		t.Fatalf("expected unhealthy cloudflare runtime")
+	if checks[RuntimeProviderLocal] == nil {
+		t.Fatalf("expected unhealthy local runtime")
 	}
-	if err := svc.SetDefaultRuntimeProvider(RuntimeProviderCloudflareContainers); err != nil {
+	if err := svc.SetDefaultRuntimeProvider(RuntimeProviderLocal); err != nil {
 		t.Fatalf("SetDefaultRuntimeProvider failed: %v", err)
 	}
 	if err := svc.RuntimeHealthCheck(ctx); err == nil {
@@ -1002,7 +942,7 @@ type stubRuntimeProvider struct {
 func (p *stubRuntimeProvider) Start(ctx context.Context, session *models.AgentSession) (*RuntimeStartResult, error) {
 	if p.startFn == nil {
 		return &RuntimeStartResult{
-			Provider:  "e2b",
+			Provider:  RuntimeProviderLocal,
 			SessionID: "stub-runtime",
 			Endpoint:  "runtime://stub",
 			Status:    "ready",

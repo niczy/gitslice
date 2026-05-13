@@ -8,6 +8,33 @@ import "google/api/annotations.proto";
 import "agent_protocol.proto";
 
 service AgentService {
+  rpc RegisterRunner(RegisterRunnerRequest) returns (RegisterRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-runners"
+      body: "*"
+    };
+  }
+
+  rpc HeartbeatRunner(HeartbeatRunnerRequest) returns (HeartbeatRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-runners/{runner_id}:heartbeat"
+      body: "*"
+    };
+  }
+
+  rpc ListRunners(ListRunnersRequest) returns (ListRunnersResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-runners"
+    };
+  }
+
+  rpc UnregisterRunner(UnregisterRunnerRequest) returns (UnregisterRunnerResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-runners/{runner_id}:unregister"
+      body: "*"
+    };
+  }
+
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
     option (google.api.http) = {
       get: "/v1/agent-sessions"
@@ -76,19 +103,21 @@ service AgentService {
 
 message CreateSessionRequest {
   string slice_id = 1;
-  // Deprecated: prefer environment + agent_type.
+  // Deprecated: ignored. Runtime selection is local-runner-only.
   string provider = 2;
-  // Deprecated: prefer environment + agent_type.
+  // Deprecated: ignored. Cloud sandbox runtimes are not active.
   string e2b_template_id = 3;
-  // Deprecated: prefer environment + agent_type.
+  // Deprecated: ignored. Cloud sandbox runtimes are not active.
   string e2b_region = 4;
   int32 idle_timeout_sec = 5;
   int32 ttl_sec = 6;
   map<string, string> env = 7;
-  // Optional environment name for resolving provider/template defaults.
+  // Deprecated: ignored. Sessions are assigned directly to a runner.
   string environment = 8;
   // Optional agent type. Defaults to "codex" when omitted.
   string agent_type = 9;
+  // Required local runner to assign this session to.
+  string runner_id = 10;
 }
 
 message AgentSessionSummary {
@@ -101,6 +130,7 @@ message AgentSessionSummary {
   string last_activity_at = 6;
   string environment = 7;
   string agent_type = 8;
+  string runner_id = 9;
 }
 
 message ListSessionsRequest {
@@ -132,6 +162,7 @@ message CreateSessionResponse {
   int32 ttl_sec = 9;
   string environment = 10;
   string agent_type = 11;
+  string runner_id = 12;
 }
 
 message GetSessionRequest {
@@ -157,6 +188,7 @@ message GetSessionResponse {
   RuntimeInfo runtime = 10;
   string environment = 11;
   string agent_type = 12;
+  string runner_id = 13;
 }
 
 message StopSessionRequest {
@@ -226,4 +258,67 @@ message ListCapabilitiesResponse {
   string default_agent_type = 2;
   repeated string supported_runtime_providers = 3;
   string default_runtime_provider = 4;
+}
+
+message AgentRunner {
+  string runner_id = 1;
+  string provider = 2;
+  string agent_type = 3;
+  string status = 4;
+  string host_name = 5;
+  int32 pid = 6;
+  string workspace_root = 7;
+  string version = 8;
+  bytes capabilities = 9;
+  string last_heartbeat_at = 10;
+  string created_at = 11;
+  string updated_at = 12;
+}
+
+message RegisterRunnerRequest {
+  string runner_id = 1;
+  string provider = 2;
+  string agent_type = 3;
+  string host_name = 4;
+  int32 pid = 5;
+  string workspace_root = 6;
+  string version = 7;
+  bytes capabilities = 8;
+}
+
+message RegisterRunnerResponse {
+  AgentRunner runner = 1;
+  int32 heartbeat_interval_sec = 2;
+}
+
+message HeartbeatRunnerRequest {
+  string runner_id = 1;
+  string status = 2;
+  string host_name = 3;
+  int32 pid = 4;
+  string workspace_root = 5;
+  bytes capabilities = 6;
+}
+
+message HeartbeatRunnerResponse {
+  AgentRunner runner = 1;
+  int32 heartbeat_interval_sec = 2;
+}
+
+message ListRunnersRequest {
+  int32 limit = 1;
+  bool include_offline = 2;
+}
+
+message ListRunnersResponse {
+  repeated AgentRunner runners = 1;
+}
+
+message UnregisterRunnerRequest {
+  string runner_id = 1;
+  string reason = 2;
+}
+
+message UnregisterRunnerResponse {
+  AgentRunner runner = 1;
 }

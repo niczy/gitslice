@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,60 +23,19 @@ var validEnvironmentAgentTypes = map[string]struct{}{
 }
 
 var validEnvironmentProviders = map[string]struct{}{
-	"e2b":                   {},
-	"cloudflare_containers": {},
-	"local":                 {},
+	"local": {},
 }
 
 func ValidateEnvironmentProviderConfig(provider string, values map[string]string) error {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
-		provider = "e2b"
+		provider = "local"
 	}
 
 	runtimeWSPath := strings.TrimSpace(values["runtime_ws_path"])
 	if runtimeWSPath != "" && !strings.HasPrefix(runtimeWSPath, "/") {
 		return fmt.Errorf("providerConfig.runtime_ws_path must start with '/'")
 	}
-
-	if provider != "cloudflare_containers" {
-		return nil
-	}
-
-	workerBaseURL := strings.TrimSpace(values["worker_base_url"])
-	if workerBaseURL == "" {
-		return fmt.Errorf("providerConfig.worker_base_url is required for cloudflare_containers")
-	}
-	parsedURL, err := url.Parse(workerBaseURL)
-	if err != nil || parsedURL == nil || strings.TrimSpace(parsedURL.Host) == "" {
-		return fmt.Errorf("providerConfig.worker_base_url must be a valid absolute URL")
-	}
-	switch strings.ToLower(strings.TrimSpace(parsedURL.Scheme)) {
-	case "http", "https":
-	default:
-		return fmt.Errorf("providerConfig.worker_base_url must use http or https")
-	}
-
-	if strings.TrimSpace(values["container_class"]) == "" {
-		return fmt.Errorf("providerConfig.container_class is required for cloudflare_containers")
-	}
-	if strings.TrimSpace(values["instance_type"]) == "" {
-		return fmt.Errorf("providerConfig.instance_type is required for cloudflare_containers")
-	}
-
-	runtimeStreamPath := strings.TrimSpace(values["runtime_stream_path"])
-	if runtimeStreamPath != "" && !strings.HasPrefix(runtimeStreamPath, "/") {
-		return fmt.Errorf("providerConfig.runtime_stream_path must start with '/'")
-	}
-
-	startupTimeoutSec := strings.TrimSpace(values["startup_timeout_sec"])
-	if startupTimeoutSec != "" {
-		parsedTimeout, parseErr := strconv.Atoi(startupTimeoutSec)
-		if parseErr != nil || parsedTimeout <= 0 {
-			return fmt.Errorf("providerConfig.startup_timeout_sec must be a positive integer")
-		}
-	}
-
 	return nil
 }
 
@@ -127,15 +84,12 @@ func normalizeEnvironmentForCreate(env *models.Environment) (*models.Environment
 	}
 	provider := strings.TrimSpace(env.Provider)
 	if provider == "" {
-		provider = "e2b"
+		provider = "local"
 	}
 	if _, ok := validEnvironmentProviders[provider]; !ok {
 		return nil, ErrInvalidInput
 	}
 	providerID := strings.TrimSpace(env.ProviderID)
-	if providerID == "" && provider != "local" {
-		return nil, ErrInvalidInput
-	}
 	providerConfig, err := normalizeEnvironmentProviderConfig(env.ProviderConfig)
 	if err != nil {
 		return nil, err
@@ -186,15 +140,12 @@ func normalizeEnvironmentForUpdate(env *models.Environment) (*models.Environment
 	}
 	provider := strings.TrimSpace(env.Provider)
 	if provider == "" {
-		provider = "e2b"
+		provider = "local"
 	}
 	if _, ok := validEnvironmentProviders[provider]; !ok {
 		return nil, ErrInvalidInput
 	}
 	providerID := strings.TrimSpace(env.ProviderID)
-	if providerID == "" && provider != "local" {
-		return nil, ErrInvalidInput
-	}
 	providerConfig, err := normalizeEnvironmentProviderConfig(env.ProviderConfig)
 	if err != nil {
 		return nil, err

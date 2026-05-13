@@ -14,6 +14,7 @@ import {
 import {
   createAgentSession,
   getAgentCapabilities,
+  listAgentRunners,
   listAgentSessionEvents,
   listAgentSessions,
   requestAgentRunnerRestart,
@@ -34,6 +35,21 @@ function normalizeSession(session) {
     environment: session?.environment ?? '',
     agentType: session?.agentType ?? session?.agent_type ?? '',
     provider: session?.provider ?? '',
+    runnerId: session?.runnerId ?? session?.runner_id ?? '',
+  };
+}
+
+function normalizeRunner(runner) {
+  return {
+    runnerId: runner?.runnerId ?? runner?.runner_id ?? '',
+    provider: runner?.provider ?? '',
+    agentType: runner?.agentType ?? runner?.agent_type ?? '',
+    status: runner?.status ?? '',
+    hostName: runner?.hostName ?? runner?.host_name ?? '',
+    pid: runner?.pid ?? 0,
+    workspaceRoot: runner?.workspaceRoot ?? runner?.workspace_root ?? '',
+    version: runner?.version ?? '',
+    lastHeartbeatAt: runner?.lastHeartbeatAt ?? runner?.last_heartbeat_at ?? '',
   };
 }
 
@@ -304,8 +320,8 @@ function buildAgentInfoRows(session, runnerState) {
   const rows = [
     ['State', session.state],
     ['Session', session.sessionId],
+    ['Runner', session.runnerId],
     ['Provider', session.provider],
-    ['Environment', session.environment],
     ['Agent', session.agentType],
     ['Host', runnerState.host_name || runnerState.hostName],
     ['PID', runnerState.pid],
@@ -372,8 +388,11 @@ export default function SliceAgentsPage({
   onSelectSession,
 }) {
   const [sessions, setSessions] = useState([]);
+  const [runners, setRunners] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
+  const [selectedRunnerId, setSelectedRunnerId] = useState('');
   const [events, setEvents] = useState([]);
+  const [runnersLoading, setRunnersLoading] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -386,6 +405,7 @@ export default function SliceAgentsPage({
   const [createError, setCreateError] = useState('');
   const [inputError, setInputError] = useState('');
   const [runnerActionError, setRunnerActionError] = useState('');
+  const [runnersError, setRunnersError] = useState('');
   const [capabilities, setCapabilities] = useState(null);
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
   const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
@@ -394,10 +414,11 @@ export default function SliceAgentsPage({
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
   ), [sliceId, slices]);
   const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
-  const sliceEnvironment = String(currentSlice?.environment || '').trim();
   const normalizedRouteSessionId = String(routeSessionId || '').trim();
   const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
-  const canCreateSession = Boolean(sliceId && sliceEnvironment);
+  const onlineRunners = useMemo(() => runners.filter((runner) => runner.status === 'online'), [runners]);
+  const selectedRunner = onlineRunners.find((runner) => runner.runnerId === selectedRunnerId) || onlineRunners[0] || null;
+  const canCreateSession = Boolean(sliceId && selectedRunner?.runnerId);
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) || null;
   const runnerState = useMemo(() => latestRunnerState(events), [events]);
   const agentInfoRows = useMemo(() => buildAgentInfoRows(selectedSession, runnerState), [selectedSession, runnerState]);
@@ -492,6 +513,27 @@ export default function SliceAgentsPage({
     writeAgentSessionURL(selectedSessionId, { replace: true });
   }, [selectedSessionId]);
 
+  const loadRunners = useCallback(async ({ keepSelection = true } = {}) => {
+    setRunnersLoading(true);
+    setRunnersError('');
+    try {
+      const nextRunners = (await listAgentRunners({ limit: 50 })).map(normalizeRunner);
+      setRunners(nextRunners);
+      setSelectedRunnerId((current) => {
+        if (keepSelection && current && nextRunners.some((runner) => runner.runnerId === current && runner.status === 'online')) {
+          return current;
+        }
+        return nextRunners.find((runner) => runner.status === 'online')?.runnerId || '';
+      });
+    } catch (err) {
+      setRunners([]);
+      setSelectedRunnerId('');
+      setRunnersError(err?.message || 'Unable to load agent runners.');
+    } finally {
+      setRunnersLoading(false);
+    }
+  }, []);
+
   const loadSessions = useCallback(async ({ keepSelection = false } = {}) => {
     if (!sliceId) {
       setSessions([]);
@@ -534,6 +576,20 @@ export default function SliceAgentsPage({
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      if (!active) return;
+      await loadRunners();
+    };
+    refresh();
+    const intervalId = window.setInterval(refresh, 10000);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [loadRunners]);
 
   useEffect(() => {
     loadSessions();
@@ -609,8 +665,8 @@ export default function SliceAgentsPage({
     setCreateError('');
     try {
       const created = normalizeSession(await createAgentSession(sliceId, {
-        environment: sliceEnvironment,
-        agentType: defaultAgentType,
+        runnerId: selectedRunner.runnerId,
+        agentType: selectedRunner.agentType || defaultAgentType,
       }));
       await loadSessions({ keepSelection: true });
       setSelectedSessionId(created.sessionId);
@@ -687,7 +743,7 @@ export default function SliceAgentsPage({
           <div className="slice-agents-sidebar-header">
             <div>
               <h2>Sessions</h2>
-              <span>{sliceEnvironment || 'No remote agent connected'}</span>
+              <span>{selectedRunner ? `${selectedRunner.agentType || 'agent'} on ${selectedRunner.hostName || 'local runner'}` : 'No local runner online'}</span>
             </div>
             <div className="slice-agents-sidebar-actions">
               <Button
@@ -706,7 +762,10 @@ export default function SliceAgentsPage({
                 variant="ghost"
                 size="icon"
                 className="slice-agents-icon-button"
-                onClick={() => loadSessions({ keepSelection: true })}
+                onClick={() => {
+                  loadRunners({ keepSelection: true });
+                  loadSessions({ keepSelection: true });
+                }}
                 aria-label="Refresh agent sessions"
                 title="Refresh"
               >
@@ -719,7 +778,7 @@ export default function SliceAgentsPage({
                 className="slice-agents-new-button"
                 onClick={handleCreateSession}
                 disabled={!canCreateSession || creatingSession}
-                title={canCreateSession ? 'New session' : 'Start a remote agent first'}
+                title={canCreateSession ? 'New session' : 'Start a local runner first'}
                 data-testid="slice-agents-new-session"
               >
                 <Plus size={15} aria-hidden="true" />
@@ -728,10 +787,50 @@ export default function SliceAgentsPage({
             </div>
           </div>
 
+          <section className="slice-agents-available-runners" data-testid="slice-agents-runners">
+            <div className="slice-agents-section-label">Available runners</div>
+            {runnersLoading && runners.length === 0 && <div className="panel-empty">Loading runners...</div>}
+            {!runnersLoading && runnersError && <div className="panel-error">{runnersError}</div>}
+            {!runnersLoading && !runnersError && onlineRunners.length === 0 && (
+              <div className="panel-empty">No local runners online.</div>
+            )}
+            {onlineRunners.length > 0 && (
+              <ul className="slice-agents-session-list">
+                {onlineRunners.map((runner) => {
+                  const isSelected = selectedRunner?.runnerId === runner.runnerId;
+                  return (
+                    <li key={runner.runnerId}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className={`slice-agents-session-row${isSelected ? ' active' : ''}`}
+                        onClick={() => setSelectedRunnerId(runner.runnerId)}
+                        aria-pressed={isSelected}
+                        data-testid="slice-agents-runner"
+                      >
+                        <span className="slice-agents-session-icon" aria-hidden="true">
+                          <TerminalSquare size={15} />
+                        </span>
+                        <span className="slice-agents-session-main">
+                          <span className="slice-agents-session-title">
+                            {runner.agentType || 'agent'} · {runner.hostName || 'local'}
+                          </span>
+                          <span className="slice-agents-session-meta">
+                            {runner.status || 'unknown'} · {runner.workspaceRoot || runner.runnerId}
+                          </span>
+                        </span>
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
           {!canCreateSession && (
             <div className="slice-agents-connection-note" data-testid="slice-agents-connection-note">
               <CircleAlert size={15} aria-hidden="true" />
-              <span>Start a remote agent to create sessions.</span>
+              <span>Start a local runner to create sessions.</span>
             </div>
           )}
           {showAgentSessionDocsLink && (

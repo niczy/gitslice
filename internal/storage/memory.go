@@ -119,6 +119,9 @@ type InMemoryStorage struct {
 	teamMembers                      map[string]map[string]*models.TeamMember         // teamID -> username -> membership
 	environments                     map[string]*models.Environment                   // env name -> environment
 
+	// Agent runners
+	agentRunners map[string]*models.AgentRunner // runnerID -> runner
+
 	// Agent sessions
 	agentSessions      map[string]*models.AgentSession        // sessionID -> session
 	activeAgentBySlice map[string]string                      // sliceID -> active sessionID
@@ -206,6 +209,7 @@ func NewInMemoryStorage() *InMemoryStorage {
 		teamsByOrg:                       make(map[string]map[string]bool),
 		teamMembers:                      make(map[string]map[string]*models.TeamMember),
 		environments:                     make(map[string]*models.Environment),
+		agentRunners:                     make(map[string]*models.AgentRunner),
 		agentSessions:                    make(map[string]*models.AgentSession),
 		activeAgentBySlice:               make(map[string]string),
 		agentSessionEvents:               make(map[string][]*models.AgentSessionEvent),
@@ -2754,7 +2758,7 @@ func (s *InMemoryStorage) getChangesFromIDs(changeIDs []string, limit int, fromC
 
 func (s *InMemoryStorage) CreateAgentSession(ctx context.Context, session *models.AgentSession) error {
 	_ = ctx
-	if session == nil || session.SessionID == "" || session.SliceID == "" || session.UserID == "" || session.Provider == "" {
+	if session == nil || session.SessionID == "" || session.SliceID == "" || session.UserID == "" || session.Provider != "local" {
 		return ErrInvalidInput
 	}
 

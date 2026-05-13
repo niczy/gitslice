@@ -349,6 +349,12 @@ type Storage interface {
 	UpdateEnvironment(ctx context.Context, env *models.Environment) error
 	DeleteEnvironment(ctx context.Context, name string) error
 
+	// Agent runners
+	UpsertAgentRunner(ctx context.Context, runner *models.AgentRunner) error
+	GetAgentRunner(ctx context.Context, runnerID string) (*models.AgentRunner, error)
+	ListAgentRunnersByUser(ctx context.Context, username string, limit int) ([]*models.AgentRunner, error)
+	UpdateAgentRunner(ctx context.Context, runner *models.AgentRunner) error
+
 	// Agent sessions
 	CreateAgentSession(ctx context.Context, session *models.AgentSession) error
 	GetAgentSession(ctx context.Context, sessionID string) (*models.AgentSession, error)

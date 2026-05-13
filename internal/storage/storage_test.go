@@ -1744,8 +1744,8 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	env := &models.Environment{
 		Name:              envName,
 		DisplayName:       "Node.js 20",
-		Provider:          "e2b",
-		ProviderID:        "tmpl-node20-" + suffix,
+		Provider:          "local",
+		ProviderID:        "runner-profile-" + suffix,
 		ProviderConfig:    map[string]string{"runtime_ws_path": "/ws"},
 		Region:            "us-west-2",
 		DefaultAgentType:  "codex",
@@ -1787,13 +1787,9 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		t.Fatalf("expected environment %q in list", envName)
 	}
 	fetchedEnv.DisplayName = "Node.js 20 LTS"
-	fetchedEnv.ProviderID = "tmpl-node20-updated-" + suffix
-	fetchedEnv.Provider = "cloudflare_containers"
-	fetchedEnv.ProviderConfig = map[string]string{
-		"worker_base_url": "https://edge.example.internal",
-		"container_class": "sandbox",
-		"instance_type":   "basic",
-	}
+	fetchedEnv.ProviderID = "runner-profile-updated-" + suffix
+	fetchedEnv.Provider = "local"
+	fetchedEnv.ProviderConfig = map[string]string{"runtime_ws_path": "/agent/ws"}
 	fetchedEnv.Region = "us-east-1"
 	fetchedEnv.DefaultAgentType = "claude"
 	fetchedEnv.AllowedAgentTypes = []string{"claude", "codex"}
@@ -1807,7 +1803,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if updatedEnv.DisplayName != "Node.js 20 LTS" || updatedEnv.ProviderID != fetchedEnv.ProviderID || updatedEnv.Region != "us-east-1" {
 		t.Fatalf("updated environment mismatch: %#v", updatedEnv)
 	}
-	if updatedEnv.Provider != "cloudflare_containers" || updatedEnv.ProviderConfig["worker_base_url"] == "" {
+	if updatedEnv.Provider != "local" || updatedEnv.ProviderConfig["runtime_ws_path"] != "/agent/ws" {
 		t.Fatalf("updated environment provider config mismatch: %#v", updatedEnv)
 	}
 	if updatedEnv.DefaultAgentType != "claude" || len(updatedEnv.AllowedAgentTypes) != 2 {
@@ -2477,13 +2473,11 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		AgentType:        "claude",
 		UserID:           "alice",
 		State:            models.AgentSessionStateCreating,
-		Provider:         "e2b",
-		RuntimeProvider:  "e2b",
+		Provider:         "local",
+		RuntimeProvider:  "local",
 		RuntimeSessionID: "runtime-create",
 		RuntimeStatus:    "creating",
 		RuntimeErrorCode: "none",
-		E2BTemplateID:    "tmpl-test",
-		E2BRegion:        "us-west-2",
 		IdleTimeoutSec:   1800,
 		TTLSec:           14400,
 		CreatedAt:        time.Now(),
@@ -2517,7 +2511,7 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	}
 
 	session.State = models.AgentSessionStateRunning
-	session.RuntimeProvider = "e2b"
+	session.RuntimeProvider = "local"
 	session.RuntimeSessionID = "sbx-" + suffix
 	session.RuntimeStatus = "ready"
 	session.RuntimeEndpoint = "wss://runtime.example/ws"
@@ -2693,12 +2687,11 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 		AgentType:        "cleanup",
 		UserID:           "alice",
 		State:            models.AgentSessionStateStopped,
-		Provider:         "e2b",
-		RuntimeProvider:  "e2b",
+		Provider:         "local",
+		RuntimeProvider:  "local",
 		RuntimeSessionID: "runtime-delete",
 		RuntimeStatus:    "stopped",
 		RuntimeErrorCode: "none",
-		E2BTemplateID:    "template",
 		IdleTimeoutSec:   60,
 		TTLSec:           60,
 	}

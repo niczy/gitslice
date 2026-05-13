@@ -37,11 +37,10 @@ var supportedAgentTypes = map[string]struct{}{
 
 type CreateRequest struct {
 	SliceID         string
+	RunnerID        string
 	EnvironmentName string
 	AgentType       string
 	Provider        string
-	E2BTemplateID   string
-	E2BRegion       string
 	IdleTimeoutSec  int
 	TTLSec          int
 	Env             map[string]string
@@ -88,16 +87,15 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 	if strings.TrimSpace(wsTokenSecret) == "" {
 		wsTokenSecret = "dev-insecure-agent-secret"
 	}
-	simulated := newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
-	return &Service{
+	svc := &Service{
 		st:                       st,
 		wsTokenSecret:            []byte(wsTokenSecret),
 		seqHead:                  make(map[string]uint64),
 		usedNonces:               make(map[string]time.Time),
 		replaySeqs:               make(map[string][]uint64),
 		maxReplayFrame:           10000,
-		runtimeProviders:         map[string]RuntimeProvider{RuntimeProviderE2B: simulated},
-		defaultRuntimeProvider:   RuntimeProviderE2B,
+		runtimeProviders:         make(map[string]RuntimeProvider),
+		defaultRuntimeProvider:   RuntimeProviderLocal,
 		runtimeStartInFlight:     make(map[string]struct{}),
 		runtimeStopInFlight:      make(map[string]struct{}),
 		runtimeBridgeInFlight:    make(map[string]struct{}),
@@ -110,19 +108,24 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		runtimeStartRetryBackoff: defaultStartRetryBackoff,
 		runtimeBridgePollTick:    defaultBridgePollTick,
 	}
+	svc.runtimeProviders[RuntimeProviderLocal] = NewLocalRuntimeProvider(svc)
+	return svc
 }
 
 func (s *Service) SetRuntimeProvider(provider RuntimeProvider) {
-	s.SetRuntimeProviderFor(RuntimeProviderE2B, provider)
+	s.SetRuntimeProviderFor(RuntimeProviderLocal, provider)
 }
 
 func (s *Service) SetRuntimeProviderFor(providerName string, provider RuntimeProvider) {
 	providerName = normalizeRuntimeProvider(providerName)
 	if providerName == "" {
-		providerName = RuntimeProviderE2B
+		providerName = RuntimeProviderLocal
+	}
+	if !isSupportedRuntimeProvider(providerName) {
+		return
 	}
 	if provider == nil {
-		provider = newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond)
+		provider = NewLocalRuntimeProvider(nil)
 	}
 	s.runtimeMu.Lock()
 	if s.runtimeProviders == nil {
@@ -166,7 +169,11 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.SliceID = strings.TrimSpace(req.SliceID)
+	req.RunnerID = strings.TrimSpace(req.RunnerID)
 	if req.SliceID == "" {
+		return nil, nil, storage.ErrInvalidInput
+	}
+	if req.RunnerID == "" {
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.EnvironmentName = strings.TrimSpace(req.EnvironmentName)
@@ -179,16 +186,11 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 	}
 	req.Provider = normalizeRuntimeProvider(req.Provider)
 	if req.Provider == "" {
-		req.Provider = RuntimeProviderE2B
+		req.Provider = RuntimeProviderLocal
 	}
 	if !isSupportedRuntimeProvider(req.Provider) {
 		return nil, nil, storage.ErrInvalidInput
 	}
-	req.E2BTemplateID = strings.TrimSpace(req.E2BTemplateID)
-	if req.E2BTemplateID == "" && req.Provider != RuntimeProviderLocal {
-		return nil, nil, storage.ErrInvalidInput
-	}
-	req.E2BRegion = strings.TrimSpace(req.E2BRegion)
 	if req.IdleTimeoutSec <= 0 {
 		req.IdleTimeoutSec = defaultIdleTimeoutSec
 	}
@@ -200,13 +202,12 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 	session := &models.AgentSession{
 		SessionID:       makeSessionID(),
 		SliceID:         req.SliceID,
+		RunnerID:        req.RunnerID,
 		EnvironmentName: req.EnvironmentName,
 		AgentType:       req.AgentType,
 		UserID:          userID,
 		State:           models.AgentSessionStateCreating,
 		Provider:        req.Provider,
-		E2BTemplateID:   req.E2BTemplateID,
-		E2BRegion:       req.E2BRegion,
 		IdleTimeoutSec:  req.IdleTimeoutSec,
 		TTLSec:          req.TTLSec,
 		CreatedAt:       now,
@@ -217,11 +218,10 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 	}
 
 	_ = s.AddAudit(ctx, session.SessionID, userID, "session_created", map[string]any{
-		"sliceId":       session.SliceID,
-		"agentType":     session.AgentType,
-		"provider":      session.Provider,
-		"e2bTemplateId": session.E2BTemplateID,
-		"e2bRegion":     session.E2BRegion,
+		"sliceId":   session.SliceID,
+		"runnerId":  session.RunnerID,
+		"agentType": session.AgentType,
+		"provider":  session.Provider,
 	})
 	_ = s.AppendStateEvent(ctx, session.SessionID, session.State)
 	ObserveAgentSessionCreate(session.AgentType, string(session.State))
@@ -765,9 +765,6 @@ func (s *Service) startSessionRuntime(sessionID string) {
 		}
 		if runtimeID := strings.TrimSpace(result.SessionID); runtimeID != "" {
 			session.RuntimeSessionID = runtimeID
-			if strings.TrimSpace(session.E2BSandboxID) == "" {
-				session.E2BSandboxID = runtimeID
-			}
 		}
 		if endpoint := strings.TrimSpace(result.Endpoint); endpoint != "" {
 			session.RuntimeEndpoint = endpoint
@@ -915,7 +912,7 @@ func actorForAudit(actorUserID string) string {
 }
 
 func (s *Service) runtimeProviderForSession(session *models.AgentSession) (RuntimeProvider, string, error) {
-	providerName := RuntimeProviderE2B
+	providerName := RuntimeProviderLocal
 	if session != nil {
 		providerName = normalizeRuntimeProvider(session.RuntimeProvider)
 		if providerName == "" {
@@ -932,7 +929,7 @@ func (s *Service) runtimeProviderByName(providerName string) (RuntimeProvider, s
 		providerName = s.defaultRuntimeProvider
 	}
 	if providerName == "" {
-		providerName = RuntimeProviderE2B
+		providerName = RuntimeProviderLocal
 	}
 	provider := s.runtimeProviders[providerName]
 	s.runtimeMu.Unlock()
@@ -951,7 +948,7 @@ func (s *Service) runtimeProviderSnapshot() map[string]RuntimeProvider {
 	defer s.runtimeMu.Unlock()
 	if len(s.runtimeProviders) == 0 {
 		return map[string]RuntimeProvider{
-			RuntimeProviderE2B: newSimulatedRuntimeProvider(50*time.Millisecond, 50*time.Millisecond),
+			RuntimeProviderLocal: NewLocalRuntimeProvider(s),
 		}
 	}
 	out := make(map[string]RuntimeProvider, len(s.runtimeProviders))
@@ -965,7 +962,7 @@ func (s *Service) DefaultRuntimeProviderName() string {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if s.defaultRuntimeProvider == "" {
-		return RuntimeProviderE2B
+		return RuntimeProviderLocal
 	}
 	return s.defaultRuntimeProvider
 }
