@@ -104,6 +104,55 @@ func TestRegisterRunnerRejectsCrossUserRunnerID(t *testing.T) {
 	}
 }
 
+func TestListRunnersMarksStaleHeartbeatOffline(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	staleHeartbeat := now.Add(-runnerOnlineTTL - time.Second)
+	if err := st.UpsertAgentRunner(context.Background(), &models.AgentRunner{
+		RunnerID:        "runner-stale",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		LastHeartbeatAt: staleHeartbeat,
+		CreatedAt:       staleHeartbeat,
+		UpdatedAt:       staleHeartbeat,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	listResp, err := srv.ListRunners(ctx, &agentv1.ListRunnersRequest{IncludeOffline: true})
+	if err != nil {
+		t.Fatalf("ListRunners failed: %v", err)
+	}
+	if len(listResp.GetRunners()) != 1 {
+		t.Fatalf("expected stale runner to be listed with include_offline, got %#v", listResp.GetRunners())
+	}
+	if listResp.GetRunners()[0].GetStatus() != string(models.AgentRunnerStatusOffline) {
+		t.Fatalf("expected stale runner to be returned offline, got %#v", listResp.GetRunners()[0])
+	}
+	stored, err := st.GetAgentRunner(context.Background(), "runner-stale")
+	if err != nil {
+		t.Fatalf("GetAgentRunner failed: %v", err)
+	}
+	if stored.Status != models.AgentRunnerStatusOffline {
+		t.Fatalf("expected stale runner status to be persisted offline, got %q", stored.Status)
+	}
+	if !stored.LastHeartbeatAt.Equal(staleHeartbeat) {
+		t.Fatalf("expected last heartbeat to be preserved, got %s want %s", stored.LastHeartbeatAt, staleHeartbeat)
+	}
+
+	onlineResp, err := srv.ListRunners(ctx, &agentv1.ListRunnersRequest{})
+	if err != nil {
+		t.Fatalf("ListRunners online-only failed: %v", err)
+	}
+	if len(onlineResp.GetRunners()) != 0 {
+		t.Fatalf("expected stale runner hidden from online-only list, got %#v", onlineResp.GetRunners())
+	}
+}
+
 func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()
@@ -202,5 +251,47 @@ func TestAgentSessionCreateRejectsOfflineOrMismatchedRunner(t *testing.T) {
 		AgentType: "codex",
 	}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected agent type mismatch, got %v", err)
+	}
+}
+
+func TestAgentSessionCreateMarksStaleRunnerOffline(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-stale-runner",
+		Name:      "Stale Runner Slice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	now := time.Now().UTC()
+	staleHeartbeat := now.Add(-runnerOnlineTTL - time.Second)
+	if err := st.UpsertAgentRunner(context.Background(), &models.AgentRunner{
+		RunnerID:        "runner-stale-create",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		LastHeartbeatAt: staleHeartbeat,
+		CreatedAt:       staleHeartbeat,
+		UpdatedAt:       staleHeartbeat,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	if _, err := srv.CreateSession(ctx, &agentv1.CreateSessionRequest{
+		SliceId:  "slice-stale-runner",
+		RunnerId: "runner-stale-create",
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected stale runner rejection, got %v", err)
+	}
+	stored, err := st.GetAgentRunner(context.Background(), "runner-stale-create")
+	if err != nil {
+		t.Fatalf("GetAgentRunner failed: %v", err)
+	}
+	if stored.Status != models.AgentRunnerStatusOffline {
+		t.Fatalf("expected stale runner status to be persisted offline, got %q", stored.Status)
 	}
 }

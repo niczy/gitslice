@@ -14,14 +14,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const agentWorkspaceStateDir = ".gitslice-agent"
+
+const agentSupervisorAuthCheckInterval = 15 * time.Second
 
 var safeAgentCheckoutNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
@@ -182,7 +188,7 @@ func backgroundAgentEnv(authConfig cliAuth) []string {
 	if strings.TrimSpace(authConfig.Username) != "" {
 		env = append(env, "GS_USERNAME="+strings.TrimSpace(authConfig.Username))
 	}
-	if strings.HasPrefix(strings.TrimSpace(authConfig.Authorization), "Bearer ") {
+	if !authConfig.CredentialStore && strings.HasPrefix(strings.TrimSpace(authConfig.Authorization), "Bearer ") {
 		env = append(env, "GS_API_KEY="+strings.TrimSpace(strings.TrimPrefix(authConfig.Authorization, "Bearer ")))
 	}
 	return env
@@ -271,6 +277,141 @@ func agentAuthSchemeForLog(authorization string) string {
 	}
 }
 
+type agentSupervisorAuthRefresher struct {
+	mu        sync.Mutex
+	cli       *CLI
+	auth      cliAuth
+	nextCheck time.Time
+}
+
+func newAgentSupervisorAuthRefresher(cli *CLI, authConfig cliAuth) *agentSupervisorAuthRefresher {
+	return &agentSupervisorAuthRefresher{cli: cli, auth: authConfig}
+}
+
+func (r *agentSupervisorAuthRefresher) context(ctx context.Context) (context.Context, error) {
+	if r == nil {
+		return ctx, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	authConfig := r.auth
+	if authConfig.CredentialStore {
+		now := time.Now()
+		if r.nextCheck.IsZero() || !now.Before(r.nextCheck) {
+			refreshed, err := ensureCLIAuthReady(replaceCLIAuth(ctx, cliAuth{}), r.cli, authConfig)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(refreshed.Authorization) != strings.TrimSpace(authConfig.Authorization) {
+				log.Printf("Refreshed stored auth for local agent runner")
+			}
+			r.auth = refreshed
+			authConfig = refreshed
+			r.nextCheck = now.Add(agentSupervisorAuthCheckInterval)
+		}
+	}
+	return replaceCLIAuth(ctx, authConfig), nil
+}
+
+type refreshingAgentServiceClient struct {
+	agentv1.AgentServiceClient
+	auth *agentSupervisorAuthRefresher
+}
+
+func refreshingAgentCall[T any](c *refreshingAgentServiceClient, ctx context.Context, call func(context.Context) (T, error)) (T, error) {
+	var zero T
+	callCtx, err := c.auth.context(ctx)
+	if err != nil {
+		return zero, err
+	}
+	return call(callCtx)
+}
+
+func (c *refreshingAgentServiceClient) RegisterRunner(ctx context.Context, req *agentv1.RegisterRunnerRequest, opts ...grpc.CallOption) (*agentv1.RegisterRunnerResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.RegisterRunnerResponse, error) {
+		return c.AgentServiceClient.RegisterRunner(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) HeartbeatRunner(ctx context.Context, req *agentv1.HeartbeatRunnerRequest, opts ...grpc.CallOption) (*agentv1.HeartbeatRunnerResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.HeartbeatRunnerResponse, error) {
+		return c.AgentServiceClient.HeartbeatRunner(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) ListRunners(ctx context.Context, req *agentv1.ListRunnersRequest, opts ...grpc.CallOption) (*agentv1.ListRunnersResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.ListRunnersResponse, error) {
+		return c.AgentServiceClient.ListRunners(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) UnregisterRunner(ctx context.Context, req *agentv1.UnregisterRunnerRequest, opts ...grpc.CallOption) (*agentv1.UnregisterRunnerResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.UnregisterRunnerResponse, error) {
+		return c.AgentServiceClient.UnregisterRunner(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) ListSessions(ctx context.Context, req *agentv1.ListSessionsRequest, opts ...grpc.CallOption) (*agentv1.ListSessionsResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.ListSessionsResponse, error) {
+		return c.AgentServiceClient.ListSessions(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) CreateSession(ctx context.Context, req *agentv1.CreateSessionRequest, opts ...grpc.CallOption) (*agentv1.CreateSessionResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.CreateSessionResponse, error) {
+		return c.AgentServiceClient.CreateSession(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) GetSession(ctx context.Context, req *agentv1.GetSessionRequest, opts ...grpc.CallOption) (*agentv1.GetSessionResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.GetSessionResponse, error) {
+		return c.AgentServiceClient.GetSession(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) StopSession(ctx context.Context, req *agentv1.StopSessionRequest, opts ...grpc.CallOption) (*agentv1.StopSessionResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.StopSessionResponse, error) {
+		return c.AgentServiceClient.StopSession(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) MintToken(ctx context.Context, req *agentv1.MintTokenRequest, opts ...grpc.CallOption) (*agentv1.MintTokenResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.MintTokenResponse, error) {
+		return c.AgentServiceClient.MintToken(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) ListEvents(ctx context.Context, req *agentv1.ListEventsRequest, opts ...grpc.CallOption) (*agentv1.ListEventsResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.ListEventsResponse, error) {
+		return c.AgentServiceClient.ListEvents(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) AppendEvent(ctx context.Context, req *agentv1.AppendEventRequest, opts ...grpc.CallOption) (*agentv1.AppendEventResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.AppendEventResponse, error) {
+		return c.AgentServiceClient.AppendEvent(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) SendInput(ctx context.Context, req *agentv1.SendInputRequest, opts ...grpc.CallOption) (*agentv1.SendInputResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.SendInputResponse, error) {
+		return c.AgentServiceClient.SendInput(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) SendInterrupt(ctx context.Context, req *agentv1.SendInterruptRequest, opts ...grpc.CallOption) (*agentv1.SendInterruptResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.SendInterruptResponse, error) {
+		return c.AgentServiceClient.SendInterrupt(callCtx, req, opts...)
+	})
+}
+
+func (c *refreshingAgentServiceClient) ListCapabilities(ctx context.Context, req *agentv1.ListCapabilitiesRequest, opts ...grpc.CallOption) (*agentv1.ListCapabilitiesResponse, error) {
+	return refreshingAgentCall(c, ctx, func(callCtx context.Context) (*agentv1.ListCapabilitiesResponse, error) {
+		return c.AgentServiceClient.ListCapabilities(callCtx, req, opts...)
+	})
+}
+
 func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg localAgentSupervisorConfig) (int, error) {
 	rootDir, err := resolveAgentWorkspaceRoot(cfg.RootDir)
 	if err != nil {
@@ -287,14 +428,29 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 		}
 		cfg.RunnerID = runnerID
 	}
+	authRefresher := newAgentSupervisorAuthRefresher(cli, authConfig)
+	supervisorCLI := *cli
+	supervisorCLI.agentClient = &refreshingAgentServiceClient{
+		AgentServiceClient: cli.agentClient,
+		auth:               authRefresher,
+	}
+	authCtx, err := authRefresher.context(ctx)
+	if err != nil {
+		return 0, err
+	}
 	logAgentRunnerStartup(authConfig, cfg)
-	if err := registerLocalAgentRunner(ctx, cli, cfg); err != nil {
+	if err := registerLocalAgentRunner(authCtx, &supervisorCLI, cfg); err != nil {
 		return 0, err
 	}
 	defer func() {
 		unregisterCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := unregisterLocalAgentRunner(unregisterCtx, cli, cfg.RunnerID); err != nil {
+		authUnregisterCtx, err := authRefresher.context(unregisterCtx)
+		if err != nil {
+			log.Printf("Warning: failed to refresh auth while unregistering local agent runner %s: %v", cfg.RunnerID, err)
+			authUnregisterCtx = unregisterCtx
+		}
+		if err := unregisterLocalAgentRunner(authUnregisterCtx, &supervisorCLI, cfg.RunnerID); err != nil {
 			log.Printf("Warning: failed to unregister local agent runner %s: %v", cfg.RunnerID, err)
 		} else {
 			log.Printf("Unregistered local agent runner: runner_id=%s", cfg.RunnerID)
@@ -327,14 +483,27 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 			return completed, nil
 		}
 
-		if heartbeatResp, err := heartbeatLocalAgentRunner(ctx, cli, cfg); err != nil {
+		authCtx, authErr := authRefresher.context(ctx)
+		if authErr != nil {
+			log.Printf("Warning: failed to refresh auth for local agent runner %s: %v", cfg.RunnerID, authErr)
+			heartbeatOKLogged = false
+			select {
+			case <-ctx.Done():
+				return completed, ctx.Err()
+			case <-ticker.C:
+				continue
+			}
+		}
+
+		if heartbeatResp, reRegistered, err := heartbeatOrRegisterLocalAgentRunner(authCtx, &supervisorCLI, cfg); err != nil {
 			log.Printf("Warning: failed to heartbeat local agent runner %s: %v", cfg.RunnerID, err)
-		} else if !heartbeatOKLogged {
+			heartbeatOKLogged = false
+		} else if reRegistered || !heartbeatOKLogged {
 			log.Printf("Local agent runner heartbeat accepted: runner_id=%s status=%s heartbeat_interval=%ds", cfg.RunnerID, heartbeatResp.GetRunner().GetStatus(), heartbeatResp.GetHeartbeatIntervalSec())
 			heartbeatOKLogged = true
 		}
 
-		sessions, discoverErr := discoverLocalAgentSessions(ctx, cli, cfg.RunnerID)
+		sessions, discoverErr := discoverLocalAgentSessions(authCtx, &supervisorCLI, cfg.RunnerID)
 		if discoverErr != nil {
 			log.Printf("Warning: failed to discover local agent sessions: %v", discoverErr)
 		} else if len(sessions) != lastDiscoveredCount {
@@ -356,20 +525,20 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 			if _, ok := managed[sessionID]; ok {
 				continue
 			}
-			runCfg, checkoutErr := localRunConfigForDiscoveredSession(ctx, cli, cfg, discovered)
+			runCfg, checkoutErr := localRunConfigForDiscoveredSession(authCtx, &supervisorCLI, cfg, discovered)
 			if checkoutErr != nil {
-				_ = appendAgentError(ctx, cli, sessionID, "LOCAL_AGENT_CHECKOUT_FAILED", checkoutErr.Error())
+				_ = appendAgentError(authCtx, &supervisorCLI, sessionID, "LOCAL_AGENT_CHECKOUT_FAILED", checkoutErr.Error())
 				log.Printf("Warning: failed to checkout slice for agent session %s: %v", sessionID, checkoutErr)
 				continue
 			}
-			if err := appendLocalRunnerAttached(ctx, cli, cfg, runCfg); err != nil {
+			if err := appendLocalRunnerAttached(authCtx, &supervisorCLI, cfg, runCfg); err != nil {
 				log.Printf("Warning: failed to append local runner metadata for agent session %s: %v", sessionID, err)
 			}
 			childCtx, cancel := context.WithCancel(ctx)
 			done := make(chan agentSessionRunResult, 1)
 			managed[sessionID] = &managedAgentSession{cancel: cancel, done: done}
 			go func() {
-				n, runErr := runAgentBridge(childCtx, cli, runCfg)
+				n, runErr := runAgentBridge(childCtx, &supervisorCLI, runCfg)
 				done <- agentSessionRunResult{sessionID: runCfg.SessionID, completed: n, err: runErr}
 			}()
 			log.Printf("Tracking agent session %s in %s", sessionID, runCfg.CWD)
@@ -700,6 +869,26 @@ func heartbeatLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSupe
 		Capabilities:  capabilities,
 	})
 	return resp, err
+}
+
+func heartbeatOrRegisterLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSupervisorConfig) (*agentv1.HeartbeatRunnerResponse, bool, error) {
+	resp, err := heartbeatLocalAgentRunner(ctx, cli, cfg)
+	if err == nil {
+		return resp, false, nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return nil, false, err
+	}
+
+	log.Printf("Local agent runner %s is missing on the server; re-registering", cfg.RunnerID)
+	if registerErr := registerLocalAgentRunner(ctx, cli, cfg); registerErr != nil {
+		return nil, true, fmt.Errorf("runner missing on server; re-register failed: %w", registerErr)
+	}
+	resp, err = heartbeatLocalAgentRunner(ctx, cli, cfg)
+	if err != nil {
+		return nil, true, fmt.Errorf("runner re-registered but heartbeat failed: %w", err)
+	}
+	return resp, true, nil
 }
 
 func unregisterLocalAgentRunner(ctx context.Context, cli *CLI, runnerID string) error {

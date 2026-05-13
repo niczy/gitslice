@@ -505,7 +505,7 @@ export default function SliceAgentsPage({
     setRunnersLoading(true);
     setRunnersError('');
     try {
-      const nextRunners = (await listAgentRunners({ limit: 50 })).map(normalizeRunner);
+      const nextRunners = (await listAgentRunners({ limit: 50, includeOffline: true })).map(normalizeRunner);
       setRunners(nextRunners);
       setSelectedRunnerId((current) => {
         if (keepSelection && current && nextRunners.some((runner) => runner.runnerId === current && runner.status === 'online')) {
@@ -785,20 +785,34 @@ export default function SliceAgentsPage({
             <div className="slice-agents-section-label">Available runners</div>
             {runnersLoading && runners.length === 0 && <div className="panel-empty">Loading runners...</div>}
             {!runnersLoading && runnersError && <div className="panel-error">{runnersError}</div>}
-            {!runnersLoading && !runnersError && onlineRunners.length === 0 && (
+            {!runnersLoading && !runnersError && runners.length === 0 && (
+              <div className="panel-empty">No local runners found.</div>
+            )}
+            {!runnersLoading && !runnersError && runners.length > 0 && onlineRunners.length === 0 && (
               <div className="panel-empty">No local runners online.</div>
             )}
-            {onlineRunners.length > 0 && (
+            {runners.length > 0 && (
               <ul className="slice-agents-session-list">
-                {onlineRunners.map((runner) => {
+                {runners.map((runner) => {
+                  const isOnline = runner.status === 'online';
                   const isSelected = selectedRunner?.runnerId === runner.runnerId;
+                  const runnerMeta = [
+                    runner.status || 'unknown',
+                    !isOnline && runner.lastHeartbeatAt ? `last seen ${formatAgentTimestamp(runner.lastHeartbeatAt)}` : '',
+                    runner.workspaceRoot || runner.runnerId,
+                  ].filter(Boolean).join(' · ');
                   return (
                     <li key={runner.runnerId}>
                       <Button
                         type="button"
                         variant="ghost"
-                        className={`slice-agents-session-row${isSelected ? ' active' : ''}`}
-                        onClick={() => setSelectedRunnerId(runner.runnerId)}
+                        className={`slice-agents-session-row${isSelected ? ' active' : ''}${isOnline ? '' : ' offline'}`}
+                        onClick={() => {
+                          if (isOnline) {
+                            setSelectedRunnerId(runner.runnerId);
+                          }
+                        }}
+                        disabled={!isOnline}
                         aria-pressed={isSelected}
                         data-testid="slice-agents-runner"
                       >
@@ -810,7 +824,7 @@ export default function SliceAgentsPage({
                             {runner.agentType || 'agent'} · {runner.hostName || 'local'}
                           </span>
                           <span className="slice-agents-session-meta">
-                            {runner.status || 'unknown'} · {runner.workspaceRoot || runner.runnerId}
+                            {runnerMeta}
                           </span>
                         </span>
                       </Button>
