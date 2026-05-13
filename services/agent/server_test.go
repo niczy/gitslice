@@ -312,7 +312,7 @@ func TestLocalSessionResponsesSupportLegacyRunnerDiscovery(t *testing.T) {
 		Provider:        agentsession.RuntimeProviderLocal,
 		AgentType:       "codex",
 		Status:          models.AgentRunnerStatusOnline,
-		Capabilities:    []byte(`{"agent_type":"codex","checkout_per_session":true}`),
+		Capabilities:    []byte(`{"agent_type":"codex","checkout_per_session":true,"local_sessions_reported":true,"local_session_ids":null}`),
 		LastHeartbeatAt: now,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -366,6 +366,18 @@ func TestLocalSessionResponsesSupportLegacyRunnerDiscovery(t *testing.T) {
 	}
 	if listResp.GetSessions()[0].GetAvailability() != agentsession.SessionAvailabilityLocal {
 		t.Fatalf("expected local availability after attach for legacy runner, got %q", listResp.GetSessions()[0].GetAvailability())
+	}
+}
+
+func TestRunnerLocalSessionIDsRequiresUsableList(t *testing.T) {
+	if ids, reported := runnerLocalSessionIDs([]byte(`{"local_sessions_reported":true,"local_session_ids":null}`)); reported || len(ids) != 0 {
+		t.Fatalf("expected null local_session_ids to be unusable, got reported=%v ids=%#v", reported, ids)
+	}
+	if ids, reported := runnerLocalSessionIDs([]byte(`{"local_sessions_reported":true,"local_session_ids":[]}`)); !reported || len(ids) != 0 {
+		t.Fatalf("expected empty array to be reported, got reported=%v ids=%#v", reported, ids)
+	}
+	if ids, reported := runnerLocalSessionIDs([]byte(`{"local_session_ids":["sess-a","sess-a","sess-b"]}`)); !reported || len(ids) != 2 {
+		t.Fatalf("expected unique ids from array, got reported=%v ids=%#v", reported, ids)
 	}
 }
 

@@ -293,6 +293,25 @@ func TestLocalAgentRunnerCapabilitiesReportsLocalSessionIDs(t *testing.T) {
 	}
 }
 
+func TestLocalAgentRunnerCapabilitiesReportsEmptyLocalSessionIDs(t *testing.T) {
+	root := t.TempDir()
+	raw, err := localAgentRunnerCapabilities(localAgentSupervisorConfig{
+		RootDir:   root,
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("localAgentRunnerCapabilities failed: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal capabilities: %v", err)
+	}
+	values, ok := payload["local_session_ids"].([]any)
+	if !ok || len(values) != 0 {
+		t.Fatalf("expected local_session_ids to be an empty array, got %#v", payload["local_session_ids"])
+	}
+}
+
 func TestAgentSessionShouldRunLocallyByAvailability(t *testing.T) {
 	cases := []struct {
 		name         string

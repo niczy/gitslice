@@ -1137,6 +1137,9 @@ func localAgentRunnerCapabilities(cfg localAgentSupervisorConfig) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	if localSessionIDs == nil {
+		localSessionIDs = []string{}
+	}
 	payload := map[string]any{
 		"agent_type":                  firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
 		"codex_mode":                  strings.TrimSpace(cfg.CodexMode),

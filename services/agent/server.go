@@ -296,37 +296,35 @@ func runnerLocalSessionIDs(raw json.RawMessage) (map[string]struct{}, bool) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return ids, false
 	}
-	reported := jsonBool(payload[agentsession.RunnerCapabilityLocalSessionsReported]) || jsonBool(payload["localSessionsReported"])
+	reported := false
 	if values, ok := payload[agentsession.RunnerCapabilityLocalSessionIDs]; ok {
-		reported = true
-		for _, id := range jsonStringList(values) {
+		list, valid := jsonStringList(values)
+		reported = valid
+		for _, id := range list {
 			ids[id] = struct{}{}
 		}
 	}
 	if values, ok := payload["localSessionIds"]; ok {
-		reported = true
-		for _, id := range jsonStringList(values) {
+		list, valid := jsonStringList(values)
+		reported = reported || valid
+		for _, id := range list {
 			ids[id] = struct{}{}
 		}
 	}
 	return ids, reported
 }
 
-func jsonBool(raw json.RawMessage) bool {
+func jsonStringList(raw json.RawMessage) ([]string, bool) {
 	if len(raw) == 0 {
-		return false
+		return nil, false
 	}
-	var value bool
-	return json.Unmarshal(raw, &value) == nil && value
-}
-
-func jsonStringList(raw json.RawMessage) []string {
-	if len(raw) == 0 {
-		return nil
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" || !strings.HasPrefix(trimmed, "[") {
+		return nil, false
 	}
 	var values []string
 	if err := json.Unmarshal(raw, &values); err != nil {
-		return nil
+		return nil, false
 	}
 	out := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
@@ -341,7 +339,7 @@ func jsonStringList(raw json.RawMessage) []string {
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
-	return out
+	return out, true
 }
 
 func agentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
