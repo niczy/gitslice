@@ -21,6 +21,7 @@ import {
   requestAgentRunnerRestart,
   sendAgentSessionInput,
 } from '../utils/api.js';
+import { parseAgentEventPayload } from '../utils/agentEvents.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
@@ -75,35 +76,8 @@ function normalizeEvent(event) {
     stream: event?.stream || '',
     type: event?.type || '',
     kind: event?.kind || '',
-    payload: parseEventPayload(event?.payload),
+    payload: parseAgentEventPayload(event?.payload),
   };
-}
-
-function parseEventPayload(value) {
-  if (!value) {
-    return {};
-  }
-  if (typeof value === 'object') {
-    return value;
-  }
-  if (typeof value !== 'string') {
-    return {};
-  }
-  const candidates = [value];
-  try {
-    candidates.push(atob(value));
-  } catch {
-    // Some local adapters already return JSON strings.
-  }
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      return parsed && typeof parsed === 'object' ? parsed : { text: String(parsed) };
-    } catch {
-      // Try the next representation.
-    }
-  }
-  return { text: value };
 }
 
 function shortSessionId(sessionId) {
