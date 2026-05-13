@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/agentsession"
+	agentv1 "github.com/niczy/gitslice/proto/agent"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
@@ -32,6 +33,11 @@ type localAgentChangesetExportRequest struct {
 	Files            []string `json:"files"`
 }
 
+type pendingLocalAgentChangesRequest struct {
+	Seq     uint64
+	Request localAgentChangesRequest
+}
+
 func parseLocalAgentChangesRequest(payload []byte) localAgentChangesRequest {
 	var request localAgentChangesRequest
 	if len(payload) > 0 {
@@ -50,6 +56,56 @@ func parseLocalAgentChangesetExportRequest(payload []byte) localAgentChangesetEx
 
 func localAgentRequestID(camel, snake string) string {
 	return firstNonEmpty(strings.TrimSpace(camel), strings.TrimSpace(snake))
+}
+
+func latestPendingLocalAgentChangesRequest(events []*agentv1.EventEnvelope) (pendingLocalAgentChangesRequest, bool) {
+	var pending pendingLocalAgentChangesRequest
+	pendingKey := ""
+	for _, event := range events {
+		switch event.GetStream() + "/" + event.GetType() {
+		case agentsession.EventStreamControl + "/" + agentsession.EventTypeLocalChangesRequested:
+			request := parseLocalAgentChangesRequest(event.GetPayload())
+			pending = pendingLocalAgentChangesRequest{Seq: event.GetSeq(), Request: request}
+			pendingKey = localAgentRequestKey(event.GetSeq(), request)
+		case agentsession.EventStreamStatus + "/" + agentsession.EventTypeLocalChanges,
+			agentsession.EventStreamControl + "/" + agentsession.EventTypeLocalChangesFailed:
+			if pendingKey != "" && pendingKey == localAgentResultRequestKey(event.GetPayload()) {
+				pending = pendingLocalAgentChangesRequest{}
+				pendingKey = ""
+			}
+		}
+	}
+	return pending, pendingKey != ""
+}
+
+func localAgentRequestKey(seq uint64, request localAgentChangesRequest) string {
+	if requestID := localAgentRequestID(request.RequestID, request.RequestIDSnake); requestID != "" {
+		return "id:" + requestID
+	}
+	return fmt.Sprintf("seq:%d", seq)
+}
+
+func localAgentResultRequestKey(payload []byte) string {
+	var result struct {
+		RequestID         string `json:"requestId"`
+		RequestIDSnake    string `json:"request_id"`
+		RequestedSeq      uint64 `json:"requestedSeq"`
+		RequestedSeqSnake uint64 `json:"requested_seq"`
+	}
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &result)
+	}
+	if requestID := localAgentRequestID(result.RequestID, result.RequestIDSnake); requestID != "" {
+		return "id:" + requestID
+	}
+	requestedSeq := result.RequestedSeq
+	if requestedSeq == 0 {
+		requestedSeq = result.RequestedSeqSnake
+	}
+	if requestedSeq > 0 {
+		return fmt.Sprintf("seq:%d", requestedSeq)
+	}
+	return ""
 }
 
 func localAgentChangesLimit(limit int) int {

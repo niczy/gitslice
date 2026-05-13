@@ -1666,6 +1666,28 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .slice-agents-local-panel-toggle {
+    justify-content: center !important;
+    width: 100%;
+  }
+
+  .slice-agents-conversation-body,
+  .slice-agents-conversation-body.has-local-changes {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .slice-agents-conversation-thread {
+    flex: 1 1 auto;
+  }
+
+  .slice-agents-local-changes-panel {
+    flex: 0 0 auto;
+    max-height: 38dvh;
+  }
+
   .slice-agents-local-changes {
     max-width: none;
   }
