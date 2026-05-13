@@ -422,6 +422,43 @@ func TestConfigEndpointSetPersistsAndShows(t *testing.T) {
 	}
 }
 
+func TestConfigEndpointSetSharedAddrWithoutTLSClearsPersistedTLS(t *testing.T) {
+	resetEndpointFlagState(t)
+	t.Setenv("HOME", t.TempDir())
+	tlsEnabled := true
+	if err := writeEndpointConfig(cliEndpointConfig{Addr: "api.agenttools.dev:443", TLS: &tlsEnabled}); err != nil {
+		t.Fatalf("write endpoint config: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := NewRootCommand([]string{"config", "endpoint", "set", "127.0.0.1:50051", "--json"}).Execute(); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+	})
+
+	var saved jsonEndpointConfigOutput
+	if err := json.Unmarshal([]byte(output), &saved); err != nil {
+		t.Fatalf("decode saved endpoint JSON: %v\n%s", err, output)
+	}
+	if saved.Status != "saved" || saved.Addr != "127.0.0.1:50051" || saved.TLS {
+		t.Fatalf("unexpected saved endpoint output: %#v", saved)
+	}
+	if saved.TLSSource != "default" {
+		t.Fatalf("expected TLS source to reset to default, got %q", saved.TLSSource)
+	}
+
+	cfg, present, err := readEndpointConfig()
+	if err != nil {
+		t.Fatalf("read endpoint config: %v", err)
+	}
+	if !present {
+		t.Fatal("expected endpoint config to exist")
+	}
+	if cfg.Addr != "127.0.0.1:50051" || cfg.TLS != nil {
+		t.Fatalf("unexpected persisted endpoint config: %#v", cfg)
+	}
+}
+
 func TestConfigEndpointClearRemovesPersistedConfig(t *testing.T) {
 	resetEndpointFlagState(t)
 	t.Setenv("HOME", t.TempDir())
