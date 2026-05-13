@@ -23,6 +23,8 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 		handleChangesetCreate(ctx, cli, args[1:])
 	case "show":
 		handleChangesetShow(ctx, cli, args[1:])
+	case "snapshots":
+		handleChangesetSnapshots(ctx, cli, args[1:])
 	case "review":
 		handleChangesetReview(ctx, cli, args[1:])
 	case "merge":
@@ -31,6 +33,8 @@ func handleChangesetCommand(ctx context.Context, cli *CLI, args []string) {
 		handleChangesetClose(ctx, cli, args[1:])
 	case "rebase":
 		handleChangesetRebase(ctx, cli, args[1:])
+	case "switch":
+		handleChangesetSwitch(ctx, cli, args[1:])
 	case "list":
 		handleChangesetList(ctx, cli, args[1:])
 	default:

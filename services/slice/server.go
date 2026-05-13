@@ -1365,6 +1365,110 @@ func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *sl
 	return resp, nil
 }
 
+func (s *sliceServiceServer) StreamChangesetSnapshot(req *slicev1.ChangesetSnapshotRequest, stream slicev1.SliceService_StreamChangesetSnapshotServer) error {
+	ctx := stream.Context()
+	changesetID := strings.TrimSpace(req.GetChangesetId())
+	if changesetID == "" {
+		return status.Error(codes.InvalidArgument, "changeset_id is required")
+	}
+
+	cs, err := s.storage.GetChangeset(ctx, changesetID)
+	if err != nil {
+		return status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	username, err := s.optionalUsername(ctx)
+	if err != nil {
+		return err
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		if username == "" {
+			return status.Error(codes.Unauthenticated, "login required")
+		}
+		return status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+
+	snapshot, err := s.resolveChangesetSnapshotForStream(ctx, cs, req.GetSnapshotVersion(), req.GetSnapshotHash())
+	if err != nil {
+		return err
+	}
+	paths := normalizeModifiedFiles(req.GetPaths())
+	if len(paths) == 0 {
+		paths = normalizeModifiedFiles(snapshot.ModifiedFiles)
+	}
+	fileMetadata, deletedPaths, err := s.buildChangesetSnapshotStreamManifest(ctx, snapshot, paths)
+	if err != nil {
+		return err
+	}
+
+	if err := sendChangesetSnapshotManifestChunks(stream, snapshot, cs.SliceID, fileMetadata, deletedPaths); err != nil {
+		return err
+	}
+	if req.GetMetadataOnly() {
+		return nil
+	}
+
+	knownHashes := make(map[string]struct{}, len(req.GetKnownHashes()))
+	for _, hash := range req.GetKnownHashes() {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			continue
+		}
+		knownHashes[hash] = struct{}{}
+	}
+
+	blockHashes := collectMissingCheckoutBlockHashes(fileMetadata, knownHashes)
+	if len(blockHashes) > 0 {
+		blockPayloads, err := s.storage.GetBlocks(ctx, blockHashes)
+		if err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot blocks: %v", err))
+		}
+		for _, blockHash := range blockHashes {
+			payload, ok := blockPayloads[blockHash]
+			if !ok {
+				return status.Error(codes.Internal, fmt.Sprintf("missing snapshot block payload for %s", blockHash))
+			}
+			if err := stream.Send(&slicev1.ChangesetSnapshotChunk{
+				Chunk: &slicev1.ChangesetSnapshotChunk_Block{
+					Block: &slicev1.BlockContent{Hash: blockHash, Content: payload},
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, meta := range fileMetadata {
+		if meta == nil || len(meta.GetBlocks()) > 0 || strings.TrimSpace(meta.GetSymlinkTarget()) != "" {
+			continue
+		}
+		if hash := strings.TrimSpace(meta.GetHash()); hash != "" {
+			if _, ok := knownHashes[hash]; ok {
+				continue
+			}
+		}
+		content, err := storage.ReadVersionedFileContent(ctx, s.storage, meta.GetHash())
+		if err != nil {
+			return status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot content for %s: %v", meta.GetPath(), err))
+		}
+		if err := stream.Send(&slicev1.ChangesetSnapshotChunk{
+			Chunk: &slicev1.ChangesetSnapshotChunk_File{
+				File: &slicev1.FileContent{
+					FileId:  meta.GetFileId(),
+					Content: content.Content,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *sliceServiceServer) MergeChangeset(ctx context.Context, req *slicev1.MergeChangesetRequest) (*slicev1.MergeChangesetResponse, error) {
 	if shouldLogProfiles() {
 		log.Printf("MergeChangeset called: changeset_id=%s", req.ChangesetId)
@@ -3428,6 +3532,127 @@ func buildSyntheticChangesetSnapshot(cs *models.Changeset) *models.ChangesetSnap
 		Message:          cs.Message,
 		CreatedAt:        createdAt,
 	}
+}
+
+func (s *sliceServiceServer) resolveChangesetSnapshotForStream(ctx context.Context, cs *models.Changeset, version int32, hash string) (*models.ChangesetSnapshot, error) {
+	if cs == nil {
+		return nil, status.Error(codes.InvalidArgument, "changeset is required")
+	}
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		snapshot, err := s.storage.GetChangesetSnapshot(ctx, cs.ID, version)
+		if err == nil && snapshot != nil {
+			return snapshot, nil
+		}
+		if version > 0 {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset snapshot version %d not found", version))
+		}
+		return nil, status.Error(codes.FailedPrecondition, "changeset snapshot content references are unavailable")
+	}
+
+	snapshot, err := s.storage.GetChangesetSnapshotByHash(ctx, cs.ID, hash)
+	if err != nil {
+		if errors.Is(err, storage.ErrChangesetNotFound) {
+			return nil, status.Error(codes.NotFound, fmt.Sprintf("changeset snapshot hash not found: %s", hash))
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load changeset snapshot by hash: %v", err))
+	}
+	if version > 0 && snapshot.Version != version {
+		return nil, status.Error(codes.InvalidArgument, "snapshot_hash and snapshot_version refer to different snapshots")
+	}
+	return snapshot, nil
+}
+
+func (s *sliceServiceServer) buildChangesetSnapshotStreamManifest(ctx context.Context, snapshot *models.ChangesetSnapshot, paths []string) ([]*slicev1.FileMetadata, []string, error) {
+	if snapshot == nil {
+		return nil, nil, status.Error(codes.InvalidArgument, "snapshot is required")
+	}
+	if len(paths) == 0 {
+		return nil, nil, nil
+	}
+	if snapshot.FileHashes == nil {
+		return nil, nil, status.Error(codes.FailedPrecondition, "changeset snapshot content references are unavailable")
+	}
+
+	modifiedSet := make(map[string]struct{}, len(snapshot.ModifiedFiles))
+	for _, path := range normalizeModifiedFiles(snapshot.ModifiedFiles) {
+		modifiedSet[path] = struct{}{}
+	}
+	fileMetadata := make([]*slicev1.FileMetadata, 0, len(paths))
+	deletedPaths := make([]string, 0)
+	for _, rawPath := range paths {
+		filePath := cleanDiffPath(rawPath)
+		if filePath == "" {
+			continue
+		}
+		if _, ok := modifiedSet[filePath]; !ok {
+			continue
+		}
+		manifestHash := strings.TrimSpace(snapshot.FileHashes[filePath])
+		if manifestHash == "" {
+			deletedPaths = append(deletedPaths, filePath)
+			continue
+		}
+		manifest, err := s.storage.GetVersionedFileManifest(ctx, manifestHash)
+		if err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				return nil, nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("changeset snapshot content for %s is missing manifest %s", filePath, shortHash(manifestHash)))
+			}
+			return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to load snapshot manifest %s: %v", shortHash(manifestHash), err))
+		}
+		if manifest == nil {
+			return nil, nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("changeset snapshot content for %s is missing manifest %s", filePath, shortHash(manifestHash)))
+		}
+		fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
+			FileId:        filePath,
+			Path:          filePath,
+			Size:          manifest.TotalSize,
+			Hash:          strings.TrimSpace(manifest.Hash),
+			Blocks:        checkoutProtoBlocks(manifest.Blocks),
+			Executable:    manifest.Executable,
+			SymlinkTarget: manifest.SymlinkTarget,
+		})
+	}
+	sort.Slice(fileMetadata, func(i, j int) bool {
+		return fileMetadata[i].GetPath() < fileMetadata[j].GetPath()
+	})
+	sort.Strings(deletedPaths)
+	return fileMetadata, normalizeModifiedFiles(deletedPaths), nil
+}
+
+func sendChangesetSnapshotManifestChunks(stream slicev1.SliceService_StreamChangesetSnapshotServer, snapshot *models.ChangesetSnapshot, sliceID string, fileMetadata []*slicev1.FileMetadata, deletedPaths []string) error {
+	if len(fileMetadata) == 0 {
+		return stream.Send(&slicev1.ChangesetSnapshotChunk{
+			Chunk: &slicev1.ChangesetSnapshotChunk_Manifest{
+				Manifest: &slicev1.ChangesetSnapshotManifest{
+					Snapshot:     changesetSnapshotToProto(snapshot),
+					DeletedPaths: deletedPaths,
+					SliceId:      strings.TrimSpace(sliceID),
+				},
+			},
+		})
+	}
+
+	for start := 0; start < len(fileMetadata); start += checkoutManifestChunkSize {
+		end := start + checkoutManifestChunkSize
+		if end > len(fileMetadata) {
+			end = len(fileMetadata)
+		}
+		manifest := &slicev1.ChangesetSnapshotManifest{
+			Snapshot:     changesetSnapshotToProto(snapshot),
+			FileMetadata: fileMetadata[start:end],
+			SliceId:      strings.TrimSpace(sliceID),
+		}
+		if start == 0 {
+			manifest.DeletedPaths = deletedPaths
+		}
+		if err := stream.Send(&slicev1.ChangesetSnapshotChunk{
+			Chunk: &slicev1.ChangesetSnapshotChunk_Manifest{Manifest: manifest},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeSnapshotFileHashes(fileHashes map[string]string) map[string]string {

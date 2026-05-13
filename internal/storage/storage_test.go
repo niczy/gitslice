@@ -1506,6 +1506,13 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if version1Snap.Version != 1 || version1Snap.Hash != "h1" {
 		t.Fatalf("unexpected version 1 snapshot: %#v", version1Snap)
 	}
+	hashSnap, err := st.GetChangesetSnapshotByHash(ctx, cs.ID, "h1")
+	if err != nil {
+		t.Fatalf("GetChangesetSnapshotByHash h1 failed: %v", err)
+	}
+	if hashSnap.Version != 1 || hashSnap.Hash != "h1" {
+		t.Fatalf("unexpected hash snapshot: %#v", hashSnap)
+	}
 	limitedSnaps, err := st.ListChangesetSnapshots(ctx, cs.ID, 1)
 	if err != nil {
 		t.Fatalf("ListChangesetSnapshots limit=1 failed: %v", err)
