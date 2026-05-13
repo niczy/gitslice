@@ -79,6 +79,74 @@ Before committing and pushing code, **ALWAYS** run the following checks:
 
 ## Project Architecture
 
+## Gitslice CLI Primer
+
+`gs` is the project CLI for slice checkouts, changesets, and local agent
+runners. Do not assume a Gitslice checkout behaves like a normal git checkout;
+prefer `gs` commands for slice state and publishing workflows.
+
+Start in an unknown workspace with:
+
+```bash
+gs context --json
+```
+
+Use that output to identify the current endpoint, user, slice binding, checkout
+metadata, and changeset context before making changes.
+
+Core concepts:
+
+- A **slice** is a focused workspace over a subset of files.
+- A **slice checkout** is a local materialized copy of a slice and contains
+  `.gs/` metadata. Do not delete or rewrite `.gs/`.
+- A **changeset** records local checkout changes for export or publish.
+- An **agent runner** is a local process started with `gs agent run` or
+  `gs agent start`; it registers with the server and provides an environment for
+  Codex, Claude, or a custom command.
+- An **agent session** is one conversation/task assigned to a runner. A runner
+  can handle multiple sessions, and each session should use its own slice
+  checkout.
+
+Common slice commands:
+
+```bash
+gs slice list --json
+gs slice checkout <slice-id-or-ref> --json
+gs slice checkout <slice-id-or-ref> --here --json
+gs slice status --json
+gs slice diff --summary
+gs slice diff --stat
+gs slice search <query> --json
+gs slice sync --json
+gs slice export --json
+gs slice publish --json
+```
+
+Use `gs slice sync` only when the checkout is clean. If it is dirty, inspect
+with `gs slice diff` first. Use `gs slice export --json` to create or update a
+changeset without merging; use `gs slice publish --json` only when the user has
+asked to publish or merge the changes.
+
+Local agent runner commands:
+
+```bash
+gs agent run --dir ~/gitslice-agents --agent codex
+gs agent start --dir ~/gitslice-agents --agent codex --json
+gs agent run --dir ~/gitslice-agents --agent claude
+gs agent input <session-id> "message"
+gs agent interrupt <session-id> --reason "user interrupt"
+gs agent stop <session-id>
+```
+
+Safety rules for agents:
+
+- Prefer `gs context --json` before assuming auth, endpoint, or slice state.
+- Prefer `gs slice diff` over `git diff` inside slice checkouts.
+- Do not remove `.gs/` metadata from a slice checkout.
+- Do not run `gs slice publish` unless the user asked to publish or merge.
+- If auth fails, ask the user or run `gs login`; do not manually edit stored
+  credentials.
+
 ### Key Packages
 
 - **`internal/common/`** - Shared utilities
