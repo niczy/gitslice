@@ -2625,6 +2625,85 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if len(events) != 1 || events[0].Kind != models.AgentSessionEventKindThinking {
 		t.Fatalf("expected thinking event kind, got %#v", events)
 	}
+	exportedAt := time.Now().UTC().Add(time.Second)
+	exportLink := &models.AgentSessionChangeset{
+		SessionID:       session.SessionID,
+		ChangesetID:     cs.ID,
+		SnapshotID:      snap2.ID,
+		SnapshotVersion: snap2.Version,
+		SnapshotHash:    snap2.Hash,
+		BaseCommitHash:  snap2.BaseCommitHash,
+		ExportedFromSeq: 3,
+		RunnerID:        session.RunnerID,
+		Source:          "gs_slice_export",
+		ExportedAt:      exportedAt,
+	}
+	if err := st.RecordAgentSessionChangeset(ctx, exportLink); err != nil {
+		t.Fatalf("RecordAgentSessionChangeset failed: %v", err)
+	}
+	bySession, err := st.ListAgentSessionChangesets(ctx, session.SessionID, 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionChangesets failed: %v", err)
+	}
+	if len(bySession) != 1 {
+		t.Fatalf("expected one session changeset link, got %#v", bySession)
+	}
+	if bySession[0].ChangesetID != cs.ID || bySession[0].SnapshotID != snap2.ID || bySession[0].ExportedFromSeq != 3 {
+		t.Fatalf("unexpected session changeset link: %#v", bySession[0])
+	}
+	byChangeset, err := st.ListChangesetAgentSessions(ctx, cs.ID, 10)
+	if err != nil {
+		t.Fatalf("ListChangesetAgentSessions failed: %v", err)
+	}
+	if len(byChangeset) != 1 || byChangeset[0].SessionID != session.SessionID {
+		t.Fatalf("unexpected changeset session links: %#v", byChangeset)
+	}
+	exportLink.Source = "updated_export"
+	exportLink.ExportedFromSeq = 4
+	exportLink.ExportedAt = exportedAt.Add(time.Second)
+	if err := st.RecordAgentSessionChangeset(ctx, exportLink); err != nil {
+		t.Fatalf("RecordAgentSessionChangeset upsert failed: %v", err)
+	}
+	limitedSessionLinks, err := st.ListAgentSessionChangesets(ctx, session.SessionID, 1)
+	if err != nil {
+		t.Fatalf("ListAgentSessionChangesets limit failed: %v", err)
+	}
+	if len(limitedSessionLinks) != 1 || limitedSessionLinks[0].Source != "updated_export" || limitedSessionLinks[0].ExportedFromSeq != 4 {
+		t.Fatalf("expected updated limited link, got %#v", limitedSessionLinks)
+	}
+	otherChangeset := &models.Changeset{
+		ID:             fmt.Sprintf("chg_other_%s", suffix),
+		Hash:           "other-hash",
+		SliceID:        slice.ID,
+		ModifiedFiles:  []string{file2ID},
+		Status:         models.ChangesetStatusPending,
+		Author:         "alice",
+		Message:        "other",
+		BaseCommitHash: "other-base",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, otherChangeset); err != nil {
+		t.Fatalf("CreateChangeset other failed: %v", err)
+	}
+	otherSnapshot := &models.ChangesetSnapshot{
+		ID:             fmt.Sprintf("%s-snapshot-1", otherChangeset.ID),
+		ChangesetID:    otherChangeset.ID,
+		Version:        1,
+		Hash:           "other-snapshot-hash",
+		BaseCommitHash: "other-base",
+		ModifiedFiles:  []string{file2ID},
+		Author:         "alice",
+		Message:        "other snapshot",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangesetSnapshot(ctx, otherSnapshot); err != nil {
+		t.Fatalf("CreateChangesetSnapshot other failed: %v", err)
+	}
+	mismatchedLink := *exportLink
+	mismatchedLink.SnapshotID = otherSnapshot.ID
+	if err := st.RecordAgentSessionChangeset(ctx, &mismatchedLink); err != ErrChangesetNotFound {
+		t.Fatalf("expected ErrChangesetNotFound for mismatched snapshot, got %v", err)
+	}
 	if err := st.AddAgentSessionAudit(ctx, &models.AgentSessionAudit{
 		SessionID:   session.SessionID,
 		ActorUserID: session.UserID,

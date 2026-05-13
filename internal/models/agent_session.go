@@ -141,3 +141,16 @@ type AgentSessionAudit struct {
 	Metadata    json.RawMessage `json:"metadata"`
 	CreatedAt   time.Time       `json:"created_at"`
 }
+
+type AgentSessionChangeset struct {
+	SessionID       string    `json:"session_id"`
+	ChangesetID     string    `json:"changeset_id"`
+	SnapshotID      string    `json:"snapshot_id"`
+	SnapshotVersion int32     `json:"snapshot_version"`
+	SnapshotHash    string    `json:"snapshot_hash"`
+	BaseCommitHash  string    `json:"base_commit_hash"`
+	ExportedFromSeq uint64    `json:"exported_from_seq"`
+	RunnerID        string    `json:"runner_id,omitempty"`
+	Source          string    `json:"source,omitempty"`
+	ExportedAt      time.Time `json:"exported_at"`
+}

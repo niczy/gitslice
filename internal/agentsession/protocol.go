@@ -15,13 +15,14 @@ const (
 	EventStreamStatus  = "status"
 	EventStreamTool    = "tool"
 
-	EventTypeInput       = "input"
-	EventTypeInterrupt   = "interrupt"
-	EventTypeOutputDelta = "output_delta"
-	EventTypeOutputFinal = "output_final"
-	EventTypeError       = "error"
-	EventTypeRuntime     = "runtime_session"
-	EventTypeState       = "state"
+	EventTypeInput                    = "input"
+	EventTypeInterrupt                = "interrupt"
+	EventTypeOutputDelta              = "output_delta"
+	EventTypeOutputFinal              = "output_final"
+	EventTypeError                    = "error"
+	EventTypeRuntime                  = "runtime_session"
+	EventTypeState                    = "state"
+	EventTypeChangesetExportCompleted = "changeset_export_completed"
 )
 
 func marshalProtocolPayload(msg proto.Message) json.RawMessage {

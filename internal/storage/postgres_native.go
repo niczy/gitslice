@@ -822,6 +822,7 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `
 		TRUNCATE TABLE
 			agent_session_audit,
+			agent_session_changesets,
 			agent_session_events,
 			agent_sessions,
 			agent_runners,
@@ -2958,6 +2959,167 @@ func (s *PostgresNativeStorage) ListChangesetSnapshotsWithOptions(ctx context.Co
 		result = []*models.ChangesetSnapshot{}
 	}
 	return result, rows.Err()
+}
+
+func (s *PostgresNativeStorage) RecordAgentSessionChangeset(ctx context.Context, link *models.AgentSessionChangeset) error {
+	ctx = ensureCtx(ctx)
+	if link == nil || strings.TrimSpace(link.SessionID) == "" || strings.TrimSpace(link.ChangesetID) == "" || strings.TrimSpace(link.SnapshotID) == "" {
+		return ErrInvalidInput
+	}
+	if link.ExportedFromSeq > uint64(^uint64(0)>>1) {
+		return ErrInvalidInput
+	}
+	exportedAt := link.ExportedAt
+	if exportedAt.IsZero() {
+		exportedAt = time.Now().UTC()
+	}
+	source := strings.TrimSpace(link.Source)
+	if source == "" {
+		source = "local_export"
+	}
+	sessionID := strings.TrimSpace(link.SessionID)
+	changesetID := strings.TrimSpace(link.ChangesetID)
+	snapshotID := strings.TrimSpace(link.SnapshotID)
+
+	var sessionExists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id = $1)`, sessionID).Scan(&sessionExists); err != nil {
+		return err
+	}
+	if !sessionExists {
+		return ErrAgentSessionNotFound
+	}
+	var snapshotBelongsToChangeset bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM changeset_snapshots
+			WHERE id = $1 AND changeset_id = $2
+		)
+	`, snapshotID, changesetID).Scan(&snapshotBelongsToChangeset); err != nil {
+		return err
+	}
+	if !snapshotBelongsToChangeset {
+		return ErrChangesetNotFound
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_session_changesets (
+			session_id, changeset_id, snapshot_id, snapshot_version, snapshot_hash,
+			base_commit_hash, exported_from_seq, runner_id, source, exported_at
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, $9, $10
+		)
+		ON CONFLICT (session_id, changeset_id, snapshot_id) DO UPDATE
+		SET snapshot_version = EXCLUDED.snapshot_version,
+		    snapshot_hash = EXCLUDED.snapshot_hash,
+		    base_commit_hash = EXCLUDED.base_commit_hash,
+		    exported_from_seq = EXCLUDED.exported_from_seq,
+		    runner_id = EXCLUDED.runner_id,
+		    source = EXCLUDED.source,
+		    exported_at = EXCLUDED.exported_at
+	`,
+		sessionID,
+		changesetID,
+		snapshotID,
+		link.SnapshotVersion,
+		strings.TrimSpace(link.SnapshotHash),
+		strings.TrimSpace(link.BaseCommitHash),
+		int64(link.ExportedFromSeq),
+		strings.TrimSpace(link.RunnerID),
+		source,
+		exportedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "agent_session_changesets_session_id_fkey") {
+			return ErrAgentSessionNotFound
+		}
+		if strings.Contains(err.Error(), "agent_session_changesets_changeset_id_fkey") ||
+			strings.Contains(err.Error(), "agent_session_changesets_snapshot_id_fkey") {
+			return ErrChangesetNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresNativeStorage) ListAgentSessionChangesets(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionChangeset, error) {
+	ctx = ensureCtx(ctx)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return []*models.AgentSessionChangeset{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id = $1)`, sessionID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrAgentSessionNotFound
+	}
+	return s.listAgentSessionChangesetLinks(ctx, `session_id = $1`, sessionID, limit)
+}
+
+func (s *PostgresNativeStorage) ListChangesetAgentSessions(ctx context.Context, changesetID string, limit int) ([]*models.AgentSessionChangeset, error) {
+	ctx = ensureCtx(ctx)
+	changesetID = strings.TrimSpace(changesetID)
+	if changesetID == "" {
+		return []*models.AgentSessionChangeset{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM changesets WHERE id = $1)`, changesetID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrChangesetNotFound
+	}
+	return s.listAgentSessionChangesetLinks(ctx, `changeset_id = $1`, changesetID, limit)
+}
+
+func (s *PostgresNativeStorage) listAgentSessionChangesetLinks(ctx context.Context, predicate string, value string, limit int) ([]*models.AgentSessionChangeset, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, changeset_id, snapshot_id, snapshot_version, snapshot_hash,
+		       base_commit_hash, exported_from_seq, runner_id, source, exported_at
+		FROM agent_session_changesets
+		WHERE `+predicate+`
+		ORDER BY exported_at DESC
+		LIMIT $2
+	`, value, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*models.AgentSessionChangeset, 0, limit)
+	for rows.Next() {
+		var link models.AgentSessionChangeset
+		var seq int64
+		if err := rows.Scan(
+			&link.SessionID,
+			&link.ChangesetID,
+			&link.SnapshotID,
+			&link.SnapshotVersion,
+			&link.SnapshotHash,
+			&link.BaseCommitHash,
+			&seq,
+			&link.RunnerID,
+			&link.Source,
+			&link.ExportedAt,
+		); err != nil {
+			return nil, err
+		}
+		if seq < 0 {
+			return nil, ErrInvalidInput
+		}
+		link.ExportedFromSeq = uint64(seq)
+		out = append(out, &link)
+	}
+	return out, rows.Err()
 }
 
 // ============ Block-Backed File Content ============
