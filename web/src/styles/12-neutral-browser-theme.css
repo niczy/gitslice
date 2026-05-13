@@ -1671,12 +1671,14 @@
     width: 100%;
   }
 
-  .slice-agents-conversation-body,
-  .slice-agents-conversation-body.has-local-changes {
+  .slice-agents-conversation-shell {
+    min-height: 0;
+  }
+
+  .slice-agents-conversation-body {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     min-height: 0;
-    position: relative;
     overflow: hidden;
   }
 

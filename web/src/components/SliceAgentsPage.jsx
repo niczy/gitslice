@@ -1854,7 +1854,7 @@ export default function SliceAgentsPage({
             </div>
           )}
           {selectedSession && (
-            <>
+            <div className={`slice-agents-conversation-shell${localChangesPanelVisible ? ' has-local-changes' : ''}`}>
               <div className="slice-agents-conversation-header">
                 <div>
                   <h1>Conversation</h1>
@@ -1881,7 +1881,7 @@ export default function SliceAgentsPage({
                   </Button>
                 )}
               </div>
-              <div className={`slice-agents-conversation-body${localChangesPanelVisible ? ' has-local-changes' : ''}`}>
+              <div className="slice-agents-conversation-body">
                 <section className="slice-agents-conversation-thread">
                   {!isConversationLocal(selectedSession) && (
                     <div className="slice-agents-connection-note" data-testid="slice-agents-local-availability-note">
@@ -2001,18 +2001,18 @@ export default function SliceAgentsPage({
                     </Button>
                   </form>
                 </section>
-                {localChangesPanelAvailable && (
-                  <aside
-                    id="slice-agents-local-changes-panel"
-                    className={`slice-agents-local-changes-panel${localChangesPanelVisible ? ' open' : ''}`}
-                    aria-hidden={!localChangesPanelVisible}
-                    data-testid="slice-agents-local-changes-panel"
-                  >
-                    {localChangesSection}
-                  </aside>
-                )}
               </div>
-            </>
+              {localChangesPanelAvailable && (
+                <aside
+                  id="slice-agents-local-changes-panel"
+                  className={`slice-agents-local-changes-panel${localChangesPanelVisible ? ' open' : ''}`}
+                  aria-hidden={!localChangesPanelVisible}
+                  data-testid="slice-agents-local-changes-panel"
+                >
+                  {localChangesSection}
+                </aside>
+              )}
+            </div>
           )}
         </main>
       </div>

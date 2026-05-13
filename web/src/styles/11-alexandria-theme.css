@@ -1063,6 +1063,17 @@ button[data-testid="topbar-get-started"]:hover {
   overflow: hidden;
 }
 
+.slice-agents-conversation-shell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
 .slice-agents-mobile-toolbar {
   align-items: center;
   gap: 8px;
@@ -1122,11 +1133,10 @@ button[data-testid="topbar-get-started"]:hover {
   flex: 1 1 auto;
   min-height: 0;
   gap: 14px;
-  position: relative;
   overflow: hidden;
 }
 
-.slice-agents-conversation-body.has-local-changes {
+.slice-agents-conversation-shell.has-local-changes .slice-agents-conversation-body {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -1145,7 +1155,7 @@ button[data-testid="topbar-get-started"]:hover {
   right: 0;
   bottom: 0;
   z-index: 6;
-  width: min(360px, calc(100% - 24px));
+  width: min(380px, calc(100% - 24px));
   min-width: 0;
   min-height: 0;
   opacity: 0;
@@ -1171,12 +1181,13 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-agents-local-changes {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   height: 100%;
+  min-height: 0;
   max-width: none;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
@@ -1229,8 +1240,10 @@ button[data-testid="topbar-get-started"]:hover {
 
 .slice-agents-local-file-list {
   display: grid;
+  flex: 1 1 auto;
   gap: 5px;
-  max-height: 178px;
+  min-height: 96px;
+  max-height: none;
   overflow: auto;
   margin: 0;
   padding: 0;
@@ -1329,6 +1342,9 @@ button[data-testid="topbar-get-started"]:hover {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 .slice-agents-export-message {
