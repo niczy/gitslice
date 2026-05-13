@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/niczy/gitslice/internal/agentsession"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -415,6 +416,27 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 				}
 				if err != nil {
 					_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_AGENT_RESTART_FAILED", err.Error())
+				}
+			case agentsession.EventStreamControl + "/" + agentsession.EventTypeLocalChangesRequested:
+				request := parseLocalAgentChangesRequest(event.GetPayload())
+				if err := handleLocalAgentChangesRequest(ctx, cli, cfg, event.GetSeq(), request); err != nil {
+					_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_CHANGES_STATUS_FAILED", err.Error())
+				}
+			case agentsession.EventStreamControl + "/" + agentsession.EventTypeChangesetExportRequested:
+				request := parseLocalAgentChangesetExportRequest(event.GetPayload())
+				if active != nil {
+					_ = appendAgentJSONEvent(ctx, cli, cfg.SessionID, agentsession.EventStreamControl, agentsession.EventTypeChangesetExportFailed, map[string]any{
+						"status":        "failed",
+						"request_id":    localAgentRequestID(request.RequestID, request.RequestIDSnake),
+						"requested_seq": event.GetSeq(),
+						"code":          "LOCAL_AGENT_BUSY",
+						"message":       "agent is currently responding; try exporting after the turn finishes",
+						"failed_at":     time.Now().UTC().Format(time.RFC3339),
+					})
+					continue
+				}
+				if err := handleLocalAgentChangesetExportRequest(ctx, cli, cfg, event.GetSeq(), request); err != nil {
+					_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_CHANGESET_EXPORT_FAILED", err.Error())
 				}
 			}
 		}

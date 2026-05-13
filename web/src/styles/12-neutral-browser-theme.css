@@ -1666,6 +1666,19 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .slice-agents-local-changes {
+    max-width: none;
+  }
+
+  .slice-agents-export-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .slice-agents-export-button {
+    justify-content: center !important;
+    width: 100%;
+  }
+
   .app-shell--browser .repo-layout,
   .app-shell--browser .repo-layout.sidebar-collapsed {
     min-height: calc(100dvh - var(--app-header-height) - 32px);

@@ -382,6 +382,37 @@ export async function requestAgentRunnerRestart(sessionId, { upgrade = true, rea
   });
 }
 
+function createAgentRequestId(prefix = 'req') {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export async function requestAgentSessionLocalChanges(sessionId, { limit = 100 } = {}) {
+  const requestId = createAgentRequestId('local_changes');
+  const response = await appendAgentSessionEvent(sessionId, {
+    stream: 'control',
+    type: 'local_changes_requested',
+    payload: {
+      requestId,
+      limit,
+    },
+  });
+  return { requestId, response };
+}
+
+export async function requestAgentSessionChangesetExport(sessionId, { message = '', files = [] } = {}) {
+  const requestId = createAgentRequestId('changeset_export');
+  const response = await appendAgentSessionEvent(sessionId, {
+    stream: 'control',
+    type: 'changeset_export_requested',
+    payload: {
+      requestId,
+      message,
+      files,
+    },
+  });
+  return { requestId, response };
+}
+
 export async function sendAgentSessionInput(sessionId, text) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/input`, {
     method: 'POST',

@@ -3,6 +3,9 @@ import {
   Bot,
   CircleAlert,
   CloudOff,
+  ExternalLink,
+  FileDiff,
+  GitPullRequest,
   Info,
   PanelLeftClose,
   PanelLeftOpen,
@@ -18,6 +21,8 @@ import {
   listAgentRunners,
   listAgentSessionEvents,
   listAgentSessions,
+  requestAgentSessionChangesetExport,
+  requestAgentSessionLocalChanges,
   requestAgentRunnerRestart,
   sendAgentSessionInput,
 } from '../utils/api.js';
@@ -84,6 +89,11 @@ function shortSessionId(sessionId) {
   return sessionId ? sessionId.replace(/^sess_?/, '').slice(0, 12) : 'unknown';
 }
 
+function shortEntityId(value, length = 12) {
+  const text = String(value || '').trim();
+  return text ? text.slice(0, length) : '';
+}
+
 function agentDisplayName(agentType) {
   switch (String(agentType || '').trim().toLowerCase()) {
     case 'codex':
@@ -122,11 +132,26 @@ function eventTitle(event) {
   if (event.stream === 'status' && event.type === 'local_runner_attached') {
     return 'Runner attached';
   }
+  if (event.stream === 'status' && event.type === 'local_changes') {
+    return 'Local changes';
+  }
   if (event.stream === 'tool') {
     return event.payload?.tool || event.payload?.id || 'Tool';
   }
   if (event.stream === 'control') {
     switch (event.type) {
+      case 'local_changes_requested':
+        return 'Local changes requested';
+      case 'local_changes_failed':
+        return 'Local changes failed';
+      case 'changeset_export_requested':
+        return 'Changeset export requested';
+      case 'changeset_export_started':
+        return 'Changeset export started';
+      case 'changeset_export_completed':
+        return 'Changeset exported';
+      case 'changeset_export_failed':
+        return 'Changeset export failed';
       case 'local_runner_restart_requested':
         return 'Runner restart requested';
       case 'local_runner_restart_started':
@@ -152,6 +177,28 @@ function eventBody(event) {
     const host = event.payload?.host_name || event.payload?.hostName || '';
     const dir = event.payload?.running_dir || event.payload?.runningDir || event.payload?.checkout_dir || event.payload?.checkoutDir || '';
     return [host, dir].filter(Boolean).join(' · ') || JSON.stringify(event.payload || {});
+  }
+  if (event.stream === 'status' && event.type === 'local_changes') {
+    const localChanges = normalizeLocalChangesPayload(event.payload || {});
+    return [
+      localChangesSummaryText(localChanges),
+      localChanges.trackedChangesetId ? `tracked ${localChanges.trackedChangesetId}` : '',
+      localChanges.refreshedAt || '',
+    ].filter(Boolean).join(' · ') || JSON.stringify(event.payload || {});
+  }
+  if (event.stream === 'control' && event.type?.startsWith('changeset_export_')) {
+    return [
+      event.payload?.status,
+      event.payload?.changeset_id || event.payload?.changesetId,
+      event.payload?.message,
+    ].filter(Boolean).join(' · ') || JSON.stringify(event.payload || {});
+  }
+  if (event.stream === 'control' && event.type?.startsWith('local_changes_')) {
+    return [
+      event.payload?.status,
+      event.payload?.message,
+      event.payload?.request_id || event.payload?.requestId,
+    ].filter(Boolean).join(' · ') || JSON.stringify(event.payload || {});
   }
   if (event.stream === 'control' && event.type?.startsWith('local_runner_')) {
     const replacementPID = event.payload?.replacement_pid || event.payload?.replacementPid || '';
@@ -247,6 +294,23 @@ function payloadExitCode(payload) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function payloadRequestId(payload) {
+  return String(payload?.requestId || payload?.request_id || '').trim();
+}
+
+function latestEvent(events, predicate) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (predicate(events[i])) {
+      return events[i];
+    }
+  }
+  return null;
+}
+
+function latestEventSeq(events, predicate) {
+  return latestEvent(events, predicate)?.seq || 0;
+}
+
 function controlErrorCode(event) {
   return String(event?.payload?.code || event?.payload?.errorCode || event?.payload?.error_code || '')
     .trim()
@@ -316,6 +380,88 @@ function isThinkingEvent(event) {
 
 function isModelResponseDelta(event) {
   return eventKind(event) === 'model_response' && event.type === 'output_delta';
+}
+
+function normalizeLocalChangePath(entry) {
+  if (!entry) {
+    return null;
+  }
+  const path = String(entry.path || '').trim();
+  if (!path) {
+    return null;
+  }
+  return {
+    path,
+    status: String(entry.status || '').trim().toUpperCase() || '?',
+  };
+}
+
+function normalizeLocalChangesPayload(payload = {}) {
+  const rawChanges = payload?.changes || {};
+  const paths = Array.isArray(payload?.paths)
+    ? payload.paths.map(normalizeLocalChangePath).filter(Boolean)
+    : [];
+  const pathCount = Number(payload?.pathCount ?? payload?.path_count ?? paths.length);
+  return {
+    requestId: payloadRequestId(payload),
+    status: String(payload?.status || '').trim(),
+    workingTree: String(payload?.workingTree || payload?.working_tree || '').trim(),
+    checkoutBase: String(payload?.checkoutBase || payload?.checkout_base || '').trim(),
+    trackedChangesetId: String(payload?.trackedChangesetId || payload?.tracked_changeset_id || '').trim(),
+    pathCount: Number.isFinite(pathCount) ? pathCount : paths.length,
+    paths,
+    truncated: Boolean(payload?.truncated),
+    refreshedAt: payload?.refreshedAt || payload?.refreshed_at || '',
+    changes: {
+      added: Number(rawChanges.added || 0),
+      modified: Number(rawChanges.modified || 0),
+      deleted: Number(rawChanges.deleted || 0),
+    },
+  };
+}
+
+function localChangesSummaryText(localChanges) {
+  if (!localChanges) {
+    return 'Not loaded';
+  }
+  if (localChanges.pathCount === 0) {
+    return 'Clean';
+  }
+  const parts = [
+    localChanges.changes.added ? `+${localChanges.changes.added}` : '',
+    localChanges.changes.modified ? `~${localChanges.changes.modified}` : '',
+    localChanges.changes.deleted ? `-${localChanges.changes.deleted}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : `${localChanges.pathCount} changed`;
+}
+
+function changeStatusLabel(status) {
+  switch (String(status || '').toUpperCase()) {
+    case 'A':
+      return 'Added';
+    case 'M':
+      return 'Modified';
+    case 'D':
+      return 'Deleted';
+    default:
+      return status || 'Changed';
+  }
+}
+
+function latestLocalChangesEvent(events) {
+  return latestEvent(events, (event) => event.stream === 'status' && event.type === 'local_changes');
+}
+
+function latestLocalChangesFailureEvent(events) {
+  return latestEvent(events, (event) => event.stream === 'control' && event.type === 'local_changes_failed');
+}
+
+function latestChangesetExportEvent(events) {
+  return latestEvent(events, (event) => event.stream === 'control' && event.type === 'changeset_export_completed');
+}
+
+function latestChangesetExportFailureEvent(events) {
+  return latestEvent(events, (event) => event.stream === 'control' && event.type === 'changeset_export_failed');
 }
 
 function buildLiveStreamState(events, session) {
@@ -654,11 +800,17 @@ export default function SliceAgentsPage({
   const [sendingInput, setSendingInput] = useState(false);
   const [agentInfoOpen, setAgentInfoOpen] = useState(false);
   const [runnerActionLoading, setRunnerActionLoading] = useState(false);
+  const [localChangesRequesting, setLocalChangesRequesting] = useState(false);
+  const [exportingChangeset, setExportingChangeset] = useState(false);
+  const [pendingLocalChangesRequestId, setPendingLocalChangesRequestId] = useState('');
+  const [pendingChangesetExportRequestId, setPendingChangesetExportRequestId] = useState('');
+  const [changesetMessage, setChangesetMessage] = useState('');
   const [sessionsError, setSessionsError] = useState('');
   const [eventsError, setEventsError] = useState('');
   const [createError, setCreateError] = useState('');
   const [inputError, setInputError] = useState('');
   const [runnerActionError, setRunnerActionError] = useState('');
+  const [localChangesError, setLocalChangesError] = useState('');
   const [runnersError, setRunnersError] = useState('');
   const [capabilities, setCapabilities] = useState(null);
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
@@ -666,6 +818,8 @@ export default function SliceAgentsPage({
   const [sessionsSidebarViewportSynced, setSessionsSidebarViewportSynced] = useState(false);
   const [agentsSidebarWidth, setAgentsSidebarWidth] = useState(readAgentsSidebarWidth);
   const [agentsSidebarResizing, setAgentsSidebarResizing] = useState(false);
+  const autoLocalChangesSessionRef = useRef('');
+  const autoLocalChangesOutputSeqRef = useRef(0);
 
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
@@ -759,6 +913,50 @@ export default function SliceAgentsPage({
     [events, selectedSession],
   );
   const assistantStreaming = liveStreamState.active;
+  const localChangesEvent = useMemo(() => latestLocalChangesEvent(events), [events]);
+  const localChangesFailureEvent = useMemo(() => latestLocalChangesFailureEvent(events), [events]);
+  const localChanges = useMemo(() => (
+    localChangesEvent ? normalizeLocalChangesPayload(localChangesEvent.payload) : null
+  ), [localChangesEvent]);
+  const latestExportEvent = useMemo(() => latestChangesetExportEvent(events), [events]);
+  const latestExportFailureEvent = useMemo(() => latestChangesetExportFailureEvent(events), [events]);
+  const latestAgentOutputFinalSeq = useMemo(
+    () => latestEventSeq(events, (event) => event.stream === 'agent' && event.type === 'output_final'),
+    [events],
+  );
+  const latestLocalChangesRequestSeq = useMemo(
+    () => latestEventSeq(events, (event) => event.stream === 'control' && event.type === 'local_changes_requested'),
+    [events],
+  );
+  const latestLocalChangesResultSeq = Math.max(localChangesEvent?.seq || 0, localChangesFailureEvent?.seq || 0);
+  const localChangesPendingFromEvents = latestLocalChangesRequestSeq > latestLocalChangesResultSeq;
+  const latestExportRequestSeq = useMemo(
+    () => latestEventSeq(events, (event) => event.stream === 'control' && event.type === 'changeset_export_requested'),
+    [events],
+  );
+  const latestExportResultSeq = Math.max(latestExportEvent?.seq || 0, latestExportFailureEvent?.seq || 0);
+  const changesetExportPendingFromEvents = latestExportRequestSeq > latestExportResultSeq;
+  const localChangesLoading = localChangesRequesting || localChangesPendingFromEvents;
+  const changesetExportLoading = exportingChangeset || changesetExportPendingFromEvents;
+  const hasDirtyFiles = Boolean(localChanges && localChanges.pathCount > 0);
+  const canExportChangeset = Boolean(
+    canSendInput
+    && hasDirtyFiles
+    && !assistantStreaming
+    && !changesetExportLoading
+  );
+  const latestChangesetExportPayload = latestExportEvent?.payload || {};
+  const latestExportedChangesetId = latestChangesetExportPayload.changeset_id || latestChangesetExportPayload.changesetId || '';
+  const latestLocalChangesFailureMessage = localChangesFailureEvent && localChangesFailureEvent.seq > (localChangesEvent?.seq || 0)
+    ? localChangesFailureEvent.payload?.message || ''
+    : '';
+  const latestExportFailureMessage = latestExportFailureEvent && latestExportFailureEvent.seq > (latestExportEvent?.seq || 0)
+    ? latestExportFailureEvent.payload?.message || ''
+    : '';
+  const localChangesDisplayError = localChangesError
+    || latestLocalChangesFailureMessage
+    || latestExportFailureMessage
+    || '';
   const conversationItems = useMemo(
     () => buildConversationItems(events, liveStreamState, selectedSession),
     [events, liveStreamState, selectedSession],
@@ -1055,6 +1253,44 @@ export default function SliceAgentsPage({
     }
   }, [selectedSessionId]);
 
+  const requestLocalChanges = useCallback(async ({ silent = false } = {}) => {
+    if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession)) {
+      return;
+    }
+    setLocalChangesRequesting(true);
+    if (!silent) {
+      setLocalChangesError('');
+    }
+    try {
+      const result = await requestAgentSessionLocalChanges(selectedSessionId, { limit: 100 });
+      setPendingLocalChangesRequestId(result.requestId || '');
+      await loadSelectedEvents();
+    } catch (err) {
+      setLocalChangesError(err?.message || 'Unable to refresh local changes.');
+    } finally {
+      setLocalChangesRequesting(false);
+    }
+  }, [loadSelectedEvents, selectedSession, selectedSessionId]);
+
+  const handleExportChangeset = useCallback(async () => {
+    if (!canExportChangeset || !selectedSessionId) {
+      return;
+    }
+    setExportingChangeset(true);
+    setLocalChangesError('');
+    try {
+      const result = await requestAgentSessionChangesetExport(selectedSessionId, {
+        message: changesetMessage.trim(),
+      });
+      setPendingChangesetExportRequestId(result.requestId || '');
+      await loadSelectedEvents();
+    } catch (err) {
+      setLocalChangesError(err?.message || 'Unable to export changeset.');
+    } finally {
+      setExportingChangeset(false);
+    }
+  }, [canExportChangeset, changesetMessage, loadSelectedEvents, selectedSessionId]);
+
   useEffect(() => {
     if (!selectedSessionId) {
       loadSelectedEvents();
@@ -1062,7 +1298,7 @@ export default function SliceAgentsPage({
     }
 
     let active = true;
-    const pollIntervalMs = assistantStreaming ? 1000 : 5000;
+    const pollIntervalMs = assistantStreaming || localChangesPendingFromEvents || changesetExportPendingFromEvents ? 1000 : 5000;
     const loadEvents = async () => {
       if (!active) return;
       await loadSelectedEvents();
@@ -1074,10 +1310,15 @@ export default function SliceAgentsPage({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [assistantStreaming, loadSelectedEvents, selectedSessionId]);
+  }, [assistantStreaming, changesetExportPendingFromEvents, loadSelectedEvents, localChangesPendingFromEvents, selectedSessionId]);
 
   useEffect(() => {
     setRunnerActionError('');
+    setLocalChangesError('');
+    setPendingLocalChangesRequestId('');
+    setPendingChangesetExportRequestId('');
+    setChangesetMessage('');
+    autoLocalChangesOutputSeqRef.current = 0;
     setEvents([]);
     setEventsError('');
   }, [selectedSessionId]);
@@ -1086,6 +1327,56 @@ export default function SliceAgentsPage({
     setAgentInfoOpen(false);
     setRunnerActionError('');
   }, [selectedRunnerId]);
+
+  useEffect(() => {
+    if (!pendingLocalChangesRequestId) {
+      return;
+    }
+    const matched = [localChangesEvent, localChangesFailureEvent]
+      .filter(Boolean)
+      .some((event) => payloadRequestId(event.payload) === pendingLocalChangesRequestId);
+    if (matched) {
+      setPendingLocalChangesRequestId('');
+    }
+  }, [localChangesEvent, localChangesFailureEvent, pendingLocalChangesRequestId]);
+
+  useEffect(() => {
+    if (!pendingChangesetExportRequestId) {
+      return;
+    }
+    const matched = [latestExportEvent, latestExportFailureEvent]
+      .filter(Boolean)
+      .some((event) => payloadRequestId(event.payload) === pendingChangesetExportRequestId);
+    if (matched) {
+      setPendingChangesetExportRequestId('');
+      setExportingChangeset(false);
+      if (latestExportEvent && payloadRequestId(latestExportEvent.payload) === pendingChangesetExportRequestId) {
+        setChangesetMessage('');
+      }
+    }
+  }, [latestExportEvent, latestExportFailureEvent, pendingChangesetExportRequestId]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession)) {
+      return;
+    }
+    if (autoLocalChangesSessionRef.current === selectedSessionId) {
+      return;
+    }
+    autoLocalChangesSessionRef.current = selectedSessionId;
+    requestLocalChanges({ silent: true });
+  }, [requestLocalChanges, selectedSession, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession) || assistantStreaming) {
+      return;
+    }
+    if (latestAgentOutputFinalSeq === 0 || autoLocalChangesOutputSeqRef.current >= latestAgentOutputFinalSeq) {
+      return;
+    }
+    autoLocalChangesOutputSeqRef.current = latestAgentOutputFinalSeq;
+    requestLocalChanges({ silent: true });
+  }, [assistantStreaming, latestAgentOutputFinalSeq, requestLocalChanges, selectedSession, selectedSessionId]);
 
   const handleCreateSession = async () => {
     if (!canCreateSession || creatingSession) {
@@ -1449,6 +1740,95 @@ export default function SliceAgentsPage({
                   <CircleAlert size={15} aria-hidden="true" />
                   <span>{conversationAvailabilityMessage(selectedSession)}</span>
                 </div>
+              )}
+              {isConversationLocal(selectedSession) && (
+                <section className="slice-agents-local-changes" data-testid="slice-agents-local-changes">
+                  <div className="slice-agents-local-changes-header">
+                    <div className="slice-agents-local-changes-title">
+                      <FileDiff size={16} aria-hidden="true" />
+                      <div>
+                        <h2>Local changes</h2>
+                        <span>
+                          {localChangesLoading && !localChanges ? 'Checking' : localChangesSummaryText(localChanges)}
+                          {localChanges?.trackedChangesetId ? ` · tracked ${shortEntityId(localChanges.trackedChangesetId)}` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="slice-agents-local-changes-actions">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="slice-agents-icon-button"
+                        onClick={() => requestLocalChanges()}
+                        disabled={localChangesLoading}
+                        aria-label="Refresh local changes"
+                        title="Refresh local changes"
+                        data-testid="slice-agents-refresh-local-changes"
+                      >
+                        <RefreshCw size={15} aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </div>
+                  {localChangesDisplayError && <div className="panel-error">{localChangesDisplayError}</div>}
+                  {localChanges && localChanges.pathCount > 0 && (
+                    <ul className="slice-agents-local-file-list" data-testid="slice-agents-local-file-list">
+                      {localChanges.paths.map((entry) => (
+                        <li key={`${entry.status}-${entry.path}`} className="slice-agents-local-file">
+                          <span
+                            className={`slice-agents-local-file-status slice-agents-local-file-status--${entry.status.toLowerCase()}`}
+                            title={changeStatusLabel(entry.status)}
+                          >
+                            {entry.status}
+                          </span>
+                          <span className="slice-agents-local-file-path" title={entry.path}>{entry.path}</span>
+                        </li>
+                      ))}
+                      {localChanges.truncated && (
+                        <li className="slice-agents-local-file slice-agents-local-file--more">
+                          {localChanges.pathCount - localChanges.paths.length} more changed files
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                  {localChanges && localChanges.pathCount === 0 && (
+                    <div className="slice-agents-local-clean" data-testid="slice-agents-local-clean">Working tree clean</div>
+                  )}
+                  {latestExportedChangesetId && (
+                    <a
+                      className="slice-agents-export-link"
+                      href={`/changesets/${encodeURIComponent(latestExportedChangesetId)}`}
+                      data-testid="slice-agents-exported-changeset"
+                    >
+                      <GitPullRequest size={14} aria-hidden="true" />
+                      <span>{shortEntityId(latestExportedChangesetId, 18)}</span>
+                      <ExternalLink size={13} aria-hidden="true" />
+                    </a>
+                  )}
+                  <div className="slice-agents-export-controls">
+                    <input
+                      className="slice-agents-export-message"
+                      value={changesetMessage}
+                      onChange={(event) => setChangesetMessage(event.target.value)}
+                      placeholder="Changeset message"
+                      disabled={!canSendInput || changesetExportLoading || assistantStreaming}
+                      data-testid="slice-agents-export-message"
+                    />
+                    <Button
+                      type="button"
+                      variant="default"
+                      size="sm"
+                      className="slice-agents-export-button"
+                      onClick={handleExportChangeset}
+                      disabled={!canExportChangeset}
+                      title={hasDirtyFiles ? 'Export local changes to a changeset' : 'No local changes to export'}
+                      data-testid="slice-agents-export-changeset"
+                    >
+                      <GitPullRequest size={15} aria-hidden="true" />
+                      {changesetExportLoading ? 'Exporting' : localChanges?.trackedChangesetId ? 'Update changeset' : 'Export changeset'}
+                    </Button>
+                  </div>
+                </section>
               )}
               {eventsError && <div className="panel-error">{eventsError}</div>}
               {eventsLoading && events.length === 0 && <div className="panel-empty">Loading conversation...</div>}

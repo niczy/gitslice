@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/niczy/gitslice/internal/storage"
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -83,6 +84,76 @@ func TestParseLocalRunnerRestartRequest(t *testing.T) {
 	got := parseLocalRunnerRestartRequest([]byte(`{"upgrade":true,"reason":"web_ui"}`))
 	if !got.Upgrade || got.Reason != "web_ui" {
 		t.Fatalf("parseLocalRunnerRestartRequest() = %#v", got)
+	}
+}
+
+func TestParseLocalAgentChangesetExportRequest(t *testing.T) {
+	got := parseLocalAgentChangesetExportRequest([]byte(`{"requestId":"req-1","message":"ship it","files":["README.md"]}`))
+	if got.RequestID != "req-1" || got.Message != "ship it" || !reflect.DeepEqual(got.Files, []string{"README.md"}) {
+		t.Fatalf("parseLocalAgentChangesetExportRequest() = %#v", got)
+	}
+}
+
+func TestBuildLocalAgentChangesPayloadReportsDirtyFiles(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
+		t.Fatalf("mkdir .gs: %v", err)
+	}
+	if err := writeSliceIDConfigAt(workdir, "home_alice"); err != nil {
+		t.Fatalf("write slice config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	readmeInfo, err := os.Lstat(filepath.Join(workdir, "README.md"))
+	if err != nil {
+		t.Fatalf("stat README: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "home_alice",
+		CommitHash: "cmt_base",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "README.md",
+				Hash:                 storage.HashFileManifestContent([]byte("before\n"), false, ""),
+				Size:                 readmeInfo.Size(),
+				ModifiedTimeUnixNano: readmeInfo.ModTime().UnixNano(),
+				ChangeTimeUnixNano:   fileChangeTimeUnixNano(readmeInfo),
+			},
+		},
+	}
+	addTestDirectoryRecords(t, workdir, index, "")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("after\n"), 0o644); err != nil {
+		t.Fatalf("modify README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	payload, err := buildLocalAgentChangesPayload(workdir, "sess_abcdef1234567890", 42, localAgentChangesRequest{RequestID: "req-1", Limit: 1})
+	if err != nil {
+		t.Fatalf("buildLocalAgentChangesPayload failed: %v", err)
+	}
+	if payload["slice_id"] != "home_alice" || payload["checkout_base"] != "cmt_base" || payload["working_tree"] != "dirty" {
+		t.Fatalf("unexpected payload identity/status: %#v", payload)
+	}
+	if payload["path_count"] != 2 || payload["truncated"] != true {
+		t.Fatalf("expected two paths with truncation, got %#v", payload)
+	}
+	changes, ok := payload["changes"].(map[string]any)
+	if !ok {
+		t.Fatalf("changes payload has unexpected type: %#v", payload["changes"])
+	}
+	if changes["added"] != 1 || changes["modified"] != 1 || changes["deleted"] != 0 {
+		t.Fatalf("unexpected changes summary: %#v", changes)
+	}
+	paths, ok := payload["paths"].([]map[string]any)
+	if !ok || len(paths) != 1 {
+		t.Fatalf("expected one printed path, got %#v", payload["paths"])
 	}
 }
 
