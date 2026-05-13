@@ -1348,6 +1348,36 @@ func (s *InMemoryStorage) GetChangesetSnapshot(ctx context.Context, changesetID 
 	return nil, ErrChangesetNotFound
 }
 
+func (s *InMemoryStorage) GetChangesetSnapshotByHash(ctx context.Context, changesetID string, hash string) (*models.ChangesetSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, ErrChangesetNotFound
+	}
+
+	ids := s.changesetSnapshotVersions[changesetID]
+	if len(ids) == 0 {
+		return nil, ErrChangesetNotFound
+	}
+
+	for _, id := range ids {
+		snapshot, ok := s.changesetSnapshots[id]
+		if !ok || strings.TrimSpace(snapshot.Hash) != hash {
+			continue
+		}
+		copySnapshot := *snapshot
+		copySnapshot.ModifiedFiles = append([]string(nil), snapshot.ModifiedFiles...)
+		copySnapshot.ModifiedFileCount = len(copySnapshot.ModifiedFiles)
+		copySnapshot.FileHashes = cloneStringMap(snapshot.FileHashes)
+		copySnapshot.BasePathVersions = cloneInt64Map(snapshot.BasePathVersions)
+		return &copySnapshot, nil
+	}
+
+	return nil, ErrChangesetNotFound
+}
+
 func (s *InMemoryStorage) ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error) {
 	return s.ListChangesetSnapshotsWithOptions(ctx, changesetID, ListChangesetSnapshotsOptions{
 		Limit:                limit,

@@ -211,6 +211,7 @@ type Storage interface {
 	UpdateChangeset(ctx context.Context, changeset *models.Changeset) error
 	CreateChangesetSnapshot(ctx context.Context, snapshot *models.ChangesetSnapshot) error
 	GetChangesetSnapshot(ctx context.Context, changesetID string, version int32) (*models.ChangesetSnapshot, error)
+	GetChangesetSnapshotByHash(ctx context.Context, changesetID string, hash string) (*models.ChangesetSnapshot, error)
 	ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error)
 
 	// Block-backed file content storage

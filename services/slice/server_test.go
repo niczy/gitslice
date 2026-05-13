@@ -184,6 +184,62 @@ func (r *checkoutStreamRecorder) RecvMsg(any) error            { return nil }
 var _ slicev1.SliceService_StreamCheckoutSliceServer = (*checkoutStreamRecorder)(nil)
 var _ grpc.ServerStream = (*checkoutStreamRecorder)(nil)
 
+type changesetSnapshotStreamRecorder struct {
+	ctx    context.Context
+	chunks []*slicev1.ChangesetSnapshotChunk
+}
+
+func (r *changesetSnapshotStreamRecorder) Context() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
+}
+
+func (r *changesetSnapshotStreamRecorder) Send(chunk *slicev1.ChangesetSnapshotChunk) error {
+	r.chunks = append(r.chunks, chunk)
+	return nil
+}
+
+func (r *changesetSnapshotStreamRecorder) SetHeader(metadata.MD) error  { return nil }
+func (r *changesetSnapshotStreamRecorder) SendHeader(metadata.MD) error { return nil }
+func (r *changesetSnapshotStreamRecorder) SetTrailer(metadata.MD)       {}
+func (r *changesetSnapshotStreamRecorder) SendMsg(any) error            { return nil }
+func (r *changesetSnapshotStreamRecorder) RecvMsg(any) error            { return nil }
+
+var _ slicev1.SliceService_StreamChangesetSnapshotServer = (*changesetSnapshotStreamRecorder)(nil)
+var _ grpc.ServerStream = (*changesetSnapshotStreamRecorder)(nil)
+
+func mergeChangesetSnapshotManifestChunks(chunks []*slicev1.ChangesetSnapshotChunk) *slicev1.ChangesetSnapshotManifest {
+	out := &slicev1.ChangesetSnapshotManifest{}
+	for _, chunk := range chunks {
+		manifest := chunk.GetManifest()
+		if manifest == nil {
+			continue
+		}
+		if out.Snapshot == nil {
+			out.Snapshot = manifest.GetSnapshot()
+		}
+		if out.SliceId == "" {
+			out.SliceId = manifest.GetSliceId()
+		}
+		out.FileMetadata = append(out.FileMetadata, manifest.GetFileMetadata()...)
+		out.DeletedPaths = append(out.DeletedPaths, manifest.GetDeletedPaths()...)
+	}
+	return out
+}
+
+func countChangesetSnapshotPayloadChunks(chunks []*slicev1.ChangesetSnapshotChunk) int {
+	count := 0
+	for _, chunk := range chunks {
+		switch chunk.GetChunk().(type) {
+		case *slicev1.ChangesetSnapshotChunk_Block, *slicev1.ChangesetSnapshotChunk_File:
+			count++
+		}
+	}
+	return count
+}
+
 type countingCheckoutStorage struct {
 	storage.Storage
 
@@ -4253,6 +4309,143 @@ func TestCreateChangesetAppendCreatesSnapshotVersions(t *testing.T) {
 		SnapshotVersion: 99,
 	}); err == nil {
 		t.Fatalf("expected error for missing snapshot version")
+	}
+}
+
+func TestStreamChangesetSnapshotReturnsMetadataAndOnlyMissingContent(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-snapshot-stream", Name: "slice-snapshot-stream", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"a.txt", "b.txt"},
+		FileContents: []*slicev1.FileContentChange{
+			{Path: "a.txt", Content: []byte("a v1\n")},
+			{Path: "b.txt", Content: []byte("b v1\n")},
+		},
+		Message: "snapshot v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset v1 failed: %v", err)
+	}
+	if _, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		ChangesetId:   createResp.GetChangesetId(),
+		ModifiedFiles: []string{"a.txt", "b.txt"},
+		FileContents: []*slicev1.FileContentChange{
+			{Path: "a.txt", Content: []byte("a v2\n")},
+			{Path: "b.txt", Deleted: true},
+		},
+		Message: "snapshot v2",
+	}); err != nil {
+		t.Fatalf("CreateChangeset append failed: %v", err)
+	}
+
+	metadataRecorder := &changesetSnapshotStreamRecorder{ctx: ctx}
+	if err := srv.StreamChangesetSnapshot(&slicev1.ChangesetSnapshotRequest{
+		ChangesetId:     createResp.GetChangesetId(),
+		SnapshotVersion: 2,
+		MetadataOnly:    true,
+	}, metadataRecorder); err != nil {
+		t.Fatalf("StreamChangesetSnapshot metadata failed: %v", err)
+	}
+	manifest := mergeChangesetSnapshotManifestChunks(metadataRecorder.chunks)
+	if manifest.GetSnapshot().GetVersion() != 2 {
+		t.Fatalf("expected snapshot version 2, got %#v", manifest.GetSnapshot())
+	}
+	if manifest.GetSliceId() != slice.ID {
+		t.Fatalf("expected slice id %q, got %q", slice.ID, manifest.GetSliceId())
+	}
+	if got := len(manifest.GetFileMetadata()); got != 1 {
+		t.Fatalf("expected one file metadata entry, got %d", got)
+	}
+	if got := manifest.GetFileMetadata()[0].GetPath(); got != "a.txt" {
+		t.Fatalf("expected a.txt metadata, got %q", got)
+	}
+	if got := manifest.GetDeletedPaths(); len(got) != 1 || got[0] != "b.txt" {
+		t.Fatalf("expected deleted b.txt, got %#v", got)
+	}
+
+	contentRecorder := &changesetSnapshotStreamRecorder{ctx: ctx}
+	if err := srv.StreamChangesetSnapshot(&slicev1.ChangesetSnapshotRequest{
+		ChangesetId:     createResp.GetChangesetId(),
+		SnapshotVersion: 2,
+		Paths:           []string{"a.txt"},
+		KnownHashes:     []string{manifest.GetFileMetadata()[0].GetHash()},
+	}, contentRecorder); err != nil {
+		t.Fatalf("StreamChangesetSnapshot known content failed: %v", err)
+	}
+	if got := countChangesetSnapshotPayloadChunks(contentRecorder.chunks); got != 0 {
+		t.Fatalf("expected known hash to suppress content payload chunks, got %d", got)
+	}
+
+	missingContentRecorder := &changesetSnapshotStreamRecorder{ctx: ctx}
+	if err := srv.StreamChangesetSnapshot(&slicev1.ChangesetSnapshotRequest{
+		ChangesetId:     createResp.GetChangesetId(),
+		SnapshotVersion: 2,
+		Paths:           []string{"a.txt"},
+	}, missingContentRecorder); err != nil {
+		t.Fatalf("StreamChangesetSnapshot content failed: %v", err)
+	}
+	if got := countChangesetSnapshotPayloadChunks(missingContentRecorder.chunks); got == 0 {
+		t.Fatalf("expected missing content payload chunks")
+	}
+}
+
+func TestStreamChangesetSnapshotResolvesHashBeyondListLimit(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-snapshot-hash-limit", Name: "slice-snapshot-hash-limit", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("failed to create slice: %v", err)
+	}
+	cs := &models.Changeset{
+		ID:             "cs-snapshot-hash-limit",
+		Hash:           "hash-1001",
+		SliceID:        slice.ID,
+		BaseCommitHash: "base-1",
+		Status:         models.ChangesetStatusPending,
+		Author:         "tester",
+		Message:        "many snapshots",
+		CreatedAt:      time.Now(),
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	for version := int32(1); version <= 1001; version++ {
+		snapshot := &models.ChangesetSnapshot{
+			ID:             common.GenerateChangesetSnapshotID(cs.ID, int64(version)),
+			ChangesetID:    cs.ID,
+			Version:        version,
+			Hash:           fmt.Sprintf("hash-%04d", version),
+			BaseCommitHash: cs.BaseCommitHash,
+			Author:         "tester",
+			Message:        fmt.Sprintf("snapshot %d", version),
+			CreatedAt:      time.Now().Add(time.Duration(version) * time.Millisecond),
+		}
+		if err := st.CreateChangesetSnapshot(ctx, snapshot); err != nil {
+			t.Fatalf("CreateChangesetSnapshot v%d failed: %v", version, err)
+		}
+	}
+
+	srv := NewService(st)
+	recorder := &changesetSnapshotStreamRecorder{ctx: ctx}
+	if err := srv.StreamChangesetSnapshot(&slicev1.ChangesetSnapshotRequest{
+		ChangesetId:  cs.ID,
+		SnapshotHash: "hash-0001",
+		MetadataOnly: true,
+	}, recorder); err != nil {
+		t.Fatalf("StreamChangesetSnapshot by old hash failed: %v", err)
+	}
+	manifest := mergeChangesetSnapshotManifestChunks(recorder.chunks)
+	if manifest.GetSnapshot().GetVersion() != 1 || manifest.GetSnapshot().GetHash() != "hash-0001" {
+		t.Fatalf("expected snapshot v1 by hash, got %#v", manifest.GetSnapshot())
 	}
 }
 

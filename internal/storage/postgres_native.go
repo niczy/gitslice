@@ -2805,6 +2805,59 @@ func (s *PostgresNativeStorage) GetChangesetSnapshot(ctx context.Context, change
 	return &snapshot, nil
 }
 
+func (s *PostgresNativeStorage) GetChangesetSnapshotByHash(ctx context.Context, changesetID string, hash string) (*models.ChangesetSnapshot, error) {
+	ctx = ensureCtx(ctx)
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, ErrChangesetNotFound
+	}
+
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, changeset_id, version, hash, base_commit_hash, modified_files,
+		       COALESCE(file_hashes, 'null'::jsonb), COALESCE(base_path_versions, 'null'::jsonb),
+		       author, message, created_at
+		FROM changeset_snapshots
+		WHERE changeset_id = $1 AND hash = $2
+		ORDER BY version DESC
+		LIMIT 1
+	`, changesetID, hash)
+
+	var snapshot models.ChangesetSnapshot
+	var modifiedJSON []byte
+	var fileHashesJSON []byte
+	var basePathVersionsJSON []byte
+	err := row.Scan(
+		&snapshot.ID,
+		&snapshot.ChangesetID,
+		&snapshot.Version,
+		&snapshot.Hash,
+		&snapshot.BaseCommitHash,
+		&modifiedJSON,
+		&fileHashesJSON,
+		&basePathVersionsJSON,
+		&snapshot.Author,
+		&snapshot.Message,
+		&snapshot.CreatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrChangesetNotFound
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(modifiedJSON, &snapshot.ModifiedFiles); err != nil {
+		snapshot.ModifiedFiles = []string{}
+	}
+	snapshot.ModifiedFileCount = len(snapshot.ModifiedFiles)
+	if err := json.Unmarshal(fileHashesJSON, &snapshot.FileHashes); err != nil {
+		snapshot.FileHashes = map[string]string{}
+	}
+	if err := json.Unmarshal(basePathVersionsJSON, &snapshot.BasePathVersions); err != nil {
+		snapshot.BasePathVersions = map[string]int64{}
+	}
+	return &snapshot, nil
+}
+
 func (s *PostgresNativeStorage) ListChangesetSnapshots(ctx context.Context, changesetID string, limit int) ([]*models.ChangesetSnapshot, error) {
 	return s.ListChangesetSnapshotsWithOptions(ctx, changesetID, ListChangesetSnapshotsOptions{
 		Limit:                limit,

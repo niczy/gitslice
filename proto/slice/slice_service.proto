@@ -29,6 +29,13 @@ service SliceService {
     };
   }
 
+  // Stream file metadata and missing content for one changeset snapshot.
+  rpc StreamChangesetSnapshot(ChangesetSnapshotRequest) returns (stream ChangesetSnapshotChunk) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/snapshot-content"
+    };
+  }
+
   // Merge change list into slice (with conflict detection)
   rpc MergeChangeset(MergeChangesetRequest) returns (MergeChangesetResponse) {
     option (google.api.http) = {
@@ -346,6 +353,30 @@ message ListChangesetSnapshotsRequest {
 
 message ListChangesetSnapshotsResponse {
   repeated ChangesetSnapshotInfo snapshots = 1;
+}
+
+message ChangesetSnapshotRequest {
+  string changeset_id = 1;
+  int32 snapshot_version = 2;
+  string snapshot_hash = 3;
+  repeated string paths = 4;
+  repeated string known_hashes = 5;
+  bool metadata_only = 6;
+}
+
+message ChangesetSnapshotManifest {
+  ChangesetSnapshotInfo snapshot = 1;
+  repeated FileMetadata file_metadata = 2;
+  repeated string deleted_paths = 3;
+  string slice_id = 4;
+}
+
+message ChangesetSnapshotChunk {
+  oneof chunk {
+    ChangesetSnapshotManifest manifest = 1;
+    FileContent file = 2;
+    BlockContent block = 3;
+  }
 }
 
 message ChangesetSnapshotInfo {
