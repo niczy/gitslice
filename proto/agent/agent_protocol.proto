@@ -12,6 +12,9 @@ message EventEnvelope {
   string stream = 3;
   string type = 4;
   bytes payload = 5;
+  // Stable server-side category for storage/query/UI rendering. Examples:
+  // thinking, tool_call, tool_result, model_response, user_input.
+  string kind = 6;
 }
 
 message AgentInputPayload {
@@ -26,6 +29,13 @@ message AgentOutputPayload {
   string text = 1;
   string channel = 2;
   int32 exit_code = 3;
+}
+
+message AgentThinkingPayload {
+  string text = 1;
+  string channel = 2;
+  string turn_id = 3;
+  string item_id = 4;
 }
 
 message AgentErrorPayload {

@@ -21,6 +21,7 @@ import {
   requestAgentRunnerRestart,
   sendAgentSessionInput,
 } from '../utils/api.js';
+import { parseAgentEventPayload } from '../utils/agentEvents.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
@@ -74,39 +75,24 @@ function normalizeEvent(event) {
     ts: event?.ts || '',
     stream: event?.stream || '',
     type: event?.type || '',
-    payload: parseEventPayload(event?.payload),
+    kind: event?.kind || '',
+    payload: parseAgentEventPayload(event?.payload),
   };
-}
-
-function parseEventPayload(value) {
-  if (!value) {
-    return {};
-  }
-  if (typeof value === 'object') {
-    return value;
-  }
-  if (typeof value !== 'string') {
-    return {};
-  }
-  const candidates = [value];
-  try {
-    candidates.push(atob(value));
-  } catch {
-    // Some local adapters already return JSON strings.
-  }
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      return parsed && typeof parsed === 'object' ? parsed : { text: String(parsed) };
-    } catch {
-      // Try the next representation.
-    }
-  }
-  return { text: value };
 }
 
 function shortSessionId(sessionId) {
   return sessionId ? sessionId.replace(/^sess_?/, '').slice(0, 12) : 'unknown';
+}
+
+function agentDisplayName(agentType) {
+  switch (String(agentType || '').trim().toLowerCase()) {
+    case 'codex':
+      return 'Codex';
+    case 'claude':
+      return 'Claude';
+    default:
+      return 'Agent';
+  }
 }
 
 function formatAgentTimestamp(value) {
@@ -185,10 +171,11 @@ function eventBody(event) {
 }
 
 function eventTone(event) {
-  if (event.stream === 'control' || event.type === 'error') {
+  const kind = eventKind(event);
+  if (kind === 'error' || event.stream === 'control' || event.type === 'error') {
     return 'error';
   }
-  if (event.stream === 'tool') {
+  if (kind === 'tool_call' || kind === 'tool_result' || event.stream === 'tool') {
     return 'tool';
   }
   if (event.stream === 'status') {
@@ -242,6 +229,7 @@ function writeAgentsSidebarWidth(value) {
 
 function payloadText(payload) {
   return payload?.text
+    || payload?.delta
     || payload?.message
     || payload?.status
     || payload?.state
@@ -259,7 +247,7 @@ function renderConversationMarkdown(text) {
   return renderMarkdownHtml(text) || '<p></p>';
 }
 
-function conversationMessageFromEvent(event) {
+function conversationMessageFromEvent(event, agentLabel = 'Agent') {
   if (event.stream === 'agent' && event.type === 'input') {
     return {
       key: `${event.seq}-user`,
@@ -275,7 +263,7 @@ function conversationMessageFromEvent(event) {
     return {
       key: `${event.seq}-assistant`,
       role: exitCode === 0 ? 'assistant' : 'error',
-      label: exitCode === 0 ? 'Codex' : 'Codex error',
+      label: exitCode === 0 ? agentLabel : `${agentLabel} error`,
       ts: event.ts,
       text: payloadText(event.payload),
       failed: exitCode !== 0,
@@ -284,30 +272,83 @@ function conversationMessageFromEvent(event) {
   return null;
 }
 
-function isAssistantResponseStreaming(events, session) {
+function eventKind(event) {
+  const explicit = String(event?.kind || '').trim().toLowerCase();
+  if (explicit) {
+    return explicit;
+  }
+  const stream = String(event?.stream || '').trim().toLowerCase();
+  const type = String(event?.type || '').trim().toLowerCase();
+  if (stream === 'agent' && type === 'input') return 'user_input';
+  if (stream === 'agent' && ['thinking_delta', 'reasoning_delta', 'reasoning_summary_delta'].includes(type)) return 'thinking';
+  if (stream === 'agent' && ['output_delta', 'output_final'].includes(type)) return 'model_response';
+  if (stream === 'tool' && ['start', 'call', 'request'].includes(type)) return 'tool_call';
+  if (stream === 'tool' && ['output', 'result', 'end'].includes(type)) return 'tool_result';
+  if (stream === 'status') return 'status';
+  if (stream === 'control' && type === 'error') return 'error';
+  if (stream === 'control') return 'control';
+  return 'event';
+}
+
+function isThinkingEvent(event) {
+  return eventKind(event) === 'thinking';
+}
+
+function isModelResponseDelta(event) {
+  return eventKind(event) === 'model_response' && event.type === 'output_delta';
+}
+
+function buildLiveStreamState(events, session) {
   if (!session || !isConversationLocal(session) || BLOCKED_CONVERSATION_STATES.has(session.state) || session.availability === 'failed') {
-    return false;
+    return {
+      active: false,
+      pendingInputSeq: 0,
+      thinkingText: '',
+      responseText: '',
+    };
   }
 
-  let pendingInput = false;
+  let pendingInputSeq = 0;
+  let thinkingText = '';
+  let responseText = '';
   for (const event of events) {
     if (event.stream === 'agent' && event.type === 'input' && payloadText(event.payload).trim()) {
-      pendingInput = true;
+      pendingInputSeq = event.seq;
+      thinkingText = '';
+      responseText = '';
     } else if (event.stream === 'agent' && event.type === 'output_final') {
-      pendingInput = false;
+      pendingInputSeq = 0;
+      thinkingText = '';
+      responseText = '';
     } else if (event.stream === 'control' && event.type === 'error') {
-      pendingInput = false;
+      pendingInputSeq = 0;
+      thinkingText = '';
+      responseText = '';
     } else if (event.stream === 'status' && event.type === 'state' && BLOCKED_CONVERSATION_STATES.has(normalizeConversationState(event.payload?.state))) {
-      pendingInput = false;
+      pendingInputSeq = 0;
+      thinkingText = '';
+      responseText = '';
+    } else if (pendingInputSeq > 0 && event.seq > pendingInputSeq && isThinkingEvent(event)) {
+      thinkingText += payloadText(event.payload);
+    } else if (pendingInputSeq > 0 && event.seq > pendingInputSeq && isModelResponseDelta(event)) {
+      responseText += payloadText(event.payload);
     }
   }
 
-  return pendingInput;
+  return {
+    active: pendingInputSeq > 0,
+    pendingInputSeq,
+    thinkingText,
+    responseText,
+  };
 }
 
-function buildConversationItems(events, assistantStreaming = false) {
+function buildConversationItems(events, liveStreamState = { active: false }, session = null) {
   const items = [];
   let folded = [];
+  let thinkingItem = null;
+  const pendingInputSeq = liveStreamState?.pendingInputSeq || 0;
+  const agentLabel = agentDisplayName(session?.agentType);
 
   const flushFolded = () => {
     if (folded.length === 0) {
@@ -321,25 +362,77 @@ function buildConversationItems(events, assistantStreaming = false) {
     folded = [];
   };
 
+  const appendThinking = (event) => {
+    const text = payloadText(event.payload);
+    if (!text) {
+      return;
+    }
+    flushFolded();
+    if (!thinkingItem) {
+      thinkingItem = {
+        kind: 'thinking',
+        key: `thinking-${event.seq}`,
+        text: '',
+        ts: event.ts,
+        live: false,
+      };
+      items.push(thinkingItem);
+    }
+    thinkingItem.text += text;
+  };
+
   for (const event of events) {
-    const message = conversationMessageFromEvent(event);
+    if (pendingInputSeq > 0 && event.seq > pendingInputSeq && (isThinkingEvent(event) || isModelResponseDelta(event))) {
+      continue;
+    }
+    if (isThinkingEvent(event)) {
+      appendThinking(event);
+      continue;
+    }
+    const message = conversationMessageFromEvent(event, agentLabel);
     if (message?.text) {
       flushFolded();
+      if (message.role === 'user') {
+        thinkingItem = null;
+      }
       items.push({
         kind: 'message',
         key: message.key,
         message,
       });
+      if (message.role !== 'user') {
+        thinkingItem = null;
+      }
     } else {
       folded.push(event);
     }
   }
   flushFolded();
 
-  if (assistantStreaming) {
+  if (liveStreamState?.active && liveStreamState.thinkingText?.trim()) {
+    items.push({
+      kind: 'thinking',
+      key: 'assistant-thinking',
+      text: liveStreamState.thinkingText,
+      live: true,
+    });
+  }
+
+  if (liveStreamState?.active && liveStreamState.responseText?.trim()) {
+    items.push({
+      kind: 'response-draft',
+      key: 'assistant-response-draft',
+      label: agentLabel,
+      text: liveStreamState.responseText,
+      live: true,
+    });
+  }
+
+  if (liveStreamState?.active && !liveStreamState.thinkingText?.trim() && !liveStreamState.responseText?.trim()) {
     items.push({
       kind: 'streaming',
       key: 'assistant-streaming',
+      label: agentLabel,
     });
   }
 
@@ -598,13 +691,14 @@ export default function SliceAgentsPage({
     && isConversationLocal(selectedSession),
   );
   const canSendInput = Boolean(selectedSessionId && selectedSession && isConversationLocal(selectedSession));
-  const assistantStreaming = useMemo(
-    () => isAssistantResponseStreaming(events, selectedSession),
+  const liveStreamState = useMemo(
+    () => buildLiveStreamState(events, selectedSession),
     [events, selectedSession],
   );
+  const assistantStreaming = liveStreamState.active;
   const conversationItems = useMemo(
-    () => buildConversationItems(events, assistantStreaming),
-    [events, assistantStreaming],
+    () => buildConversationItems(events, liveStreamState, selectedSession),
+    [events, liveStreamState, selectedSession],
   );
   const hasRunnerConversation = runnerSessions.length > 0;
   const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasRunnerConversation;
@@ -905,18 +999,19 @@ export default function SliceAgentsPage({
     }
 
     let active = true;
+    const pollIntervalMs = assistantStreaming ? 1000 : 5000;
     const loadEvents = async () => {
       if (!active) return;
       await loadSelectedEvents();
     };
 
     loadEvents();
-    const intervalId = window.setInterval(loadEvents, 5000);
+    const intervalId = window.setInterval(loadEvents, pollIntervalMs);
     return () => {
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [loadSelectedEvents, selectedSessionId]);
+  }, [assistantStreaming, loadSelectedEvents, selectedSessionId]);
 
   useEffect(() => {
     setRunnerActionError('');
@@ -1314,6 +1409,31 @@ export default function SliceAgentsPage({
                           dangerouslySetInnerHTML={{ __html: renderConversationMarkdown(item.message.text) }}
                         />
                       </li>
+                    ) : item.kind === 'thinking' || item.kind === 'response-draft' ? (
+                      <li
+                        key={item.key}
+                        className={[
+                          'slice-agents-message',
+                          'slice-agents-message--assistant',
+                          item.live ? 'slice-agents-message--live' : '',
+                          `slice-agents-message--${item.kind}`,
+                        ].filter(Boolean).join(' ')}
+                        aria-live={item.live ? 'polite' : undefined}
+                        data-testid={`slice-agents-${item.kind}`}
+                      >
+                        <div className="slice-agents-message-header">
+                          <span>{item.kind === 'thinking' ? 'Thinking' : item.label}</span>
+                          {item.live ? (
+                            <span className="slice-agents-streaming-label">{item.kind === 'thinking' ? 'Working' : 'Streaming'}</span>
+                          ) : item.ts ? (
+                            <time>{formatAgentTimestamp(item.ts)}</time>
+                          ) : null}
+                        </div>
+                        <div
+                          className="slice-agents-message-body slice-agents-message-markdown"
+                          dangerouslySetInnerHTML={{ __html: renderConversationMarkdown(item.text) }}
+                        />
+                      </li>
                     ) : item.kind === 'streaming' ? (
                       <li
                         key={item.key}
@@ -1322,10 +1442,10 @@ export default function SliceAgentsPage({
                         data-testid="slice-agents-streaming"
                       >
                         <div className="slice-agents-message-header">
-                          <span>Codex</span>
+                          <span>{item.label}</span>
                           <span className="slice-agents-streaming-label">Responding</span>
                         </div>
-                        <div className="slice-agents-streaming-dots" aria-label="Codex is responding">
+                        <div className="slice-agents-streaming-dots" aria-label={`${item.label} is responding`}>
                           <span />
                           <span />
                           <span />
@@ -1334,7 +1454,7 @@ export default function SliceAgentsPage({
                     ) : (
                       <li key={item.key} className="slice-agents-timeline-events">
                         <details className="slice-agents-debug-events">
-                          <summary>System and tool events ({item.events.length})</summary>
+                          <summary>Agent activity ({item.events.length})</summary>
                           <ol className="slice-agents-event-list">
                             {item.events.map((event) => (
                               <li

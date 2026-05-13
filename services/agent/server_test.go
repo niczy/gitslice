@@ -294,6 +294,93 @@ func TestLocalSessionResponsesExposeLocalAvailability(t *testing.T) {
 	}
 }
 
+func TestLocalSessionResponsesSupportLegacyRunnerDiscovery(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-legacy-runner",
+		Name:      "Legacy Runner Slice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := st.UpsertAgentRunner(context.Background(), &models.AgentRunner{
+		RunnerID:        "runner-legacy",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		Capabilities:    []byte(`{"agent_type":"codex","checkout_per_session":true,"local_sessions_reported":true,"local_session_ids":null}`),
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+	if err := st.CreateAgentSession(context.Background(), &models.AgentSession{
+		SessionID:      "sess-legacy",
+		SliceID:        "slice-legacy-runner",
+		RunnerID:       "runner-legacy",
+		UserID:         "alice",
+		State:          models.AgentSessionStateRunning,
+		Provider:       agentsession.RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	listResp, err := srv.ListSessions(ctx, &agentv1.ListSessionsRequest{SliceId: "slice-legacy-runner"})
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(listResp.GetSessions()) != 1 {
+		t.Fatalf("expected one session, got %#v", listResp.GetSessions())
+	}
+	if listResp.GetSessions()[0].GetState() != string(models.AgentSessionStateRunning) {
+		t.Fatalf("expected active state for legacy runner discovery, got %q", listResp.GetSessions()[0].GetState())
+	}
+	if listResp.GetSessions()[0].GetAvailability() != agentsession.SessionAvailabilityPendingLocal {
+		t.Fatalf("expected pending local availability before attach, got %q", listResp.GetSessions()[0].GetAvailability())
+	}
+
+	if err := st.AppendAgentSessionEvent(context.Background(), &models.AgentSessionEvent{
+		SessionID: "sess-legacy",
+		Seq:       1,
+		Stream:    agentsession.EventStreamStatus,
+		Type:      "local_runner_attached",
+		Payload:   []byte(`{}`),
+		TS:        now,
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent failed: %v", err)
+	}
+	listResp, err = srv.ListSessions(ctx, &agentv1.ListSessionsRequest{SliceId: "slice-legacy-runner"})
+	if err != nil {
+		t.Fatalf("ListSessions after attach failed: %v", err)
+	}
+	if listResp.GetSessions()[0].GetAvailability() != agentsession.SessionAvailabilityLocal {
+		t.Fatalf("expected local availability after attach for legacy runner, got %q", listResp.GetSessions()[0].GetAvailability())
+	}
+}
+
+func TestRunnerLocalSessionIDsRequiresUsableList(t *testing.T) {
+	if ids, reported := runnerLocalSessionIDs([]byte(`{"local_sessions_reported":true,"local_session_ids":null}`)); reported || len(ids) != 0 {
+		t.Fatalf("expected null local_session_ids to be unusable, got reported=%v ids=%#v", reported, ids)
+	}
+	if ids, reported := runnerLocalSessionIDs([]byte(`{"local_sessions_reported":true,"local_session_ids":[]}`)); !reported || len(ids) != 0 {
+		t.Fatalf("expected empty array to be reported, got reported=%v ids=%#v", reported, ids)
+	}
+	if ids, reported := runnerLocalSessionIDs([]byte(`{"local_session_ids":["sess-a","sess-a","sess-b"]}`)); !reported || len(ids) != 2 {
+		t.Fatalf("expected unique ids from array, got reported=%v ids=%#v", reported, ids)
+	}
+}
+
 func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()

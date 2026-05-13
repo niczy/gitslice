@@ -85,6 +85,7 @@ func (p *claudeStreamPayload) UnmarshalJSON(data []byte) error {
 type claudeContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Input     json.RawMessage `json:"input"`
@@ -211,6 +212,10 @@ func (r *claudeStreamJSONRunner) handleMessage(ctx context.Context, finalText st
 				finalText = nextFinalText
 				if delta != "" {
 					_ = appendAgentOutput(ctx, r.cli, r.cfg.SessionID, delta, "assistant", "output_delta", 0)
+				}
+			case "thinking", "thinking_delta":
+				if thinking := firstNonEmpty(block.Thinking, block.Text); strings.TrimSpace(thinking) != "" {
+					_ = appendAgentThinking(ctx, r.cli, r.cfg.SessionID, thinking, "thinking", "", block.ID)
 				}
 			case "tool_use":
 				r.appendToolStart(ctx, block)

@@ -236,6 +236,9 @@ message AppendEventRequest {
   string stream = 2;
   string type = 3;
   bytes payload = 4;
+  // Optional caller hint. The server classifies known stream/type pairs before
+  // persisting so storage can separate thinking/tool/model/user events.
+  string kind = 5;
 }
 
 message AppendEventResponse {

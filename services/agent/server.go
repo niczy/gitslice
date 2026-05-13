@@ -214,10 +214,26 @@ func agentSessionSummary(session *models.AgentSession, availability string) *age
 		RunnerId:     session.RunnerID,
 		Availability: availability,
 	}
+	if state := agentSessionStateForRunnerDiscovery(session); state != "" {
+		summary.State = state
+	}
 	if session.LastActivityAt != nil {
 		summary.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
 	}
 	return summary
+}
+
+func agentSessionStateForRunnerDiscovery(session *models.AgentSession) string {
+	if session == nil || !agentSessionIsLocal(session) {
+		return ""
+	}
+	if session.State.IsActive() {
+		return string(session.State)
+	}
+	if session.State == models.AgentSessionStateFailed {
+		return string(session.State)
+	}
+	return ""
 }
 
 func agentSessionIsLocal(session *models.AgentSession) bool {
@@ -241,14 +257,18 @@ func (s *agentServiceServer) agentSessionAvailability(ctx context.Context, sessi
 	if runner == nil || !agentRunnerOnline(runner, now) {
 		return agentsession.SessionAvailabilityRunnerOffline
 	}
+	attached := s.agentSessionHasLocalRunnerAttached(ctx, session.SessionID)
 	localIDs, reported := runnerLocalSessionIDs(runner.Capabilities)
 	if !reported {
-		return agentsession.SessionAvailabilityUnknown
+		if attached {
+			return agentsession.SessionAvailabilityLocal
+		}
+		return agentsession.SessionAvailabilityPendingLocal
 	}
 	if _, ok := localIDs[session.SessionID]; ok {
 		return agentsession.SessionAvailabilityLocal
 	}
-	if s.agentSessionHasLocalRunnerAttached(ctx, session.SessionID) {
+	if attached {
 		return agentsession.SessionAvailabilityCloudOnly
 	}
 	return agentsession.SessionAvailabilityPendingLocal
@@ -276,37 +296,35 @@ func runnerLocalSessionIDs(raw json.RawMessage) (map[string]struct{}, bool) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return ids, false
 	}
-	reported := jsonBool(payload[agentsession.RunnerCapabilityLocalSessionsReported]) || jsonBool(payload["localSessionsReported"])
+	reported := false
 	if values, ok := payload[agentsession.RunnerCapabilityLocalSessionIDs]; ok {
-		reported = true
-		for _, id := range jsonStringList(values) {
+		list, valid := jsonStringList(values)
+		reported = valid
+		for _, id := range list {
 			ids[id] = struct{}{}
 		}
 	}
 	if values, ok := payload["localSessionIds"]; ok {
-		reported = true
-		for _, id := range jsonStringList(values) {
+		list, valid := jsonStringList(values)
+		reported = reported || valid
+		for _, id := range list {
 			ids[id] = struct{}{}
 		}
 	}
 	return ids, reported
 }
 
-func jsonBool(raw json.RawMessage) bool {
+func jsonStringList(raw json.RawMessage) ([]string, bool) {
 	if len(raw) == 0 {
-		return false
+		return nil, false
 	}
-	var value bool
-	return json.Unmarshal(raw, &value) == nil && value
-}
-
-func jsonStringList(raw json.RawMessage) []string {
-	if len(raw) == 0 {
-		return nil
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" || !strings.HasPrefix(trimmed, "[") {
+		return nil, false
 	}
 	var values []string
 	if err := json.Unmarshal(raw, &values); err != nil {
-		return nil
+		return nil, false
 	}
 	out := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
@@ -321,7 +339,7 @@ func jsonStringList(raw json.RawMessage) []string {
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
-	return out
+	return out, true
 }
 
 func agentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
@@ -634,6 +652,7 @@ func (s *agentServiceServer) ListEvents(ctx context.Context, req *agentv1.ListEv
 			Stream:  event.Stream,
 			Type:    event.Type,
 			Payload: event.Payload,
+			Kind:    event.Kind,
 		})
 	}
 	return &agentv1.ListEventsResponse{Events: out, NextSeq: nextSeq}, nil
@@ -664,6 +683,7 @@ func (s *agentServiceServer) AppendEvent(ctx context.Context, req *agentv1.Appen
 		SessionID: session.SessionID,
 		Stream:    stream,
 		Type:      eventType,
+		Kind:      strings.TrimSpace(req.GetKind()),
 		Payload:   payload,
 	}
 	if err := s.svc.AppendEvent(ctx, event); err != nil {
@@ -769,5 +789,6 @@ func eventEnvelopeFromModel(event *models.AgentSessionEvent) *agentv1.EventEnvel
 		Stream:  event.Stream,
 		Type:    event.Type,
 		Payload: event.Payload,
+		Kind:    event.Kind,
 	}
 }

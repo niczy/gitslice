@@ -608,6 +608,22 @@ func appendAgentOutput(ctx context.Context, cli *CLI, sessionID, text, channel, 
 	return err
 }
 
+func appendAgentThinking(ctx context.Context, cli *CLI, sessionID, text, channel, turnID, itemID string) error {
+	payload, _ := protojson.Marshal(&agentv1.AgentThinkingPayload{
+		Text:    text,
+		Channel: channel,
+		TurnId:  turnID,
+		ItemId:  itemID,
+	})
+	_, err := cli.agentClient.AppendEvent(ctx, &agentv1.AppendEventRequest{
+		SessionId: sessionID,
+		Stream:    "agent",
+		Type:      "thinking_delta",
+		Payload:   payload,
+	})
+	return err
+}
+
 func appendAgentError(ctx context.Context, cli *CLI, sessionID, code, message string) error {
 	payload, _ := protojson.Marshal(&agentv1.AgentErrorPayload{Code: code, Message: message})
 	_, err := cli.agentClient.AppendEvent(ctx, &agentv1.AppendEventRequest{

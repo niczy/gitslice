@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -88,7 +89,48 @@ type AgentSessionEvent struct {
 	TS        time.Time       `json:"ts"`
 	Stream    string          `json:"stream"`
 	Type      string          `json:"type"`
+	Kind      string          `json:"kind"`
 	Payload   json.RawMessage `json:"payload"`
+}
+
+const (
+	AgentSessionEventKindUserInput     = "user_input"
+	AgentSessionEventKindThinking      = "thinking"
+	AgentSessionEventKindToolCall      = "tool_call"
+	AgentSessionEventKindToolResult    = "tool_result"
+	AgentSessionEventKindModelResponse = "model_response"
+	AgentSessionEventKindStatus        = "status"
+	AgentSessionEventKindControl       = "control"
+	AgentSessionEventKindError         = "error"
+	AgentSessionEventKindEvent         = "event"
+)
+
+func NormalizeAgentSessionEventKind(stream, eventType, current string) string {
+	stream = strings.ToLower(strings.TrimSpace(stream))
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	switch {
+	case stream == "control" && eventType == "error":
+		return AgentSessionEventKindError
+	case stream == "agent" && eventType == "input":
+		return AgentSessionEventKindUserInput
+	case stream == "agent" && (eventType == "thinking_delta" || eventType == "reasoning_delta" || eventType == "reasoning_summary_delta"):
+		return AgentSessionEventKindThinking
+	case stream == "agent" && (eventType == "output_delta" || eventType == "output_final"):
+		return AgentSessionEventKindModelResponse
+	case stream == "tool" && (eventType == "start" || eventType == "call" || eventType == "request"):
+		return AgentSessionEventKindToolCall
+	case stream == "tool" && (eventType == "output" || eventType == "result" || eventType == "end"):
+		return AgentSessionEventKindToolResult
+	case stream == "status":
+		return AgentSessionEventKindStatus
+	case stream == "control":
+		return AgentSessionEventKindControl
+	}
+	current = strings.ToLower(strings.TrimSpace(current))
+	if current != "" {
+		return current
+	}
+	return AgentSessionEventKindEvent
 }
 
 type AgentSessionAudit struct {

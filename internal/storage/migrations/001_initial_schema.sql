@@ -56,6 +56,7 @@ CREATE TABLE agent_session_events (
     ts timestamp with time zone NOT NULL,
     stream text NOT NULL,
     type text NOT NULL,
+    kind text DEFAULT 'event'::text NOT NULL,
     payload_json jsonb NOT NULL
 );
 
@@ -780,6 +781,7 @@ CREATE INDEX idx_agent_keys_username_active ON agent_keys USING btree (username)
 CREATE INDEX idx_agent_session_audit_session_created ON agent_session_audit USING btree (session_id, created_at DESC);
 
 CREATE INDEX idx_agent_session_events_ts ON agent_session_events USING btree (session_id, ts DESC);
+CREATE INDEX idx_agent_session_events_kind ON agent_session_events USING btree (session_id, kind, seq);
 
 CREATE UNIQUE INDEX idx_agent_sessions_e2b_sandbox ON agent_sessions USING btree (e2b_sandbox_id) WHERE (e2b_sandbox_id IS NOT NULL);
 

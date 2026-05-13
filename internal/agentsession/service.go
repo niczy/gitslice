@@ -407,6 +407,7 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	}
 	event.Seq = eventCopy.Seq
 	event.TS = eventCopy.TS
+	event.Kind = eventCopy.Kind
 	s.rememberSeq(eventCopy.SessionID, eventCopy.Seq)
 	return nil
 }
