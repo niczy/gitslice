@@ -137,6 +137,9 @@ func handleConfigEndpointSet(args []string) {
 		cfg.AdminAddr = ""
 		cfg.FileAddr = ""
 		cfg.FSAddr = ""
+		if !tlsSet {
+			cfg.TLS = nil
+		}
 		changed = true
 	}
 	if serviceAddr := strings.TrimSpace(*accountAddr); serviceAddr != "" {

@@ -332,8 +332,11 @@ func envValue(env []string, key string) string {
 
 type fakeAccountServiceClient struct {
 	accountv1.AccountServiceClient
-	accessToken  string
-	refreshToken string
+	accessToken     string
+	refreshToken    string
+	authContext     *accountv1.GetAuthContextResponse
+	authContextErr  error
+	authContextSeen bool
 }
 
 func (f *fakeAccountServiceClient) RefreshAccessToken(ctx context.Context, req *accountv1.RefreshAccessTokenRequest, opts ...grpc.CallOption) (*accountv1.AuthResponse, error) {
@@ -347,6 +350,24 @@ func (f *fakeAccountServiceClient) RefreshAccessToken(ctx context.Context, req *
 		RefreshToken:          f.refreshToken,
 		AccessTokenExpiresAt:  time.Now().Add(15 * time.Minute).Format(time.RFC3339),
 		RefreshTokenExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}, nil
+}
+
+func (f *fakeAccountServiceClient) GetAuthContext(ctx context.Context, req *accountv1.GetAuthContextRequest, opts ...grpc.CallOption) (*accountv1.GetAuthContextResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	f.authContextSeen = true
+	if f.authContextErr != nil {
+		return nil, f.authContextErr
+	}
+	if f.authContext != nil {
+		return f.authContext, nil
+	}
+	return &accountv1.GetAuthContextResponse{
+		Authenticated: true,
+		Username:      "stored-user",
+		AuthSource:    "local_session",
 	}, nil
 }
 

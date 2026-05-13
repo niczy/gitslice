@@ -53,9 +53,30 @@ func newLogoutCommand() *cobra.Command {
 }
 
 var (
-	ensureLoginAuthReady = ensureCLIAuthReady
+	ensureLoginAuthReady = ensureLoginAuthAccepted
 	startLoginDevice     = startDeviceLogin
 )
+
+func ensureLoginAuthAccepted(ctx context.Context, cli *CLI, authConfig cliAuth) (cliAuth, error) {
+	authConfig, err := ensureCLIAuthReady(ctx, cli, authConfig)
+	if err != nil {
+		return cliAuth{}, err
+	}
+	if strings.TrimSpace(authConfig.Authorization) == "" {
+		return authConfig, nil
+	}
+	resp, err := cli.accountClient.GetAuthContext(withCLIAuth(withCLIDeviceInfo(ctx), authConfig), &accountv1.GetAuthContextRequest{})
+	if err != nil {
+		return cliAuth{}, fmt.Errorf("validate stored login: %w", err)
+	}
+	if !resp.GetAuthenticated() {
+		return cliAuth{}, fmt.Errorf("stored login was not accepted by current endpoint")
+	}
+	if username := strings.TrimSpace(resp.GetUsername()); username != "" && strings.TrimSpace(authConfig.Username) == "" {
+		authConfig.Username = username
+	}
+	return authConfig, nil
+}
 
 func runLoginCommand(args []string) {
 	args = configureCLIBehavior(args)
