@@ -549,10 +549,14 @@ func scanCheckoutForNewFiles(dir, relDir string, lookup *checkoutIndexLookup) ([
 		if relDir == "" {
 			return nil, nil
 		}
-		if _, ok := lookup.files[filepath.Clean(relDir)]; ok {
+		cleaned := filepath.Clean(relDir)
+		if _, ok := lookup.files[cleaned]; ok {
 			return nil, nil
 		}
-		return []string{filepath.Clean(relDir)}, nil
+		if shouldIgnoreGeneratedAgentInstructionFile(dir, cleaned) {
+			return nil, nil
+		}
+		return []string{cleaned}, nil
 	}
 
 	currentDir, entries, err := currentCheckoutDirectorySnapshot(dir, normalizedDir)
@@ -609,6 +613,9 @@ func scanCheckoutForNewFiles(dir, relDir string, lookup *checkoutIndexLookup) ([
 		if _, ok := lookup.files[cleaned]; ok {
 			continue
 		}
+		if shouldIgnoreGeneratedAgentInstructionFile(dir, cleaned) {
+			continue
+		}
 		newFiles = append(newFiles, cleaned)
 	}
 
@@ -638,7 +645,11 @@ func collectAllFiles(dir, relDir string) ([]string, error) {
 			files = append(files, childFiles...)
 			continue
 		}
-		files = append(files, filepath.Clean(relPath))
+		cleaned := filepath.Clean(relPath)
+		if shouldIgnoreGeneratedAgentInstructionFile(dir, cleaned) {
+			continue
+		}
+		files = append(files, cleaned)
 	}
 	return files, nil
 }
@@ -690,6 +701,13 @@ func currentCheckoutDirectorySnapshot(rootDir, relDir string) (checkoutTrackedDi
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == ".git" || name == ".gs" {
+			continue
+		}
+		relPath := name
+		if relDir != "" {
+			relPath = filepath.Join(relDir, name)
+		}
+		if shouldIgnoreGeneratedAgentInstructionFile(rootDir, relPath) {
 			continue
 		}
 		filtered = append(filtered, entry)

@@ -348,6 +348,9 @@ func collectNoGitWorkingTreeStatusFromCandidates(dir string, lookup *checkoutInd
 		fullPath := filepath.Join(dir, candidate)
 		info, err := os.Lstat(fullPath)
 		if err == nil && !info.IsDir() {
+			if shouldIgnoreGeneratedAgentInstructionFile(dir, candidate) {
+				continue
+			}
 			addEntry(candidate, "A")
 			continue
 		}

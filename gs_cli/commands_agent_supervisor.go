@@ -954,6 +954,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 	}
 	targetRoot := filepath.Join(rootDir, agentSessionCheckoutDirName(discovered))
 	if index, err := readCheckoutIndex(targetRoot); err == nil && index != nil && strings.TrimSpace(index.SliceID) == strings.TrimSpace(session.GetSliceId()) {
+		if err := ensureAgentInstructionFiles(targetRoot); err != nil {
+			return "", err
+		}
 		return targetRoot, nil
 	}
 	if err := prepareCheckoutTargetRoot(targetRoot); err != nil {
@@ -981,6 +984,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 		return "", err
 	}
 	if err := writeCheckoutIndex(targetRoot, nextCheckoutIndex); err != nil {
+		return "", err
+	}
+	if err := ensureAgentInstructionFiles(targetRoot); err != nil {
 		return "", err
 	}
 	if err := ensureLocalSliceSearchArtifact(ctx, cli, targetRoot, session.GetSliceId(), checkoutResult.Manifest); err != nil {
