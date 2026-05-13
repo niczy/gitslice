@@ -158,6 +158,10 @@ func (s *agentServiceServer) ListRunners(ctx context.Context, req *agentv1.ListR
 	now := time.Now().UTC()
 	out := make([]*agentv1.AgentRunner, 0, len(runners))
 	for _, runner := range runners {
+		runner, err = s.markRunnerOfflineIfStale(ctx, runner, now)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to update runner")
+		}
 		if !req.GetIncludeOffline() && !agentRunnerOnline(runner, now) {
 			continue
 		}
@@ -216,6 +220,22 @@ func agentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
 		now = time.Now().UTC()
 	}
 	return now.Sub(runner.LastHeartbeatAt) <= runnerOnlineTTL
+}
+
+func (s *agentServiceServer) markRunnerOfflineIfStale(ctx context.Context, runner *models.AgentRunner, now time.Time) (*models.AgentRunner, error) {
+	if runner == nil || runner.Status != models.AgentRunnerStatusOnline || agentRunnerOnline(runner, now) {
+		return runner, nil
+	}
+	updated := *runner
+	if runner.Capabilities != nil {
+		updated.Capabilities = append([]byte(nil), runner.Capabilities...)
+	}
+	updated.Status = models.AgentRunnerStatusOffline
+	updated.UpdatedAt = now
+	if err := s.st.UpdateAgentRunner(ctx, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
 }
 
 func agentRunnerToProto(runner *models.AgentRunner, now time.Time) *agentv1.AgentRunner {
@@ -322,7 +342,12 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	if runner.UserID != userID {
 		return nil, status.Error(codes.PermissionDenied, "forbidden")
 	}
-	if !agentRunnerOnline(runner, time.Now().UTC()) {
+	now := time.Now().UTC()
+	runner, err = s.markRunnerOfflineIfStale(ctx, runner, now)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to update runner")
+	}
+	if !agentRunnerOnline(runner, now) {
 		return nil, status.Error(codes.FailedPrecondition, "runner is offline")
 	}
 

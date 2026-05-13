@@ -6490,6 +6490,14 @@ button[data-testid="topbar-get-started"]:hover {
   transform: none;
 }
 
+.slice-agents-session-row.offline {
+  color: var(--text-muted) !important;
+}
+
+.slice-agents-session-row.offline .slice-agents-session-icon {
+  color: var(--text-muted);
+}
+
 .slice-agents-session-row.active {
   box-shadow: inset 3px 0 0 var(--accent);
 }

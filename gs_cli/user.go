@@ -347,6 +347,14 @@ func withCLIAuth(ctx context.Context, authConfig cliAuth) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "authorization", authConfig.Authorization)
 }
 
+func replaceCLIAuth(ctx context.Context, authConfig cliAuth) context.Context {
+	md := metadata.MD{}
+	if authorization := strings.TrimSpace(authConfig.Authorization); authorization != "" {
+		md.Set("authorization", authorization)
+	}
+	return metadata.NewOutgoingContext(ctx, md)
+}
+
 func ensureCLIAuthReady(ctx context.Context, cli *CLI, authConfig cliAuth) (cliAuth, error) {
 	if !authConfig.CredentialStore {
 		return authConfig, nil
