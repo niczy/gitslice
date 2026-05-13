@@ -31,6 +31,7 @@ const (
 	agentWorkspaceStateDir     = ".gitslice-agent"
 	agentWorkspaceSessionsDir  = "sessions"
 	agentSessionMarkerFileMode = 0o600
+	agentStartParentPIDEnv     = "GS_AGENT_START_PARENT_PID"
 )
 
 const agentSupervisorAuthCheckInterval = 15 * time.Second
@@ -84,6 +85,19 @@ type agentSessionRunResult struct {
 
 var errAgentSupervisorRestarting = errors.New("agent supervisor restarting")
 
+type agentSupervisorAlreadyRunningError struct {
+	RootDir string
+	PID     int
+}
+
+func (e *agentSupervisorAlreadyRunningError) Error() string {
+	root := strings.TrimSpace(e.RootDir)
+	if root == "" {
+		root = "this directory"
+	}
+	return fmt.Sprintf("local agent runner is already running in %s (pid %d); stop it before starting another runner from the same directory", root, e.PID)
+}
+
 type localRunnerRestartRequest struct {
 	Upgrade bool   `json:"upgrade"`
 	Reason  string `json:"reason"`
@@ -104,6 +118,16 @@ func startAgentSupervisorBackground(ctx context.Context, cli *CLI, authConfig cl
 	if err != nil {
 		return nil, err
 	}
+	reservationPID := os.Getpid()
+	if err := claimAgentSupervisorPIDFile(rootDir, reservationPID, 0); err != nil {
+		return nil, err
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			clearAgentSupervisorPIDFileIfMatches(rootDir, reservationPID)
+		}
+	}()
 	logFile := strings.TrimSpace(cfg.LogFile)
 	if logFile == "" {
 		logFile = filepath.Join(rootDir, agentWorkspaceStateDir, "agent.log")
@@ -153,6 +177,7 @@ func startAgentSupervisorBackground(ctx context.Context, cli *CLI, authConfig cl
 	cmd.Stdout = logHandle
 	cmd.Stderr = logHandle
 	cmd.Env = backgroundAgentEnv(authConfig)
+	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", agentStartParentPIDEnv, reservationPID))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -163,6 +188,7 @@ func startAgentSupervisorBackground(ctx context.Context, cli *CLI, authConfig cl
 	}
 
 	writeAgentSupervisorPIDFile(rootDir, pid)
+	reserved = false
 	return &agentSupervisorStartOutput{
 		Status:   "started",
 		RunnerID: runnerID,
@@ -443,6 +469,10 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 		}
 		cfg.RunnerID = runnerID
 	}
+	if err := claimAgentSupervisorPIDFile(rootDir, os.Getpid(), agentStartParentPIDFromEnv()); err != nil {
+		return 0, err
+	}
+	defer clearAgentSupervisorPIDFileIfMatches(rootDir, os.Getpid())
 	authRefresher := newAgentSupervisorAuthRefresher(cli, authConfig)
 	supervisorCLI := *cli
 	supervisorCLI.agentClient = &refreshingAgentServiceClient{
@@ -772,7 +802,7 @@ func startLocalAgentReplacement(rootDir string) (int, error) {
 	cmd.Dir = cwd
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", agentStartParentPIDEnv, os.Getpid()))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return 0, err
@@ -785,25 +815,127 @@ func startLocalAgentReplacement(rootDir string) (int, error) {
 	return pid, nil
 }
 
-func writeAgentSupervisorPIDFile(rootDir string, pid int) {
+func agentStartParentPIDFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv(agentStartParentPIDEnv))
+	if raw == "" {
+		return 0
+	}
+	pid, err := strconv.Atoi(raw)
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
+}
+
+func agentSupervisorPIDFile(rootDir string) (string, error) {
 	root := strings.TrimSpace(rootDir)
-	if root == "" || pid <= 0 {
-		return
+	if root == "" {
+		return "", fmt.Errorf("agent runner root is required")
 	}
 	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	pidDir := filepath.Join(abs, agentWorkspaceStateDir)
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(pidDir, "agent.pid"), nil
+}
+
+func claimAgentSupervisorPIDFile(rootDir string, pid, allowedParentPID int) error {
+	if pid <= 0 {
+		return fmt.Errorf("agent runner pid is required")
+	}
+	pidFile, err := agentSupervisorPIDFile(rootDir)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < 25; attempt++ {
+		handle, err := os.OpenFile(pidFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_, writeErr := fmt.Fprintf(handle, "%d\n", pid)
+			closeErr := handle.Close()
+			if writeErr != nil {
+				return writeErr
+			}
+			return closeErr
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		existingPID, readErr := readAgentSupervisorPIDFilePath(pidFile)
+		if readErr != nil || existingPID <= 0 || !agentSupervisorProcessAlive(existingPID) {
+			_ = os.Remove(pidFile)
+			continue
+		}
+		if existingPID == pid {
+			return writeAgentSupervisorPIDFilePath(pidFile, pid)
+		}
+		if allowedParentPID > 0 && existingPID == allowedParentPID {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		return &agentSupervisorAlreadyRunningError{RootDir: rootDir, PID: existingPID}
+	}
+	existingPID, _ := readAgentSupervisorPIDFilePath(pidFile)
+	if existingPID > 0 && existingPID != pid && agentSupervisorProcessAlive(existingPID) {
+		return &agentSupervisorAlreadyRunningError{RootDir: rootDir, PID: existingPID}
+	}
+	return writeAgentSupervisorPIDFilePath(pidFile, pid)
+}
+
+func writeAgentSupervisorPIDFile(rootDir string, pid int) {
+	if strings.TrimSpace(rootDir) == "" || pid <= 0 {
+		return
+	}
+	pidFile, err := agentSupervisorPIDFile(rootDir)
 	if err != nil {
 		log.Printf("Warning: failed to resolve agent runner pid directory: %v", err)
 		return
 	}
-	pidDir := filepath.Join(abs, agentWorkspaceStateDir)
-	if err := os.MkdirAll(pidDir, 0o755); err != nil {
-		log.Printf("Warning: failed to create agent runner pid directory: %v", err)
-		return
-	}
-	pidFile := filepath.Join(pidDir, "agent.pid")
-	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", pid)), 0o600); err != nil {
+	if err := writeAgentSupervisorPIDFilePath(pidFile, pid); err != nil {
 		log.Printf("Warning: failed to write agent pid file: %v", err)
 	}
+}
+
+func writeAgentSupervisorPIDFilePath(pidFile string, pid int) error {
+	return os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", pid)), 0o600)
+}
+
+func clearAgentSupervisorPIDFileIfMatches(rootDir string, pid int) {
+	if pid <= 0 {
+		return
+	}
+	pidFile, err := agentSupervisorPIDFile(rootDir)
+	if err != nil {
+		return
+	}
+	existingPID, err := readAgentSupervisorPIDFilePath(pidFile)
+	if err != nil || existingPID != pid {
+		return
+	}
+	_ = os.Remove(pidFile)
+}
+
+func readAgentSupervisorPIDFilePath(pidFile string) (int, error) {
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
+}
+
+func agentSupervisorProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func localAgentSessionMarkerDir(rootDir string) string {
