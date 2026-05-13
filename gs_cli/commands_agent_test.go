@@ -2,6 +2,8 @@ package gscli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -187,6 +189,103 @@ func TestAgentSessionCheckoutDirNameIncludesFullSessionID(t *testing.T) {
 	}
 	if !strings.Contains(got, "abcdefghijklmnop123456") {
 		t.Fatalf("expected checkout dir to include full session id suffix, got %q", got)
+	}
+}
+
+func TestEnsureAgentInstructionFilesAreLocalOnly(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
+		t.Fatalf("mkdir .gs: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "slice-test",
+		CommitHash: "commit-1",
+	}
+	addTestDirectoryRecords(t, workdir, index, "")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+
+	if err := ensureAgentInstructionFiles(workdir); err != nil {
+		t.Fatalf("ensure agent instruction files: %v", err)
+	}
+	for _, name := range agentInstructionFileNames {
+		content, err := os.ReadFile(filepath.Join(workdir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !strings.Contains(string(content), agentInstructionFileMarker) {
+			t.Fatalf("%s missing generated marker", name)
+		}
+	}
+
+	entries, err := collectNoGitWorkingTreeStatusFullScan(workdir, index)
+	if err != nil {
+		t.Fatalf("collect status: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected generated instruction files to be ignored, got %#v", entries)
+	}
+
+	lookup := newCheckoutIndexLookup(index)
+	entries, remaining, err := collectNoGitWorkingTreeStatusFromCandidates(workdir, lookup, agentInstructionFileNames)
+	if err != nil {
+		t.Fatalf("collect candidate status: %v", err)
+	}
+	if len(entries) != 0 || len(remaining) != 0 {
+		t.Fatalf("expected generated instruction candidates to be ignored, got entries=%#v remaining=%#v", entries, remaining)
+	}
+}
+
+func TestEnsureAgentInstructionFilesDoesNotHideUserFiles(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
+		t.Fatalf("mkdir .gs: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "slice-test",
+		CommitHash: "commit-1",
+	}
+	addTestDirectoryRecords(t, workdir, index, "")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "AGENTS.md"), []byte("project-specific notes\n"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	entries, err := collectNoGitWorkingTreeStatusFullScan(workdir, index)
+	if err != nil {
+		t.Fatalf("collect status: %v", err)
+	}
+	got := collectWorkingTreeStatusPaths(entries)
+	want := []string{"AGENTS.md"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected status paths:\n got %#v\nwant %#v", got, want)
+	}
+}
+
+func TestEnsureAgentInstructionFilesDoesNotOverwriteExistingFiles(t *testing.T) {
+	workdir := t.TempDir()
+	existing := []byte("project-specific notes\n")
+	if err := os.WriteFile(filepath.Join(workdir, "AGENTS.md"), existing, 0o644); err != nil {
+		t.Fatalf("write existing AGENTS.md: %v", err)
+	}
+
+	if err := ensureAgentInstructionFiles(workdir); err != nil {
+		t.Fatalf("ensure agent instruction files: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(workdir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if string(content) != string(existing) {
+		t.Fatalf("expected existing AGENTS.md to be preserved, got %q", string(content))
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "CLAUDE.md")); err != nil {
+		t.Fatalf("expected CLAUDE.md to be created: %v", err)
 	}
 }
 
