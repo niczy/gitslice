@@ -429,6 +429,74 @@ func TestClearAgentSupervisorPIDFileOnlyClearsMatchingPID(t *testing.T) {
 	}
 }
 
+func TestResolveLocalAgentRunnerStopTargetsUsesCurrentWorkspaceMetadata(t *testing.T) {
+	root := t.TempDir()
+	hostName, _ := os.Hostname()
+	if err := os.MkdirAll(filepath.Join(root, agentWorkspaceStateDir), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, agentWorkspaceStateDir, "runner_id"), []byte("agr-local\n"), 0o600); err != nil {
+		t.Fatalf("write runner id: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, agentWorkspaceStateDir, "agent.pid"), []byte("123\n"), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	client := &fakeAgentServiceClient{
+		listRunnersResp: &agentv1.ListRunnersResponse{Runners: []*agentv1.AgentRunner{
+			{
+				RunnerId:      "agr-local",
+				Provider:      "local",
+				Status:        "online",
+				HostName:      hostName,
+				Pid:           456,
+				WorkspaceRoot: root,
+			},
+		}},
+	}
+	targets, err := resolveLocalAgentRunnerStopTargets(context.Background(), &CLI{agentClient: client}, localAgentRunnerStopOptions{RootDir: root})
+	if err != nil {
+		t.Fatalf("resolveLocalAgentRunnerStopTargets failed: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected one target, got %#v", targets)
+	}
+	if targets[0].RunnerID != "agr-local" || targets[0].PID != 123 || targets[0].WorkspaceRoot != root {
+		t.Fatalf("unexpected target: %#v", targets[0])
+	}
+}
+
+func TestResolveLocalAgentRunnerStopTargetsAllFiltersToOnlineLocalHost(t *testing.T) {
+	hostName, _ := os.Hostname()
+	client := &fakeAgentServiceClient{
+		listRunnersResp: &agentv1.ListRunnersResponse{Runners: []*agentv1.AgentRunner{
+			{RunnerId: "agr-local", Provider: "local", Status: "online", HostName: hostName, Pid: 101},
+			{RunnerId: "agr-offline", Provider: "local", Status: "offline", HostName: hostName, Pid: 102},
+			{RunnerId: "agr-remote", Provider: "local", Status: "online", HostName: "other-host", Pid: 103},
+			{RunnerId: "agr-cloud", Provider: "cloud", Status: "online", HostName: hostName, Pid: 104},
+		}},
+	}
+	targets, err := resolveLocalAgentRunnerStopTargets(context.Background(), &CLI{agentClient: client}, localAgentRunnerStopOptions{All: true})
+	if err != nil {
+		t.Fatalf("resolveLocalAgentRunnerStopTargets failed: %v", err)
+	}
+	if len(targets) != 1 || targets[0].RunnerID != "agr-local" {
+		t.Fatalf("expected only local online host runner, got %#v", targets)
+	}
+}
+
+func TestResolveLocalAgentRunnerStopTargetsRejectsRemoteHost(t *testing.T) {
+	hostName, _ := os.Hostname()
+	client := &fakeAgentServiceClient{
+		listRunnersResp: &agentv1.ListRunnersResponse{Runners: []*agentv1.AgentRunner{
+			{RunnerId: "agr-remote", Provider: "local", Status: "online", HostName: "not-" + hostName, Pid: 103},
+		}},
+	}
+	_, err := resolveLocalAgentRunnerStopTargets(context.Background(), &CLI{agentClient: client}, localAgentRunnerStopOptions{RunnerID: "agr-remote"})
+	if err == nil || !strings.Contains(err.Error(), "not "+hostName) {
+		t.Fatalf("expected remote host error, got %v", err)
+	}
+}
+
 func TestLocalAgentRunnerCapabilitiesReportsLocalSessionIDs(t *testing.T) {
 	root := t.TempDir()
 	checkoutDir := filepath.Join(root, "alice-demo-sess-local")
@@ -719,10 +787,13 @@ func (f *fakeAccountServiceClient) GetAuthContext(ctx context.Context, req *acco
 
 type fakeAgentServiceClient struct {
 	agentv1.AgentServiceClient
-	registerCalls  int
-	heartbeatCalls int
-	heartbeatErrs  []error
-	appendedEvents []*agentv1.AppendEventRequest
+	registerCalls   int
+	heartbeatCalls  int
+	heartbeatErrs   []error
+	appendedEvents  []*agentv1.AppendEventRequest
+	listRunnersResp *agentv1.ListRunnersResponse
+	listRunnersReqs []*agentv1.ListRunnersRequest
+	unregisterReqs  []*agentv1.UnregisterRunnerRequest
 }
 
 func (f *fakeAgentServiceClient) AppendEvent(ctx context.Context, req *agentv1.AppendEventRequest, opts ...grpc.CallOption) (*agentv1.AppendEventResponse, error) {
@@ -827,4 +898,21 @@ func (f *fakeAgentServiceClient) HeartbeatRunner(ctx context.Context, req *agent
 		},
 		HeartbeatIntervalSec: 10,
 	}, nil
+}
+
+func (f *fakeAgentServiceClient) ListRunners(ctx context.Context, req *agentv1.ListRunnersRequest, opts ...grpc.CallOption) (*agentv1.ListRunnersResponse, error) {
+	_ = ctx
+	_ = opts
+	f.listRunnersReqs = append(f.listRunnersReqs, req)
+	if f.listRunnersResp != nil {
+		return f.listRunnersResp, nil
+	}
+	return &agentv1.ListRunnersResponse{}, nil
+}
+
+func (f *fakeAgentServiceClient) UnregisterRunner(ctx context.Context, req *agentv1.UnregisterRunnerRequest, opts ...grpc.CallOption) (*agentv1.UnregisterRunnerResponse, error) {
+	_ = ctx
+	_ = opts
+	f.unregisterReqs = append(f.unregisterReqs, req)
+	return &agentv1.UnregisterRunnerResponse{Runner: &agentv1.AgentRunner{RunnerId: req.GetRunnerId(), Status: "offline"}}, nil
 }
