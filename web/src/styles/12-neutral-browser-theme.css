@@ -1673,9 +1673,10 @@
 
   .slice-agents-conversation-body,
   .slice-agents-conversation-body.has-local-changes {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     min-height: 0;
-    flex-direction: column;
+    position: relative;
     overflow: hidden;
   }
 
@@ -1684,8 +1685,12 @@
   }
 
   .slice-agents-local-changes-panel {
-    flex: 0 0 auto;
-    max-height: 38dvh;
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(340px, calc(100% - 12px));
+    max-height: none;
   }
 
   .slice-agents-local-changes {
