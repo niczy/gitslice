@@ -206,7 +206,7 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		RunnerID:    session.RunnerID,
 		Environment: session.EnvironmentName,
 		AgentType:   session.AgentType,
-		State:       string(session.State),
+		State:       httpAgentSessionResponseState(session),
 		WS: wsConnectResponse{
 			URL:       buildWSURL(r, session.SessionID),
 			Token:     token.Token,
@@ -226,6 +226,23 @@ func httpAgentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
 		now = time.Now().UTC()
 	}
 	return now.Sub(runner.LastHeartbeatAt) <= 30*time.Second
+}
+
+func httpAgentSessionResponseState(session *models.AgentSession) string {
+	if session == nil {
+		return ""
+	}
+	provider := strings.TrimSpace(session.Provider)
+	if provider == "" {
+		provider = strings.TrimSpace(session.RuntimeProvider)
+	}
+	if strings.EqualFold(provider, agentsession.RuntimeProviderLocal) {
+		switch session.State {
+		case models.AgentSessionStateStopping, models.AgentSessionStateStopped:
+			return string(models.AgentSessionStateIdle)
+		}
+	}
+	return string(session.State)
 }
 
 func (a *AgentSessionsAPI) HandleItem(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +326,7 @@ func (a *AgentSessionsAPI) getSession(w http.ResponseWriter, r *http.Request, se
 		RunnerID:       session.RunnerID,
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
-		State:          string(session.State),
+		State:          httpAgentSessionResponseState(session),
 		IdleTimeoutSec: session.IdleTimeoutSec,
 		TTLSec:         session.TTLSec,
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
@@ -348,7 +365,7 @@ func (a *AgentSessionsAPI) stopSession(w http.ResponseWriter, r *http.Request, s
 	}
 	writeJSON(w, status, stopAgentSessionResponse{
 		SessionID: session.SessionID,
-		State:     string(session.State),
+		State:     httpAgentSessionResponseState(session),
 	})
 }
 

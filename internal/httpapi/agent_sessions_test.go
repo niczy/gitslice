@@ -174,9 +174,27 @@ func TestAgentSessionsAPI(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected stop status 202/200, got %d", resp.StatusCode)
 	}
+	var stopResp struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stopResp); err != nil {
+		t.Fatalf("decode stop response failed: %v", err)
+	}
 	_ = resp.Body.Close()
+	if stopResp.State != "running" && stopResp.State != "idle" {
+		t.Fatalf("expected local session stop to keep session resumable, got %q", stopResp.State)
+	}
 
-	waitForHTTPState(t, server.URL, createResp.SessionID, "alice", "stopped", 2*time.Second)
+	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions/"+createResp.SessionID+"/token", nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST token after stop failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected token after local stop 200, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
@@ -226,6 +244,55 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for cross-user access, got %d", resp.StatusCode)
+	}
+}
+
+func TestAgentSessionsAPIHidesStoppedLocalSessionState(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	if err := st.CreateAgentSession(ctx, &models.AgentSession{
+		SessionID:      "sess-http-local-stopped",
+		SliceID:        "slice-http-local-stopped",
+		RunnerID:       "runner-http-local-stopped",
+		UserID:         "alice",
+		State:          models.AgentSessionStateStopped,
+		Provider:       agentsession.RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		RuntimeStatus:  "stopped",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		StoppedAt:      &now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	api := NewAgentSessionsAPI(st, agentsession.NewService(st, "test-secret"))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions/", api.HandleItem)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/agent-sessions/sess-http-local-stopped", nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET session failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if body.State != string(models.AgentSessionStateIdle) {
+		t.Fatalf("expected local stopped session to be presented as idle, got %q", body.State)
 	}
 }
 

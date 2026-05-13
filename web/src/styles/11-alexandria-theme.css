@@ -1084,45 +1084,6 @@ button[data-testid="topbar-get-started"]:hover {
   overflow-wrap: anywhere;
 }
 
-.slice-agents-header-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-.slice-agents-state {
-  display: inline-flex !important;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-secondary) !important;
-  font-family: inherit !important;
-  font-size: 0.74rem !important;
-  font-weight: 800;
-  text-transform: capitalize;
-  white-space: nowrap;
-}
-
-.slice-agents-state--running,
-.slice-agents-state--idle,
-.slice-agents-state--starting,
-.slice-agents-state--creating {
-  border-color: rgba(26, 127, 55, 0.24);
-  background: #dafbe1;
-  color: #1a7f37 !important;
-}
-
-.slice-agents-state--failed {
-  border-color: rgba(185, 28, 28, 0.24);
-  background: #fef2f2;
-  color: #b91c1c !important;
-}
-
 .slice-agents-info-panel {
   border: 1px solid var(--border);
   border-radius: 8px;

@@ -153,6 +153,118 @@ func TestListRunnersMarksStaleHeartbeatOffline(t *testing.T) {
 	}
 }
 
+func TestRunnerHeartbeatReactivatesStoppedLocalSessions(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-runner-reactivate",
+		Name:      "Runner Reactivate Slice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := st.UpsertAgentRunner(context.Background(), &models.AgentRunner{
+		RunnerID:        "runner-reactivate",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+
+	svc := agentsession.NewService(st, "test-secret")
+	session := &models.AgentSession{
+		SessionID:      "sess-runner-reactivate",
+		SliceID:        "slice-runner-reactivate",
+		RunnerID:       "runner-reactivate",
+		UserID:         "alice",
+		State:          models.AgentSessionStateStopped,
+		Provider:       agentsession.RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		RuntimeStatus:  "stopped",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		StoppedAt:      &now,
+	}
+	if err := st.CreateAgentSession(context.Background(), session); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: svc}
+	if _, err := srv.HeartbeatRunner(ctx, &agentv1.HeartbeatRunnerRequest{RunnerId: "runner-reactivate"}); err != nil {
+		t.Fatalf("HeartbeatRunner failed: %v", err)
+	}
+	got, err := svc.GetSession(context.Background(), session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after heartbeat failed: %v", err)
+	}
+	if got.State != models.AgentSessionStateIdle {
+		t.Fatalf("expected stopped local session to become idle, got %s", got.State)
+	}
+	if got.StoppedAt != nil {
+		t.Fatalf("expected stopped_at to be cleared")
+	}
+}
+
+func TestLocalSessionResponsesDoNotExposeStoppedState(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-local-response-state",
+		Name:      "Local Response State",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := st.CreateAgentSession(context.Background(), &models.AgentSession{
+		SessionID:      "sess-local-stopped-response",
+		SliceID:        "slice-local-response-state",
+		RunnerID:       "runner-local-response",
+		UserID:         "alice",
+		State:          models.AgentSessionStateStopped,
+		Provider:       agentsession.RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		RuntimeStatus:  "stopped",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		StoppedAt:      &now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	getResp, err := srv.GetSession(ctx, &agentv1.GetSessionRequest{SessionId: "sess-local-stopped-response"})
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if getResp.GetState() != string(models.AgentSessionStateIdle) {
+		t.Fatalf("expected local stopped session to be presented as idle, got %q", getResp.GetState())
+	}
+
+	listResp, err := srv.ListSessions(ctx, &agentv1.ListSessionsRequest{SliceId: "slice-local-response-state"})
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(listResp.GetSessions()) != 1 {
+		t.Fatalf("expected one session, got %#v", listResp.GetSessions())
+	}
+	if listResp.GetSessions()[0].GetState() != string(models.AgentSessionStateIdle) {
+		t.Fatalf("expected list response to present local stopped session as idle, got %q", listResp.GetSessions()[0].GetState())
+	}
+}
+
 func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()

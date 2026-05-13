@@ -65,13 +65,25 @@ func TestServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopSessionForUser failed: %v", err)
 	}
-	if stopResp.State != models.AgentSessionStateStopping {
-		t.Fatalf("expected stopping state, got %s", stopResp.State)
+	if stopResp.State != models.AgentSessionStateRunning && stopResp.State != models.AgentSessionStateIdle {
+		t.Fatalf("expected local session to remain resumable, got %s", stopResp.State)
 	}
-
-	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateStopped, 2*time.Second)
-	if _, err := svc.MintTokenForUser(ctx, "alice", session.SessionID); err != storage.ErrAgentSessionConflict {
-		t.Fatalf("expected ErrAgentSessionConflict for stopped session, got %v", err)
+	if _, err := svc.MintTokenForUser(ctx, "alice", session.SessionID); err != nil {
+		t.Fatalf("MintTokenForUser should keep working for resumable local session: %v", err)
+	}
+	events, _, err = svc.ListEventsForUser(ctx, "alice", session.SessionID, 0, 100)
+	if err != nil {
+		t.Fatalf("ListEventsForUser after stop failed: %v", err)
+	}
+	foundInterrupt := false
+	for _, event := range events {
+		if event.Stream == EventStreamAgent && event.Type == EventTypeInterrupt {
+			foundInterrupt = true
+			break
+		}
+	}
+	if !foundInterrupt {
+		t.Fatalf("expected local stop request to append an interrupt event")
 	}
 }
 
@@ -255,7 +267,7 @@ func TestValidateAndConsumeWSToken(t *testing.T) {
 	}
 }
 
-func TestServiceLifecycleIdleAndTTL(t *testing.T) {
+func TestServiceLifecycleIdleDoesNotStopLocalSessionAtTTL(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -279,7 +291,7 @@ func TestServiceLifecycleIdleAndTTL(t *testing.T) {
 		RunnerID:       "runner-test",
 		Provider:       RuntimeProviderLocal,
 		IdleTimeoutSec: 1,
-		TTLSec:         2,
+		TTLSec:         1,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -291,7 +303,160 @@ func TestServiceLifecycleIdleAndTTL(t *testing.T) {
 		t.Fatalf("RecordActivity failed: %v", err)
 	}
 	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
-	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateStopped, 4*time.Second)
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateIdle, 3*time.Second)
+	time.Sleep(1200 * time.Millisecond)
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.State == models.AgentSessionStateStopped || got.State == models.AgentSessionStateStopping {
+		t.Fatalf("local session should remain resumable after TTL, got %s", got.State)
+	}
+	if err := svc.HandleAgentInput(ctx, session.SessionID, "continue"); err != nil {
+		t.Fatalf("HandleAgentInput should still accept local session input after TTL: %v", err)
+	}
+}
+
+func TestServiceReactivatesStoppedLocalSessionOnInput(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-reactivate-local",
+		Name:      "Slice Reactivate Local",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:  "slice-reactivate-local",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	stopped, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	now := time.Now().UTC()
+	stopped.State = models.AgentSessionStateStopped
+	stopped.RuntimeStatus = "stopped"
+	stopped.StoppedAt = &now
+	if err := st.UpdateAgentSession(ctx, stopped); err != nil {
+		t.Fatalf("UpdateAgentSession stopped failed: %v", err)
+	}
+
+	if err := svc.HandleAgentInput(ctx, session.SessionID, "resume this session"); err != nil {
+		t.Fatalf("HandleAgentInput should reactivate stopped local session: %v", err)
+	}
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after input failed: %v", err)
+	}
+	if got.State != models.AgentSessionStateRunning {
+		t.Fatalf("expected reactivated session to be running, got %s", got.State)
+	}
+	if got.StoppedAt != nil {
+		t.Fatalf("expected stopped_at to be cleared")
+	}
+}
+
+func TestServiceMintTokenReactivatesStoppedLocalSession(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	if err := st.CreateAgentSession(ctx, &models.AgentSession{
+		SessionID:      "sess-local-token-reactivate",
+		SliceID:        "slice-local-token-reactivate",
+		RunnerID:       "runner-test",
+		UserID:         "alice",
+		State:          models.AgentSessionStateStopped,
+		Provider:       RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		RuntimeStatus:  "stopped",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		StoppedAt:      &now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	token, err := svc.MintTokenForUser(ctx, "alice", "sess-local-token-reactivate")
+	if err != nil {
+		t.Fatalf("MintTokenForUser should reactivate stopped local session: %v", err)
+	}
+	if token == nil || token.Token == "" {
+		t.Fatalf("expected minted token")
+	}
+	got, err := svc.GetSession(ctx, "sess-local-token-reactivate")
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.State != models.AgentSessionStateIdle {
+		t.Fatalf("expected token mint to reactivate local session as idle, got %s", got.State)
+	}
+	if got.StoppedAt != nil {
+		t.Fatalf("expected stopped_at to be cleared")
+	}
+}
+
+func TestServiceReactivatesStoppedLocalSessionsForRunner(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-reactivate-runner",
+		Name:      "Slice Reactivate Runner",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := NewService(st, "test-secret")
+	session, _, err := svc.CreateSession(ctx, "alice", CreateRequest{
+		SliceID:  "slice-reactivate-runner",
+		RunnerID: "runner-test",
+		Provider: RuntimeProviderLocal,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
+
+	stopped, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	now := time.Now().UTC()
+	stopped.State = models.AgentSessionStateStopped
+	stopped.RuntimeStatus = "stopped"
+	stopped.StoppedAt = &now
+	if err := st.UpdateAgentSession(ctx, stopped); err != nil {
+		t.Fatalf("UpdateAgentSession stopped failed: %v", err)
+	}
+
+	if err := svc.ReactivateLocalSessionsForRunner(ctx, "alice", "runner-test"); err != nil {
+		t.Fatalf("ReactivateLocalSessionsForRunner failed: %v", err)
+	}
+	got, err := svc.GetSession(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after reactivation failed: %v", err)
+	}
+	if got.State != models.AgentSessionStateIdle {
+		t.Fatalf("expected runner reactivation to leave session idle, got %s", got.State)
+	}
+	if got.StoppedAt != nil {
+		t.Fatalf("expected stopped_at to be cleared")
+	}
 }
 
 func TestServiceRuntimeStartFailure(t *testing.T) {
@@ -830,7 +995,7 @@ func TestServiceSyncRuntimeEventsSkipsConcurrentSync(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeStopFailure(t *testing.T) {
+func TestServiceLocalStopFailureKeepsSessionResumable(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	if err := st.CreateSlice(ctx, &models.Slice{
@@ -871,17 +1036,19 @@ func TestServiceRuntimeStopFailure(t *testing.T) {
 	}
 	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateRunning, 2*time.Second)
 
-	if _, err := svc.StopSessionForUser(ctx, "alice", session.SessionID, "test"); err != nil {
-		t.Fatalf("StopSessionForUser failed: %v", err)
+	if _, err := svc.StopSessionForUser(ctx, "alice", session.SessionID, "test"); err == nil {
+		t.Fatalf("expected StopSessionForUser to return local interrupt error")
 	}
-	waitForSessionState(t, svc, session.SessionID, models.AgentSessionStateFailed, 2*time.Second)
 
 	got, err := svc.GetSession(ctx, session.SessionID)
 	if err != nil {
 		t.Fatalf("GetSession failed: %v", err)
 	}
-	if got.FailureCode != "STOP_BACKEND_UNAVAILABLE" {
-		t.Fatalf("expected STOP_BACKEND_UNAVAILABLE failure code, got %s", got.FailureCode)
+	if got.State != models.AgentSessionStateRunning {
+		t.Fatalf("expected local session to remain running after stop failure, got %s", got.State)
+	}
+	if got.FailureCode != "" {
+		t.Fatalf("expected no terminal failure code, got %s", got.FailureCode)
 	}
 }
 

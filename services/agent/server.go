@@ -85,6 +85,9 @@ func (s *agentServiceServer) RegisterRunner(ctx context.Context, req *agentv1.Re
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to load runner")
 	}
+	if err := s.svc.ReactivateLocalSessionsForRunner(ctx, userID, runnerID); err != nil {
+		return nil, status.Error(codes.Internal, "failed to reactivate local sessions")
+	}
 	return &agentv1.RegisterRunnerResponse{
 		Runner:               agentRunnerToProto(stored, time.Now().UTC()),
 		HeartbeatIntervalSec: runnerHeartbeatIntervalSec,
@@ -132,6 +135,11 @@ func (s *agentServiceServer) HeartbeatRunner(ctx context.Context, req *agentv1.H
 	runner.UpdatedAt = now
 	if err := s.st.UpdateAgentRunner(ctx, runner); err != nil {
 		return nil, status.Error(codes.Internal, "failed to update runner")
+	}
+	if runner.Status == models.AgentRunnerStatusOnline {
+		if err := s.svc.ReactivateLocalSessionsForRunner(ctx, userID, runnerID); err != nil {
+			return nil, status.Error(codes.Internal, "failed to reactivate local sessions")
+		}
 	}
 	return &agentv1.HeartbeatRunnerResponse{
 		Runner:               agentRunnerToProto(runner, now),
@@ -200,7 +208,7 @@ func agentSessionSummary(session *models.AgentSession) *agentv1.AgentSessionSumm
 		SessionId:   session.SessionID,
 		SliceId:     session.SliceID,
 		Provider:    session.Provider,
-		State:       string(session.State),
+		State:       agentSessionResponseState(session),
 		CreatedAt:   session.CreatedAt.Format(timeRFC3339Micro),
 		Environment: session.EnvironmentName,
 		AgentType:   session.AgentType,
@@ -210,6 +218,27 @@ func agentSessionSummary(session *models.AgentSession) *agentv1.AgentSessionSumm
 		summary.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
 	}
 	return summary
+}
+
+func agentSessionResponseState(session *models.AgentSession) string {
+	if session == nil {
+		return ""
+	}
+	if agentSessionIsLocal(session) {
+		switch session.State {
+		case models.AgentSessionStateStopping, models.AgentSessionStateStopped:
+			return string(models.AgentSessionStateIdle)
+		}
+	}
+	return string(session.State)
+}
+
+func agentSessionIsLocal(session *models.AgentSession) bool {
+	if session == nil {
+		return false
+	}
+	provider := firstNonEmpty(session.Provider, session.RuntimeProvider)
+	return strings.EqualFold(provider, agentsession.RuntimeProviderLocal)
 }
 
 func agentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
@@ -387,7 +416,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		SessionId: session.SessionID,
 		SliceId:   session.SliceID,
 		Provider:  session.Provider,
-		State:     string(session.State),
+		State:     agentSessionResponseState(session),
 		RunnerId:  session.RunnerID,
 		Ws: &agentv1.WSConnectInfo{
 			Url:       wsURLFromContext(ctx, session.SessionID),
@@ -415,7 +444,7 @@ func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSes
 		SessionId:      session.SessionID,
 		SliceId:        session.SliceID,
 		Provider:       session.Provider,
-		State:          string(session.State),
+		State:          agentSessionResponseState(session),
 		IdleTimeoutSec: int32(session.IdleTimeoutSec),
 		TtlSec:         int32(session.TTLSec),
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
@@ -441,7 +470,7 @@ func (s *agentServiceServer) StopSession(ctx context.Context, req *agentv1.StopS
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
-	return &agentv1.StopSessionResponse{SessionId: session.SessionID, State: string(session.State)}, nil
+	return &agentv1.StopSessionResponse{SessionId: session.SessionID, State: agentSessionResponseState(session)}, nil
 }
 
 func (s *agentServiceServer) MintToken(ctx context.Context, req *agentv1.MintTokenRequest) (*agentv1.MintTokenResponse, error) {

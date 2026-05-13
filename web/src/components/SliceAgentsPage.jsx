@@ -29,7 +29,7 @@ function normalizeSession(session) {
   return {
     sessionId: session?.sessionId ?? session?.session_id ?? '',
     sliceId: session?.sliceId ?? session?.slice_id ?? '',
-    state: session?.state ?? '',
+    state: normalizeConversationState(session?.state),
     createdAt: session?.createdAt ?? session?.created_at ?? '',
     lastActivityAt: session?.lastActivityAt ?? session?.last_activity_at ?? '',
     environment: session?.environment ?? '',
@@ -37,6 +37,14 @@ function normalizeSession(session) {
     provider: session?.provider ?? '',
     runnerId: session?.runnerId ?? session?.runner_id ?? '',
   };
+}
+
+function normalizeConversationState(state) {
+  const normalized = String(state || '').trim().toLowerCase();
+  if (normalized === 'stopping' || normalized === 'stopped') {
+    return 'idle';
+  }
+  return normalized;
 }
 
 function normalizeRunner(runner) {
@@ -116,7 +124,7 @@ function formatAgentTimestamp(value) {
 
 function eventTitle(event) {
   if (event.stream === 'status' && event.type === 'state') {
-    return `State ${event.payload?.state || 'changed'}`;
+    return `State ${normalizeConversationState(event.payload?.state) || 'changed'}`;
   }
   if (event.stream === 'status' && event.type === 'local_runner_attached') {
     return 'Runner attached';
@@ -144,6 +152,9 @@ function eventTitle(event) {
 }
 
 function eventBody(event) {
+  if (event.stream === 'status' && event.type === 'state') {
+    return normalizeConversationState(event.payload?.state) || JSON.stringify(event.payload || {});
+  }
   if (event.stream === 'status' && event.type === 'local_runner_attached') {
     const host = event.payload?.host_name || event.payload?.hostName || '';
     const dir = event.payload?.running_dir || event.payload?.runningDir || event.payload?.checkout_dir || event.payload?.checkoutDir || '';
@@ -179,7 +190,7 @@ function eventTone(event) {
   return 'agent';
 }
 
-const ACTIVE_SESSION_STATES = new Set(['creating', 'starting', 'running', 'idle', 'stopping']);
+const BLOCKED_CONVERSATION_STATES = new Set(['failed']);
 const AGENT_EVENTS_PAGE_SIZE = 500;
 const AGENT_EVENTS_MAX = 5000;
 const SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH = 900;
@@ -264,7 +275,7 @@ function conversationMessageFromEvent(event) {
 }
 
 function isAssistantResponseStreaming(events, session) {
-  if (!session || !ACTIVE_SESSION_STATES.has(session.state)) {
+  if (!session || BLOCKED_CONVERSATION_STATES.has(session.state)) {
     return false;
   }
 
@@ -276,7 +287,7 @@ function isAssistantResponseStreaming(events, session) {
       pendingInput = false;
     } else if (event.stream === 'control' && event.type === 'error') {
       pendingInput = false;
-    } else if (event.stream === 'status' && event.type === 'state' && !ACTIVE_SESSION_STATES.has(event.payload?.state)) {
+    } else if (event.stream === 'status' && event.type === 'state' && BLOCKED_CONVERSATION_STATES.has(normalizeConversationState(event.payload?.state))) {
       pendingInput = false;
     }
   }
@@ -365,8 +376,7 @@ function buildRunningAgentInfoRows(runner, session, runnerState) {
     ['Command', runnerState.command],
     ['Codex mode', runnerState.codex_mode || runnerState.codexMode],
     ['Attached', runnerState.attached_at || runnerState.attachedAt],
-    ['Active session', session?.runnerId === runner.runnerId ? session.sessionId : ''],
-    ['Session state', session?.runnerId === runner.runnerId ? session.state : ''],
+    ['Selected conversation', session?.runnerId === runner.runnerId ? session.sessionId : ''],
     ['Last heartbeat', runner.lastHeartbeatAt],
   ];
   return rows
@@ -501,7 +511,7 @@ export default function SliceAgentsPage({
   const canRestartRunner = Boolean(
     selectedSession
     && selectedSession.provider === 'local'
-    && ACTIVE_SESSION_STATES.has(selectedSession.state),
+    && selectedRunner?.runnerId,
   );
   const assistantStreaming = useMemo(
     () => isAssistantResponseStreaming(events, selectedSession),
@@ -511,8 +521,8 @@ export default function SliceAgentsPage({
     () => buildConversationItems(events, assistantStreaming),
     [events, assistantStreaming],
   );
-  const hasActiveSession = localSessions.some((session) => ACTIVE_SESSION_STATES.has(session.state));
-  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasActiveSession;
+  const hasLocalConversation = localSessions.length > 0;
+  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasLocalConversation;
   const sessionsSidebarVisible = sessionsSidebarOpen || sessionsSidebarDismissing;
 
   const openSessionsSidebar = useCallback(() => {
@@ -1070,7 +1080,7 @@ export default function SliceAgentsPage({
             <div className="slice-agents-docs-note" data-testid="slice-agents-docs-note">
               <CircleAlert size={15} aria-hidden="true" />
               <span>
-                No active local conversation. <a href="/docs#local-agent-sessions">Start a running agent with gs.</a>
+                No local conversation. <a href="/docs#local-agent-sessions">Start a running agent with gs.</a>
               </span>
             </div>
           )}
@@ -1126,7 +1136,7 @@ export default function SliceAgentsPage({
                             Conversation · {shortSessionId(session.sessionId)}
                           </span>
                           <span className="slice-agents-session-meta">
-                            {session.agentType || 'agent'} · {session.state || 'unknown'} · {formatAgentTimestamp(session.lastActivityAt || session.createdAt)}
+                            {[session.agentType || 'agent', formatAgentTimestamp(session.lastActivityAt || session.createdAt)].filter(Boolean).join(' · ')}
                           </span>
                         </span>
                       </Button>
@@ -1184,11 +1194,6 @@ export default function SliceAgentsPage({
                 <div>
                   <h1>Conversation</h1>
                   <span>{selectedSession.agentType || 'agent'} · {selectedSession.sessionId}</span>
-                </div>
-                <div className="slice-agents-header-actions">
-                  <span className={`slice-agents-state slice-agents-state--${selectedSession.state || 'unknown'}`}>
-                    {selectedSession.state || 'unknown'}
-                  </span>
                 </div>
               </div>
               {eventsError && <div className="panel-error">{eventsError}</div>}

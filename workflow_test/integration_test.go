@@ -312,6 +312,7 @@ func runCLIWithDirInputEnvLegacyUserStreams(workdir, input string, env map[strin
 	defer cancel()
 
 	fullArgs := []string{
+		"--tls=false",
 		"--account-addr", grpcServiceAddr,
 		"--slice-addr", grpcServiceAddr,
 		"--admin-addr", grpcServiceAddr,
@@ -3111,8 +3112,7 @@ func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 		t.Fatalf("expected replay seq > %d, got %d", maxSeq-1, replayFrame.Seq)
 	}
 
-	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
-	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
+	assertLocalAgentSessionResumable(t, sessionID, stopAgentSessionViaHTTP(t, sessionID, "integration_done"))
 }
 
 func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
@@ -3150,8 +3150,7 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 		t.Fatalf("expected 401 on token reuse, got resp=%v err=%v", resp, err)
 	}
 
-	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
-	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
+	assertLocalAgentSessionResumable(t, sessionID, stopAgentSessionViaHTTP(t, sessionID, "integration_done"))
 }
 
 func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
@@ -3214,8 +3213,7 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 		t.Fatalf("expected queued claude agent/input frame")
 	}
 
-	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
-	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
+	assertLocalAgentSessionResumable(t, sessionID, stopAgentSessionViaHTTP(t, sessionID, "integration_done"))
 }
 
 func TestAgentSessionCreateUnknownRunnerIntegration(t *testing.T) {
@@ -3376,7 +3374,7 @@ func mintAgentTokenViaHTTP(t *testing.T, sessionID string) string {
 	return out.Token
 }
 
-func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) {
+func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) string {
 	t.Helper()
 	raw, _ := json.Marshal(map[string]string{"reason": reason})
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions/"+sessionID+"/stop", bytes.NewReader(raw))
@@ -3390,6 +3388,20 @@ func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) {
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected stop status 202/200, got %d body=%s", resp.StatusCode, string(data))
+	}
+	var out struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode stop response failed: %v", err)
+	}
+	return out.State
+}
+
+func assertLocalAgentSessionResumable(t *testing.T, sessionID, state string) {
+	t.Helper()
+	if state == "stopping" || state == "stopped" {
+		t.Fatalf("expected local session %s to stay resumable after stop request, got state %s", sessionID, state)
 	}
 }
 
