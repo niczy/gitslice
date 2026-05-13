@@ -50,6 +50,10 @@ PTY resize/input events.
 Active states are `creating`, `starting`, `running`, `idle`, and `stopping`.
 Terminal states are `stopped` and `failed`.
 
+A slice may have multiple active sessions. Each session is isolated by
+`session_id`; the assigned local runner creates a separate checkout directory
+for every session before starting the coding agent.
+
 ## Event Streams
 
 Use stable `stream/type` pairs so clients can route events without needing to
@@ -92,8 +96,9 @@ Both commands register an `agent_runner` record with the server, heartbeat it
 while online, and mark it offline when the process exits. The web app lists
 online runners before a session exists. When the user starts a session, the
 request includes `runner_id`; the local runner only claims sessions assigned to
-that runner, checks out the session's slice into a subdirectory of the configured
-working directory, polls `ListEvents`, runs a local coding agent for
+that runner, checks out the session's slice into a session-specific subdirectory
+of the configured working directory using the same materialization path as
+`gs slice checkout <slice> --here`, polls `ListEvents`, runs a local coding agent for
 `agent/input` events, and appends `agent/output_delta`, `agent/output_final`,
 and tool lifecycle events through `AppendEvent`.
 

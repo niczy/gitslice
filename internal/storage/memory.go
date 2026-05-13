@@ -124,7 +124,6 @@ type InMemoryStorage struct {
 
 	// Agent sessions
 	agentSessions      map[string]*models.AgentSession        // sessionID -> session
-	activeAgentBySlice map[string]string                      // sliceID -> active sessionID
 	agentSessionEvents map[string][]*models.AgentSessionEvent // sessionID -> events ordered by seq asc
 	agentSessionAudit  map[string][]*models.AgentSessionAudit // sessionID -> audit ordered by created asc
 	nextAuditID        int64
@@ -211,7 +210,6 @@ func NewInMemoryStorage() *InMemoryStorage {
 		environments:                     make(map[string]*models.Environment),
 		agentRunners:                     make(map[string]*models.AgentRunner),
 		agentSessions:                    make(map[string]*models.AgentSession),
-		activeAgentBySlice:               make(map[string]string),
 		agentSessionEvents:               make(map[string][]*models.AgentSessionEvent),
 		agentSessionAudit:                make(map[string][]*models.AgentSessionAudit),
 		nextAuditID:                      1,
@@ -311,7 +309,6 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.teamMembers = fresh.teamMembers
 	s.environments = fresh.environments
 	s.agentSessions = fresh.agentSessions
-	s.activeAgentBySlice = fresh.activeAgentBySlice
 	s.agentSessionEvents = fresh.agentSessionEvents
 	s.agentSessionAudit = fresh.agentSessionAudit
 	s.nextAuditID = fresh.nextAuditID
@@ -512,7 +509,6 @@ func (s *InMemoryStorage) DeleteSlice(ctx context.Context, sliceID string) error
 	}
 	s.rebuildFileChangeIndexesLocked()
 
-	delete(s.activeAgentBySlice, sliceID)
 	for sessionID, session := range s.agentSessions {
 		if session != nil && session.SliceID == sliceID {
 			delete(s.agentSessions, sessionID)
@@ -2768,17 +2764,9 @@ func (s *InMemoryStorage) CreateAgentSession(ctx context.Context, session *model
 	if _, exists := s.agentSessions[session.SessionID]; exists {
 		return ErrAgentSessionConflict
 	}
-	if activeID, ok := s.activeAgentBySlice[session.SliceID]; ok && activeID != "" {
-		if current, ok := s.agentSessions[activeID]; ok && current.State.IsActive() {
-			return ErrAgentSessionConflict
-		}
-	}
 
 	copySession := cloneAgentSession(session)
 	s.agentSessions[session.SessionID] = copySession
-	if copySession.State.IsActive() {
-		s.activeAgentBySlice[copySession.SliceID] = copySession.SessionID
-	}
 	return nil
 }
 
@@ -2799,15 +2787,19 @@ func (s *InMemoryStorage) GetActiveAgentSessionBySlice(ctx context.Context, slic
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	activeID, ok := s.activeAgentBySlice[sliceID]
-	if !ok || activeID == "" {
+	var latest *models.AgentSession
+	for _, session := range s.agentSessions {
+		if session == nil || session.SliceID != sliceID || !session.State.IsActive() {
+			continue
+		}
+		if latest == nil || session.CreatedAt.After(latest.CreatedAt) {
+			latest = session
+		}
+	}
+	if latest == nil {
 		return nil, ErrAgentSessionNotFound
 	}
-	session, ok := s.agentSessions[activeID]
-	if !ok || !session.State.IsActive() {
-		return nil, ErrAgentSessionNotFound
-	}
-	return cloneAgentSession(session), nil
+	return cloneAgentSession(latest), nil
 }
 
 func (s *InMemoryStorage) ListAgentSessionsBySlice(ctx context.Context, sliceID string, limit int) ([]*models.AgentSession, error) {
@@ -2874,23 +2866,8 @@ func (s *InMemoryStorage) UpdateAgentSession(ctx context.Context, session *model
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current, ok := s.agentSessions[session.SessionID]
-	if !ok {
+	if _, ok := s.agentSessions[session.SessionID]; !ok {
 		return ErrAgentSessionNotFound
-	}
-
-	if current.State.IsActive() && !session.State.IsActive() {
-		if activeID, ok := s.activeAgentBySlice[current.SliceID]; ok && activeID == current.SessionID {
-			delete(s.activeAgentBySlice, current.SliceID)
-		}
-	}
-	if session.State.IsActive() {
-		if activeID, ok := s.activeAgentBySlice[session.SliceID]; ok && activeID != "" && activeID != session.SessionID {
-			if existing, ok := s.agentSessions[activeID]; ok && existing.State.IsActive() {
-				return ErrAgentSessionConflict
-			}
-		}
-		s.activeAgentBySlice[session.SliceID] = session.SessionID
 	}
 
 	s.agentSessions[session.SessionID] = cloneAgentSession(session)

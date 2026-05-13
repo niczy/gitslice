@@ -163,7 +163,7 @@ Notes:
 
 1. API returns before sandbox runtime is fully ready.
 2. Client listens for `status` events over WS and/or polls session status endpoint.
-3. The system enforces one active session per slice (`creating|starting|running|idle|stopping`).
+3. A slice can have multiple active sessions; local runners isolate them by checking out a separate working copy per session.
 4. `provider` is currently fixed to `e2b` in v1.
 
 ### 2) Get session
@@ -389,10 +389,6 @@ CREATE UNIQUE INDEX idx_agent_sessions_e2b_sandbox
   ON agent_sessions (e2b_sandbox_id)
   WHERE e2b_sandbox_id IS NOT NULL;
 
--- Enforce one active sandbox-backed agent session per slice.
-CREATE UNIQUE INDEX idx_agent_sessions_active_per_slice
-  ON agent_sessions (slice_id)
-  WHERE state IN ('creating', 'starting', 'running', 'idle', 'stopping');
 ```
 
 ### Table: `agent_session_events`

@@ -75,7 +75,7 @@ func TestServiceLifecycle(t *testing.T) {
 	}
 }
 
-func TestServiceOneActiveSessionPerSlice(t *testing.T) {
+func TestServiceAllowsMultipleActiveSessionsPerSlice(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
 	if err := st.CreateSlice(ctx, &models.Slice{
@@ -99,8 +99,15 @@ func TestServiceOneActiveSessionPerSlice(t *testing.T) {
 		SliceID:  "slice-2",
 		RunnerID: "runner-test",
 		Provider: RuntimeProviderLocal,
-	}); err != storage.ErrAgentSessionConflict {
-		t.Fatalf("expected ErrAgentSessionConflict, got %v", err)
+	}); err != nil {
+		t.Fatalf("CreateSession second active session failed: %v", err)
+	}
+	sessions, err := st.ListAgentSessionsBySlice(ctx, "slice-2", 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionsBySlice failed: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected two active sessions for slice, got %d", len(sessions))
 	}
 }
 

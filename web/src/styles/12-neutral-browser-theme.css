@@ -1645,6 +1645,10 @@
     box-shadow: 0 0 0 rgba(15, 23, 42, 0);
   }
 
+  .slice-agents-resize-handle {
+    display: none;
+  }
+
   .slice-agents-sidebar-close {
     display: inline-flex !important;
   }

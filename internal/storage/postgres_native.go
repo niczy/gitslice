@@ -6301,8 +6301,7 @@ func (s *PostgresNativeStorage) CreateAgentSession(ctx context.Context, session 
 		session.FailureCode, session.FailureMessage,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "idx_agent_sessions_active_per_slice") ||
-			strings.Contains(err.Error(), "duplicate key") ||
+		if strings.Contains(err.Error(), "duplicate key") ||
 			strings.Contains(err.Error(), "unique constraint") {
 			return ErrAgentSessionConflict
 		}
@@ -6490,8 +6489,7 @@ func (s *PostgresNativeStorage) UpdateAgentSession(ctx context.Context, session 
 		session.FailureCode, session.FailureMessage, session.SessionID,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "idx_agent_sessions_active_per_slice") ||
-			strings.Contains(err.Error(), "duplicate key") ||
+		if strings.Contains(err.Error(), "duplicate key") ||
 			strings.Contains(err.Error(), "unique constraint") {
 			return ErrAgentSessionConflict
 		}

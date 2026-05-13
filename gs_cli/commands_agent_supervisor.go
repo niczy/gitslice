@@ -589,7 +589,7 @@ func discoverLocalAgentSessions(ctx context.Context, cli *CLI, runnerID string) 
 			return out, err
 		}
 		for _, slice := range resp.GetSlices() {
-			sessions, err := cli.agentClient.ListSessions(ctx, &agentv1.ListSessionsRequest{SliceId: slice.GetSliceId(), Limit: 20})
+			sessions, err := cli.agentClient.ListSessions(ctx, &agentv1.ListSessionsRequest{SliceId: slice.GetSliceId(), Limit: 200})
 			if err != nil {
 				log.Printf("Warning: failed to list agent sessions for slice %s: %v", slice.GetSliceId(), err)
 				continue
@@ -617,10 +617,14 @@ func appendLocalRunnerAttached(ctx context.Context, cli *CLI, supervisorCfg loca
 		"workspace_root": strings.TrimSpace(supervisorCfg.RootDir),
 		"running_dir":    strings.TrimSpace(runCfg.CWD),
 		"checkout_dir":   strings.TrimSpace(runCfg.CWD),
-		"agent_type":     strings.TrimSpace(runCfg.AgentType),
-		"codex_mode":     strings.TrimSpace(runCfg.CodexMode),
-		"claude_mode":    strings.TrimSpace(runCfg.ClaudeMode),
-		"attached_at":    time.Now().UTC().Format(time.RFC3339),
+		"checkout_command": fmt.Sprintf(
+			"gs slice checkout %s --here",
+			strings.TrimSpace(runCfg.SliceID),
+		),
+		"agent_type":  strings.TrimSpace(runCfg.AgentType),
+		"codex_mode":  strings.TrimSpace(runCfg.CodexMode),
+		"claude_mode": strings.TrimSpace(runCfg.ClaudeMode),
+		"attached_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if len(runCfg.Command) > 0 {
 		payload["command"] = append([]string(nil), runCfg.Command...)
@@ -905,9 +909,13 @@ func unregisterLocalAgentRunner(ctx context.Context, cli *CLI, runnerID string) 
 
 func localAgentRunnerCapabilities(cfg localAgentSupervisorConfig) ([]byte, error) {
 	payload := map[string]any{
-		"agent_type":  firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
-		"codex_mode":  strings.TrimSpace(cfg.CodexMode),
-		"claude_mode": strings.TrimSpace(cfg.ClaudeMode),
+		"agent_type":                  firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		"codex_mode":                  strings.TrimSpace(cfg.CodexMode),
+		"claude_mode":                 strings.TrimSpace(cfg.ClaudeMode),
+		"concurrent_sessions":         true,
+		"checkout_per_session":        true,
+		"session_checkout_strategy":   "slice_checkout",
+		"session_checkout_dir_format": "<slice>-<session>",
 	}
 	if len(cfg.Command) > 0 {
 		payload["command"] = append([]string(nil), cfg.Command...)
@@ -927,6 +935,7 @@ func localRunConfigForDiscoveredSession(ctx context.Context, cli *CLI, cfg local
 	agentType := firstNonEmpty(strings.TrimSpace(session.GetAgentType()), strings.TrimSpace(cfg.AgentType), "codex")
 	return localAgentRunConfig{
 		SessionID:    strings.TrimSpace(session.GetSessionId()),
+		SliceID:      strings.TrimSpace(session.GetSliceId()),
 		AgentType:    agentType,
 		RootDir:      strings.TrimSpace(cfg.RootDir),
 		CWD:          checkoutDir,
@@ -950,6 +959,13 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 	if err := prepareCheckoutTargetRoot(targetRoot); err != nil {
 		return "", err
 	}
+	log.Printf(
+		"Checking out slice for agent session: session_id=%s slice_id=%s target_dir=%s command=%q",
+		strings.TrimSpace(session.GetSessionId()),
+		strings.TrimSpace(session.GetSliceId()),
+		targetRoot,
+		fmt.Sprintf("gs slice checkout %s --here", strings.TrimSpace(session.GetSliceId())),
+	)
 	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, session.GetSliceId(), "HEAD", targetRoot, false, nil)
 	if err != nil {
 		return "", err
@@ -996,9 +1012,6 @@ func agentSessionCheckoutDirName(discovered discoveredAgentSession) string {
 	sessionID := ""
 	if session != nil {
 		sessionID = strings.TrimPrefix(strings.TrimSpace(session.GetSessionId()), "sess_")
-	}
-	if len(sessionID) > 12 {
-		sessionID = sessionID[:12]
 	}
 	sessionID = safeAgentCheckoutNamePattern.ReplaceAllString(sessionID, "-")
 	if sessionID == "" {

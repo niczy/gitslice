@@ -199,6 +199,7 @@ func handleAgentStop(ctx context.Context, cli *CLI, args []string) {
 
 type localAgentRunConfig struct {
 	SessionID    string
+	SliceID      string
 	AgentType    string
 	RootDir      string
 	CWD          string

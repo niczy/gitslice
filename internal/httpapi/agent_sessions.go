@@ -191,7 +191,7 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		switch err {
 		case storage.ErrAgentSessionConflict:
-			writeError(w, http.StatusConflict, "active session already exists for slice")
+			writeError(w, http.StatusConflict, "agent session already exists")
 		case storage.ErrInvalidInput:
 			writeError(w, http.StatusBadRequest, "invalid request")
 		default:
