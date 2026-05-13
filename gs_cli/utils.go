@@ -40,6 +40,22 @@ func readSliceIDFromConfig() (string, error) {
 	return sliceID, nil
 }
 
+func readSliceIDFromConfigAt(dir string) (string, error) {
+	path := filepath.Join(dir, sliceConfigPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%s file not found - have you run 'gs init'?", path)
+		}
+		return "", fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	sliceID := strings.TrimSpace(string(data))
+	if sliceID == "" {
+		return "", fmt.Errorf("slice ID in %s is empty", path)
+	}
+	return sliceID, nil
+}
+
 // writeSliceIDConfig writes the slice ID to the .gs/config file.
 func writeSliceIDConfig(sliceID string) error {
 	return writeSliceIDConfigAt(".", sliceID)
@@ -56,6 +72,17 @@ func readAgentSessionIDFromConfig() (string, error) {
 			return "", nil
 		}
 		return "", fmt.Errorf("failed to read %s: %w", agentSessionConfigPath, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func readAgentSessionIDFromConfigAt(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, agentSessionConfigPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read %s: %w", filepath.Join(dir, agentSessionConfigPath), err)
 	}
 	return strings.TrimSpace(string(data)), nil
 }
@@ -85,21 +112,42 @@ func readTrackedChangesetIDFromConfig() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+func readTrackedChangesetIDFromConfigAt(dir string) (string, error) {
+	path := filepath.Join(dir, trackedChangesetConfigPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // writeTrackedChangesetIDConfig persists the tracked changeset ID for this workspace.
 // Empty IDs clear the tracking file.
 func writeTrackedChangesetIDConfig(changesetID string) error {
+	return writeTrackedChangesetIDConfigAt(".", changesetID)
+}
+
+func writeTrackedChangesetIDConfigAt(dir, changesetID string) error {
 	changesetID = strings.TrimSpace(changesetID)
 	if changesetID == "" {
-		return clearTrackedChangesetIDConfig()
+		return clearTrackedChangesetIDConfigAt(dir)
 	}
-	if err := os.MkdirAll(filepath.Dir(trackedChangesetConfigPath), 0o755); err != nil {
+	path := filepath.Join(dir, trackedChangesetConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(trackedChangesetConfigPath, []byte(changesetID), 0o600)
+	return os.WriteFile(path, []byte(changesetID), 0o600)
 }
 
 func clearTrackedChangesetIDConfig() error {
-	err := os.Remove(trackedChangesetConfigPath)
+	return clearTrackedChangesetIDConfigAt(".")
+}
+
+func clearTrackedChangesetIDConfigAt(dir string) error {
+	err := os.Remove(filepath.Join(dir, trackedChangesetConfigPath))
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}

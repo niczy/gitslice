@@ -218,11 +218,15 @@ func normalizeLocalModifiedFiles(files []string) []string {
 }
 
 func resolveChangesetIDForExport(explicit string) (string, bool, error) {
+	return resolveChangesetIDForExportAt(".", explicit)
+}
+
+func resolveChangesetIDForExportAt(dir, explicit string) (string, bool, error) {
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
 		return explicit, true, nil
 	}
-	tracked, err := readTrackedChangesetIDFromConfig()
+	tracked, err := readTrackedChangesetIDFromConfigAt(dir)
 	if err != nil {
 		return "", false, err
 	}

@@ -22,7 +22,13 @@ const (
 	EventTypeError                    = "error"
 	EventTypeRuntime                  = "runtime_session"
 	EventTypeState                    = "state"
+	EventTypeLocalChangesRequested    = "local_changes_requested"
+	EventTypeLocalChanges             = "local_changes"
+	EventTypeLocalChangesFailed       = "local_changes_failed"
+	EventTypeChangesetExportRequested = "changeset_export_requested"
+	EventTypeChangesetExportStarted   = "changeset_export_started"
 	EventTypeChangesetExportCompleted = "changeset_export_completed"
+	EventTypeChangesetExportFailed    = "changeset_export_failed"
 )
 
 func marshalProtocolPayload(msg proto.Message) json.RawMessage {

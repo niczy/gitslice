@@ -237,6 +237,17 @@ func appendAgentChangesetExportEventIfPresent(ctx context.Context, cli *CLI, cha
 	if err != nil || strings.TrimSpace(sessionID) == "" {
 		return err
 	}
+	return appendAgentChangesetExportEvent(ctx, cli, sessionID, changesetID, changesetHash, "gs_slice_export", reviewResp, nil)
+}
+
+func appendAgentChangesetExportEvent(ctx context.Context, cli *CLI, sessionID, changesetID, changesetHash, source string, reviewResp *slicev1.ReviewChangesetResponse, extra map[string]any) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	if reviewResp == nil {
+		return fmt.Errorf("changeset export response did not include a review")
+	}
 	snapshot := reviewResp.GetSnapshot()
 	if snapshot == nil || strings.TrimSpace(snapshot.GetSnapshotId()) == "" {
 		return fmt.Errorf("changeset export response did not include a snapshot")
@@ -248,7 +259,13 @@ func appendAgentChangesetExportEventIfPresent(ctx context.Context, cli *CLI, cha
 		"snapshot_version": snapshot.GetVersion(),
 		"snapshot_hash":    strings.TrimSpace(snapshot.GetHash()),
 		"base_commit_hash": strings.TrimSpace(snapshot.GetBaseCommitHash()),
-		"source":           "gs_slice_export",
+		"source":           firstNonEmpty(strings.TrimSpace(source), "gs_slice_export"),
+	}
+	for key, value := range extra {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		payload[key] = value
 	}
 	return appendAgentJSONEvent(ctx, cli, sessionID, "control", "changeset_export_completed", payload)
 }
