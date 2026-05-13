@@ -4,11 +4,11 @@
 
 Gitslice agent sessions are controlled through the `agent.v1.AgentService`
 protobuf API. The protocol is intentionally event based so the same session can
-be driven from the web UI, a remote runtime, or a user-hosted local runner.
+be driven from the web UI and a user-hosted local runner.
 
-The web UI submits control events, the runtime consumes them, and the runtime
+The web UI submits control events, the local runner consumes them, and the runner
 appends output events back to the same durable event log. This keeps reconnects,
-audit history, and local/remote providers on one lifecycle.
+audit history, and web control on one lifecycle.
 
 ## Proto Files
 
@@ -35,13 +35,16 @@ PTY resize/input events.
 
 ## Session Lifecycle
 
-1. A client calls `CreateSession` with a `slice_id`, `agent_type`, and runtime
-   provider.
-2. The service creates an active session and appends lifecycle state events.
-3. The selected runtime provider starts and moves the session to `running`.
-4. Web or CLI clients send input through `SendInput` or the websocket bridge.
-5. The runtime appends output through `AppendEvent`.
-6. A client calls `SendInterrupt` or `StopSession` to control or terminate the
+1. A local runner calls `RegisterRunner` and keeps heartbeating while online.
+2. A client calls `CreateSession` with a `slice_id`, `agent_type`, and
+   `runner_id`.
+3. The service creates an active local session and appends lifecycle state
+   events.
+4. The local provider moves the session to `running` and waits for the assigned
+   runner to claim it.
+5. Web or CLI clients send input through `SendInput` or the websocket bridge.
+6. The runner appends output through `AppendEvent`.
+7. A client calls `SendInterrupt` or `StopSession` to control or terminate the
    session.
 
 Active states are `creating`, `starting`, `running`, `idle`, and `stopping`.
@@ -55,10 +58,10 @@ understand every payload.
 | Stream | Type | Direction | Payload |
 | --- | --- | --- | --- |
 | `status` | `state` | service to clients | `AgentStatePayload` |
-| `agent` | `input` | user to runtime | `AgentInputPayload` |
-| `agent` | `interrupt` | user/service to runtime | `AgentInterruptPayload` |
-| `agent` | `output_delta` | runtime to clients | `AgentOutputPayload` |
-| `agent` | `output_final` | runtime to clients | `AgentOutputPayload` |
+| `agent` | `input` | user to runner | `AgentInputPayload` |
+| `agent` | `interrupt` | user/service to runner | `AgentInterruptPayload` |
+| `agent` | `output_delta` | runner to clients | `AgentOutputPayload` |
+| `agent` | `output_final` | runner to clients | `AgentOutputPayload` |
 | `control` | `error` | any component to clients | `AgentErrorPayload` |
 | `control` | `runtime_session` | runtime to service/clients | JSON runtime metadata |
 | `pty` | `stdin` | user to runtime | `AgentPtyInputPayload` |
@@ -79,18 +82,24 @@ and `agent/interrupt` events for a local runner to consume.
 
 ## Local Provider
 
-The local provider uses provider name `local`. It does not require a provider ID
-in environment configuration and does not start a remote sandbox. Starting a
-local session marks the runtime endpoint as `local://<session_id>` and waits for
-a user-hosted runner.
+The local provider uses provider name `local`. It does not require an
+environment/provider profile and does not start a remote sandbox. Starting a
+local session marks the runtime endpoint as `local://<session_id>`.
 
 `gs agent start` and `gs agent run` are the local runner implementations.
 `start` launches the runner in the background; `run` keeps it in the foreground.
-Both commands watch the user's local-provider sessions, check out each web-created
-session's slice into a subdirectory of the configured working directory, poll
-`ListEvents`, run a local coding agent for `agent/input` events, and append
-`agent/output_delta`, `agent/output_final`, and tool lifecycle events through
-`AppendEvent`.
+Both commands register an `agent_runner` record with the server, heartbeat it
+while online, and mark it offline when the process exits. The web app lists
+online runners before a session exists. When the user starts a session, the
+request includes `runner_id`; the local runner only claims sessions assigned to
+that runner, checks out the session's slice into a subdirectory of the configured
+working directory, polls `ListEvents`, runs a local coding agent for
+`agent/input` events, and appends `agent/output_delta`, `agent/output_final`,
+and tool lifecycle events through `AppendEvent`.
+
+Cloud sandbox providers are intentionally not part of the active agent runtime
+surface. Agent sessions are local-runner-first until a new remote runtime design
+is introduced.
 
 Default commands:
 

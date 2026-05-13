@@ -198,7 +198,7 @@ Use the browser when you want visibility, not just commands.
 
 ## Local agent sessions
 
-Use the Agents tab when you want the web app to send prompts to coding agents running on your machine. Start one local runner in the directory where you want agent workspaces to live; the runner tracks local sessions created from the web, checks out each session's slice into its own subdirectory, and streams Codex output back into the session conversation.
+Use the Agents tab when you want the web app to send prompts to coding agents running on your machine. Start one local runner in the directory where you want agent workspaces to live; the runner registers with the server, appears in the Agents tab, tracks sessions assigned to that runner, checks out each session's slice into its own subdirectory, and streams Codex output back into the session conversation.
 
 Run the local agent in the background:
 
@@ -214,7 +214,7 @@ gs agent run
 gs agent run --dir /path/to/agent-workspaces
 ```
 
-Both commands use the current directory by default. Use `--dir` when you want a dedicated workspace root. After the runner is active, open a slice in the web app, go to Agents, and click New. The local runner discovers the new session, checks out the corresponding slice under the workspace root, and runs the agent from that checkout directory. Messages sent from the web UI become local agent input, and Codex output is appended back to the session conversation.
+Both commands use the current directory by default. Use `--dir` when you want a dedicated workspace root. After the runner is active, open a slice in the web app, go to Agents, choose an available runner, and click New. The local runner discovers its assigned session, checks out the corresponding slice under the workspace root, and runs the agent from that checkout directory. Messages sent from the web UI become local agent input, and Codex output is appended back to the session conversation.
 
 Useful variants:
 

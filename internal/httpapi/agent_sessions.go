@@ -2,10 +2,10 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/auth"
@@ -38,6 +38,7 @@ func (a *AgentSessionsAPI) requireUser(w http.ResponseWriter, r *http.Request) (
 
 type createAgentSessionRequest struct {
 	SliceID        string            `json:"sliceId"`
+	RunnerID       string            `json:"runnerId"`
 	Environment    string            `json:"environment"`
 	AgentType      string            `json:"agentType"`
 	IdleTimeoutSec int               `json:"idleTimeoutSec"`
@@ -54,6 +55,7 @@ type wsConnectResponse struct {
 type createAgentSessionResponse struct {
 	SessionID      string            `json:"sessionId"`
 	SliceID        string            `json:"sliceId"`
+	RunnerID       string            `json:"runnerId"`
 	Environment    string            `json:"environment"`
 	AgentType      string            `json:"agentType"`
 	State          string            `json:"state"`
@@ -66,6 +68,7 @@ type createAgentSessionResponse struct {
 type getAgentSessionResponse struct {
 	SessionID      string `json:"sessionId"`
 	SliceID        string `json:"sliceId"`
+	RunnerID       string `json:"runnerId"`
 	Environment    string `json:"environment"`
 	AgentType      string `json:"agentType"`
 	State          string `json:"state"`
@@ -146,40 +149,44 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	envName := strings.TrimSpace(req.Environment)
-	if envName == "" {
-		envName = strings.TrimSpace(slice.Environment)
-	}
-	if envName == "" {
-		writeError(w, http.StatusBadRequest, "no environment configured for this slice")
+	runnerID := strings.TrimSpace(req.RunnerID)
+	if runnerID == "" {
+		writeError(w, http.StatusBadRequest, "runnerId is required")
 		return
 	}
-
-	env, err := a.st.GetEnvironment(r.Context(), envName)
+	runner, err := a.st.GetAgentRunner(r.Context(), runnerID)
 	if err != nil {
-		if errors.Is(err, storage.ErrEntryNotFound) || errors.Is(err, storage.ErrInvalidInput) {
-			writeError(w, http.StatusBadRequest, "unknown environment: "+envName)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to resolve environment")
+		writeError(w, http.StatusBadRequest, "unknown runner")
 		return
 	}
-	agentType, err := resolveAgentTypeForEnvironment(req.AgentType, env)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if runner.UserID != userID {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if !httpAgentRunnerOnline(runner, time.Now().UTC()) {
+		writeError(w, http.StatusPreconditionFailed, "runner is offline")
+		return
+	}
+	agentType := strings.ToLower(strings.TrimSpace(req.AgentType))
+	if agentType == "" {
+		agentType = strings.ToLower(strings.TrimSpace(runner.AgentType))
+	}
+	if agentType == "" {
+		agentType = agentsession.DefaultAgentType()
+	}
+	if runnerAgentType := strings.ToLower(strings.TrimSpace(runner.AgentType)); runnerAgentType != "" && runnerAgentType != agentType {
+		writeError(w, http.StatusBadRequest, "agent type does not match runner")
 		return
 	}
 
 	session, token, err := a.svc.CreateSession(r.Context(), userID, agentsession.CreateRequest{
-		SliceID:         req.SliceID,
-		EnvironmentName: envName,
-		AgentType:       agentType,
-		Provider:        env.Provider,
-		E2BTemplateID:   env.ProviderID,
-		E2BRegion:       env.Region,
-		IdleTimeoutSec:  req.IdleTimeoutSec,
-		TTLSec:          req.TTLSec,
-		Env:             req.Env,
+		SliceID:        req.SliceID,
+		RunnerID:       runner.RunnerID,
+		AgentType:      agentType,
+		Provider:       agentsession.RuntimeProviderLocal,
+		IdleTimeoutSec: req.IdleTimeoutSec,
+		TTLSec:         req.TTLSec,
+		Env:            req.Env,
 	})
 	if err != nil {
 		switch err {
@@ -196,6 +203,7 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusCreated, createAgentSessionResponse{
 		SessionID:   session.SessionID,
 		SliceID:     session.SliceID,
+		RunnerID:    session.RunnerID,
 		Environment: session.EnvironmentName,
 		AgentType:   session.AgentType,
 		State:       string(session.State),
@@ -210,34 +218,14 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func resolveAgentTypeForEnvironment(requested string, env *models.Environment) (string, error) {
-	if env == nil {
-		return strings.ToLower(strings.TrimSpace(requested)), nil
+func httpAgentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
+	if runner == nil || runner.Status != models.AgentRunnerStatusOnline || runner.LastHeartbeatAt.IsZero() {
+		return false
 	}
-	requested = strings.ToLower(strings.TrimSpace(requested))
-	if requested == "" {
-		requested = strings.ToLower(strings.TrimSpace(env.DefaultAgentType))
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
-	if requested == "" {
-		requested = agentsession.DefaultAgentType()
-	}
-
-	allowed := make(map[string]struct{}, len(env.AllowedAgentTypes))
-	for _, candidate := range env.AllowedAgentTypes {
-		normalized := strings.ToLower(strings.TrimSpace(candidate))
-		if normalized == "" {
-			continue
-		}
-		allowed[normalized] = struct{}{}
-	}
-	if len(allowed) == 0 {
-		allowed["codex"] = struct{}{}
-		allowed["claude"] = struct{}{}
-	}
-	if _, ok := allowed[requested]; !ok {
-		return "", errors.New("agent type is not allowed for environment")
-	}
-	return requested, nil
+	return now.Sub(runner.LastHeartbeatAt) <= 30*time.Second
 }
 
 func (a *AgentSessionsAPI) HandleItem(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +306,7 @@ func (a *AgentSessionsAPI) getSession(w http.ResponseWriter, r *http.Request, se
 	resp := getAgentSessionResponse{
 		SessionID:      session.SessionID,
 		SliceID:        session.SliceID,
+		RunnerID:       session.RunnerID,
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
 		State:          string(session.State),

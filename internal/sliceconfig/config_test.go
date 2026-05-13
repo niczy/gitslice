@@ -73,8 +73,8 @@ func TestApplyConfig(t *testing.T) {
 	if err := st.CreateEnvironment(ctx, &models.Environment{
 		Name:        "node20",
 		DisplayName: "Node",
-		Provider:    "e2b",
-		ProviderID:  "tmpl-node20",
+		Provider:    "local",
+		ProviderID:  "runner-profile-node20",
 		Region:      "us-west-2",
 		CreatedBy:   "alice",
 	}); err != nil {
@@ -144,8 +144,8 @@ func TestApplyFromFileTree(t *testing.T) {
 	if err := st.CreateEnvironment(ctx, &models.Environment{
 		Name:        "node20",
 		DisplayName: "Node",
-		Provider:    "e2b",
-		ProviderID:  "tmpl-node20",
+		Provider:    "local",
+		ProviderID:  "runner-profile-node20",
 		Region:      "us-west-2",
 		CreatedBy:   "alice",
 	}); err != nil {

@@ -6423,6 +6423,19 @@ button[data-testid="topbar-get-started"]:hover {
   line-height: 1.35;
 }
 
+.slice-agents-available-runners {
+  display: grid;
+  gap: 6px;
+}
+
+.slice-agents-section-label {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .slice-agents-docs-note {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);

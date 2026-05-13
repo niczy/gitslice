@@ -1967,8 +1967,7 @@ func TestDeleteWorkspaceRejectsRootAndActiveSession(t *testing.T) {
 		SliceID:        "ws-delete-active",
 		UserID:         "tester",
 		State:          models.AgentSessionStateRunning,
-		Provider:       "e2b",
-		E2BTemplateID:  "template",
+		Provider:       "local",
 		IdleTimeoutSec: 60,
 		TTLSec:         60,
 	}); err != nil {

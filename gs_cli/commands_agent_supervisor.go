@@ -2,6 +2,8 @@ package gscli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ var safeAgentCheckoutNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 type localAgentSupervisorConfig struct {
 	RootDir      string
+	RunnerID     string
 	AgentType    string
 	CodexMode    string
 	ClaudeMode   string
@@ -35,10 +38,11 @@ type localAgentSupervisorConfig struct {
 }
 
 type agentSupervisorStartOutput struct {
-	Status  string `json:"status"`
-	PID     int    `json:"pid"`
-	CWD     string `json:"cwd"`
-	LogFile string `json:"log_file"`
+	Status   string `json:"status"`
+	RunnerID string `json:"runner_id"`
+	PID      int    `json:"pid"`
+	CWD      string `json:"cwd"`
+	LogFile  string `json:"log_file"`
 }
 
 type discoveredAgentSession struct {
@@ -75,6 +79,10 @@ func startAgentSupervisorBackground(ctx context.Context, cli *CLI, authConfig cl
 	if err := os.MkdirAll(filepath.Join(rootDir, agentWorkspaceStateDir), 0o755); err != nil {
 		return nil, err
 	}
+	runnerID, err := ensureAgentRunnerID(rootDir)
+	if err != nil {
+		return nil, err
+	}
 	logFile := strings.TrimSpace(cfg.LogFile)
 	if logFile == "" {
 		logFile = filepath.Join(rootDir, agentWorkspaceStateDir, "agent.log")
@@ -95,6 +103,11 @@ func startAgentSupervisorBackground(ctx context.Context, cli *CLI, authConfig cl
 	if err != nil {
 		return nil, err
 	}
+
+	cfg.RootDir = rootDir
+	cfg.RunnerID = runnerID
+	logAgentRunnerStartup(authConfig, cfg)
+	log.Printf("Starting background local agent runner: executable=%s log_file=%s", executable, logFile)
 
 	args := append(backgroundEndpointArgs(), "agent", "run", "--cwd", rootDir)
 	if agentType := strings.TrimSpace(cfg.AgentType); agentType != "" {
@@ -130,10 +143,11 @@ func startAgentSupervisorBackground(ctx context.Context, cli *CLI, authConfig cl
 
 	writeAgentSupervisorPIDFile(rootDir, pid)
 	return &agentSupervisorStartOutput{
-		Status:  "started",
-		PID:     pid,
-		CWD:     rootDir,
-		LogFile: logFile,
+		Status:   "started",
+		RunnerID: runnerID,
+		PID:      pid,
+		CWD:      rootDir,
+		LogFile:  logFile,
 	}, nil
 }
 
@@ -196,7 +210,68 @@ func resolveAgentWorkspaceRoot(raw string) (string, error) {
 	return abs, nil
 }
 
-func runAgentSupervisor(ctx context.Context, cli *CLI, cfg localAgentSupervisorConfig) (int, error) {
+func logAgentRunnerStartup(authConfig cliAuth, cfg localAgentSupervisorConfig) {
+	settings, err := resolveEndpointSettings()
+	if err != nil {
+		log.Printf("Agent runner endpoint: failed to resolve endpoint settings: %v", err)
+	} else {
+		log.Printf(
+			"Agent runner endpoint: agent_addr=%s account_addr=%s file_addr=%s fs_addr=%s tls=%t address_source=%s tls_source=%s",
+			settings.SliceAddr,
+			settings.AccountAddr,
+			settings.FileAddr,
+			settings.FSAddr,
+			settings.TLS,
+			logValue(settings.AddressSource, "unknown"),
+			logValue(settings.TLSSource, "unknown"),
+		)
+	}
+	log.Printf(
+		"Agent runner auth: username=%s source=%s credential_store=%t auth_scheme=%s",
+		logValue(authConfig.Username, "unknown"),
+		logValue(authConfig.Source, "unknown"),
+		authConfig.CredentialStore,
+		agentAuthSchemeForLog(authConfig.Authorization),
+	)
+	log.Printf(
+		"Agent runner config: runner_id=%s workspace=%s agent_type=%s codex_mode=%s claude_mode=%s poll_interval=%s once=%t custom_command=%t command_args=%d pid=%d version=%s",
+		logValue(cfg.RunnerID, "pending"),
+		logValue(cfg.RootDir, "unknown"),
+		firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		logValue(cfg.CodexMode, "auto"),
+		logValue(cfg.ClaudeMode, "auto"),
+		cfg.PollInterval,
+		cfg.Once,
+		len(cfg.Command) > 0,
+		len(cfg.Command),
+		os.Getpid(),
+		versionString(),
+	)
+}
+
+func logValue(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func agentAuthSchemeForLog(authorization string) string {
+	authorization = strings.TrimSpace(authorization)
+	switch {
+	case authorization == "":
+		return "none"
+	case strings.HasPrefix(strings.ToLower(authorization), "bearer "):
+		return "bearer"
+	case strings.HasPrefix(strings.ToLower(authorization), "user "):
+		return "user"
+	default:
+		return "custom"
+	}
+}
+
+func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg localAgentSupervisorConfig) (int, error) {
 	rootDir, err := resolveAgentWorkspaceRoot(cfg.RootDir)
 	if err != nil {
 		return 0, err
@@ -205,8 +280,32 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, cfg localAgentSupervisorC
 		cfg.PollInterval = time.Second
 	}
 	cfg.RootDir = rootDir
+	if cfg.RunnerID == "" {
+		runnerID, err := ensureAgentRunnerID(rootDir)
+		if err != nil {
+			return 0, err
+		}
+		cfg.RunnerID = runnerID
+	}
+	logAgentRunnerStartup(authConfig, cfg)
+	if err := registerLocalAgentRunner(ctx, cli, cfg); err != nil {
+		return 0, err
+	}
+	defer func() {
+		unregisterCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := unregisterLocalAgentRunner(unregisterCtx, cli, cfg.RunnerID); err != nil {
+			log.Printf("Warning: failed to unregister local agent runner %s: %v", cfg.RunnerID, err)
+		} else {
+			log.Printf("Unregistered local agent runner: runner_id=%s", cfg.RunnerID)
+		}
+	}()
+
+	log.Printf("Polling for assigned agent sessions: runner_id=%s interval=%s", cfg.RunnerID, cfg.PollInterval)
 	managed := map[string]*managedAgentSession{}
 	completed := 0
+	heartbeatOKLogged := false
+	lastDiscoveredCount := -1
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 	defer func() {
@@ -228,9 +327,19 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, cfg localAgentSupervisorC
 			return completed, nil
 		}
 
-		sessions, discoverErr := discoverLocalAgentSessions(ctx, cli)
+		if heartbeatResp, err := heartbeatLocalAgentRunner(ctx, cli, cfg); err != nil {
+			log.Printf("Warning: failed to heartbeat local agent runner %s: %v", cfg.RunnerID, err)
+		} else if !heartbeatOKLogged {
+			log.Printf("Local agent runner heartbeat accepted: runner_id=%s status=%s heartbeat_interval=%ds", cfg.RunnerID, heartbeatResp.GetRunner().GetStatus(), heartbeatResp.GetHeartbeatIntervalSec())
+			heartbeatOKLogged = true
+		}
+
+		sessions, discoverErr := discoverLocalAgentSessions(ctx, cli, cfg.RunnerID)
 		if discoverErr != nil {
 			log.Printf("Warning: failed to discover local agent sessions: %v", discoverErr)
+		} else if len(sessions) != lastDiscoveredCount {
+			log.Printf("Discovered assigned active agent sessions: runner_id=%s count=%d", cfg.RunnerID, len(sessions))
+			lastDiscoveredCount = len(sessions)
 		}
 
 		active := make(map[string]struct{}, len(sessions))
@@ -301,8 +410,9 @@ func reapManagedAgentSessions(managed map[string]*managedAgentSession) (int, err
 	return completed, nil
 }
 
-func discoverLocalAgentSessions(ctx context.Context, cli *CLI) ([]discoveredAgentSession, error) {
+func discoverLocalAgentSessions(ctx context.Context, cli *CLI, runnerID string) ([]discoveredAgentSession, error) {
 	const pageSize = 200
+	runnerID = strings.TrimSpace(runnerID)
 	var out []discoveredAgentSession
 	for offset := int32(0); ; offset += pageSize {
 		resp, err := cli.sliceClient.ListSlices(ctx, &slicev1.ListSlicesRequest{Limit: pageSize, Offset: offset})
@@ -316,7 +426,7 @@ func discoverLocalAgentSessions(ctx context.Context, cli *CLI) ([]discoveredAgen
 				continue
 			}
 			for _, session := range sessions.GetSessions() {
-				if session.GetProvider() == "local" && agentSessionStateActive(session.GetState()) {
+				if session.GetProvider() == "local" && agentSessionStateActive(session.GetState()) && strings.TrimSpace(session.GetRunnerId()) == runnerID {
 					out = append(out, discoveredAgentSession{session: session, slice: slice})
 				}
 			}
@@ -332,6 +442,7 @@ func appendLocalRunnerAttached(ctx context.Context, cli *CLI, supervisorCfg loca
 	hostName, _ := os.Hostname()
 	payload := map[string]any{
 		"status":         "attached",
+		"runner_id":      strings.TrimSpace(supervisorCfg.RunnerID),
 		"host_name":      strings.TrimSpace(hostName),
 		"pid":            os.Getpid(),
 		"workspace_root": strings.TrimSpace(supervisorCfg.RootDir),
@@ -505,6 +616,114 @@ func writeAgentSupervisorPIDFile(rootDir string, pid int) {
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", pid)), 0o600); err != nil {
 		log.Printf("Warning: failed to write agent pid file: %v", err)
 	}
+}
+
+func ensureAgentRunnerID(rootDir string) (string, error) {
+	stateDir := filepath.Join(rootDir, agentWorkspaceStateDir)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(stateDir, "runner_id")
+	if raw, err := os.ReadFile(path); err == nil {
+		if runnerID := strings.TrimSpace(string(raw)); runnerID != "" {
+			return runnerID, nil
+		}
+	}
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	runnerID := "agr_" + hex.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(runnerID+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return runnerID, nil
+}
+
+func registerLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSupervisorConfig) error {
+	hostName, _ := os.Hostname()
+	capabilities, err := localAgentRunnerCapabilities(cfg)
+	if err != nil {
+		return err
+	}
+	log.Printf(
+		"Registering local agent runner: runner_id=%s provider=local agent_type=%s host=%s pid=%d workspace=%s",
+		logValue(cfg.RunnerID, "pending"),
+		firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		logValue(hostName, "unknown"),
+		os.Getpid(),
+		logValue(cfg.RootDir, "unknown"),
+	)
+	resp, err := cli.agentClient.RegisterRunner(ctx, &agentv1.RegisterRunnerRequest{
+		RunnerId:      strings.TrimSpace(cfg.RunnerID),
+		Provider:      "local",
+		AgentType:     firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		HostName:      strings.TrimSpace(hostName),
+		Pid:           int32(os.Getpid()),
+		WorkspaceRoot: strings.TrimSpace(cfg.RootDir),
+		Version:       versionString(),
+		Capabilities:  capabilities,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.GetRunner().GetRunnerId() != "" && strings.TrimSpace(cfg.RunnerID) != resp.GetRunner().GetRunnerId() {
+		return fmt.Errorf("server returned different runner id %s", resp.GetRunner().GetRunnerId())
+	}
+	runner := resp.GetRunner()
+	log.Printf(
+		"Registered local agent runner: runner_id=%s provider=%s agent_type=%s status=%s host=%s pid=%d workspace=%s heartbeat_interval=%ds",
+		logValue(runner.GetRunnerId(), cfg.RunnerID),
+		logValue(runner.GetProvider(), "local"),
+		logValue(runner.GetAgentType(), firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex")),
+		logValue(runner.GetStatus(), "unknown"),
+		logValue(runner.GetHostName(), hostName),
+		runner.GetPid(),
+		logValue(runner.GetWorkspaceRoot(), cfg.RootDir),
+		resp.GetHeartbeatIntervalSec(),
+	)
+	return nil
+}
+
+func heartbeatLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSupervisorConfig) (*agentv1.HeartbeatRunnerResponse, error) {
+	hostName, _ := os.Hostname()
+	capabilities, err := localAgentRunnerCapabilities(cfg)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.agentClient.HeartbeatRunner(ctx, &agentv1.HeartbeatRunnerRequest{
+		RunnerId:      strings.TrimSpace(cfg.RunnerID),
+		Status:        "online",
+		HostName:      strings.TrimSpace(hostName),
+		Pid:           int32(os.Getpid()),
+		WorkspaceRoot: strings.TrimSpace(cfg.RootDir),
+		Capabilities:  capabilities,
+	})
+	return resp, err
+}
+
+func unregisterLocalAgentRunner(ctx context.Context, cli *CLI, runnerID string) error {
+	runnerID = strings.TrimSpace(runnerID)
+	if runnerID == "" {
+		return nil
+	}
+	_, err := cli.agentClient.UnregisterRunner(ctx, &agentv1.UnregisterRunnerRequest{
+		RunnerId: runnerID,
+		Reason:   "local runner stopped",
+	})
+	return err
+}
+
+func localAgentRunnerCapabilities(cfg localAgentSupervisorConfig) ([]byte, error) {
+	payload := map[string]any{
+		"agent_type":  firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		"codex_mode":  strings.TrimSpace(cfg.CodexMode),
+		"claude_mode": strings.TrimSpace(cfg.ClaudeMode),
+	}
+	if len(cfg.Command) > 0 {
+		payload["command"] = append([]string(nil), cfg.Command...)
+	}
+	return json.Marshal(payload)
 }
 
 func localRunConfigForDiscoveredSession(ctx context.Context, cli *CLI, cfg localAgentSupervisorConfig, discovered discoveredAgentSession) (localAgentRunConfig, error) {

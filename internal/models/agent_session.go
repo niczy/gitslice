@@ -35,6 +35,7 @@ func (s AgentSessionState) IsActive() bool {
 type AgentSession struct {
 	SessionID        string            `json:"session_id"`
 	SliceID          string            `json:"slice_id"`
+	RunnerID         string            `json:"runner_id,omitempty"`
 	EnvironmentName  string            `json:"environment_name,omitempty"`
 	AgentType        string            `json:"agent_type,omitempty"`
 	UserID           string            `json:"user_id"`
@@ -57,6 +58,29 @@ type AgentSession struct {
 	StoppedAt        *time.Time        `json:"stopped_at,omitempty"`
 	FailureCode      string            `json:"failure_code,omitempty"`
 	FailureMessage   string            `json:"failure_message,omitempty"`
+}
+
+type AgentRunnerStatus string
+
+const (
+	AgentRunnerStatusOnline  AgentRunnerStatus = "online"
+	AgentRunnerStatusOffline AgentRunnerStatus = "offline"
+)
+
+type AgentRunner struct {
+	RunnerID        string            `json:"runner_id"`
+	UserID          string            `json:"user_id"`
+	Provider        string            `json:"provider"`
+	AgentType       string            `json:"agent_type"`
+	Status          AgentRunnerStatus `json:"status"`
+	HostName        string            `json:"host_name,omitempty"`
+	PID             int               `json:"pid,omitempty"`
+	WorkspaceRoot   string            `json:"workspace_root,omitempty"`
+	Version         string            `json:"version,omitempty"`
+	Capabilities    json.RawMessage   `json:"capabilities,omitempty"`
+	LastHeartbeatAt time.Time         `json:"last_heartbeat_at"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 type AgentSessionEvent struct {

@@ -36,7 +36,7 @@ func handleAgentCommand(ctx context.Context, cli *CLI, authConfig cliAuth, args 
 	case "start":
 		handleAgentStart(ctx, cli, authConfig, args[1:])
 	case "run":
-		handleAgentRun(ctx, cli, args[1:])
+		handleAgentRun(ctx, cli, authConfig, args[1:])
 	case "input":
 		handleAgentInput(ctx, cli, args[1:])
 	case "interrupt":
@@ -87,11 +87,12 @@ func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []
 		return
 	}
 	fmt.Printf("Agent runner started: pid %d\n", result.PID)
+	fmt.Printf("Runner: %s\n", result.RunnerID)
 	fmt.Printf("Workspace: %s\n", result.CWD)
 	fmt.Printf("Log: %s\n", result.LogFile)
 }
 
-func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
+func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	args, once := consumeBoolFlag(args, "once")
 	fs := newCommandFlagSet("agent run")
@@ -118,11 +119,17 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("INVALID_ARGUMENT", false, "", "Invalid working directory: %v", err)
 	}
+	runnerID, err := ensureAgentRunnerID(rootDir)
+	if err != nil {
+		commandFatalf("AGENT_RUN_FAILED", true, "", "Failed to initialize local runner id: %v", err)
+	}
 	if !jsonEnabled {
 		fmt.Printf("Tracking local agent sessions in %s. Press Ctrl-C to stop the local runner.\n", rootDir)
+		fmt.Printf("Runner: %s\n", runnerID)
 	}
-	completed, err := runAgentSupervisor(ctx, cli, localAgentSupervisorConfig{
+	completed, err := runAgentSupervisor(ctx, cli, authConfig, localAgentSupervisorConfig{
 		RootDir:      rootDir,
+		RunnerID:     runnerID,
 		AgentType:    strings.TrimSpace(*agentType),
 		CodexMode:    strings.TrimSpace(*codexMode),
 		ClaudeMode:   strings.TrimSpace(*claudeMode),
@@ -136,6 +143,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, args []string) {
 	if jsonEnabled {
 		writeJSONOutput(map[string]any{
 			"cwd":              rootDir,
+			"runner_id":        runnerID,
 			"agent_type":       strings.TrimSpace(*agentType),
 			"completed_inputs": completed,
 		})

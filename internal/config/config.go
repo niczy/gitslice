@@ -78,26 +78,9 @@ type Config struct {
 	// Clerk auth configuration.
 	ClerkWebhookSecret string
 
-	// E2B runtime provider settings for agent sessions.
-	E2BAPIURL                string
-	E2BDomain                string
-	E2BAPIKey                string
-	E2BAccessToken           string
-	CodexAPIKey              string
-	ClaudeAPIKey             string
-	AgentEgressAllowlist     string
-	AgentEgressDenyByDefault bool
-	E2BRuntimeWSPort         int
-	E2BRuntimeWSPath         string
-	E2BRequestTimeoutSec     int
-
-	// Cloudflare Containers runtime control-plane settings.
+	// Agent runtime provider settings. Local runners are the only active
+	// runtime provider; this default is retained for env-file compatibility.
 	AgentRuntimeProviderDefault string
-	CFCControlBaseURL           string
-	CFCControlAudience          string
-	CFCServiceTokenID           string
-	CFCServiceTokenSecret       string
-	CFCRequestTimeoutSec        int
 }
 
 // LoadConfig loads configuration from environment variables with defaults.
@@ -168,29 +151,7 @@ func LoadConfig() (*Config, error) {
 		R2UsePathStyle:                  getEnvBool("R2_USE_PATH_STYLE", false),
 		AgentWSTokenSecret:              getEnv("AGENT_WS_TOKEN_SECRET", "dev-insecure-agent-secret"),
 		ClerkWebhookSecret:              getEnv("CLERK_WEBHOOK_SECRET", ""),
-		E2BAPIURL:                       getEnv("E2B_API_URL", ""),
-		E2BDomain:                       getEnv("E2B_DOMAIN", "e2b.app"),
-		E2BAPIKey:                       getEnv("E2B_API_KEY", ""),
-		E2BAccessToken:                  getEnv("E2B_ACCESS_TOKEN", ""),
-		CodexAPIKey:                     getEnv("OPENAI_API_KEY", ""),
-		ClaudeAPIKey:                    getEnv("ANTHROPIC_API_KEY", ""),
-		AgentEgressAllowlist: getEnv(
-			"AGENT_EGRESS_ALLOWLIST",
-			"",
-		),
-		AgentEgressDenyByDefault: getEnvBool("AGENT_EGRESS_DENY_BY_DEFAULT", false),
-		E2BRuntimeWSPort:         getEnvInt("E2B_RUNTIME_WS_PORT", 9000),
-		E2BRuntimeWSPath:         getEnv("E2B_RUNTIME_WS_PATH", "/ws"),
-		E2BRequestTimeoutSec: getEnvInt(
-			"E2B_REQUEST_TIMEOUT_SEC",
-			30,
-		),
-		AgentRuntimeProviderDefault: getEnv("AGENT_RUNTIME_PROVIDER_DEFAULT", ""),
-		CFCControlBaseURL:           getEnv("CFC_CONTROL_BASE_URL", ""),
-		CFCControlAudience:          getEnv("CFC_CONTROL_AUDIENCE", ""),
-		CFCServiceTokenID:           getEnv("CFC_SERVICE_TOKEN_ID", ""),
-		CFCServiceTokenSecret:       getEnv("CFC_SERVICE_TOKEN_SECRET", ""),
-		CFCRequestTimeoutSec:        getEnvInt("CFC_REQUEST_TIMEOUT_SEC", 30),
+		AgentRuntimeProviderDefault:     getEnv("AGENT_RUNTIME_PROVIDER_DEFAULT", ""),
 	}, nil
 }
 

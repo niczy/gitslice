@@ -297,10 +297,29 @@ export async function listAgentSessions(sliceId, { limit = 50 } = {}) {
   return payload?.sessions || [];
 }
 
-export async function createAgentSession(sliceId, { environment = '', agentType = '' } = {}) {
+export async function listAgentRunners({ limit = 50, includeOffline = false } = {}) {
+  const query = new URLSearchParams();
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
+  }
+  if (includeOffline) {
+    query.set('includeOffline', 'true');
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-runners?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load agent runners'));
+  }
+  const payload = await response.json();
+  return payload?.runners || [];
+}
+
+export async function createAgentSession(sliceId, { runnerId = '', environment = '', agentType = '' } = {}) {
   const body = {
     sliceId,
   };
+  if (runnerId) {
+    body.runnerId = runnerId;
+  }
   if (environment) {
     body.environment = environment;
   }

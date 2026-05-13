@@ -3192,9 +3192,9 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 		t.Fatalf("write agent/input failed: %v", err)
 	}
 
-	gotClaudeFinal := false
+	gotClaudeInput := false
 	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) && !gotClaudeFinal {
+	for time.Now().Before(deadline) && !gotClaudeInput {
 		var frame struct {
 			Stream  string                 `json:"stream"`
 			Type    string                 `json:"type"`
@@ -3203,22 +3203,22 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatalf("read websocket frame failed: %v", err)
 		}
-		if frame.Stream == "agent" && frame.Type == "output_final" {
+		if frame.Stream == "agent" && frame.Type == "input" {
 			text, _ := frame.Payload["text"].(string)
-			if strings.Contains(text, "Claude completed request") {
-				gotClaudeFinal = true
+			if strings.Contains(text, "Explain this diff") {
+				gotClaudeInput = true
 			}
 		}
 	}
-	if !gotClaudeFinal {
-		t.Fatalf("expected claude output_final frame")
+	if !gotClaudeInput {
+		t.Fatalf("expected queued claude agent/input frame")
 	}
 
 	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
 	waitForAgentSessionState(t, sessionID, "stopped", 4*time.Second)
 }
 
-func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
+func TestAgentSessionCreateUnknownRunnerIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
@@ -3235,9 +3235,9 @@ func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
 	}
 
 	body := map[string]any{
-		"sliceId":     sliceID,
-		"environment": "missing-integration-env",
-		"agentType":   "codex",
+		"sliceId":   sliceID,
+		"runnerId":  "missing-integration-runner",
+		"agentType": "codex",
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
@@ -3250,7 +3250,7 @@ func TestAgentSessionCreateUnknownEnvironmentIntegration(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		data, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 400 for unknown environment, got %d body=%s", resp.StatusCode, string(data))
+		t.Fatalf("expected 400 for unknown runner, got %d body=%s", resp.StatusCode, string(data))
 	}
 }
 
@@ -3258,19 +3258,6 @@ func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = withWorkflowUser(t, ctx)
-
-	if err := testStorage.CreateEnvironment(ctx, &models.Environment{
-		Name:              "integration-codex-only",
-		DisplayName:       "Integration Codex Only",
-		Provider:          "e2b",
-		ProviderID:        "tmpl-integration",
-		Region:            "us-west-2",
-		DefaultAgentType:  "codex",
-		AllowedAgentTypes: []string{"codex"},
-		CreatedBy:         workflowUsername(t),
-	}); err != nil && err != storage.ErrEntryExists {
-		t.Fatalf("failed to create codex-only environment: %v", err)
-	}
 
 	sliceID := fmt.Sprintf("agent-disallowed-%d", time.Now().UnixNano())
 	if err := testStorage.CreateSlice(ctx, &models.Slice{
@@ -3282,11 +3269,13 @@ func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("failed to create slice: %v", err)
 	}
+	runnerID := fmt.Sprintf("runner-codex-only-%d", time.Now().UnixNano())
+	seedIntegrationAgentRunner(t, runnerID, "codex")
 
 	body := map[string]any{
-		"sliceId":     sliceID,
-		"environment": "integration-codex-only",
-		"agentType":   "claude",
+		"sliceId":   sliceID,
+		"runnerId":  runnerID,
+		"agentType": "claude",
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
@@ -3305,16 +3294,16 @@ func TestAgentSessionCreateDisallowedAgentTypeIntegration(t *testing.T) {
 
 func createAgentSessionViaHTTP(t *testing.T, sliceID, environment, agentType string) string {
 	t.Helper()
-	if strings.TrimSpace(environment) != "" {
-		ensureIntegrationEnvironment(t, environment)
-	}
+	_ = environment
 	if strings.TrimSpace(agentType) == "" {
 		agentType = "codex"
 	}
+	runnerID := fmt.Sprintf("runner-%s-%d", strings.ToLower(agentType), time.Now().UnixNano())
+	seedIntegrationAgentRunner(t, runnerID, agentType)
 	body := map[string]any{
-		"sliceId":     sliceID,
-		"environment": environment,
-		"agentType":   agentType,
+		"sliceId":   sliceID,
+		"runnerId":  runnerID,
+		"agentType": agentType,
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", bytes.NewReader(raw))
@@ -3341,19 +3330,24 @@ func createAgentSessionViaHTTP(t *testing.T, sliceID, environment, agentType str
 	return out.SessionID
 }
 
-func ensureIntegrationEnvironment(t *testing.T, name string) {
+func seedIntegrationAgentRunner(t *testing.T, runnerID, agentType string) {
 	t.Helper()
 	ctx := withWorkflowUser(t, context.Background())
-	err := testStorage.CreateEnvironment(ctx, &models.Environment{
-		Name:        name,
-		DisplayName: "Integration Environment",
-		Provider:    "e2b",
-		ProviderID:  "tmpl-integration",
-		Region:      "us-west-2",
-		CreatedBy:   workflowUsername(t),
+	now := time.Now().UTC()
+	err := testStorage.UpsertAgentRunner(ctx, &models.AgentRunner{
+		RunnerID:        runnerID,
+		UserID:          workflowUsername(t),
+		Provider:        "local",
+		AgentType:       strings.ToLower(strings.TrimSpace(agentType)),
+		Status:          models.AgentRunnerStatusOnline,
+		HostName:        "integration-host",
+		WorkspaceRoot:   "/tmp/gitslice-integration-agents",
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	})
-	if err != nil && err != storage.ErrEntryExists {
-		t.Fatalf("failed to create integration environment: %v", err)
+	if err != nil {
+		t.Fatalf("failed to register integration agent runner: %v", err)
 	}
 }
 

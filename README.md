@@ -412,78 +412,30 @@ gs cache prune
 gs cache clear --objects
 ```
 
-Enable E2B-backed agent session runtime lifecycle in `core_server`:
+Run a local agent runner and register it with the server:
 
 ```bash
-E2B_API_KEY=your-e2b-api-key \
-E2B_DOMAIN=e2b.app \
-E2B_RUNTIME_WS_PORT=9000 \
-E2B_RUNTIME_WS_PATH=/ws \
-CORE_SERVICE_PORT=50051 ./core_server
+gs agent run --dir ~/gitslice-agents --agent codex
 ```
 
-If `E2B_API_KEY` and `E2B_ACCESS_TOKEN` are both unset, agent sessions use the simulated runtime provider.
-
-Enable Cloudflare Containers runtime lifecycle in `core_server`:
-
-```bash
-CFC_CONTROL_BASE_URL=https://<worker-subdomain>.workers.dev \
-CFC_SERVICE_TOKEN_ID=<service-token-id> \
-CFC_SERVICE_TOKEN_SECRET=<service-token-secret> \
-AGENT_RUNTIME_PROVIDER_DEFAULT=cloudflare_containers \
-CORE_SERVICE_PORT=50051 ./core_server
-```
-
-For rollout safety, keep `AGENT_RUNTIME_PROVIDER_DEFAULT=e2b` initially and switch runtime defaults through deployment configuration.
-
-Cloudflare control-plane worker source is in `servers/cloudflare_control_plane`:
-
-```bash
-cd servers/cloudflare_control_plane
-npm install
-npm test
-npx wrangler dev
-```
-
-For Codex/Claude sandbox sessions, configure model credentials and optional egress policy:
-
-```bash
-OPENAI_API_KEY=your-openai-key
-ANTHROPIC_API_KEY=your-anthropic-key
-
-# Optional: enforce deny-by-default egress from sandbox runtime shim.
-AGENT_EGRESS_DENY_BY_DEFAULT=true
-AGENT_EGRESS_ALLOWLIST=api.openai.com,api.anthropic.com,github.com
-```
+`gs agent run` keeps the runner in the foreground. `gs agent start` launches the
+same runner in the background. Both commands register an online `agent_runner`
+record, heartbeat it while the process is alive, and mark it offline on exit.
+The web Agents tab lists online runners and sends `runner_id` when creating a
+session. Cloud sandbox runtimes have been removed from the active runtime
+surface; the core server only starts local-runner sessions.
 
 Agent runtime observability endpoints:
 
 - `GET /debug/vars` (expvar metrics including agent session lifecycle/runtime/ws counters plus search-index build/load and indexed filesystem search metrics)
-- `GET /health/agent-runtime` (runtime provider readiness and policy validation)
+- `GET /health/agent-runtime` (local runtime provider readiness)
 
 Suggested baseline alerts:
 
 - `agent_session_runtime_fail_total` increasing rapidly by `failureCode`
 - high `agent_ws_backpressure_close_total` rate
 - unhealthy `GET /health/agent-runtime` for more than 5 minutes
-
-Cloudflare rollout checklist:
-
-1. Deploy `servers/cloudflare_control_plane` and validate `GET /internal/runtime/health` through your service token path.
-2. Configure `CFC_CONTROL_BASE_URL`, `CFC_SERVICE_TOKEN_ID`, and `CFC_SERVICE_TOKEN_SECRET` on core.
-3. Create one canary environment (`provider=cloudflare_containers`) and assign only non-critical slices first.
-4. Watch `/health/agent-runtime` and event flow (`/v1/agent-sessions/{id}/events`) during canary sessions.
-5. Expand environment usage gradually; keep E2B environments available for rollback.
-6. Roll back by switching slice environment back to E2B profile or removing Cloudflare config from core.
-
-Cloudflare runtime troubleshooting:
-
-- `CFC_CONTROL_URL_MISSING`: `CFC_CONTROL_BASE_URL` is empty or invalid.
-- `CFC_AUTH_MISSING`: service token id/secret is missing in core config.
-- `CFC_START_UNAUTHORIZED` or `CFC_STOP_UNAUTHORIZED`: service token rejected by Worker/Access.
-- `CFC_RUNTIME_UNAVAILABLE`: Worker/control plane is unreachable or returned 5xx.
-- `CFC_STREAM_DECODE_FAILED`: stream endpoint returned malformed SSE payload.
-- `RUNTIME_BRIDGE_SYNC_FAILED`: core could not sync stream events; inspect control-plane `/stream` response and core logs.
+- no online runners in the web Agents tab when users expect local agent capacity
 
 Search index maintenance:
 

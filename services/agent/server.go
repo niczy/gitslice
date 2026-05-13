@@ -2,12 +2,15 @@ package agentservice
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/authresolver"
 	"github.com/niczy/gitslice/internal/authz"
+	"github.com/niczy/gitslice/internal/ids"
 	"github.com/niczy/gitslice/internal/models"
 	"github.com/niczy/gitslice/internal/storage"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
@@ -18,6 +21,11 @@ import (
 )
 
 const timeRFC3339Micro = "2006-01-02T15:04:05.000000Z07:00"
+
+const (
+	runnerHeartbeatIntervalSec = 10
+	runnerOnlineTTL            = 30 * time.Second
+)
 
 type agentServiceServer struct {
 	agentv1.UnimplementedAgentServiceServer
@@ -37,6 +45,149 @@ func (s *agentServiceServer) requireUser(ctx context.Context) (string, error) {
 	return identity.Username, nil
 }
 
+func (s *agentServiceServer) RegisterRunner(ctx context.Context, req *agentv1.RegisterRunnerRequest) (*agentv1.RegisterRunnerResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runnerID := strings.TrimSpace(req.GetRunnerId())
+	if runnerID == "" {
+		runnerID = ids.GenerateAgentRunnerID()
+	}
+	if existing, err := s.st.GetAgentRunner(ctx, runnerID); err == nil && existing.UserID != userID {
+		return nil, status.Error(codes.PermissionDenied, "runner id belongs to another user")
+	} else if err != nil && err != storage.ErrEntryNotFound {
+		return nil, status.Error(codes.Internal, "failed to load runner")
+	}
+	capabilities, err := normalizeRunnerCapabilities(req.GetCapabilities())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "capabilities must be valid json")
+	}
+	now := time.Now().UTC()
+	runner := &models.AgentRunner{
+		RunnerID:        runnerID,
+		UserID:          userID,
+		Provider:        firstNonEmpty(strings.TrimSpace(req.GetProvider()), agentsession.RuntimeProviderLocal),
+		AgentType:       strings.ToLower(strings.TrimSpace(req.GetAgentType())),
+		Status:          models.AgentRunnerStatusOnline,
+		HostName:        strings.TrimSpace(req.GetHostName()),
+		PID:             int(req.GetPid()),
+		WorkspaceRoot:   strings.TrimSpace(req.GetWorkspaceRoot()),
+		Version:         strings.TrimSpace(req.GetVersion()),
+		Capabilities:    capabilities,
+		LastHeartbeatAt: now,
+		UpdatedAt:       now,
+	}
+	if err := s.st.UpsertAgentRunner(ctx, runner); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid runner")
+	}
+	stored, err := s.st.GetAgentRunner(ctx, runnerID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to load runner")
+	}
+	return &agentv1.RegisterRunnerResponse{
+		Runner:               agentRunnerToProto(stored, time.Now().UTC()),
+		HeartbeatIntervalSec: runnerHeartbeatIntervalSec,
+	}, nil
+}
+
+func (s *agentServiceServer) HeartbeatRunner(ctx context.Context, req *agentv1.HeartbeatRunnerRequest) (*agentv1.HeartbeatRunnerResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runnerID := strings.TrimSpace(req.GetRunnerId())
+	if runnerID == "" {
+		return nil, status.Error(codes.InvalidArgument, "runner_id is required")
+	}
+	runner, err := s.st.GetAgentRunner(ctx, runnerID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "runner not found")
+	}
+	if runner.UserID != userID {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	capabilities, err := normalizeRunnerCapabilities(req.GetCapabilities())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "capabilities must be valid json")
+	}
+	now := time.Now().UTC()
+	runner.Status = models.AgentRunnerStatusOnline
+	if statusValue := strings.TrimSpace(req.GetStatus()); statusValue == string(models.AgentRunnerStatusOffline) {
+		runner.Status = models.AgentRunnerStatusOffline
+	}
+	if hostName := strings.TrimSpace(req.GetHostName()); hostName != "" {
+		runner.HostName = hostName
+	}
+	if pid := int(req.GetPid()); pid > 0 {
+		runner.PID = pid
+	}
+	if workspaceRoot := strings.TrimSpace(req.GetWorkspaceRoot()); workspaceRoot != "" {
+		runner.WorkspaceRoot = workspaceRoot
+	}
+	if len(capabilities) > 0 {
+		runner.Capabilities = capabilities
+	}
+	runner.LastHeartbeatAt = now
+	runner.UpdatedAt = now
+	if err := s.st.UpdateAgentRunner(ctx, runner); err != nil {
+		return nil, status.Error(codes.Internal, "failed to update runner")
+	}
+	return &agentv1.HeartbeatRunnerResponse{
+		Runner:               agentRunnerToProto(runner, now),
+		HeartbeatIntervalSec: runnerHeartbeatIntervalSec,
+	}, nil
+}
+
+func (s *agentServiceServer) ListRunners(ctx context.Context, req *agentv1.ListRunnersRequest) (*agentv1.ListRunnersResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	runners, err := s.st.ListAgentRunnersByUser(ctx, userID, limit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list runners")
+	}
+	now := time.Now().UTC()
+	out := make([]*agentv1.AgentRunner, 0, len(runners))
+	for _, runner := range runners {
+		if !req.GetIncludeOffline() && !agentRunnerOnline(runner, now) {
+			continue
+		}
+		out = append(out, agentRunnerToProto(runner, now))
+	}
+	return &agentv1.ListRunnersResponse{Runners: out}, nil
+}
+
+func (s *agentServiceServer) UnregisterRunner(ctx context.Context, req *agentv1.UnregisterRunnerRequest) (*agentv1.UnregisterRunnerResponse, error) {
+	userID, err := s.requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := s.st.GetAgentRunner(ctx, strings.TrimSpace(req.GetRunnerId()))
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "runner not found")
+	}
+	if runner.UserID != userID {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	now := time.Now().UTC()
+	runner.Status = models.AgentRunnerStatusOffline
+	runner.UpdatedAt = now
+	runner.LastHeartbeatAt = now
+	if err := s.st.UpdateAgentRunner(ctx, runner); err != nil {
+		return nil, status.Error(codes.Internal, "failed to unregister runner")
+	}
+	return &agentv1.UnregisterRunnerResponse{Runner: agentRunnerToProto(runner, now)}, nil
+}
+
 func agentSessionSummary(session *models.AgentSession) *agentv1.AgentSessionSummary {
 	if session == nil {
 		return nil
@@ -49,11 +200,65 @@ func agentSessionSummary(session *models.AgentSession) *agentv1.AgentSessionSumm
 		CreatedAt:   session.CreatedAt.Format(timeRFC3339Micro),
 		Environment: session.EnvironmentName,
 		AgentType:   session.AgentType,
+		RunnerId:    session.RunnerID,
 	}
 	if session.LastActivityAt != nil {
 		summary.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
 	}
 	return summary
+}
+
+func agentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
+	if runner == nil || runner.Status != models.AgentRunnerStatusOnline || runner.LastHeartbeatAt.IsZero() {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.Sub(runner.LastHeartbeatAt) <= runnerOnlineTTL
+}
+
+func agentRunnerToProto(runner *models.AgentRunner, now time.Time) *agentv1.AgentRunner {
+	if runner == nil {
+		return nil
+	}
+	statusValue := string(runner.Status)
+	if !agentRunnerOnline(runner, now) {
+		statusValue = string(models.AgentRunnerStatusOffline)
+	}
+	return &agentv1.AgentRunner{
+		RunnerId:        runner.RunnerID,
+		Provider:        runner.Provider,
+		AgentType:       runner.AgentType,
+		Status:          statusValue,
+		HostName:        runner.HostName,
+		Pid:             int32(runner.PID),
+		WorkspaceRoot:   runner.WorkspaceRoot,
+		Version:         runner.Version,
+		Capabilities:    append([]byte(nil), runner.Capabilities...),
+		LastHeartbeatAt: runner.LastHeartbeatAt.Format(timeRFC3339Micro),
+		CreatedAt:       runner.CreatedAt.Format(timeRFC3339Micro),
+		UpdatedAt:       runner.UpdatedAt.Format(timeRFC3339Micro),
+	}
+}
+
+func normalizeRunnerCapabilities(raw []byte) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("invalid json")
+	}
+	return append([]byte(nil), raw...), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.ListSessionsRequest) (*agentv1.ListSessionsResponse, error) {
@@ -106,58 +311,41 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		return nil, status.Error(codes.PermissionDenied, "forbidden")
 	}
 
-	provider := strings.TrimSpace(req.GetProvider())
-	e2bTemplateID := strings.TrimSpace(req.GetE2BTemplateId())
-	e2bRegion := strings.TrimSpace(req.GetE2BRegion())
-	environmentName := strings.TrimSpace(req.GetEnvironment())
-	agentType := strings.ToLower(strings.TrimSpace(req.GetAgentType()))
-	var resolvedEnvironment *models.Environment
-
-	// Environment name in request takes precedence.
-	if environmentName != "" {
-		env, lookupErr := s.st.GetEnvironment(ctx, environmentName)
-		if lookupErr != nil {
-			return nil, status.Error(codes.InvalidArgument, "unknown environment")
-		}
-		resolvedEnvironment = env
-		provider = env.Provider
-		e2bTemplateID = env.ProviderID
-		if e2bRegion == "" {
-			e2bRegion = env.Region
-		}
-	} else if sliceEnv := strings.TrimSpace(slice.Environment); sliceEnv != "" && (provider == "" || e2bTemplateID == "") {
-		// Try resolving slice default environment first; if missing, preserve
-		// backward compatibility by treating slice.Environment as template id.
-		if env, lookupErr := s.st.GetEnvironment(ctx, sliceEnv); lookupErr == nil {
-			environmentName = env.Name
-			resolvedEnvironment = env
-			provider = env.Provider
-			e2bTemplateID = env.ProviderID
-			if e2bRegion == "" {
-				e2bRegion = env.Region
-			}
-		} else if e2bTemplateID == "" {
-			e2bTemplateID = sliceEnv
-		}
+	runnerID := strings.TrimSpace(req.GetRunnerId())
+	if runnerID == "" {
+		return nil, status.Error(codes.InvalidArgument, "runner_id is required")
 	}
-	if resolvedEnvironment != nil {
-		var resolveErr error
-		agentType, resolveErr = resolveAgentTypeFromEnvironment(agentType, resolvedEnvironment)
-		if resolveErr != nil {
-			return nil, status.Error(codes.InvalidArgument, resolveErr.Error())
-		}
+	runner, err := s.st.GetAgentRunner(ctx, runnerID)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "unknown runner")
+	}
+	if runner.UserID != userID {
+		return nil, status.Error(codes.PermissionDenied, "forbidden")
+	}
+	if !agentRunnerOnline(runner, time.Now().UTC()) {
+		return nil, status.Error(codes.FailedPrecondition, "runner is offline")
+	}
+
+	agentType := strings.ToLower(strings.TrimSpace(req.GetAgentType()))
+	runnerAgentType := strings.ToLower(strings.TrimSpace(runner.AgentType))
+	if agentType == "" {
+		agentType = runnerAgentType
+	}
+	if agentType == "" {
+		agentType = agentsession.DefaultAgentType()
+	}
+	if runnerAgentType != "" && agentType != runnerAgentType {
+		return nil, status.Error(codes.InvalidArgument, "agent type does not match runner")
 	}
 
 	session, token, err := s.svc.CreateSession(ctx, userID, agentsession.CreateRequest{
-		SliceID:         req.GetSliceId(),
-		EnvironmentName: environmentName,
-		AgentType:       agentType,
-		Provider:        provider,
-		E2BTemplateID:   e2bTemplateID,
-		E2BRegion:       e2bRegion,
-		IdleTimeoutSec:  int(req.GetIdleTimeoutSec()),
-		TTLSec:          int(req.GetTtlSec()),
-		Env:             req.GetEnv(),
+		SliceID:        req.GetSliceId(),
+		RunnerID:       runner.RunnerID,
+		AgentType:      agentType,
+		Provider:       agentsession.RuntimeProviderLocal,
+		IdleTimeoutSec: int(req.GetIdleTimeoutSec()),
+		TTLSec:         int(req.GetTtlSec()),
+		Env:            req.GetEnv(),
 	})
 	if err != nil {
 		switch err {
@@ -171,11 +359,11 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	}
 
 	return &agentv1.CreateSessionResponse{
-		SessionId:     session.SessionID,
-		SliceId:       session.SliceID,
-		Provider:      session.Provider,
-		E2BTemplateId: session.E2BTemplateID,
-		State:         string(session.State),
+		SessionId: session.SessionID,
+		SliceId:   session.SliceID,
+		Provider:  session.Provider,
+		State:     string(session.State),
+		RunnerId:  session.RunnerID,
 		Ws: &agentv1.WSConnectInfo{
 			Url:       wsURLFromContext(ctx, session.SessionID),
 			Token:     token.Token,
@@ -187,36 +375,6 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
 	}, nil
-}
-
-func resolveAgentTypeFromEnvironment(requested string, env *models.Environment) (string, error) {
-	if env == nil {
-		return requested, nil
-	}
-	requested = strings.ToLower(strings.TrimSpace(requested))
-	if requested == "" {
-		requested = strings.ToLower(strings.TrimSpace(env.DefaultAgentType))
-	}
-	if requested == "" {
-		requested = agentsession.DefaultAgentType()
-	}
-
-	allowed := make(map[string]struct{}, len(env.AllowedAgentTypes))
-	for _, candidate := range env.AllowedAgentTypes {
-		normalized := strings.ToLower(strings.TrimSpace(candidate))
-		if normalized == "" {
-			continue
-		}
-		allowed[normalized] = struct{}{}
-	}
-	if len(allowed) == 0 {
-		allowed["codex"] = struct{}{}
-		allowed["claude"] = struct{}{}
-	}
-	if _, ok := allowed[requested]; !ok {
-		return "", fmt.Errorf("agent type is not allowed for environment")
-	}
-	return requested, nil
 }
 
 func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSessionRequest) (*agentv1.GetSessionResponse, error) {
@@ -232,13 +390,13 @@ func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSes
 		SessionId:      session.SessionID,
 		SliceId:        session.SliceID,
 		Provider:       session.Provider,
-		E2BSandboxId:   session.E2BSandboxID,
 		State:          string(session.State),
 		IdleTimeoutSec: int32(session.IdleTimeoutSec),
 		TtlSec:         int32(session.TTLSec),
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
+		RunnerId:       session.RunnerID,
 	}
 	if session.LastActivityAt != nil {
 		resp.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)

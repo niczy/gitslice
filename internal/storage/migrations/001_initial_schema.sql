@@ -62,9 +62,10 @@ CREATE TABLE agent_session_events (
 CREATE TABLE agent_sessions (
     session_id text NOT NULL,
     slice_id text NOT NULL,
+    runner_id text DEFAULT ''::text NOT NULL,
     user_id text NOT NULL,
     state text NOT NULL,
-    provider text DEFAULT 'e2b'::text NOT NULL,
+    provider text DEFAULT 'local'::text NOT NULL,
     e2b_template_id text NOT NULL,
     e2b_sandbox_id text,
     e2b_region text,
@@ -84,6 +85,22 @@ CREATE TABLE agent_sessions (
     runtime_session_id text DEFAULT ''::text NOT NULL,
     runtime_status text DEFAULT ''::text NOT NULL,
     runtime_error_code text DEFAULT ''::text NOT NULL
+);
+
+CREATE TABLE agent_runners (
+    runner_id text NOT NULL,
+    user_id text NOT NULL,
+    provider text DEFAULT 'local'::text NOT NULL,
+    agent_type text DEFAULT 'codex'::text NOT NULL,
+    status text DEFAULT 'online'::text NOT NULL,
+    host_name text DEFAULT ''::text NOT NULL,
+    pid integer DEFAULT 0 NOT NULL,
+    workspace_root text DEFAULT ''::text NOT NULL,
+    version text DEFAULT ''::text NOT NULL,
+    capabilities_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    last_heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 CREATE TABLE auth_sessions (
@@ -322,7 +339,7 @@ CREATE TABLE directory_entries (
 CREATE TABLE environments (
     name text NOT NULL,
     display_name text DEFAULT ''::text NOT NULL,
-    provider text DEFAULT 'e2b'::text NOT NULL,
+    provider text DEFAULT 'local'::text NOT NULL,
     provider_id text DEFAULT ''::text NOT NULL,
     region text DEFAULT ''::text NOT NULL,
     created_by text DEFAULT ''::text NOT NULL,
@@ -597,6 +614,9 @@ ALTER TABLE ONLY agent_session_events
 ALTER TABLE ONLY agent_sessions
     ADD CONSTRAINT agent_sessions_pkey PRIMARY KEY (session_id);
 
+ALTER TABLE ONLY agent_runners
+    ADD CONSTRAINT agent_runners_pkey PRIMARY KEY (runner_id);
+
 ALTER TABLE ONLY auth_sessions
     ADD CONSTRAINT auth_sessions_pkey PRIMARY KEY (session_id);
 
@@ -767,11 +787,15 @@ CREATE UNIQUE INDEX idx_agent_sessions_e2b_sandbox ON agent_sessions USING btree
 
 CREATE INDEX idx_agent_sessions_runtime_session_id ON agent_sessions USING btree (runtime_session_id) WHERE (runtime_session_id <> ''::text);
 
+CREATE INDEX idx_agent_sessions_runner_id ON agent_sessions USING btree (runner_id) WHERE (runner_id <> ''::text);
+
 CREATE INDEX idx_agent_sessions_slice_created ON agent_sessions USING btree (slice_id, created_at DESC);
 
 CREATE INDEX idx_agent_sessions_state_updated ON agent_sessions USING btree (state, updated_at DESC);
 
 CREATE INDEX idx_agent_sessions_user_created ON agent_sessions USING btree (user_id, created_at DESC);
+
+CREATE INDEX idx_agent_runners_user_heartbeat ON agent_runners USING btree (user_id, last_heartbeat_at DESC);
 
 CREATE INDEX idx_auth_sessions_agent_key_id ON auth_sessions USING btree (agent_key_id) WHERE (agent_key_id IS NOT NULL);
 
