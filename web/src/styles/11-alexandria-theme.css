@@ -1098,10 +1098,56 @@ button[data-testid="topbar-get-started"]:hover {
   overflow-wrap: anywhere;
 }
 
+.slice-agents-local-panel-toggle {
+  flex: 0 0 auto;
+  min-height: 32px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+  color: var(--text-secondary) !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+}
+
+.slice-agents-local-panel-toggle:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-primary) !important;
+  transform: none;
+}
+
+.slice-agents-conversation-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.slice-agents-conversation-body.has-local-changes {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+}
+
+.slice-agents-conversation-thread {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.slice-agents-local-changes-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
 .slice-agents-local-changes {
   display: grid;
   gap: 10px;
-  max-width: min(760px, 100%);
+  max-width: none;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;

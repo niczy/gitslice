@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/niczy/gitslice/internal/agentsession"
 	"github.com/niczy/gitslice/internal/storage"
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
@@ -91,6 +92,33 @@ func TestParseLocalAgentChangesetExportRequest(t *testing.T) {
 	got := parseLocalAgentChangesetExportRequest([]byte(`{"requestId":"req-1","message":"ship it","files":["README.md"]}`))
 	if got.RequestID != "req-1" || got.Message != "ship it" || !reflect.DeepEqual(got.Files, []string{"README.md"}) {
 		t.Fatalf("parseLocalAgentChangesetExportRequest() = %#v", got)
+	}
+}
+
+func TestLatestPendingLocalAgentChangesRequest(t *testing.T) {
+	events := []*agentv1.EventEnvelope{
+		testAgentControlJSONEvent(t, 1, agentsession.EventTypeLocalChangesRequested, map[string]any{"requestId": "old"}),
+		testAgentStatusJSONEvent(t, 2, agentsession.EventTypeLocalChanges, map[string]any{"request_id": "old"}),
+		testAgentControlJSONEvent(t, 3, agentsession.EventTypeLocalChangesRequested, map[string]any{"requestId": "pending", "limit": 25}),
+	}
+
+	got, ok := latestPendingLocalAgentChangesRequest(events)
+	if !ok {
+		t.Fatalf("expected pending local changes request")
+	}
+	if got.Seq != 3 || got.Request.RequestID != "pending" || got.Request.Limit != 25 {
+		t.Fatalf("latestPendingLocalAgentChangesRequest() = %#v", got)
+	}
+}
+
+func TestLatestPendingLocalAgentChangesRequestClearsByRequestedSeq(t *testing.T) {
+	events := []*agentv1.EventEnvelope{
+		testAgentControlJSONEvent(t, 8, agentsession.EventTypeLocalChangesRequested, map[string]any{"limit": 25}),
+		testAgentControlJSONEvent(t, 9, agentsession.EventTypeLocalChangesFailed, map[string]any{"requested_seq": 8}),
+	}
+
+	if got, ok := latestPendingLocalAgentChangesRequest(events); ok {
+		t.Fatalf("latestPendingLocalAgentChangesRequest() = %#v, want no pending request", got)
 	}
 }
 
@@ -552,6 +580,25 @@ func testAgentStateEvent(t *testing.T, seq uint64, state string) *agentv1.EventE
 		t.Fatalf("marshal state payload: %v", err)
 	}
 	return &agentv1.EventEnvelope{Seq: seq, Stream: "status", Type: "state", Payload: payload}
+}
+
+func testAgentControlJSONEvent(t *testing.T, seq uint64, eventType string, payload any) *agentv1.EventEnvelope {
+	t.Helper()
+	return testAgentJSONEvent(t, seq, "control", eventType, payload)
+}
+
+func testAgentStatusJSONEvent(t *testing.T, seq uint64, eventType string, payload any) *agentv1.EventEnvelope {
+	t.Helper()
+	return testAgentJSONEvent(t, seq, "status", eventType, payload)
+}
+
+func testAgentJSONEvent(t *testing.T, seq uint64, stream, eventType string, payload any) *agentv1.EventEnvelope {
+	t.Helper()
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal %s/%s payload: %v", stream, eventType, err)
+	}
+	return &agentv1.EventEnvelope{Seq: seq, Stream: stream, Type: eventType, Payload: payloadBytes}
 }
 
 func envHasKey(env []string, key string) bool {

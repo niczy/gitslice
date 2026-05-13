@@ -254,7 +254,7 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	if claudeMode == "" {
 		return 0, fmt.Errorf("--claude-mode must be auto, stream-json, or print")
 	}
-	nextSeq, queuedInputs, err := initialAgentBridgeState(ctx, cli, cfg.SessionID)
+	nextSeq, queuedInputs, pendingLocalChanges, err := initialAgentBridgeState(ctx, cli, cfg.SessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -277,6 +277,12 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 			_ = claudeRunner.Close()
 		}
 	}()
+
+	if pendingLocalChanges.Seq > 0 {
+		if err := handleLocalAgentChangesRequest(ctx, cli, cfg, pendingLocalChanges.Seq, pendingLocalChanges.Request); err != nil {
+			_ = appendAgentError(ctx, cli, cfg.SessionID, "LOCAL_CHANGES_STATUS_FAILED", err.Error())
+		}
+	}
 
 	startNext := func() error {
 		if active != nil || len(queuedInputs) == 0 {
@@ -453,14 +459,14 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	}
 }
 
-func initialAgentBridgeState(ctx context.Context, cli *CLI, sessionID string) (uint64, []string, error) {
+func initialAgentBridgeState(ctx context.Context, cli *CLI, sessionID string) (uint64, []string, pendingLocalAgentChangesRequest, error) {
 	const pageSize = 500
 	var events []*agentv1.EventEnvelope
 	nextSeq := uint64(0)
 	for {
 		resp, err := cli.agentClient.ListEvents(ctx, &agentv1.ListEventsRequest{SessionId: sessionID, SinceSeq: nextSeq, Limit: pageSize})
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, pendingLocalAgentChangesRequest{}, err
 		}
 		pageEvents := resp.GetEvents()
 		events = append(events, pageEvents...)
@@ -472,7 +478,8 @@ func initialAgentBridgeState(ctx context.Context, cli *CLI, sessionID string) (u
 			break
 		}
 	}
-	return nextSeq, pendingAgentInputs(events), nil
+	pendingLocalChanges, _ := latestPendingLocalAgentChangesRequest(events)
+	return nextSeq, pendingAgentInputs(events), pendingLocalChanges, nil
 }
 
 func pendingAgentInputs(events []*agentv1.EventEnvelope) []string {

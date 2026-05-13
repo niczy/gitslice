@@ -9,6 +9,8 @@ import {
   Info,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   RefreshCw,
   Send,
@@ -245,6 +247,7 @@ const AGENTS_SIDEBAR_MIN_WIDTH = 280;
 const AGENTS_SIDEBAR_MAX_WIDTH = 560;
 const AGENTS_SIDEBAR_DEFAULT_WIDTH = 340;
 const AGENTS_SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.agentsSidebarWidth';
+const LOCAL_CHANGES_REQUEST_TIMEOUT_MS = 30000;
 const NON_TERMINAL_CONTROL_ERROR_CODES = new Set(['CODEX_CONFIG_WARNING']);
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
@@ -803,6 +806,7 @@ export default function SliceAgentsPage({
   const [localChangesRequesting, setLocalChangesRequesting] = useState(false);
   const [exportingChangeset, setExportingChangeset] = useState(false);
   const [pendingLocalChangesRequestId, setPendingLocalChangesRequestId] = useState('');
+  const [pendingLocalChangesRequestedAt, setPendingLocalChangesRequestedAt] = useState(0);
   const [pendingChangesetExportRequestId, setPendingChangesetExportRequestId] = useState('');
   const [changesetMessage, setChangesetMessage] = useState('');
   const [sessionsError, setSessionsError] = useState('');
@@ -818,6 +822,7 @@ export default function SliceAgentsPage({
   const [sessionsSidebarViewportSynced, setSessionsSidebarViewportSynced] = useState(false);
   const [agentsSidebarWidth, setAgentsSidebarWidth] = useState(readAgentsSidebarWidth);
   const [agentsSidebarResizing, setAgentsSidebarResizing] = useState(false);
+  const [localChangesPanelOpen, setLocalChangesPanelOpen] = useState(true);
   const autoLocalChangesSessionRef = useRef('');
   const autoLocalChangesOutputSeqRef = useRef(0);
 
@@ -924,20 +929,8 @@ export default function SliceAgentsPage({
     () => latestEventSeq(events, (event) => event.stream === 'agent' && event.type === 'output_final'),
     [events],
   );
-  const latestLocalChangesRequestSeq = useMemo(
-    () => latestEventSeq(events, (event) => event.stream === 'control' && event.type === 'local_changes_requested'),
-    [events],
-  );
-  const latestLocalChangesResultSeq = Math.max(localChangesEvent?.seq || 0, localChangesFailureEvent?.seq || 0);
-  const localChangesPendingFromEvents = latestLocalChangesRequestSeq > latestLocalChangesResultSeq;
-  const latestExportRequestSeq = useMemo(
-    () => latestEventSeq(events, (event) => event.stream === 'control' && event.type === 'changeset_export_requested'),
-    [events],
-  );
-  const latestExportResultSeq = Math.max(latestExportEvent?.seq || 0, latestExportFailureEvent?.seq || 0);
-  const changesetExportPendingFromEvents = latestExportRequestSeq > latestExportResultSeq;
-  const localChangesLoading = localChangesRequesting || localChangesPendingFromEvents;
-  const changesetExportLoading = exportingChangeset || changesetExportPendingFromEvents;
+  const localChangesLoading = localChangesRequesting || Boolean(pendingLocalChangesRequestId);
+  const changesetExportLoading = exportingChangeset || Boolean(pendingChangesetExportRequestId);
   const hasDirtyFiles = Boolean(localChanges && localChanges.pathCount > 0);
   const canExportChangeset = Boolean(
     canSendInput
@@ -1264,9 +1257,12 @@ export default function SliceAgentsPage({
     try {
       const result = await requestAgentSessionLocalChanges(selectedSessionId, { limit: 100 });
       setPendingLocalChangesRequestId(result.requestId || '');
+      setPendingLocalChangesRequestedAt(Date.now());
       await loadSelectedEvents();
     } catch (err) {
       setLocalChangesError(err?.message || 'Unable to refresh local changes.');
+      setPendingLocalChangesRequestId('');
+      setPendingLocalChangesRequestedAt(0);
     } finally {
       setLocalChangesRequesting(false);
     }
@@ -1298,7 +1294,7 @@ export default function SliceAgentsPage({
     }
 
     let active = true;
-    const pollIntervalMs = assistantStreaming || localChangesPendingFromEvents || changesetExportPendingFromEvents ? 1000 : 5000;
+    const pollIntervalMs = assistantStreaming || localChangesLoading || changesetExportLoading ? 1000 : 5000;
     const loadEvents = async () => {
       if (!active) return;
       await loadSelectedEvents();
@@ -1310,12 +1306,13 @@ export default function SliceAgentsPage({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [assistantStreaming, changesetExportPendingFromEvents, loadSelectedEvents, localChangesPendingFromEvents, selectedSessionId]);
+  }, [assistantStreaming, changesetExportLoading, loadSelectedEvents, localChangesLoading, selectedSessionId]);
 
   useEffect(() => {
     setRunnerActionError('');
     setLocalChangesError('');
     setPendingLocalChangesRequestId('');
+    setPendingLocalChangesRequestedAt(0);
     setPendingChangesetExportRequestId('');
     setChangesetMessage('');
     autoLocalChangesOutputSeqRef.current = 0;
@@ -1337,8 +1334,27 @@ export default function SliceAgentsPage({
       .some((event) => payloadRequestId(event.payload) === pendingLocalChangesRequestId);
     if (matched) {
       setPendingLocalChangesRequestId('');
+      setPendingLocalChangesRequestedAt(0);
+      if (localChangesEvent && payloadRequestId(localChangesEvent.payload) === pendingLocalChangesRequestId) {
+        setLocalChangesError('');
+      }
     }
   }, [localChangesEvent, localChangesFailureEvent, pendingLocalChangesRequestId]);
+
+  useEffect(() => {
+    if (!pendingLocalChangesRequestId || !pendingLocalChangesRequestedAt || typeof window === 'undefined') {
+      return undefined;
+    }
+    const elapsed = Date.now() - pendingLocalChangesRequestedAt;
+    const timeoutDelay = Math.max(0, LOCAL_CHANGES_REQUEST_TIMEOUT_MS - elapsed);
+    const timeoutId = window.setTimeout(() => {
+      setPendingLocalChangesRequestId('');
+      setPendingLocalChangesRequestedAt(0);
+      setLocalChangesRequesting(false);
+      setLocalChangesError('Runner did not return local changes.');
+    }, timeoutDelay);
+    return () => window.clearTimeout(timeoutId);
+  }, [pendingLocalChangesRequestId, pendingLocalChangesRequestedAt]);
 
   useEffect(() => {
     if (!pendingChangesetExportRequestId) {
@@ -1438,6 +1454,115 @@ export default function SliceAgentsPage({
       setRunnerActionLoading(false);
     }
   };
+
+  const localChangesPanelVisible = Boolean(selectedSession && isConversationLocal(selectedSession) && localChangesPanelOpen);
+  const localChangesSection = selectedSession && isConversationLocal(selectedSession) ? (
+    <section className="slice-agents-local-changes" data-testid="slice-agents-local-changes">
+      <div className="slice-agents-local-changes-header">
+        <div className="slice-agents-local-changes-title">
+          <FileDiff size={16} aria-hidden="true" />
+          <div>
+            <h2>Local changes</h2>
+            <span>
+              {localChangesLoading && !localChanges ? 'Checking' : localChangesSummaryText(localChanges)}
+              {localChanges?.trackedChangesetId ? ` · tracked ${shortEntityId(localChanges.trackedChangesetId)}` : ''}
+            </span>
+          </div>
+        </div>
+        <div className="slice-agents-local-changes-actions">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="slice-agents-icon-button"
+            onClick={() => requestLocalChanges()}
+            disabled={localChangesLoading}
+            aria-label="Refresh local changes"
+            title="Refresh local changes"
+            data-testid="slice-agents-refresh-local-changes"
+          >
+            <RefreshCw size={15} aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="slice-agents-icon-button"
+            onClick={() => setLocalChangesPanelOpen(false)}
+            aria-label="Hide local changes"
+            title="Hide local changes"
+            data-testid="slice-agents-hide-local-changes"
+          >
+            <PanelRightClose size={15} aria-hidden="true" />
+          </Button>
+        </div>
+      </div>
+      {localChangesDisplayError && <div className="panel-error">{localChangesDisplayError}</div>}
+      {localChangesLoading && !localChanges && !localChangesDisplayError && (
+        <div className="slice-agents-local-clean" data-testid="slice-agents-local-checking">Checking local checkout...</div>
+      )}
+      {!localChangesLoading && !localChanges && !localChangesDisplayError && (
+        <div className="slice-agents-local-clean" data-testid="slice-agents-local-not-loaded">Local changes not loaded.</div>
+      )}
+      {localChanges && localChanges.pathCount > 0 && (
+        <ul className="slice-agents-local-file-list" data-testid="slice-agents-local-file-list">
+          {localChanges.paths.map((entry) => (
+            <li key={`${entry.status}-${entry.path}`} className="slice-agents-local-file">
+              <span
+                className={`slice-agents-local-file-status slice-agents-local-file-status--${entry.status.toLowerCase()}`}
+                title={changeStatusLabel(entry.status)}
+              >
+                {entry.status}
+              </span>
+              <span className="slice-agents-local-file-path" title={entry.path}>{entry.path}</span>
+            </li>
+          ))}
+          {localChanges.truncated && (
+            <li className="slice-agents-local-file slice-agents-local-file--more">
+              {localChanges.pathCount - localChanges.paths.length} more changed files
+            </li>
+          )}
+        </ul>
+      )}
+      {localChanges && localChanges.pathCount === 0 && (
+        <div className="slice-agents-local-clean" data-testid="slice-agents-local-clean">Working tree clean</div>
+      )}
+      {latestExportedChangesetId && (
+        <a
+          className="slice-agents-export-link"
+          href={`/changesets/${encodeURIComponent(latestExportedChangesetId)}`}
+          data-testid="slice-agents-exported-changeset"
+        >
+          <GitPullRequest size={14} aria-hidden="true" />
+          <span>{shortEntityId(latestExportedChangesetId, 18)}</span>
+          <ExternalLink size={13} aria-hidden="true" />
+        </a>
+      )}
+      <div className="slice-agents-export-controls">
+        <input
+          className="slice-agents-export-message"
+          value={changesetMessage}
+          onChange={(event) => setChangesetMessage(event.target.value)}
+          placeholder="Changeset message"
+          disabled={!canSendInput || changesetExportLoading || assistantStreaming}
+          data-testid="slice-agents-export-message"
+        />
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          className="slice-agents-export-button"
+          onClick={handleExportChangeset}
+          disabled={!canExportChangeset}
+          title={hasDirtyFiles ? 'Export local changes to a changeset' : 'No local changes to export'}
+          data-testid="slice-agents-export-changeset"
+        >
+          <GitPullRequest size={15} aria-hidden="true" />
+          {changesetExportLoading ? 'Exporting' : localChanges?.trackedChangesetId ? 'Update changeset' : 'Export changeset'}
+        </Button>
+      </div>
+    </section>
+  ) : null;
 
   return (
     <section
@@ -1734,101 +1859,34 @@ export default function SliceAgentsPage({
                   <h1>Conversation</h1>
                   <span>{conversationAvailabilityLabel(selectedSession)} · {selectedSession.agentType || 'agent'} · {selectedSession.sessionId}</span>
                 </div>
+                {isConversationLocal(selectedSession) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="slice-agents-local-panel-toggle"
+                    onClick={() => setLocalChangesPanelOpen((open) => !open)}
+                    aria-expanded={localChangesPanelOpen}
+                    aria-controls="slice-agents-local-changes-panel"
+                    title={localChangesPanelOpen ? 'Hide local changes' : 'Show local changes'}
+                    data-testid="slice-agents-toggle-local-changes"
+                  >
+                    {localChangesPanelOpen ? (
+                      <PanelRightClose size={15} aria-hidden="true" />
+                    ) : (
+                      <PanelRightOpen size={15} aria-hidden="true" />
+                    )}
+                    <span>Local changes</span>
+                  </Button>
+                )}
               </div>
+              <div className={`slice-agents-conversation-body${localChangesPanelVisible ? ' has-local-changes' : ''}`}>
+                <section className="slice-agents-conversation-thread">
               {!isConversationLocal(selectedSession) && (
                 <div className="slice-agents-connection-note" data-testid="slice-agents-local-availability-note">
                   <CircleAlert size={15} aria-hidden="true" />
                   <span>{conversationAvailabilityMessage(selectedSession)}</span>
                 </div>
-              )}
-              {isConversationLocal(selectedSession) && (
-                <section className="slice-agents-local-changes" data-testid="slice-agents-local-changes">
-                  <div className="slice-agents-local-changes-header">
-                    <div className="slice-agents-local-changes-title">
-                      <FileDiff size={16} aria-hidden="true" />
-                      <div>
-                        <h2>Local changes</h2>
-                        <span>
-                          {localChangesLoading && !localChanges ? 'Checking' : localChangesSummaryText(localChanges)}
-                          {localChanges?.trackedChangesetId ? ` · tracked ${shortEntityId(localChanges.trackedChangesetId)}` : ''}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="slice-agents-local-changes-actions">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="slice-agents-icon-button"
-                        onClick={() => requestLocalChanges()}
-                        disabled={localChangesLoading}
-                        aria-label="Refresh local changes"
-                        title="Refresh local changes"
-                        data-testid="slice-agents-refresh-local-changes"
-                      >
-                        <RefreshCw size={15} aria-hidden="true" />
-                      </Button>
-                    </div>
-                  </div>
-                  {localChangesDisplayError && <div className="panel-error">{localChangesDisplayError}</div>}
-                  {localChanges && localChanges.pathCount > 0 && (
-                    <ul className="slice-agents-local-file-list" data-testid="slice-agents-local-file-list">
-                      {localChanges.paths.map((entry) => (
-                        <li key={`${entry.status}-${entry.path}`} className="slice-agents-local-file">
-                          <span
-                            className={`slice-agents-local-file-status slice-agents-local-file-status--${entry.status.toLowerCase()}`}
-                            title={changeStatusLabel(entry.status)}
-                          >
-                            {entry.status}
-                          </span>
-                          <span className="slice-agents-local-file-path" title={entry.path}>{entry.path}</span>
-                        </li>
-                      ))}
-                      {localChanges.truncated && (
-                        <li className="slice-agents-local-file slice-agents-local-file--more">
-                          {localChanges.pathCount - localChanges.paths.length} more changed files
-                        </li>
-                      )}
-                    </ul>
-                  )}
-                  {localChanges && localChanges.pathCount === 0 && (
-                    <div className="slice-agents-local-clean" data-testid="slice-agents-local-clean">Working tree clean</div>
-                  )}
-                  {latestExportedChangesetId && (
-                    <a
-                      className="slice-agents-export-link"
-                      href={`/changesets/${encodeURIComponent(latestExportedChangesetId)}`}
-                      data-testid="slice-agents-exported-changeset"
-                    >
-                      <GitPullRequest size={14} aria-hidden="true" />
-                      <span>{shortEntityId(latestExportedChangesetId, 18)}</span>
-                      <ExternalLink size={13} aria-hidden="true" />
-                    </a>
-                  )}
-                  <div className="slice-agents-export-controls">
-                    <input
-                      className="slice-agents-export-message"
-                      value={changesetMessage}
-                      onChange={(event) => setChangesetMessage(event.target.value)}
-                      placeholder="Changeset message"
-                      disabled={!canSendInput || changesetExportLoading || assistantStreaming}
-                      data-testid="slice-agents-export-message"
-                    />
-                    <Button
-                      type="button"
-                      variant="default"
-                      size="sm"
-                      className="slice-agents-export-button"
-                      onClick={handleExportChangeset}
-                      disabled={!canExportChangeset}
-                      title={hasDirtyFiles ? 'Export local changes to a changeset' : 'No local changes to export'}
-                      data-testid="slice-agents-export-changeset"
-                    >
-                      <GitPullRequest size={15} aria-hidden="true" />
-                      {changesetExportLoading ? 'Exporting' : localChanges?.trackedChangesetId ? 'Update changeset' : 'Export changeset'}
-                    </Button>
-                  </div>
-                </section>
               )}
               {eventsError && <div className="panel-error">{eventsError}</div>}
               {eventsLoading && events.length === 0 && <div className="panel-empty">Loading conversation...</div>}
@@ -1941,6 +1999,17 @@ export default function SliceAgentsPage({
                   <Send size={16} aria-hidden="true" />
                 </Button>
               </form>
+                </section>
+                {localChangesPanelVisible && (
+                  <aside
+                    id="slice-agents-local-changes-panel"
+                    className="slice-agents-local-changes-panel"
+                    data-testid="slice-agents-local-changes-panel"
+                  >
+                    {localChangesSection}
+                  </aside>
+                )}
+              </div>
             </>
           )}
         </main>
