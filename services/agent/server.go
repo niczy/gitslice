@@ -85,6 +85,9 @@ func (s *agentServiceServer) RegisterRunner(ctx context.Context, req *agentv1.Re
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to load runner")
 	}
+	if err := s.svc.ReactivateLocalSessionsForRunner(ctx, userID, runnerID); err != nil {
+		return nil, status.Error(codes.Internal, "failed to reactivate local sessions")
+	}
 	return &agentv1.RegisterRunnerResponse{
 		Runner:               agentRunnerToProto(stored, time.Now().UTC()),
 		HeartbeatIntervalSec: runnerHeartbeatIntervalSec,
@@ -132,6 +135,11 @@ func (s *agentServiceServer) HeartbeatRunner(ctx context.Context, req *agentv1.H
 	runner.UpdatedAt = now
 	if err := s.st.UpdateAgentRunner(ctx, runner); err != nil {
 		return nil, status.Error(codes.Internal, "failed to update runner")
+	}
+	if runner.Status == models.AgentRunnerStatusOnline {
+		if err := s.svc.ReactivateLocalSessionsForRunner(ctx, userID, runnerID); err != nil {
+			return nil, status.Error(codes.Internal, "failed to reactivate local sessions")
+		}
 	}
 	return &agentv1.HeartbeatRunnerResponse{
 		Runner:               agentRunnerToProto(runner, now),
@@ -192,24 +200,128 @@ func (s *agentServiceServer) UnregisterRunner(ctx context.Context, req *agentv1.
 	return &agentv1.UnregisterRunnerResponse{Runner: agentRunnerToProto(runner, now)}, nil
 }
 
-func agentSessionSummary(session *models.AgentSession) *agentv1.AgentSessionSummary {
+func agentSessionSummary(session *models.AgentSession, availability string) *agentv1.AgentSessionSummary {
 	if session == nil {
 		return nil
 	}
 	summary := &agentv1.AgentSessionSummary{
-		SessionId:   session.SessionID,
-		SliceId:     session.SliceID,
-		Provider:    session.Provider,
-		State:       string(session.State),
-		CreatedAt:   session.CreatedAt.Format(timeRFC3339Micro),
-		Environment: session.EnvironmentName,
-		AgentType:   session.AgentType,
-		RunnerId:    session.RunnerID,
+		SessionId:    session.SessionID,
+		SliceId:      session.SliceID,
+		Provider:     session.Provider,
+		CreatedAt:    session.CreatedAt.Format(timeRFC3339Micro),
+		Environment:  session.EnvironmentName,
+		AgentType:    session.AgentType,
+		RunnerId:     session.RunnerID,
+		Availability: availability,
 	}
 	if session.LastActivityAt != nil {
 		summary.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
 	}
 	return summary
+}
+
+func agentSessionIsLocal(session *models.AgentSession) bool {
+	if session == nil {
+		return false
+	}
+	provider := firstNonEmpty(session.Provider, session.RuntimeProvider)
+	return strings.EqualFold(provider, agentsession.RuntimeProviderLocal)
+}
+
+func (s *agentServiceServer) agentSessionAvailability(ctx context.Context, session *models.AgentSession, runner *models.AgentRunner, now time.Time) string {
+	if session == nil {
+		return agentsession.SessionAvailabilityUnknown
+	}
+	if session.State == models.AgentSessionStateFailed {
+		return agentsession.SessionAvailabilityFailed
+	}
+	if !agentSessionIsLocal(session) {
+		return agentsession.SessionAvailabilityUnknown
+	}
+	if runner == nil || !agentRunnerOnline(runner, now) {
+		return agentsession.SessionAvailabilityRunnerOffline
+	}
+	localIDs, reported := runnerLocalSessionIDs(runner.Capabilities)
+	if !reported {
+		return agentsession.SessionAvailabilityUnknown
+	}
+	if _, ok := localIDs[session.SessionID]; ok {
+		return agentsession.SessionAvailabilityLocal
+	}
+	if s.agentSessionHasLocalRunnerAttached(ctx, session.SessionID) {
+		return agentsession.SessionAvailabilityCloudOnly
+	}
+	return agentsession.SessionAvailabilityPendingLocal
+}
+
+func (s *agentServiceServer) agentSessionHasLocalRunnerAttached(ctx context.Context, sessionID string) bool {
+	events, err := s.st.ListAgentSessionEvents(ctx, sessionID, 0, 1000)
+	if err != nil {
+		return false
+	}
+	for _, event := range events {
+		if event != nil && event.Stream == agentsession.EventStreamStatus && event.Type == "local_runner_attached" {
+			return true
+		}
+	}
+	return false
+}
+
+func runnerLocalSessionIDs(raw json.RawMessage) (map[string]struct{}, bool) {
+	ids := map[string]struct{}{}
+	if len(raw) == 0 {
+		return ids, false
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ids, false
+	}
+	reported := jsonBool(payload[agentsession.RunnerCapabilityLocalSessionsReported]) || jsonBool(payload["localSessionsReported"])
+	if values, ok := payload[agentsession.RunnerCapabilityLocalSessionIDs]; ok {
+		reported = true
+		for _, id := range jsonStringList(values) {
+			ids[id] = struct{}{}
+		}
+	}
+	if values, ok := payload["localSessionIds"]; ok {
+		reported = true
+		for _, id := range jsonStringList(values) {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids, reported
+}
+
+func jsonBool(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value bool
+	return json.Unmarshal(raw, &value) == nil && value
+}
+
+func jsonStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func agentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
@@ -236,6 +348,21 @@ func (s *agentServiceServer) markRunnerOfflineIfStale(ctx context.Context, runne
 		return nil, err
 	}
 	return &updated, nil
+}
+
+func (s *agentServiceServer) runnerForSession(ctx context.Context, userID string, session *models.AgentSession, now time.Time) *models.AgentRunner {
+	if session == nil || strings.TrimSpace(session.RunnerID) == "" {
+		return nil
+	}
+	runner, err := s.st.GetAgentRunner(ctx, strings.TrimSpace(session.RunnerID))
+	if err != nil || runner.UserID != userID {
+		return nil
+	}
+	runner, err = s.markRunnerOfflineIfStale(ctx, runner, now)
+	if err != nil || runner.UserID != userID {
+		return nil
+	}
+	return runner
 }
 
 func agentRunnerToProto(runner *models.AgentRunner, now time.Time) *agentv1.AgentRunner {
@@ -308,12 +435,33 @@ func (s *agentServiceServer) ListSessions(ctx context.Context, req *agentv1.List
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to list sessions")
 	}
+	now := time.Now().UTC()
+	runners := make(map[string]*models.AgentRunner)
+	for _, session := range sessions {
+		runnerID := strings.TrimSpace(session.RunnerID)
+		if runnerID == "" {
+			continue
+		}
+		if _, ok := runners[runnerID]; ok {
+			continue
+		}
+		runner, err := s.st.GetAgentRunner(ctx, runnerID)
+		if err == nil && runner.UserID == userID {
+			runner, err = s.markRunnerOfflineIfStale(ctx, runner, now)
+		}
+		if err == nil && runner.UserID == userID {
+			runners[runnerID] = runner
+		} else {
+			runners[runnerID] = nil
+		}
+	}
 	out := make([]*agentv1.AgentSessionSummary, 0, len(sessions))
 	for _, session := range sessions {
 		if session.UserID != userID {
 			continue
 		}
-		out = append(out, agentSessionSummary(session))
+		availability := s.agentSessionAvailability(ctx, session, runners[strings.TrimSpace(session.RunnerID)], now)
+		out = append(out, agentSessionSummary(session, availability))
 	}
 	return &agentv1.ListSessionsResponse{Sessions: out}, nil
 }
@@ -384,11 +532,11 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	}
 
 	return &agentv1.CreateSessionResponse{
-		SessionId: session.SessionID,
-		SliceId:   session.SliceID,
-		Provider:  session.Provider,
-		State:     string(session.State),
-		RunnerId:  session.RunnerID,
+		SessionId:    session.SessionID,
+		SliceId:      session.SliceID,
+		Provider:     session.Provider,
+		RunnerId:     session.RunnerID,
+		Availability: s.agentSessionAvailability(ctx, session, runner, now),
 		Ws: &agentv1.WSConnectInfo{
 			Url:       wsURLFromContext(ctx, session.SessionID),
 			Token:     token.Token,
@@ -411,17 +559,19 @@ func (s *agentServiceServer) GetSession(ctx context.Context, req *agentv1.GetSes
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
+	now := time.Now().UTC()
+	runner := s.runnerForSession(ctx, userID, session, now)
 	resp := &agentv1.GetSessionResponse{
 		SessionId:      session.SessionID,
 		SliceId:        session.SliceID,
 		Provider:       session.Provider,
-		State:          string(session.State),
 		IdleTimeoutSec: int32(session.IdleTimeoutSec),
 		TtlSec:         int32(session.TTLSec),
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
 		RunnerId:       session.RunnerID,
+		Availability:   s.agentSessionAvailability(ctx, session, runner, now),
 	}
 	if session.LastActivityAt != nil {
 		resp.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
@@ -441,7 +591,7 @@ func (s *agentServiceServer) StopSession(ctx context.Context, req *agentv1.StopS
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
-	return &agentv1.StopSessionResponse{SessionId: session.SessionID, State: string(session.State)}, nil
+	return &agentv1.StopSessionResponse{SessionId: session.SessionID}, nil
 }
 
 func (s *agentServiceServer) MintToken(ctx context.Context, req *agentv1.MintTokenRequest) (*agentv1.MintTokenResponse, error) {

@@ -255,6 +255,9 @@ func (s *Service) StopSessionForUser(ctx context.Context, userID, sessionID, rea
 	if err != nil {
 		return nil, err
 	}
+	if isDurableLocalSession(session) {
+		return s.interruptDurableLocalSession(ctx, session, userID, reason)
+	}
 	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {
 		return session, nil
 	}
@@ -286,6 +289,13 @@ func (s *Service) MintTokenForUser(ctx context.Context, userID, sessionID string
 	}
 	switch session.State {
 	case models.AgentSessionStateStarting, models.AgentSessionStateRunning, models.AgentSessionStateIdle:
+	case models.AgentSessionStateStopping, models.AgentSessionStateStopped:
+		if !isDurableLocalSession(session) {
+			return nil, storage.ErrAgentSessionConflict
+		}
+		if _, err := s.reactivateDurableLocalSessionAs(ctx, session, "mint_token", models.AgentSessionStateIdle); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, storage.ErrAgentSessionConflict
 	}
@@ -522,7 +532,7 @@ func (s *Service) reconcileSession(ctx context.Context, now time.Time, session *
 	if ttlSec <= 0 {
 		ttlSec = defaultTTLSec
 	}
-	if session.State.IsActive() && now.Sub(session.CreatedAt) > time.Duration(ttlSec)*time.Second {
+	if session.State.IsActive() && !isDurableLocalSession(session) && now.Sub(session.CreatedAt) > time.Duration(ttlSec)*time.Second {
 		if session.State != models.AgentSessionStateStopping {
 			session.State = models.AgentSessionStateStopping
 			session.UpdatedAt = now
@@ -793,10 +803,144 @@ func (s *Service) startSessionRuntime(sessionID string) {
 	s.enqueueRuntimeBridge(sessionID)
 }
 
+func isDurableLocalSession(session *models.AgentSession) bool {
+	if session == nil {
+		return false
+	}
+	return normalizeRuntimeProvider(firstNonEmpty(session.Provider, session.RuntimeProvider)) == RuntimeProviderLocal
+}
+
+func (s *Service) reactivateDurableLocalSession(ctx context.Context, session *models.AgentSession, reason string) (*models.AgentSession, error) {
+	return s.reactivateDurableLocalSessionAs(ctx, session, reason, models.AgentSessionStateRunning)
+}
+
+func (s *Service) reactivateDurableLocalSessionAs(ctx context.Context, session *models.AgentSession, reason string, targetState models.AgentSessionState) (*models.AgentSession, error) {
+	if session == nil {
+		return nil, storage.ErrAgentSessionNotFound
+	}
+	if !isDurableLocalSession(session) {
+		return session, nil
+	}
+	if targetState != models.AgentSessionStateRunning && targetState != models.AgentSessionStateIdle {
+		targetState = models.AgentSessionStateRunning
+	}
+	switch session.State {
+	case models.AgentSessionStateRunning, models.AgentSessionStateIdle:
+		return session, nil
+	case models.AgentSessionStateStopping, models.AgentSessionStateStopped:
+	default:
+		return session, storage.ErrAgentSessionConflict
+	}
+
+	now := time.Now().UTC()
+	session.State = targetState
+	runtimeStatus := strings.TrimSpace(session.RuntimeStatus)
+	if runtimeStatus == "" || runtimeStatus == "stopped" {
+		runtimeStatus = "waiting_for_local_agent"
+	}
+	session.RuntimeStatus = runtimeStatus
+	session.UpdatedAt = now
+	session.LastActivityAt = &now
+	session.StoppedAt = nil
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return nil, err
+	}
+	_ = s.AddAudit(ctx, session.SessionID, session.UserID, "session_reactivated", map[string]any{
+		"reason":          strings.TrimSpace(reason),
+		"runtimeProvider": session.RuntimeProvider,
+		"agentType":       session.AgentType,
+		"environment":     session.EnvironmentName,
+	})
+	_ = s.AppendStateEvent(ctx, session.SessionID, targetState)
+	s.enqueueRuntimeBridge(session.SessionID)
+	return session, nil
+}
+
+func (s *Service) ReactivateLocalSessionsForRunner(ctx context.Context, userID, runnerID string) error {
+	userID = strings.TrimSpace(userID)
+	runnerID = strings.TrimSpace(runnerID)
+	if userID == "" || runnerID == "" {
+		return storage.ErrInvalidInput
+	}
+	sessions, err := s.st.ListAgentSessionsByState(ctx, []models.AgentSessionState{
+		models.AgentSessionStateStopping,
+		models.AgentSessionStateStopped,
+	}, 5000)
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		if session == nil ||
+			strings.TrimSpace(session.UserID) != userID ||
+			strings.TrimSpace(session.RunnerID) != runnerID ||
+			!isDurableLocalSession(session) {
+			continue
+		}
+		if _, err := s.reactivateDurableLocalSessionAs(ctx, session, "runner_online", models.AgentSessionStateIdle); err != nil && err != storage.ErrAgentSessionConflict {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) interruptDurableLocalSession(ctx context.Context, session *models.AgentSession, userID, reason string) (*models.AgentSession, error) {
+	if session == nil {
+		return nil, storage.ErrAgentSessionNotFound
+	}
+	if session.State == models.AgentSessionStateFailed {
+		return session, nil
+	}
+	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateStopping {
+		reactivated, err := s.reactivateDurableLocalSession(ctx, session, "stop_interrupt")
+		if err != nil {
+			return nil, err
+		}
+		session = reactivated
+	}
+	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
+		return nil, storage.ErrAgentSessionConflict
+	}
+
+	runtimeProvider, selectedProvider, providerErr := s.runtimeProviderForSession(session)
+	if providerErr != nil {
+		if selectedProvider != "" {
+			session.RuntimeProvider = selectedProvider
+			_ = s.st.UpdateAgentSession(ctx, session)
+		}
+		return nil, providerErr
+	}
+	if strings.TrimSpace(session.RuntimeProvider) == "" {
+		session.RuntimeProvider = selectedProvider
+	}
+	if err := runtimeProvider.Stop(ctx, session, firstNonEmpty(strings.TrimSpace(reason), "user stop")); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	session.UpdatedAt = now
+	session.LastActivityAt = &now
+	if session.State == models.AgentSessionStateIdle {
+		session.State = models.AgentSessionStateRunning
+	}
+	if err := s.st.UpdateAgentSession(ctx, session); err != nil {
+		return nil, err
+	}
+	_ = s.AddAudit(ctx, session.SessionID, actorForAudit(userID), "session_interrupt_requested", map[string]any{
+		"reason":          strings.TrimSpace(reason),
+		"runtimeProvider": session.RuntimeProvider,
+		"agentType":       session.AgentType,
+		"environment":     session.EnvironmentName,
+	})
+	return session, nil
+}
+
 func (s *Service) stopSessionRuntime(sessionID, actorUserID, reason string) {
 	ctx := context.Background()
 	session, err := s.st.GetAgentSession(ctx, sessionID)
 	if err != nil {
+		return
+	}
+	if isDurableLocalSession(session) {
+		_, _ = s.interruptDurableLocalSession(ctx, session, actorForAudit(actorUserID), reason)
 		return
 	}
 	if session.State == models.AgentSessionStateStopped || session.State == models.AgentSessionStateFailed {

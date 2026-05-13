@@ -12,12 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/niczy/gitslice/internal/agentsession"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
@@ -25,7 +27,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const agentWorkspaceStateDir = ".gitslice-agent"
+const (
+	agentWorkspaceStateDir     = ".gitslice-agent"
+	agentWorkspaceSessionsDir  = "sessions"
+	agentSessionMarkerFileMode = 0o600
+)
 
 const agentSupervisorAuthCheckInterval = 15 * time.Second
 
@@ -54,6 +60,15 @@ type agentSupervisorStartOutput struct {
 type discoveredAgentSession struct {
 	session *agentv1.AgentSessionSummary
 	slice   *slicev1.SliceInfo
+}
+
+type localAgentSessionMarker struct {
+	SessionID   string `json:"session_id"`
+	SliceID     string `json:"slice_id"`
+	RunnerID    string `json:"runner_id"`
+	AgentType   string `json:"agent_type,omitempty"`
+	CheckoutDir string `json:"checkout_dir"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 type managedAgentSession struct {
@@ -514,7 +529,7 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 		active := make(map[string]struct{}, len(sessions))
 		for _, discovered := range sessions {
 			session := discovered.session
-			if session == nil || !agentSessionStateActive(session.GetState()) {
+			if session == nil || !agentSessionShouldRunLocally(session) {
 				continue
 			}
 			sessionID := strings.TrimSpace(session.GetSessionId())
@@ -595,7 +610,7 @@ func discoverLocalAgentSessions(ctx context.Context, cli *CLI, runnerID string) 
 				continue
 			}
 			for _, session := range sessions.GetSessions() {
-				if session.GetProvider() == "local" && agentSessionStateActive(session.GetState()) && strings.TrimSpace(session.GetRunnerId()) == runnerID {
+				if session.GetProvider() == "local" && agentSessionShouldRunLocally(session) && strings.TrimSpace(session.GetRunnerId()) == runnerID {
 					out = append(out, discoveredAgentSession{session: session, slice: slice})
 				}
 			}
@@ -791,6 +806,84 @@ func writeAgentSupervisorPIDFile(rootDir string, pid int) {
 	}
 }
 
+func localAgentSessionMarkerDir(rootDir string) string {
+	return filepath.Join(strings.TrimSpace(rootDir), agentWorkspaceStateDir, agentWorkspaceSessionsDir)
+}
+
+func listLocalAgentSessionIDs(rootDir string) ([]string, error) {
+	dir := localAgentSessionMarkerDir(rootDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(entries))
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var marker localAgentSessionMarker
+		if err := json.Unmarshal(raw, &marker); err != nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(marker.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		checkoutDir := strings.TrimSpace(marker.CheckoutDir)
+		if checkoutDir != "" {
+			if info, err := os.Stat(checkoutDir); err != nil || !info.IsDir() {
+				continue
+			}
+		}
+		if _, ok := seen[sessionID]; ok {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		ids = append(ids, sessionID)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func writeLocalAgentSessionMarker(rootDir string, discovered discoveredAgentSession, checkoutDir string) error {
+	if discovered.session == nil {
+		return nil
+	}
+	sessionID := strings.TrimSpace(discovered.session.GetSessionId())
+	if sessionID == "" {
+		return nil
+	}
+	absCheckoutDir, err := filepath.Abs(strings.TrimSpace(checkoutDir))
+	if err != nil {
+		return err
+	}
+	marker := localAgentSessionMarker{
+		SessionID:   sessionID,
+		SliceID:     strings.TrimSpace(discovered.session.GetSliceId()),
+		RunnerID:    strings.TrimSpace(discovered.session.GetRunnerId()),
+		AgentType:   strings.TrimSpace(discovered.session.GetAgentType()),
+		CheckoutDir: absCheckoutDir,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	dir := localAgentSessionMarkerDir(rootDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, sessionID+".json"), append(raw, '\n'), agentSessionMarkerFileMode)
+}
+
 func ensureAgentRunnerID(rootDir string) (string, error) {
 	stateDir := filepath.Join(rootDir, agentWorkspaceStateDir)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -908,6 +1001,10 @@ func unregisterLocalAgentRunner(ctx context.Context, cli *CLI, runnerID string) 
 }
 
 func localAgentRunnerCapabilities(cfg localAgentSupervisorConfig) ([]byte, error) {
+	localSessionIDs, err := listLocalAgentSessionIDs(cfg.RootDir)
+	if err != nil {
+		return nil, err
+	}
 	payload := map[string]any{
 		"agent_type":                  firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
 		"codex_mode":                  strings.TrimSpace(cfg.CodexMode),
@@ -916,6 +1013,8 @@ func localAgentRunnerCapabilities(cfg localAgentSupervisorConfig) ([]byte, error
 		"checkout_per_session":        true,
 		"session_checkout_strategy":   "slice_checkout",
 		"session_checkout_dir_format": "<slice>-<session>",
+		agentsession.RunnerCapabilityLocalSessionsReported: true,
+		agentsession.RunnerCapabilityLocalSessionIDs:       localSessionIDs,
 	}
 	if len(cfg.Command) > 0 {
 		payload["command"] = append([]string(nil), cfg.Command...)
@@ -956,6 +1055,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 	if index, err := readCheckoutIndex(targetRoot); err == nil && index != nil && strings.TrimSpace(index.SliceID) == strings.TrimSpace(session.GetSliceId()) {
 		if err := ensureAgentInstructionFiles(targetRoot); err != nil {
 			return "", err
+		}
+		if err := writeLocalAgentSessionMarker(rootDir, discovered, targetRoot); err != nil {
+			log.Printf("Warning: failed to mark local agent session %s: %v", session.GetSessionId(), err)
 		}
 		return targetRoot, nil
 	}
@@ -998,6 +1100,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 	if err := registerCheckout(targetRoot, session.GetSliceId(), checkoutResult.Manifest.CommitHash); err != nil {
 		log.Printf("Warning: failed to register checkout path: %v", err)
 	}
+	if err := writeLocalAgentSessionMarker(rootDir, discovered, targetRoot); err != nil {
+		log.Printf("Warning: failed to mark local agent session %s: %v", session.GetSessionId(), err)
+	}
 	return targetRoot, nil
 }
 
@@ -1028,9 +1133,24 @@ func agentSessionCheckoutDirName(discovered discoveredAgentSession) string {
 
 func agentSessionStateActive(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "creating", "starting", "running", "idle", "stopping":
+	case "", "creating", "starting", "running", "idle", "stopping":
 		return true
 	default:
 		return false
 	}
+}
+
+func agentSessionShouldRunLocally(session *agentv1.AgentSessionSummary) bool {
+	if session == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(session.GetAvailability())) {
+	case agentsession.SessionAvailabilityLocal, agentsession.SessionAvailabilityPendingLocal:
+		return true
+	case agentsession.SessionAvailabilityCloudOnly,
+		agentsession.SessionAvailabilityRunnerOffline,
+		agentsession.SessionAvailabilityFailed:
+		return false
+	}
+	return agentSessionStateActive(session.GetState())
 }

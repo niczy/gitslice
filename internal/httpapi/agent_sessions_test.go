@@ -29,6 +29,7 @@ func seedAgentRunner(t *testing.T, ctx context.Context, st storage.Storage, runn
 		HostName:        "test-host",
 		PID:             1234,
 		WorkspaceRoot:   "/tmp/gitslice-agent",
+		Capabilities:    []byte(`{"local_sessions_reported":true,"local_session_ids":[]}`),
 		LastHeartbeatAt: now,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -85,6 +86,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 		Provider      *string `json:"provider"`
 		E2BTemplateID *string `json:"e2bTemplateId"`
 		E2BSandboxID  *string `json:"e2bSandboxId"`
+		Availability  string  `json:"availability"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
 		t.Fatalf("decode create response failed: %v", err)
@@ -101,8 +103,9 @@ func TestAgentSessionsAPI(t *testing.T) {
 	if createResp.Provider != nil || createResp.E2BTemplateID != nil || createResp.E2BSandboxID != nil {
 		t.Fatalf("create response should not expose legacy runtime fields: %#v", createResp)
 	}
-
-	waitForHTTPState(t, server.URL, createResp.SessionID, "alice", "running", 2*time.Second)
+	if createResp.Availability != agentsession.SessionAvailabilityPendingLocal {
+		t.Fatalf("expected pending local availability, got %q", createResp.Availability)
+	}
 
 	req, _ = http.NewRequest(http.MethodGet, server.URL+"/v1/agent-sessions/"+createResp.SessionID, nil)
 	req.Header.Set("Authorization", "User alice")
@@ -119,6 +122,7 @@ func TestAgentSessionsAPI(t *testing.T) {
 		AgentType    string  `json:"agentType"`
 		Provider     *string `json:"provider"`
 		E2BSandboxID *string `json:"e2bSandboxId"`
+		Availability string  `json:"availability"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&getResp); err != nil {
 		t.Fatalf("decode get response failed: %v", err)
@@ -132,6 +136,9 @@ func TestAgentSessionsAPI(t *testing.T) {
 	}
 	if getResp.Provider != nil || getResp.E2BSandboxID != nil {
 		t.Fatalf("get response should not expose legacy runtime fields: %#v", getResp)
+	}
+	if getResp.Availability != agentsession.SessionAvailabilityPendingLocal {
+		t.Fatalf("expected pending local availability, got %q", getResp.Availability)
 	}
 
 	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions/"+createResp.SessionID+"/token", nil)
@@ -174,9 +181,27 @@ func TestAgentSessionsAPI(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected stop status 202/200, got %d", resp.StatusCode)
 	}
+	var stopResp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stopResp); err != nil {
+		t.Fatalf("decode stop response failed: %v", err)
+	}
 	_ = resp.Body.Close()
+	if stopResp.SessionID != createResp.SessionID {
+		t.Fatalf("expected stop response session id %s, got %s", createResp.SessionID, stopResp.SessionID)
+	}
 
-	waitForHTTPState(t, server.URL, createResp.SessionID, "alice", "stopped", 2*time.Second)
+	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions/"+createResp.SessionID+"/token", nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST token after stop failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected token after local stop 200, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
@@ -226,6 +251,82 @@ func TestAgentSessionsAPIRejectsCrossUserAccess(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for cross-user access, got %d", resp.StatusCode)
+	}
+}
+
+func TestAgentSessionsAPIMarksCloudOnlyLocalSession(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	if err := st.UpsertAgentRunner(ctx, &models.AgentRunner{
+		RunnerID:        "runner-http-local-stopped",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		Capabilities:    []byte(`{"local_sessions_reported":true,"local_session_ids":[]}`),
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+	if err := st.CreateAgentSession(ctx, &models.AgentSession{
+		SessionID:      "sess-http-local-stopped",
+		SliceID:        "slice-http-local-stopped",
+		RunnerID:       "runner-http-local-stopped",
+		UserID:         "alice",
+		State:          models.AgentSessionStateStopped,
+		Provider:       agentsession.RuntimeProviderLocal,
+		AgentType:      "codex",
+		IdleTimeoutSec: 1800,
+		TTLSec:         14400,
+		RuntimeStatus:  "stopped",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		StoppedAt:      &now,
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+	if err := st.AppendAgentSessionEvent(ctx, &models.AgentSessionEvent{
+		SessionID: "sess-http-local-stopped",
+		Seq:       1,
+		Stream:    agentsession.EventStreamStatus,
+		Type:      "local_runner_attached",
+		Payload:   []byte(`{}`),
+		TS:        now,
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent failed: %v", err)
+	}
+
+	api := NewAgentSessionsAPI(st, agentsession.NewService(st, "test-secret"))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions/", api.HandleItem)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/agent-sessions/sess-http-local-stopped", nil)
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET session failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		State        string `json:"state"`
+		Availability string `json:"availability"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if body.State != "" {
+		t.Fatalf("expected lifecycle state to be hidden, got %q", body.State)
+	}
+	if body.Availability != agentsession.SessionAvailabilityCloudOnly {
+		t.Fatalf("expected cloud-only availability, got %q", body.Availability)
 	}
 }
 
@@ -305,8 +406,6 @@ func TestAgentSessionsWSFlowAndTokenReuse(t *testing.T) {
 	if createResp.SessionID == "" {
 		t.Fatalf("missing session id")
 	}
-	waitForHTTPState(t, server.URL, createResp.SessionID, "alice", "running", 2*time.Second)
-
 	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions/"+createResp.SessionID+"/token", nil)
 	req.Header.Set("Authorization", "User alice")
 	resp, err = http.DefaultClient.Do(req)
@@ -513,28 +612,4 @@ func TestAgentSessionsAPIRequiresRunner(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 with runner id, got %d", resp.StatusCode)
 	}
-}
-
-func waitForHTTPState(t *testing.T, baseURL, sessionID, user, want string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest(http.MethodGet, baseURL+"/v1/agent-sessions/"+sessionID, nil)
-		req.Header.Set("Authorization", "User "+user)
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			var body struct {
-				State string `json:"state"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&body)
-			_ = resp.Body.Close()
-			if body.State == want {
-				return
-			}
-		} else if resp != nil {
-			_ = resp.Body.Close()
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for state %s", want)
 }

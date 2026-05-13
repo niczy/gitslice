@@ -94,7 +94,14 @@ func (s *Service) HandleAgentInput(ctx context.Context, sessionID, text string) 
 		return err
 	}
 	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
-		return storage.ErrAgentSessionConflict
+		if isDurableLocalSession(session) && (session.State == models.AgentSessionStateStopping || session.State == models.AgentSessionStateStopped) {
+			session, err = s.reactivateDurableLocalSession(ctx, session, "agent_input")
+			if err != nil {
+				return err
+			}
+		} else {
+			return storage.ErrAgentSessionConflict
+		}
 	}
 	agentType := strings.TrimSpace(session.AgentType)
 	if agentType != "codex" && agentType != "claude" {
@@ -211,7 +218,14 @@ func (s *Service) HandleAgentInterrupt(ctx context.Context, sessionID, reason st
 		return err
 	}
 	if session.State != models.AgentSessionStateRunning && session.State != models.AgentSessionStateIdle {
-		return storage.ErrAgentSessionConflict
+		if isDurableLocalSession(session) && (session.State == models.AgentSessionStateStopping || session.State == models.AgentSessionStateStopped) {
+			session, err = s.reactivateDurableLocalSession(ctx, session, "agent_interrupt")
+			if err != nil {
+				return err
+			}
+		} else {
+			return storage.ErrAgentSessionConflict
+		}
 	}
 	runtimeProvider, _, providerErr := s.runtimeProviderForSession(session)
 	if providerErr != nil {

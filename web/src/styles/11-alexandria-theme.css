@@ -939,6 +939,20 @@ button[data-testid="topbar-get-started"]:hover {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.slice-agents-session-row.cloud-only {
+  color: var(--text-muted) !important;
+}
+
+.slice-agents-session-row.cloud-only .slice-agents-session-icon {
+  border-color: rgba(100, 116, 139, 0.26);
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.slice-agents-session-row.cloud-only .slice-agents-session-title {
+  color: var(--text-primary);
+}
+
 .slice-agents-session-icon {
   display: grid;
   width: 28px;
@@ -1082,45 +1096,6 @@ button[data-testid="topbar-get-started"]:hover {
   font-size: 0.76rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
-}
-
-.slice-agents-header-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-.slice-agents-state {
-  display: inline-flex !important;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-secondary) !important;
-  font-family: inherit !important;
-  font-size: 0.74rem !important;
-  font-weight: 800;
-  text-transform: capitalize;
-  white-space: nowrap;
-}
-
-.slice-agents-state--running,
-.slice-agents-state--idle,
-.slice-agents-state--starting,
-.slice-agents-state--creating {
-  border-color: rgba(26, 127, 55, 0.24);
-  background: #dafbe1;
-  color: #1a7f37 !important;
-}
-
-.slice-agents-state--failed {
-  border-color: rgba(185, 28, 28, 0.24);
-  background: #fef2f2;
-  color: #b91c1c !important;
 }
 
 .slice-agents-info-panel {

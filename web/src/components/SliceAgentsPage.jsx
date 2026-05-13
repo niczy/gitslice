@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   Bot,
   CircleAlert,
+  CloudOff,
   Info,
   PanelLeftClose,
   PanelLeftOpen,
@@ -29,7 +30,8 @@ function normalizeSession(session) {
   return {
     sessionId: session?.sessionId ?? session?.session_id ?? '',
     sliceId: session?.sliceId ?? session?.slice_id ?? '',
-    state: session?.state ?? '',
+    state: normalizeConversationState(session?.state),
+    availability: normalizeConversationAvailability(session?.availability ?? session?.local_availability),
     createdAt: session?.createdAt ?? session?.created_at ?? '',
     lastActivityAt: session?.lastActivityAt ?? session?.last_activity_at ?? '',
     environment: session?.environment ?? '',
@@ -37,6 +39,19 @@ function normalizeSession(session) {
     provider: session?.provider ?? '',
     runnerId: session?.runnerId ?? session?.runner_id ?? '',
   };
+}
+
+function normalizeConversationAvailability(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized || 'unknown';
+}
+
+function normalizeConversationState(state) {
+  const normalized = String(state || '').trim().toLowerCase();
+  if (normalized === 'stopping' || normalized === 'stopped') {
+    return 'idle';
+  }
+  return normalized;
 }
 
 function normalizeRunner(runner) {
@@ -116,7 +131,7 @@ function formatAgentTimestamp(value) {
 
 function eventTitle(event) {
   if (event.stream === 'status' && event.type === 'state') {
-    return `State ${event.payload?.state || 'changed'}`;
+    return `State ${normalizeConversationState(event.payload?.state) || 'changed'}`;
   }
   if (event.stream === 'status' && event.type === 'local_runner_attached') {
     return 'Runner attached';
@@ -144,6 +159,9 @@ function eventTitle(event) {
 }
 
 function eventBody(event) {
+  if (event.stream === 'status' && event.type === 'state') {
+    return normalizeConversationState(event.payload?.state) || JSON.stringify(event.payload || {});
+  }
   if (event.stream === 'status' && event.type === 'local_runner_attached') {
     const host = event.payload?.host_name || event.payload?.hostName || '';
     const dir = event.payload?.running_dir || event.payload?.runningDir || event.payload?.checkout_dir || event.payload?.checkoutDir || '';
@@ -179,7 +197,10 @@ function eventTone(event) {
   return 'agent';
 }
 
-const ACTIVE_SESSION_STATES = new Set(['creating', 'starting', 'running', 'idle', 'stopping']);
+const BLOCKED_CONVERSATION_STATES = new Set(['failed']);
+const LOCAL_CONVERSATION_AVAILABILITY = 'local';
+const PENDING_LOCAL_CONVERSATION_AVAILABILITY = 'pending_local';
+const CLOUD_ONLY_CONVERSATION_AVAILABILITY = 'cloud_only';
 const AGENT_EVENTS_PAGE_SIZE = 500;
 const AGENT_EVENTS_MAX = 5000;
 const SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH = 900;
@@ -264,7 +285,7 @@ function conversationMessageFromEvent(event) {
 }
 
 function isAssistantResponseStreaming(events, session) {
-  if (!session || !ACTIVE_SESSION_STATES.has(session.state)) {
+  if (!session || !isConversationLocal(session) || BLOCKED_CONVERSATION_STATES.has(session.state) || session.availability === 'failed') {
     return false;
   }
 
@@ -276,7 +297,7 @@ function isAssistantResponseStreaming(events, session) {
       pendingInput = false;
     } else if (event.stream === 'control' && event.type === 'error') {
       pendingInput = false;
-    } else if (event.stream === 'status' && event.type === 'state' && !ACTIVE_SESSION_STATES.has(event.payload?.state)) {
+    } else if (event.stream === 'status' && event.type === 'state' && BLOCKED_CONVERSATION_STATES.has(normalizeConversationState(event.payload?.state))) {
       pendingInput = false;
     }
   }
@@ -365,13 +386,65 @@ function buildRunningAgentInfoRows(runner, session, runnerState) {
     ['Command', runnerState.command],
     ['Codex mode', runnerState.codex_mode || runnerState.codexMode],
     ['Attached', runnerState.attached_at || runnerState.attachedAt],
-    ['Active session', session?.runnerId === runner.runnerId ? session.sessionId : ''],
-    ['Session state', session?.runnerId === runner.runnerId ? session.state : ''],
+    ['Selected conversation', session?.runnerId === runner.runnerId ? session.sessionId : ''],
     ['Last heartbeat', runner.lastHeartbeatAt],
   ];
   return rows
     .map(([label, value]) => [label, infoValue(value)])
     .filter(([, value]) => value);
+}
+
+function isConversationLocal(session) {
+  return session?.availability === LOCAL_CONVERSATION_AVAILABILITY;
+}
+
+function isConversationCloudOnly(session) {
+  return session?.availability === CLOUD_ONLY_CONVERSATION_AVAILABILITY;
+}
+
+function conversationAvailabilityLabel(session) {
+  switch (session?.availability) {
+    case LOCAL_CONVERSATION_AVAILABILITY:
+      return 'Local';
+    case PENDING_LOCAL_CONVERSATION_AVAILABILITY:
+      return 'Preparing local checkout';
+    case CLOUD_ONLY_CONVERSATION_AVAILABILITY:
+      return 'Cloud only';
+    case 'runner_offline':
+      return 'Runner offline';
+    case 'failed':
+      return 'Failed';
+    default:
+      return 'Unknown local copy';
+  }
+}
+
+function conversationAvailabilityMessage(session) {
+  switch (session?.availability) {
+    case PENDING_LOCAL_CONVERSATION_AVAILABILITY:
+      return 'Waiting for this runner to create the local checkout for the conversation.';
+    case CLOUD_ONLY_CONVERSATION_AVAILABILITY:
+      return 'This conversation exists on the server, but this runner does not have a local copy yet.';
+    case 'runner_offline':
+      return 'The runner for this conversation is offline.';
+    case 'failed':
+      return 'This conversation failed before it became available locally.';
+    default:
+      return 'The server cannot confirm a local copy for this conversation.';
+  }
+}
+
+function conversationAvailabilityRank(session) {
+  switch (session?.availability) {
+    case LOCAL_CONVERSATION_AVAILABILITY:
+      return 0;
+    case PENDING_LOCAL_CONVERSATION_AVAILABILITY:
+      return 1;
+    case CLOUD_ONLY_CONVERSATION_AVAILABILITY:
+      return 2;
+    default:
+      return 3;
+  }
 }
 
 function writeAgentSessionURL(sessionId, { replace = false } = {}) {
@@ -449,24 +522,38 @@ export default function SliceAgentsPage({
     () => new Set(onlineRunners.map((runner) => runner.runnerId).filter(Boolean)),
     [onlineRunners],
   );
-  const localSessions = useMemo(
+  const runnerSessions = useMemo(
     () => sessions.filter((session) => session.runnerId && onlineRunnerIds.has(session.runnerId)),
     [onlineRunnerIds, sessions],
   );
+  const localConversationCount = useMemo(
+    () => runnerSessions.filter(isConversationLocal).length,
+    [runnerSessions],
+  );
+  const cloudOnlyConversationCount = useMemo(
+    () => runnerSessions.filter(isConversationCloudOnly).length,
+    [runnerSessions],
+  );
   const sessionsByRunnerId = useMemo(() => {
     const grouped = new Map();
-    for (const session of localSessions) {
+    for (const session of runnerSessions) {
       const group = grouped.get(session.runnerId) || [];
       group.push(session);
       grouped.set(session.runnerId, group);
     }
+    for (const group of grouped.values()) {
+      group.sort((a, b) => (
+        conversationAvailabilityRank(a) - conversationAvailabilityRank(b)
+        || String(b.lastActivityAt || b.createdAt).localeCompare(String(a.lastActivityAt || a.createdAt))
+      ));
+    }
     return grouped;
-  }, [localSessions]);
+  }, [runnerSessions]);
   const routeSession = useMemo(() => (
     normalizedRouteSessionId
-      ? localSessions.find((session) => session.sessionId === normalizedRouteSessionId) || null
+      ? runnerSessions.find((session) => session.sessionId === normalizedRouteSessionId) || null
       : null
-  ), [localSessions, normalizedRouteSessionId]);
+  ), [runnerSessions, normalizedRouteSessionId]);
   const selectedRunner = onlineRunners.find((runner) => runner.runnerId === selectedRunnerId)
     || (routeSession?.runnerId ? onlineRunners.find((runner) => runner.runnerId === routeSession.runnerId) : null)
     || onlineRunners[0]
@@ -494,15 +581,23 @@ export default function SliceAgentsPage({
     ].filter(Boolean).join(' · ')
     : 'No running agent online';
   const runningAgentCountLabel = onlineRunners.length === 1 ? '1 running agent' : `${onlineRunners.length} running agents`;
-  const sessionCountLabel = localSessions.length === 1 ? '1 local conversation' : `${localSessions.length} local conversations`;
-  const selectedRunnerConversationCountLabel = selectedRunnerSessions.length === 1
-    ? '1 local conversation'
-    : `${selectedRunnerSessions.length} local conversations`;
+  const sessionCountLabel = [
+    localConversationCount === 1 ? '1 local conversation' : `${localConversationCount} local conversations`,
+    cloudOnlyConversationCount > 0 ? `${cloudOnlyConversationCount} cloud-only` : '',
+  ].filter(Boolean).join(' · ');
+  const selectedRunnerLocalCount = selectedRunnerSessions.filter(isConversationLocal).length;
+  const selectedRunnerCloudOnlyCount = selectedRunnerSessions.filter(isConversationCloudOnly).length;
+  const selectedRunnerConversationCountLabel = [
+    selectedRunnerLocalCount === 1 ? '1 local conversation' : `${selectedRunnerLocalCount} local conversations`,
+    selectedRunnerCloudOnlyCount > 0 ? `${selectedRunnerCloudOnlyCount} cloud-only` : '',
+  ].filter(Boolean).join(' · ');
   const canRestartRunner = Boolean(
     selectedSession
     && selectedSession.provider === 'local'
-    && ACTIVE_SESSION_STATES.has(selectedSession.state),
+    && selectedRunner?.runnerId
+    && isConversationLocal(selectedSession),
   );
+  const canSendInput = Boolean(selectedSessionId && selectedSession && isConversationLocal(selectedSession));
   const assistantStreaming = useMemo(
     () => isAssistantResponseStreaming(events, selectedSession),
     [events, selectedSession],
@@ -511,8 +606,8 @@ export default function SliceAgentsPage({
     () => buildConversationItems(events, assistantStreaming),
     [events, assistantStreaming],
   );
-  const hasActiveSession = localSessions.some((session) => ACTIVE_SESSION_STATES.has(session.state));
-  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasActiveSession;
+  const hasRunnerConversation = runnerSessions.length > 0;
+  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasRunnerConversation;
   const sessionsSidebarVisible = sessionsSidebarOpen || sessionsSidebarDismissing;
 
   const openSessionsSidebar = useCallback(() => {
@@ -860,7 +955,7 @@ export default function SliceAgentsPage({
   const handleSendInput = async (event) => {
     event.preventDefault();
     const text = inputText.trim();
-    if (!selectedSessionId || !text || sendingInput) {
+    if (!canSendInput || !text || sendingInput) {
       return;
     }
     setSendingInput(true);
@@ -973,8 +1068,12 @@ export default function SliceAgentsPage({
                 {onlineRunners.map((runner) => {
                   const isSelected = selectedRunner?.runnerId === runner.runnerId;
                   const runnerSessions = sessionsByRunnerId.get(runner.runnerId) || [];
-                  const runnerSessionCount = runnerSessions.length;
-                  const runnerSessionLabel = runnerSessionCount === 1 ? '1 conversation' : `${runnerSessionCount} conversations`;
+                  const runnerLocalCount = runnerSessions.filter(isConversationLocal).length;
+                  const runnerCloudOnlyCount = runnerSessions.filter(isConversationCloudOnly).length;
+                  const runnerSessionLabel = [
+                    runnerLocalCount === 1 ? '1 local' : `${runnerLocalCount} local`,
+                    runnerCloudOnlyCount > 0 ? `${runnerCloudOnlyCount} cloud-only` : '',
+                  ].filter(Boolean).join(' · ');
                   return (
                     <Button
                       key={runner.runnerId}
@@ -1070,7 +1169,7 @@ export default function SliceAgentsPage({
             <div className="slice-agents-docs-note" data-testid="slice-agents-docs-note">
               <CircleAlert size={15} aria-hidden="true" />
               <span>
-                No active local conversation. <a href="/docs#local-agent-sessions">Start a running agent with gs.</a>
+                No local conversation. <a href="/docs#local-agent-sessions">Start a running agent with gs.</a>
               </span>
             </div>
           )}
@@ -1099,34 +1198,35 @@ export default function SliceAgentsPage({
             {sessionsError && <div className="panel-error">{sessionsError}</div>}
             {sessionsLoading && selectedRunnerSessions.length === 0 && <div className="panel-empty">Loading conversations...</div>}
             {!sessionsLoading && !sessionsError && !selectedRunner && (
-              <div className="panel-empty">Select a running agent to view local conversations.</div>
+              <div className="panel-empty">Select a running agent to view conversations.</div>
             )}
             {!sessionsLoading && !sessionsError && selectedRunner && selectedRunnerSessions.length === 0 && (
-              <div className="panel-empty">No local conversations for this running agent.</div>
+              <div className="panel-empty">No conversations for this running agent.</div>
             )}
             {selectedRunnerSessions.length > 0 && (
               <ul className="slice-agents-session-list">
                 {selectedRunnerSessions.map((session) => {
                   const isSelected = session.sessionId === selectedSessionId;
+                  const cloudOnly = isConversationCloudOnly(session);
                   return (
                     <li key={session.sessionId}>
                       <Button
                         type="button"
                         variant="ghost"
-                        className={`slice-agents-session-row${isSelected ? ' active' : ''}`}
+                        className={`slice-agents-session-row${isSelected ? ' active' : ''}${cloudOnly ? ' cloud-only' : ''}`}
                         onClick={() => handleSessionSelect(session.sessionId)}
                         aria-pressed={isSelected}
                         data-testid="slice-agents-session"
                       >
                         <span className="slice-agents-session-icon" aria-hidden="true">
-                          <Bot size={15} />
+                          {cloudOnly ? <CloudOff size={15} /> : <Bot size={15} />}
                         </span>
                         <span className="slice-agents-session-main">
                           <span className="slice-agents-session-title">
                             Conversation · {shortSessionId(session.sessionId)}
                           </span>
                           <span className="slice-agents-session-meta">
-                            {session.agentType || 'agent'} · {session.state || 'unknown'} · {formatAgentTimestamp(session.lastActivityAt || session.createdAt)}
+                            {[conversationAvailabilityLabel(session), session.agentType || 'agent', formatAgentTimestamp(session.lastActivityAt || session.createdAt)].filter(Boolean).join(' · ')}
                           </span>
                         </span>
                       </Button>
@@ -1183,14 +1283,15 @@ export default function SliceAgentsPage({
               <div className="slice-agents-conversation-header">
                 <div>
                   <h1>Conversation</h1>
-                  <span>{selectedSession.agentType || 'agent'} · {selectedSession.sessionId}</span>
-                </div>
-                <div className="slice-agents-header-actions">
-                  <span className={`slice-agents-state slice-agents-state--${selectedSession.state || 'unknown'}`}>
-                    {selectedSession.state || 'unknown'}
-                  </span>
+                  <span>{conversationAvailabilityLabel(selectedSession)} · {selectedSession.agentType || 'agent'} · {selectedSession.sessionId}</span>
                 </div>
               </div>
+              {!isConversationLocal(selectedSession) && (
+                <div className="slice-agents-connection-note" data-testid="slice-agents-local-availability-note">
+                  <CircleAlert size={15} aria-hidden="true" />
+                  <span>{conversationAvailabilityMessage(selectedSession)}</span>
+                </div>
+              )}
               {eventsError && <div className="panel-error">{eventsError}</div>}
               {eventsLoading && events.length === 0 && <div className="panel-empty">Loading conversation...</div>}
               {!eventsLoading && !eventsError && conversationItems.length === 0 && (
@@ -1261,15 +1362,15 @@ export default function SliceAgentsPage({
                   data-testid="slice-agents-input"
                   value={inputText}
                   onChange={(event) => setInputText(event.target.value)}
-                  placeholder="Message agent"
-                  disabled={sendingInput}
+                  placeholder={canSendInput ? 'Message agent' : 'Local copy unavailable'}
+                  disabled={sendingInput || !canSendInput}
                 />
                 <Button
                   type="submit"
                   variant="default"
                   size="icon"
                   className="slice-agents-send-button"
-                  disabled={!inputText.trim() || sendingInput}
+                  disabled={!inputText.trim() || sendingInput || !canSendInput}
                   aria-label="Send message"
                   title="Send"
                   data-testid="slice-agents-send"
