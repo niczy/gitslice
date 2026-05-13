@@ -939,6 +939,20 @@ button[data-testid="topbar-get-started"]:hover {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.slice-agents-session-row.cloud-only {
+  color: var(--text-muted) !important;
+}
+
+.slice-agents-session-row.cloud-only .slice-agents-session-icon {
+  border-color: rgba(100, 116, 139, 0.26);
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.slice-agents-session-row.cloud-only .slice-agents-session-title {
+  color: var(--text-primary);
+}
+
 .slice-agents-session-icon {
   display: grid;
   width: 28px;

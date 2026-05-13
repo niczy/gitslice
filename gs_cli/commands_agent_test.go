@@ -2,6 +2,7 @@ package gscli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -189,6 +190,68 @@ func TestAgentSessionCheckoutDirNameIncludesFullSessionID(t *testing.T) {
 	}
 	if !strings.Contains(got, "abcdefghijklmnop123456") {
 		t.Fatalf("expected checkout dir to include full session id suffix, got %q", got)
+	}
+}
+
+func TestLocalAgentRunnerCapabilitiesReportsLocalSessionIDs(t *testing.T) {
+	root := t.TempDir()
+	checkoutDir := filepath.Join(root, "alice-demo-sess-local")
+	if err := os.MkdirAll(checkoutDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout: %v", err)
+	}
+	discovered := discoveredAgentSession{
+		session: &agentv1.AgentSessionSummary{
+			SessionId: "sess-local",
+			SliceId:   "slice-local",
+			RunnerId:  "runner-local",
+			AgentType: "codex",
+		},
+	}
+	if err := writeLocalAgentSessionMarker(root, discovered, checkoutDir); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	raw, err := localAgentRunnerCapabilities(localAgentSupervisorConfig{
+		RootDir:   root,
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("localAgentRunnerCapabilities failed: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal capabilities: %v", err)
+	}
+	if payload["local_sessions_reported"] != true {
+		t.Fatalf("expected local_sessions_reported=true, got %#v", payload["local_sessions_reported"])
+	}
+	values, ok := payload["local_session_ids"].([]any)
+	if !ok || len(values) != 1 || values[0] != "sess-local" {
+		t.Fatalf("expected local_session_ids to include sess-local, got %#v", payload["local_session_ids"])
+	}
+}
+
+func TestAgentSessionShouldRunLocallyByAvailability(t *testing.T) {
+	cases := []struct {
+		name         string
+		availability string
+		want         bool
+	}{
+		{name: "local", availability: "local", want: true},
+		{name: "pending local", availability: "pending_local", want: true},
+		{name: "cloud only", availability: "cloud_only", want: false},
+		{name: "failed", availability: "failed", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentSessionShouldRunLocally(&agentv1.AgentSessionSummary{
+				SessionId:    "sess-test",
+				Provider:     "local",
+				Availability: tc.availability,
+			})
+			if got != tc.want {
+				t.Fatalf("agentSessionShouldRunLocally() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

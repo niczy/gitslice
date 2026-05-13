@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -58,7 +59,7 @@ type createAgentSessionResponse struct {
 	RunnerID       string            `json:"runnerId"`
 	Environment    string            `json:"environment"`
 	AgentType      string            `json:"agentType"`
-	State          string            `json:"state"`
+	Availability   string            `json:"availability"`
 	WS             wsConnectResponse `json:"ws"`
 	CreatedAt      string            `json:"createdAt"`
 	IdleTimeoutSec int               `json:"idleTimeoutSec"`
@@ -71,7 +72,7 @@ type getAgentSessionResponse struct {
 	RunnerID       string `json:"runnerId"`
 	Environment    string `json:"environment"`
 	AgentType      string `json:"agentType"`
-	State          string `json:"state"`
+	Availability   string `json:"availability"`
 	LastActivityAt string `json:"lastActivityAt,omitempty"`
 	IdleTimeoutSec int    `json:"idleTimeoutSec"`
 	TTLSec         int    `json:"ttlSec"`
@@ -87,7 +88,6 @@ type stopAgentSessionRequest struct {
 
 type stopAgentSessionResponse struct {
 	SessionID string `json:"sessionId"`
-	State     string `json:"state"`
 }
 
 type tokenResponse struct {
@@ -206,7 +206,12 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		RunnerID:    session.RunnerID,
 		Environment: session.EnvironmentName,
 		AgentType:   session.AgentType,
-		State:       httpAgentSessionResponseState(session),
+		Availability: a.httpAgentSessionAvailability(
+			r.Context(),
+			session,
+			runner,
+			time.Now().UTC(),
+		),
 		WS: wsConnectResponse{
 			URL:       buildWSURL(r, session.SessionID),
 			Token:     token.Token,
@@ -228,21 +233,109 @@ func httpAgentRunnerOnline(runner *models.AgentRunner, now time.Time) bool {
 	return now.Sub(runner.LastHeartbeatAt) <= 30*time.Second
 }
 
-func httpAgentSessionResponseState(session *models.AgentSession) string {
+func httpAgentSessionIsLocal(session *models.AgentSession) bool {
 	if session == nil {
-		return ""
+		return false
 	}
 	provider := strings.TrimSpace(session.Provider)
 	if provider == "" {
 		provider = strings.TrimSpace(session.RuntimeProvider)
 	}
-	if strings.EqualFold(provider, agentsession.RuntimeProviderLocal) {
-		switch session.State {
-		case models.AgentSessionStateStopping, models.AgentSessionStateStopped:
-			return string(models.AgentSessionStateIdle)
+	return strings.EqualFold(provider, agentsession.RuntimeProviderLocal)
+}
+
+func (a *AgentSessionsAPI) httpAgentSessionAvailability(ctx context.Context, session *models.AgentSession, runner *models.AgentRunner, now time.Time) string {
+	if session == nil {
+		return agentsession.SessionAvailabilityUnknown
+	}
+	if session.State == models.AgentSessionStateFailed {
+		return agentsession.SessionAvailabilityFailed
+	}
+	if !httpAgentSessionIsLocal(session) {
+		return agentsession.SessionAvailabilityUnknown
+	}
+	if runner == nil || !httpAgentRunnerOnline(runner, now) {
+		return agentsession.SessionAvailabilityRunnerOffline
+	}
+	localIDs, reported := httpRunnerLocalSessionIDs(runner.Capabilities)
+	if !reported {
+		return agentsession.SessionAvailabilityUnknown
+	}
+	if _, ok := localIDs[session.SessionID]; ok {
+		return agentsession.SessionAvailabilityLocal
+	}
+	if a.httpAgentSessionHasLocalRunnerAttached(ctx, session.SessionID) {
+		return agentsession.SessionAvailabilityCloudOnly
+	}
+	return agentsession.SessionAvailabilityPendingLocal
+}
+
+func (a *AgentSessionsAPI) httpAgentSessionHasLocalRunnerAttached(ctx context.Context, sessionID string) bool {
+	events, err := a.st.ListAgentSessionEvents(ctx, sessionID, 0, 1000)
+	if err != nil {
+		return false
+	}
+	for _, event := range events {
+		if event != nil && event.Stream == agentsession.EventStreamStatus && event.Type == "local_runner_attached" {
+			return true
 		}
 	}
-	return string(session.State)
+	return false
+}
+
+func httpRunnerLocalSessionIDs(raw json.RawMessage) (map[string]struct{}, bool) {
+	ids := map[string]struct{}{}
+	if len(raw) == 0 {
+		return ids, false
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ids, false
+	}
+	reported := httpJSONBool(payload[agentsession.RunnerCapabilityLocalSessionsReported]) || httpJSONBool(payload["localSessionsReported"])
+	for _, key := range []string{agentsession.RunnerCapabilityLocalSessionIDs, "localSessionIds"} {
+		values, ok := payload[key]
+		if !ok {
+			continue
+		}
+		reported = true
+		for _, id := range httpJSONStringList(values) {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids, reported
+}
+
+func httpJSONBool(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value bool
+	return json.Unmarshal(raw, &value) == nil && value
+}
+
+func httpJSONStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func (a *AgentSessionsAPI) HandleItem(w http.ResponseWriter, r *http.Request) {
@@ -326,10 +419,14 @@ func (a *AgentSessionsAPI) getSession(w http.ResponseWriter, r *http.Request, se
 		RunnerID:       session.RunnerID,
 		Environment:    session.EnvironmentName,
 		AgentType:      session.AgentType,
-		State:          httpAgentSessionResponseState(session),
 		IdleTimeoutSec: session.IdleTimeoutSec,
 		TTLSec:         session.TTLSec,
 		CreatedAt:      session.CreatedAt.Format(timeRFC3339Micro),
+	}
+	if runner, err := a.st.GetAgentRunner(r.Context(), strings.TrimSpace(session.RunnerID)); err == nil && runner.UserID == userID {
+		resp.Availability = a.httpAgentSessionAvailability(r.Context(), session, runner, time.Now().UTC())
+	} else {
+		resp.Availability = a.httpAgentSessionAvailability(r.Context(), session, nil, time.Now().UTC())
 	}
 	if session.LastActivityAt != nil {
 		resp.LastActivityAt = session.LastActivityAt.Format(timeRFC3339Micro)
@@ -365,7 +462,6 @@ func (a *AgentSessionsAPI) stopSession(w http.ResponseWriter, r *http.Request, s
 	}
 	writeJSON(w, status, stopAgentSessionResponse{
 		SessionID: session.SessionID,
-		State:     httpAgentSessionResponseState(session),
 	})
 }
 

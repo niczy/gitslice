@@ -125,12 +125,15 @@ message AgentSessionSummary {
   string slice_id = 2;
   // Deprecated: retained for compatibility during migration.
   string provider = 3;
+  // Deprecated: session lifecycle is no longer exposed for local conversations.
   string state = 4;
   string created_at = 5;
   string last_activity_at = 6;
   string environment = 7;
   string agent_type = 8;
   string runner_id = 9;
+  // One of local, pending_local, cloud_only, runner_offline, failed, or unknown.
+  string availability = 10;
 }
 
 message ListSessionsRequest {
@@ -155,6 +158,7 @@ message CreateSessionResponse {
   string provider = 3;
   // Deprecated: retained for compatibility during migration.
   string e2b_template_id = 4;
+  // Deprecated: session lifecycle is no longer exposed for local conversations.
   string state = 5;
   WSConnectInfo ws = 6;
   string created_at = 7;
@@ -163,6 +167,8 @@ message CreateSessionResponse {
   string environment = 10;
   string agent_type = 11;
   string runner_id = 12;
+  // One of local, pending_local, cloud_only, runner_offline, failed, or unknown.
+  string availability = 13;
 }
 
 message GetSessionRequest {
@@ -180,6 +186,7 @@ message GetSessionResponse {
   string provider = 3;
   // Deprecated: retained for compatibility during migration.
   string e2b_sandbox_id = 4;
+  // Deprecated: session lifecycle is no longer exposed for local conversations.
   string state = 5;
   string last_activity_at = 6;
   int32 idle_timeout_sec = 7;
@@ -189,6 +196,8 @@ message GetSessionResponse {
   string environment = 11;
   string agent_type = 12;
   string runner_id = 13;
+  // One of local, pending_local, cloud_only, runner_offline, failed, or unknown.
+  string availability = 14;
 }
 
 message StopSessionRequest {

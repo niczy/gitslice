@@ -214,7 +214,7 @@ func TestRunnerHeartbeatReactivatesStoppedLocalSessions(t *testing.T) {
 	}
 }
 
-func TestLocalSessionResponsesDoNotExposeStoppedState(t *testing.T) {
+func TestLocalSessionResponsesExposeLocalAvailability(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()
 	if err := st.CreateSlice(context.Background(), &models.Slice{
@@ -226,6 +226,19 @@ func TestLocalSessionResponsesDoNotExposeStoppedState(t *testing.T) {
 		t.Fatalf("CreateSlice failed: %v", err)
 	}
 	now := time.Now().UTC()
+	if err := st.UpsertAgentRunner(context.Background(), &models.AgentRunner{
+		RunnerID:        "runner-local-response",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		Capabilities:    []byte(`{"local_sessions_reported":true,"local_session_ids":[]}`),
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
 	if err := st.CreateAgentSession(context.Background(), &models.AgentSession{
 		SessionID:      "sess-local-stopped-response",
 		SliceID:        "slice-local-response-state",
@@ -243,14 +256,27 @@ func TestLocalSessionResponsesDoNotExposeStoppedState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateAgentSession failed: %v", err)
 	}
+	if err := st.AppendAgentSessionEvent(context.Background(), &models.AgentSessionEvent{
+		SessionID: "sess-local-stopped-response",
+		Seq:       1,
+		Stream:    agentsession.EventStreamStatus,
+		Type:      "local_runner_attached",
+		Payload:   []byte(`{}`),
+		TS:        now,
+	}); err != nil {
+		t.Fatalf("AppendAgentSessionEvent failed: %v", err)
+	}
 
 	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
 	getResp, err := srv.GetSession(ctx, &agentv1.GetSessionRequest{SessionId: "sess-local-stopped-response"})
 	if err != nil {
 		t.Fatalf("GetSession failed: %v", err)
 	}
-	if getResp.GetState() != string(models.AgentSessionStateIdle) {
-		t.Fatalf("expected local stopped session to be presented as idle, got %q", getResp.GetState())
+	if getResp.GetState() != "" {
+		t.Fatalf("expected lifecycle state to be hidden, got %q", getResp.GetState())
+	}
+	if getResp.GetAvailability() != agentsession.SessionAvailabilityCloudOnly {
+		t.Fatalf("expected cloud-only availability, got %q", getResp.GetAvailability())
 	}
 
 	listResp, err := srv.ListSessions(ctx, &agentv1.ListSessionsRequest{SliceId: "slice-local-response-state"})
@@ -260,8 +286,11 @@ func TestLocalSessionResponsesDoNotExposeStoppedState(t *testing.T) {
 	if len(listResp.GetSessions()) != 1 {
 		t.Fatalf("expected one session, got %#v", listResp.GetSessions())
 	}
-	if listResp.GetSessions()[0].GetState() != string(models.AgentSessionStateIdle) {
-		t.Fatalf("expected list response to present local stopped session as idle, got %q", listResp.GetSessions()[0].GetState())
+	if listResp.GetSessions()[0].GetState() != "" {
+		t.Fatalf("expected lifecycle state to be hidden in list response, got %q", listResp.GetSessions()[0].GetState())
+	}
+	if listResp.GetSessions()[0].GetAvailability() != agentsession.SessionAvailabilityCloudOnly {
+		t.Fatalf("expected list response to mark cloud-only, got %q", listResp.GetSessions()[0].GetAvailability())
 	}
 }
 

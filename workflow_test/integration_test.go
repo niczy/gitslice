@@ -3026,7 +3026,6 @@ func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 	}
 
 	sessionID := createAgentSessionViaHTTP(t, sliceID, "integration-env", "codex")
-	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
 
 	token := mintAgentTokenViaHTTP(t, sessionID)
 	wsURL := buildAgentWSURL(sessionID, token, 0)
@@ -3112,7 +3111,8 @@ func TestAgentSessionLifecycleAndWSReplayIntegration(t *testing.T) {
 		t.Fatalf("expected replay seq > %d, got %d", maxSeq-1, replayFrame.Seq)
 	}
 
-	assertLocalAgentSessionResumable(t, sessionID, stopAgentSessionViaHTTP(t, sessionID, "integration_done"))
+	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
+	assertLocalAgentSessionResumable(t, sessionID)
 }
 
 func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
@@ -3132,7 +3132,6 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 	}
 
 	sessionID := createAgentSessionViaHTTP(t, sliceID, "integration-env", "codex")
-	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
 
 	token := mintAgentTokenViaHTTP(t, sessionID)
 	wsURL := buildAgentWSURL(sessionID, token, 0)
@@ -3150,7 +3149,8 @@ func TestAgentSessionTokenReuseRejectedIntegration(t *testing.T) {
 		t.Fatalf("expected 401 on token reuse, got resp=%v err=%v", resp, err)
 	}
 
-	assertLocalAgentSessionResumable(t, sessionID, stopAgentSessionViaHTTP(t, sessionID, "integration_done"))
+	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
+	assertLocalAgentSessionResumable(t, sessionID)
 }
 
 func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
@@ -3170,7 +3170,6 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 	}
 
 	sessionID := createAgentSessionViaHTTP(t, sliceID, "integration-env", "claude")
-	waitForAgentSessionState(t, sessionID, "running", 4*time.Second)
 
 	token := mintAgentTokenViaHTTP(t, sessionID)
 	wsURL := buildAgentWSURL(sessionID, token, 0)
@@ -3213,7 +3212,8 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 		t.Fatalf("expected queued claude agent/input frame")
 	}
 
-	assertLocalAgentSessionResumable(t, sessionID, stopAgentSessionViaHTTP(t, sessionID, "integration_done"))
+	stopAgentSessionViaHTTP(t, sessionID, "integration_done")
+	assertLocalAgentSessionResumable(t, sessionID)
 }
 
 func TestAgentSessionCreateUnknownRunnerIntegration(t *testing.T) {
@@ -3340,6 +3340,7 @@ func seedIntegrationAgentRunner(t *testing.T, runnerID, agentType string) {
 		Status:          models.AgentRunnerStatusOnline,
 		HostName:        "integration-host",
 		WorkspaceRoot:   "/tmp/gitslice-integration-agents",
+		Capabilities:    []byte(`{"local_sessions_reported":true,"local_session_ids":[]}`),
 		LastHeartbeatAt: now,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -3374,7 +3375,7 @@ func mintAgentTokenViaHTTP(t *testing.T, sessionID string) string {
 	return out.Token
 }
 
-func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) string {
+func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) {
 	t.Helper()
 	raw, _ := json.Marshal(map[string]string{"reason": reason})
 	req, _ := http.NewRequest(http.MethodPost, gatewayServiceURL+"/v1/agent-sessions/"+sessionID+"/stop", bytes.NewReader(raw))
@@ -3390,43 +3391,19 @@ func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) stri
 		t.Fatalf("expected stop status 202/200, got %d body=%s", resp.StatusCode, string(data))
 	}
 	var out struct {
-		State string `json:"state"`
+		SessionID string `json:"sessionId"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode stop response failed: %v", err)
 	}
-	return out.State
-}
-
-func assertLocalAgentSessionResumable(t *testing.T, sessionID, state string) {
-	t.Helper()
-	if state == "stopping" || state == "stopped" {
-		t.Fatalf("expected local session %s to stay resumable after stop request, got state %s", sessionID, state)
+	if out.SessionID != sessionID {
+		t.Fatalf("expected stop response session id %s, got %s", sessionID, out.SessionID)
 	}
 }
 
-func waitForAgentSessionState(t *testing.T, sessionID string, want string, timeout time.Duration) {
+func assertLocalAgentSessionResumable(t *testing.T, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest(http.MethodGet, gatewayServiceURL+"/v1/agent-sessions/"+sessionID, nil)
-		req.Header.Set("Authorization", "User "+workflowUsername(t))
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			var out struct {
-				State string `json:"state"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&out)
-			_ = resp.Body.Close()
-			if out.State == want {
-				return
-			}
-		} else if resp != nil {
-			_ = resp.Body.Close()
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for session %s state %s", sessionID, want)
+	_ = mintAgentTokenViaHTTP(t, sessionID)
 }
 
 func buildAgentWSURL(sessionID string, token string, lastSeq uint64) string {
