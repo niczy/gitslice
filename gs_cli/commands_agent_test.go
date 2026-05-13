@@ -3,7 +3,9 @@ package gscli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -190,6 +192,67 @@ func TestAgentSessionCheckoutDirNameIncludesFullSessionID(t *testing.T) {
 	}
 	if !strings.Contains(got, "abcdefghijklmnop123456") {
 		t.Fatalf("expected checkout dir to include full session id suffix, got %q", got)
+	}
+}
+
+func TestClaimAgentSupervisorPIDFileRejectsLiveRunner(t *testing.T) {
+	root := t.TempDir()
+	cmd := exec.Command("sh", "-c", "sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep process: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	writeAgentSupervisorPIDFile(root, cmd.Process.Pid)
+	err := claimAgentSupervisorPIDFile(root, os.Getpid(), 0)
+	var runningErr *agentSupervisorAlreadyRunningError
+	if !errors.As(err, &runningErr) {
+		t.Fatalf("expected already-running error, got %v", err)
+	}
+	if runningErr.PID != cmd.Process.Pid {
+		t.Fatalf("expected running pid %d, got %d", cmd.Process.Pid, runningErr.PID)
+	}
+}
+
+func TestClaimAgentSupervisorPIDFileReplacesStalePID(t *testing.T) {
+	root := t.TempDir()
+	pidFile, err := agentSupervisorPIDFile(root)
+	if err != nil {
+		t.Fatalf("agentSupervisorPIDFile failed: %v", err)
+	}
+	if err := os.WriteFile(pidFile, []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+	if err := claimAgentSupervisorPIDFile(root, os.Getpid(), 0); err != nil {
+		t.Fatalf("claimAgentSupervisorPIDFile failed: %v", err)
+	}
+	got, err := readAgentSupervisorPIDFilePath(pidFile)
+	if err != nil {
+		t.Fatalf("read pid file: %v", err)
+	}
+	if got != os.Getpid() {
+		t.Fatalf("expected pid file to contain %d, got %d", os.Getpid(), got)
+	}
+}
+
+func TestClearAgentSupervisorPIDFileOnlyClearsMatchingPID(t *testing.T) {
+	root := t.TempDir()
+	writeAgentSupervisorPIDFile(root, os.Getpid()+1)
+	clearAgentSupervisorPIDFileIfMatches(root, os.Getpid())
+	pidFile, err := agentSupervisorPIDFile(root)
+	if err != nil {
+		t.Fatalf("agentSupervisorPIDFile failed: %v", err)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("expected mismatched pid file to remain: %v", err)
+	}
+	writeAgentSupervisorPIDFile(root, os.Getpid())
+	clearAgentSupervisorPIDFileIfMatches(root, os.Getpid())
+	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected matching pid file to be removed, got %v", err)
 	}
 }
 
