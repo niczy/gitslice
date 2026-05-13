@@ -1122,11 +1122,12 @@ button[data-testid="topbar-get-started"]:hover {
   flex: 1 1 auto;
   min-height: 0;
   gap: 14px;
+  position: relative;
   overflow: hidden;
 }
 
 .slice-agents-conversation-body.has-local-changes {
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .slice-agents-conversation-thread {
@@ -1139,19 +1140,48 @@ button[data-testid="topbar-get-started"]:hover {
 }
 
 .slice-agents-local-changes-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  width: min(360px, calc(100% - 24px));
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translate3d(calc(100% + 18px), 0, 0);
+  visibility: hidden;
+  transition:
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms ease,
+    visibility 0s linear 240ms;
+  will-change: transform;
+}
+
+.slice-agents-local-changes-panel.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
+  visibility: visible;
+  transition:
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms ease;
 }
 
 .slice-agents-local-changes {
   display: grid;
+  align-content: start;
   gap: 10px;
+  height: 100%;
   max-width: none;
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
   padding: 12px;
+  box-shadow: -18px 0 34px rgba(15, 23, 42, 0.12);
 }
 
 .slice-agents-local-changes-header {
