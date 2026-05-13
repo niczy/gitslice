@@ -17,8 +17,7 @@ const (
 	AgentSessionStateFailed   AgentSessionState = "failed"
 )
 
-// IsActive returns true when a session should count against the
-// one-active-session-per-slice constraint.
+// IsActive returns true while a session is still controlled by its runner.
 func (s AgentSessionState) IsActive() bool {
 	switch s {
 	case AgentSessionStateCreating,

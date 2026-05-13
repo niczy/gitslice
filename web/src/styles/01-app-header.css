@@ -1,0 +1,55 @@
+/* Top bar */
+.top-bar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px var(--app-header-inline-padding);
+  border-bottom: 1px solid var(--border);
+  background: #ffffff;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-link--active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: rgba(9, 105, 218, 0.08);
+}
+
+.primary.nav-link--active {
+  color: #fff;
+  background: var(--accent-hover);
+}
+

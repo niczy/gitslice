@@ -9,6 +9,7 @@ import (
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
 	agentv1 "github.com/niczy/gitslice/proto/agent"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -169,6 +170,23 @@ func TestHeartbeatOrRegisterLocalAgentRunnerDoesNotReregisterUnavailable(t *test
 	}
 	if client.registerCalls != 0 {
 		t.Fatalf("expected no register calls, got %d", client.registerCalls)
+	}
+}
+
+func TestAgentSessionCheckoutDirNameIncludesFullSessionID(t *testing.T) {
+	discovered := discoveredAgentSession{
+		session: &agentv1.AgentSessionSummary{
+			SessionId: "sess_abcdefghijklmnop123456",
+			SliceId:   "slice-1",
+		},
+		slice: &slicev1.SliceInfo{Slug: "alice/demo slice"},
+	}
+	got := agentSessionCheckoutDirName(discovered)
+	if !strings.HasPrefix(got, "alice-demo-slice-") {
+		t.Fatalf("expected checkout dir to include sanitized slice label, got %q", got)
+	}
+	if !strings.Contains(got, "abcdefghijklmnop123456") {
+		t.Fatalf("expected checkout dir to include full session id suffix, got %q", got)
 	}
 }
 

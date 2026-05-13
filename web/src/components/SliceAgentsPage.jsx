@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   CircleAlert,
@@ -183,7 +183,41 @@ const ACTIVE_SESSION_STATES = new Set(['creating', 'starting', 'running', 'idle'
 const AGENT_EVENTS_PAGE_SIZE = 500;
 const AGENT_EVENTS_MAX = 5000;
 const SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH = 900;
+const AGENTS_SIDEBAR_MIN_WIDTH = 280;
+const AGENTS_SIDEBAR_MAX_WIDTH = 560;
+const AGENTS_SIDEBAR_DEFAULT_WIDTH = 340;
+const AGENTS_SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.agentsSidebarWidth';
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+function clampAgentsSidebarWidth(value, maxWidth = AGENTS_SIDEBAR_MAX_WIDTH) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return AGENTS_SIDEBAR_DEFAULT_WIDTH;
+  }
+  return Math.min(Math.max(maxWidth, AGENTS_SIDEBAR_MIN_WIDTH), Math.max(AGENTS_SIDEBAR_MIN_WIDTH, numeric));
+}
+
+function readAgentsSidebarWidth() {
+  if (typeof window === 'undefined') {
+    return AGENTS_SIDEBAR_DEFAULT_WIDTH;
+  }
+  try {
+    return clampAgentsSidebarWidth(window.localStorage.getItem(AGENTS_SIDEBAR_WIDTH_STORAGE_KEY));
+  } catch {
+    return AGENTS_SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
+function writeAgentsSidebarWidth(value) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(AGENTS_SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(value)));
+  } catch {
+    // Persisting panel width is a convenience only.
+  }
+}
 
 function payloadText(payload) {
   return payload?.text
@@ -315,25 +349,25 @@ function infoValue(value) {
   return String(value).trim();
 }
 
-function buildAgentInfoRows(session, runnerState) {
-  if (!session) {
+function buildRunningAgentInfoRows(runner, session, runnerState) {
+  if (!runner) {
     return [];
   }
   const rows = [
-    ['State', session.state],
-    ['Session', session.sessionId],
-    ['Runner', session.runnerId],
-    ['Provider', session.provider],
-    ['Agent', session.agentType],
-    ['Host', runnerState.host_name || runnerState.hostName],
-    ['PID', runnerState.pid],
-    ['Workspace', runnerState.workspace_root || runnerState.workspaceRoot],
+    ['Status', runner.status],
+    ['Runner', runner.runnerId],
+    ['Provider', runner.provider || session?.provider || 'local'],
+    ['CLI', runner.agentType || session?.agentType],
+    ['Host', runnerState.host_name || runnerState.hostName || runner.hostName],
+    ['PID', runnerState.pid || runner.pid],
+    ['Workspace', runner.workspaceRoot || runnerState.workspace_root || runnerState.workspaceRoot],
     ['Running directory', runnerState.running_dir || runnerState.runningDir || runnerState.checkout_dir || runnerState.checkoutDir],
     ['Command', runnerState.command],
     ['Codex mode', runnerState.codex_mode || runnerState.codexMode],
     ['Attached', runnerState.attached_at || runnerState.attachedAt],
-    ['Last activity', session.lastActivityAt],
-    ['Created', session.createdAt],
+    ['Active session', session?.runnerId === runner.runnerId ? session.sessionId : ''],
+    ['Session state', session?.runnerId === runner.runnerId ? session.state : ''],
+    ['Last heartbeat', runner.lastHeartbeatAt],
   ];
   return rows
     .map(([label, value]) => [label, infoValue(value)])
@@ -377,6 +411,7 @@ export default function SliceAgentsPage({
   onOpenChangesets,
   onSelectSession,
 }) {
+  const agentsLayoutRef = useRef(null);
   const [sessions, setSessions] = useState([]);
   const [runners, setRunners] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
@@ -400,6 +435,8 @@ export default function SliceAgentsPage({
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
   const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
   const [sessionsSidebarViewportSynced, setSessionsSidebarViewportSynced] = useState(false);
+  const [agentsSidebarWidth, setAgentsSidebarWidth] = useState(readAgentsSidebarWidth);
+  const [agentsSidebarResizing, setAgentsSidebarResizing] = useState(false);
 
   const currentSlice = useMemo(() => (
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
@@ -408,19 +445,59 @@ export default function SliceAgentsPage({
   const normalizedRouteSessionId = String(routeSessionId || '').trim();
   const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
   const onlineRunners = useMemo(() => runners.filter((runner) => runner.status === 'online'), [runners]);
-  const selectedRunner = onlineRunners.find((runner) => runner.runnerId === selectedRunnerId) || onlineRunners[0] || null;
+  const onlineRunnerIds = useMemo(
+    () => new Set(onlineRunners.map((runner) => runner.runnerId).filter(Boolean)),
+    [onlineRunners],
+  );
+  const localSessions = useMemo(
+    () => sessions.filter((session) => session.runnerId && onlineRunnerIds.has(session.runnerId)),
+    [onlineRunnerIds, sessions],
+  );
+  const sessionsByRunnerId = useMemo(() => {
+    const grouped = new Map();
+    for (const session of localSessions) {
+      const group = grouped.get(session.runnerId) || [];
+      group.push(session);
+      grouped.set(session.runnerId, group);
+    }
+    return grouped;
+  }, [localSessions]);
+  const routeSession = useMemo(() => (
+    normalizedRouteSessionId
+      ? localSessions.find((session) => session.sessionId === normalizedRouteSessionId) || null
+      : null
+  ), [localSessions, normalizedRouteSessionId]);
+  const selectedRunner = onlineRunners.find((runner) => runner.runnerId === selectedRunnerId)
+    || (routeSession?.runnerId ? onlineRunners.find((runner) => runner.runnerId === routeSession.runnerId) : null)
+    || onlineRunners[0]
+    || null;
+  const selectedRunnerSessions = selectedRunner
+    ? sessionsByRunnerId.get(selectedRunner.runnerId) || []
+    : [];
   const canCreateSession = Boolean(sliceId && selectedRunner?.runnerId);
-  const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) || null;
+  const selectedSession = selectedRunnerSessions.find((session) => session.sessionId === selectedSessionId) || null;
   const runnerState = useMemo(() => latestRunnerState(events), [events]);
-  const agentInfoRows = useMemo(() => buildAgentInfoRows(selectedSession, runnerState), [selectedSession, runnerState]);
-  const runnerHost = runnerStateValue(runnerState, 'host_name', 'hostName');
-  const runnerPID = infoValue(runnerState?.pid);
+  const runningAgentInfoRows = useMemo(
+    () => buildRunningAgentInfoRows(selectedRunner, selectedSession, runnerState),
+    [runnerState, selectedRunner, selectedSession],
+  );
+  const runnerHost = runnerStateValue(runnerState, 'host_name', 'hostName') || infoValue(selectedRunner?.hostName);
+  const runnerPID = infoValue(runnerState?.pid || selectedRunner?.pid);
   const runnerRunningDir = runnerStateValue(runnerState, 'running_dir', 'runningDir')
-    || runnerStateValue(runnerState, 'checkout_dir', 'checkoutDir');
-  const runnerAttached = Boolean(runnerHost || runnerPID || runnerRunningDir);
-  const runnerSummary = runnerAttached
-    ? [runnerHost, runnerPID ? `pid ${runnerPID}` : ''].filter(Boolean).join(' · ')
-    : 'Waiting for local runner';
+    || runnerStateValue(runnerState, 'checkout_dir', 'checkoutDir')
+    || infoValue(selectedRunner?.workspaceRoot);
+  const runningAgentSummary = selectedRunner
+    ? [
+      selectedRunner.agentType || 'agent',
+      runnerHost || 'local',
+      runnerPID ? `pid ${runnerPID}` : '',
+    ].filter(Boolean).join(' · ')
+    : 'No running agent online';
+  const runningAgentCountLabel = onlineRunners.length === 1 ? '1 running agent' : `${onlineRunners.length} running agents`;
+  const sessionCountLabel = localSessions.length === 1 ? '1 local conversation' : `${localSessions.length} local conversations`;
+  const selectedRunnerConversationCountLabel = selectedRunnerSessions.length === 1
+    ? '1 local conversation'
+    : `${selectedRunnerSessions.length} local conversations`;
   const canRestartRunner = Boolean(
     selectedSession
     && selectedSession.provider === 'local'
@@ -434,7 +511,7 @@ export default function SliceAgentsPage({
     () => buildConversationItems(events, assistantStreaming),
     [events, assistantStreaming],
   );
-  const hasActiveSession = sessions.some((session) => ACTIVE_SESSION_STATES.has(session.state));
+  const hasActiveSession = localSessions.some((session) => ACTIVE_SESSION_STATES.has(session.state));
   const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasActiveSession;
   const sessionsSidebarVisible = sessionsSidebarOpen || sessionsSidebarDismissing;
 
@@ -452,17 +529,73 @@ export default function SliceAgentsPage({
     setSessionsSidebarOpen(false);
   }, []);
 
-  const handleSessionSelect = useCallback((sessionId) => {
+  const resizeAgentsSidebar = useCallback((clientX) => {
+    const rect = agentsLayoutRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const availableMaxWidth = Math.min(AGENTS_SIDEBAR_MAX_WIDTH, Math.max(AGENTS_SIDEBAR_MIN_WIDTH, rect.width - 420));
+    setAgentsSidebarWidth(clampAgentsSidebarWidth(clientX - rect.left, availableMaxWidth));
+  }, []);
+
+  const handleAgentsSidebarResizePointerDown = useCallback((event) => {
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    if (typeof window !== 'undefined' && window.innerWidth <= SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH) {
+      return;
+    }
+    event.preventDefault();
+    resizeAgentsSidebar(event.clientX);
+    setAgentsSidebarResizing(true);
+  }, [resizeAgentsSidebar]);
+
+  const handleAgentsSidebarResizeKeyDown = useCallback((event) => {
+    let nextWidth = null;
+    const step = event.shiftKey ? 32 : 16;
+    if (event.key === 'ArrowLeft') {
+      nextWidth = agentsSidebarWidth - step;
+    } else if (event.key === 'ArrowRight') {
+      nextWidth = agentsSidebarWidth + step;
+    } else if (event.key === 'Home') {
+      nextWidth = AGENTS_SIDEBAR_MIN_WIDTH;
+    } else if (event.key === 'End') {
+      nextWidth = AGENTS_SIDEBAR_MAX_WIDTH;
+    } else if (event.key === 'Enter') {
+      nextWidth = AGENTS_SIDEBAR_DEFAULT_WIDTH;
+    }
+    if (nextWidth === null) {
+      return;
+    }
+    event.preventDefault();
+    setAgentsSidebarWidth(clampAgentsSidebarWidth(nextWidth));
+  }, [agentsSidebarWidth]);
+
+  const selectSessionId = useCallback((sessionId) => {
     setSelectedSessionId(sessionId);
     if (onSelectSession) {
       onSelectSession(sessionId);
     } else {
       writeAgentSessionURL(sessionId);
     }
+  }, [onSelectSession]);
+
+  const handleRunnerSelect = useCallback((runnerId) => {
+    setSelectedRunnerId(runnerId);
+    const nextSessionId = (sessionsByRunnerId.get(runnerId) || [])[0]?.sessionId || '';
+    selectSessionId(nextSessionId);
+  }, [selectSessionId, sessionsByRunnerId]);
+
+  const handleSessionSelect = useCallback((sessionId) => {
+    const nextSession = selectedRunnerSessions.find((session) => session.sessionId === sessionId);
+    if (nextSession?.runnerId) {
+      setSelectedRunnerId(nextSession.runnerId);
+    }
+    selectSessionId(sessionId);
     if (typeof window !== 'undefined' && window.innerWidth <= SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH) {
       closeSessionsSidebar();
     }
-  }, [closeSessionsSidebar, onSelectSession]);
+  }, [closeSessionsSidebar, selectSessionId, selectedRunnerSessions]);
 
   useIsomorphicLayoutEffect(() => {
     if (typeof window === 'undefined') {
@@ -493,13 +626,46 @@ export default function SliceAgentsPage({
   }, [sessionsSidebarDismissing]);
 
   useEffect(() => {
-    if (!normalizedRouteSessionId) {
+    writeAgentsSidebarWidth(agentsSidebarWidth);
+  }, [agentsSidebarWidth]);
+
+  useEffect(() => {
+    if (!agentsSidebarResizing || typeof window === 'undefined') {
+      return undefined;
+    }
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    const handlePointerMove = (event) => {
+      resizeAgentsSidebar(event.clientX);
+    };
+    const finishResize = () => {
+      setAgentsSidebarResizing(false);
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+    };
+  }, [agentsSidebarResizing, resizeAgentsSidebar]);
+
+  useEffect(() => {
+    if (!routeSession) {
       return;
     }
-    if (sessions.some((session) => session.sessionId === normalizedRouteSessionId)) {
-      setSelectedSessionId(normalizedRouteSessionId);
+    if (routeSession.runnerId && onlineRunnerIds.has(routeSession.runnerId)) {
+      setSelectedRunnerId(routeSession.runnerId);
     }
-  }, [normalizedRouteSessionId, sessions]);
+    setSelectedSessionId(routeSession.sessionId);
+  }, [onlineRunnerIds, routeSession]);
 
   const loadRunners = useCallback(async ({ keepSelection = true } = {}) => {
     setRunnersLoading(true);
@@ -516,7 +682,7 @@ export default function SliceAgentsPage({
     } catch (err) {
       setRunners([]);
       setSelectedRunnerId('');
-      setRunnersError(err?.message || 'Unable to load agent runners.');
+      setRunnersError(err?.message || 'Unable to load running agents.');
     } finally {
       setRunnersLoading(false);
     }
@@ -540,7 +706,7 @@ export default function SliceAgentsPage({
         if (keepSelection && current && nextSessions.some((session) => session.sessionId === current)) {
           return current;
         }
-        return nextSessions[0]?.sessionId || '';
+        return current && nextSessions.some((session) => session.sessionId === current) ? current : '';
       });
     } catch (err) {
       setSessions([]);
@@ -582,6 +748,25 @@ export default function SliceAgentsPage({
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
+
+  useEffect(() => {
+    if (!selectedRunner) {
+      if (selectedSessionId) {
+        setSelectedSessionId('');
+      }
+      return;
+    }
+    if (routeSession?.runnerId && selectedRunner.runnerId !== routeSession.runnerId) {
+      return;
+    }
+    if (selectedSessionId && selectedRunnerSessions.some((session) => session.sessionId === selectedSessionId)) {
+      return;
+    }
+    const fallbackSessionId = selectedRunnerSessions[0]?.sessionId || '';
+    if (selectedSessionId !== fallbackSessionId) {
+      setSelectedSessionId(fallbackSessionId);
+    }
+  }, [routeSession, selectedRunner, selectedRunnerSessions, selectedSessionId]);
 
   const loadSelectedEvents = useCallback(async () => {
     if (!selectedSessionId) {
@@ -639,11 +824,15 @@ export default function SliceAgentsPage({
   }, [loadSelectedEvents, selectedSessionId]);
 
   useEffect(() => {
-    setAgentInfoOpen(false);
     setRunnerActionError('');
     setEvents([]);
     setEventsError('');
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    setAgentInfoOpen(false);
+    setRunnerActionError('');
+  }, [selectedRunnerId]);
 
   const handleCreateSession = async () => {
     if (!canCreateSession || creatingSession) {
@@ -657,12 +846,10 @@ export default function SliceAgentsPage({
         agentType: selectedRunner.agentType || defaultAgentType,
       }));
       await loadSessions({ keepSelection: true });
-      setSelectedSessionId(created.sessionId);
-      if (onSelectSession) {
-        onSelectSession(created.sessionId);
-      } else {
-        writeAgentSessionURL(created.sessionId);
+      if (created.runnerId || selectedRunner.runnerId) {
+        setSelectedRunnerId(created.runnerId || selectedRunner.runnerId);
       }
+      selectSessionId(created.sessionId);
     } catch (err) {
       setCreateError(err?.message || 'Unable to create agent session.');
     } finally {
@@ -725,19 +912,23 @@ export default function SliceAgentsPage({
         onOpenAgents={() => {}}
       />
 
-      <div className="slice-agents-layout">
+      <div
+        ref={agentsLayoutRef}
+        className={`slice-agents-layout${agentsSidebarResizing ? ' resizing-sidebar' : ''}`}
+        style={{ '--slice-agents-sidebar-width': `${agentsSidebarWidth}px` }}
+      >
         <div
           className={`slice-agents-sidebar-overlay${sessionsSidebarVisible ? ' visible' : ''}${sessionsSidebarDismissing ? ' dismissing' : ''}`}
           onClick={closeSessionsSidebar}
         />
         <aside
           className={`slice-agents-sidebar ${sessionsSidebarOpen ? 'open' : 'closed'}${sessionsSidebarDismissing ? ' dismissing' : ''}`}
-          aria-label="Agent sessions"
+          aria-label="Running agents and conversations"
         >
           <div className="slice-agents-sidebar-header">
             <div>
-              <h2>Sessions</h2>
-              <span>{selectedRunner ? `${selectedRunner.agentType || 'agent'} on ${selectedRunner.hostName || 'local runner'}` : 'No local runner online'}</span>
+              <h2>Running agents</h2>
+              <span>{runningAgentCountLabel} · {sessionCountLabel}</span>
             </div>
             <div className="slice-agents-sidebar-actions">
               <Button
@@ -746,8 +937,8 @@ export default function SliceAgentsPage({
                 size="icon"
                 className="slice-agents-icon-button slice-agents-sidebar-close"
                 onClick={closeSessionsSidebar}
-                aria-label="Close sessions"
-                title="Close sessions"
+                aria-label="Close running agents and conversations"
+                title="Close running agents and conversations"
               >
                 <PanelLeftClose size={15} aria-hidden="true" />
               </Button>
@@ -760,11 +951,136 @@ export default function SliceAgentsPage({
                   loadRunners({ keepSelection: true });
                   loadSessions({ keepSelection: true });
                 }}
-                aria-label="Refresh agent sessions"
+                aria-label="Refresh running agents and conversations"
                 title="Refresh"
               >
                 <RefreshCw size={15} aria-hidden="true" />
               </Button>
+            </div>
+          </div>
+
+          <section className="slice-agents-panel slice-agents-running-agents" data-testid="slice-agents-runners">
+            {runnersLoading && runners.length === 0 && <div className="panel-empty">Loading running agents...</div>}
+            {!runnersLoading && runnersError && <div className="panel-error">{runnersError}</div>}
+            {!runnersLoading && !runnersError && runners.length === 0 && (
+              <div className="panel-empty">No local runners found.</div>
+            )}
+            {!runnersLoading && !runnersError && runners.length > 0 && onlineRunners.length === 0 && (
+              <div className="panel-empty">No running agents online.</div>
+            )}
+            {onlineRunners.length > 0 && (
+              <div className="slice-agents-runner-tabs" role="tablist" aria-label="Running agents">
+                {onlineRunners.map((runner) => {
+                  const isSelected = selectedRunner?.runnerId === runner.runnerId;
+                  const runnerSessions = sessionsByRunnerId.get(runner.runnerId) || [];
+                  const runnerSessionCount = runnerSessions.length;
+                  const runnerSessionLabel = runnerSessionCount === 1 ? '1 conversation' : `${runnerSessionCount} conversations`;
+                  return (
+                    <Button
+                      key={runner.runnerId}
+                      type="button"
+                      variant="ghost"
+                      role="tab"
+                      className={`slice-agents-runner-tab${isSelected ? ' active' : ''}`}
+                      onClick={() => handleRunnerSelect(runner.runnerId)}
+                      aria-selected={isSelected}
+                      title={runner.workspaceRoot || runner.runnerId}
+                      data-testid="slice-agents-runner"
+                    >
+                      <span className="slice-agents-runner-tab-icon" aria-hidden="true">
+                        <TerminalSquare size={15} />
+                      </span>
+                      <span className="slice-agents-runner-tab-main">
+                        <span className="slice-agents-runner-tab-title">
+                          <span className="slice-agents-runner-tab-status" aria-hidden="true" />
+                          <span>{runner.agentType || 'agent'} · {runner.hostName || 'local'}</span>
+                        </span>
+                        <span className="slice-agents-runner-tab-meta">
+                          {runner.status || 'unknown'} · {runnerSessionLabel}
+                        </span>
+                      </span>
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+            {selectedRunner && (
+              <section className="slice-agents-runner-card" data-testid="slice-agents-runner-card">
+                <div className="slice-agents-runner-card-header">
+                  <div>
+                    <h3>Agent environment</h3>
+                    <span>{runningAgentSummary}</span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="slice-agents-icon-button"
+                    onClick={() => setAgentInfoOpen((open) => !open)}
+                    aria-label="Inspect running agent"
+                    aria-expanded={agentInfoOpen}
+                    title="Inspect running agent"
+                    data-testid="slice-agents-info"
+                  >
+                    <Info size={15} aria-hidden="true" />
+                  </Button>
+                </div>
+                {runnerRunningDir && (
+                  <div className="slice-agents-runner-dir" title={runnerRunningDir}>
+                    {runnerRunningDir}
+                  </div>
+                )}
+                {agentInfoOpen && (
+                  <div className="slice-agents-info-panel" data-testid="slice-agents-info-panel">
+                    <dl>
+                      {runningAgentInfoRows.map(([label, value]) => (
+                        <div key={label} className="slice-agents-info-row">
+                          <dt>{label}</dt>
+                          <dd>{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                )}
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  className="slice-agents-runner-action"
+                  onClick={handleUpgradeRestartRunner}
+                  disabled={!canRestartRunner || runnerActionLoading}
+                  title={canRestartRunner ? 'Upgrade and restart running agent' : 'Select an active session'}
+                  data-testid="slice-agents-upgrade-restart"
+                >
+                  <RefreshCw size={15} aria-hidden="true" />
+                  {runnerActionLoading ? 'Requesting' : 'Upgrade & restart'}
+                </Button>
+                {runnerActionError && <div className="panel-error">{runnerActionError}</div>}
+              </section>
+            )}
+          </section>
+
+          {!canCreateSession && (
+            <div className="slice-agents-connection-note" data-testid="slice-agents-connection-note">
+              <CircleAlert size={15} aria-hidden="true" />
+              <span>Start a running agent to create conversations.</span>
+            </div>
+          )}
+          {showAgentSessionDocsLink && (
+            <div className="slice-agents-docs-note" data-testid="slice-agents-docs-note">
+              <CircleAlert size={15} aria-hidden="true" />
+              <span>
+                No active local conversation. <a href="/docs#local-agent-sessions">Start a running agent with gs.</a>
+              </span>
+            </div>
+          )}
+
+          <section className="slice-agents-panel slice-agents-session-panel">
+            <div className="slice-agents-section-head">
+              <div>
+                <h3>Conversations</h3>
+                <span>{selectedRunner ? `${selectedRunnerConversationCountLabel} on this runner` : 'Select a running agent'}</span>
+              </div>
               <Button
                 type="button"
                 variant="default"
@@ -772,59 +1088,45 @@ export default function SliceAgentsPage({
                 className="slice-agents-new-button"
                 onClick={handleCreateSession}
                 disabled={!canCreateSession || creatingSession}
-                title={canCreateSession ? 'New session' : 'Start a local runner first'}
+                title={canCreateSession ? 'New conversation' : 'Start a running agent first'}
                 data-testid="slice-agents-new-session"
               >
                 <Plus size={15} aria-hidden="true" />
                 {creatingSession ? 'Starting' : 'New'}
               </Button>
             </div>
-          </div>
-
-          <section className="slice-agents-available-runners" data-testid="slice-agents-runners">
-            <div className="slice-agents-section-label">Available runners</div>
-            {runnersLoading && runners.length === 0 && <div className="panel-empty">Loading runners...</div>}
-            {!runnersLoading && runnersError && <div className="panel-error">{runnersError}</div>}
-            {!runnersLoading && !runnersError && runners.length === 0 && (
-              <div className="panel-empty">No local runners found.</div>
+            {createError && <div className="panel-error">{createError}</div>}
+            {sessionsError && <div className="panel-error">{sessionsError}</div>}
+            {sessionsLoading && selectedRunnerSessions.length === 0 && <div className="panel-empty">Loading conversations...</div>}
+            {!sessionsLoading && !sessionsError && !selectedRunner && (
+              <div className="panel-empty">Select a running agent to view local conversations.</div>
             )}
-            {!runnersLoading && !runnersError && runners.length > 0 && onlineRunners.length === 0 && (
-              <div className="panel-empty">No local runners online.</div>
+            {!sessionsLoading && !sessionsError && selectedRunner && selectedRunnerSessions.length === 0 && (
+              <div className="panel-empty">No local conversations for this running agent.</div>
             )}
-            {runners.length > 0 && (
+            {selectedRunnerSessions.length > 0 && (
               <ul className="slice-agents-session-list">
-                {runners.map((runner) => {
-                  const isOnline = runner.status === 'online';
-                  const isSelected = selectedRunner?.runnerId === runner.runnerId;
-                  const runnerMeta = [
-                    runner.status || 'unknown',
-                    !isOnline && runner.lastHeartbeatAt ? `last seen ${formatAgentTimestamp(runner.lastHeartbeatAt)}` : '',
-                    runner.workspaceRoot || runner.runnerId,
-                  ].filter(Boolean).join(' · ');
+                {selectedRunnerSessions.map((session) => {
+                  const isSelected = session.sessionId === selectedSessionId;
                   return (
-                    <li key={runner.runnerId}>
+                    <li key={session.sessionId}>
                       <Button
                         type="button"
                         variant="ghost"
-                        className={`slice-agents-session-row${isSelected ? ' active' : ''}${isOnline ? '' : ' offline'}`}
-                        onClick={() => {
-                          if (isOnline) {
-                            setSelectedRunnerId(runner.runnerId);
-                          }
-                        }}
-                        disabled={!isOnline}
+                        className={`slice-agents-session-row${isSelected ? ' active' : ''}`}
+                        onClick={() => handleSessionSelect(session.sessionId)}
                         aria-pressed={isSelected}
-                        data-testid="slice-agents-runner"
+                        data-testid="slice-agents-session"
                       >
                         <span className="slice-agents-session-icon" aria-hidden="true">
-                          <TerminalSquare size={15} />
+                          <Bot size={15} />
                         </span>
                         <span className="slice-agents-session-main">
                           <span className="slice-agents-session-title">
-                            {runner.agentType || 'agent'} · {runner.hostName || 'local'}
+                            Conversation · {shortSessionId(session.sessionId)}
                           </span>
                           <span className="slice-agents-session-meta">
-                            {runnerMeta}
+                            {session.agentType || 'agent'} · {session.state || 'unknown'} · {formatAgentTimestamp(session.lastActivityAt || session.createdAt)}
                           </span>
                         </span>
                       </Button>
@@ -834,113 +1136,25 @@ export default function SliceAgentsPage({
               </ul>
             )}
           </section>
-
-          {!canCreateSession && (
-            <div className="slice-agents-connection-note" data-testid="slice-agents-connection-note">
-              <CircleAlert size={15} aria-hidden="true" />
-              <span>Start a local runner to create sessions.</span>
-            </div>
-          )}
-          {showAgentSessionDocsLink && (
-            <div className="slice-agents-docs-note" data-testid="slice-agents-docs-note">
-              <CircleAlert size={15} aria-hidden="true" />
-              <span>
-                No active agent session. <a href="/docs#local-agent-sessions">Start a local runner with gs.</a>
-              </span>
-            </div>
-          )}
-          {createError && <div className="panel-error">{createError}</div>}
-          {sessionsError && <div className="panel-error">{sessionsError}</div>}
-          {sessionsLoading && sessions.length === 0 && <div className="panel-empty">Loading sessions...</div>}
-          {!sessionsLoading && !sessionsError && sessions.length === 0 && (
-            <div className="panel-empty">No agent sessions yet.</div>
-          )}
-          {sessions.length > 0 && (
-            <ul className="slice-agents-session-list">
-              {sessions.map((session) => {
-                const isSelected = session.sessionId === selectedSessionId;
-                return (
-                  <li key={session.sessionId}>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className={`slice-agents-session-row${isSelected ? ' active' : ''}`}
-                      onClick={() => handleSessionSelect(session.sessionId)}
-                      aria-pressed={isSelected}
-                      data-testid="slice-agents-session"
-                    >
-                      <span className="slice-agents-session-icon" aria-hidden="true">
-                        <Bot size={15} />
-                      </span>
-                      <span className="slice-agents-session-main">
-                        <span className="slice-agents-session-title">
-                          {session.agentType || 'agent'} · {shortSessionId(session.sessionId)}
-                        </span>
-                        <span className="slice-agents-session-meta">
-                          {session.state || 'unknown'} · {formatAgentTimestamp(session.lastActivityAt || session.createdAt)}
-                        </span>
-                      </span>
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {selectedSession && (
-            <section className="slice-agents-runner-card" data-testid="slice-agents-runner-card">
-              <div className="slice-agents-runner-card-header">
-                <div>
-                  <h3>Local runner</h3>
-                  <span>{runnerSummary}</span>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="slice-agents-icon-button"
-                  onClick={() => setAgentInfoOpen((open) => !open)}
-                  aria-label="Inspect agent state"
-                  aria-expanded={agentInfoOpen}
-                  title="Inspect agent state"
-                  data-testid="slice-agents-info"
-                >
-                  <Info size={15} aria-hidden="true" />
-                </Button>
-              </div>
-              {runnerRunningDir && (
-                <div className="slice-agents-runner-dir" title={runnerRunningDir}>
-                  {runnerRunningDir}
-                </div>
-              )}
-              {agentInfoOpen && (
-                <div className="slice-agents-info-panel" data-testid="slice-agents-info-panel">
-                  <dl>
-                    {agentInfoRows.map(([label, value]) => (
-                      <div key={label} className="slice-agents-info-row">
-                        <dt>{label}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </div>
-              )}
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                className="slice-agents-runner-action"
-                onClick={handleUpgradeRestartRunner}
-                disabled={!canRestartRunner || runnerActionLoading}
-                title={canRestartRunner ? 'Upgrade and restart local runner' : 'Select an active local session'}
-                data-testid="slice-agents-upgrade-restart"
-              >
-                <RefreshCw size={15} aria-hidden="true" />
-                {runnerActionLoading ? 'Requesting' : 'Upgrade & restart'}
-              </Button>
-              {runnerActionError && <div className="panel-error">{runnerActionError}</div>}
-            </section>
-          )}
         </aside>
+
+        <div
+          className="slice-agents-resize-handle"
+          role="separator"
+          aria-label="Resize agents and conversations panel"
+          aria-orientation="vertical"
+          aria-valuemin={AGENTS_SIDEBAR_MIN_WIDTH}
+          aria-valuemax={AGENTS_SIDEBAR_MAX_WIDTH}
+          aria-valuenow={Math.round(agentsSidebarWidth)}
+          tabIndex={0}
+          title="Drag to resize. Double-click to reset."
+          data-testid="slice-agents-resize-handle"
+          onPointerDown={handleAgentsSidebarResizePointerDown}
+          onKeyDown={handleAgentsSidebarResizeKeyDown}
+          onDoubleClick={() => setAgentsSidebarWidth(AGENTS_SIDEBAR_DEFAULT_WIDTH)}
+        >
+          <span aria-hidden="true" />
+        </div>
 
         <main className="slice-agents-conversation" data-testid="slice-agents-conversation">
           <div className="slice-agents-mobile-toolbar">
@@ -950,26 +1164,26 @@ export default function SliceAgentsPage({
               size="icon"
               className="slice-agents-icon-button"
               onClick={openSessionsSidebar}
-              aria-label="Open sessions"
-              title="Open sessions"
+              aria-label="Open running agents and conversations"
+              title="Open running agents and conversations"
               data-testid="slice-agents-open-sessions"
             >
               <PanelLeftOpen size={16} aria-hidden="true" />
             </Button>
-            <span>Sessions</span>
+            <span>Running agents</span>
           </div>
           {!selectedSession && (
             <div className="slice-agents-empty-detail">
               <Bot size={22} aria-hidden="true" />
-              <span>Select a session to view its conversation.</span>
+              <span>Select a conversation from the running agent.</span>
             </div>
           )}
           {selectedSession && (
             <>
               <div className="slice-agents-conversation-header">
                 <div>
-                  <h1>{selectedSession.agentType || 'Agent'} session</h1>
-                  <span>{selectedSession.sessionId}</span>
+                  <h1>Conversation</h1>
+                  <span>{selectedSession.agentType || 'agent'} · {selectedSession.sessionId}</span>
                 </div>
                 <div className="slice-agents-header-actions">
                   <span className={`slice-agents-state slice-agents-state--${selectedSession.state || 'unknown'}`}>

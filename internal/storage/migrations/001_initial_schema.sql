@@ -781,8 +781,6 @@ CREATE INDEX idx_agent_session_audit_session_created ON agent_session_audit USIN
 
 CREATE INDEX idx_agent_session_events_ts ON agent_session_events USING btree (session_id, ts DESC);
 
-CREATE UNIQUE INDEX idx_agent_sessions_active_per_slice ON agent_sessions USING btree (slice_id) WHERE (state = ANY (ARRAY['creating'::text, 'starting'::text, 'running'::text, 'idle'::text, 'stopping'::text]));
-
 CREATE UNIQUE INDEX idx_agent_sessions_e2b_sandbox ON agent_sessions USING btree (e2b_sandbox_id) WHERE (e2b_sandbox_id IS NOT NULL);
 
 CREATE INDEX idx_agent_sessions_runtime_session_id ON agent_sessions USING btree (runtime_session_id) WHERE (runtime_session_id <> ''::text);

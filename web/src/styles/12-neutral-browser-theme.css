@@ -1,0 +1,2057 @@
+/* Neutral Precision browser revamp */
+.app-shell--browser {
+  --np-bg: #faf9fa;
+  --np-sidebar: #f8fafc;
+  --np-container: #efedee;
+  --np-container-high: #e9e8e9;
+  --np-surface: #ffffff;
+  --np-border: #c3c6d5;
+  --np-border-soft: rgba(195, 198, 213, 0.62);
+  --np-text: #1b1c1d;
+  --np-muted: #434653;
+  --np-primary: #094cb2;
+  --np-primary-strong: #2259bf;
+  --np-gutter: 16px;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--np-bg);
+  color: var(--np-text);
+  font-family: var(--font-sans);
+}
+
+.app-shell--browser :where(.primary, .ghost, .slice-create-button, .top-search-submit, .history-toggle, .browser-header-secondary, .repo-search-actions button, .repo-search-load-more, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .slice-detail-tab, .slice-activity-filter-btn, .slice-home-actions button, .diff-revert-button) {
+  gap: 8px;
+  border-radius: 4px;
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell--browser :where(.primary, .slice-create-button, .browser-commit-button) {
+  border: 1px solid var(--np-primary);
+  background: var(--np-primary);
+  color: #ffffff;
+}
+
+.app-shell--browser :where(.primary, .slice-create-button, .browser-commit-button):hover {
+  border-color: var(--np-primary-strong);
+  background: var(--np-primary-strong);
+  color: #ffffff;
+  transform: none;
+}
+
+.app-shell--browser :where(.ghost, .slice-home-actions button:not(.slice-create-button), .history-toggle, .browser-header-secondary, .repo-search-actions button, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .diff-revert-button) {
+  border: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+  color: var(--np-text);
+}
+
+.app-shell--browser :where(.ghost, .slice-home-actions button:not(.slice-create-button), .history-toggle, .browser-header-secondary, .repo-search-actions button, .slice-settings-toggle, .sidebar-toggle, .insight-toggle, .diff-revert-button):hover {
+  border-color: var(--np-border);
+  background: var(--np-container);
+  color: var(--np-primary);
+  transform: none;
+}
+
+.app-shell--browser :where(h1, h2, h3, .sidebar-panel-title, .repo-insight-meta dt, .footer-copy) {
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+}
+
+.app-shell--browser :where(code, pre, .file-preview, .file-editor, .commit-hash, .repo-search-result-line, .breadcrumb) {
+  font-family: var(--font-mono);
+}
+
+.app-shell--browser {
+  padding-top: var(--app-header-height);
+}
+
+.app-shell--browser .top-search {
+  display: grid;
+  grid-template-columns: minmax(220px, 420px) auto;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 680px;
+  margin: 0 16px;
+}
+
+.app-shell--browser .top-search-field {
+  position: relative;
+  min-width: 0;
+}
+
+.app-shell--browser .top-search-main {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 4px 0 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--np-container);
+  color: var(--np-muted);
+}
+
+.app-shell--browser .top-search-main:focus-within {
+  border-color: var(--np-primary);
+  background: var(--np-surface);
+  box-shadow: 0 0 0 2px rgba(0, 61, 155, 0.1);
+}
+
+.app-shell--browser .top-search-input,
+.app-shell--browser .top-search-glob {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--np-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.app-shell--browser .top-search-input::placeholder,
+.app-shell--browser .top-search-glob::placeholder {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .top-search-submit {
+  height: 26px;
+  min-height: 26px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+  color: var(--np-text);
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.app-shell--browser .top-search-submit:hover {
+  border-color: var(--np-primary);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .top-search-advanced {
+  display: grid;
+  grid-template-columns: minmax(80px, 128px) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-shell--browser .top-search-glob {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+}
+
+.app-shell--browser .top-search-regex {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--np-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-shell--browser .top-search-results {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 100%;
+  max-height: min(340px, calc(100dvh - 96px));
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+  box-shadow: 0 14px 32px rgba(4, 27, 60, 0.14);
+}
+
+.app-shell--browser .top-search-results .repo-search-results {
+  margin: 0;
+}
+
+.app-shell--browser .footer {
+  min-height: 32px;
+  padding: 0 16px;
+  border-top: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+  box-shadow: none;
+  color: var(--np-muted);
+  font-size: 11px;
+}
+
+.app-shell--browser .footer-copy {
+  color: var(--np-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.app-shell--browser .footer a {
+  color: var(--np-primary);
+  font-size: 11px;
+}
+
+.app-shell--browser .diff-top-bar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .diff-detail-page {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .diff-detail-controls {
+  justify-self: end;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.app-shell--browser .diff-top-title {
+  min-width: 0;
+}
+
+.app-shell--browser .diff-top-title h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-shell--browser .diff-summary {
+  align-items: center;
+  gap: 6px;
+}
+
+.app-shell--browser .diff-back-btn {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--np-text) !important;
+  box-shadow: none !important;
+}
+
+.app-shell--browser .diff-back-btn:hover {
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+  transform: none;
+}
+
+.app-shell--browser .diff-view-toggle {
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+}
+
+.app-shell--browser .diff-view-btn {
+  min-height: 32px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--np-muted) !important;
+  box-shadow: none !important;
+}
+
+.app-shell--browser .diff-view-btn:not(:last-child) {
+  border-right: 1px solid var(--np-border-soft) !important;
+}
+
+.app-shell--browser .diff-view-btn:hover {
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .diff-view-btn-active,
+.app-shell--browser .diff-view-btn-active:hover {
+  background: var(--np-surface) !important;
+  color: var(--np-primary) !important;
+  box-shadow: inset 0 -2px var(--np-primary) !important;
+}
+
+.app-shell--browser .diff-stat {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 999px;
+  background: var(--np-container);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.app-shell--browser .diff-stat-added {
+  color: #1a7f37;
+}
+
+.app-shell--browser .diff-stat-modified,
+.app-shell--browser .diff-stat-renamed {
+  color: var(--np-primary);
+}
+
+.app-shell--browser .diff-stat-deleted {
+  color: #cf222e;
+}
+
+.app-shell--browser .diff-layout {
+  background: var(--np-bg);
+}
+
+.app-shell--browser .diff-file-panel {
+  width: 260px;
+  min-width: 220px;
+  border-right: 1px solid var(--np-border-soft);
+  background: var(--np-container);
+}
+
+.app-shell--browser .diff-file-panel-header {
+  min-height: 48px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--np-border-soft);
+  background: var(--np-container);
+  color: var(--np-muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.app-shell--browser .diff-file-panel-list {
+  padding: 8px 0;
+}
+
+.app-shell--browser .diff-file-panel-item {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-left: 0;
+  color: var(--np-text);
+}
+
+.app-shell--browser .diff-file-panel-item:hover,
+.app-shell--browser .diff-file-panel-item-active {
+  background: var(--np-surface) !important;
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .diff-content {
+  padding: 12px 16px 16px;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .diff-file-list {
+  gap: 10px;
+}
+
+.app-shell--browser .diff-file-item {
+  border-color: var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+  box-shadow: none;
+}
+
+.app-shell--browser .diff-file-item:hover,
+.app-shell--browser .diff-file-item-selected {
+  border-color: var(--np-border);
+  box-shadow: none;
+}
+
+.app-shell--browser .repo-layout {
+  grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr);
+  min-height: calc(100dvh - var(--app-header-height) - 32px);
+  gap: 0;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .repo-browser--with-tabs .repo-layout {
+  min-height: calc(100dvh - var(--app-header-height) - 80px);
+}
+
+.app-shell--browser .slice-detail-nav {
+  border-bottom-color: var(--np-border-soft);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .slice-detail-nav-icon,
+.app-shell--browser .slice-detail-tabs,
+.app-shell--browser .slice-detail-get-code-button,
+.app-shell--browser .slice-detail-command-row,
+.app-shell--browser .slice-activity-summary,
+.app-shell--browser .slice-activity-filter,
+.app-shell--browser .slice-activity-row-icon {
+  border-color: var(--np-border-soft);
+  background: var(--np-bg);
+}
+
+.app-shell--browser .slice-detail-get-code-popover {
+  border-color: var(--np-border-soft);
+  background: var(--np-surface);
+  box-shadow: 0 18px 44px rgba(2, 6, 23, 0.14);
+}
+
+.app-shell--browser .slice-detail-nav-name,
+.app-shell--browser .slice-detail-get-code-button,
+.app-shell--browser .slice-detail-get-code-header,
+.app-shell--browser .slice-detail-command-row code,
+.app-shell--browser .slice-activity-header h1,
+.app-shell--browser .slice-activity-row-title {
+  color: var(--np-text);
+}
+
+.app-shell--browser .slice-detail-copy-command,
+.app-shell--browser .slice-detail-get-code-note,
+.app-shell--browser .slice-detail-get-code-secondary > span,
+.app-shell--browser .slice-activity-summary,
+.app-shell--browser .slice-activity-row-files,
+.app-shell--browser .slice-activity-muted,
+.app-shell--browser .slice-activity-row-arrow {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .slice-activity-row-meta {
+  color: #727684;
+}
+
+.app-shell--browser .slice-detail-tab,
+.app-shell--browser .slice-activity-filter-btn {
+  color: var(--np-muted) !important;
+}
+
+.app-shell--browser .slice-detail-tab:hover,
+.app-shell--browser .slice-activity-filter-btn:hover {
+  background: var(--np-container) !important;
+  color: var(--np-text) !important;
+}
+
+.app-shell--browser .slice-detail-tab.active,
+.app-shell--browser .slice-activity-filter-btn.active {
+  background: var(--np-surface) !important;
+  color: var(--np-primary) !important;
+  box-shadow: inset 0 -2px var(--np-primary);
+}
+
+.app-shell--browser .page--slice-home {
+  padding: 32px var(--np-gutter) 64px;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .slice-home {
+  width: min(1120px, 100%);
+  gap: 16px;
+}
+
+.app-shell--browser .slice-home-header h1 {
+  color: var(--np-text);
+  font-size: clamp(1.75rem, 2.4vw, 2.25rem);
+}
+
+.app-shell--browser .slice-home-header p {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .slice-home-toolbar {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.app-shell--browser .slice-home-search {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--np-container);
+  color: var(--np-muted);
+}
+
+.app-shell--browser .slice-home-search:focus-within {
+  border-color: var(--np-primary);
+  background: var(--np-surface);
+  box-shadow: 0 0 0 2px rgba(9, 76, 178, 0.1);
+}
+
+.app-shell--browser .slice-home-row {
+  min-height: 56px;
+  padding: 8px 10px !important;
+}
+
+.app-shell--browser .slice-home-panel {
+  height: auto;
+  min-height: 0;
+  max-height: min(560px, calc(100dvh - 260px));
+}
+
+.app-shell--browser .slice-home-list {
+  min-height: 0;
+}
+
+.app-shell--browser .slice-home-row--home {
+  background: rgba(9, 76, 178, 0.08) !important;
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .slice-activity-row-icon {
+  border-color: var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-container);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .slice-activity-page,
+.app-shell--browser .slice-activity-content {
+  background: var(--np-bg);
+}
+
+.app-shell--browser .slice-activity-page {
+  height: calc(100dvh - var(--app-header-height) - 32px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell--browser .slice-activity-content {
+  padding-bottom: 56px;
+  scroll-padding-bottom: 56px;
+}
+
+.app-shell--browser .slice-activity-panel {
+  border: 1px solid var(--np-border-soft);
+  border-radius: 6px;
+  background: var(--np-surface);
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.app-shell--browser .slice-activity-list li + li {
+  border-top: 1px solid var(--np-border-soft);
+}
+
+.app-shell--browser .slice-activity-panel .slice-activity-row {
+  border-radius: 0 !important;
+}
+
+.app-shell--browser :where(.slice-home-row, .slice-activity-row, .slice-dropdown-item, .diff-file-panel-item, .repo-search-result, .tree-entry) {
+  border: 0 !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  transform: none;
+}
+
+.app-shell--browser :where(.slice-home-row, .slice-activity-row, .slice-dropdown-item, .diff-file-panel-item, .repo-search-result, .tree-entry):hover {
+  background: var(--np-container) !important;
+  color: var(--np-primary) !important;
+  transform: none;
+}
+
+.app-shell--browser :where(.slice-dropdown-item.active, .diff-file-panel-item-active, .tree-entry.active) {
+  background: rgba(9, 76, 178, 0.08) !important;
+  color: var(--np-primary) !important;
+  box-shadow: inset 2px 0 var(--np-primary) !important;
+}
+
+.app-shell--browser .slice-activity-row:hover {
+  background: var(--np-container) !important;
+}
+
+.app-shell--browser .repo-layout.sidebar-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.app-shell--browser .repo-layout.insight-collapsed {
+  grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr) 0;
+}
+
+.app-shell--browser .repo-layout.sidebar-collapsed.insight-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+.app-shell--browser .repo-sidebar,
+.app-shell--browser .repo-code,
+.app-shell--browser .repo-insight {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.app-shell--browser .repo-sidebar {
+  position: relative;
+  border-right: 1px solid var(--np-border-soft);
+  background: var(--np-sidebar);
+}
+
+.app-shell--browser .repo-layout.is-resizing-sidebar {
+  transition: none;
+}
+
+.app-shell--browser .sidebar-resize-handle::after {
+  background: transparent;
+}
+
+.app-shell--browser .sidebar-resize-handle:hover::after,
+.app-shell--browser .sidebar-resize-handle:focus-visible::after,
+.app-shell--browser .repo-layout.is-resizing-sidebar .sidebar-resize-handle::after {
+  background: var(--np-primary);
+}
+
+.app-shell--browser .repo-code {
+  background: var(--np-surface);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.app-shell--browser .code-content {
+  flex: 0 0 auto;
+  overflow-y: visible;
+}
+
+.app-shell--browser .repo-insight {
+  border-left: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .sidebar-content {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  padding: 12px var(--app-header-inline-padding);
+  overflow: hidden;
+}
+
+.app-shell--browser .sidebar-section-heading,
+.app-shell--browser .sidebar-panel-title,
+.app-shell--browser .inspector-label,
+.app-shell--browser .repo-insight-meta dt {
+  color: var(--np-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.app-shell--browser .sidebar-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+}
+
+.app-shell--browser .sidebar-tree-header {
+  min-height: 36px;
+  margin: 0 0 12px;
+}
+
+.app-shell--browser .sidebar-tree-title {
+  gap: 1px;
+  padding-top: 1px;
+}
+
+.app-shell--browser .sidebar-tree-title > span {
+  color: var(--np-text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.app-shell--browser .sidebar-slice-section,
+.app-shell--browser .sidebar-tree-section {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell--browser .sidebar-slice-section {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--np-border-soft);
+}
+
+.app-shell--browser .sidebar-tree-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell--browser .slice-list-filter {
+  width: 100%;
+  height: 32px;
+  margin-bottom: 10px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  outline: 0;
+  background: var(--np-container);
+  color: var(--np-text);
+  font-size: 13px;
+}
+
+.app-shell--browser .slice-list-filter:focus {
+  border-color: var(--np-primary);
+  background: var(--np-surface);
+  box-shadow: 0 0 0 2px rgba(0, 61, 155, 0.1);
+}
+
+.app-shell--browser .slice-nav-list {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.app-shell--browser .slice-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-shell--browser .slice-nav-row.active {
+  grid-template-columns: minmax(0, 1fr) 28px;
+}
+
+.app-shell--browser .slice-nav-item {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start !important;
+  justify-content: center !important;
+  min-width: 0;
+  min-height: 34px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--np-muted) !important;
+  cursor: pointer;
+  text-align: left;
+  --tw-ring-color: transparent;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
+}
+
+.app-shell--browser .slice-nav-row.active .slice-nav-item {
+  color: var(--np-primary) !important;
+}
+
+.app-shell--browser .slice-nav-item:hover {
+  background: transparent !important;
+  color: var(--np-primary) !important;
+  transform: none;
+}
+
+.app-shell--browser .slice-nav-item:focus,
+.app-shell--browser .slice-nav-item:active,
+.app-shell--browser .slice-nav-item:focus-visible {
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
+}
+
+.app-shell--browser .slice-nav-name,
+.app-shell--browser .slice-nav-meta {
+  max-width: 100%;
+  overflow: hidden;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell--browser .slice-nav-name {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.app-shell--browser .slice-nav-meta {
+  color: color-mix(in srgb, var(--np-muted) 72%, white);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 14px;
+}
+
+.app-shell--browser .slice-nav-row.active .slice-nav-meta {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .slice-settings-toggle {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+}
+
+.app-shell--browser .sidebar-tree-section > .tree-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.app-shell--browser .slice-dropdown-trigger {
+  min-height: 36px;
+  height: 36px;
+  border: 1px solid var(--np-border-soft);
+  border-left: 3px solid var(--np-primary);
+  border-radius: 4px;
+  background: var(--np-surface);
+  box-shadow: none;
+  color: var(--np-text);
+}
+
+.app-shell--browser .slice-dropdown-trigger:hover,
+.app-shell--browser .slice-dropdown-trigger:focus-visible {
+  border-color: var(--np-primary);
+  box-shadow: 0 0 0 2px rgba(0, 61, 155, 0.12);
+}
+
+.app-shell--browser .slice-dropdown-trigger-icon {
+  color: var(--np-primary);
+}
+
+.app-shell--browser .slice-dropdown-trigger-label {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.app-shell--browser .slice-dropdown-trigger-meta {
+  color: var(--np-muted);
+  font-size: 11px;
+  line-height: 13px;
+}
+
+.app-shell--browser .slice-settings-toggle,
+.app-shell--browser .sidebar-toggle,
+.app-shell--browser .insight-toggle {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+  color: var(--np-muted);
+  box-shadow: none;
+}
+
+.app-shell--browser .slice-settings-toggle:hover,
+.app-shell--browser .slice-settings-toggle.active,
+.app-shell--browser .sidebar-toggle:hover,
+.app-shell--browser .insight-toggle:hover,
+.app-shell--browser .insight-toggle.active {
+  background: var(--np-container);
+  color: var(--np-primary);
+  transform: none;
+}
+
+.app-shell--browser .panel-header-actions {
+  gap: 6px;
+}
+
+.app-shell--browser .repo-search-panel {
+  margin: 0 0 16px;
+  padding: 0 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--np-border-soft);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell--browser .repo-search-panel-head {
+  margin-bottom: 8px;
+}
+
+.app-shell--browser .repo-search-input,
+.app-shell--browser .slice-search input,
+.app-shell--browser .visibility-field select,
+.app-shell--browser .visibility-field input,
+.app-shell--browser .slice-settings-form select {
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--np-container);
+  box-shadow: none;
+  color: var(--np-text);
+  font-size: 13px;
+}
+
+.app-shell--browser .repo-search-input:focus,
+.app-shell--browser .slice-search input:focus {
+  border-color: var(--np-primary);
+  background: var(--np-surface);
+  box-shadow: 0 0 0 2px rgba(0, 61, 155, 0.1);
+}
+
+.app-shell--browser .repo-search-glob {
+  min-height: 30px;
+}
+
+.app-shell--browser .repo-search-toggle,
+.app-shell--browser .repo-search-actions button {
+  font-size: 12px;
+}
+
+.app-shell--browser .repo-search-result {
+  display: grid;
+  align-items: stretch;
+  justify-items: stretch;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  padding: 7px 8px;
+  gap: 3px;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.app-shell--browser .repo-search-result:hover,
+.app-shell--browser .repo-search-result:focus-visible {
+  transform: none;
+  background: rgba(9, 76, 178, 0.08);
+}
+
+.app-shell--browser .repo-search-result-main {
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  gap: 8px;
+}
+
+.app-shell--browser .repo-search-result-path {
+  color: var(--np-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.app-shell--browser .repo-search-result-count {
+  background: var(--np-container);
+  color: var(--np-muted);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.app-shell--browser .repo-search-result-meta {
+  color: var(--np-muted);
+  font-size: 12px;
+  line-height: 15px;
+}
+
+.app-shell--browser .repo-search-result-meta code {
+  color: var(--np-text);
+}
+
+.app-shell--browser .repo-search-result-meta mark {
+  background: rgba(250, 204, 21, 0.32);
+}
+
+.app-shell--browser .repo-search-overflow {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .repo-search-load-more {
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-container);
+  color: var(--np-primary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: normal;
+}
+
+.app-shell--browser .repo-search-load-more:hover,
+.app-shell--browser .repo-search-load-more:focus-visible {
+  border-color: rgba(0, 61, 155, 0.32);
+  background: rgba(0, 61, 155, 0.07);
+}
+
+.app-shell--browser .repo-search-load-more span {
+  color: var(--np-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.app-shell--browser .sidebar-panel-title {
+  margin: 0 0 8px;
+}
+
+.app-shell--browser .tree-list {
+  gap: 1px;
+}
+
+.app-shell--browser .tree-entry {
+  min-height: 28px;
+  width: 100%;
+  border-radius: 4px;
+  color: var(--np-text);
+  font-size: 13px;
+  font-weight: 500;
+  padding-block: 4px;
+}
+
+.app-shell--browser .tree-entry:hover,
+.app-shell--browser .tree-entry.active {
+  background: var(--np-container);
+  color: var(--np-primary);
+  transform: none;
+}
+
+.app-shell--browser .tree-entry.active {
+  box-shadow: inset 2px 0 var(--np-primary);
+}
+
+.app-shell--browser .tree-caret {
+  width: 16px;
+}
+
+.app-shell--browser .entry-icon {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .tree-entry.directory .entry-icon,
+.app-shell--browser .tree-entry.active .entry-icon {
+  color: var(--np-primary);
+}
+
+.app-shell--browser .entry-meta {
+  color: var(--np-muted);
+  font-size: 11px;
+}
+
+.app-shell--browser .code-header {
+  min-height: 50px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--np-border-soft);
+  background: var(--np-surface);
+  box-shadow: none;
+  position: static;
+}
+
+.app-shell--browser .breadcrumbs {
+  min-width: 0;
+  gap: 0;
+}
+
+.app-shell--browser .breadcrumb {
+  flex: 0 1 auto;
+  min-height: 30px;
+  min-width: 0;
+  max-width: min(18rem, 36vw);
+  overflow: hidden;
+  padding: 0 3px;
+  border-radius: 3px;
+  color: var(--np-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.app-shell--browser .breadcrumb:first-child {
+  max-width: min(10rem, 24vw);
+}
+
+.app-shell--browser .breadcrumb:last-child {
+  flex: 1 1 auto;
+  max-width: min(22rem, 45vw);
+}
+
+.app-shell--browser .breadcrumb:hover {
+  background: var(--np-container);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .separator {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .status {
+  color: var(--np-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-shell--browser .file-size-status {
+  min-width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell--browser .history-toggle,
+.app-shell--browser .browser-header-secondary {
+  min-height: 32px;
+  height: 32px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+  color: var(--np-text);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.app-shell--browser .history-toggle:hover,
+.app-shell--browser .history-toggle.active,
+.app-shell--browser .browser-header-secondary:hover {
+  background: var(--np-container);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .browser-commit-button {
+  border-color: var(--np-primary);
+  background: var(--np-primary);
+  color: #ffffff;
+}
+
+.app-shell--browser .browser-commit-button:hover {
+  background: var(--np-primary-strong);
+  color: #ffffff;
+}
+
+.app-shell--browser .code-content {
+  padding: var(--np-gutter);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .slice-settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 24px;
+  background: rgba(27, 28, 29, 0.28);
+}
+
+.app-shell--browser .slice-settings-modal {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 48px);
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+  box-shadow: 0 18px 40px rgba(4, 27, 60, 0.18);
+}
+
+.app-shell--browser .slice-settings-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 4px;
+  background: var(--np-surface);
+  color: var(--np-muted);
+  box-shadow: none;
+}
+
+.app-shell--browser .slice-settings-modal-close:hover {
+  background: var(--np-container);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings {
+  min-height: 0;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  border-radius: 0;
+  padding: 24px;
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings-header {
+  padding-right: 48px;
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings-header p {
+  margin-bottom: 0;
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings-grid {
+  gap: 0;
+}
+
+.app-shell--browser .slice-settings-modal .border-border\/70 {
+  border: 1px solid var(--np-border-soft);
+  border-radius: 6px;
+  background: var(--np-container);
+  box-shadow: none;
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings-card-header {
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.app-shell--browser .slice-settings-modal .slice-settings-card-header p {
+  max-width: 42ch;
+}
+
+.app-shell--browser .slice-settings-modal .visibility-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.app-shell--browser .slice-settings-modal .visibility-actions button {
+  width: 100%;
+}
+
+.app-shell--browser .slice-settings-modal .panel-empty {
+  min-height: 96px;
+  display: grid;
+  place-items: center;
+}
+
+@media (max-width: 640px) {
+  .app-shell--browser .slice-settings-modal-backdrop {
+    align-items: start;
+    padding: 12px;
+  }
+
+  .app-shell--browser .slice-settings-modal {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+  }
+
+  .app-shell--browser .slice-settings-modal .slice-settings {
+    max-height: calc(100dvh - 24px);
+    padding: 18px;
+  }
+
+  .app-shell--browser .slice-settings-modal .slice-settings-card-header,
+  .app-shell--browser .slice-settings-modal .visibility-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell--browser .slice-settings-modal .visibility-actions {
+    gap: 8px;
+  }
+}
+
+.app-shell--browser .file-preview,
+.app-shell--browser .file-editor,
+.app-shell--browser .folder-preview,
+.app-shell--browser .media-preview-wrapper,
+.app-shell--browser .media-preview-pdf,
+.app-shell--browser .slice-settings,
+.app-shell--browser .history-panel {
+  min-height: 100%;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+  box-shadow: none;
+}
+
+.app-shell--browser .folder-preview {
+  border: 0;
+  border-radius: 0;
+}
+
+.app-shell--browser .file-preview,
+.app-shell--browser .file-editor {
+  padding: var(--np-gutter);
+  color: var(--np-text);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.app-shell--browser .file-preview .code-table {
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.app-shell--browser .file-preview .line-number {
+  color: var(--np-muted);
+  border-right-color: var(--np-border-soft);
+  background: var(--np-surface);
+}
+
+.app-shell--browser .file-preview .fold-toggle {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .file-preview .fold-toggle:hover {
+  background: var(--np-container);
+  color: var(--np-primary);
+}
+
+.app-shell--browser .folder-preview {
+  background: var(--np-surface);
+}
+
+.app-shell--browser .folder-preview-header {
+  border-bottom-color: var(--np-border-soft);
+  background: var(--np-surface);
+  padding: 12px 2px 12px;
+}
+
+.app-shell--browser .folder-preview-list {
+  padding: 8px 0;
+}
+
+.app-shell--browser .folder-preview-header h3,
+.app-shell--browser .folder-preview-entry {
+  color: var(--np-text);
+}
+
+.app-shell--browser .folder-preview-header span,
+.app-shell--browser .folder-preview-loading,
+.app-shell--browser .folder-preview-entry-icon,
+.app-shell--browser .folder-preview-entry-meta {
+  color: var(--np-muted);
+}
+
+.app-shell--browser .folder-preview-entry:hover {
+  background: var(--np-container);
+}
+
+.app-shell--browser .folder-preview-entry.directory .folder-preview-entry-icon {
+  color: var(--np-primary);
+}
+
+.app-shell--browser .file-preview:hover {
+  box-shadow: none;
+}
+
+.app-shell--browser .file-preview-markdown {
+  max-width: none;
+}
+
+.app-shell--browser .file-preview-markdown :where(h1, h2, h3) {
+  font-family: var(--font-sans);
+}
+
+.app-shell--browser .code-content > .panel-empty {
+  align-self: center;
+  margin: 18vh auto 0;
+  max-width: 420px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-bg);
+  color: var(--np-muted);
+}
+
+.app-shell--browser .repo-insight-scroll {
+  height: 100%;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.app-shell--browser .repo-insight-header,
+.app-shell--browser .inspector-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-shell--browser .repo-insight-header {
+  min-height: 34px;
+  margin-bottom: 14px;
+}
+
+.app-shell--browser .repo-insight-header h2 {
+  margin: 0;
+  color: var(--np-text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 24px;
+}
+
+.app-shell--browser .repo-insight-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 999px;
+  color: var(--np-primary);
+  background: var(--np-bg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.app-shell--browser .inspector-card,
+.app-shell--browser .repo-insight-section {
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--np-border-soft);
+  border-radius: 8px;
+  background: var(--np-surface);
+}
+
+.app-shell--browser .inspector-status-card {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .slice-avatar {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--np-primary);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.app-shell--browser .slice-status-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app-shell--browser .slice-status-copy strong {
+  color: var(--np-text);
+  font-size: 14px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell--browser .slice-status-copy > span:last-child,
+.app-shell--browser .repo-insight-copy,
+.app-shell--browser .repo-insight-history p {
+  color: var(--np-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.app-shell--browser .repo-insight-section h3,
+.app-shell--browser .inspector-section-title h3 {
+  margin: 0 0 10px;
+  color: var(--np-text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.app-shell--browser .inspector-section-title h3 {
+  margin-bottom: 0;
+}
+
+.app-shell--browser .inspector-section-title > span,
+.app-shell--browser .inspector-section-title > svg {
+  color: var(--np-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.app-shell--browser .repo-insight-meta {
+  gap: 12px;
+}
+
+.app-shell--browser .repo-insight-meta dt {
+  margin-bottom: 3px;
+}
+
+.app-shell--browser .repo-insight-meta dd {
+  color: var(--np-text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.app-shell--browser .repo-insight-pair {
+  gap: 12px;
+}
+
+.app-shell--browser .inspector-change-list,
+.app-shell--browser .inspector-history-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-shell--browser .inspector-change-list li,
+.app-shell--browser .inspector-history-list li {
+  min-width: 0;
+  border-radius: 4px;
+  background: var(--np-bg);
+}
+
+.app-shell--browser .inspector-change-list li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  color: var(--np-text);
+  font-size: 13px;
+}
+
+.app-shell--browser .inspector-change-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell--browser .inspector-change-list small,
+.app-shell--browser .inspector-history-list small {
+  color: var(--np-muted);
+  font-size: 11px;
+}
+
+.app-shell--browser .inspector-history-list li {
+  padding: 8px;
+}
+
+.app-shell--browser .inspector-history-list p {
+  margin: 6px 0 2px;
+  color: var(--np-text);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.app-shell--browser .change-type {
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.app-shell--browser .panel-empty,
+.app-shell--browser .panel-error,
+.app-shell--browser .repo-search-state {
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+@media (max-width: 1180px) {
+  .app-shell--browser .repo-layout,
+  .app-shell--browser .repo-layout.insight-collapsed {
+    grid-template-columns: var(--repo-sidebar-width, 260px) minmax(0, 1fr);
+  }
+
+  .app-shell--browser .repo-layout.sidebar-collapsed,
+  .app-shell--browser .repo-layout.sidebar-collapsed.insight-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .slice-agents-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .slice-agents-sidebar-overlay {
+    display: block;
+    position: fixed;
+    top: var(--app-header-height);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    background: rgba(15, 23, 42, 0.36);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms ease;
+  }
+
+  .slice-agents-sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .slice-agents-sidebar-overlay.dismissing {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .slice-agents-sidebar {
+    position: fixed;
+    top: var(--app-header-height);
+    bottom: 0;
+    left: 0;
+    z-index: 21;
+    width: 320px;
+    max-width: 88vw;
+    height: calc(100dvh - var(--app-header-height));
+    max-height: none;
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    background: var(--surface);
+    box-shadow: 0 0 0 rgba(15, 23, 42, 0);
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    transition:
+      transform 280ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 180ms ease,
+      box-shadow 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+  }
+
+  .slice-agents-page.viewport-pending .slice-agents-sidebar-overlay {
+    opacity: 0;
+    pointer-events: none;
+    transition: none;
+  }
+
+  .slice-agents-page.viewport-pending .slice-agents-sidebar {
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    box-shadow: none;
+    transition: none;
+  }
+
+  .slice-agents-sidebar.open {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    pointer-events: auto;
+    box-shadow: 18px 0 40px rgba(15, 23, 42, 0.16);
+  }
+
+  .slice-agents-sidebar.closed {
+    display: flex;
+    width: 320px;
+    max-width: 88vw;
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    box-shadow: 0 0 0 rgba(15, 23, 42, 0);
+  }
+
+  .slice-agents-resize-handle {
+    display: none;
+  }
+
+  .slice-agents-sidebar-close {
+    display: inline-flex !important;
+  }
+
+  .slice-agents-mobile-toolbar {
+    display: inline-flex !important;
+  }
+
+  .slice-agents-conversation {
+    padding: 16px;
+  }
+
+  .slice-agents-conversation-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell--browser .repo-layout,
+  .app-shell--browser .repo-layout.sidebar-collapsed {
+    min-height: calc(100dvh - var(--app-header-height) - 32px);
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell--browser .repo-browser--with-tabs .repo-layout,
+  .app-shell--browser .repo-browser--with-tabs .repo-layout.sidebar-collapsed {
+    min-height: calc(100dvh - var(--app-header-height) - 80px);
+  }
+
+  .app-shell--browser .repo-code {
+    min-height: calc(100dvh - var(--app-header-height) - 32px);
+  }
+
+  .app-shell--browser .sidebar-overlay {
+    display: block;
+    position: fixed;
+    top: var(--app-header-height);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    background: rgba(15, 23, 42, 0.36);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms ease;
+  }
+
+  .app-shell--browser .sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .app-shell--browser .sidebar-overlay.dismissing {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .app-shell--browser .repo-sidebar {
+    position: fixed;
+    top: var(--app-header-height);
+    bottom: 0;
+    left: 0;
+    z-index: 21;
+    width: 320px;
+    max-width: 88vw;
+    height: calc(100dvh - var(--app-header-height));
+    max-height: none;
+    border-right: 1px solid var(--np-border-soft);
+    background: var(--np-sidebar);
+    box-shadow: 0 0 0 rgba(15, 23, 42, 0);
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    transition:
+      transform 280ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 180ms ease,
+      box-shadow 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+  }
+
+  .app-shell--browser .repo-sidebar.open {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    pointer-events: auto;
+    box-shadow: 18px 0 40px rgba(15, 23, 42, 0.16);
+  }
+
+  .app-shell--browser .repo-sidebar.closed {
+    display: flex;
+    width: 320px;
+    max-width: 88vw;
+    border-right: 1px solid var(--np-border-soft);
+    opacity: 0;
+    transform: translate3d(-102%, 0, 0);
+    pointer-events: none;
+    box-shadow: 0 0 0 rgba(15, 23, 42, 0);
+  }
+
+  .app-shell--browser .code-content {
+    padding: 16px;
+  }
+
+  .app-shell--browser .diff-detail-page {
+    height: calc(100dvh - var(--app-header-height) - 32px);
+    overflow: hidden;
+  }
+
+  .app-shell--browser .diff-top-bar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+    min-height: 0;
+    padding: 12px 16px;
+  }
+
+  .app-shell--browser .diff-back-btn {
+    justify-self: start;
+    width: auto;
+    min-height: 30px;
+    padding: 0 4px !important;
+  }
+
+  .app-shell--browser .diff-top-title h2 {
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  .app-shell--browser .changeset-title-meta {
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+  }
+
+  .app-shell--browser .diff-detail-controls,
+  .app-shell--browser .changeset-detail-page .changeset-detail-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .app-shell--browser .diff-summary {
+    width: 100%;
+  }
+
+  .app-shell--browser .diff-view-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .app-shell--browser .diff-view-btn {
+    width: 100%;
+    min-height: 34px;
+    padding: 0 10px !important;
+  }
+
+  .app-shell--browser .changeset-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+
+  .app-shell--browser .changeset-actions > button {
+    width: 100%;
+  }
+
+  .app-shell--browser .changeset-snapshot-picker {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .app-shell--browser .changeset-snapshot-picker select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .app-shell--browser .diff-content {
+    padding: 12px 16px max(56px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+    scroll-padding-bottom: max(56px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+  }
+
+  .app-shell--browser .diff-file-item {
+    padding: 12px;
+  }
+
+  .app-shell--browser .diff-file-path {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .app-shell--browser .diff-patch,
+  .app-shell--browser .diff-split-container {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell--browser .repo-layout,
+  .app-shell--browser .repo-layout.sidebar-collapsed {
+    min-height: calc(100dvh - var(--app-header-height) - 32px);
+  }
+
+  .app-shell--browser .repo-browser--with-tabs .repo-layout,
+  .app-shell--browser .repo-browser--with-tabs .repo-layout.sidebar-collapsed {
+    min-height: calc(100dvh - var(--app-header-height) - 156px);
+  }
+
+  .slice-detail-nav {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 124px;
+    padding: 8px 12px;
+  }
+
+  .slice-detail-nav-title {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .slice-detail-nav-copy {
+    flex: 1 1 min(220px, 100%);
+  }
+
+  .slice-detail-get-code {
+    margin-left: 40px;
+  }
+
+  .slice-detail-get-code-popover {
+    left: auto;
+    right: 0;
+    width: min(420px, calc(100vw - 24px));
+  }
+
+  .slice-detail-tabs {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .slice-detail-tab {
+    flex: 1 0 auto;
+  }
+
+  .slice-activity-content {
+    padding: 16px;
+  }
+
+  .slice-activity-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .slice-activity-toolbar {
+    justify-content: flex-start;
+  }
+
+  .slice-activity-filter {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  .slice-activity-filter-btn {
+    flex: 1 0 auto;
+    padding: 0 6px !important;
+    font-size: 0.78rem !important;
+  }
+
+  .slice-activity-row,
+  .slice-activity-row--changeset {
+    grid-template-columns: 34px minmax(0, 1fr) 18px;
+    gap: 8px 12px;
+    min-height: 76px;
+  }
+
+  .slice-activity-row--changeset {
+    align-items: start !important;
+    min-height: 0;
+    padding: 12px !important;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-icon {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-main {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 6px;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-heading {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 5px;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-title {
+    display: -webkit-box;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-subtitle {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    gap: 5px 8px;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-meta,
+  .slice-activity-row--changeset .slice-activity-row-files,
+  .slice-activity-row--changeset .slice-activity-muted,
+  .slice-activity-row--changeset .commit-hash {
+    max-width: 100%;
+    line-height: 1.35;
+    white-space: normal;
+  }
+
+  .slice-activity-row > .slice-activity-row-meta,
+  .slice-activity-row > .slice-activity-row-files,
+  .slice-activity-row > .slice-activity-status {
+    grid-column: 2;
+    grid-row: auto;
+    justify-self: start;
+    text-align: left;
+  }
+
+  .slice-activity-row--changeset .slice-activity-status {
+    align-self: start;
+    justify-self: start;
+  }
+
+  .slice-activity-row-arrow {
+    grid-column: 3;
+    grid-row: 1 / span 3;
+    align-self: center;
+  }
+
+  .slice-activity-row--changeset .slice-activity-row-arrow {
+    grid-row: 1;
+  }
+
+  .app-shell--browser .slice-activity-content {
+    padding: 16px 16px max(56px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+    scroll-padding-bottom: max(56px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+  }
+
+  .app-shell--browser .code-header {
+    min-height: 48px;
+    padding: 8px;
+  }
+
+  .app-shell--browser .breadcrumbs {
+    width: 100%;
+  }
+
+  .app-shell--browser .breadcrumb {
+    max-width: min(11rem, 40vw);
+  }
+
+  .app-shell--browser .breadcrumb:first-child {
+    max-width: min(8rem, 28vw);
+  }
+
+  .app-shell--browser .breadcrumb:last-child {
+    max-width: min(14rem, 46vw);
+  }
+
+  .app-shell--browser .file-preview,
+  .app-shell--browser .file-editor {
+    padding: 16px;
+  }
+}
+
+.app-shell--browser .repo-layout,
+.app-shell--browser .repo-code,
+.app-shell--browser .repo-insight {
+  transition: none !important;
+}
+
+.app-shell--browser .repo-insight.closed {
+  transform: none;
+}
+
+.app-shell--browser .repo-sidebar.open,
+.app-shell--browser .sidebar-overlay.visible {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell--browser .repo-sidebar,
+  .app-shell--browser .sidebar-overlay {
+    transition: none;
+  }
+}

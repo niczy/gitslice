@@ -375,7 +375,7 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 	if err != nil {
 		switch err {
 		case storage.ErrAgentSessionConflict:
-			return nil, status.Error(codes.AlreadyExists, "active session already exists for slice")
+			return nil, status.Error(codes.AlreadyExists, "agent session already exists")
 		case storage.ErrInvalidInput:
 			return nil, status.Error(codes.InvalidArgument, "invalid request")
 		default:

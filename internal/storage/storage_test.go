@@ -2509,6 +2509,36 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	if len(sliceSessions) != 1 || sliceSessions[0].SessionID != session.SessionID {
 		t.Fatalf("ListAgentSessionsBySlice mismatch: %#v", sliceSessions)
 	}
+	secondSession := &models.AgentSession{
+		SessionID:       fmt.Sprintf("sess-agent-second-%s", suffix),
+		SliceID:         slice.ID,
+		EnvironmentName: "local-agents",
+		AgentType:       "codex",
+		UserID:          "alice",
+		State:           models.AgentSessionStateCreating,
+		Provider:        "local",
+		IdleTimeoutSec:  1800,
+		TTLSec:          14400,
+		CreatedAt:       time.Now().Add(time.Millisecond),
+		UpdatedAt:       time.Now().Add(time.Millisecond),
+	}
+	if err := st.CreateAgentSession(ctx, secondSession); err != nil {
+		t.Fatalf("CreateAgentSession second active session failed: %v", err)
+	}
+	active, err = st.GetActiveAgentSessionBySlice(ctx, slice.ID)
+	if err != nil {
+		t.Fatalf("GetActiveAgentSessionBySlice after second active session failed: %v", err)
+	}
+	if active.SessionID != secondSession.SessionID {
+		t.Fatalf("active session should return latest active session: got %s want %s", active.SessionID, secondSession.SessionID)
+	}
+	sliceSessions, err = st.ListAgentSessionsBySlice(ctx, slice.ID, 10)
+	if err != nil {
+		t.Fatalf("ListAgentSessionsBySlice after second active session failed: %v", err)
+	}
+	if len(sliceSessions) != 2 {
+		t.Fatalf("expected two active sessions for slice, got %#v", sliceSessions)
+	}
 
 	session.State = models.AgentSessionStateRunning
 	session.RuntimeProvider = "local"
@@ -2584,6 +2614,12 @@ func runStorageContract(ctx context.Context, t *testing.T, st Storage) {
 	session.UpdatedAt = nowStopped
 	if err := st.UpdateAgentSession(ctx, session); err != nil {
 		t.Fatalf("UpdateAgentSession stopped failed: %v", err)
+	}
+	secondSession.State = models.AgentSessionStateStopped
+	secondSession.StoppedAt = &nowStopped
+	secondSession.UpdatedAt = nowStopped
+	if err := st.UpdateAgentSession(ctx, secondSession); err != nil {
+		t.Fatalf("UpdateAgentSession second stopped failed: %v", err)
 	}
 	if _, err := st.GetActiveAgentSessionBySlice(ctx, session.SliceID); err != ErrAgentSessionNotFound {
 		t.Fatalf("expected ErrAgentSessionNotFound for inactive slice session, got %v", err)

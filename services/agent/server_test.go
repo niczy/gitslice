@@ -191,11 +191,15 @@ func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 		t.Fatalf("expected runner id in response, got %#v", createResp)
 	}
 
-	if _, err := srv.CreateSession(ctx, &agentv1.CreateSessionRequest{
+	secondResp, err := srv.CreateSession(ctx, &agentv1.CreateSessionRequest{
 		SliceId:  "slice-runner-service",
 		RunnerId: "runner-online",
-	}); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("expected active session conflict, got %v", err)
+	})
+	if err != nil {
+		t.Fatalf("CreateSession second active session failed: %v", err)
+	}
+	if secondResp.GetSessionId() == "" || secondResp.GetSessionId() == createResp.GetSessionId() {
+		t.Fatalf("expected distinct second session id, got %#v", secondResp)
 	}
 }
 
