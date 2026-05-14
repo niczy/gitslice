@@ -8,13 +8,21 @@ import {
   mergeChangeset,
   rerunCI,
 } from '../utils/api.js';
-import { formatChangeType, formatTimestamp } from '../utils/format.js';
+import { formatTimestamp } from '../utils/format.js';
 import {
-  normalizeChangeType,
   normalizeChangesetDiffResponse,
   normalizeChangesetSnapshotListResponse,
 } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
+import {
+  DiffFileItemHeader,
+  DiffFilePanel,
+  DiffSummary,
+  DiffTopBar,
+  DiffViewToggle,
+  getChangesetDiffFileKey,
+  scrollDiffFileIntoView,
+} from './diff/DiffDetailLayout.jsx';
 import { Button } from './ui/button.jsx';
 
 // ---------------------------------------------------------------------------
@@ -317,34 +325,7 @@ export default function ChangesetDiffPage({
   const handleFileSelect = useCallback((fileKey) => {
     setSelectedFileId(fileKey);
 
-    const panelItemEl = panelItemRefs.current[fileKey];
-    if (panelItemEl) {
-      const listEl = panelItemEl.closest('.diff-file-panel-list');
-      if (listEl) {
-        const itemTop = panelItemEl.offsetTop;
-        const itemBottom = itemTop + panelItemEl.offsetHeight;
-        const visibleTop = listEl.scrollTop;
-        const visibleBottom = visibleTop + listEl.clientHeight;
-
-        if (itemTop < visibleTop) {
-          listEl.scrollTo({ top: itemTop, behavior: 'smooth' });
-        } else if (itemBottom > visibleBottom) {
-          listEl.scrollTo({ top: itemBottom - listEl.clientHeight, behavior: 'smooth' });
-        }
-      }
-    }
-
-    const fileEl = fileRefs.current[fileKey];
-    const diffContentEl = diffContentRef.current;
-    if (fileEl && diffContentEl) {
-      const fileRect = fileEl.getBoundingClientRect();
-      const containerRect = diffContentEl.getBoundingClientRect();
-      const targetTop = diffContentEl.scrollTop + (fileRect.top - containerRect.top) - 16;
-      diffContentEl.scrollTo({
-        top: Math.max(targetTop, 0),
-        behavior: 'smooth',
-      });
-    }
+    scrollDiffFileIntoView(fileKey, panelItemRefs, fileRefs, diffContentRef);
   }, []);
 
   const handleMerge = async () => {
@@ -377,144 +358,102 @@ export default function ChangesetDiffPage({
 
   return (
     <section className="commit-diff-page diff-detail-page changeset-detail-page" data-testid="changeset-diff-page">
-      <div className="diff-top-bar">
-        <Button type="button" variant="ghost" className="diff-back-btn" onClick={onBack} data-testid="changeset-back-btn">
-          Back to changesets
-        </Button>
-        <div className="diff-top-title">
-          <p className="eyebrow">Changeset diff</p>
-          <h2 data-testid="changeset-title">
-            Changeset <span className="commit-hash">{changesetId ? changesetId.slice(0, 18) : ''}</span>
-          </h2>
-          {changeset && (
-            <p className="changeset-title-meta">
-              {changesetStatusText(changeset)} on {changeset.slice_id || changeset.sliceId} by {changeset.author || 'unknown'} · {formatTimestamp(changeset.created_at || changeset.createdAt)}
-            </p>
-          )}
-          {selectedSnapshot?.version > 0 && (
-            <p className="changeset-title-meta" data-testid="changeset-snapshot-meta">
-              snapshot v{selectedSnapshot.version} by {selectedSnapshot.author || changeset?.author || 'unknown'} · {formatTimestamp(selectedSnapshot.created_at || selectedSnapshot.createdAt)}
-            </p>
-          )}
-          {changesetCILabel && (
-            <p className="changeset-title-meta changeset-title-ci">
-              <span className={`changeset-ci-badge changeset-ci-badge--${ciTone(changesetCI.stale ? 'stale' : changesetCI.status)}`} data-testid="changeset-ci-status">
-                {changesetCILabel}
-              </span>
-              {changesetCI.run_id && <span className="commit-hash">{changesetCI.run_id.slice(0, 18)}</span>}
-            </p>
-          )}
-        </div>
-        <div className="diff-detail-controls changeset-detail-controls">
-          {diff && (
-            <div className="diff-summary" data-testid="changeset-summary">
-              <span className="diff-stat diff-stat-added">+{diff.files_added || diff.filesAdded || 0} added</span>
-              <span className="diff-stat diff-stat-modified">{diff.files_modified || diff.filesModified || 0} modified</span>
-              <span className="diff-stat diff-stat-deleted">-{diff.files_deleted || diff.filesDeleted || 0} deleted</span>
-            </div>
-          )}
-          {snapshots.length > 0 && (
-            <div className="changeset-snapshot-picker" data-testid="changeset-snapshot-picker">
-              <label htmlFor="changeset-snapshot-select">Snapshot</label>
-              <select
-                id="changeset-snapshot-select"
-                data-testid="changeset-snapshot-select"
-                value={selectedSnapshotVersion || snapshots[0].version}
-                onChange={(event) => setSelectedSnapshotVersion(Number(event.target.value) || 0)}
-                disabled={isLoading || actionLoading !== ''}
+      <DiffTopBar
+        backLabel="Back to changesets"
+        backTestId="changeset-back-btn"
+        controls={(
+          <div className="diff-detail-controls changeset-detail-controls">
+            <DiffSummary data={diff} testId="changeset-summary" />
+            {snapshots.length > 0 && (
+              <div className="changeset-snapshot-picker" data-testid="changeset-snapshot-picker">
+                <label htmlFor="changeset-snapshot-select">Snapshot</label>
+                <select
+                  id="changeset-snapshot-select"
+                  data-testid="changeset-snapshot-select"
+                  value={selectedSnapshotVersion || snapshots[0].version}
+                  onChange={(event) => setSelectedSnapshotVersion(Number(event.target.value) || 0)}
+                  disabled={isLoading || actionLoading !== ''}
+                >
+                  {snapshots.map((snapshot) => (
+                    <option key={snapshot.snapshot_id || `${snapshot.changeset_id}-${snapshot.version}`} value={snapshot.version}>
+                      v{snapshot.version} - {formatTimestamp(snapshot.created_at || snapshot.createdAt)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <DiffViewToggle
+              viewMode={viewMode}
+              onChange={setViewMode}
+              testId="changeset-view-toggle"
+            />
+            <div className="changeset-actions" data-testid="changeset-actions">
+              <Button
+                type="button"
+                className="primary changeset-action-merge"
+                onClick={handleMerge}
+                disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged'}
+                data-testid="changeset-merge-btn"
               >
-                {snapshots.map((snapshot) => (
-                  <option key={snapshot.snapshot_id || `${snapshot.changeset_id}-${snapshot.version}`} value={snapshot.version}>
-                    v{snapshot.version} - {formatTimestamp(snapshot.created_at || snapshot.createdAt)}
-                  </option>
-                ))}
-              </select>
+                {actionLoading === 'merge' ? 'Merging…' : 'Merge'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="changeset-action-close"
+                onClick={handleClose}
+                disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged' || changeset?.status === 'rejected'}
+                data-testid="changeset-close-btn"
+              >
+                {actionLoading === 'close' ? 'Closing…' : 'Close'}
+              </Button>
             </div>
-          )}
-          <div className="diff-view-toggle" data-testid="changeset-view-toggle">
-            <Button
-              type="button"
-              variant="ghost"
-              className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
-              onClick={() => setViewMode('unified')}
-            >
-              Unified
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
-              onClick={() => setViewMode('split')}
-            >
-              Side-by-side
-            </Button>
           </div>
-          <div className="changeset-actions" data-testid="changeset-actions">
-            <Button
-              type="button"
-              className="primary changeset-action-merge"
-              onClick={handleMerge}
-              disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged'}
-              data-testid="changeset-merge-btn"
-            >
-              {actionLoading === 'merge' ? 'Merging…' : 'Merge'}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className="changeset-action-close"
-              onClick={handleClose}
-              disabled={isLoading || actionLoading !== '' || changeset?.status === 'merged' || changeset?.status === 'rejected'}
-              data-testid="changeset-close-btn"
-            >
-              {actionLoading === 'close' ? 'Closing…' : 'Close'}
-            </Button>
-          </div>
-        </div>
-      </div>
+        )}
+        eyebrow="Changeset diff"
+        meta={(
+          <>
+            {changeset && (
+              <p className="changeset-title-meta">
+                {changesetStatusText(changeset)} on {changeset.slice_id || changeset.sliceId} by {changeset.author || 'unknown'} · {formatTimestamp(changeset.created_at || changeset.createdAt)}
+              </p>
+            )}
+            {selectedSnapshot?.version > 0 && (
+              <p className="changeset-title-meta" data-testid="changeset-snapshot-meta">
+                snapshot v{selectedSnapshot.version} by {selectedSnapshot.author || changeset?.author || 'unknown'} · {formatTimestamp(selectedSnapshot.created_at || selectedSnapshot.createdAt)}
+              </p>
+            )}
+            {changesetCILabel && (
+              <p className="changeset-title-meta changeset-title-ci">
+                <span className={`changeset-ci-badge changeset-ci-badge--${ciTone(changesetCI.stale ? 'stale' : changesetCI.status)}`} data-testid="changeset-ci-status">
+                  {changesetCILabel}
+                </span>
+                {changesetCI.run_id && <span className="commit-hash">{changesetCI.run_id.slice(0, 18)}</span>}
+              </p>
+            )}
+          </>
+        )}
+        onBack={onBack}
+        title={(
+          <>
+            Changeset <span className="commit-hash">{changesetId ? changesetId.slice(0, 18) : ''}</span>
+          </>
+        )}
+        titleTestId="changeset-title"
+      />
 
       <div className="diff-layout">
         {!isLoading && !error && changes.length > 0 && (
-          <nav className="diff-file-panel" data-testid="changeset-file-panel">
-            <div className="diff-file-panel-header">
-              Files ({visibleChanges.length}{hiddenChangeCount > 0 ? `/${changes.length}` : ''})
-            </div>
-            <ul className="diff-file-panel-list">
-              {visibleChanges.map((change) => {
-                const fileKey = change.id || `${change.path}-${change.old_path || ''}`;
-                const fileName = String(change.path || '').split('/').pop();
-                const dirPath = String(change.path || '').split('/').slice(0, -1).join('/');
-                const normalizedType = normalizeChangeType(change.change_type || change.changeType);
-                return (
-                  <li key={fileKey}>
-                    <Button
-                      ref={(el) => { panelItemRefs.current[fileKey] = el; }}
-                      type="button"
-                      variant="ghost"
-                      className={`diff-file-panel-item w-full justify-start ${selectedFileId === fileKey ? 'diff-file-panel-item-active' : ''}`}
-                      onClick={() => handleFileSelect(fileKey)}
-                      title={change.path}
-                      data-testid="changeset-file-panel-item"
-                    >
-                      <span className={`diff-file-panel-badge change-type-${normalizedType}`}>
-                        {normalizedType.charAt(0).toUpperCase()}
-                      </span>
-                      <span className="diff-file-panel-name">
-                        {dirPath && <span className="diff-file-panel-dir">{dirPath}/</span>}
-                        {fileName}
-                      </span>
-                      {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                        <span className="diff-file-panel-stats">
-                          {change.lines_added > 0 && <span className="lines-added">+{change.lines_added}</span>}
-                          {change.lines_deleted > 0 && <span className="lines-deleted">-{change.lines_deleted}</span>}
-                        </span>
-                      )}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
+          <DiffFilePanel
+            changes={visibleChanges}
+            getFileKey={getChangesetDiffFileKey}
+            headerLabel={`Files (${visibleChanges.length}${hiddenChangeCount > 0 ? `/${changes.length}` : ''})`}
+            itemTestId="changeset-file-panel-item"
+            onFileSelect={handleFileSelect}
+            panelItemRefs={panelItemRefs}
+            selectedFileId={selectedFileId}
+            testId="changeset-file-panel"
+          />
         )}
 
         <div className="diff-content" ref={diffContentRef}>
@@ -604,8 +543,7 @@ export default function ChangesetDiffPage({
           {!isLoading && !error && (
             <ul className="diff-file-list" data-testid="changeset-file-list">
               {visibleChanges.map((change) => {
-                const fileKey = change.id || `${change.path}-${change.old_path || ''}`;
-                const normalizedType = normalizeChangeType(change.change_type || change.changeType);
+                const fileKey = getChangesetDiffFileKey(change);
                 return (
                   <li
                     key={fileKey}
@@ -613,25 +551,7 @@ export default function ChangesetDiffPage({
                     className={`diff-file-item ${selectedFileId === fileKey ? 'diff-file-item-selected' : ''}`}
                     data-testid="changeset-file-item"
                   >
-                    <div className="diff-file-header">
-                      <div className="diff-file-header-main">
-                        <span className={`change-type change-type-${normalizedType}`}>
-                          {formatChangeType(change.change_type || change.changeType)}
-                        </span>
-                        <span className="diff-file-path">{change.path}</span>
-                        {change.old_path && change.old_path !== change.path && (
-                          <span className="diff-file-old-path">(was: {change.old_path})</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="diff-file-stats">
-                      {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                        <span className="history-lines">
-                          <span className="lines-added">+{change.lines_added || 0}</span>
-                          <span className="lines-deleted">-{change.lines_deleted || 0}</span>
-                        </span>
-                      )}
-                    </div>
+                    <DiffFileItemHeader change={change} />
                     {!change.patch && (
                       <div className="changeset-no-patch">No inline patch is available for this changeset entry.</div>
                     )}
