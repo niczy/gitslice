@@ -1,0 +1,114 @@
+.slice-agents-conversation {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 28px;
+  overflow: hidden;
+}
+
+.slice-agents-conversation-shell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
+.slice-agents-mobile-toolbar {
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.slice-agents-conversation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.slice-agents-conversation-header h1 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 1.12rem;
+  line-height: 1.25;
+  text-transform: capitalize;
+}
+
+.slice-agents-conversation-header span {
+  display: block;
+  color: var(--text-muted);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.slice-agents-local-panel-toggle {
+  flex: 0 0 auto;
+  min-height: 32px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+  color: var(--text-secondary) !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+}
+
+.slice-agents-local-panel-toggle:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-primary) !important;
+  transform: none;
+}
+
+.slice-agents-conversation-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-conversation-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.slice-agents-conversation-shell.has-local-changes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: stretch;
+  column-gap: 14px;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-conversation-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-conversation-body {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.slice-agents-conversation-thread {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
