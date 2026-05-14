@@ -1,0 +1,124 @@
+/* Code header */
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 14px 16px 0;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+}
+
+.code-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.code-view-tabs {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.code-view-tab {
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.code-view-tab:last-child {
+  border-right: none;
+}
+
+.code-view-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.code-view-tab.active {
+  background: rgba(9, 105, 218, 0.1);
+  color: var(--accent);
+}
+
+.code-header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.code-header-left > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.code-header h3 {
+  margin: 0 0 2px;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  transition: color 200ms ease;
+}
+
+.code-header h3:hover {
+  color: var(--accent);
+}
+
+/* Code content */
+.code-content {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-content .panel-empty {
+  padding: 24px;
+  text-align: center;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.file-loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(9, 105, 218, 0.16);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: file-loading-spin 800ms linear infinite;
+}
+
+@keyframes file-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

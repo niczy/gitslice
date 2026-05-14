@@ -1,0 +1,241 @@
+.file-preview {
+  margin: 0;
+  background: #f6f8fa;
+  color: var(--text-primary);
+  padding: 16px;
+  border-radius: 8px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  transition: all 200ms ease;
+}
+
+.file-preview:hover {
+  border-color: var(--border-strong);
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.02);
+}
+
+.file-preview code {
+  white-space: pre;
+}
+
+.file-preview-markdown {
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+  line-height: 1.7;
+  white-space: normal;
+}
+
+.file-preview-markdown h1,
+.file-preview-markdown h2,
+.file-preview-markdown h3,
+.file-preview-markdown h4,
+.file-preview-markdown h5,
+.file-preview-markdown h6 {
+  margin: 1rem 0 0.5rem;
+  line-height: 1.3;
+}
+
+.file-preview-markdown h1,
+.file-preview-markdown h2 {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.25rem;
+}
+
+.file-preview-markdown p,
+.file-preview-markdown ul,
+.file-preview-markdown ol,
+.file-preview-markdown blockquote {
+  margin: 0.65rem 0;
+}
+
+.file-preview-markdown ul,
+.file-preview-markdown ol {
+  padding-left: 1.5rem;
+}
+
+.file-preview-markdown code {
+  font-family: var(--font-mono);
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  white-space: pre-wrap;
+}
+
+.file-preview-markdown pre {
+  background: #eef2f7;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  overflow: auto;
+}
+
+.file-preview-markdown pre code {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  white-space: pre;
+}
+
+.file-preview-markdown blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.file-preview-markdown a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.file-preview-markdown a:hover {
+  text-decoration: underline;
+}
+
+.file-editor {
+  margin: 0;
+  background: #f6f8fa;
+  color: var(--text-primary);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  font-family: var(--font-mono);
+}
+
+.media-preview-wrapper {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f6f8fa;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+}
+
+.media-preview-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.15);
+}
+
+.media-preview-pdf {
+  width: 100%;
+  min-height: 420px;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+}
+
+/* Syntax highlighting */
+.token-comment {
+  color: #6e7781;
+}
+
+.token-string {
+  color: #0a3069;
+}
+
+.token-number {
+  color: #0550ae;
+}
+
+.token-keyword {
+  color: #cf222e;
+}
+
+/* Line numbers and code table */
+.code-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  counter-reset: line;
+}
+
+.code-line {
+  height: 1.6em;
+}
+
+.code-line.fold-start {
+  border-top: 0;
+}
+
+.line-number {
+  width: 1px;
+  min-width: 3.5em;
+  padding: 0 12px 0 8px;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: top;
+  border-right: 1px solid var(--border);
+  position: relative;
+  background: inherit;
+}
+
+.line-content {
+  padding: 0 12px;
+  white-space: pre;
+  word-wrap: normal;
+  vertical-align: top;
+  width: 100%;
+}
+
+/* Fold toggle */
+.fold-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1;
+  transition: transform 0.15s ease, color 0.15s ease;
+  vertical-align: middle;
+}
+
+.fold-toggle:hover {
+  color: var(--text-primary);
+  background: var(--np-container);
+}
+
+.fold-toggle.folded {
+  transform: rotate(-90deg);
+}
+
+.code-line.folded {
+  display: none;
+}
+
+.fold-start .line-number {
+  font-weight: 600;
+}
+
+.fold-end .line-number {
+  font-weight: 600;
+}
