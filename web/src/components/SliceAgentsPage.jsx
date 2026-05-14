@@ -8,52 +8,40 @@ import {
 
 import {
   createAgentSession,
-  getAgentCapabilities,
-  listAgentRunners,
-  listAgentSessionEvents,
-  listAgentSessions,
   requestAgentSessionChangesetExport,
   requestAgentSessionLocalChanges,
   requestAgentRunnerRestart,
   sendAgentSessionInput,
 } from '../api/agents.js';
 import {
-  AGENT_EVENTS_MAX,
-  AGENT_EVENTS_PAGE_SIZE,
   AGENTS_SIDEBAR_MAX_WIDTH,
   AGENTS_SIDEBAR_MIN_WIDTH,
   LOCAL_CHANGES_REQUEST_TIMEOUT_MS,
 } from '../features/agents/agentConstants.js';
 import {
   buildConversationItems,
-  buildLiveStreamState,
   latestChangesetExportEvent,
   latestChangesetExportFailureEvent,
   latestEventSeq,
   latestLocalChangesEvent,
   latestLocalChangesFailureEvent,
   latestRunnerState,
-  normalizeEvent,
   payloadRequestId,
 } from '../features/agents/agentEvents.js';
 import {
-  writeAgentSessionURL,
-} from '../features/agents/agentLayout.js';
-import {
   buildRunningAgentInfoRows,
   conversationAvailabilityLabel,
-  conversationAvailabilityRank,
   formatAgentTimestamp,
   infoValue,
   isConversationCloudOnly,
   isConversationLocal,
-  normalizeRunner,
   normalizeSession,
   runnerStateValue,
 } from '../features/agents/agentModels.js';
 import {
   normalizeLocalChangesPayload,
 } from '../features/agents/agentLocalChanges.js';
+import { useAgentSessionsData } from '../features/agents/useAgentSessionsData.js';
 import { useAgentSessionsSidebar } from '../features/agents/useAgentSessionsSidebar.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
@@ -73,14 +61,6 @@ export default function SliceAgentsPage({
   onOpenChangesets,
   onSelectSession,
 }) {
-  const [sessions, setSessions] = useState([]);
-  const [runners, setRunners] = useState([]);
-  const [selectedSessionId, setSelectedSessionId] = useState('');
-  const [selectedRunnerId, setSelectedRunnerId] = useState('');
-  const [events, setEvents] = useState([]);
-  const [runnersLoading, setRunnersLoading] = useState(false);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [eventsLoading, setEventsLoading] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [inputText, setInputText] = useState('');
   const [sendingInput, setSendingInput] = useState(false);
@@ -92,17 +72,47 @@ export default function SliceAgentsPage({
   const [pendingLocalChangesRequestedAt, setPendingLocalChangesRequestedAt] = useState(0);
   const [pendingChangesetExportRequestId, setPendingChangesetExportRequestId] = useState('');
   const [changesetMessage, setChangesetMessage] = useState('');
-  const [sessionsError, setSessionsError] = useState('');
-  const [eventsError, setEventsError] = useState('');
   const [createError, setCreateError] = useState('');
   const [inputError, setInputError] = useState('');
   const [runnerActionError, setRunnerActionError] = useState('');
   const [localChangesError, setLocalChangesError] = useState('');
-  const [runnersError, setRunnersError] = useState('');
-  const [capabilities, setCapabilities] = useState(null);
   const [localChangesPanelOpen, setLocalChangesPanelOpen] = useState(true);
   const autoLocalChangesSessionRef = useRef('');
   const autoLocalChangesOutputSeqRef = useRef(0);
+  const localChangesBusy = localChangesRequesting || Boolean(pendingLocalChangesRequestId);
+  const changesetExportBusy = exportingChangeset || Boolean(pendingChangesetExportRequestId);
+  const {
+    assistantStreaming,
+    defaultAgentType,
+    events,
+    eventsError,
+    eventsLoading,
+    liveStreamState,
+    loadRunners,
+    loadSelectedEvents,
+    loadSessions,
+    onlineRunners,
+    runnerSessions,
+    runners,
+    runnersError,
+    runnersLoading,
+    selectRunnerId,
+    selectSessionForRunner,
+    selectSessionId,
+    selectedRunner,
+    selectedRunnerId,
+    selectedRunnerSessions,
+    selectedSession,
+    selectedSessionId,
+    sessionsError,
+    sessionsLoading,
+  } = useAgentSessionsData({
+    changesetExportBusy,
+    localChangesBusy,
+    onSelectSession,
+    routeSessionId,
+    sliceId,
+  });
   const {
     agentsLayoutRef,
     agentsSidebarResizing,
@@ -123,46 +133,7 @@ export default function SliceAgentsPage({
     (slices || []).find((slice) => slice.slice_id === sliceId) || null
   ), [sliceId, slices]);
   const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
-  const normalizedRouteSessionId = String(routeSessionId || '').trim();
-  const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
-  const onlineRunners = useMemo(() => runners.filter((runner) => runner.status === 'online'), [runners]);
-  const onlineRunnerIds = useMemo(
-    () => new Set(onlineRunners.map((runner) => runner.runnerId).filter(Boolean)),
-    [onlineRunners],
-  );
-  const runnerSessions = useMemo(
-    () => sessions.filter((session) => session.runnerId && onlineRunnerIds.has(session.runnerId)),
-    [onlineRunnerIds, sessions],
-  );
-  const sessionsByRunnerId = useMemo(() => {
-    const grouped = new Map();
-    for (const session of runnerSessions) {
-      const group = grouped.get(session.runnerId) || [];
-      group.push(session);
-      grouped.set(session.runnerId, group);
-    }
-    for (const group of grouped.values()) {
-      group.sort((a, b) => (
-        conversationAvailabilityRank(a) - conversationAvailabilityRank(b)
-        || String(b.lastActivityAt || b.createdAt).localeCompare(String(a.lastActivityAt || a.createdAt))
-      ));
-    }
-    return grouped;
-  }, [runnerSessions]);
-  const routeSession = useMemo(() => (
-    normalizedRouteSessionId
-      ? runnerSessions.find((session) => session.sessionId === normalizedRouteSessionId) || null
-      : null
-  ), [runnerSessions, normalizedRouteSessionId]);
-  const selectedRunner = onlineRunners.find((runner) => runner.runnerId === selectedRunnerId)
-    || (routeSession?.runnerId ? onlineRunners.find((runner) => runner.runnerId === routeSession.runnerId) : null)
-    || onlineRunners[0]
-    || null;
-  const selectedRunnerSessions = selectedRunner
-    ? sessionsByRunnerId.get(selectedRunner.runnerId) || []
-    : [];
   const canCreateSession = Boolean(sliceId && selectedRunner?.runnerId);
-  const selectedSession = selectedRunnerSessions.find((session) => session.sessionId === selectedSessionId) || null;
   const runnerState = useMemo(() => latestRunnerState(events), [events]);
   const runningAgentInfoRows = useMemo(
     () => buildRunningAgentInfoRows(selectedRunner, selectedSession, runnerState),
@@ -193,11 +164,6 @@ export default function SliceAgentsPage({
     && isConversationLocal(selectedSession),
   );
   const canSendInput = Boolean(selectedSessionId && selectedSession && isConversationLocal(selectedSession));
-  const liveStreamState = useMemo(
-    () => buildLiveStreamState(events, selectedSession),
-    [events, selectedSession],
-  );
-  const assistantStreaming = liveStreamState.active;
   const localChangesEvent = useMemo(() => latestLocalChangesEvent(events), [events]);
   const localChangesFailureEvent = useMemo(() => latestLocalChangesFailureEvent(events), [events]);
   const localChanges = useMemo(() => (
@@ -209,8 +175,8 @@ export default function SliceAgentsPage({
     () => latestEventSeq(events, (event) => event.stream === 'agent' && event.type === 'output_final'),
     [events],
   );
-  const localChangesLoading = localChangesRequesting || Boolean(pendingLocalChangesRequestId);
-  const changesetExportLoading = exportingChangeset || Boolean(pendingChangesetExportRequestId);
+  const localChangesLoading = localChangesBusy;
+  const changesetExportLoading = changesetExportBusy;
   const hasDirtyFiles = Boolean(localChanges && localChanges.pathCount > 0);
   const canExportChangeset = Boolean(
     canSendInput
@@ -237,175 +203,10 @@ export default function SliceAgentsPage({
   const hasRunnerConversation = runnerSessions.length > 0;
   const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasRunnerConversation;
 
-  const selectSessionId = useCallback((sessionId) => {
-    setSelectedSessionId(sessionId);
-    if (onSelectSession) {
-      onSelectSession(sessionId);
-    } else {
-      writeAgentSessionURL(sessionId);
-    }
-  }, [onSelectSession]);
-
-  const handleRunnerSelect = useCallback((runnerId) => {
-    setSelectedRunnerId(runnerId);
-    const nextSessionId = (sessionsByRunnerId.get(runnerId) || [])[0]?.sessionId || '';
-    selectSessionId(nextSessionId);
-  }, [selectSessionId, sessionsByRunnerId]);
-
   const handleSessionSelect = useCallback((sessionId) => {
-    const nextSession = selectedRunnerSessions.find((session) => session.sessionId === sessionId);
-    if (nextSession?.runnerId) {
-      setSelectedRunnerId(nextSession.runnerId);
-    }
-    selectSessionId(sessionId);
+    selectSessionForRunner(sessionId);
     closeSessionsSidebarForMobile();
-  }, [closeSessionsSidebarForMobile, selectSessionId, selectedRunnerSessions]);
-
-  useEffect(() => {
-    if (!routeSession) {
-      return;
-    }
-    if (routeSession.runnerId && onlineRunnerIds.has(routeSession.runnerId)) {
-      setSelectedRunnerId(routeSession.runnerId);
-    }
-    setSelectedSessionId(routeSession.sessionId);
-  }, [onlineRunnerIds, routeSession]);
-
-  const loadRunners = useCallback(async ({ keepSelection = true } = {}) => {
-    setRunnersLoading(true);
-    setRunnersError('');
-    try {
-      const nextRunners = (await listAgentRunners({ limit: 50, includeOffline: true })).map(normalizeRunner);
-      setRunners(nextRunners);
-      setSelectedRunnerId((current) => {
-        if (keepSelection && current && nextRunners.some((runner) => runner.runnerId === current && runner.status === 'online')) {
-          return current;
-        }
-        return nextRunners.find((runner) => runner.status === 'online')?.runnerId || '';
-      });
-    } catch (err) {
-      setRunners([]);
-      setSelectedRunnerId('');
-      setRunnersError(err?.message || 'Unable to load running agents.');
-    } finally {
-      setRunnersLoading(false);
-    }
-  }, []);
-
-  const loadSessions = useCallback(async ({ keepSelection = false } = {}) => {
-    if (!sliceId) {
-      setSessions([]);
-      setSelectedSessionId('');
-      return;
-    }
-    setSessionsLoading(true);
-    setSessionsError('');
-    try {
-      const nextSessions = (await listAgentSessions(sliceId, { limit: 50 })).map(normalizeSession);
-      setSessions(nextSessions);
-      setSelectedSessionId((current) => {
-        if (normalizedRouteSessionId && nextSessions.some((session) => session.sessionId === normalizedRouteSessionId)) {
-          return normalizedRouteSessionId;
-        }
-        if (keepSelection && current && nextSessions.some((session) => session.sessionId === current)) {
-          return current;
-        }
-        return current && nextSessions.some((session) => session.sessionId === current) ? current : '';
-      });
-    } catch (err) {
-      setSessions([]);
-      setSelectedSessionId('');
-      setSessionsError(err?.message || 'Unable to load agent sessions.');
-    } finally {
-      setSessionsLoading(false);
-    }
-  }, [normalizedRouteSessionId, sliceId]);
-
-  useEffect(() => {
-    let active = true;
-    getAgentCapabilities()
-      .then((nextCapabilities) => {
-        if (active) setCapabilities(nextCapabilities || null);
-      })
-      .catch(() => {
-        if (active) setCapabilities(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const refresh = async () => {
-      if (!active) return;
-      await loadRunners();
-    };
-    refresh();
-    const intervalId = window.setInterval(refresh, 10000);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, [loadRunners]);
-
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
-
-  useEffect(() => {
-    if (!selectedRunner) {
-      if (selectedSessionId) {
-        setSelectedSessionId('');
-      }
-      return;
-    }
-    if (routeSession?.runnerId && selectedRunner.runnerId !== routeSession.runnerId) {
-      return;
-    }
-    if (selectedSessionId && selectedRunnerSessions.some((session) => session.sessionId === selectedSessionId)) {
-      return;
-    }
-    const fallbackSessionId = selectedRunnerSessions[0]?.sessionId || '';
-    if (selectedSessionId !== fallbackSessionId) {
-      setSelectedSessionId(fallbackSessionId);
-    }
-  }, [routeSession, selectedRunner, selectedRunnerSessions, selectedSessionId]);
-
-  const loadSelectedEvents = useCallback(async () => {
-    if (!selectedSessionId) {
-      setEvents([]);
-      setEventsError('');
-      setEventsLoading(false);
-      return;
-    }
-
-    setEventsLoading(true);
-    setEventsError('');
-    try {
-      let sinceSeq = 0;
-      const nextEvents = [];
-      while (nextEvents.length < AGENT_EVENTS_MAX) {
-        const payload = await listAgentSessionEvents(selectedSessionId, {
-          sinceSeq,
-          limit: Math.min(AGENT_EVENTS_PAGE_SIZE, AGENT_EVENTS_MAX - nextEvents.length),
-        });
-        const pageEvents = payload?.events || [];
-        nextEvents.push(...pageEvents);
-        const nextSeq = Number(payload?.nextSeq ?? payload?.next_seq ?? 0);
-        if (pageEvents.length < AGENT_EVENTS_PAGE_SIZE || !Number.isFinite(nextSeq) || nextSeq <= sinceSeq) {
-          break;
-        }
-        sinceSeq = nextSeq - 1;
-      }
-      setEvents(nextEvents.map(normalizeEvent));
-    } catch (err) {
-      setEvents([]);
-      setEventsError(err?.message || 'Unable to load agent conversation.');
-    } finally {
-      setEventsLoading(false);
-    }
-  }, [selectedSessionId]);
+  }, [closeSessionsSidebarForMobile, selectSessionForRunner]);
 
   const requestLocalChanges = useCallback(async ({ silent = false } = {}) => {
     if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession)) {
@@ -449,27 +250,6 @@ export default function SliceAgentsPage({
   }, [canExportChangeset, changesetMessage, loadSelectedEvents, selectedSessionId]);
 
   useEffect(() => {
-    if (!selectedSessionId) {
-      loadSelectedEvents();
-      return undefined;
-    }
-
-    let active = true;
-    const pollIntervalMs = assistantStreaming || localChangesLoading || changesetExportLoading ? 1000 : 5000;
-    const loadEvents = async () => {
-      if (!active) return;
-      await loadSelectedEvents();
-    };
-
-    loadEvents();
-    const intervalId = window.setInterval(loadEvents, pollIntervalMs);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, [assistantStreaming, changesetExportLoading, loadSelectedEvents, localChangesLoading, selectedSessionId]);
-
-  useEffect(() => {
     setRunnerActionError('');
     setLocalChangesError('');
     setPendingLocalChangesRequestId('');
@@ -477,8 +257,6 @@ export default function SliceAgentsPage({
     setPendingChangesetExportRequestId('');
     setChangesetMessage('');
     autoLocalChangesOutputSeqRef.current = 0;
-    setEvents([]);
-    setEventsError('');
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -580,10 +358,7 @@ export default function SliceAgentsPage({
         agentType: selectedRunner.agentType || defaultAgentType,
       }));
       await loadSessions({ keepSelection: true });
-      if (created.runnerId || selectedRunner.runnerId) {
-        setSelectedRunnerId(created.runnerId || selectedRunner.runnerId);
-      }
-      selectSessionId(created.sessionId);
+      selectSessionId(created.sessionId, { runnerId: created.runnerId || selectedRunner.runnerId });
     } catch (err) {
       setCreateError(err?.message || 'Unable to create agent session.');
     } finally {
@@ -662,14 +437,14 @@ export default function SliceAgentsPage({
           onClose={closeSessionsSidebar}
           onCreateSession={handleCreateSession}
           onInspectRunner={(runnerId) => {
-            handleRunnerSelect(runnerId);
+            selectRunnerId(runnerId);
             setAgentInfoOpen(true);
           }}
           onRefresh={() => {
             loadRunners({ keepSelection: true });
             loadSessions({ keepSelection: true });
           }}
-          onRunnerSelect={handleRunnerSelect}
+          onRunnerSelect={selectRunnerId}
           onSessionSelect={handleSessionSelect}
           onlineRunners={onlineRunners}
           runners={runners}
