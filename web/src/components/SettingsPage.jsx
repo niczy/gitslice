@@ -6,14 +6,16 @@ import { Card, CardContent } from './ui/card.jsx';
 import CISettingsPanel from './CISettingsPanel.jsx';
 import {
   createAgentKey,
+  fetchAgentKeys,
+  revokeAgentKey,
+} from '../api/agents.js';
+import {
   deleteAuthMethod,
   deleteAuthSession,
-  fetchAgentKeys,
   fetchAuthContext,
   fetchAuthMethods,
   fetchAuthSessions,
   fetchRepoBindings,
-  revokeAgentKey,
 } from '../utils/api.js';
 
 function formatAuthMethodType(value) {
