@@ -576,6 +576,7 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 				log.Printf("Warning: failed to checkout slice for agent session %s: %v", sessionID, checkoutErr)
 				continue
 			}
+			runCfg.AuthContext = authRefresher.context
 			if err := appendLocalRunnerAttached(authCtx, &supervisorCLI, cfg, runCfg); err != nil {
 				log.Printf("Warning: failed to append local runner metadata for agent session %s: %v", sessionID, err)
 			}

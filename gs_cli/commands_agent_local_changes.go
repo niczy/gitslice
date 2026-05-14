@@ -292,7 +292,11 @@ func exportLocalAgentChangeset(ctx context.Context, cli *CLI, cfg localAgentRunC
 	if author == "" {
 		author = "agent"
 	}
-	createResp, err := cli.sliceClient.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+	createCtx, err := localAgentRPCContext(ctx, cfg)
+	if err != nil {
+		return localAgentChangesetExportResult{}, err
+	}
+	createResp, err := cli.sliceClient.CreateChangeset(createCtx, &slicev1.CreateChangesetRequest{
 		SliceId:        sliceID,
 		BaseCommitHash: baseCommitHash,
 		ModifiedFiles:  modifiedFiles,
@@ -308,7 +312,11 @@ func exportLocalAgentChangeset(ctx context.Context, cli *CLI, cfg localAgentRunC
 	if err := writeTrackedChangesetIDConfigAt(cfg.CWD, targetChangesetID); err != nil {
 		return localAgentChangesetExportResult{}, err
 	}
-	reviewResp, err := cli.sliceClient.ReviewChangeset(ctx, &slicev1.ReviewChangesetRequest{
+	reviewCtx, err := localAgentRPCContext(ctx, cfg)
+	if err != nil {
+		return localAgentChangesetExportResult{}, err
+	}
+	reviewResp, err := cli.sliceClient.ReviewChangeset(reviewCtx, &slicev1.ReviewChangesetRequest{
 		ChangesetId: targetChangesetID,
 	})
 	if err != nil {
@@ -322,6 +330,13 @@ func exportLocalAgentChangeset(ctx context.Context, cli *CLI, cfg localAgentRunC
 		message:       message,
 		reviewResp:    reviewResp,
 	}, nil
+}
+
+func localAgentRPCContext(ctx context.Context, cfg localAgentRunConfig) (context.Context, error) {
+	if cfg.AuthContext == nil {
+		return ctx, nil
+	}
+	return cfg.AuthContext(ctx)
 }
 
 func shortSessionIdForAgentEvent(sessionID string) string {
