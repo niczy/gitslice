@@ -107,7 +107,6 @@ export default function SliceAgentsPage({
     selectedSession,
     selectedSessionId,
     sessionsError,
-    sessionsLoading,
     sliceId,
     slices,
   });

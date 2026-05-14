@@ -21,6 +21,10 @@
   overflow: hidden;
 }
 
+.slice-agents-page.viewport-pending .slice-agents-layout {
+  visibility: hidden;
+}
+
 .slice-agents-layout.resizing-sidebar {
   cursor: col-resize;
 }
@@ -39,7 +43,7 @@
   padding: 14px;
   border-right: 1px solid var(--border);
   background: var(--surface);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .slice-agents-resize-handle {
@@ -109,6 +113,7 @@
 .slice-agents-running-agents {
   grid-template-columns: minmax(0, 1fr) 30px;
   align-items: start;
+  min-height: 62px;
 }
 
 .slice-agents-running-agents > .panel-empty,
@@ -212,6 +217,7 @@
   grid-column: 1;
   grid-row: 1;
   min-width: 0;
+  min-height: 48px;
   overflow-x: auto;
   padding: 0 2px 6px;
   scroll-snap-type: x proximity;
@@ -377,6 +383,21 @@
 .slice-agents-session-list {
   display: grid;
   gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.slice-agents-session-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.slice-agents-session-panel > .panel-empty,
+.slice-agents-session-panel > .panel-error {
+  flex: 0 0 auto;
 }
 
 .slice-agents-session-row {

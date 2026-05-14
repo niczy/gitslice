@@ -19,7 +19,7 @@ export function useAgentSessionsSidebar() {
   const [sessionsSidebarOpen, setSessionsSidebarOpen] = useState(true);
   const [sessionsSidebarDismissing, setSessionsSidebarDismissing] = useState(false);
   const [sessionsSidebarViewportSynced, setSessionsSidebarViewportSynced] = useState(false);
-  const [agentsSidebarWidth, setAgentsSidebarWidth] = useState(readAgentsSidebarWidth);
+  const [agentsSidebarWidth, setAgentsSidebarWidth] = useState(AGENTS_SIDEBAR_DEFAULT_WIDTH);
   const [agentsSidebarResizing, setAgentsSidebarResizing] = useState(false);
 
   const sessionsSidebarVisible = sessionsSidebarOpen || sessionsSidebarDismissing;
@@ -105,6 +105,7 @@ export function useAgentSessionsSidebar() {
         setSessionsSidebarOpen(false);
       }
     };
+    setAgentsSidebarWidth(readAgentsSidebarWidth());
     syncSidebarForViewport();
     setSessionsSidebarViewportSynced(true);
     window.addEventListener('resize', syncSidebarForViewport);
@@ -122,8 +123,11 @@ export function useAgentSessionsSidebar() {
   }, [sessionsSidebarDismissing]);
 
   useEffect(() => {
+    if (!sessionsSidebarViewportSynced) {
+      return;
+    }
     writeAgentsSidebarWidth(agentsSidebarWidth);
-  }, [agentsSidebarWidth]);
+  }, [agentsSidebarWidth, sessionsSidebarViewportSynced]);
 
   useEffect(() => {
     if (!agentsSidebarResizing || typeof window === 'undefined') {

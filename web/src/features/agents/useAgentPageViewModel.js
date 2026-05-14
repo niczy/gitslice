@@ -24,7 +24,6 @@ export function useAgentPageViewModel({
   selectedSession,
   selectedSessionId,
   sessionsError,
-  sessionsLoading,
   sliceId,
   slices,
 }) {
@@ -69,7 +68,7 @@ export function useAgentPageViewModel({
     [events, liveStreamState, selectedSession],
   );
   const hasRunnerConversation = runnerSessions.length > 0;
-  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasRunnerConversation;
+  const showAgentSessionDocsLink = !sessionsError && !hasRunnerConversation;
   const localChangesPanelAvailable = selectedSessionIsLocal;
   const localChangesPanelVisible = Boolean(localChangesPanelAvailable && localChangesPanelOpen);
   const selectedSessionSubtitle = selectedSession
