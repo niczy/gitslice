@@ -81,3 +81,47 @@ test('proxyRequest exchanges a Clerk bearer token for a local API session', asyn
     'http://api.test/v1/slices?limit=200',
   ]);
 });
+
+test('proxyRequest rejects an unresolved Clerk bearer token before proxying', async () => {
+  configureClerkEnv();
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(url.toString());
+    if (url.toString() === 'http://api.test/v1/auth/clerk/ensure-local-identity') {
+      return Response.json({ error: 'username required' }, { status: 409 });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  };
+
+  const response = await proxyRequest(new Request('https://agenttools.dev/v1/agent-sessions/sess_123/events', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer clerk_session_token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      stream: 'control',
+      type: 'local_changes_requested',
+      payload: '',
+    }),
+  }), '/v1/agent-sessions/sess_123/events', {
+    clerkAuth: {
+      userId: 'user_proxy_123',
+      sessionId: 'sess_proxy_123',
+    },
+    clerkUser: {
+      id: 'user_proxy_123',
+      fullName: 'Proxy User',
+      primaryEmailAddressId: 'email_proxy_123',
+      emailAddresses: [
+        { id: 'email_proxy_123', emailAddress: 'proxyuser@example.com' },
+      ],
+    },
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: 'Not signed in' });
+  assert.deepEqual(calls, [
+    'http://api.test/v1/auth/clerk/ensure-local-identity',
+  ]);
+});

@@ -175,11 +175,12 @@ async function buildHeadersForUpstream(request, authenticated, options = {}) {
       headers.set('Authorization', authResult.authorization);
       return { headers, responseCookies, hasAuthorization: true, rejectUnauthenticated: false };
     }
+    headers.delete('Authorization');
     return {
       headers,
       responseCookies,
       hasAuthorization: false,
-      rejectUnauthenticated: Boolean(authResult.rejectUnauthenticated),
+      rejectUnauthenticated: Boolean(authResult.rejectUnauthenticated || /^Bearer\s+/i.test(String(request.headers.get('Authorization') || '').trim())),
     };
   }
 

@@ -54,11 +54,13 @@ async function createGatewayHeaders(request, session, options = {}) {
     const authResult = await getProxyAuthorizationResult(request, options);
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
+    } else {
+      headers.delete('Authorization');
     }
     return {
       headers,
       setCookies: authResult.setCookies || [],
-      rejectUnauthenticated: authResult.rejectUnauthenticated,
+      rejectUnauthenticated: authResult.rejectUnauthenticated || /^Bearer\s+/i.test(String(requestAuthorization || '').trim()),
     };
   }
 
