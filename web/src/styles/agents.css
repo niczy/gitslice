@@ -975,6 +975,8 @@
 
 .slice-agents-message-list {
   display: grid;
+  align-content: start;
+  align-items: start;
   min-height: 0;
   flex: 1 1 auto;
   gap: 14px;
@@ -988,6 +990,7 @@
 
 .slice-agents-message {
   display: grid;
+  align-self: start;
   gap: 7px;
   max-width: min(760px, 100%);
   padding: 12px 14px;
