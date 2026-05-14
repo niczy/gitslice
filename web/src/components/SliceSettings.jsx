@@ -5,59 +5,14 @@ import {
   addSliceFolder,
   removeSliceFolder,
 } from '../utils/api.js';
-import { Badge } from './ui/badge.jsx';
-import { Button } from './ui/button.jsx';
-import { Card, CardContent } from './ui/card.jsx';
-import { Plus, Trash2, Folder } from 'lucide-react';
-
-function normalizeVisibility(value) {
-  if (value === 2 || value === 'VISIBILITY_PUBLIC' || value === 'PUBLIC' || value === 'public') {
-    return 'public';
-  }
-  return 'private';
-}
-
-function normalizePathPropagationMode(value) {
-  if (
-    value === 2 ||
-    value === 'PATH_VISIBILITY_PROPAGATION_MODE_PUBLIC' ||
-    value === 'PUBLIC' ||
-    value === 'public'
-  ) {
-    return 'public';
-  }
-  if (
-    value === 3 ||
-    value === 'PATH_VISIBILITY_PROPAGATION_MODE_PRIVATE' ||
-    value === 'PRIVATE' ||
-    value === 'private'
-  ) {
-    return 'private';
-  }
-  return 'unchanged';
-}
-
-function visibilityRequestValue(value) {
-  return value === 'public' ? 2 : 1;
-}
-
-function pathPropagationRequestValue(value) {
-  if (value === 'public') {
-    return 2;
-  }
-  if (value === 'private') {
-    return 3;
-  }
-  return 1;
-}
-
-function visibilityTone(value) {
-  return value === 'public' ? 'public' : 'private';
-}
-
-function visibilityLabel(value) {
-  return value === 'public' ? 'Public' : 'Private';
-}
+import { SliceVisibilityCard } from './settings/SliceVisibilityCard.jsx';
+import { TrackedFoldersCard } from './settings/TrackedFoldersCard.jsx';
+import {
+  normalizePathPropagationMode,
+  normalizeVisibility,
+  pathPropagationRequestValue,
+  visibilityRequestValue,
+} from './settings/SliceSettingsHelpers.js';
 
 export default function SliceSettings({ sliceId, sliceName, folderMounts, onFolderMountsChange }) {
   const [sliceVisibility, setSliceVisibility] = useState('private');
@@ -200,138 +155,28 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
       </div>
 
       <div className="slice-settings-grid">
-        <Card className="border-border/70">
-          <CardContent className="pt-6">
-            <div className="slice-settings-card-header">
-              <div>
-                <h4>Slice visibility</h4>
-                <p>Private by default. Making the slice public allows anonymous readers to browse this slice.</p>
-              </div>
-              <Badge
-                variant="outline"
-                className={`visibility-badge visibility-badge--${visibilityTone(sliceVisibility)}`}
-                data-testid="slice-visibility-status"
-              >
-                {visibilityLabel(sliceVisibility)}
-              </Badge>
-            </div>
+        <SliceVisibilityCard
+          onPropagationModeChange={setSlicePropagationMode}
+          onSaveVisibility={saveSliceVisibility}
+          slicePropagationMode={slicePropagationMode}
+          sliceVisibility={sliceVisibility}
+          sliceVisibilityError={sliceVisibilityError}
+          sliceVisibilityLoading={sliceVisibilityLoading}
+          sliceVisibilitySaving={sliceVisibilitySaving}
+          sliceVisibilitySuccess={sliceVisibilitySuccess}
+        />
 
-            {sliceVisibilityLoading && <div className="panel-empty">Loading slice visibility…</div>}
-            {!sliceVisibilityLoading && sliceVisibilityError && <div className="panel-error">{sliceVisibilityError}</div>}
-            {!sliceVisibilityLoading && sliceVisibilitySuccess && <div className="panel-success">{sliceVisibilitySuccess}</div>}
-
-            {!sliceVisibilityLoading && !sliceVisibilityError && (
-              <div className="visibility-stack" data-testid="slice-visibility-panel">
-                <div className="visibility-controls">
-                  <label className="visibility-field">
-                    <span>Path propagation when making the slice public</span>
-                    <select
-                      value={slicePropagationMode}
-                      onChange={(event) => setSlicePropagationMode(event.target.value)}
-                      data-testid="slice-visibility-propagation"
-                    >
-                      <option value="unchanged">Leave existing path rules unchanged</option>
-                      <option value="public">Mark current slice paths public</option>
-                      <option value="private">Mark current slice paths private</option>
-                    </select>
-                  </label>
-                  <div className="visibility-actions">
-                    <Button
-                      type="button"
-                      variant={sliceVisibility === 'private' ? 'secondary' : 'outline'}
-                      disabled={sliceVisibilitySaving}
-                      onClick={() => saveSliceVisibility('private')}
-                      data-testid="slice-visibility-set-private"
-                    >
-                      {sliceVisibilitySaving && sliceVisibility === 'private' ? 'Saving…' : 'Make private'}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={sliceVisibility === 'public' ? 'secondary' : 'default'}
-                      disabled={sliceVisibilitySaving}
-                      onClick={() => saveSliceVisibility('public')}
-                      data-testid="slice-visibility-set-public"
-                    >
-                      {sliceVisibilitySaving && sliceVisibility === 'public' ? 'Saving…' : 'Make public'}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/70">
-          <CardContent className="pt-6">
-            <div className="slice-settings-card-header">
-              <div>
-                <h4>Tracked folders</h4>
-                <p>Folders from the parent slice that this custom slice tracks.</p>
-              </div>
-            </div>
-
-            {folderError && <div className="panel-error">{folderError}</div>}
-
-            {localMounts.length === 0 && (
-              <div className="panel-empty">No tracked folders configured.</div>
-            )}
-
-            {localMounts.length > 0 && (
-              <div className="tracked-folders-list">
-                {localMounts.map((mount) => {
-                  const mountSource = mount?.source_path || mount?.sourcePath || '';
-                  const mountAlias = mount?.alias || '';
-                  return (
-                    <div key={mountSource} className="tracked-folder-row" data-testid="tracked-folder-row">
-                      <div className="tracked-folder-info">
-                        <Folder size={14} className="tracked-folder-icon" />
-                        <span className="tracked-folder-source">{mountSource}</span>
-                        {mountAlias && mountAlias !== mountSource.split('/').pop() && (
-                          <span className="tracked-folder-alias">→ {mountAlias}</span>
-                        )}
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        disabled={folderRemoving === mountSource}
-                        onClick={() => removeFolder(mountSource)}
-                        data-testid="remove-tracked-folder"
-                        title={`Remove ${mountSource}`}
-                      >
-                        <Trash2 size={14} aria-hidden="true" />
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <div className="tracked-folder-add">
-              <div className="tracked-folder-input-group">
-                <input
-                  type="text"
-                  className="tracked-folder-input"
-                  placeholder="src/components"
-                  value={newFolderPath}
-                  onChange={(e) => setNewFolderPath(e.target.value)}
-                  onKeyDown={handleFolderKeyDown}
-                  data-testid="tracked-folder-input"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={folderAdding || !newFolderPath.trim()}
-                  onClick={addFolder}
-                  data-testid="add-tracked-folder"
-                >
-                  <Plus size={14} aria-hidden="true" />
-                  {folderAdding ? 'Adding…' : 'Add folder'}
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <TrackedFoldersCard
+          folderAdding={folderAdding}
+          folderError={folderError}
+          folderRemoving={folderRemoving}
+          localMounts={localMounts}
+          newFolderPath={newFolderPath}
+          onAddFolder={addFolder}
+          onFolderKeyDown={handleFolderKeyDown}
+          onNewFolderPathChange={setNewFolderPath}
+          onRemoveFolder={removeFolder}
+        />
       </div>
     </div>
   );
