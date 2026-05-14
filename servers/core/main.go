@@ -79,6 +79,7 @@ func main() {
 	}
 	log.Printf("Agent runtime providers enabled: %s (default=%s)", agentsession.RuntimeProviderLocal, agentSessionService.DefaultRuntimeProviderName())
 	agentSessionService.StartLifecycleLoop(context.Background())
+	agentSessionService.StartEventNotificationLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
 	grpcAddr := cfg.GetCoreServiceAddr()

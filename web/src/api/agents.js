@@ -139,6 +139,16 @@ export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 
   return response.json();
 }
 
+export async function mintAgentSessionToken(sessionId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/agent-sessions/${encodeURIComponent(sessionId)}/token`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to connect to agent conversation'));
+  }
+  return response.json();
+}
+
 function encodeJSONPayload(payload = {}) {
   const raw = JSON.stringify(payload || {});
   return encodeBase64(new TextEncoder().encode(raw));

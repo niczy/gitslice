@@ -21,6 +21,7 @@ export {
   listAgentRunners,
   listAgentSessionEvents,
   listAgentSessions,
+  mintAgentSessionToken,
   requestAgentRunnerRestart,
   requestAgentSessionChangesetExport,
   requestAgentSessionLocalChanges,

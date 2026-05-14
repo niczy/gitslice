@@ -80,7 +80,7 @@ export function useAgentLocalChanges({
       const result = await requestAgentSessionLocalChanges(selectedSessionId, { limit: 100 });
       setPendingLocalChangesRequestId(result.requestId || '');
       setPendingLocalChangesRequestedAt(Date.now());
-      await loadSelectedEvents();
+      await loadSelectedEvents({ incremental: true });
     } catch (err) {
       setLocalChangesError(err?.message || 'Unable to refresh local changes.');
       setPendingLocalChangesRequestId('');
@@ -101,7 +101,7 @@ export function useAgentLocalChanges({
         message: changesetMessage.trim(),
       });
       setPendingChangesetExportRequestId(result.requestId || '');
-      await loadSelectedEvents();
+      await loadSelectedEvents({ incremental: true });
     } catch (err) {
       setLocalChangesError(err?.message || 'Unable to export changeset.');
     } finally {

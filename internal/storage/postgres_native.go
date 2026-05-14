@@ -6734,9 +6734,14 @@ func (s *PostgresNativeStorage) AppendAgentSessionEvent(ctx context.Context, eve
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO agent_session_events (session_id, seq, ts, stream, type, kind, payload_json)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, event.Kind, payload)
+		WITH inserted AS (
+			INSERT INTO agent_session_events (session_id, seq, ts, stream, type, kind, payload_json)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			RETURNING session_id, seq
+		)
+		SELECT pg_notify($8, json_build_object('session_id', session_id, 'seq', seq)::text)
+		FROM inserted
+	`, event.SessionID, int64(event.Seq), event.TS, event.Stream, event.Type, event.Kind, payload, AgentSessionEventNotifyChannel)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return ErrAgentSessionConflict
