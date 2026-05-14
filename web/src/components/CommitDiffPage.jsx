@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Undo2 } from 'lucide-react';
 import { apiBaseUrl, createRevertChangeset, fetchWithAuth } from '../utils/api.js';
-import { formatChangeType } from '../utils/format.js';
 import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 import { decodeBase64 } from '../utils/highlight.js';
 import { base64ToBytes } from '../../shared/runtime.js';
+import {
+  DiffFileItemHeader,
+  DiffFilePanel,
+  DiffSummary,
+  DiffTopBar,
+  DiffViewToggle,
+  getDiffFileKey,
+  scrollDiffFileIntoView,
+} from './diff/DiffDetailLayout.jsx';
 import { Button } from './ui/button.jsx';
 
 function isBinaryPatchText(patch = '') {
@@ -313,34 +321,7 @@ export default function CommitDiffPage({
     setSelectedFileId(fileKey);
     loadPatches();
 
-    const panelItemEl = panelItemRefs.current[fileKey];
-    if (panelItemEl) {
-      const listEl = panelItemEl.closest('.diff-file-panel-list');
-      if (listEl) {
-        const itemTop = panelItemEl.offsetTop;
-        const itemBottom = itemTop + panelItemEl.offsetHeight;
-        const visibleTop = listEl.scrollTop;
-        const visibleBottom = visibleTop + listEl.clientHeight;
-
-        if (itemTop < visibleTop) {
-          listEl.scrollTo({ top: itemTop, behavior: 'smooth' });
-        } else if (itemBottom > visibleBottom) {
-          listEl.scrollTo({ top: itemBottom - listEl.clientHeight, behavior: 'smooth' });
-        }
-      }
-    }
-
-    const fileEl = fileRefs.current[fileKey];
-    const diffContentEl = diffContentRef.current;
-    if (fileEl && diffContentEl) {
-      const fileRect = fileEl.getBoundingClientRect();
-      const containerRect = diffContentEl.getBoundingClientRect();
-      const targetTop = diffContentEl.scrollTop + (fileRect.top - containerRect.top) - 16;
-      diffContentEl.scrollTo({
-        top: Math.max(targetTop, 0),
-        behavior: 'smooth',
-      });
-    }
+    scrollDiffFileIntoView(fileKey, panelItemRefs, fileRefs, diffContentRef);
   }, [loadPatches]);
 
   const revertSliceId = useMemo(() => {
@@ -375,103 +356,57 @@ export default function CommitDiffPage({
 
   return (
     <section className="commit-diff-page diff-detail-page" data-testid="commit-diff-page">
-      <div className="diff-top-bar">
-        <Button type="button" variant="ghost" className="diff-back-btn" onClick={onBack} data-testid="diff-back-btn">
-          Back to browser
-        </Button>
-        <div className="diff-top-title">
-          <p className="eyebrow">Commit diff</p>
-          <h2 data-testid="diff-commit-title">
-            Commit <span className="commit-hash">{commitHash ? commitHash.slice(0, 12) : ''}</span>
-          </h2>
-        </div>
-        <div className="diff-detail-controls">
-          {diffData && (
-            <div className="diff-summary" data-testid="diff-summary">
-              <span className="diff-stat diff-stat-added">+{diffData.files_added || 0} added</span>
-              <span className="diff-stat diff-stat-modified">{diffData.files_modified || 0} modified</span>
-              <span className="diff-stat diff-stat-deleted">-{diffData.files_deleted || 0} deleted</span>
-              {(diffData.files_renamed || 0) > 0 && (
-                <span className="diff-stat diff-stat-renamed">{diffData.files_renamed} renamed</span>
-              )}
+      <DiffTopBar
+        backLabel="Back to browser"
+        backTestId="diff-back-btn"
+        controls={(
+          <div className="diff-detail-controls">
+            <DiffSummary data={diffData} includeRenamed testId="diff-summary" />
+            <DiffViewToggle
+              viewMode={viewMode}
+              onChange={setViewMode}
+              testId="diff-view-toggle"
+              unifiedButtonTestId="diff-view-unified-btn"
+              splitButtonTestId="diff-view-split-btn"
+            />
+            <div className="changeset-actions" data-testid="diff-actions">
+              <Button
+                type="button"
+                variant="secondary"
+                className="diff-revert-button"
+                onClick={handleRevertDiff}
+                disabled={isLoading || isRevertingDiff || !commitHash}
+                data-testid="diff-revert-btn"
+              >
+                <Undo2 size={15} aria-hidden="true" />
+                {isRevertingDiff ? 'Reverting...' : 'Revert'}
+              </Button>
             </div>
-          )}
-          <div className="diff-view-toggle" data-testid="diff-view-toggle">
-            <Button
-              type="button"
-              variant="ghost"
-              className={`diff-view-btn ${viewMode === 'unified' ? 'diff-view-btn-active' : ''}`}
-              onClick={() => setViewMode('unified')}
-              data-testid="diff-view-unified-btn"
-            >
-              Unified
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className={`diff-view-btn ${viewMode === 'split' ? 'diff-view-btn-active' : ''}`}
-              onClick={() => setViewMode('split')}
-              data-testid="diff-view-split-btn"
-            >
-              Side-by-side
-            </Button>
           </div>
-          <div className="changeset-actions" data-testid="diff-actions">
-            <Button
-              type="button"
-              variant="secondary"
-              className="diff-revert-button"
-              onClick={handleRevertDiff}
-              disabled={isLoading || isRevertingDiff || !commitHash}
-              data-testid="diff-revert-btn"
-            >
-              <Undo2 size={15} aria-hidden="true" />
-              {isRevertingDiff ? 'Reverting...' : 'Revert'}
-            </Button>
-          </div>
-        </div>
-      </div>
+        )}
+        eyebrow="Commit diff"
+        onBack={onBack}
+        title={(
+          <>
+            Commit <span className="commit-hash">{commitHash ? commitHash.slice(0, 12) : ''}</span>
+          </>
+        )}
+        titleTestId="diff-commit-title"
+      />
 
       <div className="diff-layout">
         {/* Left file panel */}
         {!isLoading && !error && changes.length > 0 && (
-          <nav className="diff-file-panel" data-testid="diff-file-panel">
-            <div className="diff-file-panel-header">Files ({changes.length})</div>
-            <ul className="diff-file-panel-list">
-              {changes.map((change) => {
-                const fileKey = change.id || change.path;
-                const fileName = change.path.split('/').pop();
-                const dirPath = change.path.split('/').slice(0, -1).join('/');
-                return (
-                  <li key={fileKey}>
-                    <Button
-                      ref={(el) => { panelItemRefs.current[fileKey] = el; }}
-                      type="button"
-                      variant="ghost"
-                      className={`diff-file-panel-item w-full justify-start ${selectedFileId === fileKey ? 'diff-file-panel-item-active' : ''}`}
-                      onClick={() => handleFileSelect(fileKey)}
-                      title={change.path}
-                      data-testid="diff-file-panel-item"
-                    >
-                      <span className={`diff-file-panel-badge change-type-${normalizeChangeType(change.change_type)}`}>
-                        {normalizeChangeType(change.change_type).charAt(0).toUpperCase()}
-                      </span>
-                      <span className="diff-file-panel-name">
-                        {dirPath && <span className="diff-file-panel-dir">{dirPath}/</span>}
-                        {fileName}
-                      </span>
-                      {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                        <span className="diff-file-panel-stats">
-                          {change.lines_added > 0 && <span className="lines-added">+{change.lines_added}</span>}
-                          {change.lines_deleted > 0 && <span className="lines-deleted">-{change.lines_deleted}</span>}
-                        </span>
-                      )}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
+          <DiffFilePanel
+            changes={changes}
+            getFileKey={getDiffFileKey}
+            headerLabel={`Files (${changes.length})`}
+            itemTestId="diff-file-panel-item"
+            onFileSelect={handleFileSelect}
+            panelItemRefs={panelItemRefs}
+            selectedFileId={selectedFileId}
+            testId="diff-file-panel"
+          />
         )}
 
         {/* Main diff content */}
@@ -495,7 +430,7 @@ export default function CommitDiffPage({
           {!isLoading && !error && diffData && (
             <ul className="diff-file-list" data-testid="diff-file-list">
               {changes.map((change) => {
-                const fileKey = change.id || change.path;
+                const fileKey = getDiffFileKey(change);
                 const fallbackContent = fallbackContentByFile[fileKey];
                 const isBinaryPatch = isBinaryPatchText(change.patch || '');
                 const hasBinaryFallback = fallbackContent?.kind === 'binary';
@@ -507,25 +442,7 @@ export default function CommitDiffPage({
                     className={`diff-file-item ${selectedFileId === fileKey ? 'diff-file-item-selected' : ''}`}
                     data-testid="diff-file-item"
                   >
-                    <div className="diff-file-header">
-                      <div className="diff-file-header-main">
-                        <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
-                          {formatChangeType(change.change_type)}
-                        </span>
-                        <span className="diff-file-path" data-testid="diff-file-path">{change.path}</span>
-                        {change.old_path && change.old_path !== change.path && (
-                          <span className="diff-file-old-path">(was: {change.old_path})</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="diff-file-stats">
-                      {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                        <span className="history-lines">
-                          <span className="lines-added">+{change.lines_added || 0}</span>
-                          <span className="lines-deleted">-{change.lines_deleted || 0}</span>
-                        </span>
-                      )}
-                    </div>
+                    <DiffFileItemHeader change={change} pathTestId="diff-file-path" />
                     {change.patch && viewMode === 'unified' && (
                       isBinaryPatch && !showBinary ? (
                         <div className="diff-binary-block" data-testid="diff-file-binary-block">
