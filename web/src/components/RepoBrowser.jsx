@@ -1,32 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Edit3,
-  ExternalLink,
-  FileText,
-  Folder,
-  FolderOpen,
-  History,
-  Menu,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Settings,
-  X,
-} from 'lucide-react';
+import { X } from 'lucide-react';
 import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
-import { formatBytes } from '../utils/format.js';
-import { formatChangeType, formatTimestamp } from '../utils/format.js';
-import { normalizeChange, normalizeChangeType, normalizeEntryType } from '../utils/normalize.js';
+import { normalizeChange, normalizeEntryType } from '../utils/normalize.js';
 import { decodeBase64, highlightCodeLines } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { buildBrowserPath, parseLocation } from '../utils/routing.js';
-import {
-  SIDEBAR_WIDTH_MAX,
-  SIDEBAR_WIDTH_MIN,
-} from '../features/browser/browserConstants.js';
 import {
   buildBrowserEntriesUrl,
   buildBrowserFileHistoryUrl,
@@ -37,18 +16,20 @@ import {
 } from '../features/browser/browserApi.js';
 import {
   getDirectoryAncestorPaths,
-  getEntryDisplayPath,
-  getEntryName,
   getFilePayloadSize,
   getNumericFileSize,
   getParentDirectoryPath,
   getPreviewMeta,
   getTreeFileSize,
-  sortEntriesByTypeAndName,
 } from '../features/browser/browserModel.js';
 import { useBrowserSidebar } from '../features/browser/useBrowserSidebar.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import SliceSettings from './SliceSettings.jsx';
+import RepoBrowserHeader from './browser/RepoBrowserHeader.jsx';
+import RepoBrowserSidebar from './browser/RepoBrowserSidebar.jsx';
+import RepoFileHistoryPanel from './browser/RepoFileHistoryPanel.jsx';
+import RepoFileViewer from './browser/RepoFileViewer.jsx';
+import RepoFolderPreview from './browser/RepoFolderPreview.jsx';
 import { Button } from './ui/button.jsx';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
@@ -575,13 +556,13 @@ export default function RepoBrowser({
   }, [buildHistoryUrl]);
 
   // Toggle history panel
-  const toggleHistory = () => {
+  const toggleHistory = useCallback(() => {
     const newShowHistory = !showHistory;
     setShowHistory(newShowHistory);
     if (newShowHistory && selectedFile && fileHistory.length === 0) {
       fetchFileHistory(selectedFile);
     }
-  };
+  }, [fetchFileHistory, fileHistory.length, selectedFile, showHistory]);
 
   const writeBrowserState = useCallback(({ file = '', dir = '' } = {}, options = {}) => {
     if (typeof window === 'undefined') {
@@ -749,82 +730,6 @@ export default function RepoBrowser({
     handledOpenFileRequestTokenRef.current = openFileRequest.token;
     openFilePath(openFileRequest.path);
   }, [isActive, openFilePath, openFileRequest]);
-
-  const renderFileActions = (onActionDone) => {
-    if (!selectedFile) {
-      return null;
-    }
-
-    return (
-      <>
-        {!showHistory && (
-          <>
-            <Button
-              type="button"
-              variant="secondary"
-              className={`history-toggle ${isEditingFile ? 'active' : ''}`}
-              onClick={() => {
-                if (isEditingFile) {
-                  setDraftContent(fileContent);
-                  setIsEditingFile(false);
-                } else {
-                  setDraftContent(fileContent);
-                  setIsEditingFile(true);
-                }
-                onActionDone?.();
-              }}
-              >
-                {isEditingFile ? <X size={15} aria-hidden="true" /> : <Edit3 size={15} aria-hidden="true" />}
-                {isEditingFile ? 'Cancel' : 'Edit'}
-              </Button>
-            {isEditingFile && (
-              <Button
-                type="button"
-                variant="default"
-                className="history-toggle browser-commit-button"
-                onClick={() => {
-                  confirmFileEdit();
-                  onActionDone?.();
-                }}
-              >
-                <Check size={15} aria-hidden="true" />
-                Commit Changes
-              </Button>
-            )}
-          </>
-        )}
-        <Button
-          type="button"
-          variant="secondary"
-          className={`history-toggle ${showHistory ? 'active' : ''}`}
-          onClick={() => {
-            toggleHistory();
-            onActionDone?.();
-          }}
-          data-testid="history-toggle"
-          title={showHistory ? 'Show file content' : 'Show commit history'}
-        >
-          {showHistory ? <FileText size={15} aria-hidden="true" /> : <History size={15} aria-hidden="true" />}
-          {showHistory ? 'Content' : 'History'}
-        </Button>
-        {!showHistory && !isEditingFile && (
-          <Button
-            type="button"
-            variant="secondary"
-            className="history-toggle"
-            onClick={() => {
-              window.open(buildRawFileUrl(selectedFile), '_blank', 'noopener,noreferrer');
-              onActionDone?.();
-            }}
-            title="Open raw file"
-          >
-            <ExternalLink size={15} aria-hidden="true" />
-            Raw
-          </Button>
-        )}
-      </>
-    );
-  };
 
   useEffect(() => {
     if (!isActive || !showHistory || !selectedFile || !refreshHistoryToken) {
@@ -1265,47 +1170,8 @@ export default function RepoBrowser({
     await openDirectoryPath(directoryPath);
   };
 
-  const renderTree = (path, depth = 0) => {
-    const entries = sortEntriesByTypeAndName(treeEntries[path] || []);
-    return (
-      <ul className="tree-list">
-        {entries.map((entry) => {
-          const entryKind = normalizeEntryType(entry.type);
-          const isExpanded = expandedPaths.includes(entry.path);
-          const entryLabel = getEntryName(entry);
-          return (
-            <li key={entry.path}>
-              <Button
-                type="button"
-                variant="ghost"
-                className={`tree-entry ${entryKind}${focusedEntry?.path === entry.path ? ' active' : ''}`}
-                style={{ paddingLeft: `${depth * 14 + 8}px` }}
-                title={getEntryDisplayPath(entry)}
-                onClick={() => handleEntryClick(entry)}
-              >
-                <span className="tree-caret" aria-hidden="true">
-                  {entryKind === 'directory'
-                    ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
-                    : <span className="tree-caret-dot" />}
-                </span>
-                <span className="entry-icon" aria-hidden="true">
-                  {entryKind === 'directory'
-                    ? (isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />)
-                    : <FileText size={15} />}
-                </span>
-                <span className="entry-name">{entryLabel}</span>
-                {entryKind === 'file' && <span className="entry-meta">{formatBytes(entry.size)}</span>}
-              </Button>
-              {entryKind === 'directory' && isExpanded && renderTree(entry.path, depth + 1)}
-            </li>
-          );
-        })}
-      </ul>
-    );
-  };
-
   const selectedDirectoryEntries = useMemo(() => (
-    sortEntriesByTypeAndName(treeEntries[selectedDirectoryPath] || [])
+    treeEntries[selectedDirectoryPath] || []
   ), [selectedDirectoryPath, treeEntries]);
   const hasSelectedDirectoryEntries = Object.prototype.hasOwnProperty.call(treeEntries, selectedDirectoryPath);
   const selectedDirectoryLabel = selectedDirectoryPath
@@ -1322,6 +1188,44 @@ export default function RepoBrowser({
     await openFilePath(entry.path, { size: entry.size });
   };
   const sidebarVisible = sidebarOpen || isSidebarDismissing;
+  const showFileEditor = useCallback(() => {
+    setDraftContent(fileContent);
+    setIsEditingFile(true);
+  }, [fileContent]);
+  const cancelFileEdit = useCallback(() => {
+    setDraftContent(fileContent);
+    setIsEditingFile(false);
+  }, [fileContent]);
+  const openRawFile = useCallback(() => {
+    if (!selectedFile || typeof window === 'undefined') {
+      return;
+    }
+    window.open(buildRawFileUrl(selectedFile), '_blank', 'noopener,noreferrer');
+  }, [buildRawFileUrl, selectedFile]);
+  const closeCompactActions = useCallback(() => {
+    setIsActionMenuOpen(false);
+  }, []);
+  const fileActionProps = useMemo(() => ({
+    isEditingFile,
+    onCancelEdit: cancelFileEdit,
+    onCommitEdit: confirmFileEdit,
+    onCompactActionDone: closeCompactActions,
+    onOpenRawFile: openRawFile,
+    onShowEdit: showFileEditor,
+    onToggleHistory: toggleHistory,
+    selectedFile,
+    showHistory,
+  }), [
+    cancelFileEdit,
+    closeCompactActions,
+    confirmFileEdit,
+    isEditingFile,
+    openRawFile,
+    selectedFile,
+    showFileEditor,
+    showHistory,
+    toggleHistory,
+  ]);
 
   return (
     <section className="repo-browser repo-browser--with-tabs">
@@ -1341,310 +1245,78 @@ export default function RepoBrowser({
           className={`repo-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${isResizingSidebar ? ' is-resizing-sidebar' : ''}`}
           style={{ '--repo-sidebar-width': `${sidebarWidth}px` }}
         >
-          <div
-            className={`sidebar-overlay${sidebarVisible ? ' visible' : ''}${isSidebarDismissing ? ' dismissing' : ''}`}
-            onClick={closeSidebar}
+          <RepoBrowserSidebar
+            canLoad={canLoad}
+            canShowSettings={canShowSettings}
+            currentSliceDisplayName={currentSliceDisplayName}
+            currentSliceLabel={currentSliceLabel}
+            expandedPaths={expandedPaths}
+            focusedEntry={focusedEntry}
+            handleSidebarResizeKeyDown={handleSidebarResizeKeyDown}
+            hasLoadedRootEntries={hasLoadedRootEntries}
+            isLoading={isLoading}
+            isSidebarDismissing={isSidebarDismissing}
+            onCloseSidebar={closeSidebar}
+            onEntryClick={handleEntryClick}
+            onOpenFilesView={openFilesView}
+            onOpenSettingsView={openSettingsView}
+            sidebarOpen={sidebarOpen}
+            sidebarVisible={sidebarVisible}
+            sidebarWidth={sidebarWidth}
+            startSidebarResize={startSidebarResize}
+            treeEntries={treeEntries}
+            viewingSettings={viewingSettings}
+            visibleEntryError={visibleEntryError}
           />
-          <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}${isSidebarDismissing ? ' dismissing' : ''}`}>
-            <div className="sidebar-content">
-              <section className="sidebar-tree-section" aria-label="Selected slice files">
-                <div className="sidebar-tree-header">
-                  <div className="sidebar-tree-title">
-                    <h2 className="sidebar-panel-title">File tree</h2>
-                    <span title={currentSliceLabel}>{currentSliceDisplayName || 'Slice'}</span>
-                  </div>
-                  <div className="panel-header-actions">
-                    <span
-                      className={`tree-loading-indicator${isLoading ? ' visible' : ''}`}
-                      role="status"
-                      aria-live="polite"
-                      aria-label={isLoading ? 'Loading repository content' : undefined}
-                      data-testid="tree-loading-indicator"
-                    >
-                      <span className="tree-loading-dot" aria-hidden="true" />
-                    </span>
-                    {canShowSettings && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className={`slice-settings-toggle ${viewingSettings ? 'active' : ''}`}
-                        onClick={viewingSettings ? openFilesView : openSettingsView}
-                        aria-label={viewingSettings ? 'Close slice settings' : 'Open slice settings'}
-                        title={viewingSettings ? 'Close slice settings' : 'Slice settings'}
-                        data-testid="repo-view-settings"
-                      >
-                        <Settings size={16} aria-hidden="true" />
-                      </Button>
-                    )}
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="sidebar-toggle"
-                      onClick={closeSidebar}
-                      aria-label="Close sidebar"
-                      title="Close sidebar"
-                    >
-                      <PanelLeftClose size={16} aria-hidden="true" />
-                    </Button>
-                  </div>
-                </div>
-                {visibleEntryError && <div className="panel-error">{visibleEntryError}</div>}
-                {!canLoad && <div className="panel-empty">Choose a slice to browse files.</div>}
-                {canLoad && !isLoading && !visibleEntryError && hasLoadedRootEntries && (treeEntries[''] || []).length === 0 && (
-                  <div className="panel-empty">No entries found.</div>
-                )}
-                {canLoad && renderTree('')}
-              </section>
-            </div>
-            <div
-              className="sidebar-resize-handle"
-              role="separator"
-              aria-label="Resize sidebar"
-              aria-orientation="vertical"
-              aria-valuemin={SIDEBAR_WIDTH_MIN}
-              aria-valuemax={SIDEBAR_WIDTH_MAX}
-              aria-valuenow={sidebarWidth}
-              tabIndex={sidebarOpen ? 0 : -1}
-              onPointerDown={startSidebarResize}
-              onKeyDown={handleSidebarResizeKeyDown}
-            />
-          </aside>
 
           <div className="repo-code">
-            <div className="code-header">
-              <div className="code-header-left">
-                {!sidebarOpen && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="sidebar-toggle open-btn"
-                    onClick={openSidebar}
-                    aria-label="Open sidebar"
-                    title="Open file tree"
-                    data-testid="sidebar-toggle"
-                  >
-                    <PanelLeftOpen size={17} aria-hidden="true" />
-                  </Button>
-                )}
-                <div className="breadcrumbs">
-                  {visibleBreadcrumbs.map((crumb, index) => {
-                    const isSlicePrefix = index === 0;
-                    const hasPathAfterPrefix = visibleBreadcrumbs.length > 1;
-                    const separator = isSlicePrefix ? (hasPathAfterPrefix ? '://' : '') : (index < visibleBreadcrumbs.length - 1 ? '/' : '');
-                    const isSelectedFileCrumb = Boolean(
-                      selectedFile
-                      && normalizeWorkspaceResultPath(crumb.path) === normalizeWorkspaceResultPath(selectedFile),
-                    );
-                    return (
-                      <Button
-                        key={`${crumb.path || 'slice-root'}-${index}`}
-                        type="button"
-                        variant="ghost"
-                        className="breadcrumb"
-                        onClick={() => handleBreadcrumbClick(crumb.path)}
-                        title={
-                          isSelectedFileCrumb
-                            ? 'Open containing folder'
-                            : (crumb.name === '…' ? 'Jump to parent folder' : crumb.name)
-                        }
-                      >
-                        <span className="breadcrumb-label">{crumb.name}</span>
-                        {separator && <span className="separator">{separator}</span>}
-                      </Button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="code-header-actions">
-                {selectedFile && !isCompactHeader && (
-                  <span className="status file-size-status">
-                    {displayedFileSize === null ? '' : formatBytes(displayedFileSize)}
-                  </span>
-                )}
-                {!isCompactHeader && renderFileActions()}
-                {isCompactHeader && selectedFile && (
-                  <div className="header-actions-menu" ref={actionMenuRef}>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      className="history-toggle header-actions-menu-trigger"
-                      onClick={() => setIsActionMenuOpen((value) => !value)}
-                      aria-haspopup="menu"
-                      aria-expanded={isActionMenuOpen}
-                      title="More actions"
-                    >
-                      <Menu size={16} aria-hidden="true" />
-                    </Button>
-                    {isActionMenuOpen && (
-                      <div className="header-actions-menu-dropdown" role="menu">
-                        <span className="header-actions-menu-status">
-                          {displayedFileSize === null ? '' : formatBytes(displayedFileSize)}
-                        </span>
-                        {renderFileActions(() => setIsActionMenuOpen(false))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
+            <RepoBrowserHeader
+              actionMenuRef={actionMenuRef}
+              displayedFileSize={displayedFileSize}
+              fileActionProps={fileActionProps}
+              isActionMenuOpen={isActionMenuOpen}
+              isCompactHeader={isCompactHeader}
+              onBreadcrumbClick={handleBreadcrumbClick}
+              onOpenSidebar={openSidebar}
+              onToggleActionMenu={() => setIsActionMenuOpen((value) => !value)}
+              selectedFile={selectedFile}
+              sidebarOpen={sidebarOpen}
+              visibleBreadcrumbs={visibleBreadcrumbs}
+            />
             <div className="code-content">
               {!selectedFile && (
-                <div className="folder-preview" data-testid="folder-preview">
-                  <div className="folder-preview-header">
-                    <div>
-                      <h3>{selectedDirectoryLabel}</h3>
-                      <span>{selectedDirectoryPath ? `/${selectedDirectoryPath}` : 'Slice root'}</span>
-                    </div>
-                    <span className="folder-preview-count">
-                      {hasSelectedDirectoryEntries ? `${selectedDirectoryEntries.length} item${selectedDirectoryEntries.length === 1 ? '' : 's'}` : 'Loading'}
-                    </span>
-                  </div>
-                  {!hasSelectedDirectoryEntries && isLoading && (
-                    <div className="folder-preview-loading" role="status" aria-live="polite">
-                      <span className="file-loading-spinner" aria-hidden="true" />
-                      <span>Loading folder...</span>
-                    </div>
-                  )}
-                  {!hasSelectedDirectoryEntries && !isLoading && visibleEntryError && <div className="panel-error">{visibleEntryError}</div>}
-                  {hasSelectedDirectoryEntries && selectedDirectoryEntries.length === 0 && (
-                    <div className="panel-empty">This folder is empty.</div>
-                  )}
-                  {hasSelectedDirectoryEntries && selectedDirectoryEntries.length > 0 && (
-                    <ul className="folder-preview-list">
-                      {selectedDirectoryEntries.map((entry) => {
-                        const entryKind = normalizeEntryType(entry.type);
-                        const entryLabel = getEntryName(entry);
-                        return (
-                          <li key={entry.path}>
-                            <button
-                              type="button"
-                              className={`folder-preview-entry ${entryKind}`}
-                              onClick={() => handleContentEntryClick(entry)}
-                              title={getEntryDisplayPath(entry)}
-                            >
-                              <span className="folder-preview-entry-icon" aria-hidden="true">
-                                {entryKind === 'directory' ? <Folder size={17} /> : <FileText size={16} />}
-                              </span>
-                              <span className="folder-preview-entry-name">{entryLabel}</span>
-                              <span className="folder-preview-entry-meta">
-                                {entryKind === 'directory' ? 'Folder' : formatBytes(entry.size)}
-                              </span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
+                <RepoFolderPreview
+                  hasSelectedDirectoryEntries={hasSelectedDirectoryEntries}
+                  isLoading={isLoading}
+                  onEntryClick={handleContentEntryClick}
+                  selectedDirectoryEntries={selectedDirectoryEntries}
+                  selectedDirectoryLabel={selectedDirectoryLabel}
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  visibleEntryError={visibleEntryError}
+                />
               )}
-              {selectedFile && !showHistory && !isSelectedFileLoading && fileError && <div className="panel-error">{fileError}</div>}
-              {selectedFile && !showHistory && (
-                ((isSelectedFileLoading && hasPreviewContent) || (!isSelectedFileLoading && !fileError)) && (
-                  isEditingFile ? (
-                    <textarea
-                      className="file-editor"
-                      value={draftContent}
-                      onChange={(event) => setDraftContent(event.target.value)}
-                      spellCheck={false}
-                    />
-                  ) : previewMeta.mode === 'image' ? (
-                    <div className="media-preview-wrapper">
-                      <img className="media-preview-image" src={previewMeta.src} alt={previewPath} />
-                    </div>
-                  ) : previewMeta.mode === 'pdf' ? (
-                    <iframe
-                      className="media-preview-pdf"
-                      src={previewMeta.src}
-                      title={`${previewPath} PDF preview`}
-                    />
-                  ) : previewMeta.mode === 'markdown' ? (
-                    <article
-                      className="file-preview file-preview-markdown"
-                      dangerouslySetInnerHTML={{ __html: markdownContent || '<p>File is empty.</p>' }}
-                    />
-                  ) : (
-                    <div
-                      className="file-preview"
-                      onClick={(e) => {
-                        const btn = e.target.closest('.fold-toggle');
-                        if (!btn) return;
-                        const lineNum = parseInt(btn.dataset.foldLine, 10);
-                        if (!lineNum) return;
-                        const table = e.currentTarget.querySelector('.code-table');
-                        if (!table) return;
-                        const isFolded = btn.classList.toggle('folded');
-                        const rows = table.querySelectorAll('tr.code-line');
-                        for (const row of rows) {
-                          const range = (row.dataset.foldRange || '');
-                          if (!range) continue;
-                          const ranges = range.split(' ');
-                          for (const r of ranges) {
-                            const [start, end] = r.split('-').map(Number);
-                            if (start === lineNum) {
-                              const rowLine = parseInt(row.dataset.line, 10);
-                              if (rowLine > start && rowLine <= end) {
-                                row.classList.toggle('folded', isFolded);
-                              }
-                            }
-                          }
-                        }
-                      }}
-                    >
-                      <table className="code-table" dangerouslySetInnerHTML={{ __html: highlightedContent || '<tr><td class="line-number"></td><td class="line-content">File is empty.</td></tr>' }} />
-                    </div>
-                  )
-                )
-              )}
-              {selectedFile && showHistory && (
-                <div className="history-panel" data-testid="history-panel">
-                  {historyLoading && <div className="history-loading">Loading history...</div>}
-                  {historyError && <div className="panel-error">{historyError}</div>}
-                  {!historyLoading && !historyError && fileHistory.length === 0 && (
-                    <div className="panel-empty">No history available for this file.</div>
-                  )}
-                  {!historyLoading && fileHistory.length > 0 && (
-                    <ul className="history-list">
-                      {fileHistory.map((change) => (
-                        <li key={change.id} className="history-item" data-testid="history-item">
-                          <div className="history-item-header">
-                            <span className={`change-type change-type-${normalizeChangeType(change.change_type)}`}>
-                              {formatChangeType(change.change_type)}
-                            </span>
-                            <a
-                              className="commit-hash commit-diff-link"
-                              title={change.commit_hash}
-                              href="#"
-                              data-testid="commit-diff-link"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                if (change.commit_hash && onNavigateToDiff) {
-                                  onNavigateToDiff(change.commit_hash);
-                                }
-                              }}
-                            >
-                              {change.commit_hash ? change.commit_hash.slice(0, 7) : 'unknown'}
-                            </a>
-                          </div>
-                          <div className="history-item-message">{change.message || 'No message'}</div>
-                          <div className="history-item-meta">
-                            <span className="history-author">{change.author || 'Unknown'}</span>
-                            <span className="history-date">{formatTimestamp(change.timestamp)}</span>
-                            {(change.lines_added > 0 || change.lines_deleted > 0) && (
-                              <span className="history-lines">
-                                <span className="lines-added">+{change.lines_added || 0}</span>
-                                <span className="lines-deleted">-{change.lines_deleted || 0}</span>
-                              </span>
-                            )}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
+              <RepoFileViewer
+                draftContent={draftContent}
+                fileError={fileError}
+                hasPreviewContent={hasPreviewContent}
+                highlightedContent={highlightedContent}
+                isEditingFile={isEditingFile}
+                isSelectedFileLoading={isSelectedFileLoading}
+                markdownContent={markdownContent}
+                onDraftContentChange={setDraftContent}
+                previewMeta={previewMeta}
+                previewPath={previewPath}
+                selectedFile={selectedFile}
+                showHistory={showHistory}
+              />
+              <RepoFileHistoryPanel
+                fileHistory={fileHistory}
+                historyError={historyError}
+                historyLoading={historyLoading}
+                onNavigateToDiff={onNavigateToDiff}
+                selectedFile={selectedFile}
+                showHistory={showHistory}
+              />
             </div>
           </div>
         </div>
