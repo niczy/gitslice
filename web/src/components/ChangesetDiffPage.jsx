@@ -2,18 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   cancelCIRun,
   closeChangeset,
-  getChangesetDiff,
   listChangesetChecks,
-  listChangesetSnapshots,
   mergeChangeset,
   rerunCI,
 } from '../utils/api.js';
 import { formatTimestamp } from '../utils/format.js';
-import {
-  normalizeChangesetDiffResponse,
-  normalizeChangesetSnapshotListResponse,
-} from '../utils/normalize.js';
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
+import {
+  useChangesetDiffData,
+  useChangesetSnapshotsData,
+} from '../features/diff/useChangesetDiffData.js';
 import {
   DiffFileItemHeader,
   DiffFilePanel,
@@ -79,159 +77,45 @@ export default function ChangesetDiffPage({
   initialDiffData = null,
   initialDiffError = '',
 }) {
-  const hasInitialSnapshots = initialChangesetId === changesetId && Array.isArray(initialSnapshots);
-  const hasInitialDiff = initialChangesetId === changesetId && Boolean(initialDiffData);
-  const initialSelectedSnapshotVersion = hasInitialSnapshots
-    ? initialSnapshotVersion || initialSnapshots[0]?.version || 0
-    : 0;
-  const [payload, setPayload] = useState(() => (hasInitialDiff ? initialDiffData : null));
-  const [loadedDiffKey, setLoadedDiffKey] = useState(() => (
-    hasInitialDiff ? `${changesetId}:${initialSelectedSnapshotVersion}` : ''
-  ));
-  const [isLoading, setIsLoading] = useState(() => !hasInitialDiff && !initialDiffError);
-  const [error, setError] = useState(() => (initialChangesetId === changesetId ? initialDiffError : ''));
+  const {
+    selectedSnapshotVersion,
+    setSelectedSnapshotVersion,
+    snapshots,
+    snapshotsError,
+    snapshotsLoaded,
+  } = useChangesetSnapshotsData({
+    changesetId,
+    initialChangesetId,
+    initialSnapshotVersion,
+    initialSnapshots,
+    initialSnapshotsError,
+  });
+  const {
+    error,
+    isLoading,
+    loadedDiffKey,
+    payload,
+  } = useChangesetDiffData({
+    changesetId,
+    initialChangesetId,
+    initialDiffData,
+    initialDiffError,
+    initialSnapshotVersion,
+    selectedSnapshotVersion,
+    snapshotsLoaded,
+  });
   const [viewMode, setViewMode] = useState('unified');
   const [actionLoading, setActionLoading] = useState('');
   const [actionError, setActionError] = useState('');
-  const [snapshots, setSnapshots] = useState(() => (hasInitialSnapshots ? initialSnapshots : []));
-  const [snapshotsLoaded, setSnapshotsLoaded] = useState(() => hasInitialSnapshots);
-  const [loadedSnapshotsChangesetId, setLoadedSnapshotsChangesetId] = useState(() => (hasInitialSnapshots ? changesetId : ''));
-  const [snapshotsError, setSnapshotsError] = useState(() => (hasInitialSnapshots ? initialSnapshotsError : ''));
-  const [selectedSnapshotVersion, setSelectedSnapshotVersion] = useState(() => initialSelectedSnapshotVersion);
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [ciChecks, setCIChecks] = useState([]);
   const [ciChecksLoading, setCIChecksLoading] = useState(false);
   const [ciChecksError, setCIChecksError] = useState('');
   const [ciActionLoading, setCIActionLoading] = useState('');
   const [visibleChangeCount, setVisibleChangeCount] = useState(INITIAL_VISIBLE_CHANGE_COUNT);
-  const clientRefreshSnapshotsRef = useRef('');
-  const clientRefreshDiffRef = useRef('');
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
-
-  useEffect(() => {
-    if (
-      initialChangesetId === changesetId
-      && Array.isArray(initialSnapshots)
-      && loadedSnapshotsChangesetId !== changesetId
-    ) {
-      const nextVersion = initialSnapshotVersion || initialSnapshots[0]?.version || 0;
-      setSnapshots(initialSnapshots);
-      setSnapshotsLoaded(true);
-      setSnapshotsError(initialSnapshotsError || '');
-      setSelectedSnapshotVersion(nextVersion);
-      setLoadedSnapshotsChangesetId(changesetId);
-      return undefined;
-    }
-    if (!changesetId) {
-      setSnapshots([]);
-      setSnapshotsLoaded(false);
-      setSnapshotsError('');
-      setSelectedSnapshotVersion(0);
-      setLoadedSnapshotsChangesetId('');
-      return;
-    }
-    if (loadedSnapshotsChangesetId === changesetId && clientRefreshSnapshotsRef.current === changesetId) {
-      return undefined;
-    }
-    const hasSeededSnapshots = loadedSnapshotsChangesetId === changesetId && snapshotsLoaded;
-    clientRefreshSnapshotsRef.current = changesetId;
-
-    let active = true;
-    const loadSnapshots = async () => {
-      if (!hasSeededSnapshots) {
-        setSnapshotsLoaded(false);
-        setSnapshotsError('');
-      }
-      try {
-        const response = await listChangesetSnapshots(changesetId);
-        if (!active) {
-          return;
-        }
-        const normalized = normalizeChangesetSnapshotListResponse(response);
-        setSnapshots(normalized);
-        setSelectedSnapshotVersion(normalized[0]?.version || 0);
-        setLoadedSnapshotsChangesetId(changesetId);
-      } catch (err) {
-        if (!active) {
-          return;
-        }
-        setSnapshots([]);
-        setSelectedSnapshotVersion(0);
-        setSnapshotsError(err?.message || 'Unable to load snapshot versions.');
-        setLoadedSnapshotsChangesetId(changesetId);
-      } finally {
-        if (active) {
-          setSnapshotsLoaded(true);
-        }
-      }
-    };
-    loadSnapshots();
-    return () => { active = false; };
-  }, [
-    changesetId,
-    initialChangesetId,
-    initialSnapshotVersion,
-    initialSnapshots,
-    initialSnapshotsError,
-    loadedSnapshotsChangesetId,
-  ]);
-
-  useEffect(() => {
-    const nextDiffKey = `${changesetId || ''}:${selectedSnapshotVersion || 0}`;
-    if (
-      initialChangesetId === changesetId
-      && initialDiffData
-      && nextDiffKey === `${changesetId || ''}:${initialSnapshotVersion || 0}`
-      && loadedDiffKey !== nextDiffKey
-    ) {
-      setPayload(initialDiffData);
-      setError('');
-      setIsLoading(false);
-      setLoadedDiffKey(nextDiffKey);
-      return undefined;
-    }
-    if (!changesetId || !snapshotsLoaded) return;
-    if (loadedDiffKey === nextDiffKey && clientRefreshDiffRef.current === nextDiffKey) {
-      return undefined;
-    }
-    const hasSeededDiff = loadedDiffKey === nextDiffKey && Boolean(payload);
-    clientRefreshDiffRef.current = nextDiffKey;
-    let active = true;
-    const load = async () => {
-      if (!hasSeededDiff) {
-        setIsLoading(true);
-        setError('');
-      }
-      try {
-        const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined);
-        if (active) {
-          setPayload(normalizeChangesetDiffResponse(response));
-          setLoadedDiffKey(nextDiffKey);
-        }
-      } catch (err) {
-        if (active) {
-          setError(err?.message || 'Unable to load changeset diff.');
-          setLoadedDiffKey(nextDiffKey);
-        }
-      } finally {
-        if (active) {
-          setIsLoading(false);
-        }
-      }
-    };
-    load();
-    return () => { active = false; };
-  }, [
-    changesetId,
-    initialChangesetId,
-    initialDiffData,
-    initialSnapshotVersion,
-    loadedDiffKey,
-    selectedSnapshotVersion,
-    snapshotsLoaded,
-  ]);
 
   const changeset = payload?.changeset || null;
   const changesetCI = changeset?.ci || null;
