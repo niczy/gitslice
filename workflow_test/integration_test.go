@@ -3595,7 +3595,6 @@ func startFakeCodexRunner(t *testing.T, runnerRoot, runnerID, token, changedPath
 		"agent", "run",
 		"--cwd", runnerRoot,
 		"--agent", "codex",
-		"--codex-mode", "exec",
 		"--poll-interval", "100ms",
 		fakeCodexPath,
 	}
