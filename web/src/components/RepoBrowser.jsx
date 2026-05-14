@@ -23,130 +23,27 @@ import { decodeBase64, highlightCodeLines } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
 import { getSliceDisplayName } from '../utils/slices.js';
 import { buildBrowserPath, parseLocation } from '../utils/routing.js';
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_STORAGE_KEY,
+} from '../features/browser/browserConstants.js';
+import { clampSidebarWidth } from '../features/browser/browserLayout.js';
+import {
+  getDirectoryAncestorPaths,
+  getEntryDisplayPath,
+  getEntryName,
+  getFilePayloadSize,
+  getNumericFileSize,
+  getParentDirectoryPath,
+  getPreviewMeta,
+  getTreeFileSize,
+  sortEntriesByTypeAndName,
+} from '../features/browser/browserModel.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import SliceSettings from './SliceSettings.jsx';
 import { Button } from './ui/button.jsx';
 
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
-
-const IMAGE_MIME_TYPES = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-  avif: 'image/avif',
-};
-
-const SIDEBAR_WIDTH_MIN = 220;
-const SIDEBAR_WIDTH_MAX = 560;
-const SIDEBAR_WIDTH_DEFAULT = 260;
-const SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.browser.sidebarWidth';
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
-
-function clampSidebarWidth(value) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) {
-    return SIDEBAR_WIDTH_DEFAULT;
-  }
-  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(numericValue)));
-}
-
-const getFileExtension = (filePath) => {
-  if (!filePath || !filePath.includes('.')) {
-    return '';
-  }
-  return filePath.split('.').pop()?.toLowerCase() || '';
-};
-
-const getEntryName = (entry) => {
-  const name = String(entry?.name || '').trim();
-  if (name) {
-    return name;
-  }
-  const path = String(entry?.path || '').replace(/^\/+|\/+$/g, '');
-  if (!path) {
-    return '/';
-  }
-  return path.split('/').pop() || path;
-};
-
-const getEntryDisplayPath = (entry) => {
-  const path = String(entry?.path || '').replace(/^\/+/, '');
-  return path ? `/${path}` : '/';
-};
-
-const sortEntriesByTypeAndName = (entries = []) => [...entries].sort((left, right) => {
-  const leftType = normalizeEntryType(left.type);
-  const rightType = normalizeEntryType(right.type);
-  if (leftType !== rightType) {
-    return leftType === 'directory' ? -1 : 1;
-  }
-  return getEntryName(left).localeCompare(getEntryName(right), undefined, { sensitivity: 'base' });
-});
-
-function getNumericFileSize(value) {
-  const size = typeof value === 'number' ? value : Number.parseInt(value, 10);
-  return Number.isFinite(size) && size >= 0 ? size : null;
-}
-
-function getFilePayloadSize(filePayload, decodedContent = '') {
-  const payloadSize = getNumericFileSize(filePayload?.size);
-  if (payloadSize !== null) {
-    return payloadSize;
-  }
-  return decodedContent ? decodedContent.length : null;
-}
-
-function getTreeFileSize(treeEntries, filePath) {
-  const normalizedPath = String(filePath || '').replace(/^\/+/, '');
-  if (!normalizedPath) {
-    return null;
-  }
-  const parentPath = normalizedPath.includes('/') ? normalizedPath.split('/').slice(0, -1).join('/') : '';
-  const entry = (treeEntries?.[parentPath] || []).find((item) => String(item?.path || '').replace(/^\/+/, '') === normalizedPath);
-  return normalizeEntryType(entry?.type) === 'file' ? getNumericFileSize(entry?.size) : null;
-}
-
-const getDirectoryAncestorPaths = (path) => {
-  const parts = String(path || '').split('/').filter(Boolean);
-  const ancestors = [''];
-  for (let index = 0; index < parts.length; index += 1) {
-    ancestors.push(parts.slice(0, index + 1).join('/'));
-  }
-  return ancestors;
-};
-
-const getParentDirectoryPath = (path) => {
-  const parts = String(path || '').split('/').filter(Boolean);
-  return parts.slice(0, -1).join('/');
-};
-
-const getPreviewMeta = (filePath, encodedContent) => {
-  const extension = getFileExtension(filePath);
-  if (extension === 'pdf') {
-    return {
-      mode: 'pdf',
-      src: `data:application/pdf;base64,${encodedContent}`,
-    };
-  }
-
-  if (IMAGE_EXTENSIONS.has(extension)) {
-    return {
-      mode: 'image',
-      src: `data:${IMAGE_MIME_TYPES[extension] || 'image/*'};base64,${encodedContent}`,
-    };
-  }
-
-  if (extension === 'md' || extension === 'markdown') {
-    return { mode: 'markdown', src: '' };
-  }
-
-  return { mode: 'text', src: '' };
-};
 
 // ---------------------------------------------------------------------------
 // Repo Browser Component
