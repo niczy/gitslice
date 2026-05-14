@@ -1,0 +1,13 @@
+export const BLOCKED_CONVERSATION_STATES = new Set(['failed']);
+export const LOCAL_CONVERSATION_AVAILABILITY = 'local';
+export const PENDING_LOCAL_CONVERSATION_AVAILABILITY = 'pending_local';
+export const CLOUD_ONLY_CONVERSATION_AVAILABILITY = 'cloud_only';
+
+export const AGENT_EVENTS_PAGE_SIZE = 500;
+export const AGENT_EVENTS_MAX = 5000;
+export const SESSIONS_SIDEBAR_MOBILE_MAX_WIDTH = 900;
+export const AGENTS_SIDEBAR_MIN_WIDTH = 280;
+export const AGENTS_SIDEBAR_MAX_WIDTH = 560;
+export const AGENTS_SIDEBAR_DEFAULT_WIDTH = 340;
+export const AGENTS_SIDEBAR_WIDTH_STORAGE_KEY = 'gitslice.agentsSidebarWidth';
+export const LOCAL_CHANGES_REQUEST_TIMEOUT_MS = 30000;
