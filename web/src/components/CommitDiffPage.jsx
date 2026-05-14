@@ -5,6 +5,7 @@ import { normalizeChangeType, normalizeDiffResponse } from '../utils/normalize.j
 import { renderDiffPatch, renderSplitDiffPatch } from '../utils/diff.jsx';
 import { decodeBase64 } from '../utils/highlight.js';
 import { base64ToBytes } from '../../shared/runtime.js';
+import { useCommitDiffData } from '../features/diff/useCommitDiffData.js';
 import {
   DiffFileItemHeader,
   DiffFilePanel,
@@ -87,11 +88,17 @@ export default function CommitDiffPage({
   initialDiffData = null,
   initialDiffError = '',
 }) {
-  const hasInitialDiff = initialCommitHash === commitHash && Boolean(initialDiffData);
-  const [diffData, setDiffData] = useState(() => (hasInitialDiff ? initialDiffData : null));
-  const [loadedCommitHash, setLoadedCommitHash] = useState(() => (hasInitialDiff ? commitHash : ''));
-  const [isLoading, setIsLoading] = useState(() => !hasInitialDiff && !initialDiffError);
-  const [error, setError] = useState(() => (initialCommitHash === commitHash ? initialDiffError : ''));
+  const {
+    dataRevision,
+    diffData,
+    error,
+    isLoading,
+  } = useCommitDiffData({
+    commitHash,
+    initialCommitHash,
+    initialDiffData,
+    initialDiffError,
+  });
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [viewMode, setViewMode] = useState('unified'); // 'unified' | 'split'
   const [fallbackContentByFile, setFallbackContentByFile] = useState({});
@@ -105,65 +112,16 @@ export default function CommitDiffPage({
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
-  const clientRefreshCommitRef = useRef('');
 
   const encodePath = useCallback((value) => value.split('/').map(encodeURIComponent).join('/'), []);
 
   useEffect(() => {
-    if (initialCommitHash === commitHash && initialDiffData && loadedCommitHash !== commitHash) {
-      setDiffData(initialDiffData);
-      setFallbackContentByFile({});
-      setBinaryVisibleByFile({});
-      setPatchByFile({});
-      setHasLoadedPatches(false);
-      setPatchLoadError('');
-      setError('');
-      setIsLoading(false);
-      setLoadedCommitHash(commitHash);
-      return undefined;
-    }
-    if (!commitHash) return;
-    if (loadedCommitHash === commitHash && clientRefreshCommitRef.current === commitHash) {
-      return undefined;
-    }
-    const hasSeededDiff = loadedCommitHash === commitHash && Boolean(diffData);
-    clientRefreshCommitRef.current = commitHash;
-    let active = true;
-    const controller = new AbortController();
-
-    const loadDiff = async () => {
-      if (!hasSeededDiff) {
-        setIsLoading(true);
-        setError('');
-      }
-      try {
-        const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/changes`, {
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`Request failed (${response.status})`);
-        const payload = await response.json();
-        if (active) {
-          setDiffData(normalizeDiffResponse(payload));
-          setFallbackContentByFile({});
-          setBinaryVisibleByFile({});
-          setPatchByFile({});
-          setHasLoadedPatches(false);
-          setPatchLoadError('');
-          setLoadedCommitHash(commitHash);
-        }
-      } catch (err) {
-        if (active && err?.name !== 'AbortError') {
-          setError('Unable to load commit changes.');
-          setLoadedCommitHash(commitHash);
-        }
-      } finally {
-        if (active) setIsLoading(false);
-      }
-    };
-
-    loadDiff();
-    return () => { active = false; controller.abort(); };
-  }, [commitHash, initialCommitHash, initialDiffData, loadedCommitHash]);
+    setFallbackContentByFile({});
+    setBinaryVisibleByFile({});
+    setPatchByFile({});
+    setHasLoadedPatches(false);
+    setPatchLoadError('');
+  }, [dataRevision]);
 
   const loadPatches = useCallback(async () => {
     if (!commitHash || isPatchLoading || hasLoadedPatches) {
