@@ -1,26 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import {
-  Bot,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
-} from 'lucide-react';
 
-import {
-  AGENTS_SIDEBAR_MAX_WIDTH,
-  AGENTS_SIDEBAR_MIN_WIDTH,
-} from '../features/agents/agentConstants.js';
 import { useAgentLocalChanges } from '../features/agents/useAgentLocalChanges.js';
 import { useAgentPageViewModel } from '../features/agents/useAgentPageViewModel.js';
 import { useAgentSessionActions } from '../features/agents/useAgentSessionActions.js';
 import { useAgentSessionsData } from '../features/agents/useAgentSessionsData.js';
 import { useAgentSessionsSidebar } from '../features/agents/useAgentSessionsSidebar.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
-import SliceAgentsConversationThread from './agents/SliceAgentsConversationThread.jsx';
-import SliceAgentsLocalChangesPanel from './agents/SliceAgentsLocalChangesPanel.jsx';
+import SliceAgentsConversationPanel from './agents/SliceAgentsConversationPanel.jsx';
+import SliceAgentsResizeHandle from './agents/SliceAgentsResizeHandle.jsx';
 import SliceAgentsRunnerInfoDialog from './agents/SliceAgentsRunnerInfoDialog.jsx';
 import SliceAgentsSidebar from './agents/SliceAgentsSidebar.jsx';
-import { Button } from './ui/button.jsx';
 
 export default function SliceAgentsPage({
   sliceId,
@@ -234,118 +223,47 @@ export default function SliceAgentsPage({
           showAgentSessionDocsLink={showAgentSessionDocsLink}
         />
 
-        <div
-          className="slice-agents-resize-handle"
-          role="separator"
-          aria-label="Resize agents and conversations panel"
-          aria-orientation="vertical"
-          aria-valuemin={AGENTS_SIDEBAR_MIN_WIDTH}
-          aria-valuemax={AGENTS_SIDEBAR_MAX_WIDTH}
-          aria-valuenow={Math.round(agentsSidebarWidth)}
-          tabIndex={0}
-          title="Drag to resize. Double-click to reset."
-          data-testid="slice-agents-resize-handle"
-          onPointerDown={handleAgentsSidebarResizePointerDown}
-          onKeyDown={handleAgentsSidebarResizeKeyDown}
+        <SliceAgentsResizeHandle
+          agentsSidebarWidth={agentsSidebarWidth}
           onDoubleClick={resetAgentsSidebarWidth}
-        >
-          <span aria-hidden="true" />
-        </div>
+          onKeyDown={handleAgentsSidebarResizeKeyDown}
+          onPointerDown={handleAgentsSidebarResizePointerDown}
+        />
 
-        <main className="slice-agents-conversation" data-testid="slice-agents-conversation">
-          <div className="slice-agents-mobile-toolbar">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="slice-agents-icon-button"
-              onClick={openSessionsSidebar}
-              aria-label="Open running agents and conversations"
-              title="Open running agents and conversations"
-              data-testid="slice-agents-open-sessions"
-            >
-              <PanelLeftOpen size={16} aria-hidden="true" />
-            </Button>
-            <span>Running agents</span>
-          </div>
-          {!selectedSession && (
-            <div className="slice-agents-empty-detail">
-              <Bot size={22} aria-hidden="true" />
-              <span>Select a conversation from the running agent.</span>
-            </div>
-          )}
-          {selectedSession && (
-            <div className={`slice-agents-conversation-shell${localChangesPanelVisible ? ' has-local-changes' : ''}`}>
-              <div className="slice-agents-conversation-header">
-                <div>
-                  <h1>Conversation</h1>
-                  <span>{selectedSessionSubtitle}</span>
-                </div>
-                {selectedSessionIsLocal && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="slice-agents-local-panel-toggle"
-                    onClick={() => setLocalChangesPanelOpen((open) => !open)}
-                    aria-expanded={localChangesPanelOpen}
-                    aria-controls="slice-agents-local-changes-panel"
-                    title={localChangesPanelOpen ? 'Hide local changes' : 'Show local changes'}
-                    data-testid="slice-agents-toggle-local-changes"
-                  >
-                    {localChangesPanelOpen ? (
-                      <PanelRightClose size={15} aria-hidden="true" />
-                    ) : (
-                      <PanelRightOpen size={15} aria-hidden="true" />
-                    )}
-                    <span>Local changes</span>
-                  </Button>
-                )}
-              </div>
-              <div className="slice-agents-conversation-body">
-                <SliceAgentsConversationThread
-                  canSendInput={canSendInput}
-                  checkoutFailure={checkoutFailure}
-                  conversationItems={conversationItems}
-                  events={events}
-                  eventsError={eventsError}
-                  eventsLoading={eventsLoading}
-                  inputError={inputError}
-                  inputText={inputText}
-                  onInputChange={setInputText}
-                  onSendInput={handleSendInput}
-                  selectedSession={selectedSession}
-                  sendingInput={sendingInput}
-                />
-              </div>
-              {localChangesPanelAvailable && (
-                <aside
-                  id="slice-agents-local-changes-panel"
-                  className={`slice-agents-local-changes-panel${localChangesPanelVisible ? ' open' : ''}`}
-                  aria-hidden={!localChangesPanelVisible}
-                  data-testid="slice-agents-local-changes-panel"
-                >
-                  <SliceAgentsLocalChangesPanel
-                    assistantStreaming={assistantStreaming}
-                    canExportChangeset={canExportChangeset}
-                    canSendInput={canSendInput}
-                    changesetExportLoading={changesetExportLoading}
-                    changesetMessage={changesetMessage}
-                    displayError={localChangesDisplayError}
-                    hasDirtyFiles={hasDirtyFiles}
-                    latestExportedChangesetId={latestExportedChangesetId}
-                    localChanges={localChanges}
-                    localChangesLoading={localChangesLoading}
-                    onChangesetMessageChange={setChangesetMessage}
-                    onExportChangeset={handleExportChangeset}
-                    onHide={() => setLocalChangesPanelOpen(false)}
-                    onRefresh={() => requestLocalChanges()}
-                  />
-                </aside>
-              )}
-            </div>
-          )}
-        </main>
+        <SliceAgentsConversationPanel
+          assistantStreaming={assistantStreaming}
+          canExportChangeset={canExportChangeset}
+          canSendInput={canSendInput}
+          changesetExportLoading={changesetExportLoading}
+          changesetMessage={changesetMessage}
+          checkoutFailure={checkoutFailure}
+          conversationItems={conversationItems}
+          events={events}
+          eventsError={eventsError}
+          eventsLoading={eventsLoading}
+          hasDirtyFiles={hasDirtyFiles}
+          inputError={inputError}
+          inputText={inputText}
+          latestExportedChangesetId={latestExportedChangesetId}
+          localChanges={localChanges}
+          localChangesDisplayError={localChangesDisplayError}
+          localChangesLoading={localChangesLoading}
+          localChangesPanelAvailable={localChangesPanelAvailable}
+          localChangesPanelOpen={localChangesPanelOpen}
+          localChangesPanelVisible={localChangesPanelVisible}
+          onChangesetMessageChange={setChangesetMessage}
+          onExportChangeset={handleExportChangeset}
+          onHideLocalChanges={() => setLocalChangesPanelOpen(false)}
+          onInputChange={setInputText}
+          onOpenSessionsSidebar={openSessionsSidebar}
+          onRefreshLocalChanges={() => requestLocalChanges()}
+          onSendInput={handleSendInput}
+          onToggleLocalChanges={() => setLocalChangesPanelOpen((open) => !open)}
+          selectedSession={selectedSession}
+          selectedSessionIsLocal={selectedSessionIsLocal}
+          selectedSessionSubtitle={selectedSessionSubtitle}
+          sendingInput={sendingInput}
+        />
       </div>
       {agentInfoOpen && selectedRunner && (
         <SliceAgentsRunnerInfoDialog
