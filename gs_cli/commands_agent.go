@@ -209,6 +209,7 @@ type localAgentRunConfig struct {
 	Command      []string
 	PollInterval time.Duration
 	Once         bool
+	AuthContext  func(context.Context) (context.Context, error)
 }
 
 type localAgentTurnRunner interface {

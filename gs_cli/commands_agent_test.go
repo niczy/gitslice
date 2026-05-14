@@ -185,6 +185,67 @@ func TestBuildLocalAgentChangesPayloadReportsDirtyFiles(t *testing.T) {
 	}
 }
 
+func TestLocalAgentChangesetExportRefreshesSliceAuth(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
+		t.Fatalf("mkdir .gs: %v", err)
+	}
+	if err := writeSliceIDConfigAt(workdir, "home_alice"); err != nil {
+		t.Fatalf("write slice config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	readmeInfo, err := os.Lstat(filepath.Join(workdir, "README.md"))
+	if err != nil {
+		t.Fatalf("stat README: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "home_alice",
+		CommitHash: "cmt_base",
+		Files: []checkoutTrackedFile{
+			{
+				Path:                 "README.md",
+				Hash:                 storage.HashFileManifestContent([]byte("before\n"), false, ""),
+				Size:                 readmeInfo.Size(),
+				ModifiedTimeUnixNano: readmeInfo.ModTime().UnixNano(),
+				ChangeTimeUnixNano:   fileChangeTimeUnixNano(readmeInfo),
+			},
+		},
+	}
+	addTestDirectoryRecords(t, workdir, index, "")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("after\n"), 0o644); err != nil {
+		t.Fatalf("modify README: %v", err)
+	}
+
+	sliceClient := &authCheckingSliceServiceClient{t: t, expectedAuth: "Bearer fresh-access"}
+	agentClient := &fakeAgentServiceClient{}
+	cfg := localAgentRunConfig{
+		SessionID: "sess_export",
+		CWD:       workdir,
+		AuthContext: func(ctx context.Context) (context.Context, error) {
+			return replaceCLIAuth(ctx, cliAuth{Authorization: "Bearer fresh-access"}), nil
+		},
+	}
+	staleCtx := replaceCLIAuth(context.Background(), cliAuth{Authorization: "Bearer stale-access"})
+	if err := handleLocalAgentChangesetExportRequest(staleCtx, &CLI{sliceClient: sliceClient, agentClient: agentClient}, cfg, 9, localAgentChangesetExportRequest{
+		RequestID: "export-1",
+		Message:   "ship it",
+	}); err != nil {
+		t.Fatalf("handleLocalAgentChangesetExportRequest failed: %v", err)
+	}
+	if sliceClient.createCalls != 1 || sliceClient.reviewCalls != 1 {
+		t.Fatalf("expected one create and one review call, got create=%d review=%d", sliceClient.createCalls, sliceClient.reviewCalls)
+	}
+	if len(agentClient.appendedEvents) != 3 {
+		t.Fatalf("expected started/completed/local changes events, got %d", len(agentClient.appendedEvents))
+	}
+}
+
 func TestBackgroundAgentEnvDoesNotPinStoredAccessToken(t *testing.T) {
 	t.Setenv("GS_API_KEY", "outer-token")
 	env := backgroundAgentEnv(cliAuth{
@@ -661,6 +722,70 @@ type fakeAgentServiceClient struct {
 	registerCalls  int
 	heartbeatCalls int
 	heartbeatErrs  []error
+	appendedEvents []*agentv1.AppendEventRequest
+}
+
+func (f *fakeAgentServiceClient) AppendEvent(ctx context.Context, req *agentv1.AppendEventRequest, opts ...grpc.CallOption) (*agentv1.AppendEventResponse, error) {
+	_ = ctx
+	_ = opts
+	f.appendedEvents = append(f.appendedEvents, req)
+	return &agentv1.AppendEventResponse{Event: &agentv1.EventEnvelope{
+		Seq:     uint64(len(f.appendedEvents)),
+		Stream:  req.GetStream(),
+		Type:    req.GetType(),
+		Payload: req.GetPayload(),
+	}}, nil
+}
+
+type authCheckingSliceServiceClient struct {
+	slicev1.SliceServiceClient
+	t            *testing.T
+	expectedAuth string
+	createCalls  int
+	reviewCalls  int
+}
+
+func (f *authCheckingSliceServiceClient) CreateChangeset(ctx context.Context, req *slicev1.CreateChangesetRequest, opts ...grpc.CallOption) (*slicev1.CreateChangesetResponse, error) {
+	_ = opts
+	f.createCalls++
+	f.requireAuth(ctx)
+	if req.GetSliceId() != "home_alice" || req.GetBaseCommitHash() != "cmt_base" || !reflect.DeepEqual(req.GetModifiedFiles(), []string{"README.md"}) {
+		f.t.Fatalf("unexpected CreateChangeset request: %#v", req)
+	}
+	return &slicev1.CreateChangesetResponse{
+		ChangesetId:   "cs_export",
+		ChangesetHash: "hash_export",
+		Status:        slicev1.ChangesetStatus_PENDING,
+	}, nil
+}
+
+func (f *authCheckingSliceServiceClient) ReviewChangeset(ctx context.Context, req *slicev1.ReviewChangesetRequest, opts ...grpc.CallOption) (*slicev1.ReviewChangesetResponse, error) {
+	_ = opts
+	f.reviewCalls++
+	f.requireAuth(ctx)
+	if req.GetChangesetId() != "cs_export" {
+		f.t.Fatalf("unexpected ReviewChangeset request: %#v", req)
+	}
+	return &slicev1.ReviewChangesetResponse{
+		Snapshot: &slicev1.ChangesetSnapshotInfo{
+			SnapshotId:     "snap_export",
+			ChangesetId:    "cs_export",
+			Version:        1,
+			Hash:           "snap_hash",
+			BaseCommitHash: "cmt_base",
+			ModifiedFiles:  []string{"README.md"},
+		},
+	}, nil
+}
+
+func (f *authCheckingSliceServiceClient) requireAuth(ctx context.Context) {
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok {
+		f.t.Fatalf("missing outgoing metadata")
+	}
+	if got := strings.Join(md.Get("authorization"), ","); got != f.expectedAuth {
+		f.t.Fatalf("expected authorization %q, got %q", f.expectedAuth, got)
+	}
 }
 
 func (f *fakeAgentServiceClient) RegisterRunner(ctx context.Context, req *agentv1.RegisterRunnerRequest, opts ...grpc.CallOption) (*agentv1.RegisterRunnerResponse, error) {
