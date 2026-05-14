@@ -210,6 +210,9 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
 	populateCheckoutAllowedAddRoots(ctx, cli, sliceID, nextCheckoutIndex)
+	if err := ensureCheckoutAllowedAddRootDirs(targetRoot, nextCheckoutIndex); err != nil {
+		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to prepare checkout directories: %v", err)
+	}
 	if err := writeCheckoutIndex(targetRoot, nextCheckoutIndex); err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write checkout index: %v", err)
 	}
@@ -333,6 +336,9 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 		commandFatalf("SLICE_SYNC_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
 	populateCheckoutAllowedAddRoots(ctx, cli, sliceID, nextCheckoutIndex)
+	if err := ensureCheckoutAllowedAddRootDirs(".", nextCheckoutIndex); err != nil {
+		commandFatalf("SLICE_SYNC_FAILED", false, "", "Failed to prepare checkout directories: %v", err)
+	}
 
 	status := "up to date"
 	if !checkoutIndicesEqualContent(checkoutIndex, nextCheckoutIndex) {
