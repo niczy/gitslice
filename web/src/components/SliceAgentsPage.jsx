@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Send,
   TerminalSquare,
+  X,
 } from 'lucide-react';
 
 import {
@@ -74,6 +75,21 @@ function normalizeRunner(runner) {
     version: runner?.version ?? '',
     lastHeartbeatAt: runner?.lastHeartbeatAt ?? runner?.last_heartbeat_at ?? '',
   };
+}
+
+function runnerDisplayName(runner) {
+  const workspaceRoot = String(runner?.workspaceRoot || '').trim();
+  if (workspaceRoot) {
+    const parts = workspaceRoot.split('/').filter(Boolean);
+    return parts[parts.length - 1] || workspaceRoot;
+  }
+  if (runner?.hostName) {
+    return runner.hostName;
+  }
+  if (runner?.runnerId) {
+    return runner.runnerId.slice(0, 12);
+  }
+  return runner?.agentType || 'agent';
 }
 
 function normalizeEvent(event) {
@@ -700,19 +716,27 @@ function buildRunningAgentInfoRows(runner, session, runnerState) {
 }
 
 function isConversationLocal(session) {
-  return session?.availability === LOCAL_CONVERSATION_AVAILABILITY;
+  return session?.availability === LOCAL_CONVERSATION_AVAILABILITY || isConversationPendingLocal(session);
 }
 
 function isConversationCloudOnly(session) {
   return session?.availability === CLOUD_ONLY_CONVERSATION_AVAILABILITY;
 }
 
+function isConversationPendingLocal(session) {
+  if (session?.availability === PENDING_LOCAL_CONVERSATION_AVAILABILITY) {
+    return true;
+  }
+  return session?.availability === 'unknown'
+    && String(session?.provider || '').trim().toLowerCase() === 'local'
+    && Boolean(String(session?.runnerId || '').trim());
+}
+
 function conversationAvailabilityLabel(session) {
+  if (isConversationLocal(session)) {
+    return 'Local';
+  }
   switch (session?.availability) {
-    case LOCAL_CONVERSATION_AVAILABILITY:
-      return 'Local';
-    case PENDING_LOCAL_CONVERSATION_AVAILABILITY:
-      return 'Preparing local checkout';
     case CLOUD_ONLY_CONVERSATION_AVAILABILITY:
       return 'Cloud only';
     case 'runner_offline':
@@ -720,14 +744,15 @@ function conversationAvailabilityLabel(session) {
     case 'failed':
       return 'Failed';
     default:
-      return 'Unknown local copy';
+      return 'Local status unavailable';
   }
 }
 
 function conversationAvailabilityMessage(session) {
+  if (isConversationPendingLocal(session)) {
+    return 'Waiting for this runner to create the local checkout for the conversation.';
+  }
   switch (session?.availability) {
-    case PENDING_LOCAL_CONVERSATION_AVAILABILITY:
-      return 'Waiting for this runner to create the local checkout for the conversation.';
     case CLOUD_ONLY_CONVERSATION_AVAILABILITY:
       return 'This conversation exists on the server, but this runner does not have a local copy yet.';
     case 'runner_offline':
@@ -740,11 +765,12 @@ function conversationAvailabilityMessage(session) {
 }
 
 function conversationAvailabilityRank(session) {
+  if (isConversationPendingLocal(session)) {
+    return 1;
+  }
   switch (session?.availability) {
     case LOCAL_CONVERSATION_AVAILABILITY:
       return 0;
-    case PENDING_LOCAL_CONVERSATION_AVAILABILITY:
-      return 1;
     case CLOUD_ONLY_CONVERSATION_AVAILABILITY:
       return 2;
     default:
@@ -841,14 +867,6 @@ export default function SliceAgentsPage({
     () => sessions.filter((session) => session.runnerId && onlineRunnerIds.has(session.runnerId)),
     [onlineRunnerIds, sessions],
   );
-  const localConversationCount = useMemo(
-    () => runnerSessions.filter(isConversationLocal).length,
-    [runnerSessions],
-  );
-  const cloudOnlyConversationCount = useMemo(
-    () => runnerSessions.filter(isConversationCloudOnly).length,
-    [runnerSessions],
-  );
   const sessionsByRunnerId = useMemo(() => {
     const grouped = new Map();
     for (const session of runnerSessions) {
@@ -895,11 +913,6 @@ export default function SliceAgentsPage({
       runnerPID ? `pid ${runnerPID}` : '',
     ].filter(Boolean).join(' · ')
     : 'No running agent online';
-  const runningAgentCountLabel = onlineRunners.length === 1 ? '1 running agent' : `${onlineRunners.length} running agents`;
-  const sessionCountLabel = [
-    localConversationCount === 1 ? '1 local conversation' : `${localConversationCount} local conversations`,
-    cloudOnlyConversationCount > 0 ? `${cloudOnlyConversationCount} cloud-only` : '',
-  ].filter(Boolean).join(' · ');
   const selectedRunnerLocalCount = selectedRunnerSessions.filter(isConversationLocal).length;
   const selectedRunnerCloudOnlyCount = selectedRunnerSessions.filter(isConversationCloudOnly).length;
   const selectedRunnerConversationCountLabel = [
@@ -1394,6 +1407,19 @@ export default function SliceAgentsPage({
     requestLocalChanges({ silent: true });
   }, [assistantStreaming, latestAgentOutputFinalSeq, requestLocalChanges, selectedSession, selectedSessionId]);
 
+  useEffect(() => {
+    if (!agentInfoOpen || typeof window === 'undefined') {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setAgentInfoOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [agentInfoOpen]);
+
   const handleCreateSession = async () => {
     if (!canCreateSession || creatingSession) {
       return;
@@ -1595,12 +1621,8 @@ export default function SliceAgentsPage({
           className={`slice-agents-sidebar ${sessionsSidebarOpen ? 'open' : 'closed'}${sessionsSidebarDismissing ? ' dismissing' : ''}`}
           aria-label="Running agents and conversations"
         >
-          <div className="slice-agents-sidebar-header">
-            <div>
-              <h2>Running agents</h2>
-              <span>{runningAgentCountLabel} · {sessionCountLabel}</span>
-            </div>
-            <div className="slice-agents-sidebar-actions">
+          <section className="slice-agents-panel slice-agents-running-agents" data-testid="slice-agents-runners">
+            <div className="slice-agents-runner-toolbar">
               <Button
                 type="button"
                 variant="ghost"
@@ -1616,7 +1638,7 @@ export default function SliceAgentsPage({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="slice-agents-icon-button"
+                className="slice-agents-icon-button slice-agents-runner-refresh"
                 onClick={() => {
                   loadRunners({ keepSelection: true });
                   loadSessions({ keepSelection: true });
@@ -1627,9 +1649,6 @@ export default function SliceAgentsPage({
                 <RefreshCw size={15} aria-hidden="true" />
               </Button>
             </div>
-          </div>
-
-          <section className="slice-agents-panel slice-agents-running-agents" data-testid="slice-agents-runners">
             {runnersLoading && runners.length === 0 && <div className="panel-empty">Loading running agents...</div>}
             {!runnersLoading && runnersError && <div className="panel-error">{runnersError}</div>}
             {!runnersLoading && !runnersError && runners.length === 0 && (
@@ -1642,95 +1661,47 @@ export default function SliceAgentsPage({
               <div className="slice-agents-runner-tabs" role="tablist" aria-label="Running agents">
                 {onlineRunners.map((runner) => {
                   const isSelected = selectedRunner?.runnerId === runner.runnerId;
-                  const runnerSessions = sessionsByRunnerId.get(runner.runnerId) || [];
-                  const runnerLocalCount = runnerSessions.filter(isConversationLocal).length;
-                  const runnerCloudOnlyCount = runnerSessions.filter(isConversationCloudOnly).length;
-                  const runnerSessionLabel = [
-                    runnerLocalCount === 1 ? '1 local' : `${runnerLocalCount} local`,
-                    runnerCloudOnlyCount > 0 ? `${runnerCloudOnlyCount} cloud-only` : '',
-                  ].filter(Boolean).join(' · ');
+                  const runnerName = runnerDisplayName(runner);
                   return (
-                    <Button
+                    <div
                       key={runner.runnerId}
-                      type="button"
-                      variant="ghost"
-                      role="tab"
                       className={`slice-agents-runner-tab${isSelected ? ' active' : ''}`}
-                      onClick={() => handleRunnerSelect(runner.runnerId)}
-                      aria-selected={isSelected}
                       title={runner.workspaceRoot || runner.runnerId}
-                      data-testid="slice-agents-runner"
                     >
-                      <span className="slice-agents-runner-tab-icon" aria-hidden="true">
-                        <TerminalSquare size={15} />
-                      </span>
-                      <span className="slice-agents-runner-tab-main">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        role="tab"
+                        className="slice-agents-runner-tab-select"
+                        onClick={() => handleRunnerSelect(runner.runnerId)}
+                        aria-selected={isSelected}
+                        data-testid="slice-agents-runner"
+                      >
                         <span className="slice-agents-runner-tab-title">
-                          <span className="slice-agents-runner-tab-status" aria-hidden="true" />
-                          <span>{runner.agentType || 'agent'} · {runner.hostName || 'local'}</span>
+                          {runnerName}
                         </span>
-                        <span className="slice-agents-runner-tab-meta">
-                          {runner.status || 'unknown'} · {runnerSessionLabel}
-                        </span>
-                      </span>
-                    </Button>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="slice-agents-icon-button slice-agents-runner-tab-info"
+                        onClick={() => {
+                          handleRunnerSelect(runner.runnerId);
+                          setAgentInfoOpen(true);
+                        }}
+                        aria-label={`Inspect ${runnerName} runner`}
+                        aria-haspopup="dialog"
+                        aria-expanded={agentInfoOpen && isSelected}
+                        title="Inspect runner"
+                        data-testid="slice-agents-info"
+                      >
+                        <Info size={14} aria-hidden="true" />
+                      </Button>
+                    </div>
                   );
                 })}
               </div>
-            )}
-            {selectedRunner && (
-              <section className="slice-agents-runner-card" data-testid="slice-agents-runner-card">
-                <div className="slice-agents-runner-card-header">
-                  <div>
-                    <h3>Agent environment</h3>
-                    <span>{runningAgentSummary}</span>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="slice-agents-icon-button"
-                    onClick={() => setAgentInfoOpen((open) => !open)}
-                    aria-label="Inspect running agent"
-                    aria-expanded={agentInfoOpen}
-                    title="Inspect running agent"
-                    data-testid="slice-agents-info"
-                  >
-                    <Info size={15} aria-hidden="true" />
-                  </Button>
-                </div>
-                {runnerRunningDir && (
-                  <div className="slice-agents-runner-dir" title={runnerRunningDir}>
-                    {runnerRunningDir}
-                  </div>
-                )}
-                {agentInfoOpen && (
-                  <div className="slice-agents-info-panel" data-testid="slice-agents-info-panel">
-                    <dl>
-                      {runningAgentInfoRows.map(([label, value]) => (
-                        <div key={label} className="slice-agents-info-row">
-                          <dt>{label}</dt>
-                          <dd>{value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </div>
-                )}
-                <Button
-                  type="button"
-                  variant="default"
-                  size="sm"
-                  className="slice-agents-runner-action"
-                  onClick={handleUpgradeRestartRunner}
-                  disabled={!canRestartRunner || runnerActionLoading}
-                  title={canRestartRunner ? 'Upgrade and restart running agent' : 'Select an active session'}
-                  data-testid="slice-agents-upgrade-restart"
-                >
-                  <RefreshCw size={15} aria-hidden="true" />
-                  {runnerActionLoading ? 'Requesting' : 'Upgrade & restart'}
-                </Button>
-                {runnerActionError && <div className="panel-error">{runnerActionError}</div>}
-              </section>
             )}
           </section>
 
@@ -1752,7 +1723,7 @@ export default function SliceAgentsPage({
           <section className="slice-agents-panel slice-agents-session-panel">
             <div className="slice-agents-section-head">
               <div>
-                <h3>Conversations</h3>
+                <h3>{selectedRunner ? 'Conversations for this runner' : 'Conversations'}</h3>
                 <span>{selectedRunner ? `${selectedRunnerConversationCountLabel} on this runner` : 'Select a running agent'}</span>
               </div>
               <Button
@@ -2016,6 +1987,67 @@ export default function SliceAgentsPage({
           )}
         </main>
       </div>
+      {agentInfoOpen && selectedRunner && (
+        <div className="slice-agents-info-dialog-backdrop" role="presentation" onClick={() => setAgentInfoOpen(false)}>
+          <div
+            className="slice-agents-info-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="slice-agents-info-dialog-title"
+            data-testid="slice-agents-info-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="slice-agents-info-dialog-header">
+              <div>
+                <h2 id="slice-agents-info-dialog-title">Agent runner</h2>
+                <span>{runningAgentSummary}</span>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="slice-agents-icon-button"
+                onClick={() => setAgentInfoOpen(false)}
+                aria-label="Close agent runner details"
+                title="Close"
+              >
+                <X size={15} aria-hidden="true" />
+              </Button>
+            </div>
+            {runnerRunningDir && (
+              <div className="slice-agents-runner-dir" title={runnerRunningDir}>
+                {runnerRunningDir}
+              </div>
+            )}
+            <div className="slice-agents-info-panel" data-testid="slice-agents-info-panel">
+              <dl>
+                {runningAgentInfoRows.map(([label, value]) => (
+                  <div key={label} className="slice-agents-info-row">
+                    <dt>{label}</dt>
+                    <dd>{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+            <div className="slice-agents-info-dialog-actions">
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                className="slice-agents-runner-action"
+                onClick={handleUpgradeRestartRunner}
+                disabled={!canRestartRunner || runnerActionLoading}
+                title={canRestartRunner ? 'Upgrade and restart running agent' : 'Select an active session'}
+                data-testid="slice-agents-upgrade-restart"
+              >
+                <RefreshCw size={15} aria-hidden="true" />
+                {runnerActionLoading ? 'Requesting' : 'Upgrade & restart'}
+              </Button>
+            </div>
+            {runnerActionError && <div className="panel-error">{runnerActionError}</div>}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

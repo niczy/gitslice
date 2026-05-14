@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/niczy/gitslice/internal/agentsession"
@@ -38,6 +41,8 @@ func handleAgentCommand(ctx context.Context, cli *CLI, authConfig cliAuth, args 
 		handleAgentStart(ctx, cli, authConfig, args[1:])
 	case "run":
 		handleAgentRun(ctx, cli, authConfig, args[1:])
+	case "list":
+		handleAgentList(ctx, cli, args[1:])
 	case "input":
 		handleAgentInput(ctx, cli, args[1:])
 	case "interrupt":
@@ -151,6 +156,48 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 	}
 }
 
+func handleAgentList(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
+	fs := newCommandFlagSet("agent list")
+	includeOffline := fs.Bool("all", false, "Include offline local agent runners")
+	includeOfflineAlias := fs.Bool("include-offline", false, "Include offline local agent runners")
+	limit := fs.Int("limit", 50, "Maximum runners")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
+	parseCommandFlags(fs, args)
+	if fs.NArg() != 0 {
+		commandUsage("Usage: gs agent list [--all] [--limit 50] [--json]")
+		return
+	}
+	resp, err := cli.agentClient.ListRunners(ctx, &agentv1.ListRunnersRequest{
+		Limit:          int32(*limit),
+		IncludeOffline: *includeOffline || *includeOfflineAlias,
+	})
+	if err != nil {
+		commandFatalf("AGENT_LIST_FAILED", true, "", "Failed to list local agent runners: %v", err)
+	}
+	if jsonRequested || *jsonOutput {
+		writeJSONOutput(resp)
+		return
+	}
+	runners := resp.GetRunners()
+	if len(runners) == 0 {
+		fmt.Println("No local agent runners found.")
+		return
+	}
+	for _, runner := range runners {
+		fmt.Printf(
+			"%s  %s  agent=%s  host=%s  pid=%d  workspace=%s  last_heartbeat=%s\n",
+			runner.GetRunnerId(),
+			runner.GetStatus(),
+			firstNonEmpty(runner.GetAgentType(), "agent"),
+			firstNonEmpty(runner.GetHostName(), "local"),
+			runner.GetPid(),
+			firstNonEmpty(runner.GetWorkspaceRoot(), "-"),
+			firstNonEmpty(runner.GetLastHeartbeatAt(), "-"),
+		)
+	}
+}
+
 func handleAgentInput(ctx context.Context, cli *CLI, args []string) {
 	fs := newCommandFlagSet("agent input")
 	parseCommandFlags(fs, args)
@@ -184,18 +231,355 @@ func handleAgentInterrupt(ctx context.Context, cli *CLI, args []string) {
 }
 
 func handleAgentStop(ctx context.Context, cli *CLI, args []string) {
+	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("agent stop")
 	reason := fs.String("reason", "user stop", "Stop reason")
+	runnerID := fs.String("runner", "", "Local agent runner ID to stop")
+	cwd := fs.String("cwd", "", "Workspace directory for the local agent runner")
+	dir := fs.String("dir", "", "Alias for --cwd")
+	stopAll := fs.Bool("all", false, "Stop all online local agent runners on this host")
+	force := fs.Bool("force", false, "Force-kill the runner process if it does not exit after SIGTERM")
+	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
-	if fs.NArg() != 1 {
-		commandUsage("Usage: gs agent stop <session-id> [--reason <reason>]")
+	jsonEnabled := jsonRequested || *jsonOutput
+	if fs.NArg() > 1 {
+		commandUsage("Usage: gs agent stop [<session-id>|<runner-id>] [--runner <runner-id>] [--cwd <path>] [--all] [--reason <reason>] [--json]")
 		return
 	}
-	resp, err := cli.agentClient.StopSession(ctx, &agentv1.StopSessionRequest{SessionId: strings.TrimSpace(fs.Arg(0)), Reason: strings.TrimSpace(*reason)})
-	if err != nil {
-		commandFatalf("AGENT_STOP_FAILED", true, "", "Failed to stop agent session: %v", err)
+	rootDir := strings.TrimSpace(*cwd)
+	if strings.TrimSpace(*dir) != "" {
+		rootDir = strings.TrimSpace(*dir)
 	}
-	writeJSONOutput(resp)
+	hasRunnerSelector := *stopAll || strings.TrimSpace(*runnerID) != "" || rootDir != ""
+	if fs.NArg() == 1 {
+		arg := strings.TrimSpace(fs.Arg(0))
+		if hasRunnerSelector {
+			commandUsage("Usage: gs agent stop [<session-id>|<runner-id>] [--runner <runner-id>] [--cwd <path>] [--all] [--reason <reason>] [--json]")
+			return
+		}
+		if strings.HasPrefix(arg, "agr_") {
+			*runnerID = arg
+			hasRunnerSelector = true
+		} else {
+			resp, err := stopAgentSession(ctx, cli, arg, *reason)
+			if err != nil {
+				commandFatalf("AGENT_STOP_FAILED", true, "", "Failed to stop agent session: %v", err)
+			}
+			writeJSONOutput(resp)
+			return
+		}
+	}
+	if *stopAll && (strings.TrimSpace(*runnerID) != "" || rootDir != "") {
+		commandUsage("Usage: gs agent stop --all [--force] [--reason <reason>] [--json]")
+		return
+	}
+	if !hasRunnerSelector {
+		rootDir = "."
+	}
+	output, err := stopLocalAgentRunners(ctx, cli, localAgentRunnerStopOptions{
+		RunnerID: strings.TrimSpace(*runnerID),
+		RootDir:  rootDir,
+		All:      *stopAll,
+		Force:    *force,
+		Reason:   strings.TrimSpace(*reason),
+	})
+	if err != nil {
+		commandFatalf("AGENT_STOP_FAILED", true, "", "Failed to stop local agent runner: %v", err)
+	}
+	if jsonEnabled {
+		writeJSONOutput(output)
+		return
+	}
+	if len(output.Runners) == 0 {
+		fmt.Println("No local agent runners matched.")
+		return
+	}
+	for _, runner := range output.Runners {
+		fmt.Printf("%s  %s  pid=%d  workspace=%s\n", runner.RunnerID, runner.Status, runner.PID, firstNonEmpty(runner.WorkspaceRoot, "-"))
+	}
+}
+
+type localAgentRunnerStopOptions struct {
+	RunnerID string
+	RootDir  string
+	All      bool
+	Force    bool
+	Reason   string
+}
+
+type localAgentRunnerStopTarget struct {
+	RunnerID      string
+	PID           int
+	WorkspaceRoot string
+	HostName      string
+	Status        string
+}
+
+type localAgentRunnerStopOutput struct {
+	Status  string                       `json:"status"`
+	Runners []localAgentRunnerStopResult `json:"runners"`
+}
+
+type localAgentRunnerStopResult struct {
+	RunnerID       string `json:"runner_id"`
+	Status         string `json:"status"`
+	PID            int    `json:"pid,omitempty"`
+	WorkspaceRoot  string `json:"workspace_root,omitempty"`
+	ProcessStopped bool   `json:"process_stopped"`
+	Unregistered   bool   `json:"unregistered"`
+	Message        string `json:"message,omitempty"`
+}
+
+func stopLocalAgentRunners(ctx context.Context, cli *CLI, opts localAgentRunnerStopOptions) (*localAgentRunnerStopOutput, error) {
+	targets, err := resolveLocalAgentRunnerStopTargets(ctx, cli, opts)
+	if err != nil {
+		return nil, err
+	}
+	output := &localAgentRunnerStopOutput{Status: "stopped", Runners: make([]localAgentRunnerStopResult, 0, len(targets))}
+	for _, target := range targets {
+		result := localAgentRunnerStopResult{
+			RunnerID:      target.RunnerID,
+			PID:           target.PID,
+			WorkspaceRoot: target.WorkspaceRoot,
+		}
+		processStopped, message, err := stopAgentSupervisorProcess(target.PID, opts.Force)
+		result.ProcessStopped = processStopped
+		result.Message = message
+		if err != nil {
+			result.Status = "failed"
+			if result.Message == "" {
+				result.Message = err.Error()
+			}
+			output.Status = "failed"
+			output.Runners = append(output.Runners, result)
+			return output, err
+		}
+		if strings.TrimSpace(target.WorkspaceRoot) != "" && target.PID > 0 {
+			clearAgentSupervisorPIDFileIfMatches(target.WorkspaceRoot, target.PID)
+		}
+		if strings.TrimSpace(target.RunnerID) != "" {
+			unregisterReason := opts.Reason
+			if unregisterReason == "" {
+				unregisterReason = "local runner stopped"
+			}
+			if err := unregisterLocalAgentRunnerWithReason(ctx, cli, target.RunnerID, unregisterReason); err != nil {
+				result.Status = "failed"
+				result.Message = err.Error()
+				output.Status = "failed"
+				output.Runners = append(output.Runners, result)
+				return output, err
+			}
+			result.Unregistered = true
+		}
+		result.Status = "stopped"
+		if result.Message == "" {
+			result.Message = "stopped"
+		}
+		output.Runners = append(output.Runners, result)
+	}
+	if len(output.Runners) == 0 {
+		output.Status = "no_matches"
+	}
+	return output, nil
+}
+
+func resolveLocalAgentRunnerStopTargets(ctx context.Context, cli *CLI, opts localAgentRunnerStopOptions) ([]localAgentRunnerStopTarget, error) {
+	resp, err := cli.agentClient.ListRunners(ctx, &agentv1.ListRunnersRequest{Limit: 200, IncludeOffline: true})
+	if err != nil {
+		return nil, err
+	}
+	runners := resp.GetRunners()
+	hostName, _ := os.Hostname()
+	if opts.All {
+		targets := make([]localAgentRunnerStopTarget, 0, len(runners))
+		for _, runner := range runners {
+			if !agentRunnerIsLocalProvider(runner) || !agentRunnerHostMatches(runner, hostName) || !strings.EqualFold(runner.GetStatus(), "online") {
+				continue
+			}
+			targets = append(targets, localAgentRunnerStopTargetFromRunner(runner))
+		}
+		return targets, nil
+	}
+	rootDir := strings.TrimSpace(opts.RootDir)
+	if rootDir != "" {
+		resolvedRoot, err := resolveAgentWorkspaceRoot(rootDir)
+		if err != nil {
+			return nil, err
+		}
+		target := localAgentRunnerStopTarget{WorkspaceRoot: resolvedRoot}
+		if pid, err := readExistingAgentSupervisorPID(resolvedRoot); err == nil {
+			target.PID = pid
+		}
+		if runnerID, err := readExistingAgentRunnerID(resolvedRoot); err == nil {
+			target.RunnerID = runnerID
+		}
+		if opts.RunnerID != "" {
+			if target.RunnerID != "" && target.RunnerID != opts.RunnerID {
+				return nil, fmt.Errorf("workspace %s belongs to runner %s, not %s", resolvedRoot, target.RunnerID, opts.RunnerID)
+			}
+			target.RunnerID = opts.RunnerID
+		}
+		if runner := findAgentRunnerByID(runners, target.RunnerID); runner != nil {
+			if !agentRunnerHostMatches(runner, hostName) {
+				return nil, fmt.Errorf("runner %s is registered on host %s, not %s", runner.GetRunnerId(), runner.GetHostName(), hostName)
+			}
+			target = mergeLocalAgentRunnerStopTarget(target, localAgentRunnerStopTargetFromRunner(runner))
+		}
+		if target.RunnerID == "" && target.PID == 0 {
+			return nil, fmt.Errorf("no local agent runner metadata found in %s", resolvedRoot)
+		}
+		return []localAgentRunnerStopTarget{target}, nil
+	}
+	if opts.RunnerID == "" {
+		return nil, fmt.Errorf("runner id or workspace is required")
+	}
+	runner := findAgentRunnerByID(runners, opts.RunnerID)
+	if runner == nil {
+		return nil, fmt.Errorf("runner %s was not found", opts.RunnerID)
+	}
+	if !agentRunnerHostMatches(runner, hostName) {
+		return nil, fmt.Errorf("runner %s is registered on host %s, not %s", runner.GetRunnerId(), runner.GetHostName(), hostName)
+	}
+	return []localAgentRunnerStopTarget{localAgentRunnerStopTargetFromRunner(runner)}, nil
+}
+
+func findAgentRunnerByID(runners []*agentv1.AgentRunner, runnerID string) *agentv1.AgentRunner {
+	runnerID = strings.TrimSpace(runnerID)
+	if runnerID == "" {
+		return nil
+	}
+	for _, runner := range runners {
+		if strings.TrimSpace(runner.GetRunnerId()) == runnerID {
+			return runner
+		}
+	}
+	return nil
+}
+
+func agentRunnerIsLocalProvider(runner *agentv1.AgentRunner) bool {
+	provider := strings.TrimSpace(runner.GetProvider())
+	return provider == "" || strings.EqualFold(provider, "local")
+}
+
+func agentRunnerHostMatches(runner *agentv1.AgentRunner, hostName string) bool {
+	runnerHost := strings.TrimSpace(runner.GetHostName())
+	localHost := strings.TrimSpace(hostName)
+	return runnerHost == "" || localHost == "" || strings.EqualFold(runnerHost, localHost)
+}
+
+func localAgentRunnerStopTargetFromRunner(runner *agentv1.AgentRunner) localAgentRunnerStopTarget {
+	return localAgentRunnerStopTarget{
+		RunnerID:      strings.TrimSpace(runner.GetRunnerId()),
+		PID:           int(runner.GetPid()),
+		WorkspaceRoot: strings.TrimSpace(runner.GetWorkspaceRoot()),
+		HostName:      strings.TrimSpace(runner.GetHostName()),
+		Status:        strings.TrimSpace(runner.GetStatus()),
+	}
+}
+
+func mergeLocalAgentRunnerStopTarget(local, remote localAgentRunnerStopTarget) localAgentRunnerStopTarget {
+	if local.RunnerID == "" {
+		local.RunnerID = remote.RunnerID
+	}
+	if local.PID == 0 {
+		local.PID = remote.PID
+	}
+	if local.WorkspaceRoot == "" {
+		local.WorkspaceRoot = remote.WorkspaceRoot
+	}
+	if local.HostName == "" {
+		local.HostName = remote.HostName
+	}
+	if local.Status == "" {
+		local.Status = remote.Status
+	}
+	return local
+}
+
+func readExistingAgentRunnerID(rootDir string) (string, error) {
+	root, err := filepath.Abs(strings.TrimSpace(rootDir))
+	if err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(filepath.Join(root, agentWorkspaceStateDir, "runner_id"))
+	if err != nil {
+		return "", err
+	}
+	runnerID := strings.TrimSpace(string(raw))
+	if runnerID == "" {
+		return "", fmt.Errorf("runner id file is empty")
+	}
+	return runnerID, nil
+}
+
+func readExistingAgentSupervisorPID(rootDir string) (int, error) {
+	root, err := filepath.Abs(strings.TrimSpace(rootDir))
+	if err != nil {
+		return 0, err
+	}
+	return readAgentSupervisorPIDFilePath(filepath.Join(root, agentWorkspaceStateDir, "agent.pid"))
+}
+
+func stopAgentSupervisorProcess(pid int, force bool) (bool, string, error) {
+	if pid <= 0 {
+		return false, "no local process id recorded", nil
+	}
+	if !agentSupervisorProcessAlive(pid) {
+		return false, "process is not running", nil
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false, "", err
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return false, "process is not running", nil
+		}
+		return false, "", err
+	}
+	if waitForAgentSupervisorExit(pid, 5*time.Second) {
+		return true, "stopped", nil
+	}
+	if !force {
+		return true, "sent SIGTERM but process is still running", fmt.Errorf("runner process %d did not exit; retry with --force", pid)
+	}
+	if err := process.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return true, "", err
+	}
+	if waitForAgentSupervisorExit(pid, 5*time.Second) {
+		return true, "force-stopped", nil
+	}
+	return true, "sent SIGKILL but process is still running", fmt.Errorf("runner process %d did not exit after SIGKILL", pid)
+}
+
+func waitForAgentSupervisorExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !agentSupervisorProcessAlive(pid) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return !agentSupervisorProcessAlive(pid)
+}
+
+func unregisterLocalAgentRunnerWithReason(ctx context.Context, cli *CLI, runnerID, reason string) error {
+	runnerID = strings.TrimSpace(runnerID)
+	if runnerID == "" {
+		return nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "local runner stopped"
+	}
+	_, err := cli.agentClient.UnregisterRunner(ctx, &agentv1.UnregisterRunnerRequest{
+		RunnerId: runnerID,
+		Reason:   strings.TrimSpace(reason),
+	})
+	return err
+}
+
+func stopAgentSession(ctx context.Context, cli *CLI, sessionID, reason string) (*agentv1.StopSessionResponse, error) {
+	return cli.agentClient.StopSession(ctx, &agentv1.StopSessionRequest{SessionId: strings.TrimSpace(sessionID), Reason: strings.TrimSpace(reason)})
 }
 
 type localAgentRunConfig struct {

@@ -225,7 +225,12 @@ func (s *PostgresNativeStorage) ListAgentRunnersByUser(ctx context.Context, user
 		       COALESCE(capabilities_json, '{}'::jsonb), last_heartbeat_at, created_at, updated_at
 		FROM agent_runners
 		WHERE user_id = $1
-		ORDER BY last_heartbeat_at DESC
+		ORDER BY
+			CASE WHEN status = 'online' THEN 0 ELSE 1 END,
+			LOWER(agent_type),
+			LOWER(host_name),
+			LOWER(workspace_root),
+			runner_id
 		LIMIT $2
 	`, username, limit)
 	if err != nil {
@@ -319,6 +324,26 @@ func scanAgentRunnerRow(row agentRunnerRow) (*models.AgentRunner, error) {
 
 func sortAgentRunners(runners []*models.AgentRunner) {
 	sort.SliceStable(runners, func(i, j int) bool {
-		return runners[i].LastHeartbeatAt.After(runners[j].LastHeartbeatAt)
+		left := runners[i]
+		right := runners[j]
+		if left == nil || right == nil {
+			return left != nil
+		}
+		if left.Status != right.Status {
+			return left.Status == models.AgentRunnerStatusOnline
+		}
+		for _, pair := range [][2]string{
+			{left.AgentType, right.AgentType},
+			{left.HostName, right.HostName},
+			{left.WorkspaceRoot, right.WorkspaceRoot},
+			{left.RunnerID, right.RunnerID},
+		} {
+			leftValue := strings.ToLower(pair[0])
+			rightValue := strings.ToLower(pair[1])
+			if leftValue != rightValue {
+				return leftValue < rightValue
+			}
+		}
+		return false
 	})
 }

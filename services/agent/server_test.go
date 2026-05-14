@@ -381,6 +381,73 @@ func TestRunnerLocalSessionIDsRequiresUsableList(t *testing.T) {
 	}
 }
 
+func TestListRunnersUsesStableIdentityOrder(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	now := time.Now().UTC()
+	for _, runner := range []*models.AgentRunner{
+		{
+			RunnerID:        "runner-codex",
+			UserID:          "alice",
+			Provider:        agentsession.RuntimeProviderLocal,
+			AgentType:       "codex",
+			Status:          models.AgentRunnerStatusOnline,
+			HostName:        "zeta-host",
+			WorkspaceRoot:   "/tmp/zeta",
+			LastHeartbeatAt: now,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			RunnerID:        "runner-claude",
+			UserID:          "alice",
+			Provider:        agentsession.RuntimeProviderLocal,
+			AgentType:       "claude",
+			Status:          models.AgentRunnerStatusOnline,
+			HostName:        "alpha-host",
+			WorkspaceRoot:   "/tmp/alpha",
+			LastHeartbeatAt: now.Add(-time.Second),
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			RunnerID:        "runner-offline",
+			UserID:          "alice",
+			Provider:        agentsession.RuntimeProviderLocal,
+			AgentType:       "aider",
+			Status:          models.AgentRunnerStatusOffline,
+			HostName:        "alpha-host",
+			WorkspaceRoot:   "/tmp/offline",
+			LastHeartbeatAt: now,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+	} {
+		if err := st.UpsertAgentRunner(context.Background(), runner); err != nil {
+			t.Fatalf("UpsertAgentRunner failed: %v", err)
+		}
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	listResp, err := srv.ListRunners(ctx, &agentv1.ListRunnersRequest{IncludeOffline: true})
+	if err != nil {
+		t.Fatalf("ListRunners failed: %v", err)
+	}
+	got := make([]string, 0, len(listResp.GetRunners()))
+	for _, runner := range listResp.GetRunners() {
+		got = append(got, runner.GetRunnerId())
+	}
+	want := []string{"runner-claude", "runner-codex", "runner-offline"}
+	if len(got) != len(want) {
+		t.Fatalf("runner count = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("runner order = %#v, want %#v", got, want)
+		}
+	}
+}
+
 func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()
