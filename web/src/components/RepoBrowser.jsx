@@ -28,6 +28,14 @@ import {
   SIDEBAR_WIDTH_MIN,
 } from '../features/browser/browserConstants.js';
 import {
+  buildBrowserEntriesUrl,
+  buildBrowserFileHistoryUrl,
+  buildBrowserFileUrl,
+  buildBrowserRawFileUrl,
+  normalizeWorkspaceResultPath,
+  readBrowserErrorMessage,
+} from '../features/browser/browserApi.js';
+import {
   getDirectoryAncestorPaths,
   getEntryDisplayPath,
   getEntryName,
@@ -274,8 +282,6 @@ export default function RepoBrowser({
     setIsSettingsOpen(true);
   }, []);
 
-  const normalizeWorkspaceResultPath = useCallback((value) => String(value || '').replace(/^\/+/, ''), []);
-
   const clearFilePreview = useCallback(() => {
     setSelectedFile(null);
     setFileContent('');
@@ -395,7 +401,7 @@ export default function RepoBrowser({
       return '';
     }
     return normalizeWorkspaceResultPath(focusedEntry.path);
-  }, [focusedEntry, normalizeWorkspaceResultPath, selectedFile]);
+  }, [focusedEntry, selectedFile]);
 
   const activeBrowserPath = selectedFile || selectedDirectoryPath;
 
@@ -507,72 +513,42 @@ export default function RepoBrowser({
     setFocusedEntry({ path: '', type: 'directory' });
   }, [initialBrowserData, initialBrowserDataMatches, sliceId, sliceHash, treeEntriesScopeKey]);
 
-  const encodePath = useCallback((value) => value.split('/').map(encodeURIComponent).join('/'), []);
-
   // Build URL for entries endpoint based on mode
   const buildEntriesUrl = useCallback((path) => {
-    const params = new URLSearchParams();
-    const encodedPath = path ? encodePath(path) : '';
-    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
-
-    if (sliceHash) {
-      params.set('slice_version.slice_hash', sliceHash);
-    }
-    const queryString = params.toString();
-    return `${apiBaseUrl}/v1/slices/${sliceId}/entries${pathSuffix}${queryString ? `?${queryString}` : ''}`;
-  }, [encodePath, sliceHash, sliceId]);
+    return buildBrowserEntriesUrl({
+      apiBaseUrl,
+      sliceId,
+      path,
+      sliceHash,
+    });
+  }, [sliceHash, sliceId]);
 
   // Build URL for file endpoint based on mode
   const buildFileUrl = useCallback((filePath) => {
-    const encodedPath = filePath ? encodePath(filePath) : '';
-    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
-    const params = new URLSearchParams();
-
-    if (sliceHash) {
-      params.set('slice_version.slice_hash', sliceHash);
-    }
-    const queryString = params.toString();
-    return `${apiBaseUrl}/v1/slices/${sliceId}/files${pathSuffix}${queryString ? `?${queryString}` : ''}`;
-  }, [encodePath, sliceHash, sliceId]);
+    return buildBrowserFileUrl({
+      apiBaseUrl,
+      sliceId,
+      filePath,
+      sliceHash,
+    });
+  }, [sliceHash, sliceId]);
 
   const buildRawFileUrl = useCallback((filePath) => {
-    const encodedPath = filePath ? encodePath(filePath) : '';
-    const params = new URLSearchParams();
-    if (sliceHash) {
-      params.set('slice_version.slice_hash', sliceHash);
-    }
-    const queryString = params.toString();
-    return `/raw/slices/${encodeURIComponent(sliceId)}/${encodedPath}${queryString ? `?${queryString}` : ''}`;
-  }, [encodePath, sliceHash, sliceId]);
+    return buildBrowserRawFileUrl({
+      sliceId,
+      filePath,
+      sliceHash,
+    });
+  }, [sliceHash, sliceId]);
 
   // Build URL for file history endpoint based on mode
   const buildHistoryUrl = useCallback((filePath) => {
-    const encodedPath = filePath ? encodePath(filePath) : '';
-    const pathSuffix = encodedPath ? `/${encodedPath}` : '';
-    return `${apiBaseUrl}/v1/slices/${sliceId}/files/history${pathSuffix}`;
-  }, [encodePath, sliceId]);
-
-  // Fetch file history from the API
-  const readErrorMessage = async (response, fallbackMessage) => {
-    let detail = '';
-    try {
-      const text = await response.text();
-      if (text) {
-        try {
-          const payload = JSON.parse(text);
-          detail = payload?.message || payload?.error || '';
-        } catch {
-          detail = text;
-        }
-      }
-    } catch {
-      detail = '';
-    }
-    if (!detail) {
-      return `${fallbackMessage} (${response.status})`;
-    }
-    return `${fallbackMessage}: ${detail}`;
-  };
+    return buildBrowserFileHistoryUrl({
+      apiBaseUrl,
+      sliceId,
+      filePath,
+    });
+  }, [sliceId]);
 
   // Fetch file history from the API
   const fetchFileHistory = useCallback(async (filePath) => {
@@ -726,7 +702,7 @@ export default function RepoBrowser({
 
       const fileResponse = await fetchWithAuth(buildFileUrl(normalizedPath));
       if (!fileResponse.ok) {
-        throw new Error(await readErrorMessage(fileResponse, 'Unable to load file content'));
+        throw new Error(await readBrowserErrorMessage(fileResponse, 'Unable to load file content'));
       }
       const filePayload = await fileResponse.json();
       const content = filePayload?.file?.content || '';
@@ -757,7 +733,6 @@ export default function RepoBrowser({
     closeSidebar,
     expandedPaths,
     fileDrafts,
-    normalizeWorkspaceResultPath,
     selectedFile,
     selectedFileSize,
     treeEntries,
@@ -933,7 +908,7 @@ export default function RepoBrowser({
           try {
             const fileResp = await fetchWithAuth(buildFileUrl(pendingFile), { signal: controller.signal });
             if (!fileResp.ok) {
-              throw new Error(await readErrorMessage(fileResp, 'Unable to load file content'));
+              throw new Error(await readBrowserErrorMessage(fileResp, 'Unable to load file content'));
             }
             if (active) {
               const fileData = await fileResp.json();
@@ -1022,7 +997,7 @@ export default function RepoBrowser({
           signal: controller.signal,
         });
         if (!response.ok) {
-          throw new Error(await readErrorMessage(response, 'Unable to load file content'));
+          throw new Error(await readBrowserErrorMessage(response, 'Unable to load file content'));
         }
         const payload = await response.json();
         if (!active) {
@@ -1244,7 +1219,7 @@ export default function RepoBrowser({
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, normalizeWorkspaceResultPath, openFilePath, sliceId]);
+  }, [isActive, openFilePath, sliceId]);
 
   const handleEntryClick = async (entry) => {
     const entryKind = normalizeEntryType(entry.type);
