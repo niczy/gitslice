@@ -663,6 +663,9 @@ func TestChangesetWorkflowEndToEnd(t *testing.T) {
 
 	// Use unique file names to avoid conflicts with other tests
 	uniqueFile := fmt.Sprintf("integration_%d.go", time.Now().UnixNano())
+	if err := os.WriteFile(filepath.Join(workdir, uniqueFile), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("failed to write integration file: %v", err)
+	}
 	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "initial change", "--files", uniqueFile)
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
@@ -735,7 +738,7 @@ func TestRootSliceAndSliceCreateWorkflow(t *testing.T) {
 		t.Fatalf("Expected init output, got: %s", output)
 	}
 
-	subFolder := fmt.Sprintf("components_%d", time.Now().UnixNano())
+	subFolder := fmt.Sprintf("%s/components_%d", srcFolder, time.Now().UnixNano())
 	subFile := filepath.Join(newSliceWorkdir, filepath.FromSlash(subFolder+"/index.ts"))
 	if err := os.MkdirAll(filepath.Dir(subFile), 0o755); err != nil {
 		t.Fatalf("failed to create components folder: %v", err)
@@ -2493,7 +2496,11 @@ func TestSliceCommitHistoryIntegration(t *testing.T) {
 		t.Fatalf("expected init output, got: %s", output)
 	}
 
-	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "history change", "--files", "history_file.txt")
+	historyFile := "history_file.txt"
+	if err := os.WriteFile(filepath.Join(workdir, historyFile), []byte("history\n"), 0o644); err != nil {
+		t.Fatalf("failed to write history file: %v", err)
+	}
+	output = runCLIOrFail(t, workdir, "changeset", "create", "--message", "history change", "--files", historyFile)
 	changesetID := extractChangesetID(output)
 	if changesetID == "" {
 		t.Fatalf("failed to extract changeset ID from output: %s", output)

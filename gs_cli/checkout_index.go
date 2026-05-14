@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	checkoutIndexMagic   = "GSIDX003"
-	checkoutIndexVersion = 3
+	checkoutIndexMagic                  = "GSIDX003"
+	checkoutIndexVersion                = 3
+	checkoutIndexAllowedAddRootsSection = "allowed-add-roots-v1"
 )
 
 type checkoutTrackedFile struct {
@@ -46,11 +47,12 @@ type checkoutTrackedDirectory struct {
 }
 
 type localCheckoutIndex struct {
-	Version     uint32
-	SliceID     string
-	CommitHash  string
-	Files       []checkoutTrackedFile
-	Directories []checkoutTrackedDirectory
+	Version         uint32
+	SliceID         string
+	CommitHash      string
+	Files           []checkoutTrackedFile
+	Directories     []checkoutTrackedDirectory
+	AllowedAddRoots []string
 }
 
 func checkoutIndexFilePath(dir string) string {
@@ -121,6 +123,9 @@ func readCheckoutIndex(dir string) (*localCheckoutIndex, error) {
 		}
 		index.Directories = append(index.Directories, record)
 	}
+	if err := readCheckoutIndexOptionalSections(reader, index); err != nil {
+		return nil, err
+	}
 
 	return index, nil
 }
@@ -176,6 +181,20 @@ func writeCheckoutIndex(dir string, index *localCheckoutIndex) error {
 	for _, record := range index.Directories {
 		if err := writeCheckoutTrackedDirectoryRecord(writer, record); err != nil {
 			return err
+		}
+	}
+	index.AllowedAddRoots = normalizeCheckoutAllowedAddRoots(index.AllowedAddRoots)
+	if len(index.AllowedAddRoots) > 0 {
+		if err := writeCheckoutIndexString(writer, checkoutIndexAllowedAddRootsSection); err != nil {
+			return err
+		}
+		if err := writeCheckoutIndexUint32(writer, uint32(len(index.AllowedAddRoots))); err != nil {
+			return err
+		}
+		for _, root := range index.AllowedAddRoots {
+			if err := writeCheckoutIndexString(writer, root); err != nil {
+				return err
+			}
 		}
 	}
 	if err := writer.Flush(); err != nil {
@@ -349,6 +368,118 @@ func detectNoGitModifiedFiles(dir string, index *localCheckoutIndex) ([]string, 
 	}
 	sort.Strings(changed)
 	return uniqueCheckoutPaths(changed), nil
+}
+
+func checkoutAllowedAddRoots(index *localCheckoutIndex) []string {
+	if index == nil {
+		return nil
+	}
+	if roots := normalizeCheckoutAllowedAddRoots(index.AllowedAddRoots); len(roots) > 0 {
+		return roots
+	}
+	if root := homeSliceCheckoutRoot(index.SliceID); root != "" {
+		return []string{root}
+	}
+	return nil
+}
+
+func homeSliceCheckoutRoot(sliceID string) string {
+	sliceID = strings.TrimSpace(sliceID)
+	if !strings.HasPrefix(sliceID, "home_") {
+		return ""
+	}
+	username := strings.TrimSpace(strings.TrimPrefix(sliceID, "home_"))
+	if username == "" {
+		return ""
+	}
+	return filepath.Clean(username)
+}
+
+func normalizeCheckoutAllowedAddRoots(roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, raw := range roots {
+		cleaned := filepath.Clean(strings.Trim(strings.TrimSpace(raw), "/"))
+		if cleaned == "" || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		if cleaned == ".git" || cleaned == ".gs" || strings.HasPrefix(cleaned, ".git"+string(os.PathSeparator)) || strings.HasPrefix(cleaned, ".gs"+string(os.PathSeparator)) {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func checkoutAllowsAddedPath(index *localCheckoutIndex, rawPath string) bool {
+	roots := checkoutAllowedAddRoots(index)
+	if len(roots) == 0 {
+		return true
+	}
+	return checkoutPathUnderAllowedAddRoots(rawPath, roots)
+}
+
+func checkoutPathUnderAllowedAddRoots(rawPath string, roots []string) bool {
+	cleaned := filepath.Clean(strings.Trim(strings.TrimSpace(rawPath), "/"))
+	if cleaned == "" || cleaned == "." {
+		return false
+	}
+	for _, root := range roots {
+		if cleaned == root {
+			return false
+		}
+		if strings.HasPrefix(cleaned, root+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterCheckoutManifestForAllowedRoots(manifest *slicev1.SliceManifest, roots []string) {
+	roots = normalizeCheckoutAllowedAddRoots(roots)
+	if manifest == nil || len(roots) == 0 || len(manifest.FileMetadata) == 0 {
+		return
+	}
+	filtered := make([]*slicev1.FileMetadata, 0, len(manifest.FileMetadata))
+	for _, meta := range manifest.FileMetadata {
+		if meta == nil {
+			continue
+		}
+		checkoutPath := meta.GetPath()
+		if checkoutPath == "" {
+			checkoutPath = meta.GetFileId()
+		}
+		if checkoutPathUnderAllowedAddRoots(checkoutPath, roots) {
+			filtered = append(filtered, meta)
+		}
+	}
+	manifest.FileMetadata = filtered
+}
+
+func filterAddedWorkingTreeStatusEntriesForCheckout(entries []workingTreeStatusEntry, index *localCheckoutIndex) []workingTreeStatusEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	filtered := make([]workingTreeStatusEntry, 0, len(entries))
+	for _, entry := range entries {
+		cleaned := filepath.Clean(strings.TrimSpace(entry.Path))
+		if entry.Status == "A" && !checkoutAllowsAddedPath(index, cleaned) {
+			continue
+		}
+		filtered = append(filtered, workingTreeStatusEntry{
+			Path:   cleaned,
+			Status: entry.Status,
+		})
+	}
+	return filtered
 }
 
 func collectNoGitTrackedStatus(dir string, lookup *checkoutIndexLookup) ([]workingTreeStatusEntry, error) {
@@ -885,6 +1016,54 @@ func readCheckoutIndexString(reader *bufio.Reader) (string, error) {
 		return "", err
 	}
 	return string(buf), nil
+}
+
+func readCheckoutIndexOptionalSections(reader *bufio.Reader, index *localCheckoutIndex) error {
+	for {
+		section, ok, err := readCheckoutIndexOptionalString(reader)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		switch section {
+		case checkoutIndexAllowedAddRootsSection:
+			count, err := readCheckoutIndexUint32(reader)
+			if err != nil {
+				return err
+			}
+			roots := make([]string, 0, count)
+			for i := uint32(0); i < count; i++ {
+				root, err := readCheckoutIndexString(reader)
+				if err != nil {
+					return err
+				}
+				roots = append(roots, root)
+			}
+			index.AllowedAddRoots = normalizeCheckoutAllowedAddRoots(roots)
+		default:
+			return nil
+		}
+	}
+}
+
+func readCheckoutIndexOptionalString(reader *bufio.Reader) (string, bool, error) {
+	var size uint32
+	if err := binary.Read(reader, binary.LittleEndian, &size); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if size == 0 {
+		return "", true, nil
+	}
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return "", false, err
+	}
+	return string(buf), true, nil
 }
 
 func writeCheckoutTrackedFileRecord(writer *bufio.Writer, record checkoutTrackedFile) error {

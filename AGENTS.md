@@ -14,6 +14,7 @@ These guidelines apply to the entire repository.
 - For local dev server starts:
   - Use `make restart-servers-postgres` for normal terminal sessions; it runs `dev/dev-servers.sh`, sources `web/.dev.vars`, defaults to local Postgres `gitslice_dev`, and leaves genesis population enabled for test data.
   - When starting servers from Codex/tool shells, verify that background processes survive after the command exits. If they do not, use a persistent supervisor such as `launchctl` and make the wrapped shell source `web/.dev.vars` before starting both `core_server` and the web dev server.
+  - When supervising `core_server` manually, preserve the complete storage environment (`STORAGE_TYPE`, `POSTGRES_DSN`, `OBJECT_STORE_TYPE`, and the matching object-store location/credentials). Metadata can initialize against Postgres while blob reads point at the wrong object store if these env vars are dropped.
   - Local Clerk auth requires non-empty `AUTH_PROVIDER=clerk`, `CLERK_SECRET_KEY`, and either `CLERK_PUBLISHABLE_KEY` or `VITE_CLERK_PUBLISHABLE_KEY` in `web/.dev.vars`; after restart, check `http://localhost:5173/sign-in` does not show "Clerk is not fully configured."
   - After any local restart, verify `make dev-status`, `curl -sf http://localhost:50051/health`, and `curl -sfI http://localhost:5173/`.
 - For deployment changes, keep `ops/restart_all.sh`, `ops/start_web_server.sh`, and crontab assumptions consistent:

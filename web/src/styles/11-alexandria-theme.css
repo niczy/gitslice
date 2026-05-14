@@ -1220,6 +1220,24 @@ button[data-testid="topbar-get-started"]:hover {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.slice-agents-conversation-shell.has-local-changes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: stretch;
+  column-gap: 14px;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-conversation-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-conversation-body {
+  grid-column: 1;
+  grid-row: 2;
+}
+
 .slice-agents-conversation-thread {
   display: flex;
   min-width: 0;
@@ -1258,6 +1276,19 @@ button[data-testid="topbar-get-started"]:hover {
   transition:
     transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
     opacity 160ms ease;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-local-changes-panel {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  height: 100%;
+  transform: none;
 }
 
 .slice-agents-local-changes {

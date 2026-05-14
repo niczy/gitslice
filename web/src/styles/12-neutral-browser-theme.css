@@ -1672,7 +1672,15 @@
   }
 
   .slice-agents-conversation-shell {
+    display: flex;
+    flex-direction: column;
     min-height: 0;
+  }
+
+  .slice-agents-conversation-shell.has-local-changes {
+    display: flex;
+    grid-template-columns: none;
+    grid-template-rows: none;
   }
 
   .slice-agents-conversation-body {
@@ -1691,7 +1699,11 @@
     top: 0;
     right: 0;
     bottom: 0;
+    z-index: 6;
+    grid-column: auto;
+    grid-row: auto;
     width: min(340px, calc(100% - 12px));
+    height: auto;
     max-height: none;
   }
 

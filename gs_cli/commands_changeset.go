@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -179,7 +180,49 @@ func resolveWorkingTreeModifiedFiles(dir string, explicit []string) ([]string, b
 			return nil, false, err
 		}
 	}
+	modifiedFiles, err = filterLocalModifiedFilesForCheckout(dir, checkoutIndex, modifiedFiles)
+	if err != nil {
+		return nil, false, err
+	}
 	return modifiedFiles, false, nil
+}
+
+func filterLocalModifiedFilesForCheckout(dir string, index *localCheckoutIndex, files []string) ([]string, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+	lookup := newCheckoutIndexLookup(index)
+	filtered := make([]string, 0, len(files))
+	for _, rawPath := range files {
+		cleaned := filepath.Clean(strings.TrimSpace(rawPath))
+		if cleaned == "" || cleaned == "." {
+			continue
+		}
+		if _, tracked := lookup.files[cleaned]; tracked {
+			filtered = append(filtered, cleaned)
+			continue
+		}
+		fullPath := filepath.Join(dir, cleaned)
+		_, err := filepath.Rel(dir, fullPath)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Lstat(fullPath); err != nil {
+			if os.IsNotExist(err) {
+				if checkoutAllowsAddedPath(index, cleaned) {
+					filtered = append(filtered, cleaned)
+				}
+				continue
+			}
+			return nil, err
+		}
+		if !checkoutAllowsAddedPath(index, cleaned) {
+			continue
+		}
+		filtered = append(filtered, cleaned)
+	}
+	sort.Strings(filtered)
+	return uniqueCheckoutPaths(filtered), nil
 }
 
 func resolveCheckoutBaseCommit(dir, explicit string) (string, error) {

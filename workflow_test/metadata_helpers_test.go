@@ -33,7 +33,6 @@ func createSliceFromRoot(t *testing.T, sliceID, folderPath string) {
 			Visibility:  models.VisibilityPrivate,
 			Owners:      []string{workflowUsername(t)},
 			CreatedBy:   workflowUsername(t),
-			ParentSlice: "root",
 		}); err != nil {
 			t.Fatalf("failed to create empty slice %s: %v", sliceID, err)
 		}
