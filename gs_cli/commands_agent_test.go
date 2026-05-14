@@ -130,10 +130,13 @@ func TestBuildLocalAgentChangesPayloadReportsDirtyFiles(t *testing.T) {
 	if err := writeSliceIDConfigAt(workdir, "home_alice"); err != nil {
 		t.Fatalf("write slice config: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("before\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(workdir, "alice"), 0o755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "README.md"), []byte("before\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
-	readmeInfo, err := os.Lstat(filepath.Join(workdir, "README.md"))
+	readmeInfo, err := os.Lstat(filepath.Join(workdir, "alice", "README.md"))
 	if err != nil {
 		t.Fatalf("stat README: %v", err)
 	}
@@ -143,7 +146,7 @@ func TestBuildLocalAgentChangesPayloadReportsDirtyFiles(t *testing.T) {
 		CommitHash: "cmt_base",
 		Files: []checkoutTrackedFile{
 			{
-				Path:                 "README.md",
+				Path:                 filepath.Join("alice", "README.md"),
 				Hash:                 storage.HashFileManifestContent([]byte("before\n"), false, ""),
 				Size:                 readmeInfo.Size(),
 				ModifiedTimeUnixNano: readmeInfo.ModTime().UnixNano(),
@@ -152,14 +155,18 @@ func TestBuildLocalAgentChangesPayloadReportsDirtyFiles(t *testing.T) {
 		},
 	}
 	addTestDirectoryRecords(t, workdir, index, "")
+	addTestDirectoryRecords(t, workdir, index, "alice")
 	if err := writeCheckoutIndex(workdir, index); err != nil {
 		t.Fatalf("write checkout index: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("after\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "README.md"), []byte("after\n"), 0o644); err != nil {
 		t.Fatalf("modify README: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "new.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatalf("write new file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
 	}
 
 	payload, err := buildLocalAgentChangesPayload(workdir, "sess_abcdef1234567890", 42, localAgentChangesRequest{RequestID: "req-1", Limit: 1})
@@ -185,6 +192,47 @@ func TestBuildLocalAgentChangesPayloadReportsDirtyFiles(t *testing.T) {
 	}
 }
 
+func TestBuildLocalAgentChangesPayloadIgnoresHomeRootAddsOutsideUserRoot(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
+		t.Fatalf("mkdir .gs: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workdir, "alice"), 0o755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	if err := writeSliceIDConfigAt(workdir, "home_alice"); err != nil {
+		t.Fatalf("write slice config: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "home_alice",
+		CommitHash: "cmt_base",
+	}
+	addTestDirectoryRecords(t, workdir, index, "")
+	addTestDirectoryRecords(t, workdir, index, "alice")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "inside.txt"), []byte("inside\n"), 0o644); err != nil {
+		t.Fatalf("write inside file: %v", err)
+	}
+
+	payload, err := buildLocalAgentChangesPayload(workdir, "sess_abcdef1234567890", 42, localAgentChangesRequest{})
+	if err != nil {
+		t.Fatalf("buildLocalAgentChangesPayload failed: %v", err)
+	}
+	if payload["path_count"] != 1 {
+		t.Fatalf("expected only one in-home added path, got %#v", payload)
+	}
+	paths, ok := payload["paths"].([]map[string]any)
+	if !ok || len(paths) != 1 || paths[0]["path"] != filepath.Join("alice", "inside.txt") {
+		t.Fatalf("unexpected paths: %#v", payload["paths"])
+	}
+}
+
 func TestLocalAgentChangesetExportRefreshesSliceAuth(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workdir, ".gs"), 0o755); err != nil {
@@ -193,10 +241,13 @@ func TestLocalAgentChangesetExportRefreshesSliceAuth(t *testing.T) {
 	if err := writeSliceIDConfigAt(workdir, "home_alice"); err != nil {
 		t.Fatalf("write slice config: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("before\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(workdir, "alice"), 0o755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "README.md"), []byte("before\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
-	readmeInfo, err := os.Lstat(filepath.Join(workdir, "README.md"))
+	readmeInfo, err := os.Lstat(filepath.Join(workdir, "alice", "README.md"))
 	if err != nil {
 		t.Fatalf("stat README: %v", err)
 	}
@@ -206,7 +257,7 @@ func TestLocalAgentChangesetExportRefreshesSliceAuth(t *testing.T) {
 		CommitHash: "cmt_base",
 		Files: []checkoutTrackedFile{
 			{
-				Path:                 "README.md",
+				Path:                 filepath.Join("alice", "README.md"),
 				Hash:                 storage.HashFileManifestContent([]byte("before\n"), false, ""),
 				Size:                 readmeInfo.Size(),
 				ModifiedTimeUnixNano: readmeInfo.ModTime().UnixNano(),
@@ -215,10 +266,11 @@ func TestLocalAgentChangesetExportRefreshesSliceAuth(t *testing.T) {
 		},
 	}
 	addTestDirectoryRecords(t, workdir, index, "")
+	addTestDirectoryRecords(t, workdir, index, "alice")
 	if err := writeCheckoutIndex(workdir, index); err != nil {
 		t.Fatalf("write checkout index: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("after\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "README.md"), []byte("after\n"), 0o644); err != nil {
 		t.Fatalf("modify README: %v", err)
 	}
 
@@ -820,7 +872,7 @@ func (f *authCheckingSliceServiceClient) CreateChangeset(ctx context.Context, re
 	_ = opts
 	f.createCalls++
 	f.requireAuth(ctx)
-	if req.GetSliceId() != "home_alice" || req.GetBaseCommitHash() != "cmt_base" || !reflect.DeepEqual(req.GetModifiedFiles(), []string{"README.md"}) {
+	if req.GetSliceId() != "home_alice" || req.GetBaseCommitHash() != "cmt_base" || !reflect.DeepEqual(req.GetModifiedFiles(), []string{filepath.Join("alice", "README.md")}) {
 		f.t.Fatalf("unexpected CreateChangeset request: %#v", req)
 	}
 	return &slicev1.CreateChangesetResponse{
@@ -844,7 +896,7 @@ func (f *authCheckingSliceServiceClient) ReviewChangeset(ctx context.Context, re
 			Version:        1,
 			Hash:           "snap_hash",
 			BaseCommitHash: "cmt_base",
-			ModifiedFiles:  []string{"README.md"},
+			ModifiedFiles:  []string{filepath.Join("alice", "README.md")},
 		},
 	}, nil
 }

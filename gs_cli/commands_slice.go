@@ -209,6 +209,7 @@ func handleSliceCheckout(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
+	populateCheckoutAllowedAddRoots(ctx, cli, sliceID, nextCheckoutIndex)
 	if err := writeCheckoutIndex(targetRoot, nextCheckoutIndex); err != nil {
 		commandFatalf("SLICE_CHECKOUT_FAILED", false, "", "Failed to write checkout index: %v", err)
 	}
@@ -331,6 +332,7 @@ func handleSliceSync(ctx context.Context, cli *CLI, args []string) {
 	if err != nil {
 		commandFatalf("SLICE_SYNC_FAILED", false, "", "Failed to build checkout index: %v", err)
 	}
+	populateCheckoutAllowedAddRoots(ctx, cli, sliceID, nextCheckoutIndex)
 
 	status := "up to date"
 	if !checkoutIndicesEqualContent(checkoutIndex, nextCheckoutIndex) {
@@ -462,8 +464,12 @@ func fetchAndMaterializeSliceCheckout(
 			req.KnownHashes = knownHashes
 		}
 	}
+	allowedRoots := checkoutAllowedAddRootsFromRemote(ctx, cli, sliceID)
+	if len(allowedRoots) == 0 {
+		allowedRoots = checkoutAllowedAddRoots(&localCheckoutIndex{SliceID: sliceID})
+	}
 
-	manifest, materialized, err := materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked, previousIndex)
+	manifest, materialized, err := materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked, previousIndex, allowedRoots)
 	var staleCacheErr *staleCheckoutCacheError
 	if err != nil && cache != nil && errors.As(err, &staleCacheErr) && len(staleCacheErr.Hashes) > 0 {
 		if dropErr := cache.DropObjects(staleCacheErr.Hashes); dropErr != nil {
@@ -473,7 +479,7 @@ func fetchAndMaterializeSliceCheckout(
 			log.Printf("Warning: unable to persist cache index: %v", persistErr)
 		}
 		req.KnownHashes = filterCheckoutKnownHashes(req.KnownHashes, staleCacheErr.Hashes)
-		manifest, materialized, err = materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked, previousIndex)
+		manifest, materialized, err = materializeSliceCheckoutStream(ctx, cli, req, cache, dir, pruneTracked, previousIndex, allowedRoots)
 	}
 	if err == nil {
 		if cache != nil {
@@ -495,6 +501,7 @@ func fetchAndMaterializeSliceCheckout(
 	if err != nil {
 		return nil, err
 	}
+	filterCheckoutManifestForAllowedRoots(resp.GetManifest(), allowedRoots)
 	materialized, err = materializeSliceCheckout(dir, resp, cache, pruneTracked, previousIndex)
 	if err != nil {
 		return nil, err
@@ -545,6 +552,7 @@ func materializeSliceCheckoutStream(
 	dir string,
 	pruneTracked bool,
 	previousIndex *localCheckoutIndex,
+	allowedRoots []string,
 ) (*slicev1.SliceManifest, *checkoutMaterialization, error) {
 	stream, err := cli.sliceClient.StreamCheckoutSlice(ctx, req)
 	if err != nil {
@@ -566,6 +574,7 @@ func materializeSliceCheckoutStream(
 		if materializer != nil {
 			return nil
 		}
+		filterCheckoutManifestForAllowedRoots(manifest, allowedRoots)
 		var prepErr error
 		materializer, prepErr = newStreamedCheckoutMaterializer(dir, manifest, cache, pruneTracked, knownHashes, previousIndex)
 		return prepErr

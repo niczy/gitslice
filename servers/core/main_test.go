@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/niczy/gitslice/internal/common"
+	"github.com/niczy/gitslice/internal/config"
 	"github.com/niczy/gitslice/internal/gateway"
 	"github.com/niczy/gitslice/internal/storage"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -107,6 +110,71 @@ func TestBuildCombinedCoreHandlerServesHTTPAndGRPCOnSamePort(t *testing.T) {
 	}
 	if rootResp.GetSliceId() != "root" {
 		t.Fatalf("unexpected root slice response: %+v", rootResp)
+	}
+}
+
+type fakeStartupPinger struct {
+	pingErr         error
+	pingMetadataErr error
+	pingCalls       int
+	metadataCalls   int
+}
+
+func (p *fakeStartupPinger) Ping(ctx context.Context) error {
+	p.pingCalls++
+	return p.pingErr
+}
+
+func (p *fakeStartupPinger) PingMetadata(ctx context.Context) error {
+	p.metadataCalls++
+	return p.pingMetadataErr
+}
+
+func TestVerifyStartupDependenciesSkipsMemoryStorage(t *testing.T) {
+	pinger := &fakeStartupPinger{
+		pingErr:         errors.New("should not ping storage"),
+		pingMetadataErr: errors.New("should not ping metadata"),
+	}
+	err := verifyStartupDependencies(context.Background(), &config.Config{StorageType: "memory"}, pinger)
+	if err != nil {
+		t.Fatalf("verifyStartupDependencies returned error for memory storage: %v", err)
+	}
+	if pinger.metadataCalls != 0 || pinger.pingCalls != 0 {
+		t.Fatalf("expected memory storage to skip dependency pings, got metadata=%d storage=%d", pinger.metadataCalls, pinger.pingCalls)
+	}
+}
+
+func TestVerifyStartupDependenciesFailsWhenPostgresMetadataUnavailable(t *testing.T) {
+	pinger := &fakeStartupPinger{pingMetadataErr: errors.New("dial tcp refused")}
+	err := verifyStartupDependencies(context.Background(), &config.Config{StorageType: "postgres"}, pinger)
+	if err == nil {
+		t.Fatal("expected metadata dependency failure")
+	}
+	if !strings.Contains(err.Error(), "database dependency unavailable") {
+		t.Fatalf("expected database dependency context, got %v", err)
+	}
+	if pinger.metadataCalls != 1 {
+		t.Fatalf("expected one metadata ping, got %d", pinger.metadataCalls)
+	}
+	if pinger.pingCalls != 0 {
+		t.Fatalf("expected storage ping to be skipped after metadata failure, got %d", pinger.pingCalls)
+	}
+}
+
+func TestVerifyStartupDependenciesFailsWhenPostgresObjectStoreUnavailable(t *testing.T) {
+	pinger := &fakeStartupPinger{pingErr: errors.New("object store unavailable")}
+	err := verifyStartupDependencies(context.Background(), &config.Config{StorageType: "postgres"}, pinger)
+	if err == nil {
+		t.Fatal("expected storage dependency failure")
+	}
+	if !strings.Contains(err.Error(), "storage dependency unavailable") {
+		t.Fatalf("expected storage dependency context, got %v", err)
+	}
+	if pinger.metadataCalls != 1 {
+		t.Fatalf("expected one metadata ping, got %d", pinger.metadataCalls)
+	}
+	if pinger.pingCalls != 1 {
+		t.Fatalf("expected one storage ping, got %d", pinger.pingCalls)
 	}
 }
 

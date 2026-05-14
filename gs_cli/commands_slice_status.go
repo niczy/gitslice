@@ -199,6 +199,8 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 	if candidates, ok, err := collectDirtyTrackerCandidates(dir, index); err == nil && ok {
 		entries, remaining, err := collectNoGitWorkingTreeStatusFromCandidates(dir, lookup, candidates)
 		if err == nil {
+			entries = filterAddedWorkingTreeStatusEntriesForCheckout(entries, index)
+			remaining = collectWorkingTreeStatusPaths(entries)
 			_ = writeDirtyTrackerPaths(dir, remaining)
 			sortWorkingTreeStatus(entries)
 			return entries, nil
@@ -218,6 +220,7 @@ func collectNoGitWorkingTreeStatus(dir string, index *localCheckoutIndex) ([]wor
 		entries = append(entries, workingTreeStatusEntry{Path: path, Status: "A"})
 	}
 
+	entries = filterAddedWorkingTreeStatusEntriesForCheckout(entries, index)
 	_ = writeDirtyTrackerPaths(dir, collectWorkingTreeStatusPaths(entries))
 	sortWorkingTreeStatus(entries)
 	return entries, nil
@@ -242,6 +245,7 @@ func collectNoGitWorkingTreeStatusFullScan(dir string, index *localCheckoutIndex
 		entries = append(entries, workingTreeStatusEntry{Path: path, Status: "A"})
 	}
 
+	entries = filterAddedWorkingTreeStatusEntriesForCheckout(entries, index)
 	_ = writeDirtyTrackerPaths(dir, collectWorkingTreeStatusPaths(entries))
 	sortWorkingTreeStatus(entries)
 	return entries, nil

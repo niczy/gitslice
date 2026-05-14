@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/niczy/gitslice/internal/storage"
+	slicev1 "github.com/niczy/gitslice/proto/slice"
 )
 
 func addTestDirectoryRecords(t *testing.T, workdir string, index *localCheckoutIndex, dirs ...string) {
@@ -61,6 +62,93 @@ func TestCheckoutTrackedFileMatchesRecreatedSameContent(t *testing.T) {
 	}
 	if !matches {
 		t.Fatalf("expected recreated file with same content and mode to match checkout index")
+	}
+}
+
+func TestCollectNoGitWorkingTreeStatusFiltersAddsToAllowedRoots(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "project"), 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:         checkoutIndexVersion,
+		SliceID:         "slice-project",
+		CommitHash:      "commit-1",
+		AllowedAddRoots: []string{"project"},
+	}
+	addTestDirectoryRecords(t, workdir, index, "", "project")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	readIndex, err := readCheckoutIndex(workdir)
+	if err != nil {
+		t.Fatalf("read checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "project", "inside.txt"), []byte("inside\n"), 0o644); err != nil {
+		t.Fatalf("write inside: %v", err)
+	}
+
+	entries, err := collectNoGitWorkingTreeStatusFullScan(workdir, readIndex)
+	if err != nil {
+		t.Fatalf("collect status: %v", err)
+	}
+	got := collectWorkingTreeStatusPaths(entries)
+	want := []string{filepath.Join("project", "inside.txt")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected status paths:\n got %#v\nwant %#v", got, want)
+	}
+}
+
+func TestResolveWorkingTreeModifiedFilesIgnoresExplicitHomeRootAddOutsideUserRoot(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "alice"), 0o755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	index := &localCheckoutIndex{
+		Version:    checkoutIndexVersion,
+		SliceID:    "home_alice",
+		CommitHash: "commit-1",
+	}
+	addTestDirectoryRecords(t, workdir, index, "", "alice")
+	if err := writeCheckoutIndex(workdir, index); err != nil {
+		t.Fatalf("write checkout index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "alice", "inside.txt"), []byte("inside\n"), 0o644); err != nil {
+		t.Fatalf("write inside: %v", err)
+	}
+
+	got, _, err := resolveWorkingTreeModifiedFiles(workdir, []string{"outside.txt", filepath.Join("alice", "inside.txt")})
+	if err != nil {
+		t.Fatalf("resolve modified files: %v", err)
+	}
+	want := []string{filepath.Join("alice", "inside.txt")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected modified files:\n got %#v\nwant %#v", got, want)
+	}
+}
+
+func TestFilterCheckoutManifestForAllowedRoots(t *testing.T) {
+	manifest := &slicev1.SliceManifest{
+		FileMetadata: []*slicev1.FileMetadata{
+			{FileId: "outside.txt", Path: "outside.txt"},
+			{FileId: "nicholas/inside.txt", Path: "nicholas/inside.txt"},
+			{FileId: "nicholas", Path: "nicholas"},
+		},
+	}
+
+	filterCheckoutManifestForAllowedRoots(manifest, []string{"nicholas"})
+
+	if got, want := len(manifest.GetFileMetadata()), 1; got != want {
+		t.Fatalf("expected %d filtered metadata entry, got %d: %#v", want, got, manifest.GetFileMetadata())
+	}
+	if got, want := manifest.GetFileMetadata()[0].GetFileId(), "nicholas/inside.txt"; got != want {
+		t.Fatalf("metadata file id = %q, want %q", got, want)
 	}
 }
 

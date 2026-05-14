@@ -46,6 +46,9 @@ func main() {
 		log.Fatalf("Failed to initialize storage backend: %v", err)
 	}
 	defer closeStorage()
+	if err := verifyStartupDependencies(ctx, cfg, st); err != nil {
+		log.Fatalf("Startup dependency check failed: %v", err)
+	}
 
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
 		log.Fatalf("Failed to initialize root slice: %v", err)
@@ -146,6 +149,36 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to serve combined core handler: %v", err)
 	}
+}
+
+const startupDependencyCheckTimeout = 10 * time.Second
+
+type startupDependencyPinger interface {
+	Ping(ctx context.Context) error
+	PingMetadata(ctx context.Context) error
+}
+
+func verifyStartupDependencies(parent context.Context, cfg *config.Config, st startupDependencyPinger) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	if st == nil {
+		return fmt.Errorf("storage is required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.StorageType), "postgres") {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(parent, startupDependencyCheckTimeout)
+	defer cancel()
+
+	if err := st.PingMetadata(ctx); err != nil {
+		return fmt.Errorf("database dependency unavailable: %w", err)
+	}
+	if err := st.Ping(ctx); err != nil {
+		return fmt.Errorf("storage dependency unavailable: %w", err)
+	}
+	return nil
 }
 
 func buildCombinedCoreHandler(grpcServer *grpc.Server, httpMux http.Handler) http.Handler {

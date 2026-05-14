@@ -1227,6 +1227,7 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 	if err != nil {
 		return "", err
 	}
+	populateCheckoutAllowedAddRoots(ctx, cli, session.GetSliceId(), nextCheckoutIndex)
 	if err := writeCheckoutIndex(targetRoot, nextCheckoutIndex); err != nil {
 		return "", err
 	}

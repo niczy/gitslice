@@ -633,6 +633,69 @@ func TestCheckoutSliceReturnsOnlyMissingBlocks(t *testing.T) {
 	}
 }
 
+func TestCheckoutHomeSliceIgnoresEntriesOutsideHomeRoot(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User nicholas"))
+	st := storage.NewInMemoryStorage()
+
+	sliceID := homeslice.IDForUsername("nicholas")
+	slice := &models.Slice{
+		ID:        sliceID,
+		Name:      "nicholas",
+		Owners:    []string{"nicholas"},
+		CreatedBy: "nicholas",
+		Files:     []string{"nicholas/inside.txt", "outside.txt"},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":outside.txt",
+		Path:     "outside.txt",
+		Type:     "file",
+		ParentID: sliceID,
+	}); err != nil {
+		t.Fatalf("AddEntry(outside) failed: %v", err)
+	}
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":nicholas",
+		Path:     "nicholas",
+		Type:     "directory",
+		ParentID: sliceID,
+	}); err != nil {
+		t.Fatalf("AddEntry(home dir) failed: %v", err)
+	}
+	content := []byte("inside\n")
+	hash := mustWriteSliceManifest(t, ctx, st, sliceID, "nicholas/inside.txt", content)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       sliceID + ":nicholas/inside.txt",
+		Path:     "nicholas/inside.txt",
+		Type:     "file",
+		ParentID: sliceID + ":nicholas",
+		Size:     int64(len(content)),
+		Hash:     hash,
+	}); err != nil {
+		t.Fatalf("AddEntry(inside) failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: sliceID})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+
+	metadata := resp.GetManifest().GetFileMetadata()
+	if got, want := len(metadata), 1; got != want {
+		t.Fatalf("expected %d file metadata entries, got %d: %#v", want, got, metadata)
+	}
+	if got, want := metadata[0].GetFileId(), "nicholas/inside.txt"; got != want {
+		t.Fatalf("metadata file id = %q, want %q", got, want)
+	}
+	if got := string(mustAssembleCheckoutContent(t, resp, metadata[0])); got != string(content) {
+		t.Fatalf("checkout content = %q, want %q", got, string(content))
+	}
+}
+
 func TestCheckoutSliceOmitsPayloadWhenFileHashKnown(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()
@@ -3201,6 +3264,143 @@ func TestCreateChangesetDeduplicatesModifiedFiles(t *testing.T) {
 	}
 	if reviewResp.GetDiff().GetFilesAdded() != 1 {
 		t.Fatalf("expected diff files_added=1, got %d", reviewResp.GetDiff().GetFilesAdded())
+	}
+}
+
+func TestCreateChangesetFiltersHomeAddsOutsideUserRoot(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       home.ID,
+		ModifiedFiles: []string{"outside.txt", "alice/inside.txt"},
+		Message:       "filter outside home root",
+		FileContents: []*slicev1.FileContentChange{
+			{Path: "outside.txt", Content: []byte("outside\n")},
+			{Path: "alice/inside.txt", Content: []byte("inside\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+
+	cs, err := st.GetChangeset(ctx, createResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("GetChangeset failed: %v", err)
+	}
+	if got, want := cs.ModifiedFiles, []string{"alice/inside.txt"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected only in-home modified file, got %#v", got)
+	}
+	got, err := storage.ReadSliceFileContent(ctx, st, home.ID, "alice/inside.txt")
+	if err != nil {
+		t.Fatalf("ReadSliceFileContent inside failed: %v", err)
+	}
+	if string(got.Content) != "inside\n" {
+		t.Fatalf("expected inside content, got %q", string(got.Content))
+	}
+	if _, err := storage.ReadSliceFileContent(ctx, st, home.ID, "outside.txt"); !errors.Is(err, storage.ErrEntryNotFound) {
+		t.Fatalf("expected outside content to be ignored, got %v", err)
+	}
+}
+
+func TestCreateChangesetRejectsOnlyHomeAddsOutsideUserRoot(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	home, err := homeslice.EnsureUserHomeSlice(ctx, st, "alice")
+	if err != nil {
+		t.Fatalf("EnsureUserHomeSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	_, err = srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       home.ID,
+		ModifiedFiles: []string{"outside.txt"},
+		Message:       "filter outside home root",
+		FileContents: []*slicev1.FileContentChange{
+			{Path: "outside.txt", Content: []byte("outside\n")},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for outside-only changeset, got %v", err)
+	}
+}
+
+func TestCreateChangesetFiltersMountedSliceAddsOutsideMountRoots(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	slice := &models.Slice{
+		ID:          "mounted-filter",
+		Name:        "mounted-filter",
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		ParentSlice: "root",
+		FolderMounts: []models.SliceFolderMount{{
+			SourcePath: "alice/project",
+			Alias:      "project",
+		}},
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	createResp, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"outside.txt", "project/inside.txt"},
+		Message:       "filter outside mount root",
+		FileContents: []*slicev1.FileContentChange{
+			{Path: "outside.txt", Content: []byte("outside\n")},
+			{Path: "project/inside.txt", Content: []byte("inside\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	cs, err := st.GetChangeset(ctx, createResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("GetChangeset failed: %v", err)
+	}
+	if got, want := cs.ModifiedFiles, []string{"project/inside.txt"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected only mounted modified file, got %#v", got)
+	}
+}
+
+func TestCreateChangesetRejectsParentSliceWithoutMounts(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	if err := st.InitializeRootSlice(ctx); err != nil {
+		t.Fatalf("InitializeRootSlice failed: %v", err)
+	}
+	slice := &models.Slice{
+		ID:          "legacy-parent-shape",
+		Name:        "legacy-parent-shape",
+		Owners:      []string{"alice"},
+		CreatedBy:   "alice",
+		ParentSlice: "root",
+	}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	srv := NewService(st)
+	_, err := srv.CreateChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       slice.ID,
+		ModifiedFiles: []string{"untracked.txt"},
+		Message:       "reject legacy shape",
+		FileContents: []*slicev1.FileContentChange{
+			{Path: "untracked.txt", Content: []byte("ignored\n")},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for parent slice without mounts, got %v", err)
 	}
 }
 

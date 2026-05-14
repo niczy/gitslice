@@ -351,14 +351,118 @@ func (s *sliceServiceServer) resolveBackingSliceID(ctx context.Context, sliceID 
 }
 
 func (s *sliceServiceServer) collectSliceCheckoutEntries(ctx context.Context, sliceID string, slice *models.Slice) ([]*models.DirectoryEntry, error) {
+	if sliceUsesUnsupportedParentShape(slice) {
+		return nil, nil
+	}
 	if slice == nil || strings.TrimSpace(slice.ParentSlice) == "" || len(slice.FolderMounts) == 0 {
-		return s.collectSliceEntries(ctx, sliceID)
+		entries, err := s.collectSliceEntries(ctx, sliceID)
+		if err != nil {
+			return nil, err
+		}
+		return filterSliceEntriesForTrackedRoots(slice, entries), nil
 	}
 	backingSliceID, err := s.resolveBackingSliceID(ctx, sliceID, slice)
 	if err != nil {
 		return nil, err
 	}
-	return s.collectMountedBackingEntries(ctx, backingSliceID, slice.FolderMounts)
+	entries, err := s.collectMountedBackingEntries(ctx, backingSliceID, slice.FolderMounts)
+	if err != nil {
+		return nil, err
+	}
+	return filterSliceEntriesForTrackedRoots(slice, entries), nil
+}
+
+func filterSliceEntriesForTrackedRoots(slice *models.Slice, entries []*models.DirectoryEntry) []*models.DirectoryEntry {
+	if sliceUsesUnsupportedParentShape(slice) {
+		return nil
+	}
+	roots := sliceTrackedStorageRoots(slice)
+	if len(roots) == 0 || len(entries) == 0 {
+		return entries
+	}
+	filtered := make([]*models.DirectoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if sliceEntryWithinTrackedRoots(entry, roots) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func sliceEntryWithinTrackedRoots(entry *models.DirectoryEntry, roots []string) bool {
+	if entry == nil {
+		return false
+	}
+	cleaned := common.CleanRelativePath(entry.Path)
+	if cleaned == "" {
+		return false
+	}
+	for _, root := range roots {
+		if cleaned == root {
+			return entry.Type == "directory"
+		}
+		if strings.HasPrefix(cleaned, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func filterSliceFilesForTrackedRoots(slice *models.Slice, files []string) []string {
+	if sliceUsesUnsupportedParentShape(slice) {
+		return nil
+	}
+	roots := sliceTrackedStorageRoots(slice)
+	if len(roots) == 0 || len(files) == 0 {
+		return files
+	}
+	filtered := make([]string, 0, len(files))
+	for _, filePath := range files {
+		if pathUnderTrackedStorageRoot(filePath, roots) {
+			filtered = append(filtered, filePath)
+		}
+	}
+	return normalizeModifiedFiles(filtered)
+}
+
+func sliceTrackedStorageRoots(slice *models.Slice) []string {
+	if slice == nil {
+		return nil
+	}
+	roots := make([]string, 0, len(slice.FolderMounts)*2+1)
+	if username := homeslice.UsernameFromSliceID(slice.ID); username != "" {
+		roots = append(roots, homeslice.RelativeRootPath(username))
+	}
+	for _, mount := range slice.FolderMounts {
+		roots = append(roots, mount.SourcePath)
+		if mount.Alias != mount.SourcePath {
+			roots = append(roots, mount.Alias)
+		}
+	}
+	return normalizeChangesetAllowedAddRoots(roots)
+}
+
+func sliceUsesUnsupportedParentShape(slice *models.Slice) bool {
+	if slice == nil || slice.IsRoot || homeslice.IsHomeSliceID(slice.ID) {
+		return false
+	}
+	return strings.TrimSpace(slice.ParentSlice) != "" && len(slice.FolderMounts) == 0
+}
+
+func pathUnderTrackedStorageRoot(pathValue string, roots []string) bool {
+	cleaned := common.CleanRelativePath(pathValue)
+	if cleaned == "" {
+		return false
+	}
+	for _, root := range roots {
+		if cleaned != root && strings.HasPrefix(cleaned, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *sliceServiceServer) collectMountedBackingEntries(ctx context.Context, backingSliceID string, mounts []models.SliceFolderMount) ([]*models.DirectoryEntry, error) {
@@ -774,7 +878,7 @@ func (s *sliceServiceServer) prepareCheckout(
 	})
 
 	if len(fileMetadata) == 0 {
-		for _, fileID := range slice.Files {
+		for _, fileID := range filterSliceFilesForTrackedRoots(slice, slice.Files) {
 			fileMetadata = append(fileMetadata, &slicev1.FileMetadata{
 				FileId:     fileID,
 				Path:       common.SliceDisplayPath(slice, fileID),
@@ -1176,6 +1280,10 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 		if !authz.HasSliceViewAccess(slice, username) {
 			return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
 		}
+		modifiedFiles, fileContents = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents)
+		if len(modifiedFiles) == 0 {
+			return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
+		}
 		baseCommitHash := strings.TrimSpace(req.BaseCommitHash)
 		if baseCommitHash == "" {
 			baseCommitHash = strings.TrimSpace(existing.BaseCommitHash)
@@ -1221,6 +1329,10 @@ func (s *sliceServiceServer) CreateChangeset(ctx context.Context, req *slicev1.C
 	}
 	if !authz.HasSliceViewAccess(slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	modifiedFiles, fileContents = filterChangesetChangesForSlice(slice, modifiedFiles, fileContents)
+	if len(modifiedFiles) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "no modified files remain after filtering paths outside the slice tracked folders")
 	}
 	if err := s.applyChangesetFileContents(ctx, req.SliceId, fileContents); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to apply changeset file content: %v", err))
@@ -2344,6 +2456,111 @@ func normalizeModifiedFiles(files []string) []string {
 		normalized = append(normalized, cleaned)
 	}
 	return normalized
+}
+
+func filterChangesetChangesForSlice(slice *models.Slice, modifiedFiles []string, fileContents []changesetFileContentChange) ([]string, []changesetFileContentChange) {
+	roots, restrictAdds := changesetAllowedAddRoots(slice)
+	if !restrictAdds {
+		return modifiedFiles, fileContents
+	}
+	existingPaths := changesetExistingDisplayPathSet(slice)
+	keepPath := func(raw string) bool {
+		cleaned := common.CleanRelativePath(raw)
+		if cleaned == "" {
+			return false
+		}
+		if _, ok := existingPaths[cleaned]; ok {
+			return true
+		}
+		return changesetPathUnderAllowedRoot(cleaned, roots)
+	}
+
+	filteredFiles := make([]string, 0, len(modifiedFiles))
+	for _, filePath := range modifiedFiles {
+		if keepPath(filePath) {
+			filteredFiles = append(filteredFiles, filePath)
+		}
+	}
+	filteredContents := make([]changesetFileContentChange, 0, len(fileContents))
+	for _, change := range fileContents {
+		if keepPath(change.path) {
+			filteredContents = append(filteredContents, change)
+		}
+	}
+	return normalizeModifiedFiles(filteredFiles), filteredContents
+}
+
+func changesetAllowedAddRoots(slice *models.Slice) ([]string, bool) {
+	if slice == nil {
+		return nil, false
+	}
+	if sliceUsesUnsupportedParentShape(slice) {
+		return nil, true
+	}
+	roots := make([]string, 0, len(slice.FolderMounts)*2+1)
+	if username := homeslice.UsernameFromSliceID(slice.ID); username != "" {
+		roots = append(roots, homeslice.RelativeRootPath(username))
+	}
+	for _, mount := range slice.FolderMounts {
+		roots = append(roots, mount.Alias, mount.SourcePath)
+	}
+	normalized := normalizeChangesetAllowedAddRoots(roots)
+	return normalized, len(normalized) > 0 || len(slice.FolderMounts) > 0
+}
+
+func normalizeChangesetAllowedAddRoots(roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		cleaned := common.CleanRelativePath(root)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func changesetExistingDisplayPathSet(slice *models.Slice) map[string]struct{} {
+	if slice == nil {
+		return map[string]struct{}{}
+	}
+	paths := make(map[string]struct{}, len(slice.Files)*2)
+	for _, rawPath := range slice.Files {
+		cleaned := common.CleanRelativePath(rawPath)
+		if cleaned == "" {
+			continue
+		}
+		paths[cleaned] = struct{}{}
+		if displayPath := common.SliceDisplayPath(slice, cleaned); displayPath != "" {
+			paths[common.CleanRelativePath(displayPath)] = struct{}{}
+		}
+	}
+	return paths
+}
+
+func changesetPathUnderAllowedRoot(pathValue string, roots []string) bool {
+	cleaned := common.CleanRelativePath(pathValue)
+	if cleaned == "" {
+		return false
+	}
+	for _, root := range roots {
+		if cleaned == root {
+			return false
+		}
+		if strings.HasPrefix(cleaned, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 type changesetFileContentChange struct {
