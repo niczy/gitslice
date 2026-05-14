@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3223,6 +3225,88 @@ func TestAgentSessionClaudeStreamIntegration(t *testing.T) {
 	assertLocalAgentSessionResumable(t, sessionID)
 }
 
+func TestAgentSessionHTTPFakeCodexChangesetFlow(t *testing.T) {
+	username := workflowUsername(t)
+	token := signupAccountViaHTTP(t, username)
+	auth := "Bearer " + token
+	homeSliceID := homeslice.IDForUsername(username)
+	changedPath := username + "/agent-http-e2e.txt"
+	expectedContent := "fake codex wrote this file\nprompt: Add an HTTP API e2e file\n"
+
+	runnerRoot := filepath.Join(t.TempDir(), "agent-runner")
+	runnerID := fmt.Sprintf("agr_http_e2e_%d", time.Now().UnixNano())
+	fakeCodexPath := writeFakeCodexScript(t)
+	runner := startFakeCodexRunner(t, runnerRoot, runnerID, token, changedPath, fakeCodexPath)
+
+	waitForAgentRunnerHTTP(t, auth, runnerID, runner)
+
+	sessionID := createAgentSessionViaHTTPAuth(t, auth, homeSliceID, runnerID, "codex")
+	waitForAgentEvent(t, auth, sessionID, 15*time.Second, func(event httpAgentEvent) bool {
+		return event.Stream == agentsession.EventStreamStatus && event.Type == "local_runner_attached"
+	})
+
+	sendAgentInputViaHTTP(t, auth, sessionID, "Add an HTTP API e2e file", runner)
+	waitForAgentEvent(t, auth, sessionID, 15*time.Second, func(event httpAgentEvent) bool {
+		if event.Stream != agentsession.EventStreamAgent || event.Type != agentsession.EventTypeOutputFinal {
+			return false
+		}
+		payload := decodeAgentEventPayload(t, event.Payload)
+		text, _ := payload["text"].(string)
+		return strings.Contains(text, changedPath)
+	})
+
+	localChangesRequestID := appendAgentControlEventViaHTTP(t, auth, sessionID, agentsession.EventTypeLocalChangesRequested, map[string]any{
+		"requestId": "local_changes_http_e2e",
+		"limit":     100,
+	})
+	localChangesEvent := waitForAgentEvent(t, auth, sessionID, 15*time.Second, func(event httpAgentEvent) bool {
+		if event.Stream != agentsession.EventStreamStatus || event.Type != agentsession.EventTypeLocalChanges {
+			return false
+		}
+		payload := decodeAgentEventPayload(t, event.Payload)
+		return agentPayloadString(payload, "requestId", "request_id") == localChangesRequestID
+	})
+	localChangesPayload := decodeAgentEventPayload(t, localChangesEvent.Payload)
+	if got := intFromAgentPayload(localChangesPayload["path_count"]); got != 1 {
+		t.Fatalf("expected one local change, got payload %#v", localChangesPayload)
+	}
+	if got := intFromAgentPayload(nestedAgentPayload(localChangesPayload, "changes")["added"]); got != 1 {
+		t.Fatalf("expected one added file, got payload %#v", localChangesPayload)
+	}
+	if !agentPayloadPathsContain(localChangesPayload, changedPath, "A") {
+		t.Fatalf("expected local changes to include added %s, got %#v", changedPath, localChangesPayload)
+	}
+
+	exportMessage := "Add fake codex HTTP e2e file"
+	exportRequestID := appendAgentControlEventViaHTTP(t, auth, sessionID, agentsession.EventTypeChangesetExportRequested, map[string]any{
+		"requestId": "changeset_export_http_e2e",
+		"message":   exportMessage,
+	})
+	exportEvent := waitForAgentEvent(t, auth, sessionID, 15*time.Second, func(event httpAgentEvent) bool {
+		if event.Stream != agentsession.EventStreamControl || event.Type != agentsession.EventTypeChangesetExportCompleted {
+			return false
+		}
+		payload := decodeAgentEventPayload(t, event.Payload)
+		return agentPayloadString(payload, "requestId", "request_id") == exportRequestID
+	})
+	exportPayload := decodeAgentEventPayload(t, exportEvent.Payload)
+	changesetID := agentPayloadString(exportPayload, "changesetId", "changeset_id")
+	if changesetID == "" {
+		t.Fatalf("expected exported changeset id, got payload %#v", exportPayload)
+	}
+	if got := intFromAgentPayload(exportPayload["file_count"]); got != 1 {
+		t.Fatalf("expected export file_count=1, got payload %#v", exportPayload)
+	}
+
+	assertSliceChangesetsContainHTTP(t, auth, homeSliceID, changesetID, exportMessage)
+	mergeResp := mergeChangesetViaHTTP(t, auth, changesetID)
+	if mergeResp.NewCommitHash == "" {
+		t.Fatalf("expected merge response to include commit hash, got %#v", mergeResp)
+	}
+	assertSliceCommitViaHTTP(t, auth, homeSliceID, mergeResp.NewCommitHash, exportMessage)
+	waitForGatewayFileContent(t, auth, homeSliceID, changedPath, expectedContent)
+}
+
 func TestAgentSessionCreateUnknownRunnerIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -3411,6 +3495,496 @@ func stopAgentSessionViaHTTP(t *testing.T, sessionID string, reason string) {
 func assertLocalAgentSessionResumable(t *testing.T, sessionID string) {
 	t.Helper()
 	_ = mintAgentTokenViaHTTP(t, sessionID)
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+type fakeCodexRunnerProcess struct {
+	cancel context.CancelFunc
+	cmd    *exec.Cmd
+	done   chan error
+	stdout *lockedBuffer
+	stderr *lockedBuffer
+}
+
+func (p *fakeCodexRunnerProcess) output() string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("stdout:\n%s\nstderr:\n%s", p.stdout.String(), p.stderr.String())
+}
+
+func signupAccountViaHTTP(t *testing.T, username string) string {
+	t.Helper()
+	var out struct {
+		User struct {
+			Username string `json:"username"`
+		} `json:"user"`
+		AccessToken string `json:"accessToken"`
+	}
+	doGatewayJSON(t, http.MethodPost, gatewayServiceURL+"/v1/auth/signup", "", map[string]any{
+		"username": username,
+		"email":    username + "@example.com",
+		"password": "password123",
+		"name":     "HTTP Agent E2E",
+	}, &out, http.StatusOK)
+	if out.User.Username != username {
+		t.Fatalf("expected signup username %q, got %#v", username, out.User)
+	}
+	if strings.TrimSpace(out.AccessToken) == "" {
+		t.Fatalf("expected signup response to include access token")
+	}
+	return out.AccessToken
+}
+
+func writeFakeCodexScript(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-codex.sh")
+	script := `#!/bin/sh
+set -eu
+prompt="$(cat)"
+target="${FAKE_CODEX_OUTPUT_PATH:?}"
+mkdir -p "$(dirname "$target")"
+{
+  printf 'fake codex wrote this file\n'
+  printf 'prompt: %s\n' "$prompt"
+} > "$target"
+printf 'wrote %s\n' "$target"
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex script: %v", err)
+	}
+	return path
+}
+
+func startFakeCodexRunner(t *testing.T, runnerRoot, runnerID, token, changedPath, fakeCodexPath string) *fakeCodexRunnerProcess {
+	t.Helper()
+	stateDir := filepath.Join(runnerRoot, ".gitslice-agent")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "runner_id"), []byte(runnerID+"\n"), 0o600); err != nil {
+		t.Fatalf("write runner id: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	args := []string{
+		"--tls=false",
+		"--account-addr", grpcServiceAddr,
+		"--slice-addr", grpcServiceAddr,
+		"--admin-addr", grpcServiceAddr,
+		"--file-addr", grpcServiceAddr,
+		"--fs-addr", grpcServiceAddr,
+		"--api-key", token,
+		"agent", "run",
+		"--cwd", runnerRoot,
+		"--agent", "codex",
+		"--codex-mode", "exec",
+		"--poll-interval", "100ms",
+		fakeCodexPath,
+	}
+	cmd := exec.CommandContext(ctx, cliBinaryPath, args...)
+	stdout := &lockedBuffer{}
+	stderr := &lockedBuffer{}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = os.Environ()
+	for key, value := range workflowProcessEnv(t, map[string]string{
+		"FAKE_CODEX_OUTPUT_PATH":   changedPath,
+		"GS_DISABLE_DIRTY_TRACKER": "1",
+		"GS_NON_INTERACTIVE":       "1",
+	}) {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatalf("start fake codex runner: %v", err)
+	}
+	proc := &fakeCodexRunnerProcess{
+		cancel: cancel,
+		cmd:    cmd,
+		done:   make(chan error, 1),
+		stdout: stdout,
+		stderr: stderr,
+	}
+	go func() {
+		proc.done <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-proc.done:
+		case <-time.After(2 * time.Second):
+			if proc.cmd.Process != nil {
+				_ = proc.cmd.Process.Kill()
+			}
+			<-proc.done
+		}
+	})
+	return proc
+}
+
+func waitForAgentRunnerHTTP(t *testing.T, auth, runnerID string, proc *fakeCodexRunnerProcess) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var out struct {
+			Runners []struct {
+				RunnerID string `json:"runnerId"`
+				Status   string `json:"status"`
+			} `json:"runners"`
+		}
+		doGatewayJSON(t, http.MethodGet, gatewayServiceURL+"/v1/agent-runners?limit=50&includeOffline=true", auth, nil, &out, http.StatusOK)
+		for _, runner := range out.Runners {
+			if runner.RunnerID == runnerID && runner.Status == string(models.AgentRunnerStatusOnline) {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for agent runner %s to register\n%s", runnerID, proc.output())
+}
+
+func createAgentSessionViaHTTPAuth(t *testing.T, auth, sliceID, runnerID, agentType string) string {
+	t.Helper()
+	var out struct {
+		SessionID string `json:"sessionId"`
+	}
+	doGatewayJSON(t, http.MethodPost, gatewayServiceURL+"/v1/agent-sessions", auth, map[string]any{
+		"sliceId":   sliceID,
+		"runnerId":  runnerID,
+		"agentType": agentType,
+	}, &out, http.StatusOK, http.StatusCreated)
+	if strings.TrimSpace(out.SessionID) == "" {
+		t.Fatalf("missing session id in create response")
+	}
+	return out.SessionID
+}
+
+func sendAgentInputViaHTTP(t *testing.T, auth, sessionID, text string, proc *fakeCodexRunnerProcess) {
+	t.Helper()
+	target := gatewayServiceURL + "/v1/agent-sessions/" + url.PathEscape(sessionID) + "/input"
+	deadline := time.Now().Add(10 * time.Second)
+	var lastStatus int
+	var lastBody []byte
+	for time.Now().Before(deadline) {
+		statusCode, body := gatewayJSONRequest(t, http.MethodPost, target, auth, map[string]any{"text": text})
+		lastStatus, lastBody = statusCode, body
+		if statusCode == http.StatusOK {
+			var out struct {
+				Accepted bool `json:"accepted"`
+			}
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatalf("decode send input response: %v\n%s", err, string(body))
+			}
+			if !out.Accepted {
+				t.Fatalf("send input response was not accepted: %s", string(body))
+			}
+			return
+		}
+		if statusCode != http.StatusBadRequest || !strings.Contains(string(body), "not accepting input") {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("send input failed status=%d body=%s\n%s", lastStatus, string(lastBody), proc.output())
+}
+
+type httpAgentEvent struct {
+	Seq     string `json:"seq"`
+	Stream  string `json:"stream"`
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+	Kind    string `json:"kind"`
+}
+
+func listAgentEventsViaHTTP(t *testing.T, auth, sessionID string) []httpAgentEvent {
+	t.Helper()
+	var out struct {
+		Events []httpAgentEvent `json:"events"`
+	}
+	target := gatewayServiceURL + "/v1/agent-sessions/" + url.PathEscape(sessionID) + "/events?sinceSeq=0&limit=500"
+	doGatewayJSON(t, http.MethodGet, target, auth, nil, &out, http.StatusOK)
+	return out.Events
+}
+
+func waitForAgentEvent(t *testing.T, auth, sessionID string, timeout time.Duration, match func(httpAgentEvent) bool) httpAgentEvent {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last []httpAgentEvent
+	for time.Now().Before(deadline) {
+		last = listAgentEventsViaHTTP(t, auth, sessionID)
+		for _, event := range last {
+			if match(event) {
+				return event
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for matching agent event; last events=%#v", last)
+	return httpAgentEvent{}
+}
+
+func appendAgentControlEventViaHTTP(t *testing.T, auth, sessionID, eventType string, payload map[string]any) string {
+	t.Helper()
+	requestID := agentPayloadString(payload, "requestId", "request_id")
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal agent control payload: %v", err)
+	}
+	body := map[string]any{
+		"stream":  agentsession.EventStreamControl,
+		"type":    eventType,
+		"payload": base64.StdEncoding.EncodeToString(rawPayload),
+	}
+	var out struct {
+		Event httpAgentEvent `json:"event"`
+	}
+	target := gatewayServiceURL + "/v1/agent-sessions/" + url.PathEscape(sessionID) + "/events"
+	doGatewayJSON(t, http.MethodPost, target, auth, body, &out, http.StatusOK)
+	if strings.TrimSpace(out.Event.Seq) == "" || out.Event.Seq == "0" {
+		t.Fatalf("expected appended event seq, got %#v", out.Event)
+	}
+	return requestID
+}
+
+func decodeAgentEventPayload(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]any{}
+	}
+	candidates := []string{raw}
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+		candidates = append(candidates, string(decoded))
+	}
+	for _, candidate := range candidates {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(candidate), &payload); err == nil && payload != nil {
+			return payload
+		}
+	}
+	t.Fatalf("failed to decode agent event payload %q", raw)
+	return nil
+}
+
+func agentPayloadString(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := payload[key]; ok {
+			if s := strings.TrimSpace(fmt.Sprint(value)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func intFromAgentPayload(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func nestedAgentPayload(payload map[string]any, key string) map[string]any {
+	if nested, ok := payload[key].(map[string]any); ok {
+		return nested
+	}
+	return map[string]any{}
+}
+
+func agentPayloadPathsContain(payload map[string]any, wantPath, wantStatus string) bool {
+	paths, _ := payload["paths"].([]any)
+	for _, raw := range paths {
+		entry, _ := raw.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		path := strings.TrimSpace(fmt.Sprint(entry["path"]))
+		status := strings.ToUpper(strings.TrimSpace(fmt.Sprint(entry["status"])))
+		if path == wantPath && status == wantStatus {
+			return true
+		}
+	}
+	return false
+}
+
+func assertSliceChangesetsContainHTTP(t *testing.T, auth, sliceID, changesetID, message string) {
+	t.Helper()
+	var out struct {
+		Changesets []struct {
+			ChangesetID string `json:"changesetId"`
+			Message     string `json:"message"`
+		} `json:"changesets"`
+	}
+	target := fmt.Sprintf("%s/v1/slices/%s/changesets?limit=20&include_all_statuses=true", gatewayServiceURL, url.PathEscape(sliceID))
+	doGatewayJSON(t, http.MethodGet, target, auth, nil, &out, http.StatusOK)
+	for _, changeset := range out.Changesets {
+		if changeset.ChangesetID == changesetID {
+			if changeset.Message != message {
+				t.Fatalf("expected changeset %s message %q, got %q", changesetID, message, changeset.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected changeset %s in slice changeset list, got %#v", changesetID, out.Changesets)
+}
+
+type httpMergeChangesetResponse struct {
+	NewCommitHash string `json:"newCommitHash"`
+	ChangesetID   string `json:"changesetId"`
+}
+
+func mergeChangesetViaHTTP(t *testing.T, auth, changesetID string) httpMergeChangesetResponse {
+	t.Helper()
+	var out httpMergeChangesetResponse
+	target := gatewayServiceURL + "/v1/changesets/" + url.PathEscape(changesetID) + "/merge"
+	doGatewayJSON(t, http.MethodPost, target, auth, nil, &out, http.StatusOK)
+	if out.ChangesetID != "" && out.ChangesetID != changesetID {
+		t.Fatalf("expected merged changeset %s, got %#v", changesetID, out)
+	}
+	return out
+}
+
+func assertSliceCommitViaHTTP(t *testing.T, auth, sliceID, commitHash, message string) {
+	t.Helper()
+	var out struct {
+		Commits []struct {
+			CommitHash string `json:"commitHash"`
+			Message    string `json:"message"`
+		} `json:"commits"`
+	}
+	target := fmt.Sprintf("%s/v1/slices/%s/commits?limit=10", gatewayServiceURL, url.PathEscape(sliceID))
+	doGatewayJSON(t, http.MethodGet, target, auth, nil, &out, http.StatusOK)
+	for _, commit := range out.Commits {
+		if commit.CommitHash == commitHash {
+			if commit.Message != message {
+				t.Fatalf("expected commit %s message %q, got %q", commitHash, message, commit.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected commit %s in slice commit list, got %#v", commitHash, out.Commits)
+}
+
+func waitForGatewayFileContent(t *testing.T, auth, sliceID, path, expected string) {
+	t.Helper()
+	target := fmt.Sprintf("%s/v1/slices/%s/files/%s", gatewayServiceURL, url.PathEscape(sliceID), escapePathSegments(path))
+	deadline := time.Now().Add(10 * time.Second)
+	var lastStatus int
+	var lastBody []byte
+	for time.Now().Before(deadline) {
+		statusCode, body := gatewayJSONRequest(t, http.MethodGet, target, auth, nil)
+		lastStatus, lastBody = statusCode, body
+		if statusCode == http.StatusOK {
+			var out struct {
+				File struct {
+					Path    string `json:"path"`
+					Content string `json:"content"`
+				} `json:"file"`
+			}
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatalf("decode file response: %v\n%s", err, string(body))
+			}
+			raw, err := base64.StdEncoding.DecodeString(out.File.Content)
+			if err != nil {
+				t.Fatalf("decode file content: %v\n%s", err, string(body))
+			}
+			if string(raw) == expected {
+				return
+			}
+			lastBody = []byte(fmt.Sprintf("path=%s content=%q", out.File.Path, string(raw)))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for file %s content; last status=%d body=%s", path, lastStatus, string(lastBody))
+}
+
+func escapePathSegments(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+func doGatewayJSON(t *testing.T, method, target, auth string, body any, out any, expectedStatuses ...int) int {
+	t.Helper()
+	statusCode, data := gatewayJSONRequest(t, method, target, auth, body)
+	if len(expectedStatuses) == 0 {
+		expectedStatuses = []int{http.StatusOK}
+	}
+	for _, expected := range expectedStatuses {
+		if statusCode == expected {
+			if out != nil && len(data) > 0 {
+				if err := json.Unmarshal(data, out); err != nil {
+					t.Fatalf("decode %s %s response: %v\n%s", method, target, err, string(data))
+				}
+			}
+			return statusCode
+		}
+	}
+	t.Fatalf("%s %s failed status=%d body=%s", method, target, statusCode, string(data))
+	return statusCode
+}
+
+func gatewayJSONRequest(t *testing.T, method, target, auth string, body any) (int, []byte) {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal %s %s request: %v", method, target, err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, target, reader)
+	if err != nil {
+		t.Fatalf("new %s %s request: %v", method, target, err)
+	}
+	if strings.TrimSpace(auth) != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s request failed: %v", method, target, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read %s %s response: %v", method, target, err)
+	}
+	return resp.StatusCode, data
 }
 
 func buildAgentWSURL(sessionID string, token string, lastSeq uint64) string {
