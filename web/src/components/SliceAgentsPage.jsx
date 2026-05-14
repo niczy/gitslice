@@ -7,11 +7,8 @@ import {
 } from 'lucide-react';
 
 import {
-  createAgentSession,
   requestAgentSessionChangesetExport,
   requestAgentSessionLocalChanges,
-  requestAgentRunnerRestart,
-  sendAgentSessionInput,
 } from '../api/agents.js';
 import {
   AGENTS_SIDEBAR_MAX_WIDTH,
@@ -35,12 +32,12 @@ import {
   infoValue,
   isConversationCloudOnly,
   isConversationLocal,
-  normalizeSession,
   runnerStateValue,
 } from '../features/agents/agentModels.js';
 import {
   normalizeLocalChangesPayload,
 } from '../features/agents/agentLocalChanges.js';
+import { useAgentSessionActions } from '../features/agents/useAgentSessionActions.js';
 import { useAgentSessionsData } from '../features/agents/useAgentSessionsData.js';
 import { useAgentSessionsSidebar } from '../features/agents/useAgentSessionsSidebar.js';
 import { getSliceDisplayName } from '../utils/slices.js';
@@ -61,20 +58,13 @@ export default function SliceAgentsPage({
   onOpenChangesets,
   onSelectSession,
 }) {
-  const [creatingSession, setCreatingSession] = useState(false);
-  const [inputText, setInputText] = useState('');
-  const [sendingInput, setSendingInput] = useState(false);
   const [agentInfoOpen, setAgentInfoOpen] = useState(false);
-  const [runnerActionLoading, setRunnerActionLoading] = useState(false);
   const [localChangesRequesting, setLocalChangesRequesting] = useState(false);
   const [exportingChangeset, setExportingChangeset] = useState(false);
   const [pendingLocalChangesRequestId, setPendingLocalChangesRequestId] = useState('');
   const [pendingLocalChangesRequestedAt, setPendingLocalChangesRequestedAt] = useState(0);
   const [pendingChangesetExportRequestId, setPendingChangesetExportRequestId] = useState('');
   const [changesetMessage, setChangesetMessage] = useState('');
-  const [createError, setCreateError] = useState('');
-  const [inputError, setInputError] = useState('');
-  const [runnerActionError, setRunnerActionError] = useState('');
   const [localChangesError, setLocalChangesError] = useState('');
   const [localChangesPanelOpen, setLocalChangesPanelOpen] = useState(true);
   const autoLocalChangesSessionRef = useRef('');
@@ -164,6 +154,31 @@ export default function SliceAgentsPage({
     && isConversationLocal(selectedSession),
   );
   const canSendInput = Boolean(selectedSessionId && selectedSession && isConversationLocal(selectedSession));
+  const {
+    createError,
+    creatingSession,
+    handleCreateSession,
+    handleSendInput,
+    handleUpgradeRestartRunner,
+    inputError,
+    inputText,
+    runnerActionError,
+    runnerActionLoading,
+    sendingInput,
+    setInputText,
+  } = useAgentSessionActions({
+    canCreateSession,
+    canRestartRunner,
+    canSendInput,
+    defaultAgentType,
+    loadSelectedEvents,
+    loadSessions,
+    selectSessionId,
+    selectedRunner,
+    selectedRunnerId,
+    selectedSessionId,
+    sliceId,
+  });
   const localChangesEvent = useMemo(() => latestLocalChangesEvent(events), [events]);
   const localChangesFailureEvent = useMemo(() => latestLocalChangesFailureEvent(events), [events]);
   const localChanges = useMemo(() => (
@@ -250,7 +265,6 @@ export default function SliceAgentsPage({
   }, [canExportChangeset, changesetMessage, loadSelectedEvents, selectedSessionId]);
 
   useEffect(() => {
-    setRunnerActionError('');
     setLocalChangesError('');
     setPendingLocalChangesRequestId('');
     setPendingLocalChangesRequestedAt(0);
@@ -261,7 +275,6 @@ export default function SliceAgentsPage({
 
   useEffect(() => {
     setAgentInfoOpen(false);
-    setRunnerActionError('');
   }, [selectedRunnerId]);
 
   useEffect(() => {
@@ -345,64 +358,6 @@ export default function SliceAgentsPage({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [agentInfoOpen]);
-
-  const handleCreateSession = async () => {
-    if (!canCreateSession || creatingSession) {
-      return;
-    }
-    setCreatingSession(true);
-    setCreateError('');
-    try {
-      const created = normalizeSession(await createAgentSession(sliceId, {
-        runnerId: selectedRunner.runnerId,
-        agentType: selectedRunner.agentType || defaultAgentType,
-      }));
-      await loadSessions({ keepSelection: true });
-      selectSessionId(created.sessionId, { runnerId: created.runnerId || selectedRunner.runnerId });
-    } catch (err) {
-      setCreateError(err?.message || 'Unable to create agent session.');
-    } finally {
-      setCreatingSession(false);
-    }
-  };
-
-  const handleSendInput = async (event) => {
-    event.preventDefault();
-    const text = inputText.trim();
-    if (!canSendInput || !text || sendingInput) {
-      return;
-    }
-    setSendingInput(true);
-    setInputError('');
-    try {
-      await sendAgentSessionInput(selectedSessionId, text);
-      setInputText('');
-      await loadSelectedEvents();
-    } catch (err) {
-      setInputError(err?.message || 'Unable to send agent input.');
-    } finally {
-      setSendingInput(false);
-    }
-  };
-
-  const handleUpgradeRestartRunner = async () => {
-    if (!selectedSessionId || runnerActionLoading || !canRestartRunner) {
-      return;
-    }
-    setRunnerActionLoading(true);
-    setRunnerActionError('');
-    try {
-      await requestAgentRunnerRestart(selectedSessionId, {
-        upgrade: true,
-        reason: 'web_ui',
-      });
-      await loadSelectedEvents();
-    } catch (err) {
-      setRunnerActionError(err?.message || 'Unable to request agent restart.');
-    } finally {
-      setRunnerActionLoading(false);
-    }
-  };
 
   const localChangesPanelAvailable = Boolean(selectedSession && isConversationLocal(selectedSession));
   const localChangesPanelVisible = Boolean(localChangesPanelAvailable && localChangesPanelOpen);
