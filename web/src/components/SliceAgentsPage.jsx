@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Bot,
   PanelLeftOpen,
@@ -10,24 +10,11 @@ import {
   AGENTS_SIDEBAR_MAX_WIDTH,
   AGENTS_SIDEBAR_MIN_WIDTH,
 } from '../features/agents/agentConstants.js';
-import {
-  buildConversationItems,
-  latestRunnerState,
-} from '../features/agents/agentEvents.js';
-import {
-  buildRunningAgentInfoRows,
-  conversationAvailabilityLabel,
-  formatAgentTimestamp,
-  infoValue,
-  isConversationCloudOnly,
-  isConversationLocal,
-  runnerStateValue,
-} from '../features/agents/agentModels.js';
 import { useAgentLocalChanges } from '../features/agents/useAgentLocalChanges.js';
+import { useAgentPageViewModel } from '../features/agents/useAgentPageViewModel.js';
 import { useAgentSessionActions } from '../features/agents/useAgentSessionActions.js';
 import { useAgentSessionsData } from '../features/agents/useAgentSessionsData.js';
 import { useAgentSessionsSidebar } from '../features/agents/useAgentSessionsSidebar.js';
-import { getSliceDisplayName } from '../utils/slices.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import SliceAgentsConversationThread from './agents/SliceAgentsConversationThread.jsx';
 import SliceAgentsLocalChangesPanel from './agents/SliceAgentsLocalChangesPanel.jsx';
@@ -94,41 +81,36 @@ export default function SliceAgentsPage({
     sessionsSidebarVisible,
   } = useAgentSessionsSidebar();
 
-  const currentSlice = useMemo(() => (
-    (slices || []).find((slice) => slice.slice_id === sliceId) || null
-  ), [sliceId, slices]);
-  const sliceLabel = getSliceDisplayName(currentSlice?.name || sliceId || 'Slice');
-  const canCreateSession = Boolean(sliceId && selectedRunner?.runnerId);
-  const runnerState = useMemo(() => latestRunnerState(events), [events]);
-  const runningAgentInfoRows = useMemo(
-    () => buildRunningAgentInfoRows(selectedRunner, selectedSession, runnerState),
-    [runnerState, selectedRunner, selectedSession],
-  );
-  const runnerHost = runnerStateValue(runnerState, 'host_name', 'hostName') || infoValue(selectedRunner?.hostName);
-  const runnerPID = infoValue(runnerState?.pid || selectedRunner?.pid);
-  const runnerRunningDir = runnerStateValue(runnerState, 'running_dir', 'runningDir')
-    || runnerStateValue(runnerState, 'checkout_dir', 'checkoutDir')
-    || infoValue(selectedRunner?.workspaceRoot);
-  const runningAgentSummary = selectedRunner
-    ? [
-      selectedRunner.agentType || 'agent',
-      runnerHost || 'local',
-      runnerPID ? `pid ${runnerPID}` : '',
-    ].filter(Boolean).join(' · ')
-    : 'No running agent online';
-  const selectedRunnerLocalCount = selectedRunnerSessions.filter(isConversationLocal).length;
-  const selectedRunnerCloudOnlyCount = selectedRunnerSessions.filter(isConversationCloudOnly).length;
-  const selectedRunnerConversationCountLabel = [
-    selectedRunnerLocalCount === 1 ? '1 local conversation' : `${selectedRunnerLocalCount} local conversations`,
-    selectedRunnerCloudOnlyCount > 0 ? `${selectedRunnerCloudOnlyCount} cloud-only` : '',
-  ].filter(Boolean).join(' · ');
-  const canRestartRunner = Boolean(
-    selectedSession
-    && selectedSession.provider === 'local'
-    && selectedRunner?.runnerId
-    && isConversationLocal(selectedSession),
-  );
-  const canSendInput = Boolean(selectedSessionId && selectedSession && isConversationLocal(selectedSession));
+  const {
+    canCreateSession,
+    canRestartRunner,
+    canSendInput,
+    conversationItems,
+    currentSlice,
+    localChangesPanelAvailable,
+    localChangesPanelVisible,
+    runningAgentInfoRows,
+    runningAgentSummary,
+    runnerRunningDir,
+    selectedRunnerConversationCountLabel,
+    selectedSessionIsLocal,
+    selectedSessionSubtitle,
+    showAgentSessionDocsLink,
+    sliceLabel,
+  } = useAgentPageViewModel({
+    events,
+    liveStreamState,
+    localChangesPanelOpen,
+    runnerSessions,
+    selectedRunner,
+    selectedRunnerSessions,
+    selectedSession,
+    selectedSessionId,
+    sessionsError,
+    sessionsLoading,
+    sliceId,
+    slices,
+  });
   const {
     createError,
     creatingSession,
@@ -175,13 +157,6 @@ export default function SliceAgentsPage({
     selectedSessionId,
     setEventPollingBusy,
   });
-  const conversationItems = useMemo(
-    () => buildConversationItems(events, liveStreamState, selectedSession),
-    [events, liveStreamState, selectedSession],
-  );
-  const hasRunnerConversation = runnerSessions.length > 0;
-  const showAgentSessionDocsLink = !sessionsLoading && !sessionsError && !hasRunnerConversation;
-
   const handleSessionSelect = useCallback((sessionId) => {
     selectSessionForRunner(sessionId);
     closeSessionsSidebarForMobile();
@@ -203,9 +178,6 @@ export default function SliceAgentsPage({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [agentInfoOpen]);
-
-  const localChangesPanelAvailable = Boolean(selectedSession && isConversationLocal(selectedSession));
-  const localChangesPanelVisible = Boolean(localChangesPanelAvailable && localChangesPanelOpen);
 
   return (
     <section
@@ -307,9 +279,9 @@ export default function SliceAgentsPage({
               <div className="slice-agents-conversation-header">
                 <div>
                   <h1>Conversation</h1>
-                  <span>{conversationAvailabilityLabel(selectedSession)} · {selectedSession.agentType || 'agent'} · {selectedSession.sessionId}</span>
+                  <span>{selectedSessionSubtitle}</span>
                 </div>
-                {isConversationLocal(selectedSession) && (
+                {selectedSessionIsLocal && (
                   <Button
                     type="button"
                     variant="ghost"
