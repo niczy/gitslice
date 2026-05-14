@@ -19,6 +19,15 @@ function isRestrictedAdminProxyPath(pathname) {
     || path === '/v1/admin/home-slices:backfill';
 }
 
+function appendResponseCookies(response, cookies = []) {
+  for (const cookie of cookies) {
+    if (cookie) {
+      response.headers.append('Set-Cookie', cookie);
+    }
+  }
+  return response;
+}
+
 export async function proxyRequest(request, suffix = '', options = {}) {
   const targetURL = buildProxyURL(request, suffix);
   const headers = new Headers(request.headers);
@@ -36,20 +45,16 @@ export async function proxyRequest(request, suffix = '', options = {}) {
     }
   }
   const requestAuthorization = String(headers.get('Authorization') || '').trim();
-  const shouldResolveClerkAuthorization = !requestAuthorization || /^Bearer\s+/i.test(requestAuthorization);
+  const hasClerkBearerAuthorization = /^Bearer\s+/i.test(requestAuthorization);
+  const shouldResolveClerkAuthorization = !requestAuthorization || hasClerkBearerAuthorization;
   if (!restrictedAdminPath && shouldResolveClerkAuthorization && getAuthProvider() === 'clerk') {
     const authResult = await getProxyAuthorizationResult(request, options);
     responseCookies.push(...(authResult.setCookies || []));
     if (authResult.authorization) {
       headers.set('Authorization', authResult.authorization);
-    } else if (!requestAuthorization && authResult.rejectUnauthenticated) {
-      const response = Response.json({ error: 'Not signed in' }, { status: 401 });
-      for (const cookie of responseCookies) {
-        if (cookie) {
-          response.headers.append('Set-Cookie', cookie);
-        }
-      }
-      return response;
+    } else if (hasClerkBearerAuthorization || authResult.rejectUnauthenticated) {
+      headers.delete('Authorization');
+      return appendResponseCookies(Response.json({ error: 'Not signed in' }, { status: 401 }), responseCookies);
     }
   }
 
@@ -78,13 +83,7 @@ export async function proxyRequest(request, suffix = '', options = {}) {
         });
       }
     }
-    const proxied = new Response(response.body, response);
-    for (const cookie of responseCookies) {
-      if (cookie) {
-        proxied.headers.append('Set-Cookie', cookie);
-      }
-    }
-    return proxied;
+    return appendResponseCookies(new Response(response.body, response), responseCookies);
   } catch {
     return Response.json({ error: 'Unable to reach upstream API origin' }, { status: 502 });
   }
