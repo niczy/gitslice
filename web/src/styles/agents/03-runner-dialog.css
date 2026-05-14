@@ -1,0 +1,57 @@
+.slice-agents-info-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.slice-agents-info-dialog {
+  display: grid;
+  width: min(620px, calc(100vw - 36px));
+  max-height: min(720px, calc(100dvh - 36px));
+  gap: 12px;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.slice-agents-info-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slice-agents-info-dialog-header h2 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.slice-agents-info-dialog-header span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-info-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.slice-agents-info-dialog-actions .slice-agents-runner-action {
+  width: auto;
+  min-width: 180px;
+}

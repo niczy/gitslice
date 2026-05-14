@@ -1,0 +1,237 @@
+.slice-agents-local-changes-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  width: min(380px, calc(100% - 24px));
+  min-width: 0;
+  min-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translate3d(calc(100% + 18px), 0, 0);
+  visibility: hidden;
+  transition:
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms ease,
+    visibility 0s linear 240ms;
+  will-change: transform;
+}
+
+.slice-agents-local-changes-panel.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
+  visibility: visible;
+  transition:
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms ease;
+}
+
+.slice-agents-conversation-shell.has-local-changes .slice-agents-local-changes-panel {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  height: 100%;
+  transform: none;
+}
+
+.slice-agents-local-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  box-shadow: -18px 0 34px rgba(15, 23, 42, 0.12);
+}
+
+.slice-agents-local-changes-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slice-agents-local-changes-title {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.slice-agents-local-changes-title > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.slice-agents-local-changes-title h2 {
+  margin: 0 0 3px;
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  line-height: 1.25;
+}
+
+.slice-agents-local-changes-title span {
+  display: block;
+  color: var(--text-muted);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.slice-agents-local-changes-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.slice-agents-local-file-list {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 5px;
+  min-height: 96px;
+  max-height: none;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.slice-agents-local-file {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  list-style: none;
+}
+
+.slice-agents-local-file-status {
+  display: inline-grid;
+  width: 24px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.slice-agents-local-file-status--a {
+  border-color: rgba(26, 127, 55, 0.22);
+  background: #f0fdf4;
+  color: #1a7f37;
+}
+
+.slice-agents-local-file-status--m {
+  border-color: rgba(9, 76, 178, 0.22);
+  background: #eff6ff;
+  color: var(--accent);
+}
+
+.slice-agents-local-file-status--d {
+  border-color: rgba(185, 28, 28, 0.22);
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.slice-agents-local-file-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-local-file--more {
+  grid-template-columns: minmax(0, 1fr);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.slice-agents-local-clean {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.slice-agents-export-link {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--accent);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.slice-agents-export-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slice-agents-export-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.slice-agents-export-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.slice-agents-export-message {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  padding: 0 10px;
+}
+
+.slice-agents-export-message:focus {
+  border-color: rgba(9, 76, 178, 0.55);
+  box-shadow: 0 0 0 3px rgba(9, 76, 178, 0.09);
+  outline: none;
+}
+
+.slice-agents-export-button {
+  min-height: 34px !important;
+  border-radius: 7px !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+  white-space: nowrap;
+}

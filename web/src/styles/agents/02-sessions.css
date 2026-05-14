@@ -1,0 +1,129 @@
+.slice-agents-session-list,
+.slice-agents-message-list,
+.slice-agents-event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slice-agents-session-list {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.slice-agents-session-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.slice-agents-session-panel > .panel-empty,
+.slice-agents-session-panel > .panel-error {
+  flex: 0 0 auto;
+}
+
+.slice-agents-session-row {
+  display: grid !important;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center !important;
+  width: 100%;
+  min-height: 58px !important;
+  padding: 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  color: var(--text-primary) !important;
+  text-align: left;
+}
+
+.slice-agents-session-row:hover,
+.slice-agents-session-row.active {
+  border-color: var(--border) !important;
+  background: var(--surface-elevated) !important;
+  transform: none;
+}
+
+.slice-agents-session-row.active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.slice-agents-session-row.cloud-only {
+  color: var(--text-muted) !important;
+}
+
+.slice-agents-session-row.cloud-only .slice-agents-session-icon {
+  border-color: rgba(100, 116, 139, 0.26);
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.slice-agents-session-row.cloud-only .slice-agents-session-title {
+  color: var(--text-primary);
+}
+
+.slice-agents-session-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--accent);
+}
+
+.slice-agents-session-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.slice-agents-session-title,
+.slice-agents-session-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-session-title {
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.25;
+  text-transform: capitalize;
+}
+
+.slice-agents-session-meta {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.25;
+}
+
+.slice-agents-runner-dir {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 7px 8px;
+  color: var(--text-secondary);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-agents-runner-action {
+  justify-content: center !important;
+  min-height: 32px !important;
+  width: 100%;
+  border-radius: 6px !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+}
+

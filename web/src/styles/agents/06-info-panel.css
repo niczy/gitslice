@@ -1,0 +1,35 @@
+.slice-agents-info-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.slice-agents-info-panel dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.slice-agents-info-row {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.32fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+}
+
+.slice-agents-info-row dt {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.slice-agents-info-row dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-primary);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
