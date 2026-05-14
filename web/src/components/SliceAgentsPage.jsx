@@ -28,7 +28,7 @@ import {
   requestAgentSessionLocalChanges,
   requestAgentRunnerRestart,
   sendAgentSessionInput,
-} from '../utils/api.js';
+} from '../api/agents.js';
 import {
   AGENT_EVENTS_MAX,
   AGENT_EVENTS_PAGE_SIZE,
