@@ -1,0 +1,177 @@
+/* Repo browser */
+.repo-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.repo-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.repo-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Repo layout */
+.repo-layout {
+  display: grid;
+  grid-template-columns: var(--repo-sidebar-width, 260px) 1fr;
+  gap: 16px;
+  height: calc(100dvh - 240px);
+  min-height: calc(100dvh - 240px);
+  transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.repo-layout.sidebar-collapsed {
+  grid-template-columns: 0 1fr;
+}
+
+.repo-sidebar,
+.repo-code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: all 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.repo-sidebar {
+  min-width: 0;
+  position: relative;
+  transition:
+    opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.repo-layout.is-resizing-sidebar,
+.repo-layout.is-resizing-sidebar .repo-sidebar,
+.repo-layout.is-resizing-sidebar .repo-code,
+.repo-layout.is-resizing-sidebar .repo-insight {
+  transition: none;
+}
+
+.repo-layout.is-resizing-sidebar,
+.repo-layout.is-resizing-sidebar * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 4;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resize-handle::after {
+  position: absolute;
+  top: 12px;
+  right: 4px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: '';
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after {
+  background: var(--accent);
+}
+
+.sidebar-resize-handle:focus-visible {
+  outline: none;
+}
+
+.repo-sidebar.open {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.repo-sidebar.closed {
+  opacity: 0;
+  transform: translateX(-20px);
+  pointer-events: none;
+  width: 0;
+  padding: 0;
+  border: none;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+.repo-sidebar .panel-header {
+  padding: 14px 16px 10px;
+  flex-shrink: 0;
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 12px 12px;
+}
+
+.sidebar-slice-switcher {
+  margin-bottom: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 0 10px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-panel-title {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.sidebar-tree-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sidebar-tree-title {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sidebar-tree-title .sidebar-panel-title {
+  margin-bottom: 0;
+}
+
+.sidebar-tree-title > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

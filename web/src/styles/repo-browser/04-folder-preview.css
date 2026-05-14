@@ -1,0 +1,115 @@
+.folder-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f6f8fa;
+}
+
+.folder-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  background: #ffffff;
+}
+
+.folder-preview-header > div {
+  min-width: 0;
+}
+
+.folder-preview-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-preview-header span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-preview-count {
+  flex-shrink: 0;
+  margin-top: 0;
+  font-weight: 600;
+}
+
+.folder-preview-loading {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 180px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.folder-preview-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+}
+
+.folder-preview-entry {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-preview-entry:hover {
+  background: #ffffff;
+}
+
+.folder-preview-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.folder-preview-entry.directory .folder-preview-entry-icon {
+  color: var(--accent);
+}
+
+.folder-preview-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.folder-preview-entry-meta {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}

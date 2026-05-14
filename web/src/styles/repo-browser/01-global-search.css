@@ -1,0 +1,192 @@
+.repo-search-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.94));
+}
+
+.repo-search-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.repo-search-panel-head .sidebar-panel-title {
+  margin-bottom: 0;
+}
+
+.repo-search-count {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.repo-search-form {
+  display: grid;
+  gap: 8px;
+}
+
+.repo-search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-primary);
+  padding: 9px 10px;
+  font-size: 0.85rem;
+}
+
+.repo-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.repo-search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.repo-search-toggle input {
+  margin: 0;
+}
+
+.repo-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.repo-search-state {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding-top: 10px;
+}
+
+.repo-search-results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.repo-search-result {
+  height: auto;
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  align-items: stretch;
+  justify-items: stretch;
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.repo-search-result:hover,
+.repo-search-result:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(239, 246, 255, 0.92);
+}
+
+.repo-search-result-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.repo-search-result-path {
+  font-size: 0.76rem;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-search-result-count {
+  justify-self: end;
+  border-radius: 999px;
+  background: rgba(9, 105, 218, 0.08);
+  color: var(--accent);
+  padding: 2px 7px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.repo-search-result-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-search-result-meta code {
+  color: var(--text-primary);
+  font-size: inherit;
+}
+
+.repo-search-result-meta mark {
+  border-radius: 3px;
+  background: rgba(250, 204, 21, 0.32);
+  color: inherit;
+  padding: 0 1px;
+}
+
+.repo-search-result-line {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.77rem;
+  color: var(--text-primary);
+}
+
+.repo-search-overflow {
+  padding: 6px 8px 2px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.repo-search-load-more {
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(248, 250, 252, 0.92);
+  color: var(--accent);
+  cursor: pointer;
+  white-space: normal;
+}
+
+.repo-search-load-more:hover,
+.repo-search-load-more:focus-visible {
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(239, 246, 255, 0.92);
+}
+
+.repo-search-load-more span {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
