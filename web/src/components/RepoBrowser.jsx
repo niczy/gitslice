@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
 import { apiBaseUrl, fetchWithAuth } from '../utils/api.js';
-import { normalizeChange, normalizeEntryType } from '../utils/normalize.js';
+import { normalizeEntryType } from '../utils/normalize.js';
 import { decodeBase64, highlightCodeLines } from '../utils/highlight.js';
 import { renderMarkdownHtml } from '../utils/markdown.js';
-import { getSliceDisplayName } from '../utils/slices.js';
-import { buildBrowserPath, parseLocation } from '../utils/routing.js';
+import { parseLocation } from '../utils/routing.js';
 import {
   buildBrowserEntriesUrl,
-  buildBrowserFileHistoryUrl,
   buildBrowserFileUrl,
   buildBrowserRawFileUrl,
   normalizeWorkspaceResultPath,
@@ -23,14 +20,17 @@ import {
   getTreeFileSize,
 } from '../features/browser/browserModel.js';
 import { useBrowserSidebar } from '../features/browser/useBrowserSidebar.js';
+import { useRepoBrowserChrome } from '../features/browser/useRepoBrowserChrome.js';
+import { useRepoBrowserHistory } from '../features/browser/useRepoBrowserHistory.js';
+import { useInitialBrowserState, useRepoBrowserSlice } from '../features/browser/useRepoBrowserSlice.js';
+import { useRepoFileDrafts } from '../features/browser/useRepoFileDrafts.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
-import SliceSettings from './SliceSettings.jsx';
 import RepoBrowserHeader from './browser/RepoBrowserHeader.jsx';
+import RepoBrowserSettingsModal from './browser/RepoBrowserSettingsModal.jsx';
 import RepoBrowserSidebar from './browser/RepoBrowserSidebar.jsx';
 import RepoFileHistoryPanel from './browser/RepoFileHistoryPanel.jsx';
 import RepoFileViewer from './browser/RepoFileViewer.jsx';
 import RepoFolderPreview from './browser/RepoFolderPreview.jsx';
-import { Button } from './ui/button.jsx';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
@@ -54,15 +54,7 @@ export default function RepoBrowser({
   openFileRequest,
   initialBrowserData,
 }) {
-  // Parse initial browser state from the current route on mount.
-  const initialBrowserState = useMemo(() => {
-    if (typeof window === 'undefined') {
-      return null;
-    }
-    const route = parseLocation(window.location);
-    return route.page === 'browser' ? route.browserState || null : null;
-  }, []);
-
+  const initialBrowserState = useInitialBrowserState();
   const initialDataMatchesRawSlice = initialBrowserData?.selectedSliceId === currentSliceId
     && String(initialBrowserData?.sliceHash || '') === String(initialBrowserState?.sliceHash || '');
   const initialSelectedFilePayload = initialDataMatchesRawSlice ? initialBrowserData?.selectedFilePayload : null;
@@ -98,11 +90,6 @@ export default function RepoBrowser({
       initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : '',
     )
   ));
-  const [draftContent, setDraftContent] = useState(() => (
-    initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
-  ));
-  const [fileDrafts, setFileDrafts] = useState({});
-  const [isEditingFile, setIsEditingFile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingFilePath, setLoadingFilePath] = useState(() => (
     initialSelectedFilePath && !hasInitialSelectedFilePayload ? initialSelectedFilePath : ''
@@ -116,12 +103,6 @@ export default function RepoBrowser({
   const [focusedEntry, setFocusedEntry] = useState(() => (initialSelectedFilePath
     ? { path: initialSelectedFilePath, type: 'file' }
     : { path: initialSelectedDirectoryPath, type: 'directory' }));
-  const [showHistory, setShowHistory] = useState(false);
-  const [fileHistory, setFileHistory] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState('');
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
   const {
     closeSidebar,
     handleSidebarResizeKeyDown,
@@ -133,15 +114,35 @@ export default function RepoBrowser({
     sidebarWidth,
     startSidebarResize,
   } = useBrowserSidebar();
+  const {
+    cancelFileEdit,
+    confirmFileEdit,
+    draftContent,
+    fileDrafts,
+    isEditingFile,
+    resetAllDrafts,
+    resetDraftState,
+    setDraftContent,
+    showFileEditor,
+  } = useRepoFileDrafts({
+    fileContent,
+    initialDraftContent: initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : '',
+    selectedFile,
+    setEncodedFileContent,
+    setFileContent,
+    setPreviewEncodedFileContent,
+    setPreviewFileContent,
+    setPreviewFilePath,
+    setSelectedFileSize,
+    setTreeEntries,
+  });
 
   // File to restore after root tree entries load (from URL hash)
   const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
   const selectedFileRef = useRef(initialSelectedFilePath || null);
   const treeEntriesRef = useRef(treeEntries);
   const treeEntriesScopeRef = useRef('');
-  const hasAppliedInitialSliceRef = useRef(false);
   const hasMountedSliceRef = useRef(false);
-  const actionMenuRef = useRef(null);
   const handledOpenFileRequestTokenRef = useRef(null);
   const highlightedContent = useMemo(() => highlightCodeLines(previewFileContent).html, [previewFileContent]);
   const markdownContent = useMemo(() => renderMarkdownHtml(previewFileContent), [previewFileContent]);
@@ -165,103 +166,68 @@ export default function RepoBrowser({
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
 
-  const rawSliceId = currentSliceId;
-
-  const resolveRequestedSliceId = useCallback((requestedSliceId) => {
-    const requested = String(requestedSliceId || '').trim();
-    if (!requested) {
+  const {
+    buildRoutePath,
+    canLoad,
+    canShowSettings,
+    currentSlice,
+    currentSliceDisplayName,
+    currentSliceLabel,
+    initialBrowserDataMatches,
+    sliceId,
+    treeEntriesScopeKey,
+  } = useRepoBrowserSlice({
+    authUsername,
+    currentSliceId,
+    initialBrowserData,
+    initialBrowserState,
+    onSliceChange,
+    sliceHash,
+    slices,
+    slicesLoading,
+  });
+  const {
+    fileHistory,
+    historyError,
+    historyLoading,
+    resetHistory,
+    showHistory,
+    toggleHistory,
+  } = useRepoBrowserHistory({
+    apiBaseUrl,
+    isActive,
+    refreshHistoryToken,
+    selectedFile,
+    sliceId,
+  });
+  const selectedDirectoryPath = useMemo(() => {
+    if (selectedFile || focusedEntry?.type !== 'directory') {
       return '';
     }
-
-    const normalizedAuthUsername = String(authUsername || '').trim().toLowerCase();
-    const normalizedRequested = requested.toLowerCase();
-    if (
-      normalizedAuthUsername &&
-      (normalizedRequested === normalizedAuthUsername || normalizedRequested === `home_${normalizedAuthUsername}`)
-    ) {
-      return `home_${normalizedAuthUsername}`;
-    }
-
-    const candidateIds = [requested];
-    if (requested.startsWith('home_')) {
-      const suffix = requested.slice('home_'.length).trim();
-      if (suffix) {
-        candidateIds.push(`home_${suffix.toLowerCase()}`);
-      }
-    } else {
-      candidateIds.push(`home_${requested.toLowerCase()}`);
-    }
-
-    for (const candidateId of candidateIds) {
-      if (slices.some((slice) => slice.slice_id === candidateId)) {
-        return candidateId;
-      }
-    }
-
-    return '';
-  }, [authUsername, slices]);
-
-  const sliceId = useMemo(() => {
-    if (!rawSliceId) {
-      return '';
-    }
-    return resolveRequestedSliceId(rawSliceId) || rawSliceId;
-  }, [rawSliceId, resolveRequestedSliceId]);
-  const treeEntriesScopeKey = useMemo(() => `${sliceId}\0${String(sliceHash || '')}`, [sliceHash, sliceId]);
-
-  const initialBrowserDataMatches = useMemo(() => {
-    return initialBrowserData?.selectedSliceId === sliceId
-      && String(initialBrowserData?.sliceHash || '') === String(sliceHash || '');
-  }, [initialBrowserData, sliceHash, sliceId]);
+    return normalizeWorkspaceResultPath(focusedEntry.path);
+  }, [focusedEntry, selectedFile]);
+  const activeBrowserPath = selectedFile || selectedDirectoryPath;
+  const {
+    actionMenuRef,
+    closeCompactActions,
+    isActionMenuOpen,
+    openFilesView,
+    openSettingsView,
+    toggleActionMenu,
+    viewingSettings,
+    visibleBreadcrumbs,
+  } = useRepoBrowserChrome({
+    activeBrowserPath,
+    canShowSettings,
+    currentSliceLabel,
+    isCompactHeader,
+    sliceHash,
+    sliceId,
+  });
 
   useIsomorphicLayoutEffect(() => {
     treeEntriesRef.current = treeEntries;
   }, [treeEntries]);
-
-  useEffect(() => {
-    if (!rawSliceId || sliceId === rawSliceId) {
-      return;
-    }
-    const normalizedAuthUsername = String(authUsername || '').trim().toLowerCase();
-    const normalizedRawSliceId = String(rawSliceId || '').trim().toLowerCase();
-    const normalizedSliceId = String(sliceId || '').trim().toLowerCase();
-    if (
-      normalizedAuthUsername
-      && normalizedRawSliceId === normalizedAuthUsername
-      && normalizedSliceId === `home_${normalizedAuthUsername}`
-    ) {
-      return;
-    }
-    onSliceChange(sliceId);
-  }, [authUsername, onSliceChange, rawSliceId, sliceId]);
-
-  const currentSlice = useMemo(() => {
-    return slices.find((slice) => slice.slice_id === sliceId) || null;
-  }, [slices, sliceId]);
-
-  const canLoad = sliceId !== '' && (sliceId === 'root' || Boolean(String(authUsername || '').trim()));
-
-  const currentSliceLabel = useMemo(() => {
-    if (currentSlice?.name) {
-      return currentSlice.name;
-    }
-    return sliceId === 'root' ? 'Root Slice' : sliceId;
-  }, [currentSlice, sliceId]);
-
-  const currentSliceDisplayName = useMemo(() => {
-    return getSliceDisplayName(currentSliceLabel);
-  }, [currentSliceLabel]);
-
-  const canShowSettings = canLoad && !currentSlice?.is_root;
-  const viewingSettings = isSettingsOpen && canShowSettings;
-
-  const openFilesView = useCallback(() => {
-    setIsSettingsOpen(false);
-  }, []);
-
-  const openSettingsView = useCallback(() => {
-    setIsSettingsOpen(true);
-  }, []);
 
   const clearFilePreview = useCallback(() => {
     setSelectedFile(null);
@@ -271,24 +237,11 @@ export default function RepoBrowser({
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
-    setDraftContent('');
+    resetDraftState('');
     setFileError('');
     setLoadingFilePath('');
-    setShowHistory(false);
-    setFileHistory([]);
-    setHistoryError('');
-    setIsEditingFile(false);
-  }, []);
-
-  useEffect(() => {
-    if (!canShowSettings && isSettingsOpen) {
-      setIsSettingsOpen(false);
-    }
-  }, [canShowSettings, isSettingsOpen]);
-
-  useEffect(() => {
-    setIsSettingsOpen(false);
-  }, [sliceId, sliceHash]);
+    resetHistory();
+  }, [resetDraftState, resetHistory]);
 
   useIsomorphicLayoutEffect(() => {
     if (!initialBrowserDataMatches) {
@@ -364,108 +317,6 @@ export default function RepoBrowser({
     setLoadingFilePath('');
   }, [initialBrowserData, initialBrowserDataMatches, treeEntriesScopeKey]);
 
-  useEffect(() => {
-    if (!viewingSettings || typeof window === 'undefined') {
-      return undefined;
-    }
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        setIsSettingsOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [viewingSettings]);
-
-  const selectedDirectoryPath = useMemo(() => {
-    if (selectedFile || focusedEntry?.type !== 'directory') {
-      return '';
-    }
-    return normalizeWorkspaceResultPath(focusedEntry.path);
-  }, [focusedEntry, selectedFile]);
-
-  const activeBrowserPath = selectedFile || selectedDirectoryPath;
-
-  const breadcrumbs = useMemo(() => {
-    const slicePrefix = currentSliceLabel || 'slice';
-    if (!activeBrowserPath) {
-      return [{ name: slicePrefix, path: '' }];
-    }
-    const parts = activeBrowserPath.split('/');
-    return [
-      { name: slicePrefix, path: '' },
-      ...parts.map((part, index) => ({
-        name: part,
-        path: parts.slice(0, index + 1).join('/'),
-      })),
-    ];
-  }, [activeBrowserPath, currentSliceLabel]);
-
-  const visibleBreadcrumbs = useMemo(() => {
-    const maxBreadcrumbs = isCompactHeader ? 4 : 8;
-    if (breadcrumbs.length <= maxBreadcrumbs) {
-      return breadcrumbs;
-    }
-
-    const trailingCount = Math.max(maxBreadcrumbs - 2, 2);
-    const ellipsisTarget = breadcrumbs[breadcrumbs.length - trailingCount - 1];
-    return [
-      breadcrumbs[0],
-      { name: '…', path: ellipsisTarget?.path || '' },
-      ...breadcrumbs.slice(-trailingCount),
-    ];
-  }, [breadcrumbs, isCompactHeader]);
-
-  useEffect(() => {
-    if (!isCompactHeader) {
-      setIsActionMenuOpen(false);
-    }
-  }, [isCompactHeader]);
-
-  useEffect(() => {
-    if (!isActionMenuOpen) {
-      return undefined;
-    }
-    if (typeof document === 'undefined') {
-      return undefined;
-    }
-
-    const handleClickOutside = (event) => {
-      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target)) {
-        setIsActionMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isActionMenuOpen]);
-
-  // Update slice from URL if present
-  useEffect(() => {
-    if (hasAppliedInitialSliceRef.current) {
-      return;
-    }
-    if (slicesLoading) {
-      return;
-    }
-
-    if (!initialBrowserState?.slice) {
-      hasAppliedInitialSliceRef.current = true;
-      return;
-    }
-
-    const resolvedSliceId = resolveRequestedSliceId(initialBrowserState.slice);
-    if (!resolvedSliceId) {
-      hasAppliedInitialSliceRef.current = true;
-      return;
-    }
-
-    if (resolvedSliceId !== currentSliceId) {
-      onSliceChange(resolvedSliceId);
-    }
-    hasAppliedInitialSliceRef.current = true;
-  }, [initialBrowserState, resolveRequestedSliceId, currentSliceId, onSliceChange, slicesLoading]);
-
   // Reset tree when slice changes
   useEffect(() => {
     if (!hasMountedSliceRef.current) {
@@ -486,13 +337,11 @@ export default function RepoBrowser({
     setPreviewFileContent('');
     setPreviewEncodedFileContent('');
     setSelectedFileSize(null);
-    setDraftContent('');
-    setFileDrafts({});
-    setIsEditingFile(false);
+    resetAllDrafts();
     setFileError('');
     setLoadingFilePath('');
     setFocusedEntry({ path: '', type: 'directory' });
-  }, [initialBrowserData, initialBrowserDataMatches, sliceId, sliceHash, treeEntriesScopeKey]);
+  }, [initialBrowserData, initialBrowserDataMatches, resetAllDrafts, sliceId, sliceHash, treeEntriesScopeKey]);
 
   // Build URL for entries endpoint based on mode
   const buildEntriesUrl = useCallback((path) => {
@@ -522,48 +371,6 @@ export default function RepoBrowser({
     });
   }, [sliceHash, sliceId]);
 
-  // Build URL for file history endpoint based on mode
-  const buildHistoryUrl = useCallback((filePath) => {
-    return buildBrowserFileHistoryUrl({
-      apiBaseUrl,
-      sliceId,
-      filePath,
-    });
-  }, [sliceId]);
-
-  // Fetch file history from the API
-  const fetchFileHistory = useCallback(async (filePath) => {
-    if (!filePath) {
-      return;
-    }
-
-    setHistoryLoading(true);
-    setHistoryError('');
-
-    try {
-      const response = await fetchWithAuth(buildHistoryUrl(filePath));
-      if (!response.ok) {
-        throw new Error(`Request failed (${response.status})`);
-      }
-      const payload = await response.json();
-      setFileHistory((payload.changes || []).map(normalizeChange));
-    } catch (err) {
-      setHistoryError('Unable to load file history.');
-      setFileHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [buildHistoryUrl]);
-
-  // Toggle history panel
-  const toggleHistory = useCallback(() => {
-    const newShowHistory = !showHistory;
-    setShowHistory(newShowHistory);
-    if (newShowHistory && selectedFile && fileHistory.length === 0) {
-      fetchFileHistory(selectedFile);
-    }
-  }, [fetchFileHistory, fileHistory.length, selectedFile, showHistory]);
-
   const writeBrowserState = useCallback(({ file = '', dir = '' } = {}, options = {}) => {
     if (typeof window === 'undefined') {
       return;
@@ -573,12 +380,7 @@ export default function RepoBrowser({
       return;
     }
 
-    const nextPath = buildBrowserPath({
-      dir,
-      file,
-      slice: sliceId,
-      sliceHash,
-    });
+    const nextPath = buildRoutePath({ dir, file });
     const currentPath = `${window.location.pathname}${window.location.search}`;
     if (currentPath === nextPath) {
       return;
@@ -595,7 +397,7 @@ export default function RepoBrowser({
       gitsliceBrowserState: true,
       browserState: nextBrowserState,
     }, '', nextPath);
-  }, [sliceHash, sliceId]);
+  }, [buildRoutePath, sliceHash, sliceId]);
 
   const openFilePath = useCallback(async (targetPath, options = {}) => {
     const normalizedPath = normalizeWorkspaceResultPath(targetPath);
@@ -607,7 +409,7 @@ export default function RepoBrowser({
       closeSidebar();
     }
 
-    setIsSettingsOpen(false);
+    openFilesView();
     setFocusedEntry({ path: normalizedPath, type: 'file' });
     setSelectedFile(normalizedPath);
     setSelectedFileSize(
@@ -617,14 +419,12 @@ export default function RepoBrowser({
     );
     setFileContent('');
     setEncodedFileContent('');
-    setDraftContent('');
+    resetDraftState('');
     setIsLoading(true);
     setLoadingFilePath(normalizedPath);
     setError('');
     setFileError('');
-    setShowHistory(false);
-    setFileHistory([]);
-    setHistoryError('');
+    resetHistory();
     if (options.updateHistory !== false) {
       writeBrowserState({ file: normalizedPath });
     }
@@ -675,8 +475,7 @@ export default function RepoBrowser({
         setPreviewFileContent(fileDrafts[normalizedPath]);
         setPreviewEncodedFileContent('');
         setSelectedFileSize(fileDrafts[normalizedPath].length);
-        setDraftContent(fileDrafts[normalizedPath]);
-        setIsEditingFile(false);
+        resetDraftState(fileDrafts[normalizedPath]);
         setError('');
         return;
       }
@@ -695,8 +494,7 @@ export default function RepoBrowser({
       setPreviewFileContent(decodedContent);
       setPreviewEncodedFileContent(content);
       setSelectedFileSize(getFilePayloadSize(filePayload?.file, decodedContent));
-      setDraftContent(decodedContent);
-      setIsEditingFile(false);
+      resetDraftState(decodedContent);
       setError('');
     } catch (err) {
       setFileContent('');
@@ -714,6 +512,9 @@ export default function RepoBrowser({
     closeSidebar,
     expandedPaths,
     fileDrafts,
+    openFilesView,
+    resetDraftState,
+    resetHistory,
     selectedFile,
     selectedFileSize,
     treeEntries,
@@ -730,13 +531,6 @@ export default function RepoBrowser({
     handledOpenFileRequestTokenRef.current = openFileRequest.token;
     openFilePath(openFileRequest.path);
   }, [isActive, openFilePath, openFileRequest]);
-
-  useEffect(() => {
-    if (!isActive || !showHistory || !selectedFile || !refreshHistoryToken) {
-      return;
-    }
-    fetchFileHistory(selectedFile);
-  }, [fetchFileHistory, isActive, refreshHistoryToken, selectedFile, showHistory]);
 
   useEffect(() => {
     if (!isActive) {
@@ -917,7 +711,7 @@ export default function RepoBrowser({
         setPreviewFileContent(decodedContent);
         setPreviewEncodedFileContent(content);
         setSelectedFileSize(getFilePayloadSize(payload?.file, decodedContent));
-        setDraftContent(decodedContent);
+        resetDraftState(decodedContent);
         setError('');
       } catch (err) {
         if (!active || err?.name === 'AbortError') {
@@ -947,6 +741,7 @@ export default function RepoBrowser({
     isLoading,
     loadingFilePath,
     refreshHistoryToken,
+    resetDraftState,
     selectedFile,
     sliceHash,
     sliceId,
@@ -1053,7 +848,7 @@ export default function RepoBrowser({
     const shouldToggleExpansion = Boolean(options.toggleExpansion);
     const isExpanded = expandedPaths.includes(normalizedPath);
 
-    setIsSettingsOpen(false);
+    openFilesView();
     setFocusedEntry({ path: normalizedPath, type: 'directory' });
     clearFilePreview();
     setError('');
@@ -1136,31 +931,6 @@ export default function RepoBrowser({
     await openFilePath(entry.path, { size: entry.size });
   };
 
-  const confirmFileEdit = () => {
-    if (!selectedFile) {
-      return;
-    }
-    setFileDrafts((prev) => ({ ...prev, [selectedFile]: draftContent }));
-    setFileContent(draftContent);
-    setEncodedFileContent('');
-    setPreviewFilePath(selectedFile);
-    setPreviewFileContent(draftContent);
-    setPreviewEncodedFileContent('');
-    setSelectedFileSize(draftContent.length);
-    setIsEditingFile(false);
-    const parentPath = selectedFile.includes('/') ? selectedFile.split('/').slice(0, -1).join('/') : '';
-    setTreeEntries((prev) => {
-      const entries = prev[parentPath] || [];
-      const nextEntries = entries.map((entry) => {
-        if (entry.path !== selectedFile) {
-          return entry;
-        }
-        return { ...entry, size: draftContent.length };
-      });
-      return { ...prev, [parentPath]: nextEntries };
-    });
-  };
-
   const handleBreadcrumbClick = async (path) => {
     const normalizedPath = normalizeWorkspaceResultPath(path);
     const normalizedSelectedFile = normalizeWorkspaceResultPath(selectedFile);
@@ -1188,23 +958,12 @@ export default function RepoBrowser({
     await openFilePath(entry.path, { size: entry.size });
   };
   const sidebarVisible = sidebarOpen || isSidebarDismissing;
-  const showFileEditor = useCallback(() => {
-    setDraftContent(fileContent);
-    setIsEditingFile(true);
-  }, [fileContent]);
-  const cancelFileEdit = useCallback(() => {
-    setDraftContent(fileContent);
-    setIsEditingFile(false);
-  }, [fileContent]);
   const openRawFile = useCallback(() => {
     if (!selectedFile || typeof window === 'undefined') {
       return;
     }
     window.open(buildRawFileUrl(selectedFile), '_blank', 'noopener,noreferrer');
   }, [buildRawFileUrl, selectedFile]);
-  const closeCompactActions = useCallback(() => {
-    setIsActionMenuOpen(false);
-  }, []);
   const fileActionProps = useMemo(() => ({
     isEditingFile,
     onCancelEdit: cancelFileEdit,
@@ -1278,7 +1037,7 @@ export default function RepoBrowser({
               isCompactHeader={isCompactHeader}
               onBreadcrumbClick={handleBreadcrumbClick}
               onOpenSidebar={openSidebar}
-              onToggleActionMenu={() => setIsActionMenuOpen((value) => !value)}
+              onToggleActionMenu={toggleActionMenu}
               selectedFile={selectedFile}
               sidebarOpen={sidebarOpen}
               visibleBreadcrumbs={visibleBreadcrumbs}
@@ -1320,43 +1079,13 @@ export default function RepoBrowser({
             </div>
           </div>
         </div>
-        {viewingSettings && (
-          <div
-            className="slice-settings-modal-backdrop"
-            role="presentation"
-            onClick={openFilesView}
-          >
-            <div
-              className="slice-settings-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Slice settings"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="slice-settings-modal-close"
-                onClick={openFilesView}
-                aria-label="Close slice settings"
-                title="Close slice settings"
-              >
-                <X size={17} aria-hidden="true" />
-              </Button>
-              <SliceSettings
-                sliceId={sliceId}
-                sliceName={currentSliceLabel}
-                folderMounts={currentSlice?.folder_mounts}
-                onFolderMountsChange={(updatedMounts) => {
-                  if (currentSlice) {
-                    currentSlice.folder_mounts = updatedMounts;
-                  }
-                }}
-              />
-            </div>
-          </div>
-        )}
+        <RepoBrowserSettingsModal
+          currentSlice={currentSlice}
+          currentSliceLabel={currentSliceLabel}
+          onClose={openFilesView}
+          sliceId={sliceId}
+          viewingSettings={viewingSettings}
+        />
       </div>
     </section>
   );
