@@ -6,6 +6,7 @@ import {
   listAgentSessionEvents,
   listAgentSessions,
   mintAgentSessionToken,
+  waitForAgentRunnerUpdates,
 } from '../../api/agents.js';
 import {
   AGENT_EVENTS_MAX,
@@ -42,6 +43,9 @@ function mergeConversationEvents(currentEvents, incomingEvents) {
     .sort((a, b) => a.seq - b.seq)
     .slice(-AGENT_EVENTS_MAX);
 }
+
+const RUNNER_UPDATE_WAIT_MS = 25000;
+const RUNNER_WATCH_RETRY_MS = 5000;
 
 export function useAgentSessionsData({
   onSelectSession,
@@ -133,11 +137,14 @@ export function useAgentSessionsData({
     selectSessionId(sessionId, { runnerId: nextSession?.runnerId || '' });
   }, [selectSessionId, selectedRunnerSessions]);
 
-  const loadRunners = useCallback(async ({ keepSelection = true } = {}) => {
-    setRunnersLoading(true);
-    setRunnersError('');
+  const loadRunners = useCallback(async ({ keepSelection = true, quiet = false } = {}) => {
+    if (!quiet) {
+      setRunnersLoading(true);
+      setRunnersError('');
+    }
     try {
       const nextRunners = (await listAgentRunners({ limit: 50, includeOffline: true })).map(normalizeRunner);
+      setRunnersError('');
       setRunners(nextRunners);
       setSelectedRunnerId((current) => {
         if (keepSelection && current && nextRunners.some((runner) => runner.runnerId === current && runner.status === 'online')) {
@@ -146,24 +153,32 @@ export function useAgentSessionsData({
         return nextRunners.find((runner) => runner.status === 'online')?.runnerId || '';
       });
     } catch (err) {
+      if (quiet) {
+        return;
+      }
       setRunners([]);
       setSelectedRunnerId('');
       setRunnersError(err?.message || 'Unable to load running agents.');
     } finally {
-      setRunnersLoading(false);
+      if (!quiet) {
+        setRunnersLoading(false);
+      }
     }
   }, []);
 
-  const loadSessions = useCallback(async ({ keepSelection = false } = {}) => {
+  const loadSessions = useCallback(async ({ keepSelection = false, quiet = false } = {}) => {
     if (!sliceId) {
       setSessions([]);
       setSelectedSessionId('');
       return;
     }
-    setSessionsLoading(true);
-    setSessionsError('');
+    if (!quiet) {
+      setSessionsLoading(true);
+      setSessionsError('');
+    }
     try {
       const nextSessions = (await listAgentSessions(sliceId, { limit: 50 })).map(normalizeSession);
+      setSessionsError('');
       setSessions(nextSessions);
       setSelectedSessionId((current) => {
         if (normalizedRouteSessionId && nextSessions.some((session) => session.sessionId === normalizedRouteSessionId)) {
@@ -175,11 +190,16 @@ export function useAgentSessionsData({
         return current && nextSessions.some((session) => session.sessionId === current) ? current : '';
       });
     } catch (err) {
+      if (quiet) {
+        return;
+      }
       setSessions([]);
       setSelectedSessionId('');
       setSessionsError(err?.message || 'Unable to load agent sessions.');
     } finally {
-      setSessionsLoading(false);
+      if (!quiet) {
+        setSessionsLoading(false);
+      }
     }
   }, [normalizedRouteSessionId, sliceId]);
 
@@ -275,25 +295,53 @@ export function useAgentSessionsData({
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
     let active = true;
-    const refresh = async () => {
+    let retryTimer = 0;
+    let controller = null;
+
+    const refreshAgents = async ({ quiet = false } = {}) => {
       if (!active) return;
-      await loadRunners();
+      await Promise.all([
+        loadRunners({ keepSelection: true, quiet }),
+        loadSessions({ keepSelection: true, quiet }),
+      ]);
     };
-    refresh();
-    const intervalId = window.setInterval(refresh, 10000);
+
+    const watchRunnerUpdates = async () => {
+      if (!active || typeof window === 'undefined') return;
+      controller = new AbortController();
+      try {
+        const changed = await waitForAgentRunnerUpdates({
+          timeoutMs: RUNNER_UPDATE_WAIT_MS,
+          signal: controller.signal,
+        });
+        controller = null;
+        if (!active) return;
+        if (changed) {
+          await refreshAgents({ quiet: true });
+        }
+        watchRunnerUpdates();
+      } catch (err) {
+        controller = null;
+        if (!active || err?.name === 'AbortError' || typeof window === 'undefined') {
+          return;
+        }
+        retryTimer = window.setTimeout(watchRunnerUpdates, RUNNER_WATCH_RETRY_MS);
+      }
+    };
+
+    refreshAgents();
+    watchRunnerUpdates();
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      if (controller) {
+        controller.abort();
+      }
+      if (typeof window !== 'undefined') {
+        window.clearTimeout(retryTimer);
+      }
     };
-  }, [loadRunners]);
-
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+  }, [loadRunners, loadSessions]);
 
   useEffect(() => {
     if (!selectedRunner) {

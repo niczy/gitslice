@@ -70,6 +70,10 @@ type Service struct {
 	eventSubscribers    map[string]map[chan *models.AgentSessionEvent]struct{}
 	eventNotifyLoopOnce sync.Once
 
+	runnerSubMu       sync.Mutex
+	runnerSubscribers map[string]map[chan struct{}]struct{}
+	runnerNotifyOnce  sync.Once
+
 	runtimeMu              sync.Mutex
 	runtimeProviders       map[string]RuntimeProvider
 	defaultRuntimeProvider string
@@ -100,6 +104,7 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		replaySeqs:               make(map[string][]uint64),
 		maxReplayFrame:           10000,
 		eventSubscribers:         make(map[string]map[chan *models.AgentSessionEvent]struct{}),
+		runnerSubscribers:        make(map[string]map[chan struct{}]struct{}),
 		runtimeProviders:         make(map[string]RuntimeProvider),
 		defaultRuntimeProvider:   RuntimeProviderLocal,
 		runtimeStartInFlight:     make(map[string]struct{}),
@@ -567,6 +572,21 @@ func (s *Service) StartEventNotificationLoop(ctx context.Context) {
 	})
 }
 
+func (s *Service) StartRunnerNotificationLoop(ctx context.Context) {
+	s.runnerNotifyOnce.Do(func() {
+		listener, ok := s.st.(storage.AgentRunnerListener)
+		if !ok {
+			return
+		}
+		go func() {
+			err := listener.ListenAgentRunnerNotifications(ctx, s.handleRunnerNotification)
+			if err != nil && ctx.Err() == nil {
+				log.Printf("component=agent_runner phase=notify_loop error=%v", err)
+			}
+		}()
+	})
+}
+
 func (s *Service) SubscribeEvents(sessionID string) (<-chan *models.AgentSessionEvent, func()) {
 	sessionID = strings.TrimSpace(sessionID)
 	ch := make(chan *models.AgentSessionEvent, eventSubscriberBuffer)
@@ -602,6 +622,84 @@ func (s *Service) SubscribeEvents(sessionID string) (<-chan *models.AgentSession
 		})
 	}
 	return ch, unsubscribe
+}
+
+func (s *Service) SubscribeRunnerUpdates(userID string) (<-chan struct{}, func()) {
+	userID = strings.TrimSpace(userID)
+	ch := make(chan struct{}, 1)
+	if userID == "" {
+		close(ch)
+		return ch, func() {}
+	}
+
+	s.runnerSubMu.Lock()
+	if s.runnerSubscribers == nil {
+		s.runnerSubscribers = make(map[string]map[chan struct{}]struct{})
+	}
+	if s.runnerSubscribers[userID] == nil {
+		s.runnerSubscribers[userID] = make(map[chan struct{}]struct{})
+	}
+	s.runnerSubscribers[userID][ch] = struct{}{}
+	s.runnerSubMu.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.runnerSubMu.Lock()
+			if subscribers := s.runnerSubscribers[userID]; subscribers != nil {
+				if _, ok := subscribers[ch]; ok {
+					delete(subscribers, ch)
+					close(ch)
+				}
+				if len(subscribers) == 0 {
+					delete(s.runnerSubscribers, userID)
+				}
+			}
+			s.runnerSubMu.Unlock()
+		})
+	}
+	return ch, unsubscribe
+}
+
+func (s *Service) PublishRunnerUpdate(userID string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	s.runnerSubMu.Lock()
+	defer s.runnerSubMu.Unlock()
+	subscribers := s.runnerSubscribers[userID]
+	if len(subscribers) == 0 {
+		return
+	}
+	for ch := range subscribers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *Service) NotifyRunnerUpdate(ctx context.Context, userID, runnerID string) {
+	userID = strings.TrimSpace(userID)
+	runnerID = strings.TrimSpace(runnerID)
+	if userID == "" {
+		return
+	}
+	if notifier, ok := s.st.(storage.AgentRunnerNotifier); ok {
+		if err := notifier.NotifyAgentRunnerUpdate(ctx, userID, runnerID); err != nil && ctx.Err() == nil {
+			log.Printf("component=agent_runner phase=notify user_id=%s runner_id=%s error=%v", userID, runnerID, err)
+		}
+	}
+	s.PublishRunnerUpdate(userID)
+}
+
+func (s *Service) handleRunnerNotification(ctx context.Context, notification storage.AgentRunnerNotification) {
+	_ = ctx
+	if notification.UserID == "" {
+		return
+	}
+	s.PublishRunnerUpdate(notification.UserID)
 }
 
 func (s *Service) handleEventNotification(ctx context.Context, notification storage.AgentSessionEventNotification) {

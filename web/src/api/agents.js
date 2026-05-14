@@ -102,6 +102,21 @@ export async function listAgentRunners({ limit = 50, includeOffline = false } = 
   return payload?.runners || [];
 }
 
+export async function waitForAgentRunnerUpdates({ timeoutMs = 25000, signal } = {}) {
+  const query = new URLSearchParams();
+  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    query.set('timeoutMs', String(Math.round(timeoutMs)));
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/ws/agent-runners?${query.toString()}`, {
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to watch agent runners'));
+  }
+  const payload = await response.json();
+  return Boolean(payload?.changed);
+}
+
 export async function createAgentSession(sliceId, { runnerId = '', environment = '', agentType = '' } = {}) {
   const body = {
     sliceId,
