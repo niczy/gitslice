@@ -22,8 +22,6 @@ import {
 } from './agentModels.js';
 
 export function useAgentSessionsData({
-  changesetExportBusy = false,
-  localChangesBusy = false,
   onSelectSession,
   routeSessionId = '',
   sliceId,
@@ -40,6 +38,7 @@ export function useAgentSessionsData({
   const [eventsError, setEventsError] = useState('');
   const [runnersError, setRunnersError] = useState('');
   const [capabilities, setCapabilities] = useState(null);
+  const [eventPollingBusy, setEventPollingBusy] = useState(false);
 
   const normalizedRouteSessionId = String(routeSessionId || '').trim();
   const defaultAgentType = capabilities?.defaultAgentType || capabilities?.default_agent_type || '';
@@ -274,7 +273,7 @@ export function useAgentSessionsData({
     }
 
     let active = true;
-    const pollIntervalMs = assistantStreaming || localChangesBusy || changesetExportBusy ? 1000 : 5000;
+    const pollIntervalMs = assistantStreaming || eventPollingBusy ? 1000 : 5000;
     const loadEvents = async () => {
       if (!active) return;
       await loadSelectedEvents();
@@ -286,7 +285,7 @@ export function useAgentSessionsData({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [assistantStreaming, changesetExportBusy, loadSelectedEvents, localChangesBusy, selectedSessionId]);
+  }, [assistantStreaming, eventPollingBusy, loadSelectedEvents, selectedSessionId]);
 
   return {
     assistantStreaming,
@@ -315,5 +314,6 @@ export function useAgentSessionsData({
     sessions,
     sessionsError,
     sessionsLoading,
+    setEventPollingBusy,
   };
 }
