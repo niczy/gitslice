@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export function useRepoBrowserChrome({
-  activeBrowserPath,
   canShowSettings,
-  currentSliceLabel,
   isCompactHeader,
   sliceHash,
   sliceId,
@@ -52,36 +50,6 @@ export function useRepoBrowserChrome({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [viewingSettings]);
 
-  const breadcrumbs = useMemo(() => {
-    const slicePrefix = currentSliceLabel || 'slice';
-    if (!activeBrowserPath) {
-      return [{ name: slicePrefix, path: '' }];
-    }
-    const parts = activeBrowserPath.split('/');
-    return [
-      { name: slicePrefix, path: '' },
-      ...parts.map((part, index) => ({
-        name: part,
-        path: parts.slice(0, index + 1).join('/'),
-      })),
-    ];
-  }, [activeBrowserPath, currentSliceLabel]);
-
-  const visibleBreadcrumbs = useMemo(() => {
-    const maxBreadcrumbs = isCompactHeader ? 4 : 8;
-    if (breadcrumbs.length <= maxBreadcrumbs) {
-      return breadcrumbs;
-    }
-
-    const trailingCount = Math.max(maxBreadcrumbs - 2, 2);
-    const ellipsisTarget = breadcrumbs[breadcrumbs.length - trailingCount - 1];
-    return [
-      breadcrumbs[0],
-      { name: '\u2026', path: ellipsisTarget?.path || '' },
-      ...breadcrumbs.slice(-trailingCount),
-    ];
-  }, [breadcrumbs, isCompactHeader]);
-
   useEffect(() => {
     if (!isCompactHeader) {
       setIsActionMenuOpen(false);
@@ -114,6 +82,5 @@ export function useRepoBrowserChrome({
     openSettingsView,
     toggleActionMenu,
     viewingSettings,
-    visibleBreadcrumbs,
   };
 }
