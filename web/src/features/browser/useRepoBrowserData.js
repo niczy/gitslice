@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 
 import { fetchWithAuth } from '../../utils/api.js';
-import { decodeBase64, highlightCodeLines } from '../../utils/highlight.js';
-import { renderMarkdownHtml } from '../../utils/markdown.js';
+import { decodeBase64 } from '../../utils/highlight.js';
 import { normalizeEntryType } from '../../utils/normalize.js';
 import { parseLocation } from '../../utils/routing.js';
 import {
@@ -14,11 +13,10 @@ import {
   getFilePayloadSize,
   getNumericFileSize,
   getParentDirectoryPath,
-  getPreviewMeta,
   getTreeFileSize,
 } from './browserModel.js';
-import { useRepoBrowserHistory } from './useRepoBrowserHistory.js';
-import { useRepoFileDrafts } from './useRepoFileDrafts.js';
+import { useRepoBrowserFileState } from './useRepoBrowserFileState.js';
+import { useRepoBrowserTreeState } from './useRepoBrowserTreeState.js';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
@@ -49,103 +47,84 @@ export function useRepoBrowserData({
   sliceId,
   treeEntriesScopeKey,
 }) {
-  const [treeEntries, setTreeEntries] = useState(() => (
-    initialDataMatchesRawSlice && Array.isArray(initialBrowserData?.rootEntries)
-      ? { '': initialBrowserData.rootEntries }
-      : {}
-  ));
-  const [expandedPaths, setExpandedPaths] = useState(['']);
-  const [selectedFile, setSelectedFile] = useState(() => initialSelectedFilePath || null);
-  const [fileContent, setFileContent] = useState(() => (
-    initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
-  ));
-  const [encodedFileContent, setEncodedFileContent] = useState(() => initialSelectedFilePayload?.content || '');
-  const [previewFilePath, setPreviewFilePath] = useState(() => (
-    initialSelectedFilePayload?.content ? initialSelectedFilePath : ''
-  ));
-  const [previewFileContent, setPreviewFileContent] = useState(() => (
-    initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : ''
-  ));
-  const [previewEncodedFileContent, setPreviewEncodedFileContent] = useState(() => initialSelectedFilePayload?.content || '');
-  const [selectedFileSize, setSelectedFileSize] = useState(() => (
-    getFilePayloadSize(
-      initialSelectedFilePayload,
-      initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : '',
-    )
-  ));
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadingFilePath, setLoadingFilePath] = useState(() => (
-    initialSelectedFilePath && !hasInitialSelectedFilePayload ? initialSelectedFilePath : ''
-  ));
-  const [error, setError] = useState(() => (
-    initialDataMatchesRawSlice ? initialBrowserData?.rootEntriesError || '' : ''
-  ));
-  const [fileError, setFileError] = useState(() => (
-    initialDataMatchesRawSlice ? initialBrowserData?.selectedFileError || '' : ''
-  ));
-  const [focusedEntry, setFocusedEntry] = useState(() => (initialSelectedFilePath
-    ? { path: initialSelectedFilePath, type: 'file' }
-    : { path: initialSelectedDirectoryPath, type: 'directory' }));
+  const {
+    error,
+    expandedPaths,
+    focusedEntry,
+    hasLoadedRootEntries,
+    hasMountedSliceRef,
+    isLoading,
+    setError,
+    setExpandedPaths,
+    setFocusedEntry,
+    setIsLoading,
+    setTreeEntries,
+    treeEntries,
+    treeEntriesRef,
+    treeEntriesScopeRef,
+  } = useRepoBrowserTreeState({
+    initialBrowserData,
+    initialDataMatchesRawSlice,
+    initialSelectedDirectoryPath,
+    initialSelectedFilePath,
+  });
+
   const {
     cancelFileEdit,
+    clearFilePreview,
     confirmFileEdit,
+    displayedFileSize,
     draftContent,
     fileDrafts,
+    fileError,
+    fileHistory,
+    hasPreviewContent,
+    highlightedContent,
+    historyError,
+    historyLoading,
     isEditingFile,
+    isSelectedFileLoading,
+    loadingFilePath,
+    markdownContent,
+    openRawFile,
+    previewMeta,
+    previewPath,
     resetAllDrafts,
     resetDraftState,
-    setDraftContent,
-    showFileEditor,
-  } = useRepoFileDrafts({
-    fileContent,
-    initialDraftContent: initialSelectedFilePayload?.content ? decodeBase64(initialSelectedFilePayload.content) : '',
+    resetHistory,
     selectedFile,
+    selectedFileSize,
+    setDraftContent,
     setEncodedFileContent,
     setFileContent,
+    setFileError,
+    setLoadingFilePath,
     setPreviewEncodedFileContent,
     setPreviewFileContent,
     setPreviewFilePath,
+    setSelectedFile,
     setSelectedFileSize,
-    setTreeEntries,
-  });
-  const {
-    fileHistory,
-    historyError,
-    historyLoading,
-    resetHistory,
+    showFileEditor,
     showHistory,
     toggleHistory,
-  } = useRepoBrowserHistory({
+  } = useRepoBrowserFileState({
     apiBaseUrl,
+    buildRawFileUrl,
+    hasInitialSelectedFilePayload,
+    initialBrowserData,
+    initialDataMatchesRawSlice,
+    initialSelectedFilePath,
+    initialSelectedFilePayload,
     isActive,
     refreshHistoryToken,
-    selectedFile,
+    setTreeEntries,
     sliceId,
   });
 
   const pendingFileRef = useRef(hasInitialSelectedFilePayload ? null : initialSelectedFilePath || null);
   const selectedFileRef = useRef(initialSelectedFilePath || null);
-  const treeEntriesRef = useRef(treeEntries);
-  const treeEntriesScopeRef = useRef('');
-  const hasMountedSliceRef = useRef(false);
   const handledOpenFileRequestTokenRef = useRef(null);
 
-  const highlightedContent = useMemo(() => highlightCodeLines(previewFileContent).html, [previewFileContent]);
-  const markdownContent = useMemo(() => renderMarkdownHtml(previewFileContent), [previewFileContent]);
-  const previewPath = previewFilePath || selectedFile || '';
-  const previewMeta = useMemo(() => getPreviewMeta(previewPath, previewEncodedFileContent), [previewEncodedFileContent, previewPath]);
-  const hasPreviewContent = Boolean(previewFilePath);
-  const hasLoadedRootEntries = Object.prototype.hasOwnProperty.call(treeEntries, '');
-  const isSelectedFileLoading = Boolean(selectedFile && loadingFilePath === selectedFile && !showHistory);
-  const displayedFileSize = useMemo(() => {
-    if (!selectedFile) {
-      return null;
-    }
-    if (selectedFileSize !== null) {
-      return selectedFileSize;
-    }
-    return isSelectedFileLoading ? null : fileContent.length;
-  }, [fileContent.length, isSelectedFileLoading, selectedFile, selectedFileSize]);
   const visibleEntryError = selectedFile ? '' : error;
   const selectedDirectoryPath = useMemo(() => {
     if (selectedFile || focusedEntry?.type !== 'directory') {
@@ -158,24 +137,6 @@ export function useRepoBrowserData({
   useEffect(() => {
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
-
-  useIsomorphicLayoutEffect(() => {
-    treeEntriesRef.current = treeEntries;
-  }, [treeEntries]);
-
-  const clearFilePreview = useCallback(() => {
-    setSelectedFile(null);
-    setFileContent('');
-    setEncodedFileContent('');
-    setPreviewFilePath('');
-    setPreviewFileContent('');
-    setPreviewEncodedFileContent('');
-    setSelectedFileSize(null);
-    resetDraftState('');
-    setFileError('');
-    setLoadingFilePath('');
-    resetHistory();
-  }, [resetDraftState, resetHistory]);
 
   useIsomorphicLayoutEffect(() => {
     if (!initialBrowserDataMatches) {
@@ -854,13 +815,6 @@ export function useRepoBrowserData({
     setFocusedEntry({ path: entry.path, type: 'file' });
     await openFilePath(entry.path, { size: entry.size });
   }, [openDirectoryPath, openFilePath]);
-
-  const openRawFile = useCallback(() => {
-    if (!selectedFile || typeof window === 'undefined') {
-      return;
-    }
-    window.open(buildRawFileUrl(selectedFile), '_blank', 'noopener,noreferrer');
-  }, [buildRawFileUrl, selectedFile]);
 
   return {
     activeBrowserPath,
