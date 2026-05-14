@@ -13,6 +13,7 @@ import {
 } from './agentLocalChanges.js';
 
 const NON_TERMINAL_CONTROL_ERROR_CODES = new Set(['CODEX_CONFIG_WARNING']);
+const CHECKOUT_FAILURE_CONTROL_ERROR_CODES = new Set(['LOCAL_AGENT_CHECKOUT_FAILED']);
 
 export function normalizeEvent(event) {
   return {
@@ -240,6 +241,22 @@ export function latestLocalChangesEvent(events) {
 
 export function latestLocalChangesFailureEvent(events) {
   return latestEvent(events, (event) => event.stream === 'control' && event.type === 'local_changes_failed');
+}
+
+export function latestCheckoutFailureEvent(events) {
+  const failure = latestEvent(events, (event) => (
+    event.stream === 'control'
+    && event.type === 'error'
+    && CHECKOUT_FAILURE_CONTROL_ERROR_CODES.has(controlErrorCode(event))
+  ));
+  if (!failure) {
+    return null;
+  }
+  const attached = latestEvent(events, (event) => event.stream === 'status' && event.type === 'local_runner_attached');
+  if (attached?.seq > failure.seq) {
+    return null;
+  }
+  return failure;
 }
 
 export function latestChangesetExportEvent(events) {

@@ -351,6 +351,31 @@
   line-height: 1.35;
 }
 
+.slice-agents-checkout-error {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid rgba(185, 28, 28, 0.24);
+  border-radius: 7px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.slice-agents-checkout-error strong,
+.slice-agents-checkout-error span {
+  display: block;
+}
+
+.slice-agents-checkout-error strong {
+  margin-bottom: 2px;
+  color: #7f1d1d;
+  font-size: 0.78rem;
+}
+
 .slice-agents-docs-note {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);

@@ -85,6 +85,7 @@ export default function SliceAgentsPage({
     canCreateSession,
     canRestartRunner,
     canSendInput,
+    checkoutFailure,
     conversationItems,
     currentSlice,
     localChangesPanelAvailable,
@@ -304,6 +305,7 @@ export default function SliceAgentsPage({
               <div className="slice-agents-conversation-body">
                 <SliceAgentsConversationThread
                   canSendInput={canSendInput}
+                  checkoutFailure={checkoutFailure}
                   conversationItems={conversationItems}
                   events={events}
                   eventsError={eventsError}

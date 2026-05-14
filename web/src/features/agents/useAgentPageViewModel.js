@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 
 import {
   buildConversationItems,
+  latestCheckoutFailureEvent,
   latestRunnerState,
 } from './agentEvents.js';
 import {
@@ -62,7 +63,14 @@ export function useAgentPageViewModel({
     && selectedRunner?.runnerId
     && selectedSessionIsLocal,
   );
-  const canSendInput = Boolean(selectedSessionId && selectedSession && selectedSessionIsLocal);
+  const checkoutFailureEvent = useMemo(() => latestCheckoutFailureEvent(events), [events]);
+  const checkoutFailure = checkoutFailureEvent
+    ? {
+      message: checkoutFailureEvent.payload?.message || 'The local runner could not create the checkout for this conversation.',
+      ts: checkoutFailureEvent.ts,
+    }
+    : null;
+  const canSendInput = Boolean(selectedSessionId && selectedSession && selectedSessionIsLocal && !checkoutFailure);
   const conversationItems = useMemo(
     () => buildConversationItems(events, liveStreamState, selectedSession),
     [events, liveStreamState, selectedSession],
@@ -79,6 +87,7 @@ export function useAgentPageViewModel({
     canCreateSession,
     canRestartRunner,
     canSendInput,
+    checkoutFailure,
     conversationItems,
     currentSlice,
     localChangesPanelAvailable,

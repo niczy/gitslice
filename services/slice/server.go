@@ -888,8 +888,55 @@ func (s *sliceServiceServer) prepareCheckout(
 			})
 		}
 	}
+	fileMetadata, err = s.filterCheckoutMissingDirectContent(ctx, req.GetSliceId(), slice, backingSliceID, resolvedCommit, fileMetadata, knownHashes)
+	if err != nil {
+		return nil, nil, "", "", nil, nil, err
+	}
 
 	return metadata, slice, resolvedCommit, backingSliceID, fileMetadata, knownHashes, nil
+}
+
+func (s *sliceServiceServer) filterCheckoutMissingDirectContent(
+	ctx context.Context,
+	sliceID string,
+	slice *models.Slice,
+	backingSliceID string,
+	resolvedCommit string,
+	fileMetadata []*slicev1.FileMetadata,
+	knownHashes map[string]struct{},
+) ([]*slicev1.FileMetadata, error) {
+	if len(fileMetadata) == 0 {
+		return fileMetadata, nil
+	}
+	filtered := make([]*slicev1.FileMetadata, 0, len(fileMetadata))
+	for _, meta := range fileMetadata {
+		if meta == nil {
+			continue
+		}
+		if len(meta.GetBlocks()) > 0 {
+			filtered = append(filtered, meta)
+			continue
+		}
+		if _, ok := knownHashes[strings.TrimSpace(meta.GetHash())]; ok && strings.TrimSpace(meta.GetHash()) != "" {
+			filtered = append(filtered, meta)
+			continue
+		}
+		if _, err := s.resolveCheckoutFileContent(ctx, slice, backingSliceID, meta.GetFileId(), resolvedCommit); err != nil {
+			if errors.Is(err, storage.ErrEntryNotFound) {
+				log.Printf(
+					"Warning: skipping checkout file with missing content: slice_id=%s backing_slice_id=%s path=%s hash=%s",
+					strings.TrimSpace(sliceID),
+					strings.TrimSpace(backingSliceID),
+					meta.GetFileId(),
+					meta.GetHash(),
+				)
+				continue
+			}
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to validate checkout content for %s: %v", meta.GetFileId(), err))
+		}
+		filtered = append(filtered, meta)
+	}
+	return filtered, nil
 }
 
 func (s *sliceServiceServer) resolveCheckoutTarget(
@@ -1030,9 +1077,6 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		if meta.GetSize() == 0 {
 			file, err := s.resolveCheckoutFileContent(ctx, slice, backingSliceID, meta.GetFileId(), resolvedCommit)
 			if err != nil {
-				if errors.Is(err, storage.ErrEntryNotFound) {
-					continue
-				}
 				return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load content for %s: %v", meta.GetFileId(), err))
 			}
 			fileContents = append(fileContents, &slicev1.FileContent{
@@ -1044,9 +1088,6 @@ func (s *sliceServiceServer) CheckoutSlice(ctx context.Context, req *slicev1.Che
 		}
 		file, err := s.resolveCheckoutFileContent(ctx, slice, backingSliceID, meta.GetFileId(), resolvedCommit)
 		if err != nil {
-			if errors.Is(err, storage.ErrEntryNotFound) {
-				continue
-			}
 			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load content for %s: %v", meta.GetFileId(), err))
 		}
 		fileContents = append(fileContents, &slicev1.FileContent{
@@ -1148,9 +1189,6 @@ func (s *sliceServiceServer) StreamCheckoutSlice(req *slicev1.CheckoutRequest, s
 		}
 		file, err := s.resolveCheckoutFileContent(stream.Context(), slice, backingSliceID, meta.GetFileId(), resolvedCommit)
 		if err != nil {
-			if errors.Is(err, storage.ErrEntryNotFound) {
-				continue
-			}
 			return status.Error(codes.Internal, fmt.Sprintf("failed to load content for %s: %v", meta.GetFileId(), err))
 		}
 		if err := stream.Send(&slicev1.CheckoutChunk{

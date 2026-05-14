@@ -809,6 +809,76 @@ func TestCheckoutSliceIncludesFileMetadata(t *testing.T) {
 	}
 }
 
+func TestCheckoutSliceSkipsFilesWithMissingDirectContent(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+
+	slice := &models.Slice{ID: "slice-checkout-dirty-metadata", Name: "slice-checkout-dirty-metadata", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	goodPath := "docs/good.txt"
+	goodContent := []byte("good\n")
+	goodHash := mustWriteSliceManifest(t, ctx, st, slice.ID, goodPath, goodContent)
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + goodPath,
+		Path:     goodPath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len(goodContent)),
+		Hash:     goodHash,
+	}); err != nil {
+		t.Fatalf("AddEntry good failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, goodPath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice good failed: %v", err)
+	}
+
+	missingPath := "docs/missing.txt"
+	if err := st.AddEntry(ctx, &models.DirectoryEntry{
+		ID:       slice.ID + ":" + missingPath,
+		Path:     missingPath,
+		Type:     "file",
+		ParentID: slice.ID,
+		Size:     int64(len("missing\n")),
+		Hash:     "missing-hash",
+	}); err != nil {
+		t.Fatalf("AddEntry missing failed: %v", err)
+	}
+	if err := st.AddFileToSlice(ctx, missingPath, slice.ID); err != nil {
+		t.Fatalf("AddFileToSlice missing failed: %v", err)
+	}
+
+	srv := newSliceServiceServer(st)
+	resp, err := srv.CheckoutSlice(ctx, &slicev1.CheckoutRequest{SliceId: slice.ID})
+	if err != nil {
+		t.Fatalf("CheckoutSlice failed: %v", err)
+	}
+	byPath := map[string]*slicev1.FileMetadata{}
+	for _, meta := range resp.GetManifest().GetFileMetadata() {
+		byPath[meta.GetPath()] = meta
+	}
+	if _, ok := byPath[missingPath]; ok {
+		t.Fatalf("checkout included missing file metadata: %#v", resp.GetManifest().GetFileMetadata())
+	}
+	if got := string(mustAssembleCheckoutContent(t, resp, byPath[goodPath])); got != string(goodContent) {
+		t.Fatalf("checkout good content = %q, want %q", got, string(goodContent))
+	}
+
+	recorder := &checkoutStreamRecorder{ctx: ctx}
+	if err := srv.StreamCheckoutSlice(&slicev1.CheckoutRequest{SliceId: slice.ID}, recorder); err != nil {
+		t.Fatalf("StreamCheckoutSlice failed: %v", err)
+	}
+	for _, chunk := range recorder.chunks {
+		for _, meta := range chunk.GetManifest().GetFileMetadata() {
+			if meta.GetPath() == missingPath {
+				t.Fatalf("stream checkout included missing file metadata: %#v", chunk.GetManifest().GetFileMetadata())
+			}
+		}
+	}
+}
+
 func TestGetSliceSearchArtifactBuildsMissingArtifactForHeadCommit(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

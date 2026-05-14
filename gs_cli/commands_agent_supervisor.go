@@ -28,10 +28,11 @@ import (
 )
 
 const (
-	agentWorkspaceStateDir     = ".gitslice-agent"
-	agentWorkspaceSessionsDir  = "sessions"
-	agentSessionMarkerFileMode = 0o600
-	agentStartParentPIDEnv     = "GS_AGENT_START_PARENT_PID"
+	agentWorkspaceStateDir          = ".gitslice-agent"
+	agentWorkspaceSessionsDir       = "sessions"
+	agentSessionMarkerFileMode      = 0o600
+	agentStartParentPIDEnv          = "GS_AGENT_START_PARENT_PID"
+	agentSessionCheckoutMaxAttempts = 3
 )
 
 const agentSupervisorAuthCheckInterval = 15 * time.Second
@@ -75,6 +76,11 @@ type localAgentSessionMarker struct {
 type managedAgentSession struct {
 	cancel context.CancelFunc
 	done   chan agentSessionRunResult
+}
+
+type agentSessionCheckoutFailure struct {
+	attempts int
+	failed   bool
 }
 
 type agentSessionRunResult struct {
@@ -504,6 +510,7 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 
 	log.Printf("Polling for assigned agent sessions: runner_id=%s interval=%s", cfg.RunnerID, cfg.PollInterval)
 	managed := map[string]*managedAgentSession{}
+	checkoutFailures := map[string]*agentSessionCheckoutFailure{}
 	completed := 0
 	heartbeatOKLogged := false
 	lastDiscoveredCount := -1
@@ -570,12 +577,30 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 			if _, ok := managed[sessionID]; ok {
 				continue
 			}
-			runCfg, checkoutErr := localRunConfigForDiscoveredSession(authCtx, &supervisorCLI, cfg, discovered)
-			if checkoutErr != nil {
-				_ = appendAgentError(authCtx, &supervisorCLI, sessionID, "LOCAL_AGENT_CHECKOUT_FAILED", checkoutErr.Error())
-				log.Printf("Warning: failed to checkout slice for agent session %s: %v", sessionID, checkoutErr)
+			if failure := checkoutFailures[sessionID]; failure != nil && failure.failed {
 				continue
 			}
+			runCfg, checkoutErr := localRunConfigForDiscoveredSession(authCtx, &supervisorCLI, cfg, discovered)
+			if checkoutErr != nil {
+				failure := checkoutFailures[sessionID]
+				if failure == nil {
+					failure = &agentSessionCheckoutFailure{}
+					checkoutFailures[sessionID] = failure
+				}
+				failure.attempts++
+				if failure.attempts >= agentSessionCheckoutMaxAttempts {
+					failure.failed = true
+					message := fmt.Sprintf("Checkout failed after %d attempts: %v", failure.attempts, checkoutErr)
+					_ = appendAgentError(authCtx, &supervisorCLI, sessionID, "LOCAL_AGENT_CHECKOUT_FAILED", message)
+					log.Printf("Warning: giving up checkout for agent session %s after %d attempts: %v", sessionID, failure.attempts, checkoutErr)
+					continue
+				}
+				message := fmt.Sprintf("Checkout failed on attempt %d/%d; retrying: %v", failure.attempts, agentSessionCheckoutMaxAttempts, checkoutErr)
+				_ = appendAgentWarning(authCtx, &supervisorCLI, sessionID, "LOCAL_AGENT_CHECKOUT_RETRYING", message)
+				log.Printf("Warning: failed to checkout slice for agent session %s (attempt %d/%d): %v", sessionID, failure.attempts, agentSessionCheckoutMaxAttempts, checkoutErr)
+				continue
+			}
+			delete(checkoutFailures, sessionID)
 			runCfg.AuthContext = authRefresher.context
 			if err := appendLocalRunnerAttached(authCtx, &supervisorCLI, cfg, runCfg); err != nil {
 				log.Printf("Warning: failed to append local runner metadata for agent session %s: %v", sessionID, err)
@@ -593,6 +618,11 @@ func runAgentSupervisor(ctx context.Context, cli *CLI, authConfig cliAuth, cfg l
 		for sessionID, session := range managed {
 			if _, ok := active[sessionID]; !ok {
 				session.cancel()
+			}
+		}
+		for sessionID := range checkoutFailures {
+			if _, ok := active[sessionID]; !ok {
+				delete(checkoutFailures, sessionID)
 			}
 		}
 
@@ -1200,7 +1230,7 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 		}
 		return targetRoot, nil
 	}
-	if err := prepareCheckoutTargetRoot(targetRoot); err != nil {
+	if err := prepareAgentSessionCheckoutTargetRoot(targetRoot); err != nil {
 		return "", err
 	}
 	log.Printf(
@@ -1212,6 +1242,9 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 	)
 	checkoutResult, err := fetchAndMaterializeSliceCheckout(ctx, cli, session.GetSliceId(), "HEAD", targetRoot, false, nil)
 	if err != nil {
+		if cleanupErr := os.RemoveAll(targetRoot); cleanupErr != nil {
+			log.Printf("Warning: failed to remove incomplete agent checkout %s: %v", targetRoot, cleanupErr)
+		}
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Join(targetRoot, ".gs"), 0o755); err != nil {
@@ -1247,6 +1280,30 @@ func ensureAgentSessionCheckout(ctx context.Context, cli *CLI, rootDir string, d
 		log.Printf("Warning: failed to mark local agent session %s: %v", session.GetSessionId(), err)
 	}
 	return targetRoot, nil
+}
+
+func prepareAgentSessionCheckoutTargetRoot(root string) error {
+	info, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.MkdirAll(root, 0o755)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", root)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if err := os.RemoveAll(root); err != nil {
+		return fmt.Errorf("remove incomplete agent checkout %s: %w", root, err)
+	}
+	return os.MkdirAll(root, 0o755)
 }
 
 func agentSessionCheckoutDirName(discovered discoveredAgentSession) string {
