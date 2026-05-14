@@ -70,7 +70,7 @@ type codexAppServerRunner struct {
 
 func newCodexAppServerRunner(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (*codexAppServerRunner, error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, "codex", "app-server", "--listen", "stdio://")
+	cmd := exec.CommandContext(runCtx, "codex", codexAppServerCommandArgs()...)
 	if strings.TrimSpace(cfg.CWD) != "" {
 		cmd.Dir = cfg.CWD
 	}
@@ -166,6 +166,15 @@ func newCodexAppServerRunner(ctx context.Context, cli *CLI, cfg localAgentRunCon
 		return nil, fmt.Errorf("store codex runtime session metadata: %w", err)
 	}
 	return r, nil
+}
+
+func codexAppServerCommandArgs() []string {
+	return []string{
+		"--sandbox", "workspace-write",
+		"--ask-for-approval", "never",
+		"app-server",
+		"--listen", "stdio://",
+	}
 }
 
 func (r *codexAppServerRunner) RunTurn(ctx context.Context, prompt string) error {

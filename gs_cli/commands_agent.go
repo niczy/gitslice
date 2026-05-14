@@ -60,7 +60,7 @@ func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []
 	agentType := fs.String("agent", "codex", "Agent type")
 	cwd := fs.String("cwd", ".", "Working directory for tracked agent sessions")
 	dir := fs.String("dir", "", "Alias for --cwd")
-	codexMode := fs.String("codex-mode", "auto", "Codex runner mode: auto, app-server, or exec")
+	codexMode := fs.String("codex-mode", "app-server", "Codex runner mode: app-server")
 	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
 	logFile := fs.String("log-file", "", "Background runner log file")
@@ -72,6 +72,11 @@ func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []
 		commandFatal("INVALID_ARGUMENT", "--poll-interval must be a positive duration", false, "")
 		return
 	}
+	codexModeValue := normalizedCodexMode(*codexMode)
+	if codexModeValue == "" {
+		commandFatal("INVALID_ARGUMENT", "--codex-mode must be app-server", false, "")
+		return
+	}
 	rootDir := *cwd
 	if strings.TrimSpace(*dir) != "" {
 		rootDir = *dir
@@ -79,7 +84,7 @@ func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []
 	result, err := startAgentSupervisorBackground(ctx, cli, authConfig, localAgentSupervisorConfig{
 		RootDir:      strings.TrimSpace(rootDir),
 		AgentType:    strings.TrimSpace(*agentType),
-		CodexMode:    strings.TrimSpace(*codexMode),
+		CodexMode:    codexModeValue,
 		ClaudeMode:   strings.TrimSpace(*claudeMode),
 		Command:      append([]string(nil), fs.Args()...),
 		PollInterval: pollInterval,
@@ -105,7 +110,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 	agentType := fs.String("agent", "codex", "Agent type")
 	cwd := fs.String("cwd", ".", "Working directory for tracked agent sessions")
 	dir := fs.String("dir", "", "Alias for --cwd")
-	codexMode := fs.String("codex-mode", "auto", "Codex runner mode: auto, app-server, or exec")
+	codexMode := fs.String("codex-mode", "app-server", "Codex runner mode: app-server")
 	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
@@ -115,6 +120,11 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 	pollInterval, err := time.ParseDuration(strings.TrimSpace(*pollIntervalRaw))
 	if err != nil || pollInterval <= 0 {
 		commandFatal("INVALID_ARGUMENT", "--poll-interval must be a positive duration", false, "")
+		return
+	}
+	codexModeValue := normalizedCodexMode(*codexMode)
+	if codexModeValue == "" {
+		commandFatal("INVALID_ARGUMENT", "--codex-mode must be app-server", false, "")
 		return
 	}
 	rootDir := *cwd
@@ -137,7 +147,7 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 		RootDir:      rootDir,
 		RunnerID:     runnerID,
 		AgentType:    strings.TrimSpace(*agentType),
-		CodexMode:    strings.TrimSpace(*codexMode),
+		CodexMode:    codexModeValue,
 		ClaudeMode:   strings.TrimSpace(*claudeMode),
 		Command:      commandArgs,
 		PollInterval: pollInterval,
@@ -633,7 +643,7 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	}
 	codexMode := normalizedCodexMode(cfg.CodexMode)
 	if codexMode == "" {
-		return 0, fmt.Errorf("--codex-mode must be auto, app-server, or exec")
+		return 0, fmt.Errorf("--codex-mode must be app-server")
 	}
 	claudeMode := normalizedClaudeMode(cfg.ClaudeMode)
 	if claudeMode == "" {
@@ -901,11 +911,9 @@ func activeDone(active *activeAgentTurn) <-chan error {
 func normalizedCodexMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "auto":
-		return "auto"
+		return "app-server"
 	case "app-server", "remote-control":
 		return "app-server"
-	case "exec":
-		return "exec"
 	default:
 		return ""
 	}

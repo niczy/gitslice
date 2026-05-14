@@ -81,6 +81,25 @@ func TestPendingAgentInputsKeepsPendingAfterConfigWarning(t *testing.T) {
 	}
 }
 
+func TestNormalizedCodexModeRequiresAppServer(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "", want: "app-server"},
+		{raw: "auto", want: "app-server"},
+		{raw: "app-server", want: "app-server"},
+		{raw: "remote-control", want: "app-server"},
+		{raw: "exec", want: ""},
+	}
+
+	for _, tc := range cases {
+		if got := normalizedCodexMode(tc.raw); got != tc.want {
+			t.Fatalf("normalizedCodexMode(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestParseLocalRunnerRestartRequest(t *testing.T) {
 	got := parseLocalRunnerRestartRequest([]byte(`{"upgrade":true,"reason":"web_ui"}`))
 	if !got.Upgrade || got.Reason != "web_ui" {
