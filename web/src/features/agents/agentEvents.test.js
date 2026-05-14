@@ -7,6 +7,7 @@ import {
   eventBody,
   eventTitle,
   eventTone,
+  latestCheckoutFailureEvent,
   normalizeEvent,
   renderConversationMarkdown,
 } from './agentEvents.js';
@@ -86,6 +87,34 @@ test('event display helpers preserve local changes and control errors', () => {
   assert.equal(eventTitle(localChangesEvent), 'Local changes');
   assert.equal(eventBody(localChangesEvent), '+1');
   assert.equal(eventTone(warningEvent), 'status');
+});
+
+test('latestCheckoutFailureEvent returns unresolved terminal checkout failures', () => {
+  const retryEvent = {
+    seq: 1,
+    stream: 'control',
+    type: 'warning',
+    payload: {
+      code: 'LOCAL_AGENT_CHECKOUT_RETRYING',
+      message: 'retrying',
+    },
+  };
+  const failureEvent = {
+    seq: 2,
+    stream: 'control',
+    type: 'error',
+    payload: {
+      code: 'LOCAL_AGENT_CHECKOUT_FAILED',
+      message: 'Checkout failed after 3 attempts',
+    },
+  };
+
+  assert.equal(latestCheckoutFailureEvent([retryEvent, failureEvent]), failureEvent);
+  assert.equal(latestCheckoutFailureEvent([
+    retryEvent,
+    failureEvent,
+    { seq: 3, stream: 'status', type: 'local_runner_attached', payload: {} },
+  ]), null);
 });
 
 test('renderConversationMarkdown returns a paragraph fallback', () => {

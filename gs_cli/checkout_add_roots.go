@@ -3,6 +3,9 @@ package gscli
 import (
 	"context"
 	"log"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	slicev1 "github.com/niczy/gitslice/proto/slice"
@@ -19,6 +22,45 @@ func populateCheckoutAllowedAddRoots(ctx context.Context, cli *CLI, sliceID stri
 		roots = checkoutAllowedAddRoots(index)
 	}
 	index.AllowedAddRoots = normalizeCheckoutAllowedAddRoots(roots)
+}
+
+func ensureCheckoutAllowedAddRootDirs(dir string, index *localCheckoutIndex) error {
+	if index == nil {
+		return nil
+	}
+	roots := checkoutAllowedAddRoots(index)
+	if len(roots) == 0 {
+		return nil
+	}
+
+	directoryPaths := make(map[string]struct{}, len(index.Directories)+len(roots)*2)
+	for _, existing := range index.Directories {
+		directoryPaths[normalizeTrackedDirectoryPath(existing.Path)] = struct{}{}
+	}
+	for _, root := range roots {
+		root = filepath.Clean(strings.Trim(strings.TrimSpace(root), "/"))
+		if root == "" || root == "." {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(dir, root), 0o755); err != nil {
+			return err
+		}
+		addParentDirectoryPaths(root, directoryPaths)
+		directoryPaths[normalizeTrackedDirectoryPath(root)] = struct{}{}
+	}
+
+	index.Directories = make([]checkoutTrackedDirectory, 0, len(directoryPaths))
+	for dirPath := range directoryPaths {
+		record, _, err := currentCheckoutDirectorySnapshot(dir, dirPath)
+		if err != nil {
+			return err
+		}
+		index.Directories = append(index.Directories, record)
+	}
+	sort.Slice(index.Directories, func(i, j int) bool {
+		return index.Directories[i].Path < index.Directories[j].Path
+	})
+	return nil
 }
 
 func checkoutAllowedAddRootsFromRemote(ctx context.Context, cli *CLI, sliceID string) []string {

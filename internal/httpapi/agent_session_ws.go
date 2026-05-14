@@ -19,8 +19,6 @@ import (
 const (
 	maxInboundFrameBytes = 256 * 1024
 	maxOutboundQueueSize = 8 * 1024 * 1024
-	wsEventPollInterval  = 100 * time.Millisecond
-	wsEventPollBatch     = 200
 	wsReplayBatch        = 1000
 )
 
@@ -106,37 +104,33 @@ func (a *AgentSessionsAPI) HandleWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	liveEvents, unsubscribe := a.svc.SubscribeEvents(sessionID)
+	defer unsubscribe()
+
 	currentSeq := lastSeq
-	if tail, head, ok := a.svc.ReplayBounds(sessionID); ok && lastSeq+1 < tail {
-		agentsession.ObserveAgentWSReplayGap()
-		_ = sender.Send(wsOutgoingFrame{
-			Stream:  "control",
-			Type:    "error",
-			Payload: json.RawMessage(`{"code":"REPLAY_GAP","message":"lastSeq is outside replay window"}`),
-		})
-		currentSeq = head
-	} else {
-		replaySeq := lastSeq
-		for {
-			events, nextSeq, err := a.svc.ListEventsForUser(ctx, userID, sessionID, replaySeq, wsReplayBatch)
-			if err != nil {
-				break
+	replaySeq := lastSeq
+	for {
+		events, nextSeq, err := a.svc.ListEventsForUser(ctx, userID, sessionID, replaySeq, wsReplayBatch)
+		if err != nil {
+			break
+		}
+		for _, event := range events {
+			if event.Seq <= currentSeq {
+				continue
 			}
-			for _, event := range events {
-				if err := sender.Send(outgoingFromEvent(event)); err != nil {
-					agentsession.ObserveAgentWSBackpressureClose()
-					closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
-					return
-				}
+			if err := sender.Send(outgoingFromEvent(event)); err != nil {
+				agentsession.ObserveAgentWSBackpressureClose()
+				closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
+				return
 			}
-			if len(events) == 0 {
-				break
-			}
-			replaySeq = nextSeq - 1
-			currentSeq = replaySeq
-			if len(events) < wsReplayBatch {
-				break
-			}
+			currentSeq = event.Seq
+		}
+		if len(events) == 0 {
+			break
+		}
+		replaySeq = nextSeq - 1
+		if len(events) < wsReplayBatch {
+			break
 		}
 	}
 
@@ -144,9 +138,6 @@ func (a *AgentSessionsAPI) HandleWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		readErrCh <- a.readWSLoop(ctx, conn, sessionID)
 	}()
-
-	ticker := time.NewTicker(wsEventPollInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -161,22 +152,21 @@ func (a *AgentSessionsAPI) HandleWS(w http.ResponseWriter, r *http.Request) {
 				closeWithReason(conn, websocket.CloseInternalServerErr, "SESSION_UNAVAILABLE")
 			}
 			return
-		case <-ticker.C:
-			events, nextSeq, err := a.svc.ListEventsForUser(ctx, userID, sessionID, currentSeq, wsEventPollBatch)
-			if err != nil {
-				closeWithReason(conn, websocket.CloseInternalServerErr, "SESSION_UNAVAILABLE")
+		case event, ok := <-liveEvents:
+			if !ok {
+				agentsession.ObserveAgentWSBackpressureClose()
+				closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
 				return
 			}
-			for _, event := range events {
-				if err := sender.Send(outgoingFromEvent(event)); err != nil {
-					agentsession.ObserveAgentWSBackpressureClose()
-					closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
-					return
-				}
+			if event == nil || event.Seq <= currentSeq {
+				continue
 			}
-			if len(events) > 0 {
-				currentSeq = nextSeq - 1
+			if err := sender.Send(outgoingFromEvent(event)); err != nil {
+				agentsession.ObserveAgentWSBackpressureClose()
+				closeWithReason(conn, websocket.CloseTryAgainLater, "backpressure")
+				return
 			}
+			currentSeq = event.Seq
 		}
 	}
 }

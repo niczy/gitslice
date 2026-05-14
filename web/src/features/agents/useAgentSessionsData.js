@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   getAgentCapabilities,
   listAgentRunners,
   listAgentSessionEvents,
   listAgentSessions,
+  mintAgentSessionToken,
+  waitForAgentRunnerUpdates,
 } from '../../api/agents.js';
 import {
   AGENT_EVENTS_MAX,
@@ -17,9 +19,33 @@ import {
 import { writeAgentSessionURL } from './agentLayout.js';
 import {
   conversationAvailabilityRank,
+  isConversationLocal,
   normalizeRunner,
   normalizeSession,
 } from './agentModels.js';
+
+function lastEventSeq(events) {
+  return events.length > 0 ? events[events.length - 1].seq : 0;
+}
+
+function mergeConversationEvents(currentEvents, incomingEvents) {
+  if (!Array.isArray(incomingEvents) || incomingEvents.length === 0) {
+    return currentEvents;
+  }
+  const seen = new Set(currentEvents.map((event) => event.seq));
+  const additions = incomingEvents
+    .map(normalizeEvent)
+    .filter((event) => event.seq > 0 && !seen.has(event.seq));
+  if (additions.length === 0) {
+    return currentEvents;
+  }
+  return [...currentEvents, ...additions]
+    .sort((a, b) => a.seq - b.seq)
+    .slice(-AGENT_EVENTS_MAX);
+}
+
+const RUNNER_UPDATE_WAIT_MS = 25000;
+const RUNNER_WATCH_RETRY_MS = 5000;
 
 export function useAgentSessionsData({
   onSelectSession,
@@ -31,6 +57,9 @@ export function useAgentSessionsData({
   const [selectedSessionId, setSelectedSessionId] = useState('');
   const [selectedRunnerId, setSelectedRunnerId] = useState('');
   const [events, setEvents] = useState([]);
+  const eventsRef = useRef([]);
+  const lastEventSeqRef = useRef(0);
+  const [eventsRealtimeConnected, setEventsRealtimeConnected] = useState(false);
   const [runnersLoading, setRunnersLoading] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -108,11 +137,14 @@ export function useAgentSessionsData({
     selectSessionId(sessionId, { runnerId: nextSession?.runnerId || '' });
   }, [selectSessionId, selectedRunnerSessions]);
 
-  const loadRunners = useCallback(async ({ keepSelection = true } = {}) => {
-    setRunnersLoading(true);
-    setRunnersError('');
+  const loadRunners = useCallback(async ({ keepSelection = true, quiet = false } = {}) => {
+    if (!quiet) {
+      setRunnersLoading(true);
+      setRunnersError('');
+    }
     try {
       const nextRunners = (await listAgentRunners({ limit: 50, includeOffline: true })).map(normalizeRunner);
+      setRunnersError('');
       setRunners(nextRunners);
       setSelectedRunnerId((current) => {
         if (keepSelection && current && nextRunners.some((runner) => runner.runnerId === current && runner.status === 'online')) {
@@ -121,24 +153,32 @@ export function useAgentSessionsData({
         return nextRunners.find((runner) => runner.status === 'online')?.runnerId || '';
       });
     } catch (err) {
+      if (quiet) {
+        return;
+      }
       setRunners([]);
       setSelectedRunnerId('');
       setRunnersError(err?.message || 'Unable to load running agents.');
     } finally {
-      setRunnersLoading(false);
+      if (!quiet) {
+        setRunnersLoading(false);
+      }
     }
   }, []);
 
-  const loadSessions = useCallback(async ({ keepSelection = false } = {}) => {
+  const loadSessions = useCallback(async ({ keepSelection = false, quiet = false } = {}) => {
     if (!sliceId) {
       setSessions([]);
       setSelectedSessionId('');
       return;
     }
-    setSessionsLoading(true);
-    setSessionsError('');
+    if (!quiet) {
+      setSessionsLoading(true);
+      setSessionsError('');
+    }
     try {
       const nextSessions = (await listAgentSessions(sliceId, { limit: 50 })).map(normalizeSession);
+      setSessionsError('');
       setSessions(nextSessions);
       setSelectedSessionId((current) => {
         if (normalizedRouteSessionId && nextSessions.some((session) => session.sessionId === normalizedRouteSessionId)) {
@@ -150,26 +190,57 @@ export function useAgentSessionsData({
         return current && nextSessions.some((session) => session.sessionId === current) ? current : '';
       });
     } catch (err) {
+      if (quiet) {
+        return;
+      }
       setSessions([]);
       setSelectedSessionId('');
       setSessionsError(err?.message || 'Unable to load agent sessions.');
     } finally {
-      setSessionsLoading(false);
+      if (!quiet) {
+        setSessionsLoading(false);
+      }
     }
   }, [normalizedRouteSessionId, sliceId]);
 
-  const loadSelectedEvents = useCallback(async () => {
+  const replaceConversationEvents = useCallback((nextEvents) => {
+    const normalized = (nextEvents || []).map(normalizeEvent).slice(-AGENT_EVENTS_MAX);
+    eventsRef.current = normalized;
+    lastEventSeqRef.current = lastEventSeq(normalized);
+    setEvents(normalized);
+  }, []);
+
+  const resetConversationEvents = useCallback(() => {
+    eventsRef.current = [];
+    lastEventSeqRef.current = 0;
+    setEvents([]);
+  }, []);
+
+  const appendConversationEvents = useCallback((incomingEvents) => {
+    setEvents((currentEvents) => {
+      const merged = mergeConversationEvents(currentEvents, incomingEvents);
+      if (merged === currentEvents) {
+        return currentEvents;
+      }
+      eventsRef.current = merged;
+      lastEventSeqRef.current = lastEventSeq(merged);
+      return merged;
+    });
+  }, []);
+
+  const loadSelectedEvents = useCallback(async ({ incremental = false } = {}) => {
     if (!selectedSessionId) {
-      setEvents([]);
+      resetConversationEvents();
       setEventsError('');
       setEventsLoading(false);
       return;
     }
 
-    setEventsLoading(true);
+    const existingEvents = eventsRef.current;
+    setEventsLoading(!incremental && existingEvents.length === 0);
     setEventsError('');
     try {
-      let sinceSeq = 0;
+      let sinceSeq = incremental ? lastEventSeqRef.current : 0;
       const nextEvents = [];
       while (nextEvents.length < AGENT_EVENTS_MAX) {
         const payload = await listAgentSessionEvents(selectedSessionId, {
@@ -184,14 +255,20 @@ export function useAgentSessionsData({
         }
         sinceSeq = nextSeq - 1;
       }
-      setEvents(nextEvents.map(normalizeEvent));
+      if (incremental) {
+        appendConversationEvents(nextEvents);
+      } else {
+        replaceConversationEvents(nextEvents);
+      }
     } catch (err) {
-      setEvents([]);
+      if (!incremental) {
+        resetConversationEvents();
+      }
       setEventsError(err?.message || 'Unable to load agent conversation.');
     } finally {
       setEventsLoading(false);
     }
-  }, [selectedSessionId]);
+  }, [appendConversationEvents, replaceConversationEvents, resetConversationEvents, selectedSessionId]);
 
   useEffect(() => {
     if (!routeSession) {
@@ -218,25 +295,53 @@ export function useAgentSessionsData({
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
     let active = true;
-    const refresh = async () => {
+    let retryTimer = 0;
+    let controller = null;
+
+    const refreshAgents = async ({ quiet = false } = {}) => {
       if (!active) return;
-      await loadRunners();
+      await Promise.all([
+        loadRunners({ keepSelection: true, quiet }),
+        loadSessions({ keepSelection: true, quiet }),
+      ]);
     };
-    refresh();
-    const intervalId = window.setInterval(refresh, 10000);
+
+    const watchRunnerUpdates = async () => {
+      if (!active || typeof window === 'undefined') return;
+      controller = new AbortController();
+      try {
+        const changed = await waitForAgentRunnerUpdates({
+          timeoutMs: RUNNER_UPDATE_WAIT_MS,
+          signal: controller.signal,
+        });
+        controller = null;
+        if (!active) return;
+        if (changed) {
+          await refreshAgents({ quiet: true });
+        }
+        watchRunnerUpdates();
+      } catch (err) {
+        controller = null;
+        if (!active || err?.name === 'AbortError' || typeof window === 'undefined') {
+          return;
+        }
+        retryTimer = window.setTimeout(watchRunnerUpdates, RUNNER_WATCH_RETRY_MS);
+      }
+    };
+
+    refreshAgents();
+    watchRunnerUpdates();
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      if (controller) {
+        controller.abort();
+      }
+      if (typeof window !== 'undefined') {
+        window.clearTimeout(retryTimer);
+      }
     };
-  }, [loadRunners]);
-
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+  }, [loadRunners, loadSessions]);
 
   useEffect(() => {
     if (!selectedRunner) {
@@ -258,9 +363,77 @@ export function useAgentSessionsData({
   }, [routeSession, selectedRunner, selectedRunnerSessions, selectedSessionId]);
 
   useEffect(() => {
-    setEvents([]);
+    resetConversationEvents();
     setEventsError('');
-  }, [selectedSessionId]);
+  }, [resetConversationEvents, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession) || typeof window === 'undefined') {
+      setEventsRealtimeConnected(false);
+      return undefined;
+    }
+
+    let closed = false;
+    let socket = null;
+    let reconnectTimer = 0;
+    let reconnectDelay = 1000;
+
+    const scheduleReconnect = () => {
+      if (closed) return;
+      reconnectTimer = window.setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+    };
+
+    const connect = async () => {
+      if (closed) return;
+      setEventsRealtimeConnected(false);
+      try {
+        const tokenInfo = await mintAgentSessionToken(selectedSessionId);
+        if (closed) return;
+        const url = new URL(tokenInfo.url || `/ws/sessions/${encodeURIComponent(selectedSessionId)}`, window.location.href);
+        url.searchParams.set('token', tokenInfo.token || '');
+        url.searchParams.set('lastSeq', String(lastEventSeqRef.current || 0));
+
+        socket = new WebSocket(url.toString());
+        socket.onopen = () => {
+          reconnectDelay = 1000;
+          setEventsRealtimeConnected(true);
+        };
+        socket.onmessage = (event) => {
+          try {
+            const frame = JSON.parse(event.data);
+            if (frame?.stream && frame?.type) {
+              appendConversationEvents([frame]);
+            }
+          } catch {
+            // Ignore malformed frames; the fallback poller will catch up.
+          }
+        };
+        socket.onerror = () => {
+          socket?.close();
+        };
+        socket.onclose = () => {
+          if (closed) return;
+          setEventsRealtimeConnected(false);
+          scheduleReconnect();
+        };
+      } catch {
+        scheduleReconnect();
+      }
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      setEventsRealtimeConnected(false);
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+      }
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
+        socket.close();
+      }
+    };
+  }, [appendConversationEvents, selectedSession, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -275,8 +448,8 @@ export function useAgentSessionsData({
     let active = true;
     const pollIntervalMs = assistantStreaming || eventPollingBusy ? 1000 : 5000;
     const loadEvents = async () => {
-      if (!active) return;
-      await loadSelectedEvents();
+      if (!active || eventsRealtimeConnected) return;
+      await loadSelectedEvents({ incremental: true });
     };
 
     loadEvents();
@@ -285,7 +458,7 @@ export function useAgentSessionsData({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [assistantStreaming, eventPollingBusy, loadSelectedEvents, selectedSessionId]);
+  }, [assistantStreaming, eventPollingBusy, eventsRealtimeConnected, loadSelectedEvents, selectedSessionId]);
 
   return {
     assistantStreaming,

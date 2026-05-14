@@ -79,6 +79,8 @@ func main() {
 	}
 	log.Printf("Agent runtime providers enabled: %s (default=%s)", agentsession.RuntimeProviderLocal, agentSessionService.DefaultRuntimeProviderName())
 	agentSessionService.StartLifecycleLoop(context.Background())
+	agentSessionService.StartEventNotificationLoop(context.Background())
+	agentSessionService.StartRunnerNotificationLoop(context.Background())
 	agentservice.RegisterGRPCServer(grpcServer, st, agentSessionService)
 
 	grpcAddr := cfg.GetCoreServiceAddr()
@@ -135,6 +137,7 @@ func main() {
 
 	agentSessionsAPI := httpapi.NewAgentSessionsAPI(st, agentSessionService)
 	httpMux.Handle("/ws/sessions/", http.HandlerFunc(agentSessionsAPI.HandleWS))
+	httpMux.Handle("/ws/agent-runners", http.HandlerFunc(agentSessionsAPI.HandleRunnerUpdates))
 	httpMux.Handle("/git/", gitlayer.NewHandlerWithPromotionStorage(st, promotionSt, ""))
 	// Apply slice-path compatibility at the root gateway handler so /v1/slices and
 	// /v1/slices/ both work without ServeMux issuing slash redirects.

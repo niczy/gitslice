@@ -45,6 +45,12 @@ func (s *agentServiceServer) requireUser(ctx context.Context) (string, error) {
 	return identity.Username, nil
 }
 
+func (s *agentServiceServer) notifyRunnerUpdate(ctx context.Context, userID, runnerID string) {
+	if s.svc != nil {
+		s.svc.NotifyRunnerUpdate(ctx, userID, runnerID)
+	}
+}
+
 func (s *agentServiceServer) RegisterRunner(ctx context.Context, req *agentv1.RegisterRunnerRequest) (*agentv1.RegisterRunnerResponse, error) {
 	userID, err := s.requireUser(ctx)
 	if err != nil {
@@ -88,6 +94,7 @@ func (s *agentServiceServer) RegisterRunner(ctx context.Context, req *agentv1.Re
 	if err := s.svc.ReactivateLocalSessionsForRunner(ctx, userID, runnerID); err != nil {
 		return nil, status.Error(codes.Internal, "failed to reactivate local sessions")
 	}
+	s.notifyRunnerUpdate(ctx, userID, runnerID)
 	return &agentv1.RegisterRunnerResponse{
 		Runner:               agentRunnerToProto(stored, time.Now().UTC()),
 		HeartbeatIntervalSec: runnerHeartbeatIntervalSec,
@@ -115,6 +122,11 @@ func (s *agentServiceServer) HeartbeatRunner(ctx context.Context, req *agentv1.H
 		return nil, status.Error(codes.InvalidArgument, "capabilities must be valid json")
 	}
 	now := time.Now().UTC()
+	wasOnline := agentRunnerOnline(runner, now)
+	previousStatus := runner.Status
+	previousHostName := runner.HostName
+	previousPID := runner.PID
+	previousWorkspaceRoot := runner.WorkspaceRoot
 	runner.Status = models.AgentRunnerStatusOnline
 	if statusValue := strings.TrimSpace(req.GetStatus()); statusValue == string(models.AgentRunnerStatusOffline) {
 		runner.Status = models.AgentRunnerStatusOffline
@@ -135,6 +147,14 @@ func (s *agentServiceServer) HeartbeatRunner(ctx context.Context, req *agentv1.H
 	runner.UpdatedAt = now
 	if err := s.st.UpdateAgentRunner(ctx, runner); err != nil {
 		return nil, status.Error(codes.Internal, "failed to update runner")
+	}
+	isOnline := agentRunnerOnline(runner, now)
+	if wasOnline != isOnline ||
+		previousStatus != runner.Status ||
+		previousHostName != runner.HostName ||
+		previousPID != runner.PID ||
+		previousWorkspaceRoot != runner.WorkspaceRoot {
+		s.notifyRunnerUpdate(ctx, userID, runnerID)
 	}
 	if runner.Status == models.AgentRunnerStatusOnline {
 		if err := s.svc.ReactivateLocalSessionsForRunner(ctx, userID, runnerID); err != nil {
@@ -197,6 +217,7 @@ func (s *agentServiceServer) UnregisterRunner(ctx context.Context, req *agentv1.
 	if err := s.st.UpdateAgentRunner(ctx, runner); err != nil {
 		return nil, status.Error(codes.Internal, "failed to unregister runner")
 	}
+	s.notifyRunnerUpdate(ctx, userID, runner.RunnerID)
 	return &agentv1.UnregisterRunnerResponse{Runner: agentRunnerToProto(runner, now)}, nil
 }
 
@@ -365,6 +386,7 @@ func (s *agentServiceServer) markRunnerOfflineIfStale(ctx context.Context, runne
 	if err := s.st.UpdateAgentRunner(ctx, &updated); err != nil {
 		return nil, err
 	}
+	s.notifyRunnerUpdate(ctx, runner.UserID, runner.RunnerID)
 	return &updated, nil
 }
 

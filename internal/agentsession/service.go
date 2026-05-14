@@ -22,6 +22,7 @@ const (
 	defaultTTLSec            = 14400
 	wsTokenAudience          = "agent-ws"
 	wsTokenTTL               = 60 * time.Second
+	eventSubscriberBuffer    = 1024
 	defaultLifecycleTick     = 1 * time.Second
 	defaultStartupTimeout    = 90 * time.Second
 	defaultStartMaxRetries   = 2
@@ -65,6 +66,14 @@ type Service struct {
 	replaySeqs     map[string][]uint64
 	maxReplayFrame int
 
+	eventSubMu          sync.Mutex
+	eventSubscribers    map[string]map[chan *models.AgentSessionEvent]struct{}
+	eventNotifyLoopOnce sync.Once
+
+	runnerSubMu       sync.Mutex
+	runnerSubscribers map[string]map[chan struct{}]struct{}
+	runnerNotifyOnce  sync.Once
+
 	runtimeMu              sync.Mutex
 	runtimeProviders       map[string]RuntimeProvider
 	defaultRuntimeProvider string
@@ -94,6 +103,8 @@ func NewService(st storage.Storage, wsTokenSecret string) *Service {
 		usedNonces:               make(map[string]time.Time),
 		replaySeqs:               make(map[string][]uint64),
 		maxReplayFrame:           10000,
+		eventSubscribers:         make(map[string]map[chan *models.AgentSessionEvent]struct{}),
+		runnerSubscribers:        make(map[string]map[chan struct{}]struct{}),
 		runtimeProviders:         make(map[string]RuntimeProvider),
 		defaultRuntimeProvider:   RuntimeProviderLocal,
 		runtimeStartInFlight:     make(map[string]struct{}),
@@ -397,6 +408,7 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 		return storage.ErrInvalidInput
 	}
 	eventCopy := *event
+	eventCopy.Payload = cloneRawMessage(event.Payload)
 	eventCopy.Seq = s.nextSeq(event.SessionID)
 	eventCopy.TS = time.Now().UTC()
 	if err := s.applyRuntimeSessionEvent(ctx, &eventCopy); err != nil {
@@ -412,6 +424,7 @@ func (s *Service) AppendEvent(ctx context.Context, event *models.AgentSessionEve
 	event.TS = eventCopy.TS
 	event.Kind = eventCopy.Kind
 	s.rememberSeq(eventCopy.SessionID, eventCopy.Seq)
+	s.publishEvent(&eventCopy)
 	return nil
 }
 
@@ -542,6 +555,170 @@ func (s *Service) AddAudit(ctx context.Context, sessionID, actorUserID, action s
 		Metadata:    data,
 		CreatedAt:   time.Now().UTC(),
 	})
+}
+
+func (s *Service) StartEventNotificationLoop(ctx context.Context) {
+	s.eventNotifyLoopOnce.Do(func() {
+		listener, ok := s.st.(storage.AgentSessionEventListener)
+		if !ok {
+			return
+		}
+		go func() {
+			err := listener.ListenAgentSessionEventNotifications(ctx, s.handleEventNotification)
+			if err != nil && ctx.Err() == nil {
+				log.Printf("component=agent_session phase=event_notify_loop error=%v", err)
+			}
+		}()
+	})
+}
+
+func (s *Service) StartRunnerNotificationLoop(ctx context.Context) {
+	s.runnerNotifyOnce.Do(func() {
+		listener, ok := s.st.(storage.AgentRunnerListener)
+		if !ok {
+			return
+		}
+		go func() {
+			err := listener.ListenAgentRunnerNotifications(ctx, s.handleRunnerNotification)
+			if err != nil && ctx.Err() == nil {
+				log.Printf("component=agent_runner phase=notify_loop error=%v", err)
+			}
+		}()
+	})
+}
+
+func (s *Service) SubscribeEvents(sessionID string) (<-chan *models.AgentSessionEvent, func()) {
+	sessionID = strings.TrimSpace(sessionID)
+	ch := make(chan *models.AgentSessionEvent, eventSubscriberBuffer)
+	if sessionID == "" {
+		close(ch)
+		return ch, func() {}
+	}
+
+	s.eventSubMu.Lock()
+	if s.eventSubscribers == nil {
+		s.eventSubscribers = make(map[string]map[chan *models.AgentSessionEvent]struct{})
+	}
+	if s.eventSubscribers[sessionID] == nil {
+		s.eventSubscribers[sessionID] = make(map[chan *models.AgentSessionEvent]struct{})
+	}
+	s.eventSubscribers[sessionID][ch] = struct{}{}
+	s.eventSubMu.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.eventSubMu.Lock()
+			if subscribers := s.eventSubscribers[sessionID]; subscribers != nil {
+				if _, ok := subscribers[ch]; ok {
+					delete(subscribers, ch)
+					close(ch)
+				}
+				if len(subscribers) == 0 {
+					delete(s.eventSubscribers, sessionID)
+				}
+			}
+			s.eventSubMu.Unlock()
+		})
+	}
+	return ch, unsubscribe
+}
+
+func (s *Service) SubscribeRunnerUpdates(userID string) (<-chan struct{}, func()) {
+	userID = strings.TrimSpace(userID)
+	ch := make(chan struct{}, 1)
+	if userID == "" {
+		close(ch)
+		return ch, func() {}
+	}
+
+	s.runnerSubMu.Lock()
+	if s.runnerSubscribers == nil {
+		s.runnerSubscribers = make(map[string]map[chan struct{}]struct{})
+	}
+	if s.runnerSubscribers[userID] == nil {
+		s.runnerSubscribers[userID] = make(map[chan struct{}]struct{})
+	}
+	s.runnerSubscribers[userID][ch] = struct{}{}
+	s.runnerSubMu.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.runnerSubMu.Lock()
+			if subscribers := s.runnerSubscribers[userID]; subscribers != nil {
+				if _, ok := subscribers[ch]; ok {
+					delete(subscribers, ch)
+					close(ch)
+				}
+				if len(subscribers) == 0 {
+					delete(s.runnerSubscribers, userID)
+				}
+			}
+			s.runnerSubMu.Unlock()
+		})
+	}
+	return ch, unsubscribe
+}
+
+func (s *Service) PublishRunnerUpdate(userID string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	s.runnerSubMu.Lock()
+	defer s.runnerSubMu.Unlock()
+	subscribers := s.runnerSubscribers[userID]
+	if len(subscribers) == 0 {
+		return
+	}
+	for ch := range subscribers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *Service) NotifyRunnerUpdate(ctx context.Context, userID, runnerID string) {
+	userID = strings.TrimSpace(userID)
+	runnerID = strings.TrimSpace(runnerID)
+	if userID == "" {
+		return
+	}
+	if notifier, ok := s.st.(storage.AgentRunnerNotifier); ok {
+		if err := notifier.NotifyAgentRunnerUpdate(ctx, userID, runnerID); err != nil && ctx.Err() == nil {
+			log.Printf("component=agent_runner phase=notify user_id=%s runner_id=%s error=%v", userID, runnerID, err)
+		}
+	}
+	s.PublishRunnerUpdate(userID)
+}
+
+func (s *Service) handleRunnerNotification(ctx context.Context, notification storage.AgentRunnerNotification) {
+	_ = ctx
+	if notification.UserID == "" {
+		return
+	}
+	s.PublishRunnerUpdate(notification.UserID)
+}
+
+func (s *Service) handleEventNotification(ctx context.Context, notification storage.AgentSessionEventNotification) {
+	if notification.SessionID == "" || notification.Seq == 0 {
+		return
+	}
+	events, err := s.st.ListAgentSessionEvents(ctx, notification.SessionID, notification.Seq-1, 1)
+	if err != nil {
+		log.Printf("component=agent_session phase=event_notify_fetch session_id=%s seq=%d error=%v", notification.SessionID, notification.Seq, err)
+		return
+	}
+	for _, event := range events {
+		if event == nil || event.Seq != notification.Seq {
+			continue
+		}
+		s.rememberSeq(event.SessionID, event.Seq)
+		s.publishEvent(event)
+		return
+	}
 }
 
 func (s *Service) StartLifecycleLoop(ctx context.Context) {
@@ -1447,6 +1624,47 @@ func (s *Service) rememberSeq(sessionID string, seq uint64) {
 		seqs = seqs[len(seqs)-s.maxReplayFrame:]
 	}
 	s.replaySeqs[sessionID] = seqs
+}
+
+func (s *Service) publishEvent(event *models.AgentSessionEvent) {
+	if event == nil || strings.TrimSpace(event.SessionID) == "" {
+		return
+	}
+	s.eventSubMu.Lock()
+	defer s.eventSubMu.Unlock()
+	subscribers := s.eventSubscribers[event.SessionID]
+	if len(subscribers) == 0 {
+		return
+	}
+	for ch := range subscribers {
+		select {
+		case ch <- cloneAgentSessionEvent(event):
+		default:
+			close(ch)
+			delete(subscribers, ch)
+		}
+	}
+	if len(subscribers) == 0 {
+		delete(s.eventSubscribers, event.SessionID)
+	}
+}
+
+func cloneAgentSessionEvent(event *models.AgentSessionEvent) *models.AgentSessionEvent {
+	if event == nil {
+		return nil
+	}
+	out := *event
+	out.Payload = cloneRawMessage(event.Payload)
+	return &out
+}
+
+func cloneRawMessage(in json.RawMessage) json.RawMessage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
 }
 
 func claimString(claims jwt.MapClaims, key string) string {

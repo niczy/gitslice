@@ -70,7 +70,7 @@ type codexAppServerRunner struct {
 
 func newCodexAppServerRunner(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (*codexAppServerRunner, error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, "codex", "app-server", "--listen", "stdio://")
+	cmd := exec.CommandContext(runCtx, "codex", codexAppServerCommandArgs()...)
 	if strings.TrimSpace(cfg.CWD) != "" {
 		cmd.Dir = cfg.CWD
 	}
@@ -168,6 +168,14 @@ func newCodexAppServerRunner(ctx context.Context, cli *CLI, cfg localAgentRunCon
 	return r, nil
 }
 
+func codexAppServerCommandArgs() []string {
+	return []string{
+		"--dangerously-bypass-approvals-and-sandbox",
+		"app-server",
+		"--listen", "stdio://",
+	}
+}
+
 func (r *codexAppServerRunner) RunTurn(ctx context.Context, prompt string) error {
 	r.mu.Lock()
 	threadID := r.threadID
@@ -217,6 +225,9 @@ func (r *codexAppServerRunner) RunTurn(ctx context.Context, prompt string) error
 		case msg := <-r.notifications:
 			done, nextFinalText, exitCode, err := r.handleNotification(ctx, turnResp.Turn.ID, finalText, msg)
 			finalText = nextFinalText
+			if err != nil {
+				return err
+			}
 			if done {
 				if appendErr := appendAgentOutput(ctx, r.cli, r.cfg.SessionID, strings.TrimSpace(finalText), "assistant", "output_final", exitCode); appendErr != nil {
 					return appendErr
@@ -295,6 +306,18 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 		}
 	case "item/started":
 		r.appendToolLifecycleEvent(ctx, turnID, "start", msg.Params)
+	case "item/fileChange/requestApproval":
+		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "accept"}); err != nil {
+			return false, finalText, 0, err
+		}
+	case "item/commandExecution/requestApproval":
+		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "accept"}); err != nil {
+			return false, finalText, 0, err
+		}
+	case "applyPatchApproval", "execCommandApproval":
+		if err := r.respondToServerRequest(ctx, msg, map[string]any{"decision": "approved"}); err != nil {
+			return false, finalText, 0, err
+		}
 	case "item/completed":
 		var params struct {
 			TurnID string `json:"turnId"`
@@ -341,6 +364,26 @@ func (r *codexAppServerRunner) handleNotification(ctx context.Context, turnID, f
 		}
 	}
 	return false, finalText, 0, nil
+}
+
+func (r *codexAppServerRunner) respondToServerRequest(ctx context.Context, msg codexRPCMessage, result any) error {
+	if codexMessageID(msg.ID) == "" {
+		return nil
+	}
+	resp := map[string]any{
+		"id":     json.RawMessage(msg.ID),
+		"result": result,
+	}
+	errc := make(chan error, 1)
+	go func() {
+		errc <- r.writeJSON(resp)
+	}()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (r *codexAppServerRunner) appendReasoningDelta(ctx context.Context, turnID, channel string, payload json.RawMessage) {
@@ -452,6 +495,10 @@ func (r *codexAppServerRunner) readLoop(reader io.Reader) {
 				r.finish(err)
 			}
 			return
+		}
+		if strings.TrimSpace(msg.Method) != "" {
+			r.notifications <- msg
+			continue
 		}
 		if id := codexMessageID(msg.ID); id != "" {
 			r.mu.Lock()

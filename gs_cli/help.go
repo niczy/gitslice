@@ -71,7 +71,6 @@ func printAgentHelp() {
 	fmt.Println("  gs agent list --json")
 	fmt.Println("  gs agent start --dir ~/gitslice-agents --agent codex --json")
 	fmt.Println("  gs agent run --dir ~/gitslice-agents --agent codex")
-	fmt.Println("  gs agent run --dir ~/gitslice-agents --agent codex --codex-mode exec")
 	fmt.Println("  gs agent run --dir ~/gitslice-agents --agent claude --claude-mode print")
 	fmt.Println("  gs agent run --dir ~/gitslice-agents -- ./my-agent-script")
 	fmt.Println("  gs agent stop --runner agr_123")

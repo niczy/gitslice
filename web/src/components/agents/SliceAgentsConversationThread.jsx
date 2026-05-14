@@ -19,6 +19,7 @@ import { Button } from '../ui/button.jsx';
 
 export default function SliceAgentsConversationThread({
   canSendInput,
+  checkoutFailure,
   conversationItems,
   events,
   eventsError,
@@ -36,6 +37,15 @@ export default function SliceAgentsConversationThread({
         <div className="slice-agents-connection-note" data-testid="slice-agents-local-availability-note">
           <CircleAlert size={15} aria-hidden="true" />
           <span>{conversationAvailabilityMessage(selectedSession)}</span>
+        </div>
+      )}
+      {checkoutFailure && (
+        <div className="slice-agents-checkout-error" role="alert" data-testid="slice-agents-checkout-error">
+          <CircleAlert size={15} aria-hidden="true" />
+          <div>
+            <strong>Checkout failed</strong>
+            <span>{checkoutFailure.message}</span>
+          </div>
         </div>
       )}
       {eventsError && <div className="panel-error">{eventsError}</div>}

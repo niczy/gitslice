@@ -163,3 +163,33 @@ func TestMaterializeSliceCheckoutSkipsUnchangedTrackedFiles(t *testing.T) {
 		t.Fatalf("expected unchanged file to keep original modtime, got %v want %v", infoAfter.ModTime(), modBefore)
 	}
 }
+
+func TestEnsureCheckoutAllowedAddRootDirsCreatesTrackedRoot(t *testing.T) {
+	workdir := t.TempDir()
+	index := &localCheckoutIndex{
+		SliceID:         "home_nicholas",
+		AllowedAddRoots: []string{"nicholas"},
+	}
+	rootRecord, _, err := currentCheckoutDirectorySnapshot(workdir, "")
+	if err != nil {
+		t.Fatalf("currentCheckoutDirectorySnapshot failed: %v", err)
+	}
+	index.Directories = []checkoutTrackedDirectory{rootRecord}
+
+	if err := ensureCheckoutAllowedAddRootDirs(workdir, index); err != nil {
+		t.Fatalf("ensureCheckoutAllowedAddRootDirs failed: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(workdir, "nicholas")); err != nil {
+		t.Fatalf("expected nicholas directory: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("expected nicholas to be a directory")
+	}
+
+	seen := map[string]bool{}
+	for _, record := range index.Directories {
+		seen[record.Path] = true
+	}
+	if !seen[""] || !seen["nicholas"] {
+		t.Fatalf("expected index to track root and nicholas directories, got %#v", index.Directories)
+	}
+}

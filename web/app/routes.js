@@ -13,6 +13,7 @@ export default [
   route('auth/device/approve', 'routes/auth.device-approve.jsx'),
   route('auth/*', 'routes/auth.$.jsx'),
   route('raw/*', 'routes/raw.$.jsx'),
+  route('ws/agent-runners', 'routes/ws.agent-runners.jsx'),
   route('v1/*', 'routes/v1.$.jsx'),
   index('routes/app-shell.jsx'),
   route('login', 'routes/login.jsx'),

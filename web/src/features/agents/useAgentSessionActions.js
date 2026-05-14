@@ -67,7 +67,7 @@ export function useAgentSessionActions({
     try {
       await sendAgentSessionInput(selectedSessionId, text);
       setInputText('');
-      await loadSelectedEvents();
+      await loadSelectedEvents({ incremental: true });
     } catch (err) {
       setInputError(err?.message || 'Unable to send agent input.');
     } finally {
@@ -86,7 +86,7 @@ export function useAgentSessionActions({
         upgrade: true,
         reason: 'web_ui',
       });
-      await loadSelectedEvents();
+      await loadSelectedEvents({ incremental: true });
     } catch (err) {
       setRunnerActionError(err?.message || 'Unable to request agent restart.');
     } finally {
