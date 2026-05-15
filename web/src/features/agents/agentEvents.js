@@ -410,6 +410,22 @@ function orderedConversationEvents(events) {
     .map(({ event }) => event);
 }
 
+function shouldRenderConversationEvent(event) {
+  if (event?.stream === 'status') {
+    return false;
+  }
+  if (event?.stream !== 'control') {
+    return true;
+  }
+  if (event?.type !== 'error') {
+    return false;
+  }
+  if (CHECKOUT_FAILURE_CONTROL_ERROR_CODES.has(controlErrorCode(event))) {
+    return false;
+  }
+  return isTerminalControlError(event);
+}
+
 export function latestEvent(events, predicate) {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     if (predicate(events[i])) {
@@ -799,6 +815,9 @@ export function buildConversationItems(events, liveStreamState = { active: false
       responseDraftItem = null;
       responseDraftItems = [];
     } else {
+      if (!shouldRenderConversationEvent(event)) {
+        continue;
+      }
       if (isLiveEvent(event) && event.stream === 'tool') {
         renderedLiveActivity = true;
       }
