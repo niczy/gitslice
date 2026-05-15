@@ -15,6 +15,7 @@ export function useAgentSessionActions({
   loadSelectedEvents,
   loadSessions,
   selectSessionId,
+  selectedAgentType,
   selectedRunner,
   selectedRunnerId,
   selectedSessionId,
@@ -37,7 +38,7 @@ export function useAgentSessionActions({
     try {
       const created = normalizeSession(await createAgentSession(sliceId, {
         runnerId: selectedRunner.runnerId,
-        agentType: selectedRunner.agentType || defaultAgentType,
+        agentType: selectedAgentType || selectedRunner.defaultAgentType || selectedRunner.agentType || defaultAgentType,
       }));
       await loadSessions({ keepSelection: true });
       selectSessionId(created.sessionId, { runnerId: created.runnerId || selectedRunner.runnerId });
@@ -52,6 +53,7 @@ export function useAgentSessionActions({
     defaultAgentType,
     loadSessions,
     selectSessionId,
+    selectedAgentType,
     selectedRunner,
     sliceId,
   ]);

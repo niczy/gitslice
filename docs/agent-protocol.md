@@ -118,9 +118,18 @@ local session marks the runtime endpoint as `local://<session_id>`.
 Both commands register an `agent_runner` record with the server, heartbeat it
 while online, and mark it offline when the process exits. The web app lists
 online runners before a session exists. When the user starts a session, the
-request includes `runner_id`; the local runner only claims sessions assigned to
-that runner, checks out the session's slice into a session-specific subdirectory
-of the configured working directory using the same materialization path as
+request includes `runner_id` and an `agent_type` selected in the web UI. The
+runner reports its local CLI support in `capabilities.supported_agent_types` and
+`capabilities.default_agent_type`; the server rejects session creation if the
+requested agent type is not in that runner-supported list. `gs agent run` and
+`gs agent start` default to `--agent all`, detect installed local CLIs, and
+advertise only available agent types. Explicit selections such as `--agent
+claude` or `--agent codex,claude` fail at startup if any requested CLI is not on
+`PATH`.
+
+The local runner only claims sessions assigned to that runner, checks out the
+session's slice into a session-specific subdirectory of the configured working
+directory using the same materialization path as
 `gs slice checkout <slice> --here`, polls `ListEvents`, runs a local coding agent for
 `agent/input` events, and appends `agent/output_delta`, `agent/output_final`,
 and tool lifecycle events through `AppendEvent`.
@@ -141,9 +150,8 @@ current local checkout into a changeset.
 Default commands:
 
 - `codex`: a persistent Codex app-server session over the Codex
-  remote-control protocol when available, with `codex exec` fallback
-- `claude`: a persistent Claude Code stream-json session when available, with
-  `claude -p <prompt>` fallback
+  remote-control protocol
+- `claude`: a persistent Claude Code stream-json session
 
 In `--codex-mode auto`, the runner starts `codex app-server --listen stdio://`,
 initializes one Codex thread, and sends each Gitslice `agent/input` event as a
@@ -154,8 +162,8 @@ notifications become `agent/thinking_delta`. Command/tool notifications are
 forwarded as `tool/start`, `tool/output`, and `tool/end` events. Gitslice
 `agent/interrupt` events are translated to Codex `turn/interrupt` while the turn
 is still running, so the web UI can stop an active Codex turn without waiting for
-the process to exit. If app-server startup fails in auto mode, the runner
-appends a control error and falls back to `codex exec`.
+the process to exit. If app-server startup fails, the runner appends a control
+error and does not run a fallback command.
 
 Codex app-server sessions run with explicit full-access sandbox settings for the
 session checkout. The runner also responds to Codex permission requests with a
@@ -169,18 +177,12 @@ When the Codex thread is created, the local runner appends
 runtime metadata on the server-side `agent_sessions` row, so reconnects and
 server-side inspection do not depend on client-only runner memory.
 
-Use `--codex-mode exec` to force the previous one-process-per-input behavior:
-
-```bash
-gs agent run --dir ~/gitslice-agents --agent codex --codex-mode exec
-```
-
 In `--claude-mode auto`, the runner starts Claude Code in headless stream-json
 mode:
 
 ```bash
 claude -p --input-format stream-json --output-format stream-json \
-  --include-partial-messages --verbose
+  --include-partial-messages --verbose --permission-mode bypassPermissions
 ```
 
 Each Gitslice `agent/input` event is written as a Claude JSONL user message.
@@ -194,11 +196,9 @@ reports its session ID, the local runner appends `control/runtime_session`; the
 service stores that ID server-side with a `claude-stream-json://<session_id>`
 endpoint.
 
-Use `--claude-mode print` to force the previous one-process-per-input behavior:
-
-```bash
-gs agent run --session ags_123 --agent claude --claude-mode print
-```
+Claude is always started in `bypassPermissions` mode by the local runner because
+web-controlled sessions cannot answer interactive permission prompts. Users
+should only run local Claude agents in trusted checkout directories.
 
 Users can override the command after `--`, for example:
 

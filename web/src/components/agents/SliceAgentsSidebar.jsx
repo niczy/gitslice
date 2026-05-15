@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 
 import {
+  agentDisplayName,
   conversationAvailabilityLabel,
   formatAgentTimestamp,
   isConversationCloudOnly,
@@ -23,6 +24,7 @@ export default function SliceAgentsSidebar({
   createError,
   creatingSession,
   onClose,
+  onAgentTypeChange,
   onCreateSession,
   onInspectRunner,
   onRefresh,
@@ -32,8 +34,10 @@ export default function SliceAgentsSidebar({
   runners,
   runnersError,
   runnersLoading,
+  selectedAgentType,
   selectedRunner,
   selectedRunnerConversationCountLabel,
+  selectedRunnerSupportedAgentTypes,
   selectedRunnerSessions,
   selectedSessionId,
   sessionsDismissing,
@@ -152,19 +156,39 @@ export default function SliceAgentsSidebar({
               <h3>{selectedRunner ? 'Conversations for this runner' : 'Conversations'}</h3>
               <span>{selectedRunner ? `${selectedRunnerConversationCountLabel} on this runner` : 'Select a running agent'}</span>
             </div>
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              className="slice-agents-new-button"
-              onClick={onCreateSession}
-              disabled={!canCreateSession || creatingSession}
-              title={canCreateSession ? 'New conversation' : 'Start a running agent first'}
-              data-testid="slice-agents-new-session"
-            >
-              <Plus size={15} aria-hidden="true" />
-              {creatingSession ? 'Starting' : 'New'}
-            </Button>
+            <div className="slice-agents-create-controls">
+              {selectedRunner && (
+                <label className="slice-agents-agent-type-field">
+                  <span>Agent</span>
+                  <select
+                    value={selectedAgentType}
+                    onChange={(event) => onAgentTypeChange(event.target.value)}
+                    disabled={!canCreateSession || creatingSession}
+                    aria-label="Agent type for new conversation"
+                    data-testid="slice-agents-agent-type"
+                  >
+                    {(selectedRunnerSupportedAgentTypes || []).map((agentType) => (
+                      <option key={agentType} value={agentType}>
+                        {agentDisplayName(agentType)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                className="slice-agents-new-button"
+                onClick={onCreateSession}
+                disabled={!canCreateSession || creatingSession}
+                title={canCreateSession ? 'New conversation' : 'Start a running agent first'}
+                data-testid="slice-agents-new-session"
+              >
+                <Plus size={15} aria-hidden="true" />
+                {creatingSession ? 'Starting' : 'New'}
+              </Button>
+            </div>
           </div>
           {createError && <div className="panel-error">{createError}</div>}
           {sessionsError && <div className="panel-error">{sessionsError}</div>}

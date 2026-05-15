@@ -168,15 +168,19 @@ func (a *AgentSessionsAPI) HandleCollection(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusPreconditionFailed, "runner is offline")
 		return
 	}
-	agentType := strings.ToLower(strings.TrimSpace(req.AgentType))
+	agentType := agentsession.NormalizeAgentType(req.AgentType)
 	if agentType == "" {
-		agentType = strings.ToLower(strings.TrimSpace(runner.AgentType))
+		agentType = agentsession.RunnerDefaultAgentType(runner)
 	}
 	if agentType == "" {
 		agentType = agentsession.DefaultAgentType()
 	}
-	if runnerAgentType := strings.ToLower(strings.TrimSpace(runner.AgentType)); runnerAgentType != "" && runnerAgentType != agentType {
-		writeError(w, http.StatusBadRequest, "agent type does not match runner")
+	if !agentsession.IsSupportedAgentType(agentType) {
+		writeError(w, http.StatusBadRequest, "unsupported agent type")
+		return
+	}
+	if !agentsession.RunnerSupportsAgentType(runner, agentType) {
+		writeError(w, http.StatusBadRequest, "agent type is not supported by runner")
 		return
 	}
 

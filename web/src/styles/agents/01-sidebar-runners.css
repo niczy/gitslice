@@ -77,6 +77,44 @@
   font-weight: 800 !important;
 }
 
+.slice-agents-create-controls {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+.slice-agents-agent-type-field {
+  display: grid;
+  gap: 3px;
+  min-width: 92px;
+}
+
+.slice-agents-agent-type-field span {
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.slice-agents-agent-type-field select {
+  height: 30px;
+  min-width: 92px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.slice-agents-agent-type-field select:disabled {
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+}
+
 .slice-agents-panel {
   display: grid;
   gap: 8px;
@@ -295,4 +333,3 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-

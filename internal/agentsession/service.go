@@ -188,11 +188,11 @@ func (s *Service) CreateSession(ctx context.Context, userID string, req CreateRe
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.EnvironmentName = strings.TrimSpace(req.EnvironmentName)
-	req.AgentType = strings.ToLower(strings.TrimSpace(req.AgentType))
+	req.AgentType = NormalizeAgentType(req.AgentType)
 	if req.AgentType == "" {
 		req.AgentType = defaultAgentType
 	}
-	if _, ok := supportedAgentTypes[req.AgentType]; !ok {
+	if !IsSupportedAgentType(req.AgentType) {
 		return nil, nil, storage.ErrInvalidInput
 	}
 	req.Provider = normalizeRuntimeProvider(req.Provider)

@@ -545,6 +545,46 @@ func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 	}
 }
 
+func TestAgentSessionCreateAllowsRunnerSupportedAgentType(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	if err := st.CreateSlice(context.Background(), &models.Slice{
+		ID:        "slice-runner-multi-agent",
+		Name:      "Runner Multi Agent Slice",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := st.UpsertAgentRunner(context.Background(), &models.AgentRunner{
+		RunnerID:        "runner-multi-agent",
+		UserID:          "alice",
+		Provider:        agentsession.RuntimeProviderLocal,
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		Capabilities:    []byte(`{"default_agent_type":"codex","supported_agent_types":["codex","claude"]}`),
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+
+	srv := &agentServiceServer{st: st, svc: agentsession.NewService(st, "test-secret")}
+	createResp, err := srv.CreateSession(ctx, &agentv1.CreateSessionRequest{
+		SliceId:   "slice-runner-multi-agent",
+		RunnerId:  "runner-multi-agent",
+		AgentType: "claude",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession with runner-supported claude failed: %v", err)
+	}
+	if createResp.GetAgentType() != "claude" {
+		t.Fatalf("expected claude session, got %#v", createResp)
+	}
+}
+
 func TestAgentSessionCreateRejectsOfflineOrMismatchedRunner(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()

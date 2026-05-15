@@ -52,11 +52,14 @@ type localAgentSupervisorConfig struct {
 }
 
 type agentSupervisorStartOutput struct {
-	Status   string `json:"status"`
-	RunnerID string `json:"runner_id"`
-	PID      int    `json:"pid"`
-	CWD      string `json:"cwd"`
-	LogFile  string `json:"log_file"`
+	Status           string                `json:"status"`
+	RunnerID         string                `json:"runner_id"`
+	PID              int                   `json:"pid"`
+	CWD              string                `json:"cwd"`
+	LogFile          string                `json:"log_file"`
+	AgentTypes       []string              `json:"agent_types,omitempty"`
+	DefaultAgentType string                `json:"default_agent_type,omitempty"`
+	AgentCLIStatus   []localAgentCLIStatus `json:"agent_cli_status,omitempty"`
 }
 
 type discoveredAgentSession struct {
@@ -287,10 +290,11 @@ func logAgentRunnerStartup(authConfig cliAuth, cfg localAgentSupervisorConfig) {
 		agentAuthSchemeForLog(authConfig.Authorization),
 	)
 	log.Printf(
-		"Agent runner config: runner_id=%s workspace=%s agent_type=%s codex_mode=%s claude_mode=%s poll_interval=%s once=%t custom_command=%t command_args=%d pid=%d version=%s",
+		"Agent runner config: runner_id=%s workspace=%s agent_types=%s default_agent_type=%s codex_mode=%s claude_mode=%s poll_interval=%s once=%t custom_command=%t command_args=%d pid=%d version=%s",
 		logValue(cfg.RunnerID, "pending"),
 		logValue(cfg.RootDir, "unknown"),
-		firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		strings.Join(supportedLocalAgentTypes(cfg.AgentType), ","),
+		defaultLocalAgentType(cfg.AgentType),
 		logValue(cfg.CodexMode, "auto"),
 		logValue(cfg.ClaudeMode, "auto"),
 		cfg.PollInterval,
@@ -1075,10 +1079,13 @@ func registerLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSuper
 	if err != nil {
 		return err
 	}
+	supportedAgentTypes := supportedLocalAgentTypes(cfg.AgentType)
+	defaultAgentType := defaultLocalAgentType(cfg.AgentType)
 	log.Printf(
-		"Registering local agent runner: runner_id=%s provider=local agent_type=%s host=%s pid=%d workspace=%s",
+		"Registering local agent runner: runner_id=%s provider=local agent_types=%s default_agent_type=%s host=%s pid=%d workspace=%s",
 		logValue(cfg.RunnerID, "pending"),
-		firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		strings.Join(supportedAgentTypes, ","),
+		defaultAgentType,
 		logValue(hostName, "unknown"),
 		os.Getpid(),
 		logValue(cfg.RootDir, "unknown"),
@@ -1086,7 +1093,7 @@ func registerLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSuper
 	resp, err := cli.agentClient.RegisterRunner(ctx, &agentv1.RegisterRunnerRequest{
 		RunnerId:      strings.TrimSpace(cfg.RunnerID),
 		Provider:      "local",
-		AgentType:     firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		AgentType:     defaultAgentType,
 		HostName:      strings.TrimSpace(hostName),
 		Pid:           int32(os.Getpid()),
 		WorkspaceRoot: strings.TrimSpace(cfg.RootDir),
@@ -1101,10 +1108,11 @@ func registerLocalAgentRunner(ctx context.Context, cli *CLI, cfg localAgentSuper
 	}
 	runner := resp.GetRunner()
 	log.Printf(
-		"Registered local agent runner: runner_id=%s provider=%s agent_type=%s status=%s host=%s pid=%d workspace=%s heartbeat_interval=%ds",
+		"Registered local agent runner: runner_id=%s provider=%s agent_type=%s agent_types=%s status=%s host=%s pid=%d workspace=%s heartbeat_interval=%ds",
 		logValue(runner.GetRunnerId(), cfg.RunnerID),
 		logValue(runner.GetProvider(), "local"),
-		logValue(runner.GetAgentType(), firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex")),
+		logValue(runner.GetAgentType(), defaultAgentType),
+		strings.Join(supportedAgentTypes, ","),
 		logValue(runner.GetStatus(), "unknown"),
 		logValue(runner.GetHostName(), hostName),
 		runner.GetPid(),
@@ -1172,7 +1180,9 @@ func localAgentRunnerCapabilities(cfg localAgentSupervisorConfig) ([]byte, error
 		localSessionIDs = []string{}
 	}
 	payload := map[string]any{
-		"agent_type":                  firstNonEmpty(strings.TrimSpace(cfg.AgentType), "codex"),
+		"agent_type":                  defaultLocalAgentType(cfg.AgentType),
+		"default_agent_type":          defaultLocalAgentType(cfg.AgentType),
+		"supported_agent_types":       supportedLocalAgentTypes(cfg.AgentType),
 		"codex_mode":                  strings.TrimSpace(cfg.CodexMode),
 		"claude_mode":                 strings.TrimSpace(cfg.ClaudeMode),
 		"concurrent_sessions":         true,
@@ -1197,7 +1207,7 @@ func localRunConfigForDiscoveredSession(ctx context.Context, cli *CLI, cfg local
 	if err != nil {
 		return localAgentRunConfig{}, err
 	}
-	agentType := firstNonEmpty(strings.TrimSpace(session.GetAgentType()), strings.TrimSpace(cfg.AgentType), "codex")
+	agentType := firstNonEmpty(strings.TrimSpace(session.GetAgentType()), defaultLocalAgentType(cfg.AgentType))
 	return localAgentRunConfig{
 		SessionID:    strings.TrimSpace(session.GetSessionId()),
 		SliceID:      strings.TrimSpace(session.GetSliceId()),

@@ -57,11 +57,11 @@ func handleAgentCommand(ctx context.Context, cli *CLI, authConfig cliAuth, args 
 func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []string) {
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	fs := newCommandFlagSet("agent start")
-	agentType := fs.String("agent", "codex", "Agent type")
+	agentType := fs.String("agent", "all", "Agent type to run: codex, claude, or all")
 	cwd := fs.String("cwd", ".", "Working directory for tracked agent sessions")
 	dir := fs.String("dir", "", "Alias for --cwd")
 	codexMode := fs.String("codex-mode", "app-server", "Codex runner mode: app-server")
-	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
+	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto or stream-json")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
 	logFile := fs.String("log-file", "", "Background runner log file")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
@@ -77,13 +77,18 @@ func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []
 		commandFatal("INVALID_ARGUMENT", "--codex-mode must be app-server", false, "")
 		return
 	}
+	agentTypes, agentCLIStatus, err := resolveRunnableLocalAgentTypes(*agentType, fs.Args())
+	if err != nil {
+		commandFatal("INVALID_ARGUMENT", err.Error(), false, "")
+		return
+	}
 	rootDir := *cwd
 	if strings.TrimSpace(*dir) != "" {
 		rootDir = *dir
 	}
 	result, err := startAgentSupervisorBackground(ctx, cli, authConfig, localAgentSupervisorConfig{
 		RootDir:      strings.TrimSpace(rootDir),
-		AgentType:    strings.TrimSpace(*agentType),
+		AgentType:    formatLocalAgentTypes(agentTypes),
 		CodexMode:    codexModeValue,
 		ClaudeMode:   strings.TrimSpace(*claudeMode),
 		Command:      append([]string(nil), fs.Args()...),
@@ -93,12 +98,17 @@ func handleAgentStart(ctx context.Context, cli *CLI, authConfig cliAuth, args []
 	if err != nil {
 		commandFatalf("AGENT_START_FAILED", true, "", "Failed to start local agent runner: %v", err)
 	}
+	result.AgentTypes = append([]string(nil), agentTypes...)
+	result.DefaultAgentType = defaultLocalAgentType(formatLocalAgentTypes(agentTypes))
+	result.AgentCLIStatus = agentCLIStatus
 	if jsonEnabled {
 		writeJSONOutput(result)
 		return
 	}
 	fmt.Printf("Agent runner started: pid %d\n", result.PID)
 	fmt.Printf("Runner: %s\n", result.RunnerID)
+	fmt.Printf("Agent types: %s (default %s)\n", strings.Join(agentTypes, ", "), defaultLocalAgentType(formatLocalAgentTypes(agentTypes)))
+	printLocalAgentCLIStatus(agentCLIStatus)
 	fmt.Printf("Workspace: %s\n", result.CWD)
 	fmt.Printf("Log: %s\n", result.LogFile)
 }
@@ -107,11 +117,11 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 	args, jsonRequested := consumeBoolFlag(args, "json")
 	args, once := consumeBoolFlag(args, "once")
 	fs := newCommandFlagSet("agent run")
-	agentType := fs.String("agent", "codex", "Agent type")
+	agentType := fs.String("agent", "all", "Agent type to run: codex, claude, or all")
 	cwd := fs.String("cwd", ".", "Working directory for tracked agent sessions")
 	dir := fs.String("dir", "", "Alias for --cwd")
 	codexMode := fs.String("codex-mode", "app-server", "Codex runner mode: app-server")
-	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto, stream-json, or print")
+	claudeMode := fs.String("claude-mode", "auto", "Claude runner mode: auto or stream-json")
 	pollIntervalRaw := fs.String("poll-interval", "1s", "Event polling interval")
 	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
 	parseCommandFlags(fs, args)
@@ -125,6 +135,11 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 	codexModeValue := normalizedCodexMode(*codexMode)
 	if codexModeValue == "" {
 		commandFatal("INVALID_ARGUMENT", "--codex-mode must be app-server", false, "")
+		return
+	}
+	agentTypes, agentCLIStatus, err := resolveRunnableLocalAgentTypes(*agentType, commandArgs)
+	if err != nil {
+		commandFatal("INVALID_ARGUMENT", err.Error(), false, "")
 		return
 	}
 	rootDir := *cwd
@@ -142,11 +157,13 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 	if !jsonEnabled {
 		fmt.Printf("Tracking local agent sessions in %s. Press Ctrl-C to stop the local runner.\n", rootDir)
 		fmt.Printf("Runner: %s\n", runnerID)
+		fmt.Printf("Agent types: %s (default %s)\n", strings.Join(agentTypes, ", "), defaultLocalAgentType(formatLocalAgentTypes(agentTypes)))
+		printLocalAgentCLIStatus(agentCLIStatus)
 	}
 	completed, err := runAgentSupervisor(ctx, cli, authConfig, localAgentSupervisorConfig{
 		RootDir:      rootDir,
 		RunnerID:     runnerID,
-		AgentType:    strings.TrimSpace(*agentType),
+		AgentType:    formatLocalAgentTypes(agentTypes),
 		CodexMode:    codexModeValue,
 		ClaudeMode:   strings.TrimSpace(*claudeMode),
 		Command:      commandArgs,
@@ -160,7 +177,9 @@ func handleAgentRun(ctx context.Context, cli *CLI, authConfig cliAuth, args []st
 		writeJSONOutput(map[string]any{
 			"cwd":              rootDir,
 			"runner_id":        runnerID,
-			"agent_type":       strings.TrimSpace(*agentType),
+			"agent_type":       defaultLocalAgentType(formatLocalAgentTypes(agentTypes)),
+			"agent_types":      agentTypes,
+			"agent_cli_status": agentCLIStatus,
 			"completed_inputs": completed,
 		})
 	}
@@ -647,7 +666,7 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	}
 	claudeMode := normalizedClaudeMode(cfg.ClaudeMode)
 	if claudeMode == "" {
-		return 0, fmt.Errorf("--claude-mode must be auto, stream-json, or print")
+		return 0, fmt.Errorf("--claude-mode must be auto or stream-json")
 	}
 	nextSeq, queuedInputs, pendingLocalChanges, err := initialAgentBridgeState(ctx, cli, cfg.SessionID)
 	if err != nil {
@@ -656,8 +675,6 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 	completed := 0
 	var codexRunner localAgentTurnRunner
 	var claudeRunner *claudeStreamJSONRunner
-	var codexUnavailable bool
-	var claudeUnavailable bool
 	var active *activeAgentTurn
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
@@ -686,51 +703,47 @@ func runAgentBridge(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (int
 		prompt := queuedInputs[0]
 		queuedInputs = queuedInputs[1:]
 
-		runner := localAgentTurnRunner(commandAgentTurnRunner{cli: cli, cfg: cfg})
-		cancelOnInterrupt := true
+		var runner localAgentTurnRunner
+		cancelOnInterrupt := false
 		var afterFinish func(error)
-		if shouldUseCodexAppServer(cfg, codexMode) && !codexUnavailable {
+		if len(cfg.Command) > 0 {
+			runner = commandAgentTurnRunner{cli: cli, cfg: cfg}
+			cancelOnInterrupt = true
+		} else if shouldUseCodexAppServer(cfg, codexMode) {
 			if codexRunner == nil {
 				var err error
 				codexRunner, err = newCodexAppServerRunner(ctx, cli, cfg)
 				if err != nil {
 					_ = appendAgentError(ctx, cli, cfg.SessionID, "CODEX_APP_SERVER_UNAVAILABLE", err.Error())
-					if codexMode == "app-server" {
-						return err
-					}
-					codexUnavailable = true
+					return err
 				}
 			}
 			if codexRunner != nil {
 				runner = codexRunner
-				cancelOnInterrupt = false
 			}
-		}
-		if shouldUseClaudeStreamJSON(cfg, claudeMode) && !claudeUnavailable {
+		} else if shouldUseClaudeStreamJSON(cfg, claudeMode) {
 			if claudeRunner == nil {
 				var err error
 				claudeRunner, err = newClaudeStreamJSONRunner(ctx, cli, cfg)
 				if err != nil {
 					_ = appendAgentError(ctx, cli, cfg.SessionID, "CLAUDE_STREAM_JSON_UNAVAILABLE", err.Error())
-					if claudeMode == "stream-json" {
-						return err
-					}
-					claudeUnavailable = true
+					return err
 				}
 			}
 			if claudeRunner != nil {
 				runner = claudeRunner
-				cancelOnInterrupt = false
 				afterFinish = func(err error) {
 					if claudeRunner != nil && claudeRunner.isDone() {
 						_ = claudeRunner.Close()
 						claudeRunner = nil
-						if err != nil && claudeMode == "auto" {
-							claudeUnavailable = true
-						}
 					}
 				}
 			}
+		} else {
+			return fmt.Errorf("unsupported local agent type %q", strings.TrimSpace(cfg.AgentType))
+		}
+		if runner == nil {
+			return fmt.Errorf("no local agent runner available for %q", strings.TrimSpace(cfg.AgentType))
 		}
 
 		turnCtx, cancel := context.WithCancel(ctx)
@@ -922,14 +935,181 @@ func normalizedCodexMode(raw string) string {
 func normalizedClaudeMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "auto":
-		return "auto"
+		return "stream-json"
 	case "stream-json", "stream", "json":
 		return "stream-json"
-	case "print", "exec":
-		return "print"
 	default:
 		return ""
 	}
+}
+
+type localAgentCLIStatus struct {
+	AgentType string `json:"agent_type"`
+	Command   string `json:"command"`
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+func parseLocalAgentTypes(raw string) ([]string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" || value == "all" || value == "*" {
+		return agentsession.SupportedAgentTypes(), nil
+	}
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(value, ",") {
+		agentType := agentsession.NormalizeAgentType(part)
+		if agentType == "" {
+			continue
+		}
+		if agentType == "all" || agentType == "*" {
+			return agentsession.SupportedAgentTypes(), nil
+		}
+		if !agentsession.IsSupportedAgentType(agentType) {
+			return nil, fmt.Errorf("--agent must be codex, claude, all, or a comma-separated list of supported agent types")
+		}
+		seen[agentType] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return agentsession.SupportedAgentTypes(), nil
+	}
+	out := make([]string, 0, len(seen))
+	for _, agentType := range agentsession.SupportedAgentTypes() {
+		if _, ok := seen[agentType]; ok {
+			out = append(out, agentType)
+		}
+	}
+	return out, nil
+}
+
+func resolveRunnableLocalAgentTypes(raw string, command []string) ([]string, []localAgentCLIStatus, error) {
+	agentTypes, err := parseLocalAgentTypes(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	statuses := inspectLocalAgentCLIs(agentTypes, command)
+	if len(command) > 0 {
+		if len(statuses) > 0 && !statuses[0].Available {
+			return nil, statuses, fmt.Errorf("custom agent command unavailable: %s", statuses[0].Message)
+		}
+		return agentTypes, statuses, nil
+	}
+
+	allowPartial := localAgentSelectionAllowsPartial(raw)
+	available := make([]string, 0, len(agentTypes))
+	missing := make([]string, 0)
+	for _, status := range statuses {
+		if status.Available {
+			available = append(available, status.AgentType)
+			continue
+		}
+		if !allowPartial {
+			missing = append(missing, fmt.Sprintf("%s (%s)", status.AgentType, status.Message))
+		}
+	}
+	if len(missing) > 0 {
+		return nil, statuses, fmt.Errorf("requested agent CLI unavailable: %s", strings.Join(missing, ", "))
+	}
+	if len(available) == 0 {
+		return nil, statuses, fmt.Errorf("no supported agent CLIs found on PATH; install codex or claude")
+	}
+	return available, statuses, nil
+}
+
+func localAgentSelectionAllowsPartial(raw string) bool {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	return value == "" || value == "all" || value == "*"
+}
+
+func inspectLocalAgentCLIs(agentTypes []string, command []string) []localAgentCLIStatus {
+	if len(command) > 0 {
+		status := localAgentCLIStatus{
+			AgentType: "custom",
+			Command:   command[0],
+			Available: true,
+		}
+		if path, err := exec.LookPath(command[0]); err == nil {
+			status.Path = path
+		} else {
+			status.Available = false
+			status.Message = "custom command not found on PATH"
+		}
+		return []localAgentCLIStatus{status}
+	}
+	statuses := make([]localAgentCLIStatus, 0, len(agentTypes))
+	for _, agentType := range agentTypes {
+		commandName := localAgentCLICommand(agentType)
+		status := localAgentCLIStatus{
+			AgentType: agentType,
+			Command:   commandName,
+			Available: true,
+		}
+		if path, err := exec.LookPath(commandName); err == nil {
+			status.Path = path
+		} else {
+			status.Available = false
+			status.Message = commandName + " not found on PATH"
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+func localAgentCLICommand(agentType string) string {
+	switch agentsession.NormalizeAgentType(agentType) {
+	case "claude":
+		return "claude"
+	default:
+		return "codex"
+	}
+}
+
+func printLocalAgentCLIStatus(statuses []localAgentCLIStatus) {
+	available := make([]string, 0, len(statuses))
+	unavailable := make([]string, 0)
+	for _, status := range statuses {
+		if status.Available {
+			value := status.AgentType
+			if status.Path != "" {
+				value += "=" + status.Path
+			}
+			available = append(available, value)
+			continue
+		}
+		unavailable = append(unavailable, fmt.Sprintf("%s (%s)", status.AgentType, status.Message))
+	}
+	if len(available) > 0 {
+		fmt.Printf("Available agent CLIs: %s\n", strings.Join(available, ", "))
+	}
+	if len(unavailable) > 0 {
+		fmt.Printf("Unavailable agent CLIs: %s\n", strings.Join(unavailable, ", "))
+	}
+}
+
+func formatLocalAgentTypes(agentTypes []string) string {
+	normalized, err := parseLocalAgentTypes(strings.Join(agentTypes, ","))
+	if err != nil {
+		return agentsession.DefaultAgentType()
+	}
+	return strings.Join(normalized, ",")
+}
+
+func supportedLocalAgentTypes(raw string) []string {
+	agentTypes, err := parseLocalAgentTypes(raw)
+	if err != nil || len(agentTypes) == 0 {
+		return []string{agentsession.DefaultAgentType()}
+	}
+	return agentTypes
+}
+
+func defaultLocalAgentType(raw string) string {
+	agentTypes := supportedLocalAgentTypes(raw)
+	for _, agentType := range agentTypes {
+		if agentType == agentsession.DefaultAgentType() {
+			return agentType
+		}
+	}
+	return agentTypes[0]
 }
 
 func shouldUseCodexAppServer(cfg localAgentRunConfig, codexMode string) bool {
@@ -948,6 +1128,9 @@ func shouldUseClaudeStreamJSON(cfg localAgentRunConfig, claudeMode string) bool 
 
 func runLocalAgentCommand(ctx context.Context, cli *CLI, cfg localAgentRunConfig, prompt string) error {
 	name, args, stdinPrompt := localAgentCommand(cfg.AgentType, cfg.Command, prompt)
+	if name == "" {
+		return fmt.Errorf("custom agent command is required")
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	if strings.TrimSpace(cfg.CWD) != "" {
 		cmd.Dir = cfg.CWD
@@ -1015,12 +1198,9 @@ func localAgentCommand(agentType string, command []string, prompt string) (strin
 	if len(command) > 0 {
 		return command[0], append([]string(nil), command[1:]...), true
 	}
-	switch strings.ToLower(strings.TrimSpace(agentType)) {
-	case "claude":
-		return "claude", []string{"-p", prompt}, false
-	default:
-		return "codex", []string{"exec", "--skip-git-repo-check", prompt}, false
-	}
+	_ = agentType
+	_ = prompt
+	return "", nil, false
 }
 
 func appendAgentOutput(ctx context.Context, cli *CLI, sessionID, text, channel, eventType string, exitCode int32) error {

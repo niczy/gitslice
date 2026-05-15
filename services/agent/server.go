@@ -541,16 +541,18 @@ func (s *agentServiceServer) CreateSession(ctx context.Context, req *agentv1.Cre
 		return nil, status.Error(codes.FailedPrecondition, "runner is offline")
 	}
 
-	agentType := strings.ToLower(strings.TrimSpace(req.GetAgentType()))
-	runnerAgentType := strings.ToLower(strings.TrimSpace(runner.AgentType))
+	agentType := agentsession.NormalizeAgentType(req.GetAgentType())
 	if agentType == "" {
-		agentType = runnerAgentType
+		agentType = agentsession.RunnerDefaultAgentType(runner)
 	}
 	if agentType == "" {
 		agentType = agentsession.DefaultAgentType()
 	}
-	if runnerAgentType != "" && agentType != runnerAgentType {
-		return nil, status.Error(codes.InvalidArgument, "agent type does not match runner")
+	if !agentsession.IsSupportedAgentType(agentType) {
+		return nil, status.Error(codes.InvalidArgument, "unsupported agent type")
+	}
+	if !agentsession.RunnerSupportsAgentType(runner, agentType) {
+		return nil, status.Error(codes.InvalidArgument, "agent type is not supported by runner")
 	}
 
 	session, token, err := s.svc.CreateSession(ctx, userID, agentsession.CreateRequest{

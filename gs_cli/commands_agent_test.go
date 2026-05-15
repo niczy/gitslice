@@ -100,6 +100,72 @@ func TestNormalizedCodexModeRequiresAppServer(t *testing.T) {
 	}
 }
 
+func TestNormalizedClaudeModeRequiresStreamJSON(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "", want: "stream-json"},
+		{raw: "auto", want: "stream-json"},
+		{raw: "stream-json", want: "stream-json"},
+		{raw: "json", want: "stream-json"},
+		{raw: "print", want: ""},
+		{raw: "exec", want: ""},
+	}
+
+	for _, tc := range cases {
+		if got := normalizedClaudeMode(tc.raw); got != tc.want {
+			t.Fatalf("normalizedClaudeMode(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestResolveRunnableLocalAgentTypesAllFiltersMissingCLIs(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeExecutable(t, binDir, "codex")
+	t.Setenv("PATH", binDir)
+
+	agentTypes, statuses, err := resolveRunnableLocalAgentTypes("all", nil)
+	if err != nil {
+		t.Fatalf("resolveRunnableLocalAgentTypes failed: %v", err)
+	}
+	if !reflect.DeepEqual(agentTypes, []string{"codex"}) {
+		t.Fatalf("agent types = %#v, want codex only", agentTypes)
+	}
+	if len(statuses) != 2 || !statuses[0].Available || statuses[1].Available {
+		t.Fatalf("expected codex available and claude unavailable, got %#v", statuses)
+	}
+}
+
+func TestResolveRunnableLocalAgentTypesExplicitRequiresAllCLIs(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeExecutable(t, binDir, "codex")
+	t.Setenv("PATH", binDir)
+
+	_, statuses, err := resolveRunnableLocalAgentTypes("codex,claude", nil)
+	if err == nil || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("expected missing claude error, got %v", err)
+	}
+	if len(statuses) != 2 || !statuses[0].Available || statuses[1].Available {
+		t.Fatalf("expected codex available and claude unavailable, got %#v", statuses)
+	}
+}
+
+func TestLocalAgentCommandDoesNotFallbackToBuiltInCLI(t *testing.T) {
+	name, args, stdinPrompt := localAgentCommand("claude", nil, "hello")
+	if name != "" || args != nil || stdinPrompt {
+		t.Fatalf("expected no builtin fallback command, got name=%q args=%#v stdin=%t", name, args, stdinPrompt)
+	}
+}
+
+func writeFakeExecutable(t *testing.T, dir, name string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake executable %s: %v", name, err)
+	}
+}
+
 func TestParseLocalRunnerRestartRequest(t *testing.T) {
 	got := parseLocalRunnerRestartRequest([]byte(`{"upgrade":true,"reason":"web_ui"}`))
 	if !got.Upgrade || got.Reason != "web_ui" {
@@ -650,9 +716,38 @@ func TestLocalAgentRunnerCapabilitiesReportsLocalSessionIDs(t *testing.T) {
 	if payload["local_sessions_reported"] != true {
 		t.Fatalf("expected local_sessions_reported=true, got %#v", payload["local_sessions_reported"])
 	}
+	if payload["default_agent_type"] != "codex" {
+		t.Fatalf("expected default_agent_type=codex, got %#v", payload["default_agent_type"])
+	}
+	supported, ok := payload["supported_agent_types"].([]any)
+	if !ok || len(supported) != 1 || supported[0] != "codex" {
+		t.Fatalf("expected supported_agent_types to include codex, got %#v", payload["supported_agent_types"])
+	}
 	values, ok := payload["local_session_ids"].([]any)
 	if !ok || len(values) != 1 || values[0] != "sess-local" {
 		t.Fatalf("expected local_session_ids to include sess-local, got %#v", payload["local_session_ids"])
+	}
+}
+
+func TestLocalAgentRunnerCapabilitiesReportsMultipleAgentTypes(t *testing.T) {
+	root := t.TempDir()
+	raw, err := localAgentRunnerCapabilities(localAgentSupervisorConfig{
+		RootDir:   root,
+		AgentType: "all",
+	})
+	if err != nil {
+		t.Fatalf("localAgentRunnerCapabilities failed: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal capabilities: %v", err)
+	}
+	if payload["agent_type"] != "codex" || payload["default_agent_type"] != "codex" {
+		t.Fatalf("expected codex default agent type, got %#v", payload)
+	}
+	supported, ok := payload["supported_agent_types"].([]any)
+	if !ok || len(supported) != 2 || supported[0] != "codex" || supported[1] != "claude" {
+		t.Fatalf("expected codex and claude support, got %#v", payload["supported_agent_types"])
 	}
 }
 

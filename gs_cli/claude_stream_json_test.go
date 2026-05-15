@@ -1,6 +1,17 @@
 package gscli
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestClaudeStreamJSONArgsBypassPermissions(t *testing.T) {
+	got := claudeStreamJSONArgs()
+	wantSuffix := []string{"--permission-mode", "bypassPermissions"}
+	if len(got) < len(wantSuffix) || !reflect.DeepEqual(got[len(got)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("expected claude stream-json args to end with %#v, got %#v", wantSuffix, got)
+	}
+}
 
 func TestClaudeTextUpdateHandlesCumulativeAndChunkedText(t *testing.T) {
 	current, delta := claudeTextUpdate("", "Hello")
