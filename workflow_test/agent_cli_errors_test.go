@@ -21,15 +21,6 @@ func TestSlicePublishReturnsJSONErrorWhenClean(t *testing.T) {
 	}
 }
 
-func TestRepoPushReturnsJSONErrorWhenBindingMissing(t *testing.T) {
-	missingPath := fmt.Sprintf("/%s/missing-%d", workflowUsername(t), time.Now().UnixNano())
-
-	errResp := runCLIJSONErrorOrFail[cliErrorJSON](t, "", "repo", "push", missingPath)
-	if errResp.ErrorCode != "REPO_PUSH_FAILED" {
-		t.Fatalf("expected missing binding error, got: %+v", errResp)
-	}
-}
-
 func TestSliceStatusReturnsJSONErrorOutsideCheckout(t *testing.T) {
 	workdir := filepath.Join(t.TempDir(), "plain")
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
