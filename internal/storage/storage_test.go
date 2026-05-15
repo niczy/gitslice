@@ -522,6 +522,14 @@ func runMergeEventStoreContract(ctx context.Context, t *testing.T, store MergeEv
 		t.Fatalf("expected CreatedAt to be populated")
 	}
 
+	byCommit, err := store.GetMergeEventBySourceCommitHash(ctx, "commit-2")
+	if err != nil {
+		t.Fatalf("GetMergeEventBySourceCommitHash failed: %v", err)
+	}
+	if byCommit.EventID != "evt-2" || byCommit.ChangesetID != "chg-2" {
+		t.Fatalf("unexpected event by source commit: %#v", byCommit)
+	}
+
 	listed, err := store.ListMergeEvents(ctx, 1, 0, 10)
 	if err != nil {
 		t.Fatalf("ListMergeEvents failed: %v", err)

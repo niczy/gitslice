@@ -23,6 +23,10 @@ export function normalizeDiffResponse(data) {
     files_modified: data.files_modified ?? data.filesModified ?? 0,
     files_deleted: data.files_deleted ?? data.filesDeleted ?? 0,
     files_renamed: data.files_renamed ?? data.filesRenamed ?? 0,
+    changeset: data.changeset || data.relatedChangeset
+      ? normalizeChangesetInfo(data.changeset || data.relatedChangeset)
+      : null,
+    agent_sessions: normalizeAgentSessionChangesetLinks(data.agent_sessions ?? data.agentSessions ?? []),
     changes: (data.changes || []).map(normalizeChange),
   };
 }
@@ -60,6 +64,8 @@ export function normalizeChangesetDiffResponse(data) {
   return {
     ...data,
     changeset: normalizedChangeset,
+    agent_sessions: normalizeAgentSessionChangesetLinks(data?.agent_sessions ?? data?.agentSessions ?? []),
+    merge: normalizeChangesetMergeLink(data?.merge),
     snapshot: normalizeChangesetSnapshot(snapshot),
     diff: {
       ...diff,
@@ -70,6 +76,43 @@ export function normalizeChangesetDiffResponse(data) {
       lines_removed: diff.lines_removed ?? diff.linesRemoved ?? 0,
     },
     changes: normalizedChanges.length > 0 ? normalizedChanges : synthesizedChanges,
+  };
+}
+
+export function normalizeArtifactLinkResponse(data) {
+  return {
+    ...data,
+    commit_hash: data?.commit_hash ?? data?.commitHash ?? '',
+    changeset: data?.changeset ? normalizeChangesetInfo(data.changeset) : null,
+    agent_sessions: normalizeAgentSessionChangesetLinks(data?.agent_sessions ?? data?.agentSessions ?? []),
+    merge: normalizeChangesetMergeLink(data?.merge),
+  };
+}
+
+export function normalizeAgentSessionChangesetLinks(links = []) {
+  return (Array.isArray(links) ? links : []).map((link) => ({
+    ...link,
+    session_id: link?.session_id ?? link?.sessionId ?? '',
+    changeset_id: link?.changeset_id ?? link?.changesetId ?? '',
+    snapshot_id: link?.snapshot_id ?? link?.snapshotId ?? '',
+    snapshot_version: Number(link?.snapshot_version ?? link?.snapshotVersion ?? 0),
+    snapshot_hash: link?.snapshot_hash ?? link?.snapshotHash ?? '',
+    base_commit_hash: link?.base_commit_hash ?? link?.baseCommitHash ?? '',
+    exported_from_seq: Number(link?.exported_from_seq ?? link?.exportedFromSeq ?? 0),
+    runner_id: link?.runner_id ?? link?.runnerId ?? '',
+    source: link?.source ?? '',
+    exported_at: link?.exported_at ?? link?.exportedAt ?? 0,
+    slice_id: link?.slice_id ?? link?.sliceId ?? '',
+  }));
+}
+
+export function normalizeChangesetMergeLink(link) {
+  if (!link) return null;
+  return {
+    ...link,
+    commit_hash: link.commit_hash ?? link.commitHash ?? '',
+    source_slice_id: link.source_slice_id ?? link.sourceSliceId ?? '',
+    merged_at: link.merged_at ?? link.mergedAt ?? 0,
   };
 }
 

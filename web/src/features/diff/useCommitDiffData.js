@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiBaseUrl, fetchWithAuth } from '../../utils/api.js';
-import { normalizeDiffResponse } from '../../utils/normalize.js';
+import { apiBaseUrl, fetchWithAuth, getCommitArtifactLinks } from '../../utils/api.js';
+import { normalizeArtifactLinkResponse, normalizeDiffResponse } from '../../utils/normalize.js';
 
 export function useCommitDiffData({
   commitHash,
@@ -46,7 +46,14 @@ export function useCommitDiffData({
         if (!response.ok) throw new Error(`Request failed (${response.status})`);
         const payload = await response.json();
         if (active) {
-          setDiffData(normalizeDiffResponse(payload));
+          const normalized = normalizeDiffResponse(payload);
+          const linkPayload = await getCommitArtifactLinks(commitHash).catch(() => null);
+          if (active && linkPayload) {
+            const links = normalizeArtifactLinkResponse(linkPayload);
+            normalized.changeset = links.changeset;
+            normalized.agent_sessions = links.agent_sessions;
+          }
+          setDiffData(normalized);
           setLoadedCommitHash(commitHash);
           setDataRevision((revision) => revision + 1);
         }

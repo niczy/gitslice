@@ -4,6 +4,8 @@ import {
   requestAgentSessionChangesetExport,
   requestAgentSessionLocalChanges,
 } from '../../api/agents.js';
+import { getChangesetArtifactLinks } from '../../api/changesets.js';
+import { normalizeArtifactLinkResponse } from '../../utils/normalize.js';
 import { LOCAL_CHANGES_REQUEST_TIMEOUT_MS } from './agentConstants.js';
 import {
   latestChangesetExportEvent,
@@ -33,6 +35,7 @@ export function useAgentLocalChanges({
   const [pendingChangesetExportRequestId, setPendingChangesetExportRequestId] = useState('');
   const [changesetMessage, setChangesetMessage] = useState('');
   const [localChangesError, setLocalChangesError] = useState('');
+  const [latestExportedChangeset, setLatestExportedChangeset] = useState(null);
   const autoLocalChangesSessionRef = useRef('');
   const autoLocalChangesOutputSeqRef = useRef(0);
 
@@ -180,6 +183,38 @@ export function useAgentLocalChanges({
   }, [latestExportEvent, latestExportFailureEvent, pendingChangesetExportRequestId]);
 
   useEffect(() => {
+    if (!latestExportedChangesetId) {
+      setLatestExportedChangeset(null);
+      return undefined;
+    }
+
+    let active = true;
+    const loadChangesetLink = async () => {
+      try {
+        const response = await getChangesetArtifactLinks(latestExportedChangesetId);
+        if (!active) {
+          return;
+        }
+        setLatestExportedChangeset(normalizeArtifactLinkResponse(response).changeset);
+      } catch {
+        if (active) {
+          setLatestExportedChangeset(null);
+        }
+      }
+    };
+
+    loadChangesetLink();
+    if (typeof window === 'undefined') {
+      return () => { active = false; };
+    }
+    const timer = window.setInterval(loadChangesetLink, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [latestExportedChangesetId]);
+
+  useEffect(() => {
     if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession)) {
       return;
     }
@@ -216,6 +251,7 @@ export function useAgentLocalChanges({
     changesetExportLoading: changesetExportBusy,
     changesetMessage,
     hasDirtyFiles,
+    latestExportedChangeset,
     latestExportedChangesetId,
     localChanges,
     localChangesDisplayError,

@@ -76,6 +76,11 @@ function shouldDeferPatchLoad(changes = []) {
   return changes.some((change) => ((change.lines_added || 0) + (change.lines_deleted || 0)) > LAZY_PATCH_LINE_THRESHOLD);
 }
 
+function shortArtifactId(value = '', length = 14) {
+  const text = String(value || '');
+  return text.length > length ? text.slice(0, length) : text;
+}
+
 // ---------------------------------------------------------------------------
 // Commit Diff Page Component
 // ---------------------------------------------------------------------------
@@ -112,6 +117,11 @@ export default function CommitDiffPage({
   const fileRefs = useRef({});
   const panelItemRefs = useRef({});
   const diffContentRef = useRef(null);
+  const linkedChangeset = diffData?.changeset || null;
+  const linkedAgentSession = (diffData?.agent_sessions || [])[0] || null;
+  const conversationHref = linkedAgentSession?.session_id
+    ? `/slices/${encodeURIComponent(linkedAgentSession.slice_id || linkedChangeset?.slice_id || linkedChangeset?.sliceId || '')}/agents?session=${encodeURIComponent(linkedAgentSession.session_id)}`
+    : '';
 
   const encodePath = useCallback((value) => value.split('/').map(encodeURIComponent).join('/'), []);
 
@@ -343,6 +353,27 @@ export default function CommitDiffPage({
           </div>
         )}
         eyebrow="Commit diff"
+        meta={(
+          <>
+            {linkedChangeset?.changeset_id && (
+              <p className="changeset-title-meta diff-artifact-links" data-testid="commit-artifact-links">
+                Changeset{' '}
+                <a href={`/changesets/${encodeURIComponent(linkedChangeset.changeset_id)}`}>
+                  {shortArtifactId(linkedChangeset.changeset_id, 18)}
+                </a>
+                {linkedChangeset.status && <span className="diff-artifact-pill">{linkedChangeset.status}</span>}
+              </p>
+            )}
+            {conversationHref && (
+              <p className="changeset-title-meta diff-artifact-links" data-testid="commit-conversation-link">
+                Conversation{' '}
+                <a href={conversationHref}>
+                  {shortArtifactId(linkedAgentSession.session_id, 18)}
+                </a>
+              </p>
+            )}
+          </>
+        )}
         onBack={onBack}
         title={(
           <>

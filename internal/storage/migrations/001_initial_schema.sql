@@ -742,6 +742,8 @@ ALTER TABLE ONLY merge_events
 ALTER TABLE ONLY merge_events
     ADD CONSTRAINT merge_events_pkey PRIMARY KEY (shard_id, merge_seq);
 
+CREATE INDEX idx_merge_events_source_commit_hash ON merge_events USING btree (source_commit_hash, created_at DESC);
+
 ALTER TABLE ONLY organization_invites
     ADD CONSTRAINT organization_invites_pkey PRIMARY KEY (invite_id);
 

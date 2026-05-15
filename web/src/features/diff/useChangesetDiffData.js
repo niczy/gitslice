@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  getChangesetArtifactLinks,
   getChangesetDiff,
   listChangesetSnapshots,
 } from '../../utils/api.js';
 import {
+  normalizeArtifactLinkResponse,
   normalizeChangesetDiffResponse,
   normalizeChangesetSnapshotListResponse,
 } from '../../utils/normalize.js';
@@ -151,9 +153,24 @@ export function useChangesetDiffData({
         setError('');
       }
       try {
-        const response = await getChangesetDiff(changesetId, selectedSnapshotVersion || undefined);
+        const [response, linkResponse] = await Promise.all([
+          getChangesetDiff(changesetId, selectedSnapshotVersion || undefined),
+          getChangesetArtifactLinks(changesetId).catch(() => null),
+        ]);
         if (active) {
-          setPayload(normalizeChangesetDiffResponse(response));
+          const normalized = normalizeChangesetDiffResponse(response);
+          if (linkResponse) {
+            const links = normalizeArtifactLinkResponse(linkResponse);
+            normalized.agent_sessions = links.agent_sessions;
+            normalized.merge = links.merge;
+            if (links.changeset) {
+              normalized.changeset = {
+                ...normalized.changeset,
+                ...links.changeset,
+              };
+            }
+          }
+          setPayload(normalized);
           setLoadedDiffKey(nextDiffKey);
         }
       } catch (err) {

@@ -59,7 +59,9 @@ export {
 
 export {
   closeChangeset,
+  getChangesetArtifactLinks,
   getChangesetDiff,
+  getCommitArtifactLinks,
   listChangesetSnapshots,
   mergeChangeset,
 } from '../api/changesets.js';

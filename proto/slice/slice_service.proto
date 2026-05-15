@@ -35,6 +35,20 @@ service SliceService {
     };
   }
 
+  // Get server-side links between a changeset, agent conversations, and merge commits.
+  rpc GetChangesetArtifactLinks(GetChangesetArtifactLinksRequest) returns (GetChangesetArtifactLinksResponse) {
+    option (google.api.http) = {
+      get: "/v1/changesets/{changeset_id}/artifact-links"
+    };
+  }
+
+  // Get server-side links between a commit, its originating changeset, and agent conversations.
+  rpc GetCommitArtifactLinks(GetCommitArtifactLinksRequest) returns (GetCommitArtifactLinksResponse) {
+    option (google.api.http) = {
+      get: "/v1/commits/{commit_hash}/artifact-links"
+    };
+  }
+
   // List version snapshots for a changeset.
   rpc ListChangesetSnapshots(ListChangesetSnapshotsRequest) returns (ListChangesetSnapshotsResponse) {
     option (google.api.http) = {
@@ -356,6 +370,46 @@ message ReviewChangesetResponse {
   repeated file.v1.FileChangeRecord changes = 5;
   ChangesetSnapshotInfo snapshot = 6;
   repeated ReviewIssue issues = 7;
+}
+
+message GetChangesetArtifactLinksRequest {
+  string changeset_id = 1;
+}
+
+message GetChangesetArtifactLinksResponse {
+  ChangesetInfo changeset = 1;
+  repeated AgentSessionChangesetLink agent_sessions = 2;
+  ChangesetMergeLink merge = 3;
+}
+
+message GetCommitArtifactLinksRequest {
+  string commit_hash = 1;
+}
+
+message GetCommitArtifactLinksResponse {
+  string commit_hash = 1;
+  ChangesetInfo changeset = 2;
+  repeated AgentSessionChangesetLink agent_sessions = 3;
+}
+
+message AgentSessionChangesetLink {
+  string session_id = 1;
+  string changeset_id = 2;
+  string snapshot_id = 3;
+  int32 snapshot_version = 4;
+  string snapshot_hash = 5;
+  string base_commit_hash = 6;
+  uint64 exported_from_seq = 7;
+  string runner_id = 8;
+  string source = 9;
+  int64 exported_at = 10;
+  string slice_id = 11;
+}
+
+message ChangesetMergeLink {
+  string commit_hash = 1;
+  string source_slice_id = 2;
+  int64 merged_at = 3;
 }
 
 message ListChangesetSnapshotsRequest {

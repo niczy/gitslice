@@ -23,6 +23,7 @@ export default function SliceAgentsConversationPanel({
   hasDirtyFiles,
   inputError,
   inputText,
+  latestExportedChangeset,
   latestExportedChangesetId,
   localChanges,
   localChangesDisplayError,
@@ -125,6 +126,7 @@ export default function SliceAgentsConversationPanel({
                 changesetMessage={changesetMessage}
                 displayError={localChangesDisplayError}
                 hasDirtyFiles={hasDirtyFiles}
+                latestExportedChangeset={latestExportedChangeset}
                 latestExportedChangesetId={latestExportedChangesetId}
                 localChanges={localChanges}
                 localChangesLoading={localChangesLoading}

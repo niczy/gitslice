@@ -26,6 +26,7 @@ export default function SliceAgentsLocalChangesPanel({
   changesetMessage,
   displayError,
   hasDirtyFiles,
+  latestExportedChangeset,
   latestExportedChangesetId,
   localChanges,
   localChangesLoading,
@@ -35,6 +36,7 @@ export default function SliceAgentsLocalChangesPanel({
   onRefresh,
 }) {
   const [expandedFiles, setExpandedFiles] = useState(() => new Set());
+  const latestExportedChangesetStatus = latestExportedChangeset?.status || '';
 
   useEffect(() => {
     setExpandedFiles(new Set());
@@ -188,7 +190,12 @@ export default function SliceAgentsLocalChangesPanel({
           data-testid="slice-agents-exported-changeset"
         >
           <GitPullRequest size={14} aria-hidden="true" />
-          <span>{shortEntityId(latestExportedChangesetId, 18)}</span>
+          <span className="slice-agents-export-id">{shortEntityId(latestExportedChangesetId, 18)}</span>
+          {latestExportedChangesetStatus && (
+            <span className={`slice-agents-export-status slice-agents-export-status--${latestExportedChangesetStatus}`}>
+              {latestExportedChangesetStatus}
+            </span>
+          )}
           <ExternalLink size={13} aria-hidden="true" />
         </a>
       )}
