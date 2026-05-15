@@ -13,7 +13,20 @@ service SliceService {
   rpc CheckoutSlice(CheckoutRequest) returns (CheckoutResponse);
 
   // Create a new change list
-  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
+  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets"
+      body: "*"
+    };
+  }
+
+  // Create and immediately commit a direct file-tree edit.
+  rpc CreateAndMergeChangeset(CreateChangesetRequest) returns (MergeChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets:createAndMerge"
+      body: "*"
+    };
+  }
 
   // Review a change list (check against slice head)
   rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse) {

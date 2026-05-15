@@ -4872,6 +4872,89 @@ merge_policy:
 	}
 }
 
+func TestCreateAndMergeChangesetBypassesCIGateWithoutForce(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
+	st := storage.NewInMemoryStorage()
+	homeSliceID := homeslice.IDForUsername("alice")
+	slice := &models.Slice{ID: homeSliceID, Name: "alice", Owners: []string{"alice"}, CreatedBy: "alice"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/.gitslice/ci.yaml", []byte(`
+version: 1
+triggers:
+  changeset_export: true
+defaults:
+  runner_pool: default
+  shell: bash
+runner_pools:
+  default:
+    executor: shell
+merge_policy:
+  require_success: true
+  allow_force_merge: false
+`))
+	mustWriteSliceManifest(t, ctx, st, homeSliceID, "alice/api/.gs-ci.yaml", []byte(`
+version: 1
+name: api
+watch:
+  - "**/*.go"
+jobs:
+  unit:
+    required: true
+    commands:
+      - go test ./...
+`))
+
+	srv := NewService(st)
+	mergeResp, err := srv.CreateAndMergeChangeset(ctx, &slicev1.CreateChangesetRequest{
+		SliceId:       homeSliceID,
+		ModifiedFiles: []string{"alice/api/from-tree.go"},
+		Message:       "create file from tree",
+		FileContents: []*slicev1.FileContentChange{{
+			Path:    "alice/api/from-tree.go",
+			Content: []byte("package main\n"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndMergeChangeset failed: %v", err)
+	}
+	if mergeResp.GetStatus() != slicev1.MergeStatus_MERGE_STATUS_SUCCESS {
+		t.Fatalf("merge status = %v, want success", mergeResp.GetStatus())
+	}
+	cs, err := st.GetChangeset(ctx, mergeResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("GetChangeset failed: %v", err)
+	}
+	if cs.Status != models.ChangesetStatusMerged {
+		t.Fatalf("changeset status = %v, want merged", cs.Status)
+	}
+	event, err := st.GetMergeEventByChangeset(ctx, mergeResp.GetChangesetId())
+	if err != nil {
+		t.Fatalf("GetMergeEventByChangeset failed: %v", err)
+	}
+	if event.Forced {
+		t.Fatalf("direct file-tree commit should not be recorded as force merge")
+	}
+	if len(event.TouchedPaths) != 1 || event.TouchedPaths[0] != "alice/api/from-tree.go" {
+		t.Fatalf("merge event touched paths = %#v, want alice/api/from-tree.go", event.TouchedPaths)
+	}
+	if len(event.PathUpdates) != 1 {
+		t.Fatalf("merge event path updates = %d, want 1", len(event.PathUpdates))
+	}
+	update := event.PathUpdates[0]
+	if update.Path != "alice/api/from-tree.go" || update.Deleted || update.ContentHash == "" {
+		t.Fatalf("merge event path update = %#v, want created file with content hash", update)
+	}
+	file, err := storage.ReadVersionedFileContent(ctx, st, update.ContentHash)
+	if err != nil {
+		t.Fatalf("ReadVersionedFileContent failed: %v", err)
+	}
+	if got := string(file.Content); got != "package main\n" {
+		t.Fatalf("committed file content = %q, want package main", got)
+	}
+}
+
 func TestMergeChangesetEnqueuesMergeRequestedRunWhenChecksMissing(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User alice"))
 	st := storage.NewInMemoryStorage()

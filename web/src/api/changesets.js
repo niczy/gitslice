@@ -31,9 +31,15 @@ export async function listChangesetSnapshots(changesetId, options = {}) {
   return response.json();
 }
 
-export async function mergeChangeset(changesetId) {
+export async function mergeChangeset(changesetId, { force = false, forceReason = '' } = {}) {
+  const body = force || forceReason ? JSON.stringify({
+    force,
+    forceReason,
+  }) : undefined;
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/merge`, {
     method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body,
   });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to merge changeset'));

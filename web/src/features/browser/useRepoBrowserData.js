@@ -15,6 +15,7 @@ import {
   useRepoBrowserRouteWriter,
 } from './useRepoBrowserRouteState.js';
 import { useRepoBrowserTreeLoader } from './useRepoBrowserTreeLoader.js';
+import { useRepoBrowserTreeActions } from './useRepoBrowserTreeActions.js';
 import { useRepoBrowserTreeState } from './useRepoBrowserTreeState.js';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
@@ -27,6 +28,7 @@ export function useRepoBrowserData({
   buildRoutePath,
   canLoad,
   closeSidebar,
+  currentSlice,
   currentSliceDisplayName,
   currentSliceLabel,
   hasInitialSelectedFilePayload,
@@ -320,6 +322,28 @@ export function useRepoBrowserData({
     writeBrowserState,
   });
 
+  const { getCreateTreeEntryBlockedReason, handleTreeAction, treeActionState } = useRepoBrowserTreeActions({
+    apiBaseUrl,
+    buildEntriesUrl,
+    buildFileUrl,
+    canLoad,
+    clearFilePreview,
+    currentSlice,
+    focusedEntry,
+    openFilesView,
+    setError,
+    setExpandedPaths,
+    setFileError,
+    setFocusedEntry,
+    setIsLoading,
+    setSliceHash,
+    setTreeEntries,
+    sliceHash,
+    sliceId,
+    treeEntriesScopeRef,
+    writeBrowserState,
+  });
+
   useRepoBrowserRouteReader({
     isActive,
     openDirectoryPath,
@@ -378,6 +402,8 @@ export function useRepoBrowserData({
     handleBreadcrumbClick,
     handleContentEntryClick,
     handleEntryClick,
+    getCreateTreeEntryBlockedReason,
+    handleTreeAction,
     hasLoadedRootEntries,
     hasPreviewContent,
     hasSelectedDirectoryEntries,
@@ -400,6 +426,7 @@ export function useRepoBrowserData({
     showHistory,
     toggleHistory,
     treeEntries,
+    treeActionState,
     visibleEntryError,
   };
 }

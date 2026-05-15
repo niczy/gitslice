@@ -103,8 +103,26 @@
   padding: 0;
 }
 
+.tree-item {
+  position: relative;
+}
+
+.tree-entry-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 4px;
+}
+
+.tree-entry-row:hover,
+.tree-entry-row.active {
+  background: var(--surface-hover);
+}
+
 .tree-entry {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   border-radius: 4px;
@@ -120,7 +138,7 @@
 }
 
 .tree-entry:hover {
-  background: var(--surface-hover);
+  background: transparent;
   transform: translateX(4px);
 }
 
@@ -146,12 +164,110 @@
 
 .entry-name {
   flex: 1;
+  min-width: 0;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .entry-meta {
+  flex: 0 0 auto;
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+.tree-action-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  padding-right: 2px;
+}
+
+.tree-action-toggle {
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  opacity: 0;
+}
+
+.panel-header-actions .tree-action-toggle {
+  opacity: 1;
+}
+
+.tree-entry-row:hover .tree-action-toggle,
+.tree-entry-row.active .tree-action-toggle,
+.tree-action-toggle.active,
+.tree-action-toggle:focus-visible {
+  opacity: 1;
+}
+
+.tree-action-toggle:hover,
+.tree-action-toggle.active {
+  border-color: var(--border);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+}
+
+.tree-action-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 2px;
+  z-index: 8;
+  width: 148px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+}
+
+.panel-header-actions .tree-action-menu {
+  right: 0;
+}
+
+.tree-action-item {
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-action-item:hover,
+.tree-action-item:focus-visible {
+  outline: none;
+  background: var(--surface-hover);
+}
+
+.tree-action-item:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.tree-action-item:disabled:hover,
+.tree-action-item:disabled:focus-visible {
+  background: transparent;
+}
+
+.tree-action-item.danger {
+  color: #cf222e;
+}
+
+.tree-action-item.danger:hover,
+.tree-action-item.danger:focus-visible {
+  background: #ffebe9;
 }
 
 /* Breadcrumbs */
