@@ -70,6 +70,21 @@ func (s *sliceServiceServer) optionalUsername(ctx context.Context) (string, erro
 	return identity.Username, nil
 }
 
+func (s *sliceServiceServer) loadAuthorizedChangeset(ctx context.Context, changesetID, username string) (*models.Changeset, *models.Slice, error) {
+	cs, err := s.storage.GetChangeset(ctx, changesetID)
+	if err != nil {
+		return nil, nil, status.Error(codes.NotFound, fmt.Sprintf("changeset not found: %s", changesetID))
+	}
+	slice, err := s.storage.GetSlice(ctx, cs.SliceID)
+	if err != nil {
+		return nil, nil, status.Error(codes.NotFound, fmt.Sprintf("slice not found: %s", cs.SliceID))
+	}
+	if !authz.HasSliceViewAccess(slice, username) {
+		return nil, nil, status.Error(codes.PermissionDenied, "not authorized for slice")
+	}
+	return cs, slice, nil
+}
+
 const (
 	defaultPromotionBatchWindow  = 50 * time.Millisecond
 	defaultPromotionBatchMaxSize = 512
@@ -79,6 +94,7 @@ const (
 	checkoutManifestChunkSize    = 256
 	maxReviewPatchableChanges    = 100
 	maxChangesetListReviewPaths  = 500
+	agentArtifactLinkLimit       = 20
 )
 
 func newSliceServiceServer(st storage.Storage) *sliceServiceServer {
@@ -1495,6 +1511,79 @@ func (s *sliceServiceServer) ReviewChangeset(ctx context.Context, req *slicev1.R
 		Snapshot:     changesetSnapshotToProto(snapshot),
 		Issues:       issues,
 	}, nil
+}
+
+func (s *sliceServiceServer) GetChangesetArtifactLinks(ctx context.Context, req *slicev1.GetChangesetArtifactLinksRequest) (*slicev1.GetChangesetArtifactLinksResponse, error) {
+	changesetID := strings.TrimSpace(req.GetChangesetId())
+	if changesetID == "" {
+		return nil, status.Error(codes.InvalidArgument, "changeset_id is required")
+	}
+
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cs, _, err := s.loadAuthorizedChangeset(ctx, changesetID, username)
+	if err != nil {
+		return nil, err
+	}
+
+	links, err := s.agentSessionChangesetLinks(ctx, cs)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load agent session links: %v", err))
+	}
+
+	mergeLink, err := s.changesetMergeLink(ctx, cs.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load merge link: %v", err))
+	}
+
+	return &slicev1.GetChangesetArtifactLinksResponse{
+		Changeset:     convertChangesetToProto(cs),
+		AgentSessions: links,
+		Merge:         mergeLink,
+	}, nil
+}
+
+func (s *sliceServiceServer) GetCommitArtifactLinks(ctx context.Context, req *slicev1.GetCommitArtifactLinksRequest) (*slicev1.GetCommitArtifactLinksResponse, error) {
+	commitHash := strings.TrimSpace(req.GetCommitHash())
+	if commitHash == "" {
+		return nil, status.Error(codes.InvalidArgument, "commit_hash is required")
+	}
+
+	username, err := s.requireUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &slicev1.GetCommitArtifactLinksResponse{CommitHash: commitHash}
+	mergeStore, ok := s.storage.(storage.MergeEventStore)
+	if !ok {
+		return resp, nil
+	}
+	event, err := mergeStore.GetMergeEventBySourceCommitHash(ctx, commitHash)
+	if err != nil {
+		if errors.Is(err, storage.ErrMergeEventNotFound) {
+			return resp, nil
+		}
+		if errors.Is(err, storage.ErrInvalidInput) {
+			return nil, status.Error(codes.InvalidArgument, "commit_hash is required")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load merge event: %v", err))
+	}
+
+	cs, _, err := s.loadAuthorizedChangeset(ctx, event.ChangesetID, username)
+	if err != nil {
+		return nil, err
+	}
+	links, err := s.agentSessionChangesetLinks(ctx, cs)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to load agent session links: %v", err))
+	}
+
+	resp.Changeset = convertChangesetToProto(cs)
+	resp.AgentSessions = links
+	return resp, nil
 }
 
 func (s *sliceServiceServer) ListChangesetSnapshots(ctx context.Context, req *slicev1.ListChangesetSnapshotsRequest) (*slicev1.ListChangesetSnapshotsResponse, error) {
@@ -4391,6 +4480,72 @@ func convertChangesetToProto(cs *models.Changeset) *slicev1.ChangesetInfo {
 		CreatedAt:         cs.CreatedAt.Unix(),
 		MergedAt:          mergedAt,
 		ModifiedFileCount: int32(changesetModifiedFileCount(cs)),
+	}
+}
+
+func (s *sliceServiceServer) agentSessionChangesetLinks(ctx context.Context, cs *models.Changeset) ([]*slicev1.AgentSessionChangesetLink, error) {
+	if cs == nil || strings.TrimSpace(cs.ID) == "" {
+		return nil, nil
+	}
+	links, err := s.storage.ListChangesetAgentSessions(ctx, cs.ID, agentArtifactLinkLimit)
+	if err != nil {
+		if errors.Is(err, storage.ErrChangesetNotFound) {
+			return []*slicev1.AgentSessionChangesetLink{}, nil
+		}
+		return nil, err
+	}
+	out := make([]*slicev1.AgentSessionChangesetLink, 0, len(links))
+	for _, link := range links {
+		protoLink := agentSessionChangesetLinkToProto(link, cs.SliceID)
+		if protoLink != nil {
+			out = append(out, protoLink)
+		}
+	}
+	return out, nil
+}
+
+func (s *sliceServiceServer) changesetMergeLink(ctx context.Context, changesetID string) (*slicev1.ChangesetMergeLink, error) {
+	mergeStore, ok := s.storage.(storage.MergeEventStore)
+	if !ok {
+		return nil, nil
+	}
+	event, err := mergeStore.GetMergeEventByChangeset(ctx, changesetID)
+	if err != nil {
+		if errors.Is(err, storage.ErrMergeEventNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return changesetMergeLinkToProto(event), nil
+}
+
+func agentSessionChangesetLinkToProto(link *models.AgentSessionChangeset, sliceID string) *slicev1.AgentSessionChangesetLink {
+	if link == nil {
+		return nil
+	}
+	return &slicev1.AgentSessionChangesetLink{
+		SessionId:       link.SessionID,
+		ChangesetId:     link.ChangesetID,
+		SnapshotId:      link.SnapshotID,
+		SnapshotVersion: link.SnapshotVersion,
+		SnapshotHash:    link.SnapshotHash,
+		BaseCommitHash:  link.BaseCommitHash,
+		ExportedFromSeq: link.ExportedFromSeq,
+		RunnerId:        link.RunnerID,
+		Source:          link.Source,
+		ExportedAt:      link.ExportedAt.Unix(),
+		SliceId:         sliceID,
+	}
+}
+
+func changesetMergeLinkToProto(event *models.MergeEvent) *slicev1.ChangesetMergeLink {
+	if event == nil {
+		return nil
+	}
+	return &slicev1.ChangesetMergeLink{
+		CommitHash:    event.SourceCommitHash,
+		SourceSliceId: event.SourceSliceID,
+		MergedAt:      event.CreatedAt.Unix(),
 	}
 }
 

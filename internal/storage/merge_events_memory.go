@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/niczy/gitslice/internal/models"
@@ -128,6 +129,31 @@ func (s *InMemoryStorage) GetMergeEventByChangeset(ctx context.Context, changese
 		return nil, ErrMergeEventNotFound
 	}
 	return cloneMergeEvent(event), nil
+}
+
+func (s *InMemoryStorage) GetMergeEventBySourceCommitHash(ctx context.Context, sourceCommitHash string) (*models.MergeEvent, error) {
+	_ = ctx
+	sourceCommitHash = strings.TrimSpace(sourceCommitHash)
+	if sourceCommitHash == "" {
+		return nil, ErrInvalidInput
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var latest *models.MergeEvent
+	for _, event := range s.mergeEventsByChangeset {
+		if event == nil || event.SourceCommitHash != sourceCommitHash {
+			continue
+		}
+		if latest == nil || event.CreatedAt.After(latest.CreatedAt) || (event.CreatedAt.Equal(latest.CreatedAt) && event.MergeSeq > latest.MergeSeq) {
+			latest = event
+		}
+	}
+	if latest == nil {
+		return nil, ErrMergeEventNotFound
+	}
+	return cloneMergeEvent(latest), nil
 }
 
 func (s *InMemoryStorage) ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error) {

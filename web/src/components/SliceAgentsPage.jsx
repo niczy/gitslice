@@ -131,6 +131,7 @@ export default function SliceAgentsPage({
     changesetMessage,
     handleExportChangeset,
     hasDirtyFiles,
+    latestExportedChangeset,
     latestExportedChangesetId,
     localChanges,
     localChangesDisplayError,
@@ -245,6 +246,7 @@ export default function SliceAgentsPage({
           hasDirtyFiles={hasDirtyFiles}
           inputError={inputError}
           inputText={inputText}
+          latestExportedChangeset={latestExportedChangeset}
           latestExportedChangesetId={latestExportedChangesetId}
           localChanges={localChanges}
           localChangesDisplayError={localChangesDisplayError}

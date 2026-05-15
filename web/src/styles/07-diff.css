@@ -344,6 +344,40 @@
   color: var(--text-muted);
 }
 
+.diff-artifact-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-artifact-links a {
+  color: var(--accent);
+  font-family: IBM Plex Mono, ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.diff-artifact-links a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.diff-artifact-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: lowercase;
+}
+
 .changeset-title-ci {
   display: inline-flex;
   flex-wrap: wrap;
@@ -609,4 +643,3 @@
     padding: 10px;
   }
 }
-

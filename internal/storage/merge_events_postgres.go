@@ -264,6 +264,39 @@ func getMergeEventByChangeset(ctx context.Context, q queryable, changesetID stri
 	return event, nil
 }
 
+func (s *PostgresNativeStorage) GetMergeEventBySourceCommitHash(ctx context.Context, sourceCommitHash string) (*models.MergeEvent, error) {
+	ctx = ensureCtx(ctx)
+	return getMergeEventBySourceCommitHash(ctx, s.pool, sourceCommitHash)
+}
+
+func (s *postgresNativeTxView) GetMergeEventBySourceCommitHash(ctx context.Context, sourceCommitHash string) (*models.MergeEvent, error) {
+	ctx = ensureCtx(ctx)
+	return getMergeEventBySourceCommitHash(ctx, s.tx, sourceCommitHash)
+}
+
+func getMergeEventBySourceCommitHash(ctx context.Context, q queryable, sourceCommitHash string) (*models.MergeEvent, error) {
+	sourceCommitHash = strings.TrimSpace(sourceCommitHash)
+	if sourceCommitHash == "" {
+		return nil, ErrInvalidInput
+	}
+	event, err := scanMergeEvent(q.QueryRow(ctx, `
+		SELECT home_id, shard_id, merge_seq, event_id, changeset_id,
+		       source_slice_id, source_commit_hash, author, message,
+		       touched_paths, path_updates, forced, force_reason, forced_by, created_at
+		FROM merge_events
+		WHERE source_commit_hash = $1
+		ORDER BY created_at DESC, merge_seq DESC
+		LIMIT 1
+	`, sourceCommitHash))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMergeEventNotFound
+		}
+		return nil, err
+	}
+	return event, nil
+}
+
 func (s *PostgresNativeStorage) ListMergeEvents(ctx context.Context, shardID int32, afterSeq int64, limit int) ([]*models.MergeEvent, error) {
 	ctx = ensureCtx(ctx)
 	return listMergeEvents(ctx, s.pool, shardID, afterSeq, limit)

@@ -2182,6 +2182,124 @@ func TestDeleteSliceRequiresForceForOpenChangesets(t *testing.T) {
 	}
 }
 
+func TestArtifactLinksExposeAgentConversationAndMergeCommit(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
+	st := storage.NewInMemoryStorage()
+	srv := NewService(st)
+
+	now := time.Now().UTC()
+	slice := &models.Slice{ID: "sl_artifact_links", Name: "artifact-links", Owners: []string{"tester"}, CreatedBy: "tester"}
+	if err := st.CreateSlice(ctx, slice); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+	mergedAt := now.Add(time.Minute)
+	cs := &models.Changeset{
+		ID:             "chg_artifact_links",
+		Hash:           "hash-artifact-links",
+		SliceID:        slice.ID,
+		BaseCommitHash: "base-artifact-links",
+		ModifiedFiles:  []string{"README.md"},
+		Status:         models.ChangesetStatusMerged,
+		Author:         "tester",
+		Message:        "agent export",
+		CreatedAt:      now,
+		MergedAt:       &mergedAt,
+	}
+	if err := st.CreateChangeset(ctx, cs); err != nil {
+		t.Fatalf("CreateChangeset failed: %v", err)
+	}
+	snapshot := &models.ChangesetSnapshot{
+		ID:             "snap_artifact_links",
+		ChangesetID:    cs.ID,
+		Version:        3,
+		Hash:           "snapshot-artifact-links",
+		BaseCommitHash: cs.BaseCommitHash,
+		ModifiedFiles:  []string{"README.md"},
+		Author:         "tester",
+		Message:        "export",
+		CreatedAt:      now,
+	}
+	if err := st.CreateChangesetSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("CreateChangesetSnapshot failed: %v", err)
+	}
+	session := &models.AgentSession{
+		SessionID: "sess_artifact_links",
+		SliceID:   slice.ID,
+		RunnerID:  "runner_artifact_links",
+		UserID:    "tester",
+		State:     models.AgentSessionStateRunning,
+		Provider:  "local",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.CreateAgentSession(ctx, session); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+	if err := st.RecordAgentSessionChangeset(ctx, &models.AgentSessionChangeset{
+		SessionID:       session.SessionID,
+		ChangesetID:     cs.ID,
+		SnapshotID:      snapshot.ID,
+		SnapshotVersion: snapshot.Version,
+		SnapshotHash:    snapshot.Hash,
+		BaseCommitHash:  snapshot.BaseCommitHash,
+		ExportedFromSeq: 42,
+		RunnerID:        session.RunnerID,
+		Source:          "local_export",
+		ExportedAt:      now,
+	}); err != nil {
+		t.Fatalf("RecordAgentSessionChangeset failed: %v", err)
+	}
+	if err := st.AppendMergeEvent(ctx, &models.MergeEvent{
+		HomeID:           "home-tester",
+		ShardID:          1,
+		MergeSeq:         1,
+		EventID:          "me_artifact_links",
+		ChangesetID:      cs.ID,
+		SourceSliceID:    slice.ID,
+		SourceCommitHash: "commit-artifact-links",
+		Author:           "tester",
+		Message:          "merge artifact links",
+		TouchedPaths:     []string{"README.md"},
+		PathUpdates: []*models.MergePathUpdate{{
+			Path:             "README.md",
+			BaseVersion:      1,
+			NewVersion:       2,
+			ContentHash:      "sha256:content-artifact-links",
+			ManifestHash:     "sha256:manifest-artifact-links",
+			SourceSliceID:    slice.ID,
+			SourceCommitHash: "commit-artifact-links",
+		}},
+		CreatedAt: mergedAt,
+	}); err != nil {
+		t.Fatalf("AppendMergeEvent failed: %v", err)
+	}
+
+	changesetLinks, err := srv.GetChangesetArtifactLinks(ctx, &slicev1.GetChangesetArtifactLinksRequest{ChangesetId: cs.ID})
+	if err != nil {
+		t.Fatalf("GetChangesetArtifactLinks failed: %v", err)
+	}
+	if changesetLinks.GetChangeset().GetStatus() != slicev1.ChangesetStatus_MERGED {
+		t.Fatalf("expected merged changeset status, got %v", changesetLinks.GetChangeset().GetStatus())
+	}
+	if changesetLinks.GetMerge().GetCommitHash() != "commit-artifact-links" {
+		t.Fatalf("unexpected merge link: %#v", changesetLinks.GetMerge())
+	}
+	if got := changesetLinks.GetAgentSessions(); len(got) != 1 || got[0].GetSessionId() != session.SessionID || got[0].GetSliceId() != slice.ID {
+		t.Fatalf("unexpected agent session links: %#v", got)
+	}
+
+	commitLinks, err := srv.GetCommitArtifactLinks(ctx, &slicev1.GetCommitArtifactLinksRequest{CommitHash: "commit-artifact-links"})
+	if err != nil {
+		t.Fatalf("GetCommitArtifactLinks failed: %v", err)
+	}
+	if commitLinks.GetChangeset().GetChangesetId() != cs.ID {
+		t.Fatalf("unexpected commit changeset link: %#v", commitLinks.GetChangeset())
+	}
+	if got := commitLinks.GetAgentSessions(); len(got) != 1 || got[0].GetSessionId() != session.SessionID {
+		t.Fatalf("unexpected commit agent session links: %#v", got)
+	}
+}
+
 func TestGetSliceByName(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "User tester"))
 	st := storage.NewInMemoryStorage()

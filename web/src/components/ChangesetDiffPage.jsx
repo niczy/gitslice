@@ -65,6 +65,11 @@ function checkField(check, snakeName, camelName, fallback = '') {
   return check?.[snakeName] ?? check?.[camelName] ?? fallback;
 }
 
+function shortArtifactId(value = '', length = 14) {
+  const text = String(value || '');
+  return text.length > length ? text.slice(0, length) : text;
+}
+
 export default function ChangesetDiffPage({
   changesetId,
   onBack,
@@ -118,6 +123,12 @@ export default function ChangesetDiffPage({
   const diffContentRef = useRef(null);
 
   const changeset = payload?.changeset || null;
+  const agentSessionLinks = payload?.agent_sessions || [];
+  const primaryAgentSessionLink = agentSessionLinks[0] || null;
+  const mergeLink = payload?.merge || null;
+  const conversationHref = primaryAgentSessionLink?.session_id
+    ? `/slices/${encodeURIComponent(primaryAgentSessionLink.slice_id || changeset?.slice_id || changeset?.sliceId || '')}/agents?session=${encodeURIComponent(primaryAgentSessionLink.session_id)}`
+    : '';
   const changesetCI = changeset?.ci || null;
   const selectedSnapshot = payload?.snapshot || null;
   const changesetCILabel = ciSummaryText(changesetCI);
@@ -313,6 +324,27 @@ export default function ChangesetDiffPage({
                   {changesetCILabel}
                 </span>
                 {changesetCI.run_id && <span className="commit-hash">{changesetCI.run_id.slice(0, 18)}</span>}
+              </p>
+            )}
+            {(conversationHref || mergeLink?.commit_hash) && (
+              <p className="changeset-title-meta diff-artifact-links" data-testid="changeset-artifact-links">
+                {conversationHref && (
+                  <>
+                    Conversation{' '}
+                    <a href={conversationHref}>
+                      {shortArtifactId(primaryAgentSessionLink.session_id, 18)}
+                    </a>
+                  </>
+                )}
+                {conversationHref && mergeLink?.commit_hash && <span aria-hidden="true"> · </span>}
+                {mergeLink?.commit_hash && (
+                  <>
+                    Commit{' '}
+                    <a href={`/diff/${encodeURIComponent(mergeLink.commit_hash)}`}>
+                      {shortArtifactId(mergeLink.commit_hash, 12)}
+                    </a>
+                  </>
+                )}
               </p>
             )}
           </>

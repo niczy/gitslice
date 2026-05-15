@@ -31,6 +31,22 @@ export async function listChangesetSnapshots(changesetId, options = {}) {
   return response.json();
 }
 
+export async function getChangesetArtifactLinks(changesetId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/changesets/${encodeURIComponent(changesetId)}/artifact-links`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load changeset links'));
+  }
+  return response.json();
+}
+
+export async function getCommitArtifactLinks(commitHash) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/commits/${encodeURIComponent(commitHash)}/artifact-links`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load commit links'));
+  }
+  return response.json();
+}
+
 export async function mergeChangeset(changesetId, { force = false, forceReason = '' } = {}) {
   const body = force || forceReason ? JSON.stringify({
     force,
