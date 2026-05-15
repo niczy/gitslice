@@ -105,6 +105,74 @@ export async function removeSliceFolder(sliceId, folderPath) {
   return response.json();
 }
 
+export async function getSliceEnvRequirements(sliceId) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/requirements`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load environment requirements'));
+  }
+  return response.json();
+}
+
+export async function listSliceEnvKV(sliceId, { profile = 'local', includeHomeScope = true } = {}) {
+  const query = new URLSearchParams();
+  query.set('profile', profile || 'default');
+  if (includeHomeScope) {
+    query.set('include_home_scope', 'true');
+  }
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to load environment KV entries'));
+  }
+  return response.json();
+}
+
+export async function setSliceEnvValue(sliceId, { profile = 'local', key, value, homeScope = false } = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/values/${encodeURIComponent(key)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      profile,
+      value,
+      homeScope,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to save environment value'));
+  }
+  return response.json();
+}
+
+export async function setSliceEnvSecret(sliceId, { profile = 'local', key, value, homeScope = false } = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/secrets/${encodeURIComponent(key)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      profile,
+      value,
+      homeScope,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to save environment secret'));
+  }
+  return response.json();
+}
+
+export async function deleteSliceEnvKV(sliceId, {
+  profile = 'local',
+  className,
+  key,
+  homeScope = false,
+} = {}) {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/${encodeURIComponent(className)}/${encodeURIComponent(key)}?profile=${encodeURIComponent(profile)}&home_scope=${homeScope ? 'true' : 'false'}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Unable to delete environment KV entry'));
+  }
+  return response.json();
+}
+
 export async function getPathVisibility({ workspaceId, path }) {
   const params = new URLSearchParams({
     workspace_id: workspaceId,

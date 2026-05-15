@@ -171,6 +171,8 @@ The server API exposes this flow as gRPC methods with HTTP bindings:
 `POST /v1/slices/{slice_id}/env/kv/secrets/{key}`, and
 `POST /v1/slices/{slice_id}/env:materialize`. The CLI can wrap these as
 `gs kv` and `gs env materialize` commands without changing the server contract.
+The web app exposes the same KV operations from a slice's Code tab settings
+dialog under Environment KV.
 
 Profiles separate local, agent, CI, staging, and production needs. Local agents prefer the `agent` profile and fall back to `local`; CI uses the trusted home-head `ci` profile. Materialized paths are ignored by status, diff, export, local agent change collection, caches, and artifacts.
 
