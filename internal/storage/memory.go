@@ -98,9 +98,6 @@ type InMemoryStorage struct {
 	accountByClaimTokenHash          map[string]string                                // claim token hash -> accountID
 	users                            map[string]*models.User                          // username -> user
 	userByEmail                      map[string]string                                // lower(email) -> username
-	repoBindings                     map[string]*models.RepoBinding                   // bindingID -> binding
-	repoBindingsByPath               map[string]string                                // sliceID:path -> bindingID
-	repoBindingsByOwner              map[string]map[string]bool                       // username -> bindingID -> true
 	authSessions                     map[string]*models.AuthSession                   // sessionID -> auth session
 	authSessionByToken               map[string]string                                // token -> sessionID
 	authSessionByRefreshToken        map[string]string                                // refresh token -> sessionID
@@ -189,9 +186,6 @@ func NewInMemoryStorage() *InMemoryStorage {
 		accountByClaimTokenHash:          make(map[string]string),
 		users:                            make(map[string]*models.User),
 		userByEmail:                      make(map[string]string),
-		repoBindings:                     make(map[string]*models.RepoBinding),
-		repoBindingsByPath:               make(map[string]string),
-		repoBindingsByOwner:              make(map[string]map[string]bool),
 		authSessions:                     make(map[string]*models.AuthSession),
 		authSessionByToken:               make(map[string]string),
 		authSessionByRefreshToken:        make(map[string]string),
@@ -290,9 +284,6 @@ func (s *InMemoryStorage) Reset(ctx context.Context) error {
 	s.accountByClaimTokenHash = fresh.accountByClaimTokenHash
 	s.users = fresh.users
 	s.userByEmail = fresh.userByEmail
-	s.repoBindings = fresh.repoBindings
-	s.repoBindingsByPath = fresh.repoBindingsByPath
-	s.repoBindingsByOwner = fresh.repoBindingsByOwner
 	s.authSessions = fresh.authSessions
 	s.authSessionByToken = fresh.authSessionByToken
 	s.authSessionByRefreshToken = fresh.authSessionByRefreshToken
@@ -489,19 +480,6 @@ func (s *InMemoryStorage) DeleteSlice(ctx context.Context, sliceID string) error
 	for key := range s.manifests {
 		if strings.HasPrefix(key, manifestPrefix) {
 			delete(s.manifests, key)
-		}
-	}
-	for bindingID, binding := range s.repoBindings {
-		if binding == nil || binding.SliceID != sliceID {
-			continue
-		}
-		delete(s.repoBindings, bindingID)
-		delete(s.repoBindingsByPath, repoBindingPathKey(binding.SliceID, binding.RootPath))
-		if ownerBindings := s.repoBindingsByOwner[binding.OwnerUsername]; ownerBindings != nil {
-			delete(ownerBindings, bindingID)
-			if len(ownerBindings) == 0 {
-				delete(s.repoBindingsByOwner, binding.OwnerUsername)
-			}
 		}
 	}
 	for commitHash, snapshot := range s.commitSnapshots {

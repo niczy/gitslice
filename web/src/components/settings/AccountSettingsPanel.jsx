@@ -1,7 +1,6 @@
 import AgentKeysCard from './AgentKeysCard.jsx';
 import AuthContextCard from './AuthContextCard.jsx';
 import AuthMethodsCard from './AuthMethodsCard.jsx';
-import RepoBindingsCard from './RepoBindingsCard.jsx';
 import SessionsCard from './SessionsCard.jsx';
 
 export default function AccountSettingsPanel(props) {
@@ -13,10 +12,7 @@ export default function AccountSettingsPanel(props) {
         <SessionsCard {...props} />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <RepoBindingsCard {...props} />
-        <AgentKeysCard {...props} />
-      </div>
+      <AgentKeysCard {...props} />
     </>
   );
 }

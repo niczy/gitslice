@@ -103,42 +103,6 @@ test.describe('Cookie-backed web auth', () => {
     await expect.poll(() => seenBrowserRequests.length).toBeGreaterThan(0);
   });
 
-  test('settings shows repo bindings for the signed-in user', async ({ page }) => {
-    const username = `webbindings${Date.now()}`;
-
-    await page.goto('/login');
-    await page.getByLabel('Username').fill(username);
-    await page.getByRole('button', { name: /login with username/i }).click();
-    await expect(page).toHaveURL(/\/slices(\?.*)?$/);
-
-    await page.route('**/v1/repos/bindings', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          bindings: [
-            {
-              binding_id: 'binding-1',
-              path: `/${username}/imports/demo`,
-              repo_url: 'https://github.com/example/demo.git',
-              branch: 'main',
-              push_enabled: true,
-              last_imported_commit: 'abc123',
-              last_pushed_commit: 'def456',
-            },
-          ],
-        }),
-      });
-    });
-
-    await page.goto('/settings');
-    await expect(page.getByTestId('settings-page')).toBeVisible();
-    await expect(page.getByRole('heading', { name: /github bindings/i })).toBeVisible();
-    await expect(page.getByTestId('settings-repo-bindings')).toContainText(`/${username}/imports/demo`);
-    await expect(page.getByTestId('settings-repo-bindings')).toContainText('https://github.com/example/demo.git');
-    await expect(page.getByTestId('settings-repo-bindings')).toContainText(/yes/i);
-  });
-
   test('settings can add and revoke agent keys', async ({ page }) => {
     const username = `webagentkeys${Date.now()}`;
     const pastedPublicKey = 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=';
@@ -162,13 +126,6 @@ test.describe('Cookie-backed web auth', () => {
     await page.getByRole('button', { name: /login with username/i }).click();
     await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
-    await page.route('**/v1/repos/bindings', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ bindings: [] }),
-      });
-    });
     await page.route('**/v1/auth/agent/keys', async (route) => {
       if (route.request().method() === 'GET') {
         await route.fulfill({
@@ -260,13 +217,6 @@ test.describe('Cookie-backed web auth', () => {
     await page.getByRole('button', { name: /login with username/i }).click();
     await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
-    await page.route('**/v1/repos/bindings', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ bindings: [] }),
-      });
-    });
     await page.route('**/v1/auth/sessions', async (route) => {
       await route.fulfill({
         status: 200,
@@ -337,13 +287,6 @@ test.describe('Cookie-backed web auth', () => {
     await page.getByRole('button', { name: /login with username/i }).click();
     await expect(page).toHaveURL(/\/slices(\?.*)?$/);
 
-    await page.route('**/v1/repos/bindings', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ bindings: [] }),
-      });
-    });
     await page.route('**/v1/auth/sessions', async (route) => {
       await route.fulfill({
         status: 200,

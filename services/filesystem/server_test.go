@@ -1019,7 +1019,7 @@ func TestWorkspaceSearchArtifactTracksMutations(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
+func TestWorkspaceSearchArtifactTracksRepoImportAndForceImport(t *testing.T) {
 	ctx := authContext("tester")
 	st := storage.NewInMemoryStorage()
 	if err := common.EnsureRootSliceInitialized(ctx, st); err != nil {
@@ -1051,16 +1051,18 @@ func TestWorkspaceSearchArtifactTracksRepoBindingImportAndPull(t *testing.T) {
 	runGitOrFailFS(t, sourceDir, "commit", "-m", "remote update")
 	runGitOrFailFS(t, sourceDir, "push", "origin", "main")
 
-	pullResp, err := svc.PullRepoBinding(ctx, &filesystemv1.PullRepoBindingRequest{
-		Path: "/tester/vendor/demo",
+	forceResp, err := svc.ImportRepo(ctx, &filesystemv1.ImportRepoRequest{
+		RepoUrl:        remoteDir,
+		Path:           "/tester/vendor/demo",
+		AllowOverwrite: true,
 	})
 	if err != nil {
-		t.Fatalf("PullRepoBinding failed: %v", err)
+		t.Fatalf("force ImportRepo failed: %v", err)
 	}
 
-	artifact = waitForWorkspaceSearchArtifactCommitForTest(t, svc, st, homeslice.IDForUsername("tester"), pullResp.GetCommitHash())
+	artifact = waitForWorkspaceSearchArtifactCommitForTest(t, svc, st, homeslice.IDForUsername("tester"), forceResp.GetCommitHash())
 	if got := searchArtifactPaths(artifact); len(got) != 2 || got[0] != "tester/vendor/demo/CHANGELOG.md" || got[1] != "tester/vendor/demo/README.md" {
-		t.Fatalf("unexpected artifact paths after pull: %#v", got)
+		t.Fatalf("unexpected artifact paths after force import: %#v", got)
 	}
 }
 

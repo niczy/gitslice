@@ -27,14 +27,6 @@ func execGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-func ProviderForURL(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if strings.Contains(trimmed, "github.com") {
-		return "github"
-	}
-	return "git"
-}
-
 func Clone(ctx context.Context, repoURL, branch, token string) (string, string, string, func(), error) {
 	parentDir, err := os.MkdirTemp("", "gitslice-repo-")
 	if err != nil {
@@ -142,23 +134,6 @@ func SnapshotWorktree(root string) ([]File, error) {
 	return files, nil
 }
 
-func ResetWorktree(repoDir string) error {
-	entries, err := os.ReadDir(repoDir)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == ".git" {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(repoDir, name)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func WriteFiles(root string, files []File) error {
 	for _, file := range files {
 		targetPath := filepath.Join(root, filepath.FromSlash(file.Path))
@@ -183,55 +158,6 @@ func WriteFiles(root string, files []File) error {
 		}
 	}
 	return nil
-}
-
-func HasChanges(ctx context.Context, repoDir string) (bool, error) {
-	out, err := execGit(ctx, repoDir, "status", "--porcelain")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(out)) != "", nil
-}
-
-func CommitAndPush(ctx context.Context, repoDir, branch, message, username, token string) (string, bool, error) {
-	if _, err := execGit(ctx, repoDir, "config", "user.name", username); err != nil {
-		return "", false, err
-	}
-	if _, err := execGit(ctx, repoDir, "config", "user.email", fmt.Sprintf("%s@gitslice.local", username)); err != nil {
-		return "", false, err
-	}
-	if _, err := execGit(ctx, repoDir, "add", "-A"); err != nil {
-		return "", false, err
-	}
-	changed, err := HasChanges(ctx, repoDir)
-	if err != nil {
-		return "", false, err
-	}
-	if !changed {
-		head, err := HeadCommit(ctx, repoDir)
-		return head, false, err
-	}
-	if _, err := execGit(ctx, repoDir, "commit", "-m", message); err != nil {
-		return "", false, err
-	}
-
-	if strings.TrimSpace(token) != "" {
-		authURL, err := execGit(ctx, repoDir, "remote", "get-url", "origin")
-		if err != nil {
-			return "", false, err
-		}
-		if _, err := execGit(ctx, repoDir, "remote", "set-url", "origin", withToken(strings.TrimSpace(string(authURL)), token)); err != nil {
-			return "", false, err
-		}
-	}
-	if _, err := execGit(ctx, repoDir, "push", "origin", "HEAD:"+branch); err != nil {
-		return "", false, err
-	}
-	head, err := HeadCommit(ctx, repoDir)
-	if err != nil {
-		return "", false, err
-	}
-	return head, true, nil
 }
 
 func withToken(rawURL, token string) string {

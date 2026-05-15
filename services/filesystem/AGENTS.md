@@ -2,7 +2,7 @@
 
 These instructions apply to `services/filesystem`.
 
-- This package implements the mutable workspace filesystem API. It owns workspace create/delete/list/info plus file writes, edits, deletes, moves, copies, mkdir, batch operations, streaming transfer, upload planning/finalization, snapshots, diffs, forks, merges, repo bindings, search indexing, and root promotion side effects.
+- This package implements the mutable workspace filesystem API. It owns workspace create/delete/list/info plus file writes, edits, deletes, moves, copies, mkdir, batch operations, streaming transfer, upload planning/finalization, snapshots, diffs, forks, merges, repo imports, search indexing, and root promotion side effects.
 - Do not add committed-code browsing or public read-only slice history endpoints here when they can be served by `services/file`.
 - Keep the gRPC surface aligned with `proto/filesystem/filesystem_service.proto` and expose HTTP routes through grpc-gateway bindings. Avoid standalone `net/http` handlers for `/v1/*`.
 - Use the existing workspace helpers for authorization and path resolution. In home-workspace mode, keep paths constrained to the owning user's home namespace and avoid allowing writes outside tracked workspace/home paths.

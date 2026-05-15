@@ -229,33 +229,6 @@ service FilesystemService {
     };
   }
 
-  rpc ListRepoBindings(ListRepoBindingsRequest) returns (ListRepoBindingsResponse) {
-    option (google.api.http) = {
-      get: "/v1/repos/bindings"
-    };
-  }
-
-  rpc PullRepoBinding(PullRepoBindingRequest) returns (PullRepoBindingResponse) {
-    option (google.api.http) = {
-      post: "/v1/repos/pull"
-      body: "*"
-    };
-  }
-
-  rpc PushRepoBinding(PushRepoBindingRequest) returns (PushRepoBindingResponse) {
-    option (google.api.http) = {
-      post: "/v1/repos/push"
-      body: "*"
-    };
-  }
-
-  rpc DeleteRepoBinding(DeleteRepoBindingRequest) returns (DeleteRepoBindingResponse) {
-    option (google.api.http) = {
-      post: "/v1/repos/unlink"
-      body: "*"
-    };
-  }
-
   rpc StreamRead(StreamReadRequest) returns (stream StreamReadResponse);
   rpc StreamWrite(stream StreamWriteRequest) returns (StreamWriteResponse);
   rpc UploadBlocks(stream UploadBlocksRequest) returns (UploadBlocksResponse);
@@ -915,71 +888,21 @@ message UploadBlocksResponse {
   int32 blocks_reused = 5;
 }
 
-message RepoBinding {
-  string binding_id = 1;
-  string provider = 2;
-  string repo_url = 3;
-  string branch = 4;
-  string path = 5;
-  bool push_enabled = 6;
-  string last_imported_commit = 7;
-  string last_pushed_commit = 8;
-  string last_seen_remote_commit = 9;
-  string created_at = 10;
-  string updated_at = 11;
-}
-
 message ImportRepoRequest {
   string repo_url = 1;
   string path = 2;
   string branch = 3;
   bool allow_overwrite = 4;
-  bool push_enabled = 5;
+  reserved 5;
   string github_token = 6;
 }
 
 message ImportRepoResponse {
-  RepoBinding binding = 1;
+  reserved 1;
   string commit_hash = 2;
   string remote_commit = 3;
   int32 file_count = 4;
-}
-
-message ListRepoBindingsRequest {}
-
-message ListRepoBindingsResponse {
-  repeated RepoBinding bindings = 1;
-}
-
-message PullRepoBindingRequest {
-  string path = 1;
-  bool allow_overwrite = 2;
-  string github_token = 3;
-}
-
-message PullRepoBindingResponse {
-  RepoBinding binding = 1;
-  string commit_hash = 2;
-  string remote_commit = 3;
-  int32 file_count = 4;
-}
-
-message PushRepoBindingRequest {
-  string path = 1;
-  string message = 2;
-  string github_token = 3;
-}
-
-message PushRepoBindingResponse {
-  RepoBinding binding = 1;
-  string remote_commit = 2;
-  bool pushed = 3;
-}
-
-message DeleteRepoBindingRequest {
-  string path = 1;
-}
-
-message DeleteRepoBindingResponse {
-  string path = 1;
+  string repo_url = 5;
+  string path = 6;
+  string branch = 7;
 }

@@ -15,7 +15,6 @@ import {
   fetchAuthContext,
   fetchAuthMethods,
   fetchAuthSessions,
-  fetchRepoBindings,
 } from '../utils/api.js';
 
 export default function SettingsPage({
@@ -30,9 +29,6 @@ export default function SettingsPage({
   const activeSection = String(settingsSection || '').startsWith('ci') ? 'ci' : 'account';
   const hasInitialSettings = initialSettingsData?.username === username;
   const [loadedSettingsUsername, setLoadedSettingsUsername] = useState(() => (hasInitialSettings ? username : ''));
-  const [bindings, setBindings] = useState(() => (hasInitialSettings ? initialSettingsData.bindings || [] : []));
-  const [bindingsLoading, setBindingsLoading] = useState(false);
-  const [bindingsError, setBindingsError] = useState(() => (hasInitialSettings ? initialSettingsData.bindingsError || '' : ''));
   const [authMethods, setAuthMethods] = useState(() => (hasInitialSettings ? initialSettingsData.authMethods || [] : []));
   const [authMethodsLoading, setAuthMethodsLoading] = useState(false);
   const [authMethodsError, setAuthMethodsError] = useState(() => (hasInitialSettings ? initialSettingsData.authMethodsError || '' : ''));
@@ -57,9 +53,6 @@ export default function SettingsPage({
   useEffect(() => {
     let cancelled = false;
     if (!username) {
-      setBindings([]);
-      setBindingsLoading(false);
-      setBindingsError('');
       setAuthMethods([]);
       setAuthMethodsLoading(false);
       setAuthMethodsError('');
@@ -79,9 +72,6 @@ export default function SettingsPage({
     }
 
     if (initialSettingsData?.username === username && loadedSettingsUsername !== username) {
-      setBindings(initialSettingsData.bindings || []);
-      setBindingsLoading(false);
-      setBindingsError(initialSettingsData.bindingsError || '');
       setAuthMethods(initialSettingsData.authMethods || []);
       setAuthMethodsLoading(false);
       setAuthMethodsError(initialSettingsData.authMethodsError || '');
@@ -110,8 +100,6 @@ export default function SettingsPage({
       clientRefreshUsernameRef.current = username;
     } else {
       clientRefreshUsernameRef.current = username;
-      setBindingsLoading(true);
-      setBindingsError('');
       setAuthMethodsLoading(true);
       setAuthMethodsError('');
       setAuthContextLoading(true);
@@ -121,35 +109,18 @@ export default function SettingsPage({
       setAgentKeysLoading(true);
       setAgentKeysError('');
     }
-    fetchRepoBindings()
-      .then((nextBindings) => {
-        if (!cancelled) {
-          setBindings(nextBindings);
-          setLoadedSettingsUsername(username);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setBindings([]);
-          setBindingsError(err?.message || 'Unable to load repo bindings.');
-          setLoadedSettingsUsername(username);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setBindingsLoading(false);
-        }
-      });
     fetchAuthMethods()
       .then((nextMethods) => {
         if (!cancelled) {
           setAuthMethods(nextMethods);
+          setLoadedSettingsUsername(username);
         }
       })
       .catch((err) => {
         if (!cancelled) {
           setAuthMethods([]);
           setAuthMethodsError(err?.message || 'Unable to load auth methods.');
+          setLoadedSettingsUsername(username);
         }
       })
       .finally(() => {
@@ -341,7 +312,7 @@ export default function SettingsPage({
       <div className="section-header">
         <Badge variant="secondary" className="eyebrow">Account</Badge>
         <h2>Settings</h2>
-        <p>Manage session details, enrolled agent keys, and GitHub repo bindings from one account surface.</p>
+        <p>Manage session details and enrolled agent keys from one account surface.</p>
       </div>
 
       {!username && <div className="panel-error">You need to log in before account settings are available.</div>}
@@ -371,9 +342,6 @@ export default function SettingsPage({
               authMethodsError={authMethodsError}
               authMethodsLoading={authMethodsLoading}
               authSessionSource={authSessionSource}
-              bindings={bindings}
-              bindingsError={bindingsError}
-              bindingsLoading={bindingsLoading}
               onAgentKeyCreate={handleAgentKeyCreate}
               onAgentKeyNameChange={setAgentKeyName}
               onAgentKeyPublicKeyChange={setAgentKeyPublicKey}

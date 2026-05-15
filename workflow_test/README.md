@@ -57,7 +57,7 @@ Keep this package current whenever CLI or service behavior changes in areas like
 - changeset create, review, merge, list, show
 - cache and checkout registry behavior
 - dirty tracker behavior
-- repo binding flows
+- one-shot repo import flows
 - auth/session behavior that affects CLI workflows
 
 ## Test Helpers

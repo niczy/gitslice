@@ -35,7 +35,7 @@ test('renders the docs page with navigation and core workflows', async ({ page }
   await expect(page.locator('code').filter({ hasText: /printf "hotfix shipped remotely\\n" \| gs fs write \/\$USER\/app\/NOTICE\.txt/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice create ui-refresh apps\/web/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice checkout <slice-id-or-slug>/i }).first()).toBeVisible();
-  await expect(page.locator('code').filter({ hasText: /gs repo import https:\/\/github\.com\/org\/repo\.git \/\$USER\/vendor\/repo --push-enabled/i }).first()).toBeVisible();
+  await expect(page.locator('code').filter({ hasText: /gs repo import https:\/\/github\.com\/org\/repo\.git \/\$USER\/vendor\/repo/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice export --message "refresh settings page" --files src\/routes\/settings\.tsx/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs changeset merge/i }).first()).toBeVisible();
   await expect(page.locator('code').filter({ hasText: /gs slice publish --review-only --message "stage for review" --files src\/routes\/settings\.tsx/i }).first()).toBeVisible();

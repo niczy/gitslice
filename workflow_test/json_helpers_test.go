@@ -211,60 +211,13 @@ type sliceDeleteJSON struct {
 	Status  string `json:"status"`
 }
 
-type repoBindingJSON struct {
-	Path                 string `json:"path"`
-	RepoURL              string `json:"repo_url"`
-	Branch               string `json:"branch"`
-	PushEnabled          bool   `json:"push_enabled"`
-	LastImportedCommit   string `json:"last_imported_commit"`
-	LastPushedCommit     string `json:"last_pushed_commit"`
-	LastSeenRemoteCommit string `json:"last_seen_remote_commit"`
-}
-
 type repoImportJSON struct {
-	Binding      repoBindingJSON `json:"binding"`
-	CommitHash   string          `json:"commit_hash"`
-	RemoteCommit string          `json:"remote_commit"`
-	FileCount    int32           `json:"file_count"`
-}
-
-type repoEnsureJSON struct {
-	Created      bool            `json:"created"`
-	Updated      bool            `json:"updated"`
-	Binding      repoBindingJSON `json:"binding"`
-	CommitHash   string          `json:"commit_hash"`
-	RemoteCommit string          `json:"remote_commit"`
-	FileCount    int32           `json:"file_count"`
-}
-
-type repoListJSON struct {
-	Total    int               `json:"total"`
-	Bindings []repoBindingJSON `json:"bindings"`
-}
-
-type repoStatusJSON struct {
-	Found   bool             `json:"found"`
-	Binding *repoBindingJSON `json:"binding"`
-}
-
-type repoPullJSON struct {
-	Binding      repoBindingJSON `json:"binding"`
-	CommitHash   string          `json:"commit_hash"`
-	RemoteCommit string          `json:"remote_commit"`
-	FileCount    int32           `json:"file_count"`
-	Updated      bool            `json:"updated"`
-	Published    bool            `json:"published"`
-}
-
-type repoPushJSON struct {
-	Binding      repoBindingJSON `json:"binding"`
-	RemoteCommit string          `json:"remote_commit"`
-	Pushed       bool            `json:"pushed"`
-}
-
-type repoUnlinkJSON struct {
-	Path   string `json:"path"`
-	Status string `json:"status"`
+	RepoURL      string `json:"repo_url"`
+	Path         string `json:"path"`
+	Branch       string `json:"branch"`
+	CommitHash   string `json:"commit_hash"`
+	RemoteCommit string `json:"remote_commit"`
+	FileCount    int32  `json:"file_count"`
 }
 
 type jobJSON struct {
@@ -572,9 +525,4 @@ type contextJSON struct {
 		ReviewStatus string `json:"review_status"`
 		Error        string `json:"error"`
 	} `json:"tracked_changeset"`
-	RepoBindings []struct {
-		Path        string `json:"path"`
-		RepoURL     string `json:"repo_url"`
-		PushEnabled bool   `json:"push_enabled"`
-	} `json:"repo_bindings"`
 }

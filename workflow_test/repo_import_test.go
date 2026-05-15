@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,7 +32,7 @@ func createLocalGitRemote(t *testing.T) (string, string) {
 	if err := os.WriteFile(readmePath, []byte("version 1\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
-	if err := os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho repo binding\n"), 0o755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho repo import\n"), 0o755); err != nil {
 		t.Fatalf("write executable: %v", err)
 	}
 	if err := os.Symlink("README.md", filepath.Join(sourceDir, "README.link")); err != nil {
@@ -47,11 +46,8 @@ func createLocalGitRemote(t *testing.T) (string, string) {
 	return remoteDir, sourceDir
 }
 
-func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
-	_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	username := fmt.Sprintf("repocli%d", time.Now().UnixNano()%1_000_000_000)
+func TestRepoImportCLIWorkflowEndToEnd(t *testing.T) {
+	username := fmt.Sprintf("repoimport%d", time.Now().UnixNano()%1_000_000_000)
 	homeDir := filepath.Join(t.TempDir(), "home")
 	if err := os.MkdirAll(homeDir, 0o755); err != nil {
 		t.Fatalf("mkdir CLI home: %v", err)
@@ -76,41 +72,13 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 	boundPath := fmt.Sprintf("/%s/repos/demo-%d", username, time.Now().UnixNano())
 	readmePath := boundPath + "/README.md"
 
-	importOutput := runCLIJSONForUser("", "repo", "import", "--push-enabled", remoteDir, boundPath)
+	importOutput := runCLIJSONForUser("", "repo", "import", remoteDir, boundPath)
 	var importResp repoImportJSON
 	if err := json.Unmarshal([]byte(importOutput), &importResp); err != nil {
 		t.Fatalf("decode repo import JSON: %v\nOutput:\n%s", err, importOutput)
 	}
-	if importResp.Binding.Path != boundPath || importResp.Binding.RepoURL != remoteDir || importResp.Binding.Branch != "main" {
+	if importResp.Path != boundPath || importResp.RepoURL != remoteDir || importResp.Branch != "main" {
 		t.Fatalf("expected import output, got: %+v", importResp)
-	}
-
-	listOutput := runCLIJSONForUser("", "repo", "list")
-	var listResp repoListJSON
-	if err := json.Unmarshal([]byte(listOutput), &listResp); err != nil {
-		t.Fatalf("decode repo list JSON: %v\nOutput:\n%s", err, listOutput)
-	}
-	if listResp.Total < 1 {
-		t.Fatalf("expected repo list output to include binding, got: %+v", listResp)
-	}
-	foundBinding := false
-	for _, binding := range listResp.Bindings {
-		if binding.Path == boundPath && binding.RepoURL == remoteDir {
-			foundBinding = true
-			break
-		}
-	}
-	if !foundBinding {
-		t.Fatalf("expected repo list output to include binding, got: %+v", listResp)
-	}
-
-	statusOutput := runCLIJSONForUser("", "repo", "status", boundPath)
-	var statusResp repoStatusJSON
-	if err := json.Unmarshal([]byte(statusOutput), &statusResp); err != nil {
-		t.Fatalf("decode repo status JSON: %v\nOutput:\n%s", err, statusOutput)
-	}
-	if !statusResp.Found || statusResp.Binding == nil || !statusResp.Binding.PushEnabled {
-		t.Fatalf("expected status to show push enabled, got: %+v", statusResp)
 	}
 
 	output := runCLIForUser("", "fs", "cat", readmePath)
@@ -156,67 +124,30 @@ func TestRepoBindingCLIWorkflowEndToEnd(t *testing.T) {
 	runGitOrFail(t, sourceDir, "commit", "-m", "remote update")
 	runGitOrFail(t, sourceDir, "push", "origin", "main")
 
-	pullOutput := runCLIJSONForUser("", "repo", "pull", boundPath)
-	var pullResp repoPullJSON
-	if err := json.Unmarshal([]byte(pullOutput), &pullResp); err != nil {
-		t.Fatalf("decode repo pull JSON: %v\nOutput:\n%s", err, pullOutput)
+	failedOutput, err := runCLIWithDirInputEnvLegacyUser("", "", env, true, username, "repo", "import", remoteDir, boundPath, "--json")
+	if err == nil {
+		t.Fatalf("expected repo import without --force to fail for populated path, got:\n%s", failedOutput)
 	}
-	if !pullResp.Updated || pullResp.CommitHash == "" {
-		t.Fatalf("expected pull output, got: %+v", pullResp)
+	if !strings.Contains(failedOutput, "target path already contains files") {
+		t.Fatalf("expected populated path error, got:\n%s", failedOutput)
+	}
+
+	forceOutput := runCLIJSONForUser("", "repo", "import", "--force", remoteDir, boundPath)
+	var forceResp repoImportJSON
+	if err := json.Unmarshal([]byte(forceOutput), &forceResp); err != nil {
+		t.Fatalf("decode force repo import JSON: %v\nOutput:\n%s", err, forceOutput)
+	}
+	if forceResp.Path != boundPath || forceResp.CommitHash == "" {
+		t.Fatalf("expected force import output, got: %+v", forceResp)
 	}
 
 	output = runCLIForUser("", "fs", "cat", readmePath)
 	if output != "version 2 from remote\n" {
-		t.Fatalf("unexpected README after pull: %q", output)
+		t.Fatalf("unexpected README after force import: %q", output)
 	}
 	output = runCLIForUser("", "fs", "cat", boundPath+"/CHANGELOG.md")
 	if output != "remote changelog\n" {
-		t.Fatalf("unexpected changelog after pull: %q", output)
-	}
-
-	localReadme := filepath.Join(t.TempDir(), "README.md")
-	if err := os.WriteFile(localReadme, []byte("version 3 from home slice\n"), 0o644); err != nil {
-		t.Fatalf("write local README: %v", err)
-	}
-	output = runCLIForUser("", "fs", "write", readmePath, "-f", localReadme)
-	if !strings.Contains(output, "Commit: ") {
-		t.Fatalf("expected fs write output, got: %s", output)
-	}
-
-	pushOutput := runCLIJSONForUser("", "repo", "push", "--message", "push repo binding changes", boundPath)
-	var pushResp repoPushJSON
-	if err := json.Unmarshal([]byte(pushOutput), &pushResp); err != nil {
-		t.Fatalf("decode repo push JSON: %v\nOutput:\n%s", err, pushOutput)
-	}
-	if !pushResp.Pushed || pushResp.RemoteCommit == "" {
-		t.Fatalf("expected push output, got: %+v", pushResp)
-	}
-
-	runGitOrFail(t, sourceDir, "pull", "--ff-only", "origin", "main")
-	readmeContent, err := os.ReadFile(filepath.Join(sourceDir, "README.md"))
-	if err != nil {
-		t.Fatalf("read source README after push: %v", err)
-	}
-	if string(readmeContent) != "version 3 from home slice\n" {
-		t.Fatalf("unexpected README in source repo after push: %q", readmeContent)
-	}
-
-	unlinkOutput := runCLIJSONForUser("", "repo", "unlink", boundPath)
-	var unlinkResp repoUnlinkJSON
-	if err := json.Unmarshal([]byte(unlinkOutput), &unlinkResp); err != nil {
-		t.Fatalf("decode repo unlink JSON: %v\nOutput:\n%s", err, unlinkOutput)
-	}
-	if unlinkResp.Path != boundPath || unlinkResp.Status != "removed" {
-		t.Fatalf("expected unlink output, got: %+v", unlinkResp)
-	}
-	listOutput = runCLIJSONForUser("", "repo", "list")
-	if err := json.Unmarshal([]byte(listOutput), &listResp); err != nil {
-		t.Fatalf("decode repo list JSON: %v\nOutput:\n%s", err, listOutput)
-	}
-	for _, binding := range listResp.Bindings {
-		if binding.Path == boundPath {
-			t.Fatalf("expected repo binding to be removed, got: %+v", listResp)
-		}
+		t.Fatalf("unexpected changelog after force import: %q", output)
 	}
 }
 
@@ -261,7 +192,7 @@ func TestDetachedRepoImportJobWorkflow(t *testing.T) {
 	if err := json.Unmarshal(completed.Result, &importResp); err != nil {
 		t.Fatalf("decode repo import job result: %v\nResult:\n%s", err, string(completed.Result))
 	}
-	if importResp.Binding.Path != boundPath || importResp.Binding.RepoURL != remoteDir {
+	if importResp.Path != boundPath || importResp.RepoURL != remoteDir {
 		t.Fatalf("unexpected repo import job result: %+v", importResp)
 	}
 
@@ -279,7 +210,7 @@ func TestDetachedRepoImportJobWorkflow(t *testing.T) {
 	if err := json.Unmarshal([]byte(logsOutput), &logs); err != nil {
 		t.Fatalf("decode jobs logs JSON: %v\nOutput:\n%s", err, logsOutput)
 	}
-	if logs.JobID != started.JobID || !strings.Contains(logs.Stdout, "\"binding\"") {
+	if logs.JobID != started.JobID || !strings.Contains(logs.Stdout, "\"repo_url\"") {
 		t.Fatalf("unexpected jobs logs output: %+v", logs)
 	}
 
@@ -308,8 +239,8 @@ func TestDetachedRepoImportJobWorkflow(t *testing.T) {
 	}
 }
 
-func TestFilesystemEnsureDirAndRepoPullPublishWorkflow(t *testing.T) {
-	username := fmt.Sprintf("repopublish%d", time.Now().UnixNano()%1_000_000_000)
+func TestFilesystemEnsureDirIsIdempotent(t *testing.T) {
+	username := fmt.Sprintf("ensuredir%d", time.Now().UnixNano()%1_000_000_000)
 	env := workflowProcessEnv(t, nil)
 	runCLIJSONForUser := func(workdir string, args ...string) string {
 		t.Helper()
@@ -335,24 +266,5 @@ func TestFilesystemEnsureDirAndRepoPullPublishWorkflow(t *testing.T) {
 	}
 	if existing.Status != "exists" {
 		t.Fatalf("unexpected ensure-dir existing response: %+v", existing)
-	}
-
-	remoteDir, sourceDir := createLocalGitRemote(t)
-	boundPath := fmt.Sprintf("/%s/repos/publish-%d", username, time.Now().UnixNano())
-	_ = runCLIJSONForUser("", "repo", "import", remoteDir, boundPath)
-
-	if err := os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte("published from remote\n"), 0o644); err != nil {
-		t.Fatalf("rewrite remote README: %v", err)
-	}
-	runGitOrFail(t, sourceDir, "add", "README.md")
-	runGitOrFail(t, sourceDir, "commit", "-m", "publish pull")
-	runGitOrFail(t, sourceDir, "push", "origin", "main")
-
-	var pullResp repoPullJSON
-	if err := json.Unmarshal([]byte(runCLIJSONForUser("", "repo", "pull", "--publish", boundPath)), &pullResp); err != nil {
-		t.Fatalf("decode repo pull publish JSON: %v", err)
-	}
-	if !pullResp.Published || !pullResp.Updated || pullResp.CommitHash == "" {
-		t.Fatalf("unexpected repo pull --publish response: %+v", pullResp)
 	}
 }

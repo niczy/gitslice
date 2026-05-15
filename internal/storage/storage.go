@@ -18,7 +18,6 @@ var (
 	ErrLockHeld                 = errors.New("resource locked")
 	ErrCommitNotFound           = errors.New("commit not found")
 	ErrSliceFilesImmutable      = errors.New("slice files are immutable")
-	ErrRepoBindingNotFound      = errors.New("repo binding not found")
 	ErrAgentSessionNotFound     = errors.New("agent session not found")
 	ErrAgentSessionConflict     = errors.New("agent session conflict")
 	ErrSearchArtifactNotReady   = errors.New("search artifact not ready")
@@ -297,10 +296,6 @@ type Storage interface {
 	CreateUser(ctx context.Context, user *models.User) error
 	UpdateUser(ctx context.Context, user *models.User) error
 	DeleteUser(ctx context.Context, username string) error
-	PutRepoBinding(ctx context.Context, binding *models.RepoBinding) error
-	GetRepoBinding(ctx context.Context, sliceID, rootPath string) (*models.RepoBinding, error)
-	ListRepoBindingsByOwner(ctx context.Context, username string) ([]*models.RepoBinding, error)
-	DeleteRepoBinding(ctx context.Context, sliceID, rootPath string) error
 	CreateAuthSession(ctx context.Context, session *models.AuthSession) error
 	GetAuthSession(ctx context.Context, sessionID string) (*models.AuthSession, error)
 	GetAuthSessionByToken(ctx context.Context, token string) (*models.AuthSession, error)

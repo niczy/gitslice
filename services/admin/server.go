@@ -135,19 +135,6 @@ func (s *adminServiceServer) deleteUser(ctx context.Context, adminUser, target *
 	sessions, _ := s.storage.ListAuthSessionsByUser(ctx, target.Username)
 	agentKeys, _ := s.storage.ListAgentKeysByUser(ctx, target.Username)
 
-	repoBindings, err := s.storage.ListRepoBindingsByOwner(ctx, target.Username)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "failed to list repo bindings")
-	}
-	for _, binding := range repoBindings {
-		if binding == nil {
-			continue
-		}
-		if err := s.storage.DeleteRepoBinding(ctx, binding.SliceID, binding.RootPath); err != nil && err != storage.ErrRepoBindingNotFound {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to delete repo binding: %v", err))
-		}
-	}
-
 	ownedSlices, err := s.storage.ListSlicesByOwner(ctx, target.Username, int(^uint(0)>>1), 0)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to list user slices")

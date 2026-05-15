@@ -3,11 +3,9 @@ package gscli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	accountv1 "github.com/niczy/gitslice/proto/account"
-	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -91,84 +89,6 @@ func handleSliceEnsure(ctx context.Context, cli *CLI, args []string) {
 	}
 	fmt.Printf("Created slice: %s (id: %s)\n", resp.GetName(), resp.GetSliceId())
 	fmt.Printf("Slug: %s\n", resp.GetSlug())
-}
-
-func handleRepoEnsure(ctx context.Context, cli *CLI, args []string) {
-	args, jsonRequested := consumeBoolFlag(args, "json")
-	fs := newCommandFlagSet("repo ensure")
-	branch := fs.String("branch", "", "Remote branch to import (default: remote default branch)")
-	force := fs.Bool("force", false, "Replace an existing conflicting binding or path")
-	pushEnabled := fs.Bool("push-enabled", false, "Ensure pushback is enabled for this binding")
-	githubToken := fs.String("github-token", strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), "GitHub token for private repo import")
-	jsonOutput := fs.Bool("json", false, "Print structured JSON output")
-	parseCommandFlags(fs, args)
-	jsonEnabled := jsonRequested || *jsonOutput
-
-	if fs.NArg() != 2 {
-		commandUsage("Usage: gs repo ensure <repo-url> </absolute/path> [--branch <name>] [--push-enabled] [--force] [--json]")
-		return
-	}
-
-	repoURL := strings.TrimSpace(fs.Arg(0))
-	targetPath := strings.TrimSpace(fs.Arg(1))
-	bindingsResp, err := cli.filesystemClient.ListRepoBindings(ctx, &filesystemv1.ListRepoBindingsRequest{})
-	if err != nil {
-		commandFatalf("REPO_ENSURE_FAILED", true, "", "Failed to list repo bindings: %v", err)
-	}
-	for _, binding := range bindingsResp.GetBindings() {
-		if binding.GetPath() != targetPath {
-			continue
-		}
-		sameRepo := binding.GetRepoUrl() == repoURL
-		sameBranch := strings.TrimSpace(*branch) == "" || binding.GetBranch() == strings.TrimSpace(*branch)
-		samePushMode := binding.GetPushEnabled() == *pushEnabled
-		if sameRepo && sameBranch && samePushMode {
-			if jsonEnabled {
-				writeJSONOutput(jsonRepoEnsureOutput{
-					Created: false,
-					Updated: false,
-					Binding: buildRepoBindingOutput(binding),
-				})
-				return
-			}
-			fmt.Printf("Using existing repo binding: %s\n", binding.GetPath())
-			fmt.Printf("Repo: %s\n", binding.GetRepoUrl())
-			return
-		}
-		if !*force {
-			commandFatal(
-				"REPO_BINDING_MISMATCH",
-				fmt.Sprintf("Repo binding at %s does not match requested repo/branch/push settings", targetPath),
-				false,
-				"rerun with --force to replace the existing binding",
-			)
-		}
-	}
-
-	resp, err := cli.filesystemClient.ImportRepo(ctx, &filesystemv1.ImportRepoRequest{
-		RepoUrl:        repoURL,
-		Path:           targetPath,
-		Branch:         strings.TrimSpace(*branch),
-		AllowOverwrite: *force,
-		PushEnabled:    *pushEnabled,
-		GithubToken:    strings.TrimSpace(*githubToken),
-	})
-	if err != nil {
-		commandFatalf("REPO_ENSURE_FAILED", true, "", "Failed to ensure repo binding: %v", err)
-	}
-
-	if jsonEnabled {
-		writeJSONOutput(jsonRepoEnsureOutput{
-			Created:      true,
-			Updated:      *force,
-			Binding:      buildRepoBindingOutput(resp.GetBinding()),
-			CommitHash:   resp.GetCommitHash(),
-			RemoteCommit: resp.GetRemoteCommit(),
-			FileCount:    resp.GetFileCount(),
-		})
-		return
-	}
-	fmt.Printf("Ensured repo binding: %s -> %s\n", resp.GetBinding().GetPath(), resp.GetBinding().GetRepoUrl())
 }
 
 func ensureSliceSlug(username, name string) string {

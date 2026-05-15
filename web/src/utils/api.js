@@ -36,7 +36,6 @@ export {
   fetchAuthMethods,
   fetchAuthSessions,
   fetchCurrentUser,
-  fetchRepoBindings,
   updateCurrentUser,
 } from '../api/account.js';
 
