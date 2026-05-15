@@ -115,7 +115,11 @@ export default function SliceAgentsConversationThread({
             ) : (
               <li key={item.key} className="slice-agents-timeline-events">
                 <details className="slice-agents-debug-events">
-                  <summary>Agent activity ({item.events.length})</summary>
+                  <summary>
+                    {item.events.length === 1
+                      ? eventTitle(item.events[0])
+                      : `Agent activity (${item.events.length})`}
+                  </summary>
                   <ol className="slice-agents-event-list">
                     {item.events.map((event) => (
                       <li
