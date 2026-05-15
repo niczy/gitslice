@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	filesystemv1 "github.com/niczy/gitslice/proto/filesystem"
 	slicev1 "github.com/niczy/gitslice/proto/slice"
 	"github.com/spf13/cobra"
 )
@@ -78,13 +77,6 @@ func handleContext(ctx context.Context, cli *CLI, authConfig cliAuth, args []str
 			out.TrackedChange.Error = reviewErr.Error()
 		} else {
 			out.TrackedChange.ReviewStatus = reviewResp.GetReviewStatus().String()
-		}
-	}
-
-	if bindingsResp, err := cli.filesystemClient.ListRepoBindings(ctx, &filesystemv1.ListRepoBindingsRequest{}); err == nil {
-		out.RepoBindings = make([]jsonRepoBinding, 0, len(bindingsResp.GetBindings()))
-		for _, binding := range bindingsResp.GetBindings() {
-			out.RepoBindings = append(out.RepoBindings, buildRepoBindingOutput(binding))
 		}
 	}
 
@@ -175,5 +167,4 @@ func handleContext(ctx context.Context, cli *CLI, authConfig cliAuth, args []str
 	} else {
 		fmt.Println("Tracked changeset: none")
 	}
-	fmt.Printf("Repo bindings: %d\n", len(out.RepoBindings))
 }

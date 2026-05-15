@@ -831,7 +831,6 @@ func (s *PostgresNativeStorage) Reset(ctx context.Context) error {
 			organization_invites,
 			organization_members,
 			organizations,
-			repo_bindings,
 			auth_sessions,
 			users,
 			accounts,
@@ -1780,9 +1779,6 @@ func (s *PostgresNativeStorage) DeleteSlice(ctx context.Context, sliceID string)
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM agent_sessions WHERE slice_id = $1`, sliceID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM repo_bindings WHERE slice_id = $1`, sliceID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM file_manifests WHERE slice_id = $1`, sliceID); err != nil {
@@ -4938,9 +4934,6 @@ func (s *PostgresNativeStorage) DeleteUser(ctx context.Context, username string)
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM device_authorizations WHERE username = $1`, username); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM repo_bindings WHERE owner_username = $1`, username); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM team_members WHERE username = $1`, username); err != nil {

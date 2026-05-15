@@ -7,7 +7,7 @@ Use `gs fs` for direct cloud edits in your home slice. Use custom slices when yo
 Git Slice is a cloud versioned filesystem built for two real workflows. The first is direct remote work with `gs fs`. The second is focused local work through custom slices and fast checkouts. Both are slice-backed, both keep commit history, and both converge through the same publish model.
 
 - Cloud reads, writes, snapshots, diffs, upload, download, and batch operations through `gs fs`.
-- Repo bindings that import a GitHub repo into a home-slice path and optionally let you pull and push it later.
+- One-shot Git repo imports that snapshot a remote repository into a home-slice path.
 - Focused slice creation and fast `gs slice checkout` for editor-heavy work.
 - Tracked publish and merge through `gs slice publish`, with `gs changeset` commands available for review and manual steps.
 - Repo browser, history, commit diffs, and slice navigation in the web app.
@@ -79,14 +79,12 @@ cd ui-refresh
 gs slice diff
 ```
 
-### Bind a GitHub repo into a home-slice directory
+### Import a GitHub repo into a home-slice directory
 
-Best when you want one directory to stay connected to an upstream repo while still using normal `gs fs` edits.
+Best when you want to snapshot an external repository into your home slice.
 
 ```sh
-gs repo import https://github.com/org/repo.git /$USER/vendor/repo --push-enabled
-gs repo pull /$USER/vendor/repo
-gs repo push /$USER/vendor/repo --message "sync upstream fixes"
+gs repo import https://github.com/org/repo.git /$USER/vendor/repo
 ```
 
 ### Publish local work back to the shared tree
@@ -114,22 +112,18 @@ Use `gs fs` when remote is the fastest path. `gs fs` operates on your home slice
 - Sync a directory in one command: `gs fs sync --direction push ./site /$USER/site`
 - Batch several mutations: `gs fs batch -f ops.jsonl`
 
-## Repo bindings
+## Repo imports
 
-Bind a GitHub repo to one directory in your home slice. Use `gs repo` when one absolute path in your home slice should track an upstream repository. Import a repo into a directory, pull future remote updates into that bound path, and optionally push your edits back upstream later.
+Use `gs repo import` to clone a remote Git repository temporarily, snapshot its worktree, and write that snapshot into one absolute path in your home slice. The import creates a normal home-slice commit and does not keep a persistent upstream binding.
 
 ```sh
-gs repo import https://github.com/org/repo.git /$USER/vendor/repo --push-enabled
-gs repo status /$USER/vendor/repo
-gs repo pull /$USER/vendor/repo
-gs repo push /$USER/vendor/repo --message "sync upstream fixes"
-gs repo unlink /$USER/vendor/repo
+gs repo import https://github.com/org/repo.git /$USER/vendor/repo
+gs repo import https://github.com/org/repo.git /$USER/vendor/repo --force
 ```
 
-- `gs repo import` snapshots the remote repo into one bound directory and records the binding.
-- `gs repo pull` refreshes the bound directory from upstream and records a normal home-slice commit.
-- `gs repo push` exports the bound directory back to the remote repo when push is enabled.
-- The Settings page lists your current bindings so you can see path, branch, push mode, and last sync state.
+- Use `--branch <name>` to import a specific branch.
+- Use `--force` to replace an existing imported directory with a fresh snapshot.
+- Use `--github-token` or `GITHUB_TOKEN` when importing a private GitHub repository.
 
 ## Custom slices
 

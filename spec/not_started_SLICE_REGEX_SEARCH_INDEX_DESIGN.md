@@ -336,7 +336,7 @@ On:
 - `MoveFile`
 - `CopyFile`
 - `Batch`
-- repo pull/import flows
+- repo import flows
 
 the server should update search state incrementally:
 
@@ -402,7 +402,7 @@ Use:
 Use:
 
 - mutation RPC inputs
-- repo binding pull/push/import touched-path sets
+- repo import touched-path sets
 
 ---
 
@@ -838,7 +838,7 @@ That means:
 ### Validation
 
 - filesystem service tests for write/edit/delete/move/copy updates
-- repo binding import/pull flows update index state correctly
+- repo import flows update index state correctly
 
 ---
 

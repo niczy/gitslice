@@ -382,8 +382,6 @@ async function loadSettingsData(request, session, data, setCookies, options = {}
 
   const settings = {
     username,
-    bindings: [],
-    bindingsError: '',
     authMethods: [],
     authMethodsError: '',
     authContext: null,
@@ -419,7 +417,6 @@ async function loadSettingsData(request, session, data, setCookies, options = {}
   };
 
   await Promise.all([
-    loadSection('bindings', 'bindingsError', '/v1/repos/bindings', (payload) => payload?.bindings || []),
     loadSection('authMethods', 'authMethodsError', '/v1/auth/methods', (payload) => payload?.methods || []),
     loadSection('authContext', 'authContextError', '/v1/auth/context', (payload) => payload),
     loadSection('sessions', 'sessionsError', '/v1/auth/sessions', (payload) => payload?.sessions || []),

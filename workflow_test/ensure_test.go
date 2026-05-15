@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,40 +32,5 @@ func TestSliceEnsureIsIdempotent(t *testing.T) {
 	second := runCLIJSONOrFail[sliceEnsureJSON](t, rootWorkdir, "slice", "ensure", sliceName, folderPath)
 	if !first.Created || second.Created || first.SliceID == "" || first.SliceID != second.SliceID || first.Slug != second.Slug {
 		t.Fatalf("expected idempotent slice ensure results, got first=%+v second=%+v", first, second)
-	}
-}
-
-func TestRepoEnsureIsIdempotent(t *testing.T) {
-	username := fmt.Sprintf("repoensure%d", time.Now().UnixNano()%1_000_000_000)
-	homeDir := filepath.Join(t.TempDir(), "home")
-	if err := os.MkdirAll(homeDir, 0o755); err != nil {
-		t.Fatalf("mkdir CLI home: %v", err)
-	}
-	env := map[string]string{"HOME": homeDir}
-	runCLIForUser := func(workdir string, args ...string) string {
-		t.Helper()
-		output, err := runCLIWithDirInputEnvLegacyUser(workdir, "", env, true, username, args...)
-		if err != nil {
-			t.Fatalf("CLI command failed: %v\nOutput:\n%s", err, output)
-		}
-		return output
-	}
-	runCLIJSONForUser := func(workdir string, args ...string) repoEnsureJSON {
-		t.Helper()
-		output := runCLIForUser(workdir, append(args, "--json")...)
-		var resp repoEnsureJSON
-		if err := json.Unmarshal([]byte(output), &resp); err != nil {
-			t.Fatalf("decode repo ensure JSON: %v\nOutput:\n%s", err, output)
-		}
-		return resp
-	}
-
-	remoteDir, _ := createLocalGitRemote(t)
-	boundPath := fmt.Sprintf("/%s/repos/ensure-%d", username, time.Now().UnixNano())
-
-	first := runCLIJSONForUser("", "repo", "ensure", "--push-enabled", remoteDir, boundPath)
-	second := runCLIJSONForUser("", "repo", "ensure", "--push-enabled", remoteDir, boundPath)
-	if !first.Created || second.Created || first.Binding.Path != boundPath || first.Binding.Path != second.Binding.Path {
-		t.Fatalf("expected idempotent repo ensure results, got first=%+v second=%+v", first, second)
 	}
 }

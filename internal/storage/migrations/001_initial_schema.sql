@@ -509,22 +509,6 @@ CREATE TABLE projection_offsets (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-CREATE TABLE repo_bindings (
-    binding_id text NOT NULL,
-    owner_username text NOT NULL,
-    slice_id text NOT NULL,
-    root_path text NOT NULL,
-    provider text DEFAULT 'github'::text NOT NULL,
-    repo_url text DEFAULT ''::text NOT NULL,
-    branch text DEFAULT ''::text NOT NULL,
-    push_enabled boolean DEFAULT false NOT NULL,
-    last_imported_commit text DEFAULT ''::text NOT NULL,
-    last_pushed_commit text DEFAULT ''::text NOT NULL,
-    last_seen_remote_commit text DEFAULT ''::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
 CREATE TABLE slice_commits (
     slice_id text NOT NULL,
     seq bigint NOT NULL,
@@ -759,12 +743,6 @@ ALTER TABLE ONLY path_visibility
 ALTER TABLE ONLY projection_offsets
     ADD CONSTRAINT projection_offsets_pkey PRIMARY KEY (projection_name, shard_id);
 
-ALTER TABLE ONLY repo_bindings
-    ADD CONSTRAINT repo_bindings_pkey PRIMARY KEY (binding_id);
-
-ALTER TABLE ONLY repo_bindings
-    ADD CONSTRAINT repo_bindings_slice_id_root_path_key UNIQUE (slice_id, root_path);
-
 ALTER TABLE ONLY slice_commits
     ADD CONSTRAINT slice_commits_pkey PRIMARY KEY (slice_id, seq);
 
@@ -917,8 +895,6 @@ CREATE UNIQUE INDEX idx_organizations_root_path_unique ON organizations USING bt
 
 CREATE INDEX idx_path_visibility_path_prefix ON path_visibility USING btree (path);
 
-CREATE INDEX idx_repo_bindings_owner_username ON repo_bindings USING btree (owner_username);
-
 CREATE UNIQUE INDEX idx_slice_commits_hash ON slice_commits USING btree (slice_id, commit_hash);
 
 CREATE INDEX idx_slice_commits_slice_seq_desc ON slice_commits USING btree (slice_id, seq DESC);
@@ -1025,12 +1001,6 @@ ALTER TABLE ONLY organization_members
 
 ALTER TABLE ONLY organization_members
     ADD CONSTRAINT organization_members_username_fkey FOREIGN KEY (username) REFERENCES users(username);
-
-ALTER TABLE ONLY repo_bindings
-    ADD CONSTRAINT repo_bindings_owner_username_fkey FOREIGN KEY (owner_username) REFERENCES users(username);
-
-ALTER TABLE ONLY repo_bindings
-    ADD CONSTRAINT repo_bindings_slice_id_fkey FOREIGN KEY (slice_id) REFERENCES slices(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 ALTER TABLE ONLY slice_commits
     ADD CONSTRAINT slice_commits_slice_id_fkey FOREIGN KEY (slice_id) REFERENCES slices(id) ON UPDATE CASCADE ON DELETE CASCADE;

@@ -662,16 +662,6 @@ func (s *InMemoryStorage) DeleteUser(ctx context.Context, username string) error
 			delete(s.deviceAuthorizationByUserCode, authorization.UserCode)
 		}
 	}
-	if bindingIDs := s.repoBindingsByOwner[username]; len(bindingIDs) > 0 {
-		for bindingID := range bindingIDs {
-			if binding := s.repoBindings[bindingID]; binding != nil {
-				delete(s.repoBindingsByPath, repoBindingPathKey(binding.SliceID, binding.RootPath))
-			}
-			delete(s.repoBindings, bindingID)
-		}
-	}
-	delete(s.repoBindingsByOwner, username)
-
 	if orgs := s.userOrgs[username]; len(orgs) > 0 {
 		for slug := range orgs {
 			if members, ok := s.orgMembers[slug]; ok && members != nil {

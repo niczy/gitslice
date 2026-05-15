@@ -353,64 +353,13 @@ type jsonSlicePublishOutput struct {
 	Merge          *jsonMergeOutput          `json:"merge,omitempty"`
 }
 
-type jsonRepoBinding struct {
-	BindingID            string `json:"binding_id,omitempty"`
-	Provider             string `json:"provider,omitempty"`
-	RepoURL              string `json:"repo_url"`
-	Branch               string `json:"branch,omitempty"`
-	Path                 string `json:"path"`
-	PushEnabled          bool   `json:"push_enabled"`
-	LastImportedCommit   string `json:"last_imported_commit,omitempty"`
-	LastPushedCommit     string `json:"last_pushed_commit,omitempty"`
-	LastSeenRemoteCommit string `json:"last_seen_remote_commit,omitempty"`
-	CreatedAt            string `json:"created_at,omitempty"`
-	UpdatedAt            string `json:"updated_at,omitempty"`
-}
-
 type jsonRepoImportOutput struct {
-	Binding      jsonRepoBinding `json:"binding"`
-	CommitHash   string          `json:"commit_hash,omitempty"`
-	RemoteCommit string          `json:"remote_commit,omitempty"`
-	FileCount    int32           `json:"file_count"`
-}
-
-type jsonRepoListOutput struct {
-	Total    int               `json:"total"`
-	Bindings []jsonRepoBinding `json:"bindings"`
-}
-
-type jsonRepoStatusOutput struct {
-	Found   bool             `json:"found"`
-	Binding *jsonRepoBinding `json:"binding,omitempty"`
-}
-
-type jsonRepoPullOutput struct {
-	Binding      jsonRepoBinding `json:"binding"`
-	CommitHash   string          `json:"commit_hash,omitempty"`
-	RemoteCommit string          `json:"remote_commit,omitempty"`
-	FileCount    int32           `json:"file_count"`
-	Updated      bool            `json:"updated"`
-	Published    bool            `json:"published,omitempty"`
-}
-
-type jsonRepoPushOutput struct {
-	Binding      jsonRepoBinding `json:"binding"`
-	RemoteCommit string          `json:"remote_commit,omitempty"`
-	Pushed       bool            `json:"pushed"`
-}
-
-type jsonRepoUnlinkOutput struct {
-	Path   string `json:"path"`
-	Status string `json:"status"`
-}
-
-type jsonRepoEnsureOutput struct {
-	Created      bool            `json:"created"`
-	Updated      bool            `json:"updated"`
-	Binding      jsonRepoBinding `json:"binding"`
-	CommitHash   string          `json:"commit_hash,omitempty"`
-	RemoteCommit string          `json:"remote_commit,omitempty"`
-	FileCount    int32           `json:"file_count,omitempty"`
+	RepoURL      string `json:"repo_url"`
+	Path         string `json:"path"`
+	Branch       string `json:"branch,omitempty"`
+	CommitHash   string `json:"commit_hash,omitempty"`
+	RemoteCommit string `json:"remote_commit,omitempty"`
+	FileCount    int32  `json:"file_count"`
 }
 
 type jsonCacheCheckoutRecord struct {
@@ -590,7 +539,6 @@ type jsonContextOutput struct {
 	HomeSliceID   string                     `json:"home_slice_id,omitempty"`
 	Checkout      jsonContextCheckoutOutput  `json:"checkout"`
 	TrackedChange jsonContextChangesetOutput `json:"tracked_changeset"`
-	RepoBindings  []jsonRepoBinding          `json:"repo_bindings,omitempty"`
 }
 
 type jsonConflictInfo struct {
@@ -1080,25 +1028,6 @@ func buildFilesystemSearchOutput(workspaceID, query string, regex bool, glob str
 	}
 	output.Total = len(output.Matches)
 	return output
-}
-
-func buildRepoBindingOutput(binding *filesystemv1.RepoBinding) jsonRepoBinding {
-	if binding == nil {
-		return jsonRepoBinding{}
-	}
-	return jsonRepoBinding{
-		BindingID:            binding.GetBindingId(),
-		Provider:             binding.GetProvider(),
-		RepoURL:              binding.GetRepoUrl(),
-		Branch:               binding.GetBranch(),
-		Path:                 binding.GetPath(),
-		PushEnabled:          binding.GetPushEnabled(),
-		LastImportedCommit:   binding.GetLastImportedCommit(),
-		LastPushedCommit:     binding.GetLastPushedCommit(),
-		LastSeenRemoteCommit: binding.GetLastSeenRemoteCommit(),
-		CreatedAt:            binding.GetCreatedAt(),
-		UpdatedAt:            binding.GetUpdatedAt(),
-	}
 }
 
 func buildConflictOutput(conflict *slicev1.Conflict) jsonConflictInfo {

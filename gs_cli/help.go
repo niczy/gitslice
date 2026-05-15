@@ -21,7 +21,7 @@ func printHelp() {
 	fmt.Println("  changeset   Manage change lists")
 	fmt.Println("  conflict    Detect and resolve conflicts")
 	fmt.Println("  import      Import external repositories")
-	fmt.Println("  repo        Bind remote repositories into your home slice")
+	fmt.Println("  repo        Import remote repositories into your home slice")
 	fmt.Println("  file        Browse files and file history")
 	fmt.Println("  fs          Remote home filesystem operations")
 	fmt.Println("  update      Update the gs CLI (alias: upgrade)")
@@ -46,7 +46,6 @@ func printHelp() {
 	fmt.Println("  gs context --json")
 	fmt.Println("  gs slice checkout home_nic --json")
 	fmt.Println("  gs slice status --json")
-	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
 	fmt.Println("  gs fs write /nic/app/config.json -f config.json --json")
 	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --detach --json")
 	fmt.Println("  gs ci status --json")
@@ -390,20 +389,12 @@ func printImportHelp() {
 
 func printRepoHelp() {
 	fmt.Println("Usage: gs repo <command> [options]")
-	fmt.Println("Most repo commands support --json.")
+	fmt.Println("Repo import supports --json.")
 	fmt.Println("\nCommands:")
-	fmt.Println("  ensure   Ensure a remote repo binding exists at an absolute home path")
-	fmt.Println("  import   Import a remote repository into an absolute home path and create a binding")
-	fmt.Println("  list     List your remote repo bindings")
-	fmt.Println("  status   Show the binding configured for an absolute home path")
-	fmt.Println("  pull     Pull the latest remote snapshot into the bound home path")
-	fmt.Println("  push     Push the bound home path back to the tracked remote branch")
-	fmt.Println("  unlink   Remove the binding from an absolute home path")
+	fmt.Println("  import   Import a remote repository once into an absolute home path")
 	fmt.Println("\nExamples:")
-	fmt.Println("  gs repo ensure https://github.com/org/repo.git /nic/vendor/repo --json")
-	fmt.Println("  gs repo list --json")
-	fmt.Println("  gs repo pull /nic/vendor/repo --detach --json")
-	fmt.Println("  gs repo push /nic/vendor/repo --detach --json")
+	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --json")
+	fmt.Println("  gs repo import https://github.com/org/repo.git /nic/vendor/repo --force --detach --json")
 }
 
 func printFileHelp() {
