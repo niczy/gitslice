@@ -6,6 +6,8 @@ import { normalizeEntryType } from '../../utils/normalize.js';
 import { getEntryName } from './browserModel.js';
 
 export const TREE_DIRECTORY_MARKER_FILE = '.gitslicekeep';
+export const TREE_CREATE_VISIBILITY_TIMEOUT_MS = 8000;
+export const TREE_CREATE_VISIBILITY_POLL_MS = 250;
 
 export function normalizeTreePath(value) {
   return String(value || '').trim().replace(/^\/+|\/+$/g, '');
@@ -73,6 +75,38 @@ export function getDefaultTreeActionTarget(focusedEntry) {
 export function pathExistsInEntries(entries = [], targetPath) {
   const normalizedPath = normalizeTreePath(targetPath);
   return entries.some((entry) => normalizeTreePath(entry?.path) === normalizedPath);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
+}
+
+export async function waitForCreatedTreeEntry({
+  fetchEntries,
+  parentPath,
+  pollMs = TREE_CREATE_VISIBILITY_POLL_MS,
+  sleepFn = sleep,
+  targetPath,
+  timeoutMs = TREE_CREATE_VISIBILITY_TIMEOUT_MS,
+}) {
+  if (typeof fetchEntries !== 'function') {
+    throw new Error('fetchEntries is required.');
+  }
+
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastEntries = [];
+  for (;;) {
+    lastEntries = await fetchEntries(parentPath);
+    if (pathExistsInEntries(lastEntries, targetPath)) {
+      return { entries: lastEntries, visible: true };
+    }
+    if (Date.now() >= deadline) {
+      return { entries: lastEntries, visible: false };
+    }
+    await sleepFn(Math.max(0, pollMs));
+  }
 }
 
 export function entryLabelForPrompt(entry) {

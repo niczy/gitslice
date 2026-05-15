@@ -179,6 +179,7 @@ export default function RepoBrowser({
     isActive,
     openFileRequest,
     openFilesView,
+    openSidebar,
     refreshHistoryToken,
     setSliceHash,
     sliceHash,
