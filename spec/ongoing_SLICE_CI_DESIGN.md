@@ -499,6 +499,13 @@ For v1, materialize the full candidate home tree into an ephemeral workspace.
 This is simplest and avoids surprising commands that expect repository-level
 files.
 
+Environment files needed by a custom slice are materialized from the home-slice
+sidecar requirements file described in
+[`ongoing_SLICE_ENV_MATERIALIZATION_DESIGN.md`](ongoing_SLICE_ENV_MATERIALIZATION_DESIGN.md).
+CI must read those requirements from trusted home head, include the requirements
+hash in the plan hash, and exclude sensitive materialized paths from caches,
+artifacts, logs, and changeset export surfaces.
+
 Later optimizations can materialize only:
 
 - matched manifest directories
