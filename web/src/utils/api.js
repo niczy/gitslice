@@ -42,6 +42,7 @@ export {
 
 export {
   addSliceFolder,
+  createChangeset,
   createRevertChangeset,
   createSliceFromFolder,
   fetchSliceEntries,

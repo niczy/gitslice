@@ -13,7 +13,12 @@ service SliceService {
   rpc CheckoutSlice(CheckoutRequest) returns (CheckoutResponse);
 
   // Create a new change list
-  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
+  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse) {
+    option (google.api.http) = {
+      post: "/v1/changesets"
+      body: "*"
+    };
+  }
 
   // Review a change list (check against slice head)
   rpc ReviewChangeset(ReviewChangesetRequest) returns (ReviewChangesetResponse) {

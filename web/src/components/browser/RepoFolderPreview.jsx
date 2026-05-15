@@ -8,6 +8,7 @@ import {
   getEntryName,
   sortEntriesByTypeAndName,
 } from '../../features/browser/browserModel.js';
+import { filterVisibleTreeEntries } from '../../features/browser/browserTreeOperations.js';
 import { formatBytes } from '../../utils/format.js';
 import { normalizeEntryType } from '../../utils/normalize.js';
 
@@ -20,7 +21,7 @@ export default function RepoFolderPreview({
   selectedDirectoryPath,
   visibleEntryError,
 }) {
-  const sortedEntries = sortEntriesByTypeAndName(selectedDirectoryEntries);
+  const sortedEntries = sortEntriesByTypeAndName(filterVisibleTreeEntries(selectedDirectoryEntries));
 
   return (
     <div className="folder-preview" data-testid="folder-preview">

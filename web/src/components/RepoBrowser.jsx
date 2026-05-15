@@ -131,6 +131,7 @@ export default function RepoBrowser({
     handleBreadcrumbClick,
     handleContentEntryClick,
     handleEntryClick,
+    handleTreeAction,
     hasLoadedRootEntries,
     hasPreviewContent,
     hasSelectedDirectoryEntries,
@@ -153,6 +154,7 @@ export default function RepoBrowser({
     showHistory,
     toggleHistory,
     treeEntries,
+    treeActionState,
     visibleEntryError,
   } = useRepoBrowserData({
     apiBaseUrl,
@@ -261,12 +263,14 @@ export default function RepoBrowser({
             isSidebarDismissing={isSidebarDismissing}
             onCloseSidebar={closeSidebar}
             onEntryClick={handleEntryClick}
+            onTreeAction={handleTreeAction}
             onOpenFilesView={openFilesView}
             onOpenSettingsView={openSettingsView}
             sidebarOpen={sidebarOpen}
             sidebarVisible={sidebarVisible}
             sidebarWidth={sidebarWidth}
             startSidebarResize={startSidebarResize}
+            treeActionState={treeActionState}
             treeEntries={treeEntries}
             viewingSettings={viewingSettings}
             visibleEntryError={visibleEntryError}
