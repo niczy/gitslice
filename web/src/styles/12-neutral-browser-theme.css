@@ -1153,7 +1153,7 @@
 }
 
 .app-shell--browser .slice-settings-page-content {
-  background: var(--np-surface);
+  background: var(--settings-bg);
 }
 
 .app-shell--browser .slice-settings-page .slice-settings {
@@ -1163,14 +1163,9 @@
   background: transparent;
 }
 
-.app-shell--browser .slice-settings-page .slice-settings-header {
-  border-bottom-color: var(--np-border-soft);
-}
-
-.app-shell--browser .slice-settings-page .border-border\/70 {
-  border: 1px solid var(--np-border-soft);
-  border-radius: 6px;
-  background: var(--np-container);
+.app-shell--browser .slice-settings-page .slice-settings-card {
+  border: 0;
+  border-radius: 18px;
   box-shadow: none;
 }
 
@@ -1180,7 +1175,7 @@
 }
 
 .app-shell--browser .slice-settings-page .slice-settings-card-header p {
-  max-width: 48ch;
+  max-width: 56ch;
 }
 
 .app-shell--browser .slice-settings-page .panel-empty {

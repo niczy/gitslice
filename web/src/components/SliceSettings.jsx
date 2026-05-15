@@ -41,6 +41,7 @@ export default function SliceSettings({
   folderMounts,
   onFolderMountsChange,
   initialSettingsData = null,
+  showHeader = true,
 }) {
   const initialVisibilityPayload = getInitialVisibilityPayload(initialSettingsData, sliceId);
   const initialVisibilityError = getInitialVisibilityError(initialSettingsData, sliceId);
@@ -211,12 +212,14 @@ export default function SliceSettings({
 
   return (
     <div className="slice-settings" data-testid="slice-settings-panel">
-      <div className="slice-settings-header">
-        <h3>Slice settings</h3>
-        <p>
-          Manage visibility, tracked folders, and environment values for <strong>{sliceName || sliceId}</strong>.
-        </p>
-      </div>
+      {showHeader && (
+        <div className="slice-settings-header">
+          <h3>Slice settings</h3>
+          <p>
+            Manage visibility, tracked folders, and environment values for <strong>{sliceName || sliceId}</strong>.
+          </p>
+        </div>
+      )}
 
       <div className="slice-settings-grid">
         <SliceVisibilityCard

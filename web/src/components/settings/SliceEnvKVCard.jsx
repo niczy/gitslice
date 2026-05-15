@@ -363,7 +363,7 @@ export function SliceEnvKVCard({ sliceId, initialEnvData = null }) {
     && requirementProfiles.includes('local');
 
   return (
-    <Card className="border-border/70">
+    <Card className="slice-settings-card slice-settings-card--env">
       <CardContent className="pt-6">
         <div className="slice-settings-card-header">
           <div>
