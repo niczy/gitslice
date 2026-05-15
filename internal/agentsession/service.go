@@ -390,6 +390,21 @@ func (s *Service) ListEventsForUser(ctx context.Context, userID, sessionID strin
 	return events, nextSeq, nil
 }
 
+func (s *Service) ListLatestEventsForUser(ctx context.Context, userID, sessionID string, limit int) ([]*models.AgentSessionEvent, uint64, error) {
+	if _, err := s.GetSessionForUser(ctx, userID, sessionID); err != nil {
+		return nil, 0, err
+	}
+	events, err := s.st.ListLatestAgentSessionEvents(ctx, sessionID, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	nextSeq := uint64(1)
+	if len(events) > 0 {
+		nextSeq = events[len(events)-1].Seq + 1
+	}
+	return events, nextSeq, nil
+}
+
 func (s *Service) AppendStateEvent(ctx context.Context, sessionID string, state models.AgentSessionState) error {
 	payload, err := json.Marshal(map[string]string{"state": string(state)})
 	if err != nil {

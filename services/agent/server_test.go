@@ -448,6 +448,53 @@ func TestListRunnersUsesStableIdentityOrder(t *testing.T) {
 	}
 }
 
+func TestListEventsTailReturnsLatestEvents(t *testing.T) {
+	ctx := agentTestContext("alice")
+	st := storage.NewInMemoryStorage()
+	svc := agentsession.NewService(st, "test-secret")
+	srv := &agentServiceServer{st: st, svc: svc}
+
+	if err := st.CreateAgentSession(ctx, &models.AgentSession{
+		SessionID: "sess-tail",
+		SliceID:   "slice-tail",
+		RunnerID:  "runner-tail",
+		UserID:    "alice",
+		State:     models.AgentSessionStateRunning,
+		Provider:  agentsession.RuntimeProviderLocal,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateAgentSession failed: %v", err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := svc.AppendEvent(ctx, &models.AgentSessionEvent{
+			SessionID: "sess-tail",
+			Stream:    agentsession.EventStreamAgent,
+			Type:      agentsession.EventTypeOutputDelta,
+			Payload:   []byte(`{"text":"delta"}`),
+		}); err != nil {
+			t.Fatalf("AppendEvent %d failed: %v", i, err)
+		}
+	}
+
+	resp, err := srv.ListEvents(ctx, &agentv1.ListEventsRequest{
+		SessionId: "sess-tail",
+		Tail:      2,
+	})
+	if err != nil {
+		t.Fatalf("ListEvents tail failed: %v", err)
+	}
+	if got, want := len(resp.GetEvents()), 2; got != want {
+		t.Fatalf("expected %d tail events, got %d", want, got)
+	}
+	if got := []uint64{resp.GetEvents()[0].GetSeq(), resp.GetEvents()[1].GetSeq()}; got[0] != 4 || got[1] != 5 {
+		t.Fatalf("expected latest events [4 5], got %#v", got)
+	}
+	if resp.GetNextSeq() != 6 {
+		t.Fatalf("expected next_seq 6, got %d", resp.GetNextSeq())
+	}
+}
+
 func TestAgentSessionCreateRequiresOnlineRunner(t *testing.T) {
 	ctx := agentTestContext("alice")
 	st := storage.NewInMemoryStorage()

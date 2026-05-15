@@ -3054,6 +3054,30 @@ func (s *InMemoryStorage) ListAgentSessionEvents(ctx context.Context, sessionID 
 	return out, nil
 }
 
+func (s *InMemoryStorage) ListLatestAgentSessionEvents(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionEvent, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.agentSessions[sessionID]; !ok {
+		return nil, ErrAgentSessionNotFound
+	}
+	events := s.agentSessionEvents[sessionID]
+	if limit <= 0 {
+		limit = 200
+	}
+	start := len(events) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	out := make([]*models.AgentSessionEvent, 0, len(events)-start)
+	for _, event := range events[start:] {
+		out = append(out, cloneAgentSessionEvent(event))
+	}
+	return out, nil
+}
+
 func (s *InMemoryStorage) AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error {
 	_ = ctx
 	if audit == nil || audit.SessionID == "" || audit.Action == "" {

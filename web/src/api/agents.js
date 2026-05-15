@@ -141,9 +141,13 @@ export async function createAgentSession(sliceId, { runnerId = '', environment =
   return response.json();
 }
 
-export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 200 } = {}) {
+export async function listAgentSessionEvents(sessionId, { sinceSeq = 0, limit = 200, tail = 0 } = {}) {
   const query = new URLSearchParams();
-  query.set('sinceSeq', String(sinceSeq || 0));
+  if (typeof tail === 'number' && tail > 0) {
+    query.set('tail', String(tail));
+  } else {
+    query.set('sinceSeq', String(sinceSeq || 0));
+  }
   if (typeof limit === 'number' && limit > 0) {
     query.set('limit', String(limit));
   }

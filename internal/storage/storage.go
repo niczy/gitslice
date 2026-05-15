@@ -368,5 +368,6 @@ type Storage interface {
 	UpdateAgentSession(ctx context.Context, session *models.AgentSession) error
 	AppendAgentSessionEvent(ctx context.Context, event *models.AgentSessionEvent) error
 	ListAgentSessionEvents(ctx context.Context, sessionID string, sinceSeq uint64, limit int) ([]*models.AgentSessionEvent, error)
+	ListLatestAgentSessionEvents(ctx context.Context, sessionID string, limit int) ([]*models.AgentSessionEvent, error)
 	AddAgentSessionAudit(ctx context.Context, audit *models.AgentSessionAudit) error
 }

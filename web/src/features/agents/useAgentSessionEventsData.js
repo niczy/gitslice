@@ -5,9 +5,14 @@ import {
   mintAgentSessionToken,
 } from '../../api/agents.js';
 import {
+  AGENT_EVENTS_INITIAL_TAIL,
   AGENT_EVENTS_MAX,
   AGENT_EVENTS_PAGE_SIZE,
 } from './agentConstants.js';
+import {
+  readCachedAgentSessionEvents,
+  scheduleCachedAgentSessionEventsWrite,
+} from './agentEventCache.js';
 import {
   buildLiveStreamState,
   normalizeEvent,
@@ -45,6 +50,9 @@ export function useAgentSessionEventsData({
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState('');
   const [eventPollingBusy, setEventPollingBusy] = useState(false);
+  const [eventsInitialized, setEventsInitialized] = useState(false);
+  const selectedSessionIdRef = useRef('');
+  selectedSessionIdRef.current = selectedSessionId || '';
 
   const liveStreamState = useMemo(
     () => buildLiveStreamState(events, selectedSession),
@@ -57,6 +65,9 @@ export function useAgentSessionEventsData({
     eventsRef.current = normalized;
     lastEventSeqRef.current = lastEventSeq(normalized);
     setEvents(normalized);
+    if (selectedSessionIdRef.current) {
+      scheduleCachedAgentSessionEventsWrite(selectedSessionIdRef.current, normalized);
+    }
   }, []);
 
   const resetConversationEvents = useCallback(() => {
@@ -73,15 +84,19 @@ export function useAgentSessionEventsData({
       }
       eventsRef.current = merged;
       lastEventSeqRef.current = lastEventSeq(merged);
+      if (selectedSessionIdRef.current) {
+        scheduleCachedAgentSessionEventsWrite(selectedSessionIdRef.current, merged);
+      }
       return merged;
     });
   }, []);
 
-  const loadSelectedEvents = useCallback(async ({ incremental = false } = {}) => {
+  const loadSelectedEvents = useCallback(async ({ incremental = false, tail = false } = {}) => {
     if (!selectedSessionId) {
       resetConversationEvents();
       setEventsError('');
       setEventsLoading(false);
+      setEventsInitialized(true);
       return;
     }
 
@@ -89,6 +104,18 @@ export function useAgentSessionEventsData({
     setEventsLoading(!incremental && existingEvents.length === 0);
     setEventsError('');
     try {
+      if (tail && existingEvents.length === 0) {
+        const payload = await listAgentSessionEvents(selectedSessionId, {
+          tail: AGENT_EVENTS_INITIAL_TAIL,
+          limit: AGENT_EVENTS_INITIAL_TAIL,
+        });
+        if (selectedSessionIdRef.current !== selectedSessionId) {
+          return;
+        }
+        replaceConversationEvents(payload?.events || []);
+        return;
+      }
+
       let sinceSeq = incremental ? lastEventSeqRef.current : 0;
       const nextEvents = [];
       while (nextEvents.length < AGENT_EVENTS_MAX) {
@@ -104,28 +131,64 @@ export function useAgentSessionEventsData({
         }
         sinceSeq = nextSeq - 1;
       }
+      if (selectedSessionIdRef.current !== selectedSessionId) {
+        return;
+      }
       if (incremental) {
         appendConversationEvents(nextEvents);
       } else {
         replaceConversationEvents(nextEvents);
       }
     } catch (err) {
-      if (!incremental) {
-        resetConversationEvents();
+      if (selectedSessionIdRef.current === selectedSessionId) {
+        if (!incremental) {
+          resetConversationEvents();
+        }
+        setEventsError(err?.message || 'Unable to load agent conversation.');
       }
-      setEventsError(err?.message || 'Unable to load agent conversation.');
     } finally {
-      setEventsLoading(false);
+      if (selectedSessionIdRef.current === selectedSessionId) {
+        setEventsLoading(false);
+      }
     }
   }, [appendConversationEvents, replaceConversationEvents, resetConversationEvents, selectedSessionId]);
 
   useEffect(() => {
+    let active = true;
+    const sessionId = selectedSessionId;
     resetConversationEvents();
     setEventsError('');
-  }, [resetConversationEvents, selectedSessionId]);
+    setEventsInitialized(false);
+    if (!sessionId) {
+      setEventsInitialized(true);
+      return undefined;
+    }
+
+    const hydrateAndCatchUp = async () => {
+      const cachedEvents = await readCachedAgentSessionEvents(sessionId);
+      if (!active || selectedSessionIdRef.current !== sessionId) {
+        return;
+      }
+      if (cachedEvents.length > 0) {
+        replaceConversationEvents(cachedEvents);
+      }
+      await loadSelectedEvents({
+        incremental: cachedEvents.length > 0,
+        tail: cachedEvents.length === 0,
+      });
+      if (active && selectedSessionIdRef.current === sessionId) {
+        setEventsInitialized(true);
+      }
+    };
+
+    void hydrateAndCatchUp();
+    return () => {
+      active = false;
+    };
+  }, [loadSelectedEvents, replaceConversationEvents, resetConversationEvents, selectedSessionId]);
 
   useEffect(() => {
-    if (!selectedSessionId || !selectedSession || !isConversationLocal(selectedSession) || typeof window === 'undefined') {
+    if (!eventsInitialized || !selectedSessionId || !selectedSession || !isConversationLocal(selectedSession) || typeof window === 'undefined') {
       setEventsRealtimeConnected(false);
       return undefined;
     }
@@ -190,9 +253,12 @@ export function useAgentSessionEventsData({
         socket.close();
       }
     };
-  }, [appendConversationEvents, selectedSession, selectedSessionId]);
+  }, [appendConversationEvents, eventsInitialized, selectedSession, selectedSessionId]);
 
   useEffect(() => {
+    if (!eventsInitialized) {
+      return undefined;
+    }
     if (!selectedSessionId) {
       loadSelectedEvents();
       return undefined;
@@ -215,7 +281,7 @@ export function useAgentSessionEventsData({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [assistantStreaming, eventPollingBusy, eventsRealtimeConnected, loadSelectedEvents, selectedSessionId]);
+  }, [assistantStreaming, eventPollingBusy, eventsInitialized, eventsRealtimeConnected, loadSelectedEvents, selectedSessionId]);
 
   return {
     assistantStreaming,
