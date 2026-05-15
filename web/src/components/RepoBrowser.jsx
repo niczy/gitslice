@@ -12,7 +12,6 @@ import { useRepoBrowserData } from '../features/browser/useRepoBrowserData.js';
 import { useInitialBrowserState, useRepoBrowserSlice } from '../features/browser/useRepoBrowserSlice.js';
 import SliceDetailNav from './SliceDetailNav.jsx';
 import RepoBrowserHeader from './browser/RepoBrowserHeader.jsx';
-import RepoBrowserSettingsModal from './browser/RepoBrowserSettingsModal.jsx';
 import RepoBrowserSidebar from './browser/RepoBrowserSidebar.jsx';
 import RepoFileHistoryPanel from './browser/RepoFileHistoryPanel.jsx';
 import RepoFileViewer from './browser/RepoFileViewer.jsx';
@@ -28,6 +27,7 @@ export default function RepoBrowser({
   onOpenCommits,
   onOpenChangesets,
   onOpenAgents,
+  onOpenSettings,
   refreshHistoryToken,
   isActive,
   slicesLoading,
@@ -82,14 +82,9 @@ export default function RepoBrowser({
     closeCompactActions,
     isActionMenuOpen,
     openFilesView,
-    openSettingsView,
     toggleActionMenu,
-    viewingSettings,
   } = useRepoBrowserChrome({
-    canShowSettings,
     isCompactHeader,
-    sliceHash,
-    sliceId,
   });
 
   const buildEntriesUrl = useCallback((path) => {
@@ -247,6 +242,7 @@ export default function RepoBrowser({
         onOpenCommits={onOpenCommits}
         onOpenChangesets={onOpenChangesets}
         onOpenAgents={onOpenAgents}
+        onOpenSettings={onOpenSettings}
       />
       <div className="repo-main">
         <div
@@ -268,15 +264,13 @@ export default function RepoBrowser({
             getCreateTreeEntryBlockedReason={getCreateTreeEntryBlockedReason}
             onEntryClick={handleEntryClick}
             onTreeAction={handleTreeAction}
-            onOpenFilesView={openFilesView}
-            onOpenSettingsView={openSettingsView}
+            onOpenSettingsView={onOpenSettings}
             sidebarOpen={sidebarOpen}
             sidebarVisible={sidebarVisible}
             sidebarWidth={sidebarWidth}
             startSidebarResize={startSidebarResize}
             treeActionState={treeActionState}
             treeEntries={treeEntries}
-            viewingSettings={viewingSettings}
             visibleEntryError={visibleEntryError}
           />
 
@@ -331,13 +325,6 @@ export default function RepoBrowser({
             </div>
           </div>
         </div>
-        <RepoBrowserSettingsModal
-          currentSlice={currentSlice}
-          currentSliceLabel={currentSliceLabel}
-          onClose={openFilesView}
-          sliceId={sliceId}
-          viewingSettings={viewingSettings}
-        />
       </div>
     </section>
   );

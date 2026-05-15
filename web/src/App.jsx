@@ -20,6 +20,7 @@ import SliceHomePage from './components/SliceHomePage.jsx';
 import SliceCommitListPage from './components/SliceCommitListPage.jsx';
 import SliceChangesetListPage from './components/SliceChangesetListPage.jsx';
 import SliceAgentsPage from './components/SliceAgentsPage.jsx';
+import SliceSettingsPage from './components/SliceSettingsPage.jsx';
 import ProjectsPage from './components/ProjectsPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import NotFoundPage from './components/NotFoundPage.jsx';
@@ -55,7 +56,11 @@ function getInitialSliceId(username) {
 }
 
 function isSliceScopedPage(page) {
-  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents';
+  return page === 'browser'
+    || page === 'slice-commits'
+    || page === 'slice-changesets'
+    || page === 'slice-agents'
+    || page === 'slice-settings';
 }
 
 function App({
@@ -140,7 +145,7 @@ function App({
     } else if (page === 'changeset') {
       setDiffCommitHash('');
       setDiffChangesetId(changesetId);
-    } else if (page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents') {
+    } else if (page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents' || page === 'slice-settings') {
       const nextSliceId = options.browserState?.slice || '';
       setDiffCommitHash('');
       setDiffChangesetId('');
@@ -332,6 +337,21 @@ function App({
     navigate('slice-agents', '', '', { browserState });
   }, [currentSliceId, navigate, routerNavigate]);
 
+  const openSliceSettings = useCallback((sliceId = currentSliceId) => {
+    const normalizedSliceId = String(sliceId || '').trim();
+    if (!normalizedSliceId) {
+      return;
+    }
+    hasExplicitSliceSelectionRef.current = true;
+    if (routerNavigate) {
+      navigate('slice-settings', '', '', { browserState: { slice: normalizedSliceId } });
+      return;
+    }
+    setCurrentSliceId(normalizedSliceId);
+    setBrowserRouteSliceId(normalizedSliceId);
+    navigate('slice-settings', '', '', { browserState: { slice: normalizedSliceId } });
+  }, [currentSliceId, navigate, routerNavigate]);
+
   const openBrowserHome = useCallback(() => {
     hasExplicitSliceSelectionRef.current = false;
     if (routerNavigate) {
@@ -489,7 +509,7 @@ function App({
   const isSliceHomePage = activePage === 'browser' && !browserRouteSliceId;
   const isBrowserLayout = (activePage === 'browser' && Boolean(browserRouteSliceId)) || isSliceScopedDetail || activePage === 'diff' || activePage === 'changeset';
   const pageClassName = `page${isBrowserLayout ? ' page--browser' : ''}${isSliceHomePage ? ' page--slice-home' : ''}${activePage === 'profile' ? ' page--profile' : ''}`;
-  const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin']);
+  const blockedProtectedPages = new Set(['projects', 'settings', 'profile', 'admin', 'slice-settings']);
   const isProtectedPage = blockedProtectedPages.has(activePage);
   const hasRouteAuthorization = activePage !== 'admin' || isAdminUser;
   const routeAccessState = !isProtectedPage
@@ -549,7 +569,13 @@ function App({
 
   const isNavActive = (item) => {
     if (item === 'repos') {
-      return activePage === 'browser' || activePage === 'slice-commits' || activePage === 'slice-changesets' || activePage === 'slice-agents' || activePage === 'diff' || activePage === 'changeset';
+      return activePage === 'browser'
+        || activePage === 'slice-commits'
+        || activePage === 'slice-changesets'
+        || activePage === 'slice-agents'
+        || activePage === 'slice-settings'
+        || activePage === 'diff'
+        || activePage === 'changeset';
     }
     if (item === 'projects') {
       return activePage === 'projects';
@@ -693,6 +719,7 @@ function App({
               onOpenCommits={() => openSliceCommits(currentSliceId)}
               onOpenChangesets={() => openSliceChangesets(currentSliceId)}
               onOpenAgents={() => openSliceAgents(currentSliceId)}
+              onOpenSettings={() => openSliceSettings(currentSliceId)}
               refreshHistoryToken={historyRefreshToken}
               isActive={activePage === 'browser'}
               slicesLoading={slicesLoading}
@@ -710,6 +737,7 @@ function App({
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
             onOpenAgents={() => openSliceAgents(browserRouteSliceId || currentSliceId)}
+            onOpenSettings={() => openSliceSettings(browserRouteSliceId || currentSliceId)}
             onOpenCommitDiff={navigateToDiff}
             initialCommits={initialRouteData.sliceCommits}
             initialCommitsError={initialRouteData.sliceCommitsError || ''}
@@ -726,6 +754,7 @@ function App({
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
             onOpenAgents={() => openSliceAgents(browserRouteSliceId || currentSliceId)}
+            onOpenSettings={() => openSliceSettings(browserRouteSliceId || currentSliceId)}
             onOpenChangesetDiff={navigateToChangesetDiff}
             initialChangesets={initialRouteData.sliceChangesets}
             initialChangesetsError={initialRouteData.sliceChangesetsError || ''}
@@ -743,7 +772,21 @@ function App({
             onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
             onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
             onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
+            onOpenSettings={() => openSliceSettings(browserRouteSliceId || currentSliceId)}
             onSelectSession={(sessionId) => openSliceAgents(browserRouteSliceId || currentSliceId, sessionId)}
+          />
+        )}
+
+        {activePage === 'slice-settings' && routeAccessState === 'allowed' && (
+          <SliceSettingsPage
+            sliceId={browserRouteSliceId || currentSliceId}
+            slices={slices}
+            publicApiBaseUrl={initialAuthConfig.publicApiBaseUrl || ''}
+            onOpenCode={() => openSliceDetail(browserRouteSliceId || currentSliceId)}
+            onOpenCommits={() => openSliceCommits(browserRouteSliceId || currentSliceId)}
+            onOpenChangesets={() => openSliceChangesets(browserRouteSliceId || currentSliceId)}
+            onOpenAgents={() => openSliceAgents(browserRouteSliceId || currentSliceId)}
+            initialSettingsData={initialRouteData.sliceSettings}
           />
         )}
 

@@ -10,7 +10,11 @@ export function parseBrowserState(search = '') {
 }
 
 export function isSliceScopedRoute(page) {
-  return page === 'browser' || page === 'slice-commits' || page === 'slice-changesets' || page === 'slice-agents';
+  return page === 'browser'
+    || page === 'slice-commits'
+    || page === 'slice-changesets'
+    || page === 'slice-agents'
+    || page === 'slice-settings';
 }
 
 export function buildBrowserPath(state = {}) {
@@ -34,4 +38,8 @@ export function buildSliceAgentsPath(state = {}) {
   const query = params.toString();
   const path = `/slices/${encodeURIComponent(state.slice)}/agents`;
   return query ? `${path}?${query}` : path;
+}
+
+export function buildSliceSettingsPath(state = {}) {
+  return `/slices/${encodeURIComponent(state.slice)}/settings`;
 }

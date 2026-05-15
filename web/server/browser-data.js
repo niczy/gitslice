@@ -172,6 +172,9 @@ function createRouteData(routeInfo) {
     sliceChangesetsStatusFilter: 'all',
     sliceChangesets: null,
     sliceChangesetsError: '',
+    sliceSettingsSliceId: routeInfo?.page === 'slice-settings' ? routeInfo?.browserState?.slice || '' : '',
+    sliceSettings: null,
+    sliceSettingsError: '',
     commitDiffHash: routeInfo?.page === 'diff' ? routeInfo?.commitHash || '' : '',
     commitDiff: null,
     commitDiffError: '',
@@ -188,7 +191,7 @@ function createRouteData(routeInfo) {
 }
 
 function pageNeedsSlices(page) {
-  return ['browser', 'projects', 'slice-commits', 'slice-changesets', 'slice-agents'].includes(page);
+  return ['browser', 'projects', 'slice-commits', 'slice-changesets', 'slice-agents', 'slice-settings'].includes(page);
 }
 
 function routeNeedsSlices(routeInfo, session) {
@@ -309,6 +312,92 @@ async function loadSliceChangesets(request, session, data, setCookies, options =
     data.sliceChangesets = null;
     data.sliceChangesetsError = error?.message || 'Unable to load changesets.';
   }
+}
+
+async function loadSliceSettingsData(request, session, data, setCookies, options = {}) {
+  const sliceId = String(data.sliceSettingsSliceId || '').trim();
+  if (!sliceId) {
+    return;
+  }
+
+  const settings = {
+    sliceId,
+    visibility: null,
+    visibilityError: '',
+    env: {
+      sliceId,
+      profile: 'local',
+      requirements: null,
+      requirementsError: '',
+      entries: [],
+      entriesError: '',
+    },
+  };
+  data.sliceSettings = settings;
+
+  const loadVisibility = async () => {
+    try {
+      const { payload, setCookies: cookies } = await fetchJSON(
+        request,
+        session,
+        `/v1/slices/${encodeURIComponent(sliceId)}/visibility`,
+        undefined,
+        options,
+      );
+      setCookies.push(...cookies);
+      settings.visibility = payload || null;
+    } catch (error) {
+      recordRouteError(data, setCookies, error);
+      settings.visibilityError = error?.message || 'Unable to load slice visibility.';
+      data.sliceSettingsError = data.sliceSettingsError || settings.visibilityError;
+    }
+  };
+
+  const loadEnvRequirements = async () => {
+    try {
+      const { payload, setCookies: cookies } = await fetchJSON(
+        request,
+        session,
+        `/v1/slices/${encodeURIComponent(sliceId)}/env/requirements`,
+        undefined,
+        options,
+      );
+      setCookies.push(...cookies);
+      settings.env.requirements = payload || null;
+    } catch (error) {
+      recordRouteError(data, setCookies, error);
+      settings.env.requirementsError = error?.message || 'Unable to load environment requirements.';
+      data.sliceSettingsError = data.sliceSettingsError || settings.env.requirementsError;
+    }
+  };
+
+  const loadEnvEntries = async () => {
+    try {
+      const profiles = ['local', 'default'];
+      const responses = await Promise.all(profiles.map(async (profile) => {
+        const { payload, setCookies: cookies } = await fetchJSON(
+          request,
+          session,
+          `/v1/slices/${encodeURIComponent(sliceId)}/env/kv`,
+          new URLSearchParams({ profile }),
+          options,
+        );
+        setCookies.push(...cookies);
+        return payload?.entries || [];
+      }));
+      settings.env.entries = responses.flat();
+    } catch (error) {
+      recordRouteError(data, setCookies, error);
+      settings.env.entriesError = error?.message || 'Unable to load environment KV entries.';
+      data.sliceSettingsError = data.sliceSettingsError || settings.env.entriesError;
+    }
+  };
+
+  await Promise.all([
+    loadVisibility(),
+    loadEnvRequirements(),
+    loadEnvEntries(),
+  ]);
 }
 
 async function loadCommitDiff(request, session, data, setCookies, options = {}) {
@@ -477,6 +566,12 @@ export async function loadBrowserRouteData(request, session, routeInfo, options 
 
   try {
     await loadSliceChangesets(request, session, data, setCookies, options);
+  } catch (error) {
+    markAuthExpired(error);
+  }
+
+  try {
+    await loadSliceSettingsData(request, session, data, setCookies, options);
   } catch (error) {
     markAuthExpired(error);
   }

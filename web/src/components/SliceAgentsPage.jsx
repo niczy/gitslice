@@ -19,6 +19,7 @@ export default function SliceAgentsPage({
   onOpenCode,
   onOpenCommits,
   onOpenChangesets,
+  onOpenSettings,
   onSelectSession,
 }) {
   const [agentInfoOpen, setAgentInfoOpen] = useState(false);
@@ -205,6 +206,7 @@ export default function SliceAgentsPage({
         onOpenCommits={onOpenCommits}
         onOpenChangesets={onOpenChangesets}
         onOpenAgents={() => {}}
+        onOpenSettings={onOpenSettings}
       />
 
       <div

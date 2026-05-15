@@ -15,12 +15,51 @@ import {
   visibilityRequestValue,
 } from './settings/SliceSettingsHelpers.js';
 
-export default function SliceSettings({ sliceId, sliceName, folderMounts, onFolderMountsChange }) {
-  const [sliceVisibility, setSliceVisibility] = useState('private');
-  const [slicePropagationMode, setSlicePropagationMode] = useState('unchanged');
-  const [sliceVisibilityLoading, setSliceVisibilityLoading] = useState(true);
+function readSettingField(value, camelName, snakeName, fallback = '') {
+  return value?.[camelName] ?? value?.[snakeName] ?? fallback;
+}
+
+function getInitialVisibilityPayload(initialSettingsData, sliceId) {
+  const initialSliceId = readSettingField(initialSettingsData, 'sliceId', 'slice_id', '');
+  if (!sliceId || initialSliceId !== sliceId) {
+    return null;
+  }
+  return initialSettingsData?.visibility || null;
+}
+
+function getInitialVisibilityError(initialSettingsData, sliceId) {
+  const initialSliceId = readSettingField(initialSettingsData, 'sliceId', 'slice_id', '');
+  if (!sliceId || initialSliceId !== sliceId) {
+    return '';
+  }
+  return readSettingField(initialSettingsData, 'visibilityError', 'visibility_error', '');
+}
+
+export default function SliceSettings({
+  sliceId,
+  sliceName,
+  folderMounts,
+  onFolderMountsChange,
+  initialSettingsData = null,
+}) {
+  const initialVisibilityPayload = getInitialVisibilityPayload(initialSettingsData, sliceId);
+  const initialVisibilityError = getInitialVisibilityError(initialSettingsData, sliceId);
+  const [sliceVisibility, setSliceVisibility] = useState(() => (
+    normalizeVisibility(readSettingField(initialVisibilityPayload, 'visibility', 'visibility', 'private'))
+  ));
+  const [slicePropagationMode, setSlicePropagationMode] = useState(() => (
+    normalizePathPropagationMode(
+      readSettingField(initialVisibilityPayload, 'pathPropagationMode', 'path_propagation_mode', 'unchanged'),
+    )
+  ));
+  const [loadedVisibilitySliceId, setLoadedVisibilitySliceId] = useState(() => (
+    initialVisibilityPayload || initialVisibilityError ? sliceId : ''
+  ));
+  const [sliceVisibilityLoading, setSliceVisibilityLoading] = useState(() => (
+    Boolean(sliceId) && !initialVisibilityPayload && !initialVisibilityError
+  ));
   const [sliceVisibilitySaving, setSliceVisibilitySaving] = useState(false);
-  const [sliceVisibilityError, setSliceVisibilityError] = useState('');
+  const [sliceVisibilityError, setSliceVisibilityError] = useState(() => initialVisibilityError);
   const [sliceVisibilitySuccess, setSliceVisibilitySuccess] = useState('');
 
   const [localMounts, setLocalMounts] = useState(folderMounts || []);
@@ -32,6 +71,24 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
   useEffect(() => {
     setLocalMounts(folderMounts || []);
   }, [folderMounts]);
+
+  useEffect(() => {
+    const nextVisibilityPayload = getInitialVisibilityPayload(initialSettingsData, sliceId);
+    const nextVisibilityError = getInitialVisibilityError(initialSettingsData, sliceId);
+    if (!nextVisibilityPayload && !nextVisibilityError) {
+      return;
+    }
+    if (nextVisibilityPayload) {
+      setSliceVisibility(normalizeVisibility(readSettingField(nextVisibilityPayload, 'visibility', 'visibility', 'private')));
+      setSlicePropagationMode(normalizePathPropagationMode(
+        readSettingField(nextVisibilityPayload, 'pathPropagationMode', 'path_propagation_mode', 'unchanged'),
+      ));
+    }
+    setSliceVisibilityError(nextVisibilityError || '');
+    setSliceVisibilitySuccess('');
+    setSliceVisibilityLoading(false);
+    setLoadedVisibilitySliceId(sliceId);
+  }, [initialSettingsData, sliceId]);
 
   const addFolder = async () => {
     const path = (newFolderPath || '').trim();
@@ -89,6 +146,10 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
       setSliceVisibilityLoading(false);
       setSliceVisibilityError('');
       setSliceVisibilitySuccess('');
+      setLoadedVisibilitySliceId('');
+      return;
+    }
+    if (loadedVisibilitySliceId === sliceId) {
       return;
     }
 
@@ -104,6 +165,7 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
           return;
         }
         setSliceVisibility(normalizeVisibility(response?.visibility));
+        setSlicePropagationMode(normalizePathPropagationMode(response?.path_propagation_mode ?? response?.pathPropagationMode));
       } catch (err) {
         if (!active) {
           return;
@@ -112,6 +174,7 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
       } finally {
         if (active) {
           setSliceVisibilityLoading(false);
+          setLoadedVisibilitySliceId(sliceId);
         }
       }
     };
@@ -120,7 +183,7 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
     return () => {
       active = false;
     };
-  }, [sliceId]);
+  }, [loadedVisibilitySliceId, sliceId]);
 
   const saveSliceVisibility = async (nextVisibility) => {
     if (!sliceId || sliceVisibilitySaving) {
@@ -151,7 +214,7 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
       <div className="slice-settings-header">
         <h3>Slice settings</h3>
         <p>
-          Manage visibility for <strong>{sliceName || sliceId}</strong>.
+          Manage visibility, tracked folders, and environment values for <strong>{sliceName || sliceId}</strong>.
         </p>
       </div>
 
@@ -179,7 +242,7 @@ export default function SliceSettings({ sliceId, sliceName, folderMounts, onFold
           onRemoveFolder={removeFolder}
         />
 
-        <SliceEnvKVCard sliceId={sliceId} />
+        <SliceEnvKVCard sliceId={sliceId} initialEnvData={initialSettingsData?.env || null} />
       </div>
     </div>
   );

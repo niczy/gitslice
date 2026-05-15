@@ -1,6 +1,7 @@
 export {
   buildBrowserPath,
   buildSliceAgentsPath,
+  buildSliceSettingsPath,
   isSliceScopedRoute,
   parseBrowserState,
 } from '../routing/browserRoutes.js';

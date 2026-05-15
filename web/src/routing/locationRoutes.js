@@ -150,6 +150,17 @@ export function parseLocation(locationLike = (typeof window !== 'undefined' ? wi
         },
       };
     }
+    if (slice && extraSegments.length === 0 && viewSegment === 'settings') {
+      return {
+        page: 'slice-settings',
+        commitHash: '',
+        changesetId: '',
+        browserState: {
+          ...parseBrowserState(locationLike?.search || ''),
+          slice,
+        },
+      };
+    }
     return {
       page: 'browser',
       commitHash: '',
