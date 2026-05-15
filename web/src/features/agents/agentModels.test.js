@@ -52,7 +52,13 @@ test('runnerDisplayName prefers workspace basename', () => {
     host_name: 'build-host',
     workspace_root: '/tmp/workspaces/example-slice',
     agent_type: 'codex',
+    capabilities: Buffer.from(JSON.stringify({
+      default_agent_type: 'codex',
+      supported_agent_types: ['codex', 'claude'],
+    })).toString('base64'),
   });
 
   assert.equal(runnerDisplayName(runner), 'example-slice');
+  assert.deepEqual(runner.supportedAgentTypes, ['codex', 'claude']);
+  assert.equal(runner.defaultAgentType, 'codex');
 });

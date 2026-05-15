@@ -95,13 +95,7 @@ type claudeContentBlock struct {
 
 func newClaudeStreamJSONRunner(ctx context.Context, cli *CLI, cfg localAgentRunConfig) (*claudeStreamJSONRunner, error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, "claude",
-		"-p",
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--include-partial-messages",
-		"--verbose",
-	)
+	cmd := exec.CommandContext(runCtx, "claude", claudeStreamJSONArgs()...)
 	if strings.TrimSpace(cfg.CWD) != "" {
 		cmd.Dir = cfg.CWD
 	}
@@ -138,6 +132,17 @@ func newClaudeStreamJSONRunner(ctx context.Context, cli *CLI, cfg localAgentRunC
 	go r.readLoop(stdout)
 	go r.captureStderr(stderr)
 	return r, nil
+}
+
+func claudeStreamJSONArgs() []string {
+	return []string{
+		"-p",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+		"--verbose",
+		"--permission-mode", "bypassPermissions",
+	}
 }
 
 func (r *claudeStreamJSONRunner) RunTurn(ctx context.Context, prompt string) error {

@@ -6,6 +6,7 @@ import {
   latestRunnerState,
 } from './agentEvents.js';
 import {
+  agentDisplayName,
   buildRunningAgentInfoRows,
   conversationAvailabilityLabel,
   infoValue,
@@ -45,7 +46,7 @@ export function useAgentPageViewModel({
     || infoValue(selectedRunner?.workspaceRoot);
   const runningAgentSummary = selectedRunner
     ? [
-      selectedRunner.agentType || 'agent',
+      (selectedRunner.supportedAgentTypes || [selectedRunner.agentType]).filter(Boolean).map(agentDisplayName).join(', ') || 'Agent',
       runnerHost || 'local',
       runnerPID ? `pid ${runnerPID}` : '',
     ].filter(Boolean).join(' · ')

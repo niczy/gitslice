@@ -39,6 +39,28 @@ func seedAgentRunner(t *testing.T, ctx context.Context, st storage.Storage, runn
 	}
 }
 
+func seedMultiAgentRunner(t *testing.T, ctx context.Context, st storage.Storage, runnerID, userID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	err := st.UpsertAgentRunner(ctx, &models.AgentRunner{
+		RunnerID:        runnerID,
+		UserID:          userID,
+		Provider:        "local",
+		AgentType:       "codex",
+		Status:          models.AgentRunnerStatusOnline,
+		HostName:        "test-host",
+		PID:             1234,
+		WorkspaceRoot:   "/tmp/gitslice-agent",
+		Capabilities:    []byte(`{"default_agent_type":"codex","supported_agent_types":["codex","claude"],"local_sessions_reported":true,"local_session_ids":[]}`),
+		LastHeartbeatAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertAgentRunner failed: %v", err)
+	}
+}
+
 func TestAgentSessionsAPI(t *testing.T) {
 	ctx := context.Background()
 	st := storage.NewInMemoryStorage()
@@ -566,6 +588,48 @@ func TestAgentSessionsAPIDisallowedAgentType(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestAgentSessionsAPIAllowsRunnerSupportedAgentType(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewInMemoryStorage()
+	seedMultiAgentRunner(t, ctx, st, "runner-http-multi-agent", "alice")
+	if err := st.CreateSlice(ctx, &models.Slice{
+		ID:        "slice-http-multi-agent",
+		Name:      "Slice Multi Agent",
+		Owners:    []string{"alice"},
+		CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("CreateSlice failed: %v", err)
+	}
+
+	svc := agentsession.NewService(st, "test-secret")
+	api := NewAgentSessionsAPI(st, svc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent-sessions", api.HandleCollection)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	createRaw := []byte(`{"sliceId":"slice-http-multi-agent","runnerId":"runner-http-multi-agent","agentType":"claude"}`)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-sessions", bytes.NewReader(createRaw))
+	req.Header.Set("Authorization", "User alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var out struct {
+		AgentType string `json:"agentType"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if out.AgentType != "claude" {
+		t.Fatalf("expected claude session, got %q", out.AgentType)
 	}
 }
 

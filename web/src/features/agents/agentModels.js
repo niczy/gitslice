@@ -4,6 +4,8 @@ import {
   PENDING_LOCAL_CONVERSATION_AVAILABILITY,
 } from './agentConstants.js';
 
+const SUPPORTED_AGENT_TYPES = ['codex', 'claude'];
+
 export function normalizeConversationAvailability(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized || 'unknown';
@@ -32,11 +34,118 @@ export function normalizeSession(session) {
   };
 }
 
+export function normalizeRunnerCapabilities(rawCapabilities) {
+  if (!rawCapabilities) {
+    return {};
+  }
+  if (typeof rawCapabilities === 'object' && !Array.isArray(rawCapabilities)) {
+    return rawCapabilities;
+  }
+  if (typeof rawCapabilities !== 'string') {
+    return {};
+  }
+  const raw = rawCapabilities.trim();
+  if (!raw) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Proto JSON encodes bytes as base64. Fall through to decode below.
+  }
+  const decoded = decodeRunnerCapabilitiesBase64(raw);
+  if (!decoded) {
+    return {};
+  }
+  try {
+    return JSON.parse(decoded);
+  } catch {
+    return {};
+  }
+}
+
+function decodeRunnerCapabilitiesBase64(value) {
+  try {
+    if (typeof atob === 'function') {
+      const binary = atob(value);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new TextDecoder().decode(bytes);
+    }
+    const BufferCtor = globalThis.Buffer;
+    if (BufferCtor) {
+      return BufferCtor.from(value, 'base64').toString('utf8');
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function normalizeAgentTypeValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeAgentTypeList(values) {
+  const seen = new Set();
+  for (const value of values || []) {
+    const agentType = normalizeAgentTypeValue(value);
+    if (SUPPORTED_AGENT_TYPES.includes(agentType)) {
+      seen.add(agentType);
+    }
+  }
+  return SUPPORTED_AGENT_TYPES.filter((agentType) => seen.has(agentType));
+}
+
+function runnerSupportedAgentTypes(capabilities, agentType) {
+  const reportedSupported = normalizeAgentTypeList([
+    ...(capabilities?.supported_agent_types || []),
+    ...(capabilities?.supportedAgentTypes || []),
+  ]);
+  if (reportedSupported.length > 0) {
+    return reportedSupported;
+  }
+  const supported = normalizeAgentTypeList([
+    capabilities?.agent_type,
+    capabilities?.agentType,
+    agentType,
+  ]);
+  return supported.length > 0 ? supported : ['codex'];
+}
+
+function runnerDefaultAgentType(capabilities, supportedAgentTypes, agentType) {
+  const candidates = [
+    capabilities?.default_agent_type,
+    capabilities?.defaultAgentType,
+    capabilities?.agent_type,
+    capabilities?.agentType,
+    agentType,
+    'codex',
+    supportedAgentTypes[0],
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeAgentTypeValue(candidate);
+    if (supportedAgentTypes.includes(normalized)) {
+      return normalized;
+    }
+  }
+  return supportedAgentTypes[0] || 'codex';
+}
+
 export function normalizeRunner(runner) {
+  const capabilities = normalizeRunnerCapabilities(runner?.capabilities);
+  const agentType = normalizeAgentTypeValue(runner?.agentType ?? runner?.agent_type ?? '');
+  const supportedAgentTypes = runnerSupportedAgentTypes(capabilities, agentType);
+  const defaultAgentType = runnerDefaultAgentType(capabilities, supportedAgentTypes, agentType);
   return {
     runnerId: runner?.runnerId ?? runner?.runner_id ?? '',
     provider: runner?.provider ?? '',
-    agentType: runner?.agentType ?? runner?.agent_type ?? '',
+    agentType,
+    defaultAgentType,
+    supportedAgentTypes,
+    capabilities,
     status: runner?.status ?? '',
     hostName: runner?.hostName ?? runner?.host_name ?? '',
     pid: runner?.pid ?? 0,
@@ -123,7 +232,8 @@ export function buildRunningAgentInfoRows(runner, session, runnerState) {
     ['Status', runner.status],
     ['Runner', runner.runnerId],
     ['Provider', runner.provider || session?.provider || 'local'],
-    ['CLI', runner.agentType || session?.agentType],
+    ['Default CLI', agentDisplayName(runner.defaultAgentType || runner.agentType || session?.agentType)],
+    ['Available CLIs', (runner.supportedAgentTypes || []).map(agentDisplayName).join(', ')],
     ['Host', runnerState.host_name || runnerState.hostName || runner.hostName],
     ['PID', runnerState.pid || runner.pid],
     ['Workspace', runner.workspaceRoot || runnerState.workspace_root || runnerState.workspaceRoot],

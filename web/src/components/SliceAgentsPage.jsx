@@ -23,6 +23,7 @@ export default function SliceAgentsPage({
 }) {
   const [agentInfoOpen, setAgentInfoOpen] = useState(false);
   const [localChangesPanelOpen, setLocalChangesPanelOpen] = useState(true);
+  const [selectedAgentType, setSelectedAgentType] = useState('');
   const {
     assistantStreaming,
     defaultAgentType,
@@ -100,6 +101,10 @@ export default function SliceAgentsPage({
     sliceId,
     slices,
   });
+  const selectedRunnerSupportedAgentTypes = selectedRunner?.supportedAgentTypes?.length
+    ? selectedRunner.supportedAgentTypes
+    : [selectedRunner?.defaultAgentType || selectedRunner?.agentType || defaultAgentType].filter(Boolean);
+  const selectedRunnerAgentTypesKey = selectedRunnerSupportedAgentTypes.join('|');
   const {
     createError,
     creatingSession,
@@ -120,6 +125,7 @@ export default function SliceAgentsPage({
     loadSelectedEvents,
     loadSessions,
     selectSessionId,
+    selectedAgentType,
     selectedRunner,
     selectedRunnerId,
     selectedSessionId,
@@ -156,6 +162,20 @@ export default function SliceAgentsPage({
   useEffect(() => {
     setAgentInfoOpen(false);
   }, [selectedRunnerId]);
+
+  useEffect(() => {
+    if (!selectedRunner) {
+      setSelectedAgentType('');
+      return;
+    }
+    const fallback = selectedRunner.defaultAgentType
+      || defaultAgentType
+      || selectedRunnerSupportedAgentTypes[0]
+      || '';
+    setSelectedAgentType((current) => (
+      selectedRunnerSupportedAgentTypes.includes(current) ? current : fallback
+    ));
+  }, [defaultAgentType, selectedRunner, selectedRunnerAgentTypesKey]);
 
   useEffect(() => {
     if (!agentInfoOpen || typeof window === 'undefined') {
@@ -199,6 +219,7 @@ export default function SliceAgentsPage({
           creatingSession={creatingSession}
           onClose={closeSessionsSidebar}
           onCreateSession={handleCreateSession}
+          onAgentTypeChange={setSelectedAgentType}
           onInspectRunner={(runnerId) => {
             selectRunnerId(runnerId);
             setAgentInfoOpen(true);
@@ -215,6 +236,8 @@ export default function SliceAgentsPage({
           runnersLoading={runnersLoading}
           selectedRunner={selectedRunner}
           selectedRunnerConversationCountLabel={selectedRunnerConversationCountLabel}
+          selectedRunnerSupportedAgentTypes={selectedRunnerSupportedAgentTypes}
+          selectedAgentType={selectedAgentType}
           selectedRunnerSessions={selectedRunnerSessions}
           selectedSessionId={selectedSessionId}
           sessionsDismissing={sessionsSidebarDismissing}
