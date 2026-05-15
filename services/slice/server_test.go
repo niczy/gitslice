@@ -4936,9 +4936,19 @@ jobs:
 	if event.Forced {
 		t.Fatalf("direct file-tree commit should not be recorded as force merge")
 	}
-	file, err := st.GetFileAtCommit(ctx, mergeResp.GetNewCommitHash(), "alice/api/from-tree.go")
+	if len(event.TouchedPaths) != 1 || event.TouchedPaths[0] != "alice/api/from-tree.go" {
+		t.Fatalf("merge event touched paths = %#v, want alice/api/from-tree.go", event.TouchedPaths)
+	}
+	if len(event.PathUpdates) != 1 {
+		t.Fatalf("merge event path updates = %d, want 1", len(event.PathUpdates))
+	}
+	update := event.PathUpdates[0]
+	if update.Path != "alice/api/from-tree.go" || update.Deleted || update.ContentHash == "" {
+		t.Fatalf("merge event path update = %#v, want created file with content hash", update)
+	}
+	file, err := storage.ReadVersionedFileContent(ctx, st, update.ContentHash)
 	if err != nil {
-		t.Fatalf("GetFileAtCommit failed: %v", err)
+		t.Fatalf("ReadVersionedFileContent failed: %v", err)
 	}
 	if got := string(file.Content); got != "package main\n" {
 		t.Fatalf("committed file content = %q, want package main", got)
