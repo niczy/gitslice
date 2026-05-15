@@ -2457,7 +2457,7 @@ ignored_paths:
 			HasValue bool   `json:"hasValue"`
 		} `json:"entries"`
 	}
-	doGatewayJSON(t, http.MethodGet, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env/kv?profile=local&include_home_scope=true", auth, nil, &kvOut, http.StatusOK)
+	doGatewayJSON(t, http.MethodGet, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env/kv?profile=local", auth, nil, &kvOut, http.StatusOK)
 	seenKV := map[string]struct {
 		Class string
 		Value string
@@ -2489,7 +2489,6 @@ ignored_paths:
 		ResolvedRefs []struct {
 			Key   string `json:"key"`
 			Class string `json:"class"`
-			Scope string `json:"scope"`
 		} `json:"resolvedRefs"`
 	}
 	doGatewayJSON(t, http.MethodPost, gatewayServiceURL+"/v1/slices/"+url.PathEscape(sliceID)+"/env:materialize", auth, map[string]any{

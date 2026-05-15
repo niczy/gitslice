@@ -113,6 +113,8 @@ func TestEnvironmentKVStoreCompliance(t *testing.T) {
 			}
 			secretEntry, err := st.UpsertEnvironmentKV(ctx, &models.EnvironmentKVEntry{
 				HomeID:    "alice",
+				SliceID:   "slice-env",
+				SliceSlug: "env",
 				Profile:   "default",
 				Key:       "DATABASE_URL",
 				Class:     models.EnvironmentKVClassSecret,
@@ -125,10 +127,10 @@ func TestEnvironmentKVStoreCompliance(t *testing.T) {
 			}
 			resolved, err := st.ResolveEnvironmentKV(ctx, "alice", "slice-env", "local", models.EnvironmentKVClassSecret, "DATABASE_URL")
 			if err != nil {
-				t.Fatalf("ResolveEnvironmentKV fallback failed: %v", err)
+				t.Fatalf("ResolveEnvironmentKV default profile fallback failed: %v", err)
 			}
-			if resolved.ID != secretEntry.ID || resolved.Value != "postgres://secret" || resolved.SliceID != "" || resolved.Profile != "default" {
-				t.Fatalf("unexpected fallback resolution: %#v", resolved)
+			if resolved.ID != secretEntry.ID || resolved.Value != "postgres://secret" || resolved.SliceID != "slice-env" || resolved.Profile != "default" {
+				t.Fatalf("unexpected default profile fallback resolution: %#v", resolved)
 			}
 			updatedValue, err := st.UpsertEnvironmentKV(ctx, &models.EnvironmentKVEntry{
 				HomeID:    "alice",
@@ -147,10 +149,9 @@ func TestEnvironmentKVStoreCompliance(t *testing.T) {
 				t.Fatalf("unexpected updated value entry: %#v", updatedValue)
 			}
 			listed, err := st.ListEnvironmentKV(ctx, models.EnvironmentKVFilter{
-				HomeID:      "alice",
-				SliceID:     "slice-env",
-				Profile:     "local",
-				IncludeHome: true,
+				HomeID:  "alice",
+				SliceID: "slice-env",
+				Profile: "local",
 			})
 			if err != nil {
 				t.Fatalf("ListEnvironmentKV failed: %v", err)

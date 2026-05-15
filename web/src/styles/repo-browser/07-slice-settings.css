@@ -407,7 +407,7 @@
 
 .env-kv-form-grid {
   display: grid;
-  grid-template-columns: minmax(110px, 0.7fr) minmax(0, 1.4fr) minmax(120px, 0.9fr);
+  grid-template-columns: minmax(110px, 0.7fr) minmax(0, 1.8fr);
   gap: 10px;
   align-items: end;
 }

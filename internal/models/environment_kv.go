@@ -31,10 +31,9 @@ type EnvironmentKVEntry struct {
 }
 
 type EnvironmentKVFilter struct {
-	HomeID      string
-	SliceID     string
-	Profile     string
-	Class       EnvironmentKVClass
-	Key         string
-	IncludeHome bool
+	HomeID  string
+	SliceID string
+	Profile string
+	Class   EnvironmentKVClass
+	Key     string
 }

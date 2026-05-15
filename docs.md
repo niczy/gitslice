@@ -163,7 +163,7 @@ ignored_paths:
   - .env.local
 ```
 
-KV entries resolve by `home / slice / profile / class / key`: slice profile, slice default, home profile, then home default. Secrets are write-only outside materialization; normal list/read APIs return only metadata. Non-secret values can be listed by authorized users.
+KV entries are slice scoped and resolve by `slice / profile / class / key`: selected profile, then the slice's `default` profile. Secrets are write-only outside materialization; normal list/read APIs return only metadata. Non-secret values can be listed by authorized users.
 
 The server API exposes this flow as gRPC methods with HTTP bindings:
 `GET /v1/slices/{slice_id}/env/requirements`,

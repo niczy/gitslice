@@ -61,10 +61,6 @@ function entryIdentity(entry) {
   ].join(':');
 }
 
-function entryScopeLabel(entry) {
-  return entry.sliceId ? 'Slice' : 'Home';
-}
-
 function shortHash(hash) {
   if (!hash) {
     return '';
@@ -92,7 +88,6 @@ export function SliceEnvKVCard({ sliceId }) {
   const [className, setClassName] = useState('value');
   const [key, setKey] = useState('');
   const [value, setValue] = useState('');
-  const [scope, setScope] = useState('slice');
   const [saving, setSaving] = useState(false);
   const [deletingEntry, setDeletingEntry] = useState('');
   const [formError, setFormError] = useState('');
@@ -146,7 +141,6 @@ export function SliceEnvKVCard({ sliceId }) {
       const responses = await Promise.all(
         profilesToLoad.map((currentProfile) => listSliceEnvKV(sliceId, {
           profile: currentProfile,
-          includeHomeScope: true,
         })),
       );
       const merged = new Map();
@@ -226,7 +220,6 @@ export function SliceEnvKVCard({ sliceId }) {
     setClassName('value');
     setKey('');
     setValue('');
-    setScope('slice');
   };
 
   const saveEntry = async (event) => {
@@ -244,7 +237,6 @@ export function SliceEnvKVCard({ sliceId }) {
         profile,
         key: trimmedKey,
         value,
-        homeScope: scope === 'home',
       };
       if (className === 'secret') {
         await setSliceEnvSecret(sliceId, payload);
@@ -271,7 +263,6 @@ export function SliceEnvKVCard({ sliceId }) {
         profile: entry.profile,
         className: entry.className,
         key: entry.key,
-        homeScope: !entry.sliceId,
       });
       setFormSuccess(`${entry.key} deleted from ${entry.profile}.`);
       setRefreshToken((current) => current + 1);
@@ -287,7 +278,6 @@ export function SliceEnvKVCard({ sliceId }) {
     setClassName(entry.className === 'secret' ? 'secret' : 'value');
     setKey(entry.key);
     setValue(entry.className === 'secret' ? '' : entry.value);
-    setScope(entry.sliceId ? 'slice' : 'home');
     setFormError('');
     setFormSuccess('');
   };
@@ -430,13 +420,6 @@ export function SliceEnvKVCard({ sliceId }) {
                 data-testid="slice-env-kv-key"
               />
             </label>
-            <label className="env-kv-field">
-              <span>Scope</span>
-              <select value={scope} onChange={(event) => setScope(event.target.value)}>
-                <option value="slice">Slice</option>
-                <option value="home">Home default</option>
-              </select>
-            </label>
           </div>
           <label className="env-kv-field">
             <span>{className === 'secret' ? 'Secret value' : 'Value'}</span>
@@ -491,7 +474,6 @@ export function SliceEnvKVCard({ sliceId }) {
                         <strong>{entry.key}</strong>
                         <span>{entry.className}</span>
                         <span>{entry.profile}</span>
-                        <span>{entryScopeLabel(entry)}</span>
                       </div>
                       <div className="env-kv-entry-value">
                         {isSecret ? (

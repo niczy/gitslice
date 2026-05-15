@@ -217,11 +217,7 @@ func (s *InMemoryStorage) ListEnvironmentKV(ctx context.Context, filter models.E
 		if entry.HomeID != normalized.HomeID {
 			continue
 		}
-		if normalized.IncludeHome {
-			if entry.SliceID != "" && entry.SliceID != normalized.SliceID {
-				continue
-			}
-		} else if entry.SliceID != normalized.SliceID {
+		if entry.SliceID != normalized.SliceID {
 			continue
 		}
 		if normalized.Profile != "" && entry.Profile != normalized.Profile {
@@ -262,11 +258,10 @@ func (s *InMemoryStorage) DeleteEnvironmentKV(ctx context.Context, filter models
 
 func (s *InMemoryStorage) ResolveEnvironmentKV(ctx context.Context, homeID, sliceID, profile string, class models.EnvironmentKVClass, key string) (*models.EnvironmentKVEntry, error) {
 	filter := models.EnvironmentKVFilter{
-		HomeID:      homeID,
-		SliceID:     sliceID,
-		Class:       class,
-		Key:         key,
-		IncludeHome: true,
+		HomeID:  homeID,
+		SliceID: sliceID,
+		Class:   class,
+		Key:     key,
 	}
 	candidates, err := environmentKVResolutionCandidates(filter, profile)
 	if err != nil {
@@ -300,21 +295,13 @@ func environmentKVResolutionCandidates(filter models.EnvironmentKVFilter, profil
 	if activeProfile != "default" {
 		profiles = append(profiles, "default")
 	}
-	candidates := make([]models.EnvironmentKVFilter, 0, 4)
+	candidates := make([]models.EnvironmentKVFilter, 0, 2)
 	for _, candidateProfile := range profiles {
 		if normalized.SliceID != "" {
 			candidate := normalized
 			candidate.Profile = candidateProfile
-			candidate.IncludeHome = false
 			candidates = append(candidates, candidate)
 		}
-	}
-	for _, candidateProfile := range profiles {
-		candidate := normalized
-		candidate.SliceID = ""
-		candidate.Profile = candidateProfile
-		candidate.IncludeHome = false
-		candidates = append(candidates, candidate)
 	}
 	return candidates, nil
 }
@@ -423,12 +410,12 @@ func (s *PostgresNativeStorage) listEnvironmentKV(ctx context.Context, q queryab
 		FROM environment_kv_entries
 		WHERE deleted_at IS NULL
 		  AND home_id = $1
-		  AND (($2::boolean AND (slice_id = $3 OR slice_id = '')) OR (NOT $2::boolean AND slice_id = $3))
-		  AND ($4 = '' OR profile = $4)
-		  AND ($5 = '' OR class = $5)
-		  AND ($6 = '' OR key = $6)
+		  AND slice_id = $2
+		  AND ($3 = '' OR profile = $3)
+		  AND ($4 = '' OR class = $4)
+		  AND ($5 = '' OR key = $5)
 		ORDER BY home_id, slice_id, profile, class, key
-	`, normalized.HomeID, normalized.IncludeHome, normalized.SliceID, normalized.Profile, string(normalized.Class), normalized.Key)
+	`, normalized.HomeID, normalized.SliceID, normalized.Profile, string(normalized.Class), normalized.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -492,11 +479,10 @@ func (s *postgresNativeTxView) ResolveEnvironmentKV(ctx context.Context, homeID,
 func (s *PostgresNativeStorage) resolveEnvironmentKV(ctx context.Context, q queryable, homeID, sliceID, profile string, class models.EnvironmentKVClass, key string) (*models.EnvironmentKVEntry, error) {
 	ctx = ensureCtx(ctx)
 	candidates, err := environmentKVResolutionCandidates(models.EnvironmentKVFilter{
-		HomeID:      homeID,
-		SliceID:     sliceID,
-		Class:       class,
-		Key:         key,
-		IncludeHome: true,
+		HomeID:  homeID,
+		SliceID: sliceID,
+		Class:   class,
+		Key:     key,
 	}, profile)
 	if err != nil {
 		return nil, err

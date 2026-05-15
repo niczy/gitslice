@@ -98,10 +98,9 @@ func (s *sliceServiceServer) ListSliceEnvKV(ctx context.Context, req *slicev1.Li
 		profile = "default"
 	}
 	entries, err := s.storage.ListEnvironmentKV(ctx, models.EnvironmentKVFilter{
-		HomeID:      envCtx.homeID,
-		SliceID:     envCtx.slice.ID,
-		Profile:     profile,
-		IncludeHome: req.GetIncludeHomeScope(),
+		HomeID:  envCtx.homeID,
+		SliceID: envCtx.slice.ID,
+		Profile: profile,
 	})
 	if err != nil {
 		return nil, storageErrorToStatus(err, "failed to list environment KV")
@@ -114,7 +113,7 @@ func (s *sliceServiceServer) ListSliceEnvKV(ctx context.Context, req *slicev1.Li
 }
 
 func (s *sliceServiceServer) SetSliceEnvValue(ctx context.Context, req *slicev1.SetSliceEnvValueRequest) (*slicev1.SetSliceEnvValueResponse, error) {
-	entry, err := s.setSliceEnvKV(ctx, req.GetSliceId(), req.GetProfile(), req.GetKey(), req.GetValue(), req.GetHomeScope(), models.EnvironmentKVClassValue)
+	entry, err := s.setSliceEnvKV(ctx, req.GetSliceId(), req.GetProfile(), req.GetKey(), req.GetValue(), models.EnvironmentKVClassValue)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +121,7 @@ func (s *sliceServiceServer) SetSliceEnvValue(ctx context.Context, req *slicev1.
 }
 
 func (s *sliceServiceServer) SetSliceEnvSecret(ctx context.Context, req *slicev1.SetSliceEnvSecretRequest) (*slicev1.SetSliceEnvSecretResponse, error) {
-	entry, err := s.setSliceEnvKV(ctx, req.GetSliceId(), req.GetProfile(), req.GetKey(), req.GetValue(), req.GetHomeScope(), models.EnvironmentKVClassSecret)
+	entry, err := s.setSliceEnvKV(ctx, req.GetSliceId(), req.GetProfile(), req.GetKey(), req.GetValue(), models.EnvironmentKVClassSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -142,13 +141,9 @@ func (s *sliceServiceServer) DeleteSliceEnvKV(ctx context.Context, req *slicev1.
 		return nil, status.Error(codes.PermissionDenied, "not authorized to update slice environment KV")
 	}
 	class := models.EnvironmentKVClass(strings.ToLower(strings.TrimSpace(req.GetClass())))
-	sliceID := envCtx.slice.ID
-	if req.GetHomeScope() {
-		sliceID = ""
-	}
 	err = s.storage.DeleteEnvironmentKV(ctx, models.EnvironmentKVFilter{
 		HomeID:  envCtx.homeID,
-		SliceID: sliceID,
+		SliceID: envCtx.slice.ID,
 		Profile: req.GetProfile(),
 		Class:   class,
 		Key:     req.GetKey(),
@@ -219,7 +214,7 @@ func (s *sliceServiceServer) RenderSliceEnvMaterialization(ctx context.Context, 
 	return resp, nil
 }
 
-func (s *sliceServiceServer) setSliceEnvKV(ctx context.Context, sliceID, profile, key, value string, homeScope bool, class models.EnvironmentKVClass) (*models.EnvironmentKVEntry, error) {
+func (s *sliceServiceServer) setSliceEnvKV(ctx context.Context, sliceID, profile, key, value string, class models.EnvironmentKVClass) (*models.EnvironmentKVEntry, error) {
 	username, err := s.requireUsername(ctx)
 	if err != nil {
 		return nil, err
@@ -231,16 +226,10 @@ func (s *sliceServiceServer) setSliceEnvKV(ctx context.Context, sliceID, profile
 	if !canManageSliceVisibility(envCtx.slice, username) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized to update slice environment KV")
 	}
-	scopeSliceID := envCtx.slice.ID
-	scopeSliceSlug := envCtx.sliceSlug
-	if homeScope {
-		scopeSliceID = ""
-		scopeSliceSlug = ""
-	}
 	entry, err := s.storage.UpsertEnvironmentKV(ctx, &models.EnvironmentKVEntry{
 		HomeID:    envCtx.homeID,
-		SliceID:   scopeSliceID,
-		SliceSlug: scopeSliceSlug,
+		SliceID:   envCtx.slice.ID,
+		SliceSlug: envCtx.sliceSlug,
 		Profile:   profile,
 		Key:       key,
 		Class:     class,
@@ -612,16 +601,11 @@ func (r *sliceEnvRenderState) addMissing(class models.EnvironmentKVClass, key st
 		Class:   string(class),
 		Key:     key,
 		Profile: r.profile,
-		Scope:   "resolution",
 	}
 }
 
 func (r *sliceEnvRenderState) addRef(class models.EnvironmentKVClass, key string, entry *models.EnvironmentKVEntry) {
-	scope := "slice"
-	if strings.TrimSpace(entry.SliceID) == "" {
-		scope = "home"
-	}
-	mapKey := strings.Join([]string{string(class), key, scope, entry.Profile}, "\x00")
+	mapKey := strings.Join([]string{string(class), key, entry.Profile}, "\x00")
 	if _, ok := r.refs[mapKey]; ok {
 		return
 	}
@@ -629,7 +613,6 @@ func (r *sliceEnvRenderState) addRef(class models.EnvironmentKVClass, key string
 		Class:     string(class),
 		Key:       key,
 		Profile:   entry.Profile,
-		Scope:     scope,
 		Version:   entry.Version,
 		ValueHash: entry.ValueHash,
 	}
@@ -655,9 +638,6 @@ func (r *sliceEnvRenderState) refList() []*slicev1.SliceEnvKVReference {
 		out = append(out, ref)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Scope != out[j].Scope {
-			return out[i].Scope < out[j].Scope
-		}
 		if out[i].Class != out[j].Class {
 			return out[i].Class < out[j].Class
 		}

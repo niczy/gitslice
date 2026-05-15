@@ -113,12 +113,9 @@ export async function getSliceEnvRequirements(sliceId) {
   return response.json();
 }
 
-export async function listSliceEnvKV(sliceId, { profile = 'local', includeHomeScope = true } = {}) {
+export async function listSliceEnvKV(sliceId, { profile = 'local' } = {}) {
   const query = new URLSearchParams();
   query.set('profile', profile || 'default');
-  if (includeHomeScope) {
-    query.set('include_home_scope', 'true');
-  }
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv?${query.toString()}`);
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Unable to load environment KV entries'));
@@ -126,14 +123,13 @@ export async function listSliceEnvKV(sliceId, { profile = 'local', includeHomeSc
   return response.json();
 }
 
-export async function setSliceEnvValue(sliceId, { profile = 'local', key, value, homeScope = false } = {}) {
+export async function setSliceEnvValue(sliceId, { profile = 'local', key, value } = {}) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/values/${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       profile,
       value,
-      homeScope,
     }),
   });
   if (!response.ok) {
@@ -142,14 +138,13 @@ export async function setSliceEnvValue(sliceId, { profile = 'local', key, value,
   return response.json();
 }
 
-export async function setSliceEnvSecret(sliceId, { profile = 'local', key, value, homeScope = false } = {}) {
+export async function setSliceEnvSecret(sliceId, { profile = 'local', key, value } = {}) {
   const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/secrets/${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       profile,
       value,
-      homeScope,
     }),
   });
   if (!response.ok) {
@@ -162,9 +157,8 @@ export async function deleteSliceEnvKV(sliceId, {
   profile = 'local',
   className,
   key,
-  homeScope = false,
 } = {}) {
-  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/${encodeURIComponent(className)}/${encodeURIComponent(key)}?profile=${encodeURIComponent(profile)}&home_scope=${homeScope ? 'true' : 'false'}`, {
+  const response = await fetchWithAuth(`${apiBaseUrl}/v1/slices/${encodeURIComponent(sliceId)}/env/kv/${encodeURIComponent(className)}/${encodeURIComponent(key)}?profile=${encodeURIComponent(profile)}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
