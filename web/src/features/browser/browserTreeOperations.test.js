@@ -13,6 +13,7 @@ import {
   normalizeTreeOperationName,
   pathExistsInEntries,
   remapChildPathForRename,
+  waitForCreatedTreeEntry,
 } from './browserTreeOperations.js';
 
 test('normalizeTreeOperationName accepts one path segment', () => {
@@ -49,6 +50,38 @@ test('pathExistsInEntries compares normalized entry paths', () => {
   const entries = [{ path: '/docs/README.md' }, { path: 'docs/src' }];
   assert.equal(pathExistsInEntries(entries, 'docs/README.md'), true);
   assert.equal(pathExistsInEntries(entries, 'docs/missing.md'), false);
+});
+
+test('waitForCreatedTreeEntry polls until a created path is visible', async () => {
+  let calls = 0;
+  const result = await waitForCreatedTreeEntry({
+    parentPath: 'docs',
+    targetPath: 'docs/README.md',
+    pollMs: 1,
+    sleepFn: async () => {},
+    fetchEntries: async (path) => {
+      calls += 1;
+      assert.equal(path, 'docs');
+      return calls < 3 ? [] : [{ path: 'docs/README.md', type: 'file' }];
+    },
+  });
+
+  assert.equal(calls, 3);
+  assert.equal(result.visible, true);
+  assert.deepEqual(result.entries, [{ path: 'docs/README.md', type: 'file' }]);
+});
+
+test('waitForCreatedTreeEntry returns last entries when visibility times out', async () => {
+  const result = await waitForCreatedTreeEntry({
+    parentPath: 'docs',
+    targetPath: 'docs/missing.md',
+    timeoutMs: 0,
+    sleepFn: async () => {},
+    fetchEntries: async () => [{ path: 'docs/other.md', type: 'file' }],
+  });
+
+  assert.equal(result.visible, false);
+  assert.deepEqual(result.entries, [{ path: 'docs/other.md', type: 'file' }]);
 });
 
 test('changeset and merge helpers normalize gateway payloads', () => {

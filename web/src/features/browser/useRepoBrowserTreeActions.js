@@ -30,6 +30,7 @@ import {
   normalizeTreeOperationName,
   pathExistsInEntries,
   remapChildPathForRename,
+  waitForCreatedTreeEntry,
 } from './browserTreeOperations.js';
 
 const EMPTY_ACTION_STATE = {
@@ -73,6 +74,7 @@ export function useRepoBrowserTreeActions({
   clearFilePreview,
   currentSlice,
   focusedEntry,
+  openSidebar,
   openFilesView,
   setError,
   setExpandedPaths,
@@ -154,6 +156,7 @@ export function useRepoBrowserTreeActions({
   const refreshTreeAfterMerge = useCallback(async ({
     clearSelection = false,
     directoryPath = '',
+    preloadedEntriesByPath = {},
   } = {}) => {
     const normalizedDirectory = normalizeWorkspaceResultPath(directoryPath);
     const expandedAncestors = getDirectoryAncestorPaths(normalizedDirectory);
@@ -176,7 +179,11 @@ export function useRepoBrowserTreeActions({
 
     const loadedEntries = {};
     for (const path of expandedAncestors) {
-      loadedEntries[path] = await fetchEntriesForAction(path, { head: true });
+      if (Object.prototype.hasOwnProperty.call(preloadedEntriesByPath, path)) {
+        loadedEntries[path] = preloadedEntriesByPath[path];
+      } else {
+        loadedEntries[path] = await fetchEntriesForAction(path, { head: true });
+      }
     }
     setTreeEntries(loadedEntries);
   }, [
@@ -211,6 +218,15 @@ export function useRepoBrowserTreeActions({
     return mergeResponse;
   }, [currentSlice, sliceHash, sliceId]);
 
+  const waitForCreatedPath = useCallback(async ({ parentPath, targetPath }) => {
+    const normalizedParent = normalizeWorkspaceResultPath(parentPath);
+    return waitForCreatedTreeEntry({
+      parentPath: normalizedParent,
+      targetPath,
+      fetchEntries: (path) => fetchEntriesForAction(path, { head: true }),
+    });
+  }, [fetchEntriesForAction]);
+
   const createFile = useCallback(async (entry) => {
     const parentPath = getCreateParentPath(entry);
     assertCanCreateUnderTreePath({ sliceId, currentSlice, parentPath });
@@ -228,9 +244,17 @@ export function useRepoBrowserTreeActions({
       modifiedFiles: [filePath],
       fileContents: [{ path: filePath, content: '' }],
     });
-    await refreshTreeAfterMerge({ directoryPath: parentPath });
-    return `Created ${actionMessageName(filePath)}.`;
-  }, [createAndMergeChangeset, currentSlice, fetchEntriesForAction, getCreateParentPath, refreshTreeAfterMerge, sliceId]);
+    const waitResult = await waitForCreatedPath({ parentPath, targetPath: filePath });
+    await refreshTreeAfterMerge({
+      directoryPath: parentPath,
+      preloadedEntriesByPath: {
+        [normalizeWorkspaceResultPath(parentPath)]: waitResult.entries,
+      },
+    });
+    return waitResult.visible
+      ? `Created ${actionMessageName(filePath)}.`
+      : `Created ${actionMessageName(filePath)}. The file tree is still catching up.`;
+  }, [createAndMergeChangeset, currentSlice, fetchEntriesForAction, getCreateParentPath, refreshTreeAfterMerge, sliceId, waitForCreatedPath]);
 
   const createFolder = useCallback(async (entry) => {
     const parentPath = getCreateParentPath(entry);
@@ -253,9 +277,19 @@ export function useRepoBrowserTreeActions({
         content: encodeTreeTextContent(''),
       }],
     });
-    await refreshTreeAfterMerge({ directoryPath: folderPath, clearSelection: true });
-    return `Created ${actionMessageName(folderPath)}.`;
-  }, [createAndMergeChangeset, currentSlice, fetchEntriesForAction, getCreateParentPath, refreshTreeAfterMerge, sliceId]);
+    const waitResult = await waitForCreatedPath({ parentPath, targetPath: folderPath });
+    await refreshTreeAfterMerge({
+      directoryPath: folderPath,
+      clearSelection: true,
+      preloadedEntriesByPath: {
+        [normalizeWorkspaceResultPath(parentPath)]: waitResult.entries,
+        [normalizeWorkspaceResultPath(folderPath)]: [],
+      },
+    });
+    return waitResult.visible
+      ? `Created ${actionMessageName(folderPath)}.`
+      : `Created ${actionMessageName(folderPath)}. The file tree is still catching up.`;
+  }, [createAndMergeChangeset, currentSlice, fetchEntriesForAction, getCreateParentPath, refreshTreeAfterMerge, sliceId, waitForCreatedPath]);
 
   const deleteEntry = useCallback(async (entry) => {
     const entryKind = normalizeEntryType(entry?.type);
@@ -374,6 +408,11 @@ export function useRepoBrowserTreeActions({
       return;
     }
 
+    const shouldKeepSidebarOpen = action === 'create-file' || action === 'create-folder';
+    if (shouldKeepSidebarOpen) {
+      openSidebar?.();
+    }
+
     const targetPath = normalizeWorkspaceResultPath(entry?.path || focusedEntry?.path || '');
     setTreeActionState({
       ...EMPTY_ACTION_STATE,
@@ -408,6 +447,9 @@ export function useRepoBrowserTreeActions({
       setError(errorMessage);
     } finally {
       setIsLoading(false);
+      if (shouldKeepSidebarOpen) {
+        openSidebar?.();
+      }
     }
   }, [
     canLoad,
@@ -415,6 +457,7 @@ export function useRepoBrowserTreeActions({
     createFolder,
     deleteEntry,
     focusedEntry,
+    openSidebar,
     renameEntry,
     setError,
     setFileError,

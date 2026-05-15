@@ -237,7 +237,7 @@ export default function RepoBrowserSidebar({
     <>
       <div
         className={`sidebar-overlay${sidebarVisible ? ' visible' : ''}${isSidebarDismissing ? ' dismissing' : ''}`}
-        onClick={onCloseSidebar}
+        onClick={actionBusy ? undefined : onCloseSidebar}
       />
       <aside className={`repo-sidebar ${sidebarOpen ? 'open' : 'closed'}${isSidebarDismissing ? ' dismissing' : ''}`}>
         <div className="sidebar-content">
@@ -285,9 +285,10 @@ export default function RepoBrowserSidebar({
                   variant="ghost"
                   size="icon"
                   className="sidebar-toggle"
+                  disabled={actionBusy}
                   onClick={onCloseSidebar}
                   aria-label="Close sidebar"
-                  title="Close sidebar"
+                  title={actionBusy ? 'Wait for the file tree action to finish' : 'Close sidebar'}
                 >
                   <PanelLeftClose size={16} aria-hidden="true" />
                 </Button>
