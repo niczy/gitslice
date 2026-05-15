@@ -211,10 +211,7 @@ export function useRepoBrowserTreeActions({
     if (!changesetId) {
       throw new Error('Changeset was created without an id.');
     }
-    const mergeResponse = await mergeChangeset(changesetId, {
-      force: true,
-      forceReason: 'Code tab file tree operation',
-    });
+    const mergeResponse = await mergeChangeset(changesetId);
     if (!isSuccessfulMergeResponse(mergeResponse)) {
       throw new Error(mergeResponseErrorMessage(mergeResponse));
     }
