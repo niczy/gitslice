@@ -18,9 +18,11 @@ const (
 )
 
 type localAgentChangesRequest struct {
-	RequestID      string `json:"requestId"`
-	RequestIDSnake string `json:"request_id"`
-	Limit          int    `json:"limit"`
+	RequestID         string `json:"requestId"`
+	RequestIDSnake    string `json:"request_id"`
+	Limit             int    `json:"limit"`
+	IncludeDiffs      bool   `json:"includeDiffs"`
+	IncludeDiffsSnake bool   `json:"include_diffs"`
 }
 
 type localAgentChangesetExportRequest struct {
@@ -122,7 +124,7 @@ func localAgentChangesLimit(limit int) int {
 }
 
 func handleLocalAgentChangesRequest(ctx context.Context, cli *CLI, cfg localAgentRunConfig, eventSeq uint64, request localAgentChangesRequest) error {
-	payload, err := buildLocalAgentChangesPayload(cfg.CWD, cfg.SessionID, eventSeq, request)
+	payload, err := buildLocalAgentChangesPayloadForRunner(ctx, cli, cfg, eventSeq, request)
 	if err != nil {
 		return appendAgentJSONEvent(ctx, cli, cfg.SessionID, agentsession.EventStreamControl, agentsession.EventTypeLocalChangesFailed, map[string]any{
 			"status":        "failed",
@@ -137,6 +139,14 @@ func handleLocalAgentChangesRequest(ctx context.Context, cli *CLI, cfg localAgen
 }
 
 func buildLocalAgentChangesPayload(dir, sessionID string, requestedSeq uint64, request localAgentChangesRequest) (map[string]any, error) {
+	return buildLocalAgentChangesPayloadForRunner(context.Background(), nil, localAgentRunConfig{
+		CWD:       dir,
+		SessionID: sessionID,
+	}, requestedSeq, request)
+}
+
+func buildLocalAgentChangesPayloadForRunner(ctx context.Context, cli *CLI, cfg localAgentRunConfig, requestedSeq uint64, request localAgentChangesRequest) (map[string]any, error) {
+	dir := cfg.CWD
 	sliceID, err := readSliceIDFromConfigAt(dir)
 	if err != nil {
 		return nil, err
@@ -177,6 +187,12 @@ func buildLocalAgentChangesPayload(dir, sessionID string, requestedSeq uint64, r
 			"status": entry.Status,
 		})
 	}
+	includeDiffs := request.IncludeDiffs || request.IncludeDiffsSnake
+	if includeDiffs && len(printed) > 0 {
+		if err := attachLocalAgentDiffs(ctx, cli, cfg, checkoutIndex, printed, paths); err != nil {
+			return nil, err
+		}
+	}
 	checkoutBase := ""
 	if checkoutIndex != nil {
 		checkoutBase = strings.TrimSpace(checkoutIndex.CommitHash)
@@ -185,19 +201,61 @@ func buildLocalAgentChangesPayload(dir, sessionID string, requestedSeq uint64, r
 		"status":                "ready",
 		"request_id":            localAgentRequestID(request.RequestID, request.RequestIDSnake),
 		"requested_seq":         requestedSeq,
-		"session_id":            strings.TrimSpace(sessionID),
+		"session_id":            strings.TrimSpace(cfg.SessionID),
 		"slice_id":              sliceID,
 		"checkout_dir":          strings.TrimSpace(dir),
 		"checkout_base":         checkoutBase,
 		"tracked_changeset_id":  strings.TrimSpace(trackedChangesetID),
 		"working_tree":          workingTree,
 		"changes":               map[string]any{"added": added, "modified": modified, "deleted": deleted},
+		"diffs_included":        includeDiffs,
 		"path_count":            len(statusEntries),
 		"paths":                 paths,
 		"truncated":             truncated,
 		"refreshed_at":          time.Now().UTC().Format(time.RFC3339),
 		"local_changes_version": 1,
 	}, nil
+}
+
+func attachLocalAgentDiffs(ctx context.Context, cli *CLI, cfg localAgentRunConfig, checkoutIndex *localCheckoutIndex, entries []workingTreeStatusEntry, paths []map[string]any) error {
+	if len(entries) == 0 || len(paths) == 0 {
+		return nil
+	}
+	diffCtx := ctx
+	if cfg.AuthContext != nil {
+		var err error
+		diffCtx, err = cfg.AuthContext(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	cache, cacheErr := NewCacheManager()
+	if cacheErr != nil {
+		cache = nil
+	}
+	diffs, err := buildLocalSliceDiffsAt(diffCtx, cli, checkoutIndex, cache, entries, cfg.CWD)
+	if err != nil {
+		return err
+	}
+	byKey := make(map[string]localSliceDiff, len(diffs))
+	for _, diff := range diffs {
+		byKey[diff.Status+"\x00"+diff.Path] = diff
+	}
+	for _, path := range paths {
+		key := strings.TrimSpace(fmt.Sprint(path["status"])) + "\x00" + strings.TrimSpace(fmt.Sprint(path["path"]))
+		diff, ok := byKey[key]
+		if !ok {
+			continue
+		}
+		path["patch"] = diff.Patch
+		path["lines_added"] = diff.LinesAdded
+		path["lines_deleted"] = diff.LinesDeleted
+		path["binary"] = diff.Binary
+		if len(diff.MetadataNotes) > 0 {
+			path["metadata_notes"] = append([]string(nil), diff.MetadataNotes...)
+		}
+	}
+	return nil
 }
 
 func handleLocalAgentChangesetExportRequest(ctx context.Context, cli *CLI, cfg localAgentRunConfig, eventSeq uint64, request localAgentChangesetExportRequest) error {

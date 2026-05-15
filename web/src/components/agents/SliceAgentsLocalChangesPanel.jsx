@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react';
 import {
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   FileDiff,
   GitPullRequest,
@@ -8,9 +11,11 @@ import {
 
 import {
   changeStatusLabel,
+  localChangeStateText,
   localChangesSummaryText,
 } from '../../features/agents/agentLocalChanges.js';
 import { shortEntityId } from '../../features/agents/agentModels.js';
+import { renderDiffPatch } from '../../utils/diff.jsx';
 import { Button } from '../ui/button.jsx';
 
 export default function SliceAgentsLocalChangesPanel({
@@ -29,6 +34,24 @@ export default function SliceAgentsLocalChangesPanel({
   onHide,
   onRefresh,
 }) {
+  const [expandedFiles, setExpandedFiles] = useState(() => new Set());
+
+  useEffect(() => {
+    setExpandedFiles(new Set());
+  }, [localChanges?.requestId, localChanges?.refreshedAt]);
+
+  const toggleFile = (fileKey) => {
+    setExpandedFiles((current) => {
+      const next = new Set(current);
+      if (next.has(fileKey)) {
+        next.delete(fileKey);
+      } else {
+        next.add(fileKey);
+      }
+      return next;
+    });
+  };
+
   return (
     <section className="slice-agents-local-changes" data-testid="slice-agents-local-changes">
       <div className="slice-agents-local-changes-header">
@@ -71,6 +94,22 @@ export default function SliceAgentsLocalChangesPanel({
         </div>
       </div>
       {displayError && <div className="panel-error">{displayError}</div>}
+      {localChanges && (
+        <div className="slice-agents-local-change-state" data-testid="slice-agents-local-change-state">
+          <span>
+            <strong>State</strong>
+            {localChanges.workingTree || (localChanges.pathCount > 0 ? 'dirty' : 'clean')}
+          </span>
+          <span>
+            <strong>Base</strong>
+            {localChanges.checkoutBase ? shortEntityId(localChanges.checkoutBase, 12) : 'unknown'}
+          </span>
+          <span>
+            <strong>Diff</strong>
+            {localChanges.diffsIncluded ? 'loaded' : 'summary'}
+          </span>
+        </div>
+      )}
       {localChangesLoading && !localChanges && !displayError && (
         <div className="slice-agents-local-clean" data-testid="slice-agents-local-checking">Checking local checkout...</div>
       )}
@@ -79,17 +118,59 @@ export default function SliceAgentsLocalChangesPanel({
       )}
       {localChanges && localChanges.pathCount > 0 && (
         <ul className="slice-agents-local-file-list" data-testid="slice-agents-local-file-list">
-          {localChanges.paths.map((entry) => (
-            <li key={`${entry.status}-${entry.path}`} className="slice-agents-local-file">
-              <span
-                className={`slice-agents-local-file-status slice-agents-local-file-status--${entry.status.toLowerCase()}`}
-                title={changeStatusLabel(entry.status)}
-              >
-                {entry.status}
-              </span>
-              <span className="slice-agents-local-file-path" title={entry.path}>{entry.path}</span>
-            </li>
-          ))}
+          {localChanges.paths.map((entry) => {
+            const fileKey = `${entry.status}-${entry.path}`;
+            const expanded = expandedFiles.has(fileKey);
+            const hasPatch = Boolean(entry.patch);
+            const hasDiffState = localChanges.diffsIncluded || hasPatch || entry.binary || entry.metadataNotes.length > 0;
+            return (
+              <li key={fileKey} className={`slice-agents-local-file${expanded ? ' expanded' : ''}`}>
+                <button
+                  type="button"
+                  className="slice-agents-local-file-toggle"
+                  onClick={() => toggleFile(fileKey)}
+                  aria-expanded={expanded}
+                  title={entry.path}
+                  data-testid="slice-agents-local-file-toggle"
+                >
+                  <span className="slice-agents-local-file-chevron" aria-hidden="true">
+                    {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </span>
+                  <span
+                    className={`slice-agents-local-file-status slice-agents-local-file-status--${entry.status.toLowerCase()}`}
+                    title={changeStatusLabel(entry.status)}
+                  >
+                    {entry.status}
+                  </span>
+                  <span className="slice-agents-local-file-path">{entry.path}</span>
+                  <span className="slice-agents-local-file-state">{localChangeStateText(entry)}</span>
+                </button>
+                {expanded && (
+                  <div className="slice-agents-local-file-diff" data-testid="slice-agents-local-file-diff">
+                    {entry.metadataNotes.length > 0 && (
+                      <ul className="slice-agents-local-file-notes">
+                        {entry.metadataNotes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {hasPatch && (
+                      <pre className="slice-agents-local-diff-patch diff-patch">{renderDiffPatch(entry.patch)}</pre>
+                    )}
+                    {!hasPatch && entry.binary && (
+                      <div className="slice-agents-local-diff-empty">Binary or non-text change</div>
+                    )}
+                    {!hasPatch && !entry.binary && hasDiffState && (
+                      <div className="slice-agents-local-diff-empty">No textual diff</div>
+                    )}
+                    {!hasDiffState && (
+                      <div className="slice-agents-local-diff-empty">Refresh to load inline diff</div>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
           {localChanges.truncated && (
             <li className="slice-agents-local-file slice-agents-local-file--more">
               {localChanges.pathCount - localChanges.paths.length} more changed files

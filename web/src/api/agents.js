@@ -204,7 +204,7 @@ function createAgentRequestId(prefix = 'req') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function requestAgentSessionLocalChanges(sessionId, { limit = 100 } = {}) {
+export async function requestAgentSessionLocalChanges(sessionId, { limit = 100, includeDiffs = false } = {}) {
   const requestId = createAgentRequestId('local_changes');
   const response = await appendAgentSessionEvent(sessionId, {
     stream: 'control',
@@ -212,6 +212,7 @@ export async function requestAgentSessionLocalChanges(sessionId, { limit = 100 }
     payload: {
       requestId,
       limit,
+      includeDiffs: Boolean(includeDiffs),
     },
   });
   return { requestId, response };
