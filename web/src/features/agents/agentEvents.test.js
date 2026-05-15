@@ -80,6 +80,42 @@ test('buildConversationItems renders live deltas inline without duplicating aggr
   assert.equal(items[1].live, true);
 });
 
+test('buildConversationItems hides routine status and control events from the thread', () => {
+  const items = buildConversationItems([
+    { seq: 1, ts: 't1', stream: 'agent', type: 'input', payload: { text: 'make a change' } },
+    { seq: 2, ts: 't2', stream: 'status', type: 'state', payload: { state: 'running' } },
+    { seq: 3, ts: 't3', stream: 'status', type: 'local_runner_attached', payload: { hostName: 'devbox' } },
+    { seq: 4, ts: 't4', stream: 'control', type: 'runtime_session', payload: { runtimeSessionId: 'codex-1' } },
+    { seq: 5, ts: 't5', stream: 'control', type: 'local_changes_requested', payload: { requestId: 'req-1' } },
+    { seq: 6, ts: 't6', stream: 'control', type: 'changeset_export_started', payload: { requestId: 'req-2' } },
+    { seq: 7, ts: 't7', stream: 'status', type: 'local_changes', payload: { changes: { modified: 1 } } },
+    { seq: 8, ts: 't8', stream: 'agent', type: 'output_final', payload: { text: 'Done', exitCode: 0 } },
+  ], { active: false }, { agentType: 'codex' });
+
+  assert.deepEqual(items.map((item) => item.kind), ['message', 'message']);
+  assert.equal(items[0].message.text, 'make a change');
+  assert.equal(items[1].message.text, 'Done');
+});
+
+test('buildConversationItems renders terminal control errors that do not have dedicated UI', () => {
+  const items = buildConversationItems([
+    { seq: 1, ts: 't1', stream: 'agent', type: 'input', payload: { text: 'continue' } },
+    { seq: 2, ts: 't2', stream: 'control', type: 'error', payload: { code: 'AGENT_RUN_FAILED', message: 'agent failed' } },
+  ], { active: false }, { agentType: 'codex' });
+
+  assert.deepEqual(items.map((item) => item.kind), ['message', 'events']);
+  assert.equal(items[1].events[0].payload.message, 'agent failed');
+});
+
+test('buildConversationItems hides checkout failures because the thread has a dedicated banner', () => {
+  const items = buildConversationItems([
+    { seq: 1, ts: 't1', stream: 'agent', type: 'input', payload: { text: 'continue' } },
+    { seq: 2, ts: 't2', stream: 'control', type: 'error', payload: { code: 'LOCAL_AGENT_CHECKOUT_FAILED', message: 'checkout failed' } },
+  ], { active: false }, { agentType: 'codex' });
+
+  assert.deepEqual(items.map((item) => item.kind), ['message']);
+});
+
 test('buildLiveStreamState exposes pending thinking and response text', () => {
   const state = buildLiveStreamState([
     { seq: 1, stream: 'agent', type: 'input', payload: { text: 'continue' } },
